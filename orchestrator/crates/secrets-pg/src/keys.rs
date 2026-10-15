@@ -155,6 +155,10 @@ pub(crate) struct Key {
 /// new secret and every secret that is re-sealed ([`rewrap`](crate::PgSecretStore::rewrap)).
 ///
 /// Rotation is by id: add a key, make it current, run `rewrap`, remove the old one.
+///
+/// Cloning shares the keys (they are behind an `Arc`): a clone is another handle to the same
+/// ciphers, not another copy of the key bytes.
+#[derive(Clone)]
 pub struct Keyring {
     current: Arc<Key>,
     keys: BTreeMap<KeyId, Arc<Key>>,

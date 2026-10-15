@@ -129,9 +129,13 @@ pub struct Config {
     pub artifacts: Option<Artifacts>,
     /// Where a person's own credentials (the tokens and keys of the MCP servers they add) are
     /// kept, sealed (ADR 0046). Absent: no store, and nothing is kept. Read and checked by every
-    /// role, and not used by the running service yet.
+    /// role, and used when `userToolServers.enabled` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<UserSecrets>,
+    /// People's own MCP servers (ADR 0046): whether they may add them, what the orchestrator may
+    /// connect to for them, and the OAuth client it presents. Absent: off, and nothing changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_tool_servers: Option<UserToolServers>,
     /// What the web is told (`GET /api/config`).
     #[serde(default)]
     pub ui: Ui,
@@ -1342,6 +1346,94 @@ pub struct UserSecretKey {
     pub key: SecretRef,
 }
 
+/// People's own MCP servers (ADR 0046): a person adds a server of their own (a URL and how to
+/// authenticate to it), and the orchestrator calls it for them with a credential it keeps for them.
+/// **Off unless `enabled` is `true`**: with it off nothing is built, nothing is read from `secrets`
+/// and nothing about the deployment's own `toolServers` changes. Adding a server also needs the
+/// permission `tools.user.add`, which no role holds by default.
+///
+/// With `enabled` and no `secrets` section only servers that want no authentication (`none`) can be
+/// added: a credential has nowhere to be kept, and the orchestrator refuses to keep one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserToolServers {
+    /// Whether people may add MCP servers of their own (default `false`). When `true`, an id in
+    /// `toolServers` may not start with `u-`: the ids of a person's servers do.
+    #[serde(default)]
+    pub enabled: bool,
+    /// What the orchestrator may connect to for a person's server.
+    #[serde(default)]
+    pub egress: UserToolServersEgress,
+    /// The OAuth client the orchestrator presents to the authorization servers of those servers.
+    #[serde(default)]
+    pub oauth: UserToolServersOauth,
+}
+
+/// The most entries of `userToolServers.egress.allow` or `deny`.
+pub const MAX_EGRESS_PATTERNS: usize = 256;
+
+/// The deployment's lists for the URL a person types (ADR 0046, decision 5). **Without them every
+/// public host is allowed over `https`, and every private, loopback, link-local (the cloud's
+/// metadata address among them) and reserved address is refused**, judged on the address a
+/// connection is made to and not on the name. An entry is a host name (`mcp.example.com`), an
+/// address (`203.0.113.7`, `[2001:db8::7]`) or `*.` and a domain (`*.example.com`: any subdomain,
+/// not the domain itself).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserToolServersEgress {
+    /// Hosts a person's server may be at, none (default: every public host). When it has entries,
+    /// every host it does not name is refused. A host named exactly (or an address) may also
+    /// resolve to a private address: that is an operator's choice. A `*.` entry never lifts the
+    /// ban on private addresses, and nothing here lifts the ban on link-local, multicast and the
+    /// other special ranges. At most 256 entries.
+    #[serde(default)]
+    #[schemars(length(max = 256))]
+    pub allow: Vec<String>,
+    /// Hosts that are refused whatever else is said, none. Same entries as `allow`; always wins.
+    /// At most 256 entries.
+    #[serde(default)]
+    #[schemars(length(max = 256))]
+    pub deny: Vec<String>,
+    /// Also take `http` URLs (default `false`): for a development stack, where a server runs on a
+    /// local port. **Refused when `server.environment` is `production`**: a credential would travel
+    /// in the clear.
+    #[serde(default)]
+    pub allow_http: bool,
+}
+
+/// The default of `userToolServers.oauth.clientName`.
+pub const DEFAULT_OAUTH_CLIENT_NAME: &str = "another-agentic-system";
+
+fn default_oauth_client_name() -> String {
+    DEFAULT_OAUTH_CLIENT_NAME.to_owned()
+}
+
+/// The OAuth client the orchestrator is to the authorization servers of a person's MCP servers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserToolServersOauth {
+    /// The name a client registered dynamically (RFC 7591) shows the person on the consent page:
+    /// 1 to 80 characters of one line, not blank (default `another-agentic-system`).
+    #[serde(default = "default_oauth_client_name")]
+    pub client_name: String,
+    /// The `https` URL, with a path, of this orchestrator's Client ID Metadata Document, none
+    /// (default). With it, an authorization server that supports such documents is given this URL
+    /// as the `client_id` and registers nothing; the orchestrator serves the document at that URL.
+    /// Without it that step of the registration order is skipped (a pre-registered client and
+    /// dynamic registration remain). At most 2 KiB, no user name, password or fragment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_metadata_url: Option<String>,
+}
+
+impl Default for UserToolServersOauth {
+    fn default() -> Self {
+        UserToolServersOauth {
+            client_name: default_oauth_client_name(),
+            client_metadata_url: None,
+        }
+    }
+}
+
 fn default_presign_ttl_secs() -> u64 {
     DEFAULT_PRESIGN_TTL_SECS
 }
@@ -1846,6 +1938,12 @@ pub enum AuthPermission {
     /// It names what an endpoint that shows an operator no content may be used by.
     #[serde(rename = "admin")]
     Admin,
+    /// Add, edit, authorize and re-key an MCP server of one's own (ADR 0046). It takes no scope
+    /// and **no role holds it unless the file lists it: `admin` does not imply it**. Listing, attaching
+    /// and removing one's own servers are not gated by it. Only has an effect with
+    /// `userToolServers.enabled`.
+    #[serde(rename = "tools.user.add")]
+    ToolsUserAdd,
 }
 
 impl AuthPermission {
@@ -1860,6 +1958,7 @@ impl AuthPermission {
             AuthPermission::ThreadDelete => "thread.delete",
             AuthPermission::ArtifactRead => "artifact.read",
             AuthPermission::Admin => "admin",
+            AuthPermission::ToolsUserAdd => "tools.user.add",
         }
     }
 }

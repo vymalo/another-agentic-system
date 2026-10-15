@@ -63,11 +63,18 @@ pub enum Permission {
     /// listing of other people's; it names what a future endpoint may show an operator, which is
     /// never a person's content.
     Admin,
+    /// `tools.user.add`: add, edit, authorize and re-key an MCP server of one's own (ADR 0046). It
+    /// takes no scope (a person's servers are the person's own), and **it is granted to no role by
+    /// default: `admin` does not imply it**, the built-in `user` and `admin` do not hold it, and a
+    /// deployment lists it for the roles it chooses. Listing, attaching and removing one's own
+    /// servers are not gated by it, so a person whose permission is taken away can still remove what
+    /// they added.
+    ToolsUserAdd,
 }
 
 impl Permission {
     /// Every permission, in the order they are listed.
-    pub const ALL: [Permission; 8] = [
+    pub const ALL: [Permission; 9] = [
         Permission::AgentRead,
         Permission::AgentInvoke,
         Permission::ThreadRead,
@@ -76,6 +83,7 @@ impl Permission {
         Permission::ThreadDelete,
         Permission::ArtifactRead,
         Permission::Admin,
+        Permission::ToolsUserAdd,
     ];
 
     /// The name used in the configuration and by `GET /api/me`.
@@ -89,6 +97,7 @@ impl Permission {
             Permission::ThreadDelete => "thread.delete",
             Permission::ArtifactRead => "artifact.read",
             Permission::Admin => "admin",
+            Permission::ToolsUserAdd => "tools.user.add",
         }
     }
 
@@ -606,6 +615,8 @@ impl<'p> Access<'p> {
                 }
             }
             (Permission::Admin, Resource::Anything) => true,
+            // Adding a server is not about anyone's: it is a server of the person's own.
+            (Permission::ToolsUserAdd, Resource::Anything) => true,
             // A permission asked of a resource it is not about.
             _ => false,
         }
@@ -997,6 +1008,87 @@ mod tests {
             no_delete.check(&a, Permission::ThreadDelete, &thread_of(&alice)),
             Err(Denied::Permission(Permission::ThreadDelete))
         );
+    }
+
+    /// ADR 0046: `tools.user.add` is granted to no role by default. The built-in `user` and `admin`
+    /// do not hold it, and `admin` does not imply it; a role that lists it holds it, over nothing in
+    /// particular (a server of the person's own), with no scope; a role that lists its permissions
+    /// without it adds nothing.
+    #[test]
+    fn adding_a_server_of_ones_own_is_granted_to_no_role_by_default() {
+        let policy = Policy::default();
+        let a = principal("alice@x.io", &["user"]);
+        let root = principal("root@x.io", &["admin"]);
+        for who in [&a, &root] {
+            assert!(
+                !policy.access(who).has(Permission::ToolsUserAdd),
+                "a built-in role holds tools.user.add"
+            );
+            assert_eq!(
+                policy.check(who, Permission::ToolsUserAdd, &Resource::Anything),
+                Err(Denied::Permission(Permission::ToolsUserAdd))
+            );
+        }
+        for grant in [RoleGrant::user(), RoleGrant::admin()] {
+            assert!(!grant.permissions.contains(&Permission::ToolsUserAdd));
+        }
+        // admin is a user with `admin`, and `admin` alone gives nothing else
+        let admin_only = Policy::new(
+            BTreeMap::from([(
+                Role::new("ops"),
+                RoleGrant {
+                    permissions: BTreeSet::from([Permission::Admin]),
+                    ..RoleGrant::none()
+                },
+            )]),
+            Some(Role::new("ops")),
+        )
+        .unwrap();
+        let ops = principal("ops@x.io", &["ops"]);
+        assert!(admin_only.allows(&ops, Permission::Admin, &Resource::Anything));
+        assert!(!admin_only.allows(&ops, Permission::ToolsUserAdd, &Resource::Anything));
+
+        // a role that lists it
+        let maker = Policy::new(
+            BTreeMap::from([
+                (Role::new("user"), RoleGrant::user()),
+                (
+                    Role::new("maker"),
+                    RoleGrant {
+                        permissions: BTreeSet::from([Permission::ToolsUserAdd]),
+                        ..RoleGrant::none()
+                    },
+                ),
+            ]),
+            Some(Role::new("user")),
+        )
+        .unwrap();
+        let m = principal("alice@x.io", &["maker"]);
+        assert!(maker.allows(&m, Permission::ToolsUserAdd, &Resource::Anything));
+        // it is not about a thread or an agent: asked of those it is no
+        let (alice, coder) = (user("alice@x.io"), AgentId::new("coder"));
+        assert!(!maker.allows(&m, Permission::ToolsUserAdd, &thread_of(&alice)));
+        assert!(!maker.allows(
+            &m,
+            Permission::ToolsUserAdd,
+            &Resource::Agent { id: &coder }
+        ));
+        // and it gives nothing else
+        assert!(!maker.allows(&m, Permission::ThreadRead, &thread_of(&alice)));
+        // a person with both roles has it, and everything the user has
+        let both = principal("alice@x.io", &["user", "maker"]);
+        assert!(maker.allows(&both, Permission::ToolsUserAdd, &Resource::Anything));
+        assert!(maker.allows(&both, Permission::ThreadRead, &thread_of(&alice)));
+
+        assert_eq!(maker.access(&m).scope(Permission::ToolsUserAdd), None);
+        assert!(!Permission::ToolsUserAdd.is_scoped());
+        assert!(!Permission::ToolsUserAdd.is_over_agents());
+        assert_eq!(
+            Permission::parse("tools.user.add"),
+            Some(Permission::ToolsUserAdd)
+        );
+        assert_eq!(Permission::ToolsUserAdd.to_string(), "tools.user.add");
+        assert!(Permission::ALL.contains(&Permission::ToolsUserAdd));
     }
 
     #[test]

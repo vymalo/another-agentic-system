@@ -1339,6 +1339,233 @@ async fn by_default_only_the_agui_surface_and_the_resource_api_are_mounted() {
     assert!(log.contains("\"surfaces\":\"agui\""), "{log}");
 }
 
+// ---- people's own MCP servers (ADR 0046, slice 4a) ---------------------------------------------
+
+const USER_SECRET_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+/// The `secrets` section, in a build that has the store it names (one without `secrets-pg` refuses
+/// `store: pg`).
+const SECRETS: &str = if cfg!(feature = "secrets-pg") {
+    "\
+secrets:
+  store: pg
+  pg:
+    keys: [{ id: k1, key: { file: k1 } }]
+    current: k1
+"
+} else {
+    ""
+};
+
+/// Whether `table` exists in the schema of `db`.
+async fn has_table(db: &pgdb::TestDb, table: &str) -> bool {
+    let pool = db.pool("smoke-check", 1).await;
+    let found: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2",
+    )
+    .bind(&db.schema)
+    .bind(table)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    found == 1
+}
+
+async fn ready(client: &reqwest::Client, base: &str) {
+    eventually("the binary is ready", || async {
+        (http_status(client, &format!("{base}/readyz")).await == Some(200)).then_some(())
+    })
+    .await;
+}
+
+/// Off is off: a `secrets` section the file has (and checks) is neither opened nor migrated, and
+/// the log says nothing of the feature.
+#[tokio::test]
+async fn people_s_own_servers_are_off_by_default_and_nothing_of_them_is_built() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    fs::write(scratch.file("k1"), format!("{USER_SECRET_KEY}\n")).unwrap();
+    for (name, extra) in [
+        ("no-section.log", String::new()),
+        ("secrets-only.log", SECRETS.to_owned()),
+        (
+            "disabled.log",
+            format!(
+                "userToolServers: {{ enabled: false, egress: {{ allowHttp: true }} }}\n{SECRETS}"
+            ),
+        ),
+    ] {
+        let (run, base, client) = serve_configured(&db, &scratch, name, &extra).await;
+        ready(&client, &base).await;
+        let status = run.borrow_mut().terminate(Duration::from_secs(20));
+        let log = run.borrow().log();
+        assert!(
+            status.success(),
+            "{name}: unclean exit {status:?}; log:\n{log}"
+        );
+        assert!(
+            !log.contains("userToolServers") && !log.contains("MCP servers"),
+            "{name}: the feature is off and says nothing: {log}"
+        );
+        assert!(
+            !has_table(&db, "user_secrets").await,
+            "{name}: the secret store was migrated while the feature is off"
+        );
+        // the definitions' table is made by the thread store's migrations like the others
+        assert!(has_table(&db, "user_tool_servers").await, "{name}");
+    }
+}
+
+/// On, with a `secrets` section: the sealed table is migrated, the process is ready, and the log says
+/// what is kept (the ids of the keys) and never a key.
+#[cfg(feature = "secrets-pg")]
+#[tokio::test]
+async fn enabled_with_secrets_migrates_the_sealed_store_and_logs_no_key() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    fs::write(scratch.file("k1"), format!("{USER_SECRET_KEY}\n")).unwrap();
+    let (run, base, client) = serve_configured(
+        &db,
+        &scratch,
+        "enabled.log",
+        &format!("userToolServers: {{ enabled: true }}\n{SECRETS}"),
+    )
+    .await;
+    ready(&client, &base).await;
+    assert!(
+        has_table(&db, "user_secrets").await,
+        "the sealed store was migrated"
+    );
+    assert!(has_table(&db, "user_tool_servers").await);
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("kept sealed in Postgres"), "{log}");
+    assert!(log.contains("people's own MCP servers are on"), "{log}");
+    assert!(
+        !log.contains(&USER_SECRET_KEY[..16]),
+        "a key is in the log: {log}"
+    );
+}
+
+/// On with no `secrets` section: ready, with a warning that only servers that need no credential can
+/// be added, and no secret store.
+#[tokio::test]
+async fn enabled_without_secrets_starts_and_says_only_none_servers_can_be_added() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let (run, base, client) = serve_configured(
+        &db,
+        &scratch,
+        "enabled-no-secrets.log",
+        "userToolServers: { enabled: true, egress: { allowHttp: true } }\n",
+    )
+    .await;
+    ready(&client, &base).await;
+    assert!(
+        !has_table(&db, "user_secrets").await,
+        "no section, no secret store"
+    );
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("no secrets section"), "{log}");
+    assert!(log.contains("allowHttp"), "the plain http warning: {log}");
+}
+
+/// Which processes build the ports of people's own servers: the ones that serve routes, where the API
+/// and the thread-tools endpoint use them. A worker opens nothing for the feature, so the secret
+/// store's table is not made by it, and its log says why; the control plane of the same file migrates
+/// it and says what is kept.
+#[cfg(feature = "secrets-pg")]
+#[tokio::test]
+async fn a_worker_opens_nothing_for_people_s_own_servers_and_a_control_plane_does() {
+    for (role, builds) in [("worker", false), ("control-plane", true)] {
+        let Some(db) = pgdb::TestDb::new().await else {
+            eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let scratch = Scratch::new();
+        fs::write(scratch.file("k1"), format!("{USER_SECRET_KEY}\n")).unwrap();
+        let (run, base, client) = serve_configured(
+            &db,
+            &scratch,
+            &format!("{role}.log"),
+            &format!("server: {{ role: {role} }}\nuserToolServers: {{ enabled: true }}\n{SECRETS}"),
+        )
+        .await;
+        ready(&client, &base).await;
+        assert_eq!(
+            has_table(&db, "user_secrets").await,
+            builds,
+            "{role}: the secret store is migrated by the roles that serve routes"
+        );
+        // every role has the definitions' table: the thread store's migrations make it
+        assert!(has_table(&db, "user_tool_servers").await, "{role}");
+        let status = run.borrow_mut().terminate(Duration::from_secs(20));
+        let log = run.borrow().log();
+        assert!(
+            status.success(),
+            "{role}: unclean exit {status:?}; log:\n{log}"
+        );
+        assert_eq!(
+            log.contains("kept sealed in Postgres"),
+            builds,
+            "{role}: {log}"
+        );
+        assert_eq!(
+            log.contains("serves no routes"),
+            !builds,
+            "{role}: a worker says once why the feature is not there: {log}"
+        );
+        assert!(
+            !log.contains(&USER_SECRET_KEY[..16]),
+            "{role}: a key is in the log: {log}"
+        );
+    }
+}
+
+/// A `u-` id among the deployment's own tool servers stops a process that enabled the feature,
+/// naming the key (ADR 0046, decision 2), before anything connects.
+#[test]
+fn a_deployment_server_with_a_persons_id_stops_a_process_that_enabled_the_feature() {
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        &format!(
+            "{CONFIG}userToolServers: {{ enabled: true }}
+toolServers:
+  - {{ id: u-0123456789, name: Mine, url: 'https://mine.example.com/mcp' }}
+"
+        ),
+    );
+    let out = run_to_end(
+        &[],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", "postgres://u:hunter2@127.0.0.1:1/none"),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(78), "EX_CONFIG: {}", out.stderr);
+    assert!(
+        out.stderr.contains("toolServers[0].id: starts with u-"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("hunter2"), "{}", out.stderr);
+}
+
 // ---- authentication (ADR 0033) ---------------------------------------------------------------
 
 /// Starts the binary on a free port from a configuration file that is `CONFIG` and `extra`, and

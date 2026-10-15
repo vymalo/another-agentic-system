@@ -51,6 +51,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::artifacts::ArtifactSettings;
+use crate::user_tools::UserToolsSettings;
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
@@ -1141,6 +1142,7 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         orch_config::AuthPermission::ThreadDelete => Permission::ThreadDelete,
         orch_config::AuthPermission::ArtifactRead => Permission::ArtifactRead,
         orch_config::AuthPermission::Admin => Permission::Admin,
+        orch_config::AuthPermission::ToolsUserAdd => Permission::ToolsUserAdd,
     };
     let tier = |t: orch_config::AuthTier| match t {
         orch_config::AuthTier::Plan => orch_core::AccessTier::Plan,
@@ -1277,6 +1279,12 @@ pub struct Config {
     /// file: the section has no variable): no store, and a file is refused. Its `Debug` never
     /// shows a credential.
     pub artifacts: Option<ArtifactSettings>,
+    /// `userToolServers` (and, when the file has it, the keys of `secrets`) of the configuration
+    /// file (ADR 0046): `Some` only when `userToolServers.enabled` is true, and then what the
+    /// composition root builds the ports of people's own MCP servers from. `None` without the
+    /// section and with it off (and always from the environment alone: the section has no variable).
+    /// Its `Debug` shows the hosts of the lists and the ids of the keys, never a key.
+    pub user_tools: Option<UserToolsSettings>,
     /// `sharing` of the configuration file (ADR 0040): the cap on what can be shared, the secret
     /// the links are made with and what a public reader may see. Disabled without the section (and
     /// always from the environment alone: the section has no variable). Its `Debug` never shows a
@@ -1333,7 +1341,8 @@ impl fmt::Debug for Config {
             .field("instance_id", &self.instance_id)
             .field("shutdown_grace", &self.shutdown_grace)
             .field("log_format", &self.log_format)
-            .field("artifacts", &self.artifacts);
+            .field("artifacts", &self.artifacts)
+            .field("user_tools", &self.user_tools);
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
         #[cfg(feature = "registry-platform")]
@@ -1727,6 +1736,7 @@ impl Config {
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
             log_format,
             artifacts: resolved.artifacts,
+            user_tools: resolved.user_tools,
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
@@ -2589,6 +2599,8 @@ impl WebhookSecrets {
 struct Resolved {
     /// `artifacts`, read as the file said it (it has no variable).
     artifacts: Option<ArtifactSettings>,
+    /// `userToolServers` and the keys of `secrets`, when the feature is enabled (no variable).
+    user_tools: Option<UserToolsSettings>,
     /// `auth.mode` and `auth.jwt`: keys that have no variable, so no string to go through.
     auth: AuthSettings,
     /// `models.endpoints` and `tasks`, read: they replace what the legacy variables make.
@@ -5116,6 +5128,7 @@ mod tests {
                 model: orch_ports::NoModel,
                 auth: orch_ports::RefuseAll,
                 registry: directory.fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             cfg.app_config(),

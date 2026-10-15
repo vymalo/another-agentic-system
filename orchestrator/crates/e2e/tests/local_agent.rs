@@ -181,6 +181,7 @@ fn app<S: ThreadStore, W: Wakeup>(
                 model: orch_ports::NoModel,
                 auth: orch_auth_header::HeaderAuth::new(),
                 registry: World::directory().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             World::directory(),
             AppConfig {

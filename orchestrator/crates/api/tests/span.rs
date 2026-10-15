@@ -73,6 +73,7 @@ async fn the_token_is_not_in_the_request_span() {
                 model: NoModel,
                 auth,
                 registry: directory.fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig {

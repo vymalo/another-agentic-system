@@ -855,8 +855,15 @@ impl Classify for UserToolServerStoreError {
 ///   ([`MAX_USER_TOOL_SERVERS`] is 8) with [`TooMany`](UserToolServerStoreError::TooMany), and
 ///   writers that race for the last places never pass it. A count read and then an insert is not
 ///   enough: two writers both count seven. A SQL adapter serializes the inserts of one owner, with a
-///   transaction-scoped advisory lock keyed by the owner (`pg_advisory_xact_lock(hashtext(owner))`)
-///   or `SELECT … FOR UPDATE` on a row of the owner, then counts, then inserts. The testkit races
+///   transaction-scoped advisory lock keyed by the owner or `SELECT … FOR UPDATE` on a row of the
+///   owner, then counts, then inserts. **On Postgres the advisory lock is the two-`int4` form, with a
+///   class of the adapter's own: `pg_advisory_xact_lock(class, hashtext(owner))`.** The one-`bigint`
+///   form `pg_advisory_xact_lock(hashtext(owner))` shares a key space with every other one-`bigint`
+///   lock of the database, and no number can promise to differ from another's: adam-rs, which shares
+///   the orchestrator's database under the feature `agent-local`, takes
+///   `pg_advisory_xact_lock(hashtext($1))` (`crates/adam-store-postgres/src/lib.rs`, at the revision
+///   the workspace pins), and a person's e-mail can hash to the number of its migration key. Postgres
+///   keeps the two forms apart, so the two-`int4` lock is structurally another lock. The testkit races
 ///   sixteen adds for the last places, twenty times over.
 /// - **Revisions are compare and swap.** Every write of a definition gives it a new
 ///   [`ServerRevision`] (never given twice for a key, even across a `delete`: see its docs), and
@@ -954,4 +961,77 @@ pub trait UserToolServerStore: Send + Sync + 'static {
         owner: &UserId,
         id: &UserToolServerId,
     ) -> impl Future<Output = Result<(), UserToolServerStoreError>> + Send;
+}
+
+/// The definitions store of a deployment where people's own MCP servers are off
+/// (`userToolServers.enabled` false or absent): every call is
+/// [`UserToolServerStoreError::Unavailable`] with a sentence that says why and holds no owner or
+/// definition. A feature that is off keeps and reads nothing, so a route that forgets to check the
+/// switch cannot write a definition. The model is [`NoArtifacts`](crate::NoArtifacts); it does not
+/// pass the conformance suite, which is for the stores that keep.
+///
+/// **Reads refuse too**, as `Transient` (an `Unavailable` is): a caller that calls `list` or `get`
+/// without first asking [`UserToolPorts::mode`](crate::UserToolPorts::mode) for
+/// [`is_enabled`](crate::UserToolsMode::is_enabled) would fail every request, and every job that
+/// reaches the relay, in a deployment that has the feature off, which is every deployment by default.
+/// The rule for the endpoints and the relay is to check the mode first; an empty list is not what
+/// this store answers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoUserToolServers;
+
+impl NoUserToolServers {
+    fn refuse<T>() -> Result<T, UserToolServerStoreError> {
+        Err(UserToolServerStoreError::unavailable(
+            "people's own MCP servers are off in this deployment (userToolServers.enabled is false)",
+        ))
+    }
+}
+
+impl UserToolServerStore for NoUserToolServers {
+    async fn insert(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServer,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn get(
+        &self,
+        _owner: &UserId,
+        _id: &UserToolServerId,
+    ) -> Result<Option<StoredServer>, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn list(&self, _owner: &UserId) -> Result<Vec<StoredServer>, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn replace(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServer,
+        _expected: ServerRevision,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn set_state(
+        &self,
+        _owner: &UserId,
+        _id: &UserToolServerId,
+        _state: UserToolServerState,
+        _expected: ServerRevision,
+    ) -> Result<ServerRevision, UserToolServerStoreError> {
+        Self::refuse()
+    }
+
+    async fn delete(
+        &self,
+        _owner: &UserId,
+        _id: &UserToolServerId,
+    ) -> Result<(), UserToolServerStoreError> {
+        Self::refuse()
+    }
 }

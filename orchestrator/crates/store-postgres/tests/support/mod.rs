@@ -60,6 +60,20 @@ impl TestDb {
             .expect("connect pool")
     }
 
+    /// A pool confined to this schema whose sessions have the given settings from the start (what a
+    /// role or a database setting does: `ALTER ROLE ... SET`).
+    pub async fn pool_with(&self, app: &str, max: u32, settings: &[(&str, &str)]) -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(max)
+            .connect_with(
+                self.options()
+                    .options(settings.iter().copied())
+                    .application_name(app),
+            )
+            .await
+            .expect("connect pool")
+    }
+
     /// A migrated store in this schema.
     pub async fn store(&self) -> PgStore {
         let store = PgStore::from_pool(self.pool("orch-test", 24).await);

@@ -351,7 +351,8 @@
         "artifact.read",
         "thread.share",
         "thread.delete",
-        "admin"
+        "admin",
+        "tools.user.add"
       ],
       "type": "string"
     },
@@ -1456,6 +1457,80 @@
       ],
       "type": "object"
     },
+    "UserToolServers": {
+      "additionalProperties": false,
+      "description": "People's own MCP servers (ADR 0046): a person adds a server of their own (a URL and how to authenticate to it), and the orchestrator calls it for them with a credential it keeps for them. **Off unless `enabled` is `true`**: with it off nothing is built, nothing is read from `secrets` and nothing about the deployment's own `toolServers` changes. Adding a server also needs the permission `tools.user.add`, which no role holds by default. With `enabled` and no `secrets` section only servers that want no authentication (`none`) can be added: a credential has nowhere to be kept, and the orchestrator refuses to keep one.",
+      "properties": {
+        "egress": {
+          "$ref": "#/$defs/UserToolServersEgress",
+          "default": {
+            "allow": [],
+            "allowHttp": false,
+            "deny": []
+          },
+          "description": "What the orchestrator may connect to for a person's server."
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether people may add MCP servers of their own (default `false`). When `true`, an id in `toolServers` may not start with `u-`: the ids of a person's servers do.",
+          "type": "boolean"
+        },
+        "oauth": {
+          "$ref": "#/$defs/UserToolServersOauth",
+          "default": {
+            "clientName": "another-agentic-system"
+          },
+          "description": "The OAuth client the orchestrator presents to the authorization servers of those servers."
+        }
+      },
+      "type": "object"
+    },
+    "UserToolServersEgress": {
+      "additionalProperties": false,
+      "description": "The deployment's lists for the URL a person types (ADR 0046, decision 5). **Without them every public host is allowed over `https`, and every private, loopback, link-local (the cloud's metadata address among them) and reserved address is refused**, judged on the address a connection is made to and not on the name. An entry is a host name (`mcp.example.com`), an address (`203.0.113.7`, `[2001:db8::7]`) or `*.` and a domain (`*.example.com`: any subdomain, not the domain itself).",
+      "properties": {
+        "allow": {
+          "default": [],
+          "description": "Hosts a person's server may be at, none (default: every public host). When it has entries, every host it does not name is refused. A host named exactly (or an address) may also resolve to a private address: that is an operator's choice. A `*.` entry never lifts the ban on private addresses, and nothing here lifts the ban on link-local, multicast and the other special ranges. At most 256 entries.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "allowHttp": {
+          "default": false,
+          "description": "Also take `http` URLs (default `false`): for a development stack, where a server runs on a local port. **Refused when `server.environment` is `production`**: a credential would travel in the clear.",
+          "type": "boolean"
+        },
+        "deny": {
+          "default": [],
+          "description": "Hosts that are refused whatever else is said, none. Same entries as `allow`; always wins. At most 256 entries.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "UserToolServersOauth": {
+      "additionalProperties": false,
+      "description": "The OAuth client the orchestrator is to the authorization servers of a person's MCP servers.",
+      "properties": {
+        "clientMetadataUrl": {
+          "description": "The `https` URL, with a path, of this orchestrator's Client ID Metadata Document, none (default). With it, an authorization server that supports such documents is given this URL as the `client_id` and registers nothing; the orchestrator serves the document at that URL. Without it that step of the registration order is skipped (a pre-registered client and dynamic registration remain). At most 2 KiB, no user name, password or fragment.",
+          "type": "string"
+        },
+        "clientName": {
+          "default": "another-agentic-system",
+          "description": "The name a client registered dynamically (RFC 7591) shows the person on the consent page: 1 to 80 characters of one line, not blank (default `another-agentic-system`).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "WebhookGeneric": {
       "additionalProperties": false,
       "description": "The generic signed CI report.",
@@ -1616,7 +1691,7 @@
     },
     "secrets": {
       "$ref": "#/$defs/UserSecrets",
-      "description": "Where a person's own credentials (the tokens and keys of the MCP servers they add) are kept, sealed (ADR 0046). Absent: no store, and nothing is kept. Read and checked by every role, and not used by the running service yet."
+      "description": "Where a person's own credentials (the tokens and keys of the MCP servers they add) are kept, sealed (ADR 0046). Absent: no store, and nothing is kept. Read and checked by every role, and used when `userToolServers.enabled` is true."
     },
     "server": {
       "$ref": "#/$defs/Server",
@@ -1677,6 +1752,10 @@
         "showDescriptions": true
       },
       "description": "What the web is told (`GET /api/config`)."
+    },
+    "userToolServers": {
+      "$ref": "#/$defs/UserToolServers",
+      "description": "People's own MCP servers (ADR 0046): whether they may add them, what the orchestrator may connect to for them, and the OAuth client it presents. Absent: off, and nothing changes."
     },
     "version": {
       "description": "The version of this file's format. This build reads `1`.",

@@ -7,9 +7,12 @@ work (discovery, PKCE `S256`, the `resource` parameter, client registration, ref
 `D: UserToolServerStore`, and reads a clock (`C: Clock`, `SystemClock` by default). It builds the HTTP client it
 needs itself, and **every URL that client fetches goes through the egress guard** (`orch_ports::EgressPolicy`).
 
-**Not wired into the binary yet** (the composition root, the `secrets` and `userToolServers` configuration, the
-endpoints and the relay's lease are later slices of the ADR). No configuration, environment variable or feature
-here.
+**Wired into the binary since slice 4a** (the composition root builds a `Broker<PgSecretStore, PgUserToolServers>` when
+`userToolServers.enabled` and the file has a `secrets` section, with the egress policy, the system clock, and `BrokerConfig` from
+`userToolServers.oauth.clientName` and `clientMetadataUrl`; with no `secrets` section the root puts `orch_ports::NoBroker` in its place,
+which refuses every call). **No route and no relay uses it yet**: the endpoints (4b) and the relay's lease (5) are later slices. No
+configuration, environment variable or feature here: the crate takes what the binary gives it, and the lease and flow lifetimes, the
+timeouts and the response size keep their defaults (no configuration key tunes them).
 
 ## API
 
@@ -23,7 +26,7 @@ let broker = Broker::builder(secrets, definitions, egress_policy)   // S, D, Egr
 
 | Item | What |
 |---|---|
-| `Broker<S, D, C>` | Implements `CredentialBroker`. `Clone` is cheap and shares the single-flight table (one process); build another with `Broker::builder` for another replica. `Debug` prints nothing of what it holds. |
+| `Broker<S, D, C>` | Implements `CredentialBroker` and the marker `orch_ports::KeepsCredentials` (a broker that keeps credentials, which the bundle's `UserTools::full` asks for and `NoBroker` does not have; `tests/conformance.rs` checks it). In the service it is the only holder of the sealed secret store: the bundle of people's servers has none to give. `Clone` is cheap and shares the single-flight table (one process); build another with `Broker::builder` for another replica. `Debug` prints nothing of what it holds. |
 | `BrokerBuilder` | `clock`, `config`, `lookup`, `build`. |
 | `BrokerConfig` | `with_client_name`, `with_client_metadata_url`, `with_refresh_margin`, `with_lease_ttl`, `with_flow_ttl`, `with_timeouts`, `with_max_response_bytes`; checked by `build`: every duration is above zero and at most its bound (`MAX_LEASE_TTL`, `MAX_FLOW_TTL`, `MAX_REFRESH_MARGIN`, `MAX_TIMEOUT`), the response size is in `1..=MAX_RESPONSE_BYTES`, the document URL is at most 2 KiB (`BuildError::Config`, `BuildError::ClientMetadataUrl`). |
 | `HostLookup`, `LookupFuture`, `SystemLookup` | How a host name becomes addresses. The default asks the operating system. Whatever answers, the guard judges the addresses and the connection is made to those alone. |
@@ -313,7 +316,7 @@ connections, cannot then prove that nothing connected).
 
 | File | What |
 |---|---|
-| `tests/conformance.rs` | `orch_ports::credential_broker_conformance!` (36 cases, in `orch-ports`' `testkit::credential_broker`) over `MemorySecretStore` (behind a wrapper that yields after every call, so two replicas interleave as they do in production), `MemoryUserToolServers` and the mock. Among them: the `iss` of the callback in all its cases and a mix-up with a second authorization server; three replicas and six leases that present a rotating refresh token once; eight leases against a failing server that make one request; a grant not lent after the scopes or the client id change. |
+| `tests/conformance.rs` | `orch_ports::credential_broker_conformance!` (36 cases, in `orch-ports`' `testkit::credential_broker`) over `MemorySecretStore` (behind a wrapper that yields after every call, so two replicas interleave as they do in production), `MemoryUserToolServers` and the mock. Among them: the `iss` of the callback in all its cases and a mix-up with a second authorization server; three replicas and six leases that present a rotating refresh token once; eight leases against a failing server that make one request; a grant not lent after the scopes or the client id change; plus one test that the broker is a `KeepsCredentials`. |
 | `tests/egress.rs` | A policy that does not name the address, `http` without `allowing_http`; **which endpoint is refused at which address**: the token endpoint at `169.254.169.254` with a policy that does not name it (`allow-list`) and with one that does, so that the class of the address decides (`private-address`); the registration endpoint at `169.254.169.254` (class decides) and at `127.0.0.2`; the revocation endpoint at `127.0.0.2` (and at `169.254.169.254`, whose rule is read from the log: `tests/logs.rs`); the token endpoint at `127.0.0.2`. Where the address is `127.0.0.2` a tripwire listener counts connections: none. Also: a stricter policy at a refresh, a name that resolves to a private address (DNS rebinding), to a mix, to nothing, a resolver that fails, a name admitted by `allow` and connected to only through the hook, a redirect not followed, an authorization endpoint that is not http(s) or has a fragment, a response over the limit with a `Content-Length` and **without one** (chunked), a body that drips, a slow server. |
 | `tests/registration.rs` | The order of the ADR (client id, document, reuse, dynamic), the secret of a registered client, **one registration per hour per issuer and redirect URI** and never at another issuer, the authorization request (PKCE, `state`, `resource` as the definition's URL, scope or none, redirect), the root metadata fallback, OpenID-only issuers, metadata about another resource or issuer, a URL over 2 KiB in the metadata, a request over 8 KiB, a flow too large for the store refused before a client is registered, a token that is not a bearer token, and the settings checks and their upper bounds. |
 | `tests/behaviour.rs` | What is kept, lifetimes and leases (`expires_in: 0`), rotating and non-rotating refresh tokens, **the claim to refresh** (written before the request, waited for, taken over when it runs out, the access token lent while another replica refreshes, released after a failure), **a refusal after another replica rotated**, a hanging refresh that is one request, a rotate that fails once or stays down (and the callers that waited for it hear so), the state the broker writes (and does not write after an edit), revocation upstream, stores that are down, a refresh that outlives its caller, **a revoke that runs beside an authorization (in this process and in another)**, **a flow begun while another ends**, the marker of a used flow, a corrupt record. |

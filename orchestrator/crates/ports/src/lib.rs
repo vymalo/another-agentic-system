@@ -25,6 +25,11 @@
 //! - [`UserToolServerStore`]: the definitions of a person's own MCP servers, by `(owner, id)`, at most
 //!   eight per person; a definition holds no secret and a URL the guard accepted, and every write of
 //!   an existing one is a compare and swap on a [`ServerRevision`] (ADR 0046);
+//! - [`UserToolPorts`] (with [`UserTools`], [`UserToolsMode`] and the refusing [`NoUserTools`]): the
+//!   definitions store and the broker held together as the bundle holds the others, with the mode a
+//!   deployment chose (fixed by the constructor, never set beside the ports) and its egress policy,
+//!   and no secret store; [`NoUserToolServers`], [`NoSecrets`] and [`NoBroker`] refuse every call, and
+//!   [`KeepsCredentials`] marks the brokers that do not (ADR 0046);
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
 //!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
 //!   relay apply one function;
@@ -71,12 +76,12 @@ pub use auth::{
     AuthError, Authenticator, ByCredential, CredentialKind, Credentials, DpopCredentials,
     Principal, RefuseAll, Role,
 };
-pub use bundle::{PortSet, Ports};
+pub use bundle::{NoUserTools, PortSet, Ports, UserToolPorts, UserTools, UserToolsMode};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
 pub use credentials::{
-    CredentialBroker, CredentialError, CredentialLease, CredentialRef, MAX_CREDENTIAL_REF_BYTES,
-    MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, OAuthStart, OAuthState, OAuthStateError,
-    RedirectUri, RedirectUriError,
+    CredentialBroker, CredentialError, CredentialLease, CredentialRef, KeepsCredentials,
+    MAX_CREDENTIAL_REF_BYTES, MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, NoBroker, OAuthStart,
+    OAuthState, OAuthStateError, RedirectUri, RedirectUriError,
 };
 pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
@@ -93,8 +98,8 @@ pub use registry::{
 };
 pub use route::ByTransport;
 pub use secrets::{
-    MAX_SECRET_BYTES, MaterialTooLarge, SecretError, SecretMaterial, SecretServer, SecretStore,
-    SecretVersion,
+    MAX_SECRET_BYTES, MaterialTooLarge, NoSecrets, SecretError, SecretMaterial, SecretServer,
+    SecretStore, SecretVersion,
 };
 pub use store::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
@@ -108,8 +113,8 @@ pub use tools::{
 };
 pub use user_tools::{
     DefinitionError, MAX_CLIENT_ID_BYTES, MAX_HEADER_NAME_BYTES, MAX_NAME_CHARS, MAX_SCOPE_BYTES,
-    MAX_SCOPES, MAX_USER_TOOL_SERVERS, ServerRevision, StoredServer, ToolServerStatus,
-    UnavailableReason, UserAuth, UserToolServer, UserToolServerId, UserToolServerState,
-    UserToolServerStore, UserToolServerStoreError,
+    MAX_SCOPES, MAX_USER_TOOL_SERVERS, NoUserToolServers, ServerRevision, StoredServer,
+    ToolServerStatus, UnavailableReason, UserAuth, UserToolServer, UserToolServerId,
+    UserToolServerState, UserToolServerStore, UserToolServerStoreError,
 };
 pub use wakeup::{Topic, Wakeup, WakeupCapabilities, WakeupError};

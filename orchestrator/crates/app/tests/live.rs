@@ -228,6 +228,7 @@ async fn a_wakeup_without_live_text_changes_nothing_about_the_log() {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory(),
             AppConfig::default(),

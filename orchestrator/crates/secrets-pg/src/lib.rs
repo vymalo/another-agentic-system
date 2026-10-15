@@ -51,4 +51,4 @@ mod store;
 
 pub use keys::{KEY_LEN, KeyBytes, KeyError, KeyId, Keyring, MAX_KEY_ID_LEN};
 pub use rewrap::{MAX_LISTED_FAILURES, RewrapFailure, RewrapFailureKind, RewrapReport};
-pub use store::{LOCK_TIMEOUT, MIGRATIONS_TABLE, PgSecretStore, advisory_lock_key};
+pub use store::{LOCK_TIMEOUT, MIGRATIONS_TABLE, PgSecretStore, advisory_lock_key, is_outage};

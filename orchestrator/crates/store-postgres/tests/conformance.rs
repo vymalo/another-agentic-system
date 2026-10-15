@@ -6,7 +6,7 @@ mod support;
 
 use std::time::Duration;
 
-use orch_store_postgres::{PgStore, PgWakeup};
+use orch_store_postgres::{PgStore, PgUserToolServers, PgWakeup};
 use support::TestDb;
 
 async fn make_store() -> Option<PgStore> {
@@ -23,5 +23,13 @@ async fn make_wakeup() -> Option<PgWakeup> {
     Some(wakeup)
 }
 
+/// The definitions of people's servers: the table is created by the store's migrations, the adapter
+/// shares the store's pool.
+async fn make_user_tool_servers() -> Option<PgUserToolServers> {
+    let store = TestDb::new().await?.store().await;
+    Some(PgUserToolServers::from_pool(store.pool().clone()))
+}
+
 orch_ports::thread_store_conformance!(make_store);
 orch_ports::wakeup_conformance!(make_wakeup);
+orch_ports::user_tool_server_store_conformance!(make_user_tool_servers);

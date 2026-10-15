@@ -46,6 +46,7 @@ fn app_over(w: &World, registry: &MemoryRegistry) -> Arc<RegistryApp> {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig {

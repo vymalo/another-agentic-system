@@ -46,6 +46,7 @@ fn app(w: &World) -> Arc<TestApp> {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory.fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig {
@@ -184,6 +185,7 @@ async fn a_thread_created_before_the_rename_keeps_working() {
                 model: ScriptedModel::default(),
                 auth: orch_ports::RefuseAll,
                 registry: old_directory.fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             old_directory,
             AppConfig::default(),
@@ -250,6 +252,7 @@ async fn a_role_and_a_tool_server_that_name_an_alias_are_about_the_agent() {
             model: w.model.clone(),
             auth: orch_ports::RefuseAll,
             registry: directory.fixed_registry(),
+            user_tools: orch_ports::NoUserTools::off(),
         },
         directory,
         AppConfig {

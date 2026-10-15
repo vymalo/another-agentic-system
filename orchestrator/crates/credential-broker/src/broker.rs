@@ -1121,6 +1121,13 @@ fn authorization_url(
 
 // ---------------------------------------------------------------------------------- the port
 
+/// This is a broker that keeps credentials (sealed, in the `S` it was built over): the bundle of a
+/// deployment that has one asks for the marker, and `NoBroker` does not have it.
+impl<S: SecretStore, D: UserToolServerStore, C: Clock> orch_ports::KeepsCredentials
+    for Broker<S, D, C>
+{
+}
+
 impl<S: SecretStore, D: UserToolServerStore, C: Clock> CredentialBroker for Broker<S, D, C> {
     async fn store(
         &self,

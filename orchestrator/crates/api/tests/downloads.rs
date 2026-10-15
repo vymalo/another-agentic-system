@@ -306,6 +306,7 @@ impl Harness {
                     model: NoModel,
                     auth,
                     registry: directory.fixed_registry(),
+                    user_tools: orch_ports::NoUserTools::off(),
                 },
                 directory,
                 AppConfig {

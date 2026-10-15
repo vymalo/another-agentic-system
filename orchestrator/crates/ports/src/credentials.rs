@@ -613,3 +613,88 @@ pub trait CredentialBroker: Send + Sync + 'static {
         server: &UserToolServerId,
     ) -> impl Future<Output = Result<(), CredentialError>> + Send;
 }
+
+/// A credential broker that **keeps credentials**: a real one, over a secret store that seals. It is
+/// implemented by the brokers that do and never by [`NoBroker`]. [`UserTools::full`](crate::UserTools::full)
+/// asks for it, so a bundle cannot claim [`UserToolsMode::Full`](crate::UserToolsMode::Full) over a
+/// broker that refuses every call: the mode of a bundle is what its constructor built, and not a second
+/// statement that may disagree with it.
+///
+/// It adds nothing to [`CredentialBroker`]: no port signature changed for it.
+pub trait KeepsCredentials: CredentialBroker {}
+
+/// The broker of a deployment that keeps no credentials (`secrets` absent from the configuration, or
+/// `userToolServers` off): every call is [`CredentialError::Unavailable`] with a sentence that says
+/// why and holds no owner, server, state or secret. With it only servers that want no authentication
+/// can exist ([`UserAuth::None`]); the caller does not ask it about those.
+///
+/// It is the broker, and not a real one over [`NoSecrets`](crate::NoSecrets), because a real broker
+/// would do its network work first (discovery, registration) and fail only at the store. The model is
+/// [`NoArtifacts`](crate::NoArtifacts); it does not pass the conformance suite, which is for a broker
+/// that keeps.
+///
+/// A server that already holds a credential when the section is taken away from the configuration is
+/// `unavailable` for as long as it is gone. `revoke` is refused too, because the port is honest: nothing
+/// was revoked. **A caller does not call it in that deployment** ([`UserToolsMode::WithoutCredentials`](crate::UserToolsMode::WithoutCredentials)
+/// does not keep credentials, see [`UserToolPorts`](crate::UserToolPorts)): it deletes the definition,
+/// which a person must always be able to do, and the sealed row, if there is one, stays in the secret
+/// store, unreachable without its key and never lent (the broker binds a credential to the
+/// definition's URL and to the id made again, and the ids are random).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoBroker;
+
+impl NoBroker {
+    fn refuse<T>() -> Result<T, CredentialError> {
+        Err(CredentialError::unavailable(
+            "no credentials are kept (the secrets section is absent from the configuration, or \
+             userToolServers is off)",
+        ))
+    }
+}
+
+impl CredentialBroker for NoBroker {
+    async fn store(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+        _material: &ToolSecret,
+    ) -> Result<CredentialRef, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn begin_oauth(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+        _redirect: &RedirectUri,
+    ) -> Result<OAuthStart, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn complete_oauth(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+        _state: &OAuthState,
+        _code: &ToolSecret,
+        _iss: Option<&str>,
+    ) -> Result<CredentialRef, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn lease(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+    ) -> Result<CredentialLease, CredentialError> {
+        Self::refuse()
+    }
+
+    async fn revoke(
+        &self,
+        _owner: &UserId,
+        _server: &UserToolServerId,
+    ) -> Result<(), CredentialError> {
+        Self::refuse()
+    }
+}

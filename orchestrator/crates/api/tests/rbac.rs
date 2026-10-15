@@ -174,6 +174,7 @@ impl Harness {
                     model: NoModel,
                     auth: auth.clone(),
                     registry: directory.fixed_registry(),
+                    user_tools: orch_ports::NoUserTools::off(),
                 },
                 directory,
                 AppConfig {

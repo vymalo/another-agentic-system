@@ -2819,6 +2819,7 @@ dependencies = [
  "orch-auth-jwt",
  "orch-config",
  "orch-core",
+ "orch-credential-broker",
  "orch-model-openai",
  "orch-ports",
  "orch-registry-platform",

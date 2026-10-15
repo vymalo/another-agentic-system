@@ -63,6 +63,7 @@ async fn start() -> Api {
                 model: NoModel,
                 auth: orch_auth_header::HeaderAuth::new(),
                 registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory,
             AppConfig::default(),

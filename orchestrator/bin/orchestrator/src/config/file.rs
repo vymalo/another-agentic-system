@@ -40,6 +40,7 @@ use super::{
     flag, number, parse_surfaces,
 };
 use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings, UploadLimits};
+use crate::user_tools::UserToolsSettings;
 
 /// The most a configuration file or an agents file may be.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -384,8 +385,6 @@ fn load_user_secrets_from(
     env: impl Fn(&str) -> Option<String>,
     read: impl Fn(&Path) -> io::Result<String>,
 ) -> Result<UserSecretsOnly, ConfigError> {
-    use orch_secrets_pg::{KeyBytes, KeyId, Keyring};
-
     let tree = orch_config::parse_yaml(text).map_err(file_errors)?;
     let config = orch_config::check(&tree).map_err(file_errors)?;
     let no_flags = FlagSecrets::new();
@@ -403,17 +402,8 @@ fn load_user_secrets_from(
     };
     // The rules have checked every id and every key; what `orch-secrets-pg` says here is the same
     // sentence, and it quotes nothing.
-    let keyed = |what: &str, e: orch_secrets_pg::KeyError| document(format!("{what}: {e}"));
-    let mut keys = Vec::new();
-    for (i, key) in valid.keys.iter().enumerate() {
-        let at = format!("secrets.pg.keys[{i}]");
-        keys.push((
-            KeyId::parse(&key.id).map_err(|e| keyed(&format!("{at}.id"), e))?,
-            KeyBytes::from_hex(key.key.expose()).map_err(|e| keyed(&format!("{at}.key"), e))?,
-        ));
-    }
-    let current = KeyId::parse(&pg.current).map_err(|e| keyed("secrets.pg.current", e))?;
-    let keyring = Keyring::new(current, keys).map_err(|e| keyed("secrets.pg", e))?;
+    let keyring =
+        crate::user_tools::keyring(pg, &valid.keys).map_err(|e| document(e.to_string()))?;
     Ok(UserSecretsOnly {
         database_url: SecretString::from(valid.database_url.expose()),
         keyring,
@@ -1359,6 +1349,8 @@ fn project(
     }
     let resolved = Resolved {
         artifacts: artifact_settings(valid)?,
+        // People's own MCP servers (ADR 0046): the egress policy and the keys, only when enabled.
+        user_tools: UserToolsSettings::from_file(valid).map_err(document)?,
         auth: super::AuthSettings::from_file(&c.auth),
         models: Some(models_of(valid)),
         tool_servers: tool_servers_of(&c.tool_servers),
@@ -4039,6 +4031,334 @@ artifacts:
                 lines[0].contains("cannot read the configuration file"),
                 "{lines:?}"
             );
+        }
+    }
+
+    /// `userToolServers` (ADR 0046, slice 4a) as the service reads it: off unless enabled, and then
+    /// the egress policy, the OAuth client and the keys of `secrets` the composition root builds the
+    /// ports from.
+    mod user_tool_servers {
+        use orch_ports::{EgressPolicy, EgressRefusal};
+
+        use super::*;
+
+        const UK1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        const UK2: &str = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
+
+        const SECRETS: &str = "\
+secrets:
+  store: pg
+  pg:
+    keys:
+      - { id: k1, key: { env: UK1 } }
+      - { id: k2, key: { env: UK2 } }
+    current: k2
+";
+
+        /// The `secrets` section, in a build that has the store it names (one without
+        /// `secrets-pg` refuses `store: pg` and has no use for it here).
+        fn secrets() -> &'static str {
+            if cfg!(feature = "secrets-pg") {
+                SECRETS
+            } else {
+                ""
+            }
+        }
+
+        fn pairs<'a>() -> Vec<(&'a str, &'a str)> {
+            let mut pairs = base();
+            pairs.extend([("UK1", UK1), ("UK2", UK2)]);
+            pairs
+        }
+
+        fn load(section: &str) -> Result<Loaded, ConfigError> {
+            load_file_only(&pairs(), &format!("{FILE}{section}"))
+        }
+
+        #[test]
+        fn a_file_without_the_section_has_the_feature_off() {
+            let loaded = load("").unwrap();
+            assert!(loaded.config.user_tools.is_none());
+            // and the keys of a `secrets` section are read and checked as before, and not used
+            let loaded = load(secrets()).unwrap();
+            assert!(loaded.config.user_tools.is_none());
+        }
+
+        #[test]
+        fn a_section_that_is_not_enabled_builds_nothing() {
+            let text = format!(
+                "userToolServers:
+  egress: {{ allow: [mcp.example.com], allowHttp: true }}
+  oauth: {{ clientName: Acme }}
+{}",
+                secrets()
+            );
+            let loaded = load(&text).unwrap();
+            assert!(loaded.config.user_tools.is_none());
+            let text = format!("userToolServers: {{ enabled: false }}\n{}", secrets());
+            assert!(load(&text).unwrap().config.user_tools.is_none());
+        }
+
+        #[test]
+        fn enabled_without_secrets_keeps_no_credential() {
+            let loaded = load("userToolServers: { enabled: true }\n").unwrap();
+            let tools = loaded.config.user_tools.as_ref().unwrap();
+            assert_eq!(tools.client_name, "another-agentic-system");
+            assert_eq!(tools.client_metadata_url, None);
+            assert!(!tools.allow_http);
+            #[cfg(feature = "secrets-pg")]
+            assert!(tools.keyring.is_none(), "no secrets section, no keys");
+            // the default policy: https, public hosts
+            assert!(
+                tools
+                    .egress
+                    .check_url("https://mcp.example.com/mcp")
+                    .is_ok()
+            );
+            assert!(
+                tools
+                    .egress
+                    .check_url("http://mcp.example.com/mcp")
+                    .is_err()
+            );
+            assert_eq!(tools.egress, EgressPolicy::new());
+        }
+
+        #[test]
+        fn the_lists_and_the_switch_become_the_egress_policy() {
+            let text = "userToolServers:
+  enabled: true
+  egress:
+    allow: [mcp.example.com, '*.tools.example.org']
+    deny: [bad.tools.example.org]
+    allowHttp: true
+  oauth:
+    clientName: Acme Chat
+    clientMetadataUrl: https://chat.example.com/.well-known/oauth-client.json
+";
+            let loaded = load(text).unwrap();
+            let tools = loaded.config.user_tools.as_ref().unwrap();
+            assert!(tools.allow_http);
+            assert_eq!(tools.client_name, "Acme Chat");
+            assert_eq!(
+                tools.client_metadata_url.as_deref(),
+                Some("https://chat.example.com/.well-known/oauth-client.json")
+            );
+            let egress = &tools.egress;
+            // allowed, http taken
+            assert!(egress.check_url("http://mcp.example.com/mcp").is_ok());
+            assert!(egress.check_url("https://a.tools.example.org/mcp").is_ok());
+            // denied wins, and the allow list refuses what it does not name
+            assert_eq!(
+                egress
+                    .check_url("https://bad.tools.example.org/mcp")
+                    .unwrap_err(),
+                EgressRefusal::Denied
+            );
+            assert_eq!(
+                egress
+                    .check_url("https://other.example.net/mcp")
+                    .unwrap_err(),
+                EgressRefusal::NotAllowed
+            );
+        }
+
+        #[test]
+        #[cfg(feature = "secrets-pg")]
+        fn enabled_with_secrets_reads_the_keys_into_a_ring() {
+            let text = format!("userToolServers: {{ enabled: true }}\n{SECRETS}");
+            let loaded = load(&text).unwrap();
+            let ring = loaded
+                .config
+                .user_tools
+                .as_ref()
+                .unwrap()
+                .keyring
+                .as_ref()
+                .unwrap();
+            assert_eq!(ring.current().as_str(), "k2");
+            assert_eq!(
+                ring.ids().map(ToString::to_string).collect::<Vec<_>>(),
+                ["k1", "k2"]
+            );
+            // nothing of a key is printed, by the settings or by the whole configuration
+            let shown = format!("{:?}", loaded.config);
+            assert!(shown.contains("k2"), "{shown}");
+            for key in [UK1, UK2] {
+                assert!(!shown.contains(&key[..16]), "{shown}");
+            }
+            assert!(!shown.contains("hunter2"), "{shown}");
+        }
+
+        #[test]
+        #[cfg(feature = "secrets-pg")]
+        fn a_key_that_is_not_a_key_is_named_whether_the_feature_is_on_or_not() {
+            let bad = SECRETS.replace("env: UK1", "env: NOT_A_KEY");
+            let pairs = [pairs(), vec![("NOT_A_KEY", "not-a-key")]].concat();
+            for enabled in ["false", "true"] {
+                let text = format!("{FILE}userToolServers: {{ enabled: {enabled} }}\n{bad}");
+                let errors = lines(load_file_only(&pairs, &text));
+                assert_eq!(errors.len(), 1, "{errors:?}");
+                assert!(
+                    errors[0].starts_with("secrets.pg.keys[0].key: "),
+                    "{errors:?}"
+                );
+                assert!(!errors[0].contains("not-a-key"), "{errors:?}");
+            }
+        }
+
+        #[test]
+        fn a_deployment_server_with_the_id_of_a_persons_is_a_startup_error_only_when_enabled() {
+            let servers = "toolServers:
+  - { id: u-0123456789, name: Mine, url: 'https://mine.example.com/mcp' }
+";
+            let errors = lines(load(&format!(
+                "userToolServers: {{ enabled: true }}\n{servers}"
+            )));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].starts_with("toolServers[0].id: starts with u-"),
+                "{errors:?}"
+            );
+            assert!(load(&format!("userToolServers: {{ enabled: false }}\n{servers}")).is_ok());
+            assert!(load(servers).is_ok());
+        }
+
+        /// `tools.user.add` (ADR 0046): no role holds it by default (the built-in `user` and `admin`
+        /// do not, and `admin` does not imply it); a file that lists it for a role gives it to that
+        /// role and no other, with the feature on or off.
+        #[test]
+        fn the_permission_to_add_a_server_reaches_the_policy_and_no_built_in_role_holds_it() {
+            use orch_app::{Permission, Resource};
+            let user = orch_core::UserId::new("a@example.com");
+            let principal = |roles: &[&str]| orch_ports::Principal {
+                roles: roles.iter().map(|r| orch_ports::Role::new(*r)).collect(),
+                ..orch_ports::Principal::of(user.clone())
+            };
+            let can = |policy: &orch_app::Policy, roles: &[&str]| {
+                policy.allows(
+                    &principal(roles),
+                    Permission::ToolsUserAdd,
+                    &Resource::Anything,
+                )
+            };
+            let built_in = load("").unwrap().config.auth.policy;
+            assert!(!can(&built_in, &[]));
+            assert!(!can(&built_in, &["user"]));
+            assert!(!can(&built_in, &["admin"]), "admin does not imply it");
+
+            for enabled in ["false", "true"] {
+                let text = format!(
+                    "userToolServers: {{ enabled: {enabled} }}
+auth:
+  defaultRole: plain
+  roles:
+    plain: {{ permissions: [agent.read, agent.invoke, thread.read, thread.write] }}
+    maker: {{ permissions: [tools.user.add] }}
+    root: {{ permissions: [admin] }}
+"
+                );
+                let policy = load(&text).unwrap().config.auth.policy;
+                assert!(can(&policy, &["maker"]), "enabled: {enabled}");
+                assert!(!can(&policy, &["plain"]), "enabled: {enabled}");
+                assert!(!can(&policy, &["root"]), "enabled: {enabled}");
+                assert!(!can(&policy, &[]), "the default role is plain");
+                assert!(can(&policy, &["plain", "maker"]), "roles are unioned");
+            }
+        }
+
+        /// A host pattern is written twice, in `orch-config` (what a configuration file is checked
+        /// with) and in `orch-ports` (what the egress policy is built from), because neither crate
+        /// may depend on the other. This binary sees both, so here they are made to agree: an entry
+        /// one accepts and the other refuses would pass the check and fail when the policy is
+        /// built, or the other way round.
+        #[test]
+        fn the_configuration_and_the_egress_guard_agree_on_what_a_host_pattern_is() {
+            let long_label = "a".repeat(64);
+            let long_name = format!("{}com", "a.".repeat(130));
+            // the limits (RFC 1035) and the first byte beyond each: a label of 63 and a name of 253
+            // bytes are names, 64 and 254 are not
+            let label = |n: usize| "a".repeat(n);
+            let name = |last: usize| format!("{0}.{0}.{0}.{1}", label(63), label(last));
+            let (label63, name253, name254) = (format!("{}.com", label(63)), name(61), name(62));
+            let (name253_dotted, name254_dotted) = (format!("{name253}."), format!("{name254}."));
+            let (wild253, wild254) = (format!("*.{name253}"), format!("*.{name254}"));
+            let label64 = format!("{}.com", label(64));
+            assert_eq!((name253.len(), name254.len()), (253, 254));
+            let entries = [
+                "mcp.example.com",
+                "MCP.Example.COM",
+                "mcp.example.com.",
+                "localhost",
+                "a_b.example.com",
+                "-",
+                "*.example.com",
+                "*.internal",
+                "*.xn--bcher-kva.example",
+                "203.0.113.7",
+                "0.0.0.0",
+                "[2001:db8::7]",
+                "2001:db8::7",
+                "::1",
+                "[::ffff:8.8.8.8]",
+                "xn--bcher-kva.example",
+                "münchen.example",
+                "",
+                " ",
+                "mcp.example.com/path",
+                "https://mcp.example.com",
+                "mcp.example.com:443",
+                "user@mcp.example.com",
+                "*",
+                "*.",
+                "*.*.example.com",
+                "*.203.0.113.7",
+                "mcp.*.com",
+                "mcp..example.com",
+                ".example.com",
+                "mcp example.com",
+                "010.0.0.1",
+                "127.1",
+                "0x7f.1",
+                "2130706433",
+                "256.1.1.1",
+                "[2001:db8::7%eth0]",
+                "[1.2.3.4]",
+                "[]",
+                "%41.example.com",
+                "a\u{2028}b.example.com",
+                &long_label,
+                &long_name,
+                &label63,
+                &label64,
+                &name253,
+                &name254,
+                &name253_dotted,
+                &name254_dotted,
+                &wild253,
+                &wild254,
+            ];
+            let within = [&label63, &name253, &name253_dotted, &wild253].map(String::as_str);
+            let beyond = [&label64, &name254, &name254_dotted, &wild254].map(String::as_str);
+            for entry in entries {
+                let in_the_guard = EgressPolicy::from_lists([entry], Vec::<&str>::new()).is_ok();
+                // a YAML double-quoted scalar: the entries have only a quote-free, backslash-free
+                // alphabet apart from the line separator, which JSON escapes the YAML way
+                let quoted = serde_json::to_string(entry).unwrap();
+                let text = format!("userToolServers:\n  egress:\n    allow: [{quoted}]\n");
+                let in_the_file = load(&text).is_ok();
+                assert_eq!(
+                    in_the_file, in_the_guard,
+                    "{entry:?}: the file says {in_the_file}, the guard says {in_the_guard}"
+                );
+                // and the limits are where RFC 1035 puts them, not only where the two agree
+                if within.contains(&entry) {
+                    assert!(in_the_file, "{entry:?} is within the limits");
+                }
+                if beyond.contains(&entry) {
+                    assert!(!in_the_file, "{entry:?} is beyond a limit");
+                }
+            }
         }
     }
 }

@@ -34,7 +34,7 @@ info:
     Authorization ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
     [`config.md`](config.md#roles-and-permissions)): who a person is says what they may do. The
     roles of the credential (the token's roles claim) map, by `auth.roles`, to the permissions
-    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read` and `admin`; a role
+    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin` and `tools.user.add` (granted to no role by default); a role
     the configuration does not define grants nothing, and a person with no defined role gets
     `auth.defaultRole`. `getMe` says what the caller's roles grant. **Nobody reads another person's
     thread** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): every permission
@@ -1248,11 +1248,11 @@ components:
       type: object
       required: [permission]
       properties:
-        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin] }
+        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin, tools.user.add] }
         scope:
           type: string
           enum: [own]
-          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` and `thread.delete` (which take no scope: they are over one's own thread) and `admin`"
+          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` and `thread.delete` (which take no scope: they are over one's own thread), `admin` and `tools.user.add` (a person's servers are the person's own)"
     MeAgents:
       type: object
       required: [read, invoke]

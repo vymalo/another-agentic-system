@@ -379,11 +379,31 @@ fn transient_sqlstate(code: &str) -> bool {
         || matches!(code, "40001" | "40P01" | "57P01" | "57P02" | "57P03")
 }
 
+/// Whether a driver error says the database is down or too busy to answer *now* (the network, TLS,
+/// the pool, the connection worker, a lock that was not got in time, and the SQLSTATEs of
+/// [`transient_sqlstate`]), as opposed to a statement it refused (a missing privilege, a syntax
+/// error, a constraint): waiting cures the first and never the second.
+fn transient(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed
+        | sqlx::Error::Protocol(_) => true,
+        sqlx::Error::Database(db) => db
+            .code()
+            .is_some_and(|code| code == LOCK_NOT_AVAILABLE || transient_sqlstate(&code)),
+        _ => false,
+    }
+}
+
 /// A driver error, as the port says it: a row that does not decode is `Corrupt`; everything else
 /// (the network, the pool, the server, a rejected statement) is `Unavailable`, with the driver's
 /// error as the source. The port has no class for "a bug"; a statement that is rejected every
 /// time shows as a store that is down, and the log has the cause. A driver error holds no
-/// parameter of the statement, so no secret and no ciphertext.
+/// parameter of the statement, so no secret and no ciphertext. [`is_outage`] reads the source back
+/// for the caller that must tell an outage from a refusal.
 pub(crate) fn db_err(err: sqlx::Error) -> SecretError {
     if matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some(LOCK_NOT_AVAILABLE))
     {
@@ -392,27 +412,46 @@ pub(crate) fn db_err(err: sqlx::Error) -> SecretError {
         )
         .with_source(err);
     }
-    let transient = match &err {
-        sqlx::Error::Io(_)
-        | sqlx::Error::Tls(_)
-        | sqlx::Error::PoolTimedOut
-        | sqlx::Error::PoolClosed
-        | sqlx::Error::WorkerCrashed
-        | sqlx::Error::Protocol(_) => true,
-        sqlx::Error::Database(db) => db.code().is_some_and(|code| transient_sqlstate(&code)),
-        sqlx::Error::Decode(_)
-        | sqlx::Error::ColumnDecode { .. }
-        | sqlx::Error::ColumnNotFound(_) => {
-            return SecretError::corrupt("a row of the secret store does not decode");
-        }
-        _ => false,
-    };
-    let detail = if transient {
+    if matches!(
+        &err,
+        sqlx::Error::Decode(_) | sqlx::Error::ColumnDecode { .. } | sqlx::Error::ColumnNotFound(_)
+    ) {
+        return SecretError::corrupt("a row of the secret store does not decode");
+    }
+    let detail = if transient(&err) {
         "the database cannot be reached"
     } else {
         "the database refused the request"
     };
     SecretError::unavailable(detail).with_source(err)
+}
+
+/// Whether `error` is the database being down or too busy to answer (the connection, the pool, a
+/// restart, a lock that was held too long), and so a failure that waiting cures; `false` for
+/// anything else: a statement the database refused (a missing privilege at `migrate`, a syntax
+/// error), a migration history that is not this build's, a key this deployment does not hold, a
+/// row that is not what was written.
+///
+/// [`SecretError::Unavailable`] does not tell them apart, because the port has no class for "a
+/// bug" and a statement that is refused every time shows as a store that is down; its `Transient`
+/// class is true of both. A caller that decides what to do from the class alone (retry, or exit
+/// as for an outage) would wait for ever on the second, so it asks here, where the driver's error
+/// the store kept as the source is understood. An `Unavailable` with no source says only that the
+/// store could not be reached (an adapter that knows nothing more), and is an outage.
+#[must_use]
+pub fn is_outage(error: &SecretError) -> bool {
+    let SecretError::Unavailable { source, .. } = error else {
+        return false;
+    };
+    let Some(source) = source.as_deref() else {
+        return true;
+    };
+    if let Some(driver) = source.downcast_ref::<sqlx::Error>() {
+        return transient(driver);
+    }
+    // a migration that was not run for a reason of its own (the source, the driver's support) is no
+    // outage; whatever else a source may be, the store could not be reached
+    !source.is::<sqlx::migrate::MigrateError>()
 }
 
 fn migrate_err(err: sqlx::migrate::MigrateError) -> SecretError {
@@ -472,5 +511,123 @@ mod tests {
         assert!(matches!(refused, SecretError::Unavailable { .. }));
         let bad = db_err(sqlx::Error::ColumnNotFound("v".to_owned()));
         assert!(matches!(bad, SecretError::Corrupt(_)));
+    }
+
+    /// A server error carrying only a SQLSTATE.
+    #[derive(Debug)]
+    struct Sqlstate(&'static str);
+
+    impl std::fmt::Display for Sqlstate {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "server error {}", self.0)
+        }
+    }
+
+    impl std::error::Error for Sqlstate {}
+
+    impl sqlx::error::DatabaseError for Sqlstate {
+        fn message(&self) -> &str {
+            "server error"
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some(std::borrow::Cow::Borrowed(self.0))
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn db(code: &'static str) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(Sqlstate(code)))
+    }
+
+    /// The class of a failure is `Transient` for every `Unavailable`; what tells a database that is
+    /// down from one that refused a statement is the driver's error kept as the source.
+    #[test]
+    fn only_a_database_that_cannot_answer_is_an_outage() {
+        use orch_core::{Classify as _, ErrorClass};
+        use sqlx::migrate::MigrateError as M;
+        let boxed = |msg: &str| -> Box<dyn std::error::Error + Send + Sync> { msg.into() };
+        let outages = [
+            (
+                "the network",
+                db_err(sqlx::Error::Io(std::io::Error::other("reset"))),
+            ),
+            ("tls", db_err(sqlx::Error::Tls(boxed("handshake")))),
+            ("the pool is empty", db_err(sqlx::Error::PoolTimedOut)),
+            ("the pool is closed", db_err(sqlx::Error::PoolClosed)),
+            ("the worker crashed", db_err(sqlx::Error::WorkerCrashed)),
+            (
+                "a bad frame",
+                db_err(sqlx::Error::Protocol("bad frame".into())),
+            ),
+            ("connection exception", db_err(db("08006"))),
+            ("too many connections", db_err(db("53300"))),
+            ("serialization failure", db_err(db("40001"))),
+            ("deadlock", db_err(db("40P01"))),
+            ("admin shutdown", db_err(db("57P01"))),
+            ("cannot connect now", db_err(db("57P03"))),
+            ("a lock not got in time", db_err(db(LOCK_NOT_AVAILABLE))),
+            (
+                "a migration that could not reach it",
+                migrate_err(M::Execute(sqlx::Error::PoolTimedOut)),
+            ),
+            (
+                "a store that knows nothing more",
+                SecretError::unavailable("down"),
+            ),
+        ];
+        for (what, error) in outages {
+            assert!(is_outage(&error), "{what}: {error:?}");
+        }
+        let refusals = [
+            ("a missing privilege", db_err(db("42501"))),
+            ("a syntax error", db_err(db("42601"))),
+            ("a table that is not there", db_err(db("42P01"))),
+            ("a read-only transaction", db_err(db("25006"))),
+            ("a constraint", db_err(db("23514"))),
+            ("a row that is not there", db_err(sqlx::Error::RowNotFound)),
+            (
+                "a bad configuration",
+                db_err(sqlx::Error::Configuration(boxed("bad url"))),
+            ),
+            (
+                "a missing privilege during migrate",
+                migrate_err(M::ExecuteMigration(db("42501"), 1)),
+            ),
+            (
+                "a migration source",
+                migrate_err(M::Source(boxed("no such directory"))),
+            ),
+        ];
+        for (what, error) in refusals {
+            // the class is the port's and does not say it: both are `Unavailable`, both `Transient`
+            assert!(
+                matches!(error, SecretError::Unavailable { .. }),
+                "{what}: {error:?}"
+            );
+            assert_eq!(error.class(), ErrorClass::Transient, "{what}");
+            assert!(!is_outage(&error), "{what}: {error:?}");
+        }
+        // the other variants are never an outage
+        for error in [
+            SecretError::Conflict,
+            SecretError::KeyUnknown,
+            SecretError::corrupt("a row"),
+            migrate_err(M::VersionMismatch(1)),
+            migrate_err(M::Dirty(1)),
+            db_err(sqlx::Error::ColumnNotFound("v".to_owned())),
+        ] {
+            assert!(!is_outage(&error), "{error:?}");
+        }
     }
 }
