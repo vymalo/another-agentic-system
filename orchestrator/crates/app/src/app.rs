@@ -536,6 +536,11 @@ struct Claim<'a> {
     inbox: Option<&'a InboxLease>,
     /// With `lease`: how to end that row in the same commit.
     finishes: Option<OutboxFinal>,
+    /// The input starts a job for a person who no longer holds `tools.user.add`: the servers of
+    /// their own are taken off the thread in the same commit, before the input (ADR 0046, decision
+    /// 4: with the permission gone a person's servers are not offered, and the relay refuses a call
+    /// to a server the thread no longer has).
+    detach_own_tools: bool,
 }
 
 impl<P: Ports> App<P> {
@@ -1539,7 +1544,12 @@ impl<P: Ports> App<P> {
         let (next, cmds) = {
             let (mut next, mut cmds) = (next, cmds);
             let kept = self
-                .carried_tools(user, &target.agent_id, &next.job.tools)
+                .carried_tools(
+                    user,
+                    &target.agent_id,
+                    &next.job.tools,
+                    self.may_add_own(who),
+                )
                 .await?;
             if kept != next.job.tools {
                 let (after, detach) = transition(
@@ -2046,7 +2056,7 @@ impl<P: Ports> App<P> {
                 tier: None,
             }
         };
-        let outcome = self.apply(id, input, None, None, None).await?;
+        let outcome = self.apply_for_owner(who, id, input, None).await?;
         match outcome {
             ApplyOutcome::Applied { events, .. } => events
                 .into_iter()
@@ -2195,6 +2205,14 @@ impl<P: Ports> App<P> {
             *tier = self
                 .resolve_tier(&access, &thread.target.agent_id, None, thread.job.tier)
                 .await?;
+        }
+        // What starts or continues the agent's work for the person is the owner's act: the servers
+        // of their own they may no longer use are taken off the thread with it.
+        if matches!(
+            input,
+            Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
+        ) {
+            return self.apply_for_owner(who, id, input, key).await;
         }
         self.apply(id, input, key, None, None).await
     }
@@ -2405,12 +2423,17 @@ impl<P: Ports> App<P> {
         owner: &UserId,
         agent: &AgentId,
         tools: &[String],
+        may_use_own: bool,
     ) -> Result<Vec<String>, AppError> {
         let mut kept = Vec::with_capacity(tools.len());
         for id in tools.iter().filter(|id| self.may_attach(id, agent)) {
             let listed = self.cfg.tool_servers.iter().any(|s| &s.id == id);
-            if !listed && is_own_server_id(id) && !self.owns_user_tool_server(owner, id).await? {
-                continue;
+            if !listed && is_own_server_id(id) {
+                // a person's own server goes with the fork only if its new owner owns it and may
+                // still use servers of their own (`tools.user.add`, ADR 0046 decision 4)
+                if !may_use_own || !self.owns_user_tool_server(owner, id).await? {
+                    continue;
+                }
             }
             kept.push(id.clone());
         }
@@ -2753,6 +2776,45 @@ impl<P: Ports> App<P> {
         self.apply_fenced(thread, input, key, binding, claim).await
     }
 
+    /// [`apply`](Self::apply) of an input that **starts or continues a job for `who`**, a message or
+    /// a click on a surface: when `who` no longer holds `tools.user.add` (ADR 0046, slice 5a
+    /// review), the servers of their own that the thread has are taken off it in the same commit,
+    /// before the input, by the same transition [`fork_thread`](Self::fork_thread) uses
+    /// (`SetTools`), so the job reads a set without them and the relay, which asks whether a server
+    /// is still attached, refuses a call to one. `who` is the thread's owner: no role acts on
+    /// another person's thread (ADR 0039), and the entry points that call this have checked that.
+    ///
+    /// A job that is already running keeps what it was started with until it ends; a job the system
+    /// starts (a CI report, the verifier, a timer, a redelivery) has no requester and uses the set
+    /// the person's last message left.
+    async fn apply_for_owner(
+        &self,
+        who: &impl Requester,
+        thread: ThreadId,
+        input: Input,
+        key: Option<String>,
+    ) -> Result<ApplyOutcome, AppError> {
+        let claim = Claim {
+            detach_own_tools: !self.may_add_own(who),
+            ..Claim::default()
+        };
+        self.apply_fenced(thread, input, key, None, claim).await
+    }
+
+    /// The servers of `tools` that stay on a thread whose owner may not use servers of their own:
+    /// the deployment's, whatever their ids look like, and nothing else. `None` when that is all
+    /// of them.
+    fn without_own_servers(&self, tools: &[String]) -> Option<Vec<String>> {
+        let kept: Vec<String> = tools
+            .iter()
+            .filter(|id| {
+                !is_own_server_id(id) || self.cfg.tool_servers.iter().any(|s| &s.id == *id)
+            })
+            .cloned()
+            .collect();
+        (kept.len() != tools.len()).then_some(kept)
+    }
+
     /// [`apply`](Self::apply) under the claim of an outbox row, which the same commit also ends
     /// as `finish` (ADR 0020: a redelivered message starts the next job and its row is done in
     /// one transaction, so a crash cannot leave it claimable after the job started). A repeat
@@ -2769,6 +2831,7 @@ impl<P: Ports> App<P> {
             lease: Some(lease),
             inbox: None,
             finishes: Some(finish),
+            ..Claim::default()
         };
         self.apply_fenced(thread, input, Some(key), None, claim)
             .await
@@ -2844,6 +2907,7 @@ impl<P: Ports> App<P> {
             lease,
             inbox,
             finishes,
+            detach_own_tools,
         } = claim;
         for _ in 0..self.cfg.max_commit_attempts {
             let record = self
@@ -2858,7 +2922,23 @@ impl<P: Ports> App<P> {
                     events: Vec::new(),
                 });
             };
-            let (next, cmds) = transition(&record.snapshot(), &input)?;
+            // On each attempt, against the thread as it is now: a person's servers that another
+            // writer attached or detached meanwhile are decided again.
+            let mut snapshot = record.snapshot();
+            let mut cmds = Vec::new();
+            if detach_own_tools && let Some(kept) = self.without_own_servers(&record.job.tools) {
+                let (after, detach) = transition(
+                    &snapshot,
+                    &Input::SetTools {
+                        user: record.owner.clone(),
+                        servers: kept,
+                    },
+                )?;
+                snapshot = after;
+                cmds.extend(detach);
+            }
+            let (next, more) = transition(&snapshot, &input)?;
+            cmds.extend(more);
             let now = self.ports.clock().now();
             let job = (next.job != record.job).then_some(next.job);
             let next = next.state;

@@ -97,10 +97,10 @@ use std::fmt;
 
 use orch_core::{Classify, report};
 use orch_ports::{
-    CredentialBroker, CredentialError, EgressPolicy, EgressTarget, IdGen, Ports, ServerRevision,
-    StoreError, StoredServer, ToolSecret, ToolServerStatus, UnavailableReason, UserAuth,
-    UserToolPorts, UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
-    UserToolServerStoreError, UserToolsMode,
+    CredentialBroker, CredentialError, EgressPolicy, EgressTarget, IdGen,
+    MIN_SCRUBBABLE_SECRET_BYTES, Ports, ServerRevision, StoreError, StoredServer, ToolSecret,
+    ToolServerStatus, UnavailableReason, UserAuth, UserToolPorts, UserToolServer, UserToolServerId,
+    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserToolsMode,
 };
 
 use crate::{App, AppError, Permission, Requester, Resource};
@@ -870,7 +870,7 @@ impl<P: Ports> App<P> {
     }
 
     /// Whether the person holds `tools.user.add`.
-    fn may_add_own(&self, who: &impl Requester) -> bool {
+    pub(crate) fn may_add_own(&self, who: &impl Requester) -> bool {
         self.access(who)
             .check(Permission::ToolsUserAdd, &Resource::Anything)
             .is_ok()
@@ -1163,20 +1163,23 @@ fn check_url(egress: &EgressPolicy, text: &str) -> Result<EgressTarget, AppError
     })
 }
 
-/// A secret a header can carry: 1 to [`MAX_USER_SECRET_BYTES`] printable ASCII characters (spaces
-/// inside are fine), none at either end. Nothing of it is in the message.
+/// A secret a header can carry: [`MIN_SCRUBBABLE_SECRET_BYTES`] (8) to [`MAX_USER_SECRET_BYTES`]
+/// printable ASCII characters (spaces inside are fine), none at either end. Nothing of it is in the
+/// message. The minimum is the shortest value the relay can take out of what a stranger's server says
+/// back without redacting ordinary words (ADR 0046, slice 5a review): a shorter one would be said
+/// back whole and not found, and no real token or key is that short.
 fn check_secret(secret: &ToolSecret) -> Result<(), AppError> {
     let text = secret.expose();
     let printable = text.bytes().all(|b| (0x20..=0x7e).contains(&b));
-    if text.is_empty()
+    if text.len() < MIN_SCRUBBABLE_SECRET_BYTES
         || text.len() > MAX_USER_SECRET_BYTES
         || !printable
         || text.starts_with(' ')
         || text.ends_with(' ')
     {
         return Err(AppError::Invalid(format!(
-            "the secret must be 1 to {MAX_USER_SECRET_BYTES} printable ASCII characters with no \
-             space at either end"
+            "the secret must be {MIN_SCRUBBABLE_SECRET_BYTES} to {MAX_USER_SECRET_BYTES} printable \
+             ASCII characters with no space at either end"
         )));
     }
     Ok(())

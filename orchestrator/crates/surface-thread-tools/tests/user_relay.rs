@@ -444,10 +444,22 @@ fn policy() -> Policy {
     let mut grant = RoleGrant::user();
     grant.permissions.insert(Permission::ToolsUserAdd);
     Policy::new(
-        BTreeMap::from([(Role::new("user"), grant)]),
+        BTreeMap::from([
+            (Role::new("user"), grant),
+            // the same person after their operator took `tools.user.add` away
+            (Role::new("limited"), RoleGrant::user()),
+        ]),
         Some(Role::new("user")),
     )
     .unwrap()
+}
+
+/// Alice with the roles she has after the permission is taken from her.
+fn alice_limited() -> orch_ports::Principal {
+    orch_ports::Principal {
+        roles: [Role::new("limited")].into_iter().collect(),
+        ..orch_ports::Principal::of(UserId::new(ALICE))
+    }
 }
 
 /// What a test changes about the relay of the rig.
@@ -2200,4 +2212,50 @@ async fn a_credential_that_straddles_the_cut_of_a_long_result_does_not_survive_a
         !out.text.contains("lent-") && !out.text.contains("lent-token"),
         "a beginning of the credential is at the end of the text"
     );
+}
+
+// ---- a revoked permission ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn once_the_owner_loses_the_permission_the_next_message_detaches_the_server_and_the_relay_refuses_the_call()
+ {
+    let r = Rig::start().await;
+    let id = r.bearer("Tracker", TRACKER).await;
+    let thread = r.working_thread(&[&id]).await;
+    let client = r.client(thread).await;
+    // while the owner holds the permission the server is on the endpoint, and a message changes nothing
+    assert!(tool_names(&client).await.contains(&format!("{id}__echo")));
+    r.app
+        .post_message(&Rig::alice(), thread, "carry on".to_owned())
+        .await
+        .unwrap();
+    assert!(
+        !call(&client, &format!("{id}__echo"), json!({"text": "still"}))
+            .await
+            .is_error
+    );
+
+    // the permission is taken away; the owner's next message (sent while the job runs) is the
+    // moment the application takes the server off the thread
+    r.app
+        .post_message(&alice_limited(), thread, "and again".to_owned())
+        .await
+        .unwrap();
+    let record = r.app.get_thread(&Rig::alice(), thread).await.unwrap();
+    assert!(record.job.tools.is_empty(), "{:?}", record.job.tools);
+
+    // from then on the relay refuses a call to it (-32602, no step, no lease) and does not list it
+    let leases = r.broker.leases();
+    let steps = r.steps(thread).await.len();
+    let err = try_call(&client, &format!("{id}__echo"), json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(protocol_code(&err), -32602);
+    assert_eq!(
+        r.broker.leases(),
+        leases,
+        "no lease for a server that is not attached"
+    );
+    assert_eq!(r.steps(thread).await.len(), steps, "no step either");
+    assert_eq!(tool_names(&client).await, ["get_ui_catalog", "turn_output"]);
 }

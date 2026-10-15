@@ -130,6 +130,10 @@ fn bob() -> Principal {
 fn carol() -> Principal {
     principal("carol@example.com", &["user"])
 }
+/// Alice after her operator took `tools.user.add` from her roles: the same person, the same threads.
+fn alice_revoked() -> Principal {
+    principal("alice@example.com", &["user"])
+}
 
 fn policy() -> Policy {
     Policy::new(
@@ -842,4 +846,236 @@ async fn a_fork_in_a_deployment_that_turned_the_feature_off_detaches_a_persons_s
         .unwrap()
         .thread;
     assert!(fork.job.tools.is_empty());
+}
+
+// ------------------------------------------------------- a revoked permission (slice 5a review)
+
+/// The `tools_detached` and `user_message` events of the thread in log order, as `(kind, ids)`.
+fn tools_and_messages(log: &[orch_core::Event]) -> Vec<(&'static str, Vec<String>)> {
+    log.iter()
+        .filter_map(|e| match &e.body {
+            EventBody::ToolsDetached(data) => Some(("detached", data.servers.clone())),
+            EventBody::ToolsAttached(data) => Some(("attached", data.servers.clone())),
+            EventBody::UserMessage(_) => Some(("message", Vec::new())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_owner_who_holds_the_permission_keeps_their_servers_across_a_message() {
+    let rig = Rig::full();
+    let mine = rig.server(&alice(), UserToolServerState::Connected).await;
+    let thread = ended_with(&rig, &[mine.as_str(), "docs-1"]).await;
+    rig.app
+        .post_message(&alice(), thread.id, "again".to_owned())
+        .await
+        .unwrap();
+    let after = rig.app.get_thread(&alice().user, thread.id).await.unwrap();
+    assert!(
+        after.job.tools.contains(&mine.to_string()),
+        "{:?}",
+        after.job.tools
+    );
+    let log = rig.events(&alice(), thread.id).await;
+    assert!(detached_in(&log).is_empty(), "{:?}", detached_in(&log));
+}
+
+#[tokio::test]
+async fn the_next_message_of_an_owner_who_lost_the_permission_detaches_their_servers_in_its_own_commit()
+ {
+    let rig = Rig::full();
+    let mine = rig.server(&alice(), UserToolServerState::Connected).await;
+    let thread = ended_with(&rig, &[mine.as_str(), "docs-1"]).await;
+
+    // the permission is taken away; the next message of the owner starts a job
+    rig.app
+        .post_message(&alice_revoked(), thread.id, "again".to_owned())
+        .await
+        .unwrap();
+    let after = rig.app.get_thread(&alice().user, thread.id).await.unwrap();
+    // the deployment's server stays; the person's own is gone before the job reads its set
+    assert_eq!(after.job.tools, ["docs-1".to_owned()]);
+    // in the log: detached, then the message, in one commit (no event between them)
+    let log = rig.events(&alice(), thread.id).await;
+    let order = tools_and_messages(&log);
+    let detached = order
+        .iter()
+        .position(|(kind, ids)| *kind == "detached" && ids == &[mine.to_string()])
+        .unwrap_or_else(|| panic!("no tools_detached for the server: {order:?}"));
+    let again = order
+        .iter()
+        .rposition(|(kind, _)| *kind == "message")
+        .unwrap();
+    assert!(detached < again, "{order:?}");
+    let by_seq = |position: usize| {
+        log.iter()
+            .filter(|e| {
+                matches!(
+                    e.body,
+                    EventBody::ToolsDetached(_)
+                        | EventBody::ToolsAttached(_)
+                        | EventBody::UserMessage(_)
+                )
+            })
+            .nth(position)
+            .unwrap()
+            .seq
+    };
+    assert_eq!(
+        by_seq(again),
+        by_seq(detached) + 1,
+        "one commit: nothing between"
+    );
+    // and the picker says why: the server is `not_permitted`
+    assert!(matches!(
+        rig.attach(&alice_revoked(), thread.id, &[mine.as_str()])
+            .await,
+        Err(AppError::UserTool(UserToolRefusal::NotReady {
+            reason: OwnReason::NotPermitted,
+            ..
+        }))
+    ));
+}
+
+#[tokio::test]
+async fn every_entry_that_starts_a_job_detaches_what_the_owner_may_no_longer_use() {
+    // stop & send, a message submitted by a surface, a fork with its first message
+    let rig = Rig::full();
+    let mine = rig.server(&alice(), UserToolServerState::Connected).await;
+    let mine = mine.to_string();
+
+    let thread = ended_with(&rig, &[mine.as_str(), "docs-1"]).await;
+    rig.app
+        .stop_and_send(&alice_revoked(), thread.id, "stop".to_owned())
+        .await
+        .unwrap();
+    let after = rig.app.get_thread(&alice().user, thread.id).await.unwrap();
+    assert_eq!(after.job.tools, ["docs-1".to_owned()], "stop_and_send");
+
+    let thread = ended_with(&rig, &[mine.as_str(), "docs-1"]).await;
+    rig.app
+        .submit(
+            &alice_revoked(),
+            thread.id,
+            orch_core::Input::UserMessage {
+                user: alice().user,
+                text: "again".to_owned(),
+                message_id: None,
+                run_id: None,
+                origin: orch_core::Origin::default(),
+                catalog: None,
+                mentions: Vec::new(),
+                tier: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let after = rig.app.get_thread(&alice().user, thread.id).await.unwrap();
+    assert_eq!(after.job.tools, ["docs-1".to_owned()], "submit");
+
+    // a fork carries what its owner may use, with its first message or without one
+    let parent = ended_with(&rig, &[mine.as_str(), "docs-1"]).await;
+    let fork = rig
+        .app
+        .fork_thread(&alice_revoked(), parent.id, after_first_turn())
+        .await
+        .unwrap()
+        .thread;
+    assert_eq!(fork.job.tools, ["docs-1".to_owned()], "fork_thread");
+    let log = rig.events(&alice(), fork.id).await;
+    assert_eq!(
+        detached_in(&log),
+        [vec![mine.clone()]],
+        "in the fork's own log"
+    );
+    // the parent is untouched
+    let parent = rig.app.get_thread(&alice().user, parent.id).await.unwrap();
+    assert!(parent.job.tools.contains(&mine));
+}
+
+#[tokio::test]
+async fn a_message_of_someone_with_no_servers_of_their_own_attached_writes_no_extra_event() {
+    let rig = Rig::full();
+    let thread = ended_with(&rig, &["docs-1"]).await;
+    rig.app
+        .post_message(&alice_revoked(), thread.id, "again".to_owned())
+        .await
+        .unwrap();
+    let log = rig.events(&alice(), thread.id).await;
+    assert!(detached_in(&log).is_empty());
+    // a deployment server whose id looks like a person's is its own, and stays
+    let after = rig.app.get_thread(&alice().user, thread.id).await.unwrap();
+    assert_eq!(after.job.tools, ["docs-1".to_owned()]);
+}
+
+#[tokio::test]
+async fn the_person_who_starts_a_job_is_always_the_owner_of_the_thread() {
+    // why the requester's roles are the owner's: nobody acts on another's thread, whatever their roles
+    let rig = Rig::full();
+    let mine = rig.server(&alice(), UserToolServerState::Connected).await;
+    let thread = ended_with(&rig, &[mine.as_str()]).await;
+    let admin = principal("admin@example.com", &["user", "admin", "maker"]);
+    let refused = rig
+        .app
+        .post_message(&admin, thread.id, "hello".to_owned())
+        .await;
+    assert!(matches!(refused, Err(AppError::NotFound)), "{refused:?}");
+}
+
+#[tokio::test]
+async fn a_fork_made_with_its_first_message_by_an_owner_who_lost_the_permission_carries_no_server_of_theirs()
+ {
+    let rig = Rig::full();
+    let mine = rig.server(&alice(), UserToolServerState::Connected).await;
+    let parent = ended_with(&rig, &[mine.as_str(), "docs-1"]).await;
+    let forked = rig
+        .app
+        .fork_and_send(
+            &alice_revoked(),
+            parent.id,
+            ThreadId(uuid::Uuid::now_v7()),
+            1,
+            None,
+            orch_app::FirstMessage {
+                text: "from here".to_owned(),
+                message_id: None,
+                run_id: None,
+                origin: orch_core::Origin::default(),
+                ui_catalog: None,
+                mentions: Vec::new(),
+                tier: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(forked.thread.job.tools, ["docs-1".to_owned()]);
+    let log = rig.events(&alice(), forked.thread.id).await;
+    assert_eq!(detached_in(&log), [vec![mine.to_string()]]);
+}
+
+#[tokio::test]
+async fn a_message_of_a_person_without_the_permission_keeps_a_deployment_server_that_looks_like_a_persons()
+ {
+    // `u-docs` is the deployment's: the revocation takes a person's own servers off a thread and
+    // nothing else, whatever the ids look like
+    let w = support::World::new();
+    let app = w.app_with(AppConfig {
+        stream_poll: Duration::from_millis(100),
+        tool_servers: vec![ToolServerInfo::new("u-docs", "Docs")],
+        ..AppConfig::default()
+    });
+    let who = support::alice();
+    let thread = support::create(&app, &who, "plain", "hello").await;
+    app.set_tools(&who, thread.id, vec!["u-docs".to_owned()])
+        .await
+        .unwrap();
+    app.post_message(&who, thread.id, "again".to_owned())
+        .await
+        .unwrap();
+    let after = app.get_thread(&who, thread.id).await.unwrap();
+    assert_eq!(after.job.tools, ["u-docs"]);
+    let log = app.list_events(&who, thread.id, 0, 100).await.unwrap();
+    assert!(detached_in(&log).is_empty(), "{:?}", detached_in(&log));
 }

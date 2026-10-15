@@ -1011,6 +1011,10 @@ async fn a_body_that_cannot_be_used_is_a_400_that_quotes_nothing_of_it() {
             ),
         ),
         (
+            "a secret of seven bytes",
+            obj(json!({"name": "x", "url": URL, "auth": {"kind": "bearer"}, "secret": "short77"})),
+        ),
+        (
             "a secret with a newline",
             obj(
                 json!({"name": "x", "url": URL, "auth": {"kind": "bearer"}, "secret": format!("{planted}\nmore")}),

@@ -551,7 +551,7 @@ one anyway has two lines on screen.
 | The caller's task is over (the thread is terminal, the job is not the token's, the ask finished) | a result with `isError: true`, "this task is over" | none |
 | The server cannot be reached, or the connection times out | `isError`: "the MCP server '<name>' could not be reached; the call did not run" | `failed` |
 | No answer within the server's timeout | `isError`: "no answer within N s; it may still be running on the server" | `failed` |
-| The server answers 401 or 403 | `isError`: "the MCP server refused the orchestrator's credentials" (and the operator's log has a warning) | `failed` |
+| The server answers 401 or 403 (a 403 with no challenge is told apart by the client as `Forbidden`; for the deployment's servers the words are the same) | `isError`: "the MCP server refused the orchestrator's credentials" (and the operator's log has a warning) | `failed` |
 | The server answers with a JSON-RPC error | `isError` with its message, at most 1 KiB | `failed` |
 | The server's result has `isError: true` | passed through as it is | `failed`, `detail` its first line |
 | The result is over 256 KiB | the content cut, with a note appended | `completed` |
@@ -650,24 +650,39 @@ definition, ready or not) **and detaches the rest** in its own first events.
 
 - **`tools/list`.** The definition is read, a **fresh lease** is taken from the broker, and the server is listed through a
   client that judges every connection. Tools are named `<id>__<tool>` as above, with these differences: the tool's
-  `annotations` are **dropped** (a stranger's hints are not believed), its `description` is cut at **2 KiB**, it has no
-  `icons`, and `timeoutSecs` is 65 (60 s, the call's bound, plus the margin of 5; a person cannot set it yet). A server that
+  `annotations` are **dropped** (a stranger's hints are not believed), its `description` is cut at **2 KiB** and its `title`
+  at **256 bytes**, it has no `icons`, and `timeoutSecs` is 65 (60 s, the call's bound, plus the margin of 5; a person cannot
+  set it yet). **A stranger's listing is bounded**: the client reads at most 10 pages and 200 tools and at most 4 MiB of any
+  one response; a tool whose input schema is over 64 KiB of JSON, one named with the credential it was lent and every tool past
+  the 200th are left out, and an output schema over 64 KiB is dropped (the log says how many, never which). A server that
   cannot be used is left out and logged by id and reason, never silently: see the table.
+- **A place first.** At most **4** requests at once go to one person's servers and **16** in the whole process; a request waits
+  up to **10 s** for its place and is `busy` after. The place is taken **before the lease**, so a request that waits holds no
+  credential. (Why: a stranger's server holds a connection and up to 4 MiB of buffered answer as long as it likes, and a lookup
+  that never answers pins a thread of the blocking pool that cannot be cancelled. The numbers are constants a deployment
+  cannot set yet.)
 - **`tools/call`.** The lease is taken again, for this one call, and **nothing is cached**: not in the relay, not between a list
-  and a call. A `bearer` or `oauth2` lease is sent as `Authorization: Bearer <token>`; an `api_key` lease in the header the
+  and a call. **The lease and the URL are of one revision**: the definition is read again after the lease, and if the person
+  edited the server in between the lease is dropped and the whole is done once more on the new definition; if it moves again
+  the call is not made ("could not be had now"). A lease shorter than 8 bytes is not lent. A `bearer` or `oauth2` lease is sent as `Authorization: Bearer <token>`; an `api_key` lease in the header the
   person named, with the value as it is; a server of the kind `none` is connected to with no credential and the broker is
   not asked. The call is **one step** as above, with `icon: "mcp-server:<u-id>"` (the web draws a person's server, which
   supplies no icon, as the glyph of a tool).
 - **Re-checked at each call:** that the server is still attached to the thread, that its owner still owns it, and that the
   feature is still on. A server detached or deleted after the agent listed its tools is not on the endpoint any more
-  (`-32602`, no step, no lease). A revoked `tools.user.add` does not stop a call (the relay has the owner's identity from the
-  thread, not their roles): it stops an attach, and the picker says `not_permitted`; `userToolServers.enabled: false` stops
-  every call at once.
+  (`-32602`, no step, no lease). The relay has the owner's identity from the thread and not their roles, so it cannot see a
+  revoked `tools.user.add`; **the application does**: the next message, steer, stop & send, UI action or fork of an owner who no
+  longer holds the permission takes their own servers off the thread **in the same commit**, before the message (a
+  `tools_detached` event), so the job reads a set without them and this check then refuses the call. A job that is already
+  running keeps its servers until it ends, and a job the system starts (a CI report, the verifier, a timer) uses the set the
+  person's last message left. `userToolServers.enabled: false` stops every call at once.
 
 | Situation | `tools/list` | The agent gets from `tools/call` | Step | The definition |
 |---|---|---|---|---|
 | The credential ended, was never given, or the server is not `connected` (`NeedsReauth` from the broker, state `added`, `needs_reauth` or `revoked`) | left out | `isError`: "the MCP server needs the person to sign in again" | `failed`, `detail` the same | state becomes `needs_reauth` when the broker said so |
-| The server answers **401 or 403** (the client does not tell them apart, and a scope step-up is a 403) | left out | `isError`: the same sentence | `failed` | state becomes `needs_reauth` (a definition changed since is left as it is) |
+| The server answers **401**, or **403 with a `WWW-Authenticate` challenge** (`insufficient_scope`, a step-up), to a server of a kind that holds a credential | left out | `isError`: the same sentence | `failed` | state becomes `needs_reauth` (a definition changed since is left as it is) |
+| The server answers **403 with no challenge**, or **401 to a server added with no credential** (kind `none`) | left out | `isError`: "the MCP server '<name>' refused the call; the call did not run", or "... wants credentials and was added with none; ..." | `failed` | **unchanged**: no sign-in of the person's would change it |
+| There is no place within 10 s (4 requests of the person, or 16 in the process, are in flight) | left out | `isError`: "the MCP server '<name>' is busy; the call did not run, try again" | `failed` | unchanged |
 | The broker or the secret store is down, or the definitions cannot be read, or this deployment keeps no credentials | left out | `isError`: "the credential for the MCP server '<name>' could not be had now; the call did not run" (the id stands for the name when the definition is what cannot be read) | `failed` | unchanged |
 | The egress guard refuses the server: today's lists, a refusal of the broker's own fetch, or **the address the name resolved to at the connection** | left out | `isError`: "the MCP server '<name>' is not reachable from here; the call did not run" (the same words for every rule) | `failed` | unchanged |
 | The server was deleted between the read and the lease | left out | `isError`: "the MCP server '<name>' is no longer there; the call did not run" | `failed` | |
@@ -702,17 +717,23 @@ sequenceDiagram
   R->>R: mode() first, then: attached? owned by the owner?
   R->>D: get(owner, server)
   R->>L: step running (icon mcp-server:u-…, input)
+  R->>R: a place among the requests in flight (4 a person, 16 in all, 10 s)
   R->>R: connected? today's egress lists?
   R->>B: lease(owner, server)
   B-->>R: Bearer token, or a header and its value (fresh, short)
+  R->>D: get(owner, server) again: the revision the lease was made for?
   R->>C: call_tool(endpoint with the lease)
-  C->>C: check_url, then the address the name resolved to
-  C->>S: the request with the credential (no redirect followed)
-  alt the server answers 401 or 403
+  C->>C: check_url, the address the name resolved to, the peer address of the connection
+  C->>S: the request with the credential (no redirect followed, at most 4 MiB read back)
+  alt the server answers 401, or 403 with a challenge, and the kind holds a credential
     S-->>C: Unauthenticated
-    R->>D: set_state(needs_reauth) on the revision read
+    R->>D: set_state(needs_reauth) on the revision the endpoint was made from
     R->>L: step failed
     R-->>A: isError "the MCP server needs the person to sign in again"
+  else the server answers 403 with no challenge
+    S-->>C: Forbidden
+    R->>L: step failed (no state changes)
+    R-->>A: isError "the MCP server '<name>' refused the call; the call did not run"
   else it answers
     S-->>R: result
     R->>L: step completed (output, cut to 8 KiB)
@@ -725,16 +746,21 @@ stateDiagram-v2
   [*] --> Read: tools/list or tools/call
   Read --> NotOnEndpoint: no definition for the owner, the feature off, or detached
   Read --> NeedsSignIn: state is not connected
+  Read --> Busy: no place within 10 s
   Read --> NotReachable: today's egress lists refuse it
   Read --> Lease: connected
   Lease --> NeedsSignIn: the broker says the credential ended
-  Lease --> CouldNotBeHad: the broker or its store is down
+  Lease --> CouldNotBeHad: the broker or its store is down, or the definition moved twice
   Lease --> NotReachable: the broker's own fetch was refused by the guard
-  Lease --> Connect: a fresh lease
+  Lease --> Read: the definition moved while the credential was leased (once)
+  Lease --> Connect: a fresh lease, for the revision the URL was read from
   Connect --> NotReachable: the guard refuses the address at the connection
-  Connect --> NeedsSignIn: the server answers 401 or 403
+  Connect --> NeedsSignIn: the server answers 401, or 403 with a challenge
+  Connect --> Refused: the server answers 403 with no challenge
   Connect --> Served: the server answers
   NotOnEndpoint --> [*]: -32602, no step
+  Busy --> [*]: left out, or a failed step
+  Refused --> [*]: left out, or a failed step, no state changes
   NeedsSignIn --> [*]: left out, or a failed step
   NotReachable --> [*]: left out, or a failed step
   CouldNotBeHad --> [*]: left out, or a failed step

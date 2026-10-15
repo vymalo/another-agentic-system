@@ -279,7 +279,8 @@ paths:
         2 KiB, and the deployment's egress lists: a refusal is a 400 `url_refused` whose `detail` is the guard's reason for a
         person, never the precise rule and never an address), the header of an `api_key` (not one the orchestrator owns:
         `Authorization`, `Host`, `Content-Type`, `Mcp-*`, ...), the scopes and the client id of an `oauth2`, and the secret
-        (1 to 4096 printable ASCII characters, none at either end a space).
+        (8 to 4096 printable ASCII characters, none at either end a space; **8 is the shortest the relay can take out of
+        what a server says back** without redacting ordinary words, so a shorter secret is a 400, ADR 0046 slice 5a review).
 
         * `none`: no `secret`. The server is `connected` at once.
         * `bearer` and `api_key`: the `secret` is required, the token or the key. The definition is written `added`, the
@@ -1987,7 +1988,7 @@ components:
         name: { type: string, minLength: 1, maxLength: 80, description: "The name the picker shows. Trimmed; one line" }
         url: { type: string, maxLength: 2048, description: "The server's MCP endpoint. `https`, a host, no user information, query or fragment, and not refused by the deployment's egress lists: a private, loopback, link-local or reserved address is refused, and a refusal never says which address" }
         auth: { $ref: "#/components/schemas/UserToolAuth" }
-        secret: { type: string, minLength: 1, maxLength: 4096, writeOnly: true, description: "The token or the key: printable ASCII (spaces inside are fine, none at either end). Write-only" }
+        secret: { type: string, minLength: 8, maxLength: 4096, writeOnly: true, description: "The token or the key: 8 to 4096 printable ASCII characters (spaces inside are fine, none at either end). Write-only" }
     UpdateUserToolServerRequest:
       type: object
       additionalProperties: false
@@ -1996,7 +1997,7 @@ components:
         name: { type: string, minLength: 1, maxLength: 80 }
         url: { type: string, maxLength: 2048, description: "A new URL revokes the credential, which was issued for the old one, and leaves the server `added`" }
         auth: { $ref: "#/components/schemas/UserToolAuth" }
-        secret: { type: string, minLength: 1, maxLength: 4096, writeOnly: true, description: "A new token or key, for a `bearer` or `api_key` server. Write-only" }
+        secret: { type: string, minLength: 8, maxLength: 4096, writeOnly: true, description: "A new token or key, for a `bearer` or `api_key` server (8 to 4096 printable ASCII characters). Write-only" }
         revision: { type: string, pattern: "^[0-9]+$", description: "The `revision` the listing gave: the change is refused (409 `stale_revision`) when the server changed since" }
     ThreadToolsRequest:
       type: object
