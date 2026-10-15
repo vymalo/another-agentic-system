@@ -609,7 +609,12 @@ services:
   # http://mock-mcp-search:8080/mcp, one tool `web_search` with an icon, answering the canned results of
   # dev/mock-mcp-search/results.json, so that an agent that searches the web, and a web search attached to a chat,
   # run offline. It requires `Authorization: Bearer dev-search-token`. From the host: http://127.0.0.1:8096/mcp
-  # (dev/check-agent-mocks.sh probes it; GET /__journal lists the calls it has had).
+  # (dev/check-agent-mocks.sh probes it; GET /__journal lists the calls it has had, and every request that reached it, with the `Host` it named).
+  # It is also the server of the MCP servers people add for themselves (ADR 0046, dev/user-tools-relay-e2e.sh), under two names:
+  # `mock-mcp-search`, which dev/orchestrator.yaml's `userToolServers.egress.allow` names EXACTLY (so the private address it resolves to is allowed),
+  # and `mock-mcp-search.strangers.test`, an alias of the same container that the allow list admits only by a `*.strangers.test` entry, which never
+  # lifts the ban on a private address: a stranger's name that resolves into the cluster. A person's token is any that starts with
+  # `MOCK_MCP_TOKEN_PREFIX`, so a scenario makes one up for each run and the stack holds only the prefix.
   mock-mcp-search:
     profiles: [app]
     build:
@@ -617,6 +622,10 @@ services:
     image: another-agentic-system/mock-mcp-search:dev
     environment:
       MOCK_MCP_TOKEN: dev-search-token # local development only
+      MOCK_MCP_TOKEN_PREFIX: user-token- # local development only: a person's own token for this server is `user-token-<anything>`
+    networks:
+      default:
+        aliases: [mock-mcp-search.strangers.test]
     ports:
       - "127.0.0.1:${MOCK_MCP_SEARCH_PORT:-8096}:8080"
     healthcheck:
