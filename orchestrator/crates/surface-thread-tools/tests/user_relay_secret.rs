@@ -37,7 +37,9 @@ const REFUSED: &str = "SENTINEL-refused-e72a5d1b04";
 /// In the path of the URL of a server, as a webhook-style URL has one: the person sees their own URL
 /// and nothing else may show it.
 const IN_PATH: &str = "SENTINEL-in-the-path-4be7c20a1d";
-const SECRETS: [&str; 3] = [BEARER, KEY, REFUSED];
+/// Typed for the server that says it back.
+const LEAKED: &str = "SENTINEL-leaked-1b9d03e6f2";
+const SECRETS: [&str; 4] = [BEARER, KEY, REFUSED, LEAKED];
 
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<u8>>>);
@@ -95,6 +97,8 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
             .await;
     let refusing =
         FakeToolServer::spawn(FakeToolServerOptions::default().bearer("another-token")).await;
+    let leaky =
+        FakeToolServer::spawn(FakeToolServerOptions::default().bearer(LEAKED).leaky()).await;
     let policy = EgressPolicy::new()
         .allowing_http()
         .with_allow(pattern("127.0.0.1"));
@@ -120,6 +124,7 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
         json!({"name": "Search", "url": key_server.url(),
                "auth": {"kind": "api_key", "header": "X-Api-Key"}, "secret": KEY}),
         json!({"name": "Locked", "url": refusing.url(), "auth": {"kind": "bearer"}, "secret": REFUSED}),
+        json!({"name": "Leaky", "url": leaky.url(), "auth": {"kind": "bearer"}, "secret": LEAKED}),
     ] {
         let (status, text) = rig
             .api(reqwest::Method::POST, "/api/user-tool-servers", Some(body))
@@ -133,11 +138,16 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
                 .to_owned(),
         );
     }
-    let [tracker, search, locked] = [&ids[0], &ids[1], &ids[2]];
+    let [tracker, search, locked, leaking] = [&ids[0], &ids[1], &ids[2], &ids[3]];
 
     // the control: the broker does hold the secrets, sealed in its store, so a search that finds
     // nothing elsewhere is a search that could have found something
-    for (id, secret) in [(tracker, BEARER), (search, KEY), (locked, REFUSED)] {
+    for (id, secret) in [
+        (tracker, BEARER),
+        (search, KEY),
+        (locked, REFUSED),
+        (leaking, LEAKED),
+    ] {
         let id = UserToolServerId::parse(id).unwrap();
         let (_, material) = rig
             .secrets
@@ -148,7 +158,9 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
         assert!(String::from_utf8_lossy(material.expose()).contains(secret));
     }
 
-    let thread = rig.working_thread(&[tracker, search, locked]).await;
+    let thread = rig
+        .working_thread(&[tracker, search, locked, leaking])
+        .await;
     let client = rig.client(thread).await;
 
     // the agent: the list, the calls that work, a tool that fails, a tool that does not exist
@@ -174,6 +186,17 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
         .unwrap_err();
     note("agent error", &format!("{error} {error:?}"));
 
+    // the server that says the credential back, in a result, in a failed tool and in an error
+    for tool in ["echo", "fail", "nothing"] {
+        let out = call(
+            &client,
+            &format!("{leaking}__{tool}"),
+            json!({"text": "hi"}),
+        )
+        .await;
+        assert!(out.text.contains("[redacted]"), "{out:?}");
+        note("agent call", &format!("{out:?}"));
+    }
     // the server that refuses: the person is told to sign in again; the secret is not repeated
     let refused = call(&client, &format!("{locked}__echo"), json!({})).await;
     assert!(refused.is_error);
@@ -296,6 +319,25 @@ async fn a_secret_lent_for_a_call_is_in_the_request_to_the_server_and_nowhere_el
             !outputs.contains(secret),
             "{secret} is in what the client and the agent saw"
         );
+        if secret == LEAKED {
+            // A server that says the credential back is logged by `rmcp`, the library, which writes
+            // every message it receives (and, on the server side of this very process, every one it
+            // sends) at DEBUG and TRACE: that is not the relay's to scrub, and it is the operator's
+            // choice to run it at TRACE. Every line of the logs that holds it comes from `rmcp`.
+            let elsewhere: Vec<&str> = logs
+                .lines()
+                .filter(|line| line.contains(secret) && !line.contains(" rmcp::"))
+                .collect();
+            assert!(
+                elsewhere.is_empty(),
+                "{secret} is in logs of ours: {elsewhere:?}"
+            );
+            assert!(
+                logs.lines().any(|line| line.contains(secret)),
+                "the control: the library did log what the server said back"
+            );
+            continue;
+        }
         // the logs hold the canary and nothing else of the bearer
         let in_logs = logs.matches(secret).count();
         let expected = usize::from(secret == BEARER); // the canary line

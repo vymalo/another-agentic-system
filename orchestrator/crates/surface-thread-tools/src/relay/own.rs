@@ -56,6 +56,14 @@
 //! - **What a stranger says is untrusted**: a tool's `annotations` are dropped, its `description` is
 //!   cut at [`MAX_OWN_DESCRIPTION_BYTES`] (2 KiB), the icon is none (a person supplies none), and the
 //!   step's icon is `mcp-server:<u-id>`, which the web draws as the generic glyph of a tool.
+//! - **What the server says back is scrubbed of the credential it was lent.** A server that echoes what
+//!   it was sent (a debugging tool that returns the request's headers, an error that quotes the bad
+//!   token) would otherwise put the credential into the step's output and detail, the thread's log, the
+//!   export, the AG-UI stream and the agent's context. Every place the relay passes a stranger's words
+//!   on (a result, a JSON-RPC error's message, a listed tool's title, description and schemas) has the
+//!   exact value of each secret it sent replaced by `[redacted]` ([`scrub_output`]). Only the exact
+//!   value, and only a value of at least 8 bytes (a shorter one would redact ordinary words): a server
+//!   that encodes the credential first (base64, hashed) is not caught, and nothing could catch it.
 //! - **Re-checked at each call**: that the server is still attached to the thread, that its owner
 //!   still owns it, that the feature is still on. A server detached or deleted after the agent listed
 //!   its tools is not on the endpoint any more (`-32602`, no step), as for the deployment's.
@@ -78,8 +86,10 @@ use orch_ports::{
     ToolCall, ToolServerClient, ToolServerEndpoint, ToolServerError, UnavailableReason,
     UserToolPorts, UserToolServerId, UserToolServerState, UserToolServerStore,
 };
+use orch_ports::{ToolCallOutput, ToolDef, ToolSecret};
 use rmcp::ErrorData;
 use rmcp::model::{CallToolResult, JsonObject, Tool};
+use serde_json::{Map, Value};
 
 use super::{
     CLIENT_GRACE, Ended, Live, Presented, RelayTools, answered, canceled, definition, error_result,
@@ -232,7 +242,8 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                 return Vec::new();
             }
         };
-        let upstream = match client.list_tools(&prepared.endpoint).await {
+        let secrets = secrets_of(&prepared.endpoint);
+        let mut upstream = match client.list_tools(&prepared.endpoint).await {
             Ok(upstream) => upstream,
             Err(error) => {
                 if matches!(error, ToolServerError::Unauthenticated) {
@@ -240,10 +251,10 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                         .await;
                     self.left_out(&id, Cannot::NeedsSignIn);
                 } else {
-                    // The public detail: no URL, no credential, no transport error.
+                    // No URL, no credential, no transport error, and none of the server's words.
                     tracing::warn!(
                         server = %id,
-                        reason = %error.public_detail(),
+                        reason = loggable(&error),
                         rule = refusal_rule(&error),
                         "a server of a person's could not be listed: its tools are left out"
                     );
@@ -251,6 +262,9 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                 return Vec::new();
             }
         };
+        for tool in &mut upstream {
+            scrub_tool(tool, &secrets);
+        }
         let presented = Presented {
             id: id.as_str(),
             name: &name,
@@ -351,8 +365,13 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
                 .prepare(&ctx.owner, stored)
                 .await
                 .map_err(Failed::Cannot)?;
+            let secrets = secrets_of(&prepared.endpoint);
             match tokio::time::timeout(bound, client.call_tool(&prepared.endpoint, &call)).await {
-                Ok(answer) => answer.map_err(Failed::Server),
+                Ok(Ok(mut output)) => {
+                    scrub_output(&mut output, &secrets);
+                    Ok(output)
+                }
+                Ok(Err(error)) => Err(Failed::Server(scrub_error(error, &secrets))),
                 Err(_) => Err(Failed::Server(ToolServerError::TimedOut {
                     after: USER_SERVER_TIMEOUT,
                 })),
@@ -505,5 +524,207 @@ fn refusal_rule(error: &ToolServerError) -> &'static str {
     match error {
         ToolServerError::EgressRefused(rule) => rule.rule(),
         _ => "",
+    }
+}
+
+/// The shortest secret that is scrubbed from what a server says: a shorter one would redact ordinary
+/// words, and nobody's credential is that short.
+const MIN_SCRUBBED_BYTES: usize = 8;
+
+/// What replaces a credential in a server's words (the marker the step's input uses too).
+const REDACTED: &str = "[redacted]";
+
+/// The secrets an endpoint sends: its bearer and the values of its headers, those long enough to be
+/// scrubbed. Clones are wiped when they are dropped, as the originals are.
+fn secrets_of(endpoint: &ToolServerEndpoint) -> Vec<ToolSecret> {
+    endpoint
+        .bearer
+        .iter()
+        .chain(endpoint.headers.iter().map(|(_, value)| value))
+        .filter(|secret| secret.expose().len() >= MIN_SCRUBBED_BYTES)
+        .cloned()
+        .collect()
+}
+
+/// `text` with the exact value of each secret replaced.
+fn scrub_text(text: &mut String, secrets: &[ToolSecret]) {
+    for secret in secrets {
+        if text.contains(secret.expose()) {
+            *text = text.replace(secret.expose(), REDACTED);
+        }
+    }
+}
+
+/// Every string of `value`, and every key of an object, scrubbed.
+fn scrub_value(value: &mut Value, secrets: &[ToolSecret]) {
+    match value {
+        Value::String(text) => scrub_text(text, secrets),
+        Value::Array(items) => items.iter_mut().for_each(|item| scrub_value(item, secrets)),
+        Value::Object(map) => scrub_map(map, secrets),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn scrub_map(map: &mut Map<String, Value>, secrets: &[ToolSecret]) {
+    let scrubbed: Map<String, Value> = std::mem::take(map)
+        .into_iter()
+        .map(|(mut key, mut value)| {
+            scrub_text(&mut key, secrets);
+            scrub_value(&mut value, secrets);
+            (key, value)
+        })
+        .collect();
+    *map = scrubbed;
+}
+
+/// A result with the credential taken out of its content and its structured part.
+fn scrub_output(output: &mut ToolCallOutput, secrets: &[ToolSecret]) {
+    for block in &mut output.content {
+        scrub_value(block, secrets);
+    }
+    if let Some(structured) = &mut output.structured {
+        scrub_value(structured, secrets);
+    }
+}
+
+/// A tool as the server listed it, with the credential taken out of the words it chose.
+fn scrub_tool(tool: &mut ToolDef, secrets: &[ToolSecret]) {
+    if let Some(title) = &mut tool.title {
+        scrub_text(title, secrets);
+    }
+    if let Some(description) = &mut tool.description {
+        scrub_text(description, secrets);
+    }
+    scrub_map(&mut tool.input_schema, secrets);
+    if let Some(schema) = &mut tool.output_schema {
+        scrub_map(schema, secrets);
+    }
+    if let Some(annotations) = &mut tool.annotations {
+        scrub_value(annotations, secrets);
+    }
+}
+
+/// An error of the server with the credential taken out of the message it chose.
+fn scrub_error(error: ToolServerError, secrets: &[ToolSecret]) -> ToolServerError {
+    match error {
+        ToolServerError::Remote { code, mut message } => {
+            scrub_text(&mut message, secrets);
+            ToolServerError::Remote { code, message }
+        }
+        other => other,
+    }
+}
+
+/// What the operator's log says of an error of a person's server: the words of `public_detail`, but
+/// never a stranger's own (a JSON-RPC message may quote anything).
+fn loggable(error: &ToolServerError) -> String {
+    match error {
+        ToolServerError::Remote { code, .. } => {
+            format!("the server answered a JSON-RPC error ({code})")
+        }
+        other => other.public_detail(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn secrets(values: &[&str]) -> Vec<ToolSecret> {
+        values.iter().map(|v| ToolSecret::new(*v)).collect()
+    }
+
+    #[test]
+    fn the_exact_value_is_replaced_wherever_it_is_in_the_json() {
+        let secrets = secrets(&["sentinel-token-123456", "key-abcdefgh"]);
+        let mut value = json!({
+            "text": "you sent Bearer sentinel-token-123456 and key-abcdefgh, twice: sentinel-token-123456",
+            "nested": [{"deep": "x sentinel-token-123456"}, 7, null, true],
+            "sentinel-token-123456": "a key that is the secret",
+        });
+        scrub_value(&mut value, &secrets);
+        let shown = value.to_string();
+        assert!(
+            !shown.contains("sentinel-token-123456") && !shown.contains("key-abcdefgh"),
+            "{shown}"
+        );
+        assert_eq!(
+            value["text"],
+            "you sent Bearer [redacted] and [redacted], twice: [redacted]"
+        );
+        assert_eq!(value["nested"][0]["deep"], "x [redacted]");
+        assert_eq!(value["[redacted]"], "a key that is the secret");
+        assert_eq!(value["nested"][1], 7, "what is not text is left alone");
+    }
+
+    #[test]
+    fn a_secret_too_short_to_tell_from_words_is_not_scrubbed() {
+        let endpoint = ToolServerEndpoint::new(
+            "u-abcdefghij",
+            "https://x.example/mcp",
+            Duration::from_secs(1),
+        )
+        .with_bearer(ToolSecret::new("short"))
+        .with_header("X-Key", ToolSecret::new("long-enough-key"));
+        let kept = secrets_of(&endpoint);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].expose(), "long-enough-key");
+        let mut text = "a short word and long-enough-key".to_owned();
+        scrub_text(&mut text, &kept);
+        assert_eq!(text, "a short word and [redacted]");
+    }
+
+    #[test]
+    fn a_remote_message_and_a_result_and_a_listed_tool_are_scrubbed_and_other_errors_are_not_touched()
+     {
+        let secrets = secrets(&["sentinel-token-123456"]);
+        let ToolServerError::Remote { message, .. } = scrub_error(
+            ToolServerError::remote(-32000, "bad token sentinel-token-123456"),
+            &secrets,
+        ) else {
+            panic!("a remote error stays one");
+        };
+        assert_eq!(message, "bad token [redacted]");
+        assert!(matches!(
+            scrub_error(ToolServerError::Unauthenticated, &secrets),
+            ToolServerError::Unauthenticated
+        ));
+
+        let mut output = ToolCallOutput {
+            content: vec![json!({"type": "text", "text": "headers: sentinel-token-123456"})],
+            structured: Some(json!({"auth": "sentinel-token-123456"})),
+            ..ToolCallOutput::default()
+        };
+        scrub_output(&mut output, &secrets);
+        assert_eq!(output.text_of(), "headers: [redacted]");
+        assert_eq!(output.structured, Some(json!({"auth": "[redacted]"})));
+
+        let mut tool = ToolDef {
+            name: "t".to_owned(),
+            title: Some("sentinel-token-123456".to_owned()),
+            description: Some("uses sentinel-token-123456".to_owned()),
+            input_schema: json!({"type": "object", "default": "sentinel-token-123456"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            output_schema: None,
+            annotations: Some(json!({"hint": "sentinel-token-123456"})),
+        };
+        scrub_tool(&mut tool, &secrets);
+        assert!(!format!("{tool:?}").contains("sentinel-token-123456"));
+    }
+
+    #[test]
+    fn the_log_never_quotes_the_words_of_a_server() {
+        let error = ToolServerError::remote(-32000, "your token sentinel-token-123456 is bad");
+        let said = loggable(&error);
+        assert!(!said.contains("sentinel"), "{said}");
+        assert_eq!(
+            loggable(&ToolServerError::Unauthenticated),
+            "the server refused the credentials"
+        );
     }
 }

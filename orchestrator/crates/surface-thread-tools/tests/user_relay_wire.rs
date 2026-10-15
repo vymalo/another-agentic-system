@@ -135,6 +135,65 @@ async fn the_server_receives_exactly_the_credential_the_person_typed() {
 }
 
 #[tokio::test]
+async fn a_server_that_says_the_credential_back_does_not_get_it_into_the_step_the_log_or_the_agent()
+{
+    // A careless server returns the headers it was sent in its result, in the message of its
+    // errors and in a failed tool's text. The relay passes a stranger's words on to the agent and to
+    // the step (and so to the log, the export and the AG-UI stream), and replaces the exact value of
+    // the credential it lent wherever it is.
+    let server =
+        FakeToolServer::spawn(FakeToolServerOptions::default().bearer(BEARER).leaky()).await;
+    let rig = WireRig::start(
+        loopback_allowed(),
+        McpToolClient::guarded(loopback_allowed()).unwrap(),
+    )
+    .await;
+    let id = rig.add(bearer_body("Leaky", &server.url(), BEARER)).await;
+    let thread = rig.working_thread(&[&id]).await;
+    let client = rig.client(thread).await;
+
+    let echoed = call(&client, &format!("{id}__echo"), json!({"text": "hi"})).await;
+    let failed = call(&client, &format!("{id}__fail"), json!({})).await;
+    let unknown = call(&client, &format!("{id}__nothing"), json!({})).await;
+    for out in [&echoed, &failed, &unknown] {
+        assert!(!out.text.contains(BEARER), "{out:?}");
+        assert!(
+            out.text.contains("[redacted]"),
+            "the server did say it back: {out:?}"
+        );
+    }
+    assert!(!echoed.is_error && failed.is_error && unknown.is_error);
+    assert_eq!(
+        echoed.value,
+        json!({"text": "hi"}),
+        "what the credential is not in is untouched"
+    );
+
+    // the control: the server was sent it, and said it back
+    assert!(
+        server
+            .seen()
+            .iter()
+            .any(|r| r.method == "tools/call" && r.bearer.as_deref() == Some(BEARER))
+    );
+
+    // and it is in nothing the thread keeps: not an output, not a detail
+    let events = rig
+        .app
+        .list_events(&WireRig::alice(), thread, 0, 100)
+        .await
+        .unwrap();
+    let log = serde_json::to_string(&events).unwrap();
+    assert!(!log.contains(BEARER), "{log}");
+    assert!(
+        log.contains("[redacted]"),
+        "the steps kept the server's words, scrubbed"
+    );
+    let listed = serde_json::to_string(&client.list_all_tools().await.unwrap()).unwrap();
+    assert!(!listed.contains(BEARER));
+}
+
+#[tokio::test]
 async fn a_401_through_the_real_client_marks_the_server_with_or_without_a_challenge() {
     for challenge in [true, false] {
         // the server wants another token than the one the person typed

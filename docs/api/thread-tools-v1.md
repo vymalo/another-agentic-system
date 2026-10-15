@@ -674,9 +674,14 @@ definition, ready or not) **and detaches the rest** in its own first events.
 | Detached, deleted, not the owner's, the feature off, or a relay with no client for them | not listed | JSON-RPC `-32602` | none | |
 | Anything else the server does (unreachable, no answer in time, a JSON-RPC error, `isError`, over 256 KiB, a call the agent drops) | | the rows of the table above | | |
 
-None of the sentences holds a URL, an address, a rule or a secret. **What a server says in its answer is its own words**:
-a server that echoes the credential it was given puts it in its result, in the step and in front of the model, and nothing
-here can stop it (the credential was the server's from the moment it was sent).
+None of the sentences holds a URL, an address, a rule or a secret. **What a server says in its answer is its own words, with
+the credential it was lent taken out**: a server that echoes what it was sent (a tool that returns the request's headers, an
+error that quotes the bad token) has the exact value of each secret replaced by `[redacted]` in a result's content and
+structured part, in the message of a JSON-RPC error, and in a listed tool's title, description and schemas, before the words
+reach the step (and so the log, the export and the AG-UI stream), the agent and the operator's log line. Only the exact value
+and only a value of 8 bytes or more (a shorter one would redact ordinary words): a server that encodes the credential first
+is not caught. The `rmcp` library logs every message it receives at TRACE, which is not the relay's to scrub; at the default
+level it says nothing of it.
 
 ```mermaid
 sequenceDiagram
