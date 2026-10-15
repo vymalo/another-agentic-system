@@ -572,25 +572,28 @@ fn the_callback_is_the_public_url_and_the_path_unless_a_url_is_given() {
     );
     // an explicit address wins, and does not need the public URL
     let given = load(
-        &oauth_file("", "    callbackUrl: https://api.example.com/cb\n"),
+        &oauth_file(
+            "",
+            "    callbackUrl: https://api.example.com/api/user-tool-servers/oauth/callback\n",
+        ),
         &with_keys(),
     )
     .unwrap();
     assert_eq!(
         given.config.user_tool_callback_url().as_deref(),
-        Some("https://api.example.com/cb")
+        Some("https://api.example.com/api/user-tool-servers/oauth/callback")
     );
     let both = load(
         &oauth_file(
             "  publicUrl: https://chat.example.com\n",
-            "    callbackUrl: https://api.example.com/cb\n",
+            "    callbackUrl: https://api.example.com/api/user-tool-servers/oauth/callback\n",
         ),
         &with_keys(),
     )
     .unwrap();
     assert_eq!(
         both.config.user_tool_callback_url().as_deref(),
-        Some("https://api.example.com/cb")
+        Some("https://api.example.com/api/user-tool-servers/oauth/callback")
     );
     // nothing to derive it from
     let none = load(&file("  {}\n"), &env()).unwrap();
@@ -615,7 +618,10 @@ fn credentials_kept_need_an_address_for_the_browser_to_come_back_to() {
     );
     assert!(
         load(
-            &oauth_file("", "    callbackUrl: https://chat.example.com/cb\n"),
+            &oauth_file(
+                "",
+                "    callbackUrl: https://chat.example.com/api/user-tool-servers/oauth/callback\n"
+            ),
             &with_keys()
         )
         .is_ok()
@@ -676,9 +682,11 @@ fn a_public_url_that_oauth_does_not_take_as_a_redirect_is_named_when_credentials
 fn the_callback_url_is_one_a_browser_may_come_back_to() {
     let good = [
         "https://chat.example.com/api/user-tool-servers/oauth/callback",
-        "https://chat.example.com:8443/cb",
-        "http://127.0.0.1:8080/cb",
-        "http://[::1]:8080/cb",
+        "https://chat.example.com:8443/api/user-tool-servers/oauth/callback",
+        "http://127.0.0.1:8080/api/user-tool-servers/oauth/callback",
+        "http://[::1]:8080/api/user-tool-servers/oauth/callback",
+        // the path is the one the URL has once it is read, which is the one the broker sends
+        "https://chat.example.com/api/./user-tool-servers/oauth/../oauth/callback",
     ];
     for url in good {
         assert!(
@@ -716,6 +724,79 @@ fn the_callback_url_is_one_a_browser_may_come_back_to() {
     }
 }
 
+/// The router mounts the callback at one path and nowhere else (`axum` matches exactly), so a
+/// `callbackUrl` with any other path would have every authorization end at a 404 and the Client ID
+/// Metadata Document list a redirect that nothing serves. The key may move the **origin** (an API
+/// host of its own), never the path (ADR 0046, slice 4c review).
+#[test]
+fn a_callback_url_whose_path_is_not_the_served_one_is_refused_and_the_expected_path_is_named() {
+    let bad = [
+        "https://api.example.com/cb",
+        "https://api.example.com/",
+        "https://api.example.com",
+        "https://api.example.com/oauth/callback",
+        // axum does not redirect, fold the case or decode: each of these is a 404 there
+        "https://api.example.com/api/user-tool-servers/oauth/callback/",
+        "https://api.example.com/API/user-tool-servers/oauth/callback",
+        "https://api.example.com/api/user-tool-servers/oauth%2Fcallback",
+        "https://api.example.com/api/user-tool-servers/oauth/callbackx",
+        "https://api.example.com/x/api/user-tool-servers/oauth/callback",
+        "https://api.example.com//api/user-tool-servers/oauth/callback",
+        "http://127.0.0.1:8080/cb",
+    ];
+    for url in bad {
+        let errors = lines(load(
+            &oauth_file("", &format!("    callbackUrl: \"{url}\"\n")),
+            &with_keys(),
+        ));
+        assert_eq!(errors.len(), 1, "{url}: {errors:?}");
+        assert!(
+            errors[0].starts_with(
+                "userToolServers.oauth.callbackUrl: its path must be \
+                 /api/user-tool-servers/oauth/callback"
+            ),
+            "{url}: {errors:?}"
+        );
+    }
+    // it is the shape that is refused first when there is no URL to speak of
+    let errors = lines(load(
+        &oauth_file(
+            "",
+            "    callbackUrl: \"/api/user-tool-servers/oauth/callback\"\n",
+        ),
+        &with_keys(),
+    ));
+    assert!(
+        errors[0].starts_with("userToolServers.oauth.callbackUrl: expected an https URL"),
+        "{errors:?}"
+    );
+    // the check does not depend on credentials being kept, nor on the public URL
+    for text in [
+        file("  enabled: true\n  oauth:\n    callbackUrl: https://api.example.com/cb\n"),
+        oauth_file(
+            "  publicUrl: https://chat.example.com\n",
+            "    callbackUrl: https://api.example.com/cb\n",
+        ),
+    ] {
+        let errors = lines(load(&text, &with_keys()));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].starts_with("userToolServers.oauth.callbackUrl: its path must be"),
+            "{errors:?}"
+        );
+    }
+    // a public URL with a path of its own does not move the callback: the path is the route's
+    let derived = load(
+        &oauth_file("  publicUrl: https://chat.example.com/some/prefix\n", ""),
+        &with_keys(),
+    )
+    .unwrap();
+    assert_eq!(
+        derived.config.user_tool_callback_url().as_deref(),
+        Some("https://chat.example.com/api/user-tool-servers/oauth/callback")
+    );
+}
+
 #[test]
 fn production_takes_an_https_callback_only() {
     let production = |oauth: &str| {
@@ -725,7 +806,9 @@ fn production_takes_an_https_callback_only() {
     };
     assert!(
         load(
-            &production("    callbackUrl: https://chat.example.com/cb\n"),
+            &production(
+                "    callbackUrl: https://chat.example.com/api/user-tool-servers/oauth/callback\n"
+            ),
             &with_keys()
         )
         .is_ok()
@@ -819,7 +902,7 @@ fn the_document_is_on_the_origin_of_the_callback() {
     assert!(
         with(
             "  publicUrl: https://chat.example.com\n",
-            "    callbackUrl: https://api.example.com/cb\n    clientMetadataUrl: https://api.example.com/oauth/c.json\n"
+            "    callbackUrl: https://api.example.com/api/user-tool-servers/oauth/callback\n    clientMetadataUrl: https://api.example.com/oauth/c.json\n"
         )
         .is_ok()
     );

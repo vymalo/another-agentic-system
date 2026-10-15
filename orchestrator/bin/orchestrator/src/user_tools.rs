@@ -75,6 +75,32 @@ pub struct UserToolsSettings {
     pub keyring: Option<orch_secrets_pg::Keyring>,
 }
 
+/// The redirect URI the broker is given, from the address the file names (`userToolServers.oauth
+/// .callbackUrl`, or `server.publicUrl` and the callback's path). The file's rules have checked the
+/// shape and the path; this is the second look, where the address becomes the `redirect_uri` of every
+/// authorization and the only redirect of the Client ID Metadata Document: **its path is the one the
+/// router serves the callback at** ([`orch_api::OAUTH_CALLBACK_PATH`]) or the process does not start,
+/// because any other path ends every authorization at a 404.
+///
+/// # Errors
+/// The words for the operator, naming the key and the path that is served.
+fn callback_redirect(url: Option<String>) -> Result<Option<RedirectUri>, String> {
+    let served = orch_api::OAUTH_CALLBACK_PATH;
+    url.map(|url| {
+        let redirect = RedirectUri::parse(&url).map_err(|e| {
+            format!("userToolServers.oauth.callbackUrl (or server.publicUrl and {served}): {e}")
+        })?;
+        match url::Url::parse(redirect.as_str()) {
+            Ok(parsed) if parsed.path() == served => Ok(redirect),
+            _ => Err(format!(
+                "userToolServers.oauth.callbackUrl: its path must be {served}, the only path the \
+                 orchestrator serves the callback at"
+            )),
+        }
+    })
+    .transpose()
+}
+
 impl UserToolsSettings {
     /// The settings of a valid file, or `None` when `userToolServers` is absent or not enabled.
     ///
@@ -97,18 +123,7 @@ impl UserToolsSettings {
         if section.egress.allow_http {
             egress = egress.allowing_http();
         }
-        let callback = valid
-            .config
-            .user_tool_callback_url()
-            .map(|url| {
-                RedirectUri::parse(&url).map_err(|e| {
-                    format!(
-                        "userToolServers.oauth.callbackUrl (or server.publicUrl and {}): {e}",
-                        orch_config::OAUTH_CALLBACK_PATH
-                    )
-                })
-            })
-            .transpose()?;
+        let callback = callback_redirect(valid.config.user_tool_callback_url())?;
         #[cfg(feature = "secrets-pg")]
         let keyring = match valid.config.secrets.as_ref().and_then(|s| s.pg.as_ref()) {
             Some(pg) => {

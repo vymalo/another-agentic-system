@@ -282,6 +282,12 @@ pub enum ClientMetadataError {
     /// The redirect URI is not an absolute URL.
     #[error("the redirect URI is not an absolute URL")]
     RedirectNotAUrl,
+    /// The redirect URI is not at the path the router serves the callback at ([`CALLBACK_PATH`]): the
+    /// document would list a redirect that ends at a 404.
+    #[error(
+        "the redirect URI's path is not {CALLBACK_PATH}, the only path the callback is served at"
+    )]
+    RedirectPath,
     /// The name is empty or holds a line break.
     #[error("the client name is empty or has a control character")]
     Name,
@@ -323,7 +329,11 @@ impl ClientMetadata {
         {
             return Err(ClientMetadataError::Reserved(prefix));
         }
-        Url::parse(redirect_uri).map_err(|_| ClientMetadataError::RedirectNotAUrl)?;
+        let redirect =
+            Url::parse(redirect_uri).map_err(|_| ClientMetadataError::RedirectNotAUrl)?;
+        if redirect.path() != CALLBACK_PATH {
+            return Err(ClientMetadataError::RedirectPath);
+        }
         if client_name.trim().is_empty() || client_name.chars().any(char::is_control) {
             return Err(ClientMetadataError::Name);
         }
@@ -377,6 +387,9 @@ pub(crate) async fn client_metadata(State(document): State<Arc<ClientMetadata>>)
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A redirect URI the router serves.
+    const CALLBACK: &str = "https://chat.example.com/api/user-tool-servers/oauth/callback";
 
     #[test]
     fn the_four_parameters_are_read_and_the_rest_is_not() {
@@ -442,7 +455,7 @@ mod tests {
     fn the_client_id_is_the_url_as_written() {
         // the authorization server compares the document's `client_id` with the URL it fetched
         let url = "https://Chat.Example.com:443/oauth/c.json?v=1";
-        let document = ClientMetadata::new(url, "n", "https://chat.example.com/cb").unwrap();
+        let document = ClientMetadata::new(url, "n", CALLBACK).unwrap();
         let json: serde_json::Value = serde_json::from_str(document.body()).unwrap();
         assert_eq!(json["client_id"], url);
         assert_eq!(document.path(), "/oauth/c.json");
@@ -450,7 +463,7 @@ mod tests {
 
     #[test]
     fn a_document_that_cannot_be_served_is_refused() {
-        let ok = |url: &str| ClientMetadata::new(url, "n", "https://chat.example.com/cb");
+        let ok = |url: &str| ClientMetadata::new(url, "n", CALLBACK);
         assert_eq!(ok("nope"), Err(ClientMetadataError::NotAUrl));
         for url in [
             "http://chat.example.com/c",
@@ -475,9 +488,22 @@ mod tests {
             ClientMetadata::new("https://chat.example.com/c", "n", "not a url"),
             Err(ClientMetadataError::RedirectNotAUrl)
         );
+        // the only redirect the document lists is the one the router serves
+        for redirect in [
+            "https://chat.example.com/cb",
+            "https://chat.example.com/",
+            "https://chat.example.com/api/user-tool-servers/oauth/callback/",
+            "https://chat.example.com/api/user-tool-servers/oauth/callbackx",
+        ] {
+            assert_eq!(
+                ClientMetadata::new("https://chat.example.com/c", "n", redirect),
+                Err(ClientMetadataError::RedirectPath),
+                "{redirect}"
+            );
+        }
         for name in ["", "  ", "two\nlines"] {
             assert_eq!(
-                ClientMetadata::new("https://chat.example.com/c", name, "https://x/cb"),
+                ClientMetadata::new("https://chat.example.com/c", name, CALLBACK),
                 Err(ClientMetadataError::Name),
                 "{name:?}"
             );

@@ -59,6 +59,39 @@ fn settings(keyring: bool) -> UserToolsSettings {
     }
 }
 
+/// Where the browser comes back to is built from the file's address, and a path other than the one
+/// the router serves is refused again here (the file's rules refuse it first; this is the second
+/// look at the place where the address is turned into the redirect URI and the document's only
+/// redirect), with the path that is served in the words.
+#[test]
+fn the_redirect_is_built_only_for_the_path_the_router_serves() {
+    let served = orch_api::OAUTH_CALLBACK_PATH;
+    assert_eq!(served, orch_config::OAUTH_CALLBACK_PATH);
+    let built = callback_redirect(Some(format!("https://chat.example.com{served}")))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        built.as_str(),
+        "https://chat.example.com/api/user-tool-servers/oauth/callback"
+    );
+    assert!(callback_redirect(None).unwrap().is_none());
+    for bad in [
+        "https://chat.example.com/cb",
+        "https://chat.example.com/",
+        "https://chat.example.com/api/user-tool-servers/oauth/callback/",
+        "https://chat.example.com/API/user-tool-servers/oauth/callback",
+        "https://chat.example.com/api/user-tool-servers/oauth%2Fcallback",
+    ] {
+        let words = callback_redirect(Some(bad.to_owned())).unwrap_err();
+        assert!(
+            words.contains(served) && words.starts_with("userToolServers.oauth.callbackUrl"),
+            "{bad}: {words}"
+        );
+    }
+    // an address the port does not take at all is still the port's refusal
+    assert!(callback_redirect(Some("not a url".to_owned())).is_err());
+}
+
 /// The database of a test schema, as a URL the secret store connects to.
 fn database_url_of(db: &pgdb::TestDb) -> String {
     let sep = if db.url.contains('?') { '&' } else { '?' };

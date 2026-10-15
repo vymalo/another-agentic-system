@@ -892,13 +892,31 @@ async fn a_path_inside_the_api_cannot_be_a_document() {
     // the router is never built over a path the API serves: the document refuses to be made
     for path in ["/api/public/oauth/c.json", "/mcp", "/healthz", "/agui/x"] {
         assert!(
-            ClientMetadata::new(
-                &format!("https://chat.example.com{path}"),
-                "n",
-                "https://chat.example.com/cb"
-            )
-            .is_err(),
+            matches!(
+                ClientMetadata::new(
+                    &format!("https://chat.example.com{path}"),
+                    "n",
+                    "https://chat.example.com/api/user-tool-servers/oauth/callback"
+                ),
+                Err(orch_api::ClientMetadataError::Reserved(_))
+            ),
             "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_document_cannot_list_a_redirect_the_router_does_not_serve() {
+    // the redirect the document lists is where the callback is, or no document is made
+    for redirect in [
+        "https://chat.example.com/cb",
+        "https://chat.example.com/api/user-tool-servers/oauth/callback/",
+        "https://chat.example.com/",
+    ] {
+        assert_eq!(
+            ClientMetadata::new("https://chat.example.com/oauth/c.json", "n", redirect),
+            Err(orch_api::ClientMetadataError::RedirectPath),
+            "{redirect}"
         );
     }
 }

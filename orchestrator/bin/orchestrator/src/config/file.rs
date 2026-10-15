@@ -4167,7 +4167,7 @@ secrets:
         #[cfg(feature = "secrets-pg")]
         fn enabled_with_secrets_reads_the_keys_into_a_ring() {
             let text = format!(
-                "userToolServers: {{ enabled: true, oauth: {{ callbackUrl: 'https://chat.example.com/cb' }} }}\n{SECRETS}"
+                "userToolServers: {{ enabled: true, oauth: {{ callbackUrl: 'https://chat.example.com/api/user-tool-servers/oauth/callback' }} }}\n{SECRETS}"
             );
             let loaded = load(&text).unwrap();
             let ring = loaded
@@ -4199,7 +4199,7 @@ secrets:
             let pairs = [pairs(), vec![("NOT_A_KEY", "not-a-key")]].concat();
             for enabled in ["false", "true"] {
                 let text = format!(
-                    "{FILE}userToolServers: {{ enabled: {enabled}, oauth: {{ callbackUrl: 'https://chat.example.com/cb' }} }}\n{bad}"
+                    "{FILE}userToolServers: {{ enabled: {enabled}, oauth: {{ callbackUrl: 'https://chat.example.com/api/user-tool-servers/oauth/callback' }} }}\n{bad}"
                 );
                 let errors = lines(load_file_only(&pairs, &text));
                 assert_eq!(errors.len(), 1, "{errors:?}");
@@ -4239,7 +4239,7 @@ secrets:
             let loaded = load_file_only(
                 &pairs(),
                 &format!(
-                    "{text}userToolServers: {{ enabled: true, oauth: {{ callbackUrl: 'https://api.example.com/cb' }} }}\n"
+                    "{text}userToolServers: {{ enabled: true, oauth: {{ callbackUrl: 'https://api.example.com/api/user-tool-servers/oauth/callback' }} }}\n"
                 ),
             )
             .unwrap();
@@ -4252,7 +4252,7 @@ secrets:
                     .callback
                     .as_ref()
                     .map(orch_ports::RedirectUri::as_str),
-                Some("https://api.example.com/cb")
+                Some("https://api.example.com/api/user-tool-servers/oauth/callback")
             );
             // and the application is told it
             assert_eq!(
@@ -4262,7 +4262,7 @@ secrets:
                     .user_tool_redirect
                     .as_ref()
                     .map(orch_ports::RedirectUri::as_str),
-                Some("https://api.example.com/cb")
+                Some("https://api.example.com/api/user-tool-servers/oauth/callback")
             );
             // with the feature off, nothing
             assert!(
@@ -4275,53 +4275,83 @@ secrets:
             );
         }
 
-        /// The file takes, outside production, exactly the addresses the port's `RedirectUri` takes:
-        /// the broker is given what the rules let through, and a difference between the two would be
-        /// a startup that passes the rules and fails the build.
+        /// The file takes, outside production, the addresses the port's `RedirectUri` takes **that are
+        /// at the path the router serves**: the broker is given what the rules let through, and a
+        /// difference between the two would be a startup that passes the rules and fails the build.
+        /// The path is the one rule the file adds on top of the port's (with the query, which the
+        /// port takes and this route's callback would not), so a difference is only ever the path.
         #[test]
-        fn the_file_takes_exactly_the_redirects_the_port_takes() {
+        fn the_file_takes_exactly_the_redirects_the_port_takes_at_the_served_path() {
+            let served = orch_api::OAUTH_CALLBACK_PATH;
             let entries = [
-                "https://chat.example.com/cb",
-                "https://chat.example.com:8443/api/user-tool-servers/oauth/callback",
-                "https://chat.example.com/",
-                "https://127.0.0.1/cb",
-                "https://localhost/cb",
-                "http://127.0.0.1:8080/cb",
-                "http://127.0.0.1/cb",
-                "http://[::1]:8080/cb",
-                "http://[::1]/cb",
-                "http://localhost:8080/cb",
-                "http://127.0.0.2:8080/cb",
-                "http://127.1/cb",
-                "http://2130706433/cb",
-                "http://chat.example.com/cb",
-                "http://10.0.0.1/cb",
-                "https://chat.example.com/cb?x=1",
-                "https://chat.example.com/cb#f",
-                "https://chat.example.com/cb?",
-                "https://u@chat.example.com/cb",
-                "https://u:p@chat.example.com/cb",
-                "https://chat.example.com:0/cb",
-                "https://chat.example.com:65535/cb",
-                "ftp://chat.example.com/cb",
-                "custom-scheme://callback",
-                "chat.example.com/cb",
-                "/cb",
-                "",
-                "https://",
-                "https:///cb",
+                format!("https://chat.example.com{served}"),
+                format!("https://chat.example.com:8443{served}"),
+                format!("https://127.0.0.1{served}"),
+                format!("https://localhost{served}"),
+                format!("http://127.0.0.1:8080{served}"),
+                format!("http://127.0.0.1{served}"),
+                format!("http://[::1]:8080{served}"),
+                format!("http://[::1]{served}"),
+                format!("http://localhost:8080{served}"),
+                format!("http://127.0.0.2:8080{served}"),
+                format!("http://127.1{served}"),
+                format!("http://2130706433{served}"),
+                format!("http://chat.example.com{served}"),
+                format!("http://10.0.0.1{served}"),
+                format!("https://chat.example.com{served}?x=1"),
+                format!("https://chat.example.com{served}#f"),
+                format!("https://chat.example.com{served}?"),
+                format!("https://u@chat.example.com{served}"),
+                format!("https://u:p@chat.example.com{served}"),
+                format!("https://chat.example.com:0{served}"),
+                format!("https://chat.example.com:65535{served}"),
+                format!("ftp://chat.example.com{served}"),
+                "custom-scheme://callback".to_owned(),
+                format!("chat.example.com{served}"),
+                served.to_owned(),
+                String::new(),
+                "https://".to_owned(),
+                format!("https://{served}"),
+                // the port takes these; the file does not, for their path
+                "https://chat.example.com/cb".to_owned(),
+                "https://chat.example.com/".to_owned(),
+                "https://chat.example.com".to_owned(),
+                "http://127.0.0.1:8080/cb".to_owned(),
+                format!("https://chat.example.com{served}/"),
             ];
-            for entry in entries {
+            for entry in &entries {
                 // the same rules the port applies to the redirect the broker is given; the file also
-                // refuses a query, which the port takes, and which this route's callback would not
+                // refuses a query, which the port takes, and a path that is not the served one
                 let query_free = !entry.contains('?');
-                let port = orch_ports::RedirectUri::parse(entry).is_ok() && query_free;
+                let at_the_served_path = url::Url::parse(entry).is_ok_and(|u| u.path() == served);
+                let port = orch_ports::RedirectUri::parse(entry).is_ok()
+                    && query_free
+                    && at_the_served_path;
                 let text = format!(
                     "userToolServers: {{ enabled: true, oauth: {{ callbackUrl: '{entry}' }} }}\n{}",
                     secrets()
                 );
                 assert_eq!(load(&text).is_ok(), port, "{entry:?}");
             }
+        }
+
+        /// The path refusal names the key and the path, exits 78 (it is a configuration error like
+        /// the others) and echoes nothing else.
+        #[test]
+        fn a_callback_at_another_path_names_the_path_that_is_served() {
+            let text = format!(
+                "userToolServers: {{ enabled: true, oauth: {{ callbackUrl: 'https://api.example.com/cb' }} }}\n{}",
+                secrets()
+            );
+            let errors = lines(load(&text));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].starts_with(
+                    "userToolServers.oauth.callbackUrl: its path must be \
+                     /api/user-tool-servers/oauth/callback"
+                ),
+                "{errors:?}"
+            );
         }
 
         /// The Client ID Metadata Document is made where credentials are kept, the file names its URL

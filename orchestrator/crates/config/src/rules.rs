@@ -21,8 +21,8 @@ use crate::tree::child;
 use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Environment, LogFormat, MAX_PRESIGN_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT,
-    MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, Prompt, SecretRef, SharingMode,
-    Surface, ToolServer, UrlRef, UserSecrets, UserToolServers,
+    MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, OAUTH_CALLBACK_PATH, Prompt,
+    SecretRef, SharingMode, Surface, ToolServer, UrlRef, UserSecrets, UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -1465,9 +1465,8 @@ impl Checker<'_> {
         }
         let production = cfg.server.environment == Environment::Production;
         let callback = cfg.user_tool_callback_url();
-        if let Some(url) = &section.oauth.callback_url
-            && !is_oauth_callback_url(url, production)
-        {
+        let explicit = section.oauth.callback_url.as_deref();
+        if explicit.is_some_and(|url| !is_oauth_callback_url(url, production)) {
             self.invalid(
                 "userToolServers.oauth.callbackUrl",
                 if production {
@@ -1480,6 +1479,17 @@ impl Checker<'_> {
                      name, password, query or fragment: the address the browser comes back to \
                      after a person authorizes a server"
                 },
+            );
+        } else if explicit.is_some_and(|url| !has_callback_path(url)) {
+            // the router serves the callback at one path (axum matches exactly), so any other path
+            // ends every authorization at a 404 and makes the document list a redirect nobody serves
+            self.invalid(
+                "userToolServers.oauth.callbackUrl",
+                format!(
+                    "its path must be {OAUTH_CALLBACK_PATH}, the only path the orchestrator \
+                     serves the callback at (and the edge lets through): the key may name another \
+                     origin, not another path"
+                ),
             );
         } else if section.enabled && cfg.secrets.is_some() {
             // credentials are kept here, so an `oauth2` server can be added and has to be authorized
@@ -1852,6 +1862,13 @@ fn is_oauth_callback_url(raw: &str, production: bool) -> bool {
                 && u.query().is_none()
                 && u.fragment().is_none()
         })
+}
+
+/// Whether `raw` has the path the orchestrator serves the OAuth callback at,
+/// [`OAUTH_CALLBACK_PATH`], once it is read: the path the broker sends as the `redirect_uri`, and the
+/// one the router matches (exactly: no trailing slash, no case folding, no decoded `%2F`).
+fn has_callback_path(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|u| u.path() == OAUTH_CALLBACK_PATH)
 }
 
 /// A tool server's id: `^[a-z0-9][a-z0-9-]{0,30}$`.

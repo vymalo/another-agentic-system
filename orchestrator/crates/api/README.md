@@ -222,7 +222,7 @@ with the fixed `internal error`.
 * **The Client ID Metadata Document**, `ClientMetadata::new(client_id_url, client_name, redirect_uri)`, `ApiConfig.client_metadata`: served at the path of the client identifier (`GET`, outside sign-in, behind the same guard,
   `Cache-Control: public, max-age=3600`). It says `client_id` (the URL byte for byte), `client_name`, `redirect_uris` (the callback alone), `grant_types`, `response_types` and `token_endpoint_auth_method: none`. `new` refuses a URL that is not `https`
   with a host and a path, and a path under `RESERVED_PATHS` (`/api`, `/agui`, `/mcp`, `/thread-tools`, `/webhooks`, `/healthz`, `/readyz`, `/metrics`, `/oauth2`: also exported as `CLIENT_METADATA_RESERVED_PATHS`; the binary's test holds the list
-  equal to the configuration's). `OAUTH_CALLBACK_PATH` is the path of the callback.
+  equal to the configuration's), and a redirect URI whose path is not `OAUTH_CALLBACK_PATH` (`ClientMetadataError::RedirectPath`: the document would list a redirect that ends at a 404). `OAUTH_CALLBACK_PATH` is the path of the callback.
 
 ### `GET /metrics`
 

@@ -1428,8 +1428,11 @@ pub struct UserToolServersOauth {
     /// (default: `server.publicUrl` and `/api/user-tool-servers/oauth/callback`). Needed when
     /// `server.publicUrl` is not set, or is not an origin the orchestrator's API is reached at.
     /// `https`, or (outside production) `http` on `127.0.0.1` or `[::1]`; no user name, password,
-    /// query or fragment; at most 2 KiB. **The edge must let a `GET` of this path through to the
-    /// orchestrator with no sign-in**: the browser that comes back carries no session.
+    /// query or fragment; at most 2 KiB. **Its path must be exactly
+    /// `/api/user-tool-servers/oauth/callback`**, the only path the orchestrator serves the
+    /// callback at: the key moves the origin, never the path (the process exits 78 otherwise).
+    /// **The edge must let a `GET` of this path through to the orchestrator with no sign-in**: the
+    /// browser that comes back carries no session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub callback_url: Option<String>,
 }

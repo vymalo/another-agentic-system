@@ -1394,7 +1394,7 @@ test starts on the loopback and the real broker and router (`cargo test -p orch-
 `--test user_tools_oauth_secret`, the pending store in `cargo test -p orch-store-postgres --test pending_authorizations` with
 `ORCH_TEST_DATABASE_URL`). To try it by hand, put a real authorization server's MCP server in `userToolServers.egress.allow`
 (the redirect URI above must be one it accepts: a server that accepts only `https` redirects needs the `https` address of a tunnel in
-`server.publicUrl` or `oauth.callbackUrl`, and the Client ID Metadata Document needs an `https` `oauth.clientMetadataUrl` on the same origin).
+`server.publicUrl` or `oauth.callbackUrl`, whose path is always `/api/user-tool-servers/oauth/callback`: the key moves the origin, and another path is refused at startup; and the Client ID Metadata Document needs an `https` `oauth.clientMetadataUrl` on the same origin).
 The `state` of the flow is kept 10 minutes as a hash in the table `user_tool_oauth_pending` and used once: a second visit of the same link is
 the page "This link is not valid".
 

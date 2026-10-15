@@ -1018,7 +1018,7 @@ none of it can work in a cluster until the rollout slice does these, in this ord
 
 1. **Values for `userToolServers`** (`enabled`, the `egress` lists, `oauth.clientName`) rendered into the orchestrator's configuration, next to `secrets`. With credentials kept (`secrets` set) the orchestrator **refuses to start** unless it knows where the
    browser comes back to: `server.publicUrl` (the chart's public origin, already the address a shared link is shown under) or `userToolServers.oauth.callbackUrl`. The default callback is `<publicUrl>/api/user-tool-servers/oauth/callback`, an `https` URL
-   in production (`http` is refused there).
+   in production (`http` is refused there). `callbackUrl` may name another origin, **never another path**: the orchestrator serves the callback at that one path and exits 78 for any other.
 2. **The edge lets exactly one more path through with no sign-in** (`files/Caddyfile`, `deploy/chart/tests/render-check.sh` to assert it): `GET /api/user-tool-servers/oauth/callback`, its own `handle` **before** `handle /api/*`, with
    `header_up -Authorization -X-Auth-Request-Email`, as the public share routes are, and `GET` only (HEAD must not reach it). The browser that comes back is the system browser on the desktop and the in-app tab on mobile, so it has no cookie and no token
    (ADR 0047); if the Ingress puts oauth2-proxy in front of the edge's own `forward_auth`, its `skip_auth_routes` needs the same path. Without this the person lands on the sign-in page and the authorization never finishes.
