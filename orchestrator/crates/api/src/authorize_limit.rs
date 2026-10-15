@@ -17,8 +17,9 @@
 //!   an unknown server costs the same token as one that reaches the broker.
 //! - **The table of persons is bounded** ([`MAX_PEOPLE`]): a person with nothing to remember (a full
 //!   bucket) is forgotten, and when the table is still full a person it has not met is refused until
-//!   one is. Only a signed-in person with `tools.user.add` gets a bucket made, but this is not left
-//!   to depend on it.
+//!   one is. Any signed-in person gets a bucket when they call the route, with or without
+//!   `tools.user.add` (the limiter is in front of the permission check), so the bound is what keeps
+//!   the table from growing with the number of people.
 //!
 //! Time is `tokio::time::Instant`, so a test with paused time moves it. The counts are in thousandths
 //! of a call and whole milliseconds, never floating point.

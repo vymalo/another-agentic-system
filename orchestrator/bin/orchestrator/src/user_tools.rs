@@ -43,7 +43,9 @@ use orch_ports::{
     StoredServer, ToolSecret, UserToolPorts as _, UserToolServer, UserToolServerId,
     UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserTools,
 };
-use orch_store_postgres::{PgPendingAuthorizations, PgStore, PgUserToolServers};
+#[cfg(feature = "secrets-pg")]
+use orch_store_postgres::PgPendingAuthorizations;
+use orch_store_postgres::{PgStore, PgUserToolServers};
 
 /// What `userToolServers` (and, when the file has it, `secrets`) says, in the terms of this
 /// process: present only when the feature is **enabled**. Its `Debug` shows the lists of hosts and
@@ -382,7 +384,9 @@ pub enum ConfiguredPending {
     /// The feature is off, or no credentials are kept, so nothing can be authorized: every call is
     /// refused.
     Off(NoPendingAuthorizations),
-    /// `user_tool_oauth_pending`, in the pool of the thread store.
+    /// `user_tool_oauth_pending`, in the pool of the thread store. Built where the broker is, and
+    /// only a build with `secrets-pg` has one.
+    #[cfg(feature = "secrets-pg")]
     Pg(PgPendingAuthorizations),
 }
 
@@ -403,6 +407,7 @@ impl PendingAuthorizations for ConfiguredPending {
     ) -> Result<(), PendingAuthorizationError> {
         match self {
             ConfiguredPending::Off(store) => store.put(state, owner, server, expires_at, now).await,
+            #[cfg(feature = "secrets-pg")]
             ConfiguredPending::Pg(store) => store.put(state, owner, server, expires_at, now).await,
         }
     }
@@ -414,6 +419,7 @@ impl PendingAuthorizations for ConfiguredPending {
     ) -> Result<Option<PendingAuthorization>, PendingAuthorizationError> {
         match self {
             ConfiguredPending::Off(store) => store.take(state, now).await,
+            #[cfg(feature = "secrets-pg")]
             ConfiguredPending::Pg(store) => store.take(state, now).await,
         }
     }

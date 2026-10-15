@@ -690,6 +690,11 @@ fn write_config(scratch: &Scratch, yaml: &str) -> PathBuf {
     path
 }
 
+/// Where the browser comes back to after a person authorizes a server: required, with `secrets`, when
+/// the file has no `server.publicUrl` to take it from (ADR 0046, slice 4c).
+const CALLBACK: &str =
+    "oauth: { callbackUrl: 'http://127.0.0.1:8080/api/user-tool-servers/oauth/callback' }";
+
 const CONFIG: &str = "\
 version: 1
 database:
@@ -1440,7 +1445,7 @@ async fn enabled_with_secrets_migrates_the_sealed_store_and_logs_no_key() {
         &db,
         &scratch,
         "enabled.log",
-        &format!("userToolServers: {{ enabled: true }}\n{SECRETS}"),
+        &format!("userToolServers: {{ enabled: true, {CALLBACK} }}\n{SECRETS}"),
     )
     .await;
     ready(&client, &base).await;
@@ -1506,7 +1511,9 @@ async fn a_worker_opens_nothing_for_people_s_own_servers_and_a_control_plane_doe
             &db,
             &scratch,
             &format!("{role}.log"),
-            &format!("server: {{ role: {role} }}\nuserToolServers: {{ enabled: true }}\n{SECRETS}"),
+            &format!(
+                "server: {{ role: {role} }}\nuserToolServers: {{ enabled: true, {CALLBACK} }}\n{SECRETS}"
+            ),
         )
         .await;
         ready(&client, &base).await;
