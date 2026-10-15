@@ -733,7 +733,7 @@ sequenceDiagram
   else the server answers 403 with no challenge
     S-->>C: Forbidden
     R->>L: step failed (no state changes)
-    R-->>A: isError "the MCP server '<name>' refused the call; the call did not run"
+    R-->>A: isError "the MCP server '<name>' refused the call, the call did not run"
   else it answers
     S-->>R: result
     R->>L: step completed (output, cut to 8 KiB)
