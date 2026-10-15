@@ -137,7 +137,9 @@
 #                     it; a detach answers without the tool; a name that a `*.` entry admits
 #                     and that resolves into the cluster is accepted, attached and refused at
 #                     the connection, with nothing sent to the mock under it (the
-#                     orchestrator's log says `private-address`); a wrong key answers 401, the
+#                     orchestrator's log says `private-address`; that check, and the search of
+#                     the logs for secrets, need docker compose: skipped without it, a failure
+#                     in CI or with REQUIRE_DOCKER=1); a wrong key answers 401, the
 #                     definition becomes `needs_reauth`, attaching it is 422
 #                     `tool_server_needs_auth`, and a new key makes it work with the new token
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
