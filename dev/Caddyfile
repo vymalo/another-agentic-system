@@ -83,6 +83,15 @@
 	# spend a state), and no other route under /api/user-tool-servers becomes public. The Client ID Metadata Document of the orchestrator's OAuth
 	# client (`userToolServers.oauth.clientMetadataUrl`, an https URL; this stack is http and sets none) would be one more handle of this kind,
 	# `GET` of its exact path to the orchestrator with no sign-in, as deploy/chart/README.md says.
+	#
+	# What "exactly" is: Caddy's `path` matcher is wider than a string comparison. It matches without regard to case, merges a doubled `/`,
+	# decodes `%2F` and resolves `..` and `.` (found by the review of the slice 4c pull request, 2026-10-15; a trailing `/` is not matched), and
+	# the request goes on to the orchestrator AS IT CAME. So `/API/user-tool-servers/oauth/callback`, `//api/…`, `…/oauth%2Fcallback` and
+	# `…/oauth/../oauth/callback` all take this handle, with `Authorization` dropped. That is fail closed: the orchestrator's router matches the
+	# path exactly (axum: case-sensitive, not decoded, dot segments kept), so those are no route there, and its fallback is behind the identity
+	# layer, which answers 401 to a request with no credential. No near miss reaches the callback. dev/user-tools-e2e.sh asserts it through this
+	# edge and `a_near_miss_of_the_callback_path_is_the_identity_layers_401_and_spends_nothing` (orchestrator/crates/api/tests/user_tools_oauth.rs)
+	# without it. A public path added here later must be as exact on the orchestrator's side as the callback is.
 	@oauthCallback {
 		method GET
 		path /api/user-tool-servers/oauth/callback

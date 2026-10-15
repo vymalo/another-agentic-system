@@ -950,6 +950,59 @@ async fn a_callback_in_the_window_of_a_url_edit_never_leaves_a_connected_server_
     );
 }
 
+/// A request line as it is written, with no client in between to tidy the path (a URL parser resolves
+/// `..` and the like): the status of the answer.
+async fn raw_status(world: &World, method: &str, target: &str) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = world.base.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let request =
+        format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).await.unwrap();
+    let answer = String::from_utf8_lossy(&answer);
+    answer
+        .split_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .unwrap_or_else(|| panic!("no status in: {answer}"))
+}
+
+/// The dev edge's Caddy matcher reads more paths than the callback's as the callback (another case, a
+/// doubled slash, `%2F`, `..`), drops `Authorization` and sends the request on as it came (found by the
+/// review of slice 4c). The router matches exactly and its fallback is behind the identity layer, so
+/// each of those is a 401 with no credential, and none of them reaches the callback: a real flow's
+/// `state` sent to them is not spent.
+#[tokio::test]
+async fn a_near_miss_of_the_callback_path_is_the_identity_layers_401_and_spends_nothing() {
+    let world = World::full().await;
+    let id = world.add_oauth("alice").await;
+    let callback = world.callback_of("alice", &id).await;
+    let query = callback.split_once('?').unwrap().1.to_owned();
+    for near in [
+        "/API/user-tool-servers/oauth/callback",
+        "/api/USER-tool-servers/oauth/Callback",
+        "//api/user-tool-servers/oauth/callback",
+        "/api//user-tool-servers/oauth/callback",
+        "/api/user-tool-servers/oauth%2Fcallback",
+        "/api/user-tool-servers/oauth%2fcallback",
+        "/api/user-tool-servers/oauth/../oauth/callback",
+        "/api/./user-tool-servers/oauth/callback",
+        "/api/user-tool-servers/oauth/callback/",
+        "/api/user-tool-servers/oauth/callbackx",
+        "/api/user-tool-servers/oauth/callback/x",
+    ] {
+        let status = raw_status(&world, "GET", &format!("{near}?{query}")).await;
+        assert_eq!(status, 401, "{near}");
+    }
+    // the identity layer answered all of them: nothing was exchanged or spent, and the real callback works
+    assert_eq!(world.mock.requests().code_exchanges, 0);
+    assert_eq!(world.pending.len(), 1, "the state is still there");
+    assert_a_safe_page(&world.bare_get(&callback).await, 200);
+    assert_eq!(world.listed("alice", &id).await["state"], "connected");
+}
+
 #[tokio::test]
 async fn head_is_not_get_and_spends_nothing() {
     let world = World::full().await;
