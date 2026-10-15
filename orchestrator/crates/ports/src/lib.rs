@@ -30,6 +30,9 @@
 //!   deployment chose (fixed by the constructor, never set beside the ports) and its egress policy,
 //!   and no secret store; [`NoUserToolServers`], [`NoSecrets`] and [`NoBroker`] refuse every call, and
 //!   [`KeepsCredentials`] marks the brokers that do not (ADR 0046);
+//! - [`PendingAuthorizations`]: the OAuth authorizations that have begun and whose callback has not
+//!   come, `state → (owner, server, until)`, used at most once, kept by the state's digest (ADR 0046,
+//!   slice 4c); [`NoPendingAuthorizations`] refuses every call;
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
 //!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
 //!   relay apply one function;
@@ -49,6 +52,7 @@ mod credentials;
 mod egress;
 mod inbox;
 mod model;
+mod pending;
 mod registry;
 mod route;
 mod secrets;
@@ -92,6 +96,10 @@ pub use inbox::{
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
 };
 pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
+pub use pending::{
+    NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
+    PendingAuthorizations, StateDigest,
+};
 pub use registry::{
     AgentListing, AgentRegistry, CompositeRegistry, FixedRegistry, RegistryEntry, RegistryError,
     STATIC_SOURCE, SourceStatus,

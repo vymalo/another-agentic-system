@@ -755,3 +755,34 @@ async fn an_api_key_is_lent_in_the_header_the_person_named() {
     assert!(!lease.is_bearer());
     assert_eq!(lease.secret().expose(), SECRET);
 }
+
+// ------------------------------------------------------------------------- the egress refusal
+
+/// The refusal of the guard is found in the chain of an `Unavailable`, however deep the broker put
+/// it, and only there: an error that has none, and the other classes, say nothing of an egress.
+#[test]
+fn the_egress_refusal_that_made_an_error_unavailable_is_found_in_its_chain() {
+    use orch_ports::EgressRefusal;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("a lower layer")]
+    struct Layer(#[source] EgressRefusal);
+
+    let direct = CredentialError::unavailable("the egress guard refused a URL")
+        .with_source(EgressRefusal::PrivateAddress);
+    assert_eq!(direct.egress_refusal(), Some(EgressRefusal::PrivateAddress));
+
+    let deeper =
+        CredentialError::unavailable("discovery failed").with_source(Layer(EgressRefusal::Denied));
+    assert_eq!(deeper.egress_refusal(), Some(EgressRefusal::Denied));
+
+    let other = CredentialError::unavailable("the authorization server did not answer")
+        .with_source(std::io::Error::other("closed"));
+    assert_eq!(other.egress_refusal(), None);
+    assert_eq!(
+        CredentialError::unavailable("nothing").egress_refusal(),
+        None
+    );
+    assert_eq!(CredentialError::NeedsReauth.egress_refusal(), None);
+    assert_eq!(CredentialError::Unknown.egress_refusal(), None);
+}

@@ -82,7 +82,7 @@ use orch_core::{BoxError, Classify, ErrorClass, UserId};
 use subtle::ConstantTimeEq;
 use url::{Host, Url};
 
-use crate::egress::MAX_URL_BYTES;
+use crate::egress::{EgressRefusal, MAX_URL_BYTES};
 use crate::tools::ToolSecret;
 use crate::user_tools::{DefinitionError, UserAuth, UserToolServerId};
 
@@ -460,6 +460,23 @@ impl CredentialError {
             },
             other @ (CredentialError::NeedsReauth | CredentialError::Unknown) => other,
         }
+    }
+
+    /// The refusal of the [`EgressPolicy`](crate::EgressPolicy) that made this an
+    /// [`Unavailable`](Self::Unavailable), when that is why: the broker keeps the guard's refusal as
+    /// the source of the error when the guard stopped a URL it was about to fetch (the server's
+    /// metadata, the authorization server's, its token endpoint). A person is shown
+    /// [`EgressRefusal::public_reason`], never the precise [`rule`](EgressRefusal::rule) (ADR 0046,
+    /// departure 17). `None` for any other error.
+    pub fn egress_refusal(&self) -> Option<EgressRefusal> {
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        while let Some(e) = source {
+            if let Some(refusal) = e.downcast_ref::<EgressRefusal>() {
+                return Some(*refusal);
+            }
+            source = e.source();
+        }
+        None
     }
 }
 

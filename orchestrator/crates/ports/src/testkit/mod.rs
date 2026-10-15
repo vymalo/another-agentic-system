@@ -1,7 +1,8 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`UserToolServerStore`](crate::UserToolServerStore) and
+//! [`SecretStore`](crate::SecretStore), [`UserToolServerStore`](crate::UserToolServerStore),
+//! [`PendingAuthorizations`](crate::PendingAuthorizations) and
 //! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
 //!
 //! ```ignore
@@ -16,6 +17,7 @@ pub mod authenticator;
 pub mod bearer;
 pub mod chat_model;
 pub mod credential_broker;
+pub mod pending_authorizations;
 pub mod registry;
 pub mod secret_store;
 pub mod thread_store;
@@ -462,6 +464,68 @@ macro_rules! user_tool_server_store_conformance {
                 match $make().await {
                     Some(store) => $crate::testkit::user_tool_server_store::$case(store).await,
                     None => eprintln!("skipped: no user tool server store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `PendingAuthorizations` conformance case (ADR 0046, slice 4c).
+/// `$make` is an `async fn() -> Option<S>` returning a fresh store (`None` skips the suite). Each case
+/// uses owners, servers and states of its own and gives up after 60 s. The calling crate needs `tokio`
+/// (with `macros` and `rt-multi-thread`) as a dev-dependency.
+///
+/// One case needs a store that can be **broken**: `pending_authorizations_conformance!(make, breaker =
+/// path)` where `path` is an `async fn(&S)` that makes every later call of that store fail as an
+/// unreachable store does (a Postgres adapter closes its pool; `MemoryPendingAuthorizations` is
+/// taken down with `set_down(true)`). Without a `breaker` the case
+/// `a_broken_store_is_unavailable_and_names_nothing` is skipped, and says so.
+#[macro_export]
+macro_rules! pending_authorizations_conformance {
+    ($make:path) => {
+        $crate::pending_authorizations_conformance!(@common $make);
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_broken_store_is_unavailable_and_names_nothing() {
+            eprintln!(
+                "skipped: this adapter supplies no breaker (`pending_authorizations_conformance!(make, \
+                 breaker = path)`), so its errors are not looked into for a state"
+            );
+        }
+    };
+    ($make:path, breaker = $breaker:path) => {
+        $crate::pending_authorizations_conformance!(@common $make);
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_broken_store_is_unavailable_and_names_nothing() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::pending_authorizations::a_broken_store_is_unavailable_and_names_nothing(
+                        store, $breaker,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store of pending authorizations available"),
+            }
+        }
+    };
+    (@common $make:path) => {
+        $crate::pending_authorizations_conformance!(@cases $make;
+            a_put_state_is_taken_once_with_its_owner_and_server
+            another_state_never_matches
+            a_state_that_has_ended_takes_nothing
+            concurrent_takes_of_one_state_have_one_winner
+            a_later_put_for_a_server_replaces_the_earlier_one
+            owners_are_kept_apart
+            the_same_state_put_again_belongs_to_the_later_put
+            a_put_forgets_the_states_that_have_ended
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::pending_authorizations::$case(store).await,
+                    None => eprintln!("skipped: no store of pending authorizations available"),
                 }
             }
         )*

@@ -4,13 +4,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::{Classify, ErrorClass, UserId};
-use orch_ports::memory::MemoryUserToolServers;
+use orch_ports::memory::{MemoryPendingAuthorizations, MemoryUserToolServers};
 use orch_ports::{
     CredentialBroker, CredentialError, CredentialLease, CredentialRef, EgressPolicy,
-    KeepsCredentials, NoBroker, NoSecrets, NoUserToolServers, NoUserTools, OAuthStart, OAuthState,
-    Ports, RedirectUri, SecretError, SecretMaterial, SecretServer, SecretStore, SecretVersion,
-    ServerRevision, ToolSecret, UserAuth, UserToolPorts, UserToolServer, UserToolServerId,
-    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserTools, UserToolsMode,
+    KeepsCredentials, NoBroker, NoPendingAuthorizations, NoSecrets, NoUserToolServers, NoUserTools,
+    OAuthStart, OAuthState, Ports, RedirectUri, SecretError, SecretMaterial, SecretServer,
+    SecretStore, SecretVersion, ServerRevision, ToolSecret, UserAuth, UserToolPorts,
+    UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
+    UserToolServerStoreError, UserTools, UserToolsMode,
 };
 
 const SENTINEL: &str = "sentinel-7c41a0-do-not-print";
@@ -163,9 +164,10 @@ fn the_bundle_of_nothing_is_off_and_keeps_no_credential() {
     assert!(!none.mode().is_enabled());
     assert!(!none.mode().keeps_credentials());
     assert_eq!(*none.egress(), EgressPolicy::new());
-    // the two are reachable through it, as the refusing ones
+    // the three are reachable through it, as the refusing ones
     let _: &NoUserToolServers = none.servers();
     let _: &NoBroker = none.broker();
+    let _: &orch_ports::NoPendingAuthorizations = none.pending();
 }
 
 /// A broker that stands for one that keeps credentials: it says so with the marker and does nothing
@@ -226,7 +228,7 @@ async fn the_mode_of_a_bundle_is_derived_from_the_constructor_that_built_it() {
 
     // enabled with no secrets section: the definitions work, the broker refuses
     let egress = EgressPolicy::new().allowing_http();
-    let without: UserTools<MemoryUserToolServers, NoBroker> =
+    let without: UserTools<MemoryUserToolServers, NoBroker, NoPendingAuthorizations> =
         UserTools::without_credentials(egress.clone(), MemoryUserToolServers::new());
     assert_eq!(without.mode(), UserToolsMode::WithoutCredentials);
     assert!(without.mode().is_enabled() && !without.mode().keeps_credentials());
@@ -247,8 +249,13 @@ async fn the_mode_of_a_bundle_is_derived_from_the_constructor_that_built_it() {
     );
 
     // enabled with a broker that keeps credentials
-    let full: UserTools<MemoryUserToolServers, Lending> =
-        UserTools::full(egress.clone(), MemoryUserToolServers::new(), Lending);
+    let full: UserTools<MemoryUserToolServers, Lending, MemoryPendingAuthorizations> =
+        UserTools::full(
+            egress.clone(),
+            MemoryUserToolServers::new(),
+            Lending,
+            MemoryPendingAuthorizations::new(),
+        );
     assert_eq!(full.mode(), UserToolsMode::Full);
     assert!(full.mode().keeps_credentials());
     assert!(
@@ -257,20 +264,23 @@ async fn the_mode_of_a_bundle_is_derived_from_the_constructor_that_built_it() {
     );
 }
 
-/// What a bundle owes is the definitions, the broker, the policy and the mode, **and no secret store**:
-/// a handler that is given the bundle cannot read secret material through it. The broker holds its
-/// own handle on the store; the API never needs one. This implements the trait with exactly those
-/// four, which would not compile if the trait still asked for a `Secrets` type and a `secrets()`.
+/// What a bundle owes is the definitions, the broker, the pending authorizations, the policy and the
+/// mode, **and no secret store**: a handler that is given the bundle cannot read secret material
+/// through it. The broker holds its own handle on the store; the API never needs one. This implements
+/// the trait with exactly those five, which would not compile if the trait still asked for a
+/// `Secrets` type and a `secrets()`.
 #[test]
 fn a_bundle_gives_out_no_secret_store() {
     struct Four {
         egress: EgressPolicy,
         servers: NoUserToolServers,
         broker: NoBroker,
+        pending: NoPendingAuthorizations,
     }
     impl UserToolPorts for Four {
         type Servers = NoUserToolServers;
         type Broker = NoBroker;
+        type Pending = NoPendingAuthorizations;
         fn mode(&self) -> UserToolsMode {
             UserToolsMode::Off
         }
@@ -283,11 +293,15 @@ fn a_bundle_gives_out_no_secret_store() {
         fn broker(&self) -> &NoBroker {
             &self.broker
         }
+        fn pending(&self) -> &NoPendingAuthorizations {
+            &self.pending
+        }
     }
     let four = Four {
         egress: EgressPolicy::new(),
         servers: NoUserToolServers,
         broker: NoBroker,
+        pending: NoPendingAuthorizations,
     };
     assert_eq!(four.mode(), UserToolsMode::Off);
 }

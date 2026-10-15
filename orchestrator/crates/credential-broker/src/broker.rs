@@ -168,14 +168,7 @@ fn random_failed() -> CredentialError {
 /// refused. A person is shown [`EgressRefusal::public_reason`](orch_ports::EgressRefusal), never
 /// the precise rule.
 pub fn egress_refusal(error: &CredentialError) -> Option<orch_ports::EgressRefusal> {
-    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
-    while let Some(e) = source {
-        if let Some(refusal) = e.downcast_ref::<orch_ports::EgressRefusal>() {
-            return Some(*refusal);
-        }
-        source = e.source();
-    }
-    None
+    error.egress_refusal()
 }
 
 // -------------------------------------------------------------------------------------- time
