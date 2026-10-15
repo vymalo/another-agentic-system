@@ -100,6 +100,26 @@ describe("client_credentials", () => {
     }
   });
 
+  it("takes the roles of the request instead of the user's own: the same person, a role taken away", async () => {
+    const asked = async (roles) => verified((await (await post("/token", { grant_type: "client_credentials", user: "tool-maker@example.com", roles, ...creds })).json()).access_token);
+    const own = await verified((await (await post("/token", { grant_type: "client_credentials", user: "tool-maker@example.com", ...creds })).json()).access_token);
+    assert.deepEqual(own.roles, ["tool-maker"]);
+    const without = await asked("user");
+    assert.deepEqual(without.roles, ["user"]);
+    assert.equal(without.sub, own.sub, "the same subject");
+    assert.equal(without.email, own.email);
+    assert.deepEqual((await asked("user, chat-only ,,")).roles, ["user", "chat-only"]);
+    assert.deepEqual((await asked("")).roles, [], "present and empty is no role");
+  });
+
+  it("refuses a list of roles that is too long to be one", async () => {
+    const many = Array.from({ length: 33 }, (_, i) => `r${i}`).join(",");
+    const res = await post("/token", { grant_type: "client_credentials", roles: many, ...creds });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error, "invalid_request");
+    assert.equal((await post("/token", { grant_type: "client_credentials", roles: "x".repeat(65), ...creds })).status, 400);
+  });
+
   it("refuses a user it does not know, and a client it does not know", async () => {
     const stranger = await post("/token", { grant_type: "client_credentials", user: "nobody@example.com", ...creds });
     assert.equal(stranger.status, 400);

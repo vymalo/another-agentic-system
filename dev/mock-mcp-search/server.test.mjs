@@ -1,7 +1,9 @@
 // Tests of server.mjs, with node's own runner: `node --test dev/mock-mcp-search/` (CI: workflow Compose, job
 // `scripts`). They bind a free local port, so run them where binding is allowed.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { request } from "node:http";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { ICON_URI, PROTOCOL_VERSIONS, createMockServer, validateResults } from "./server.mjs";
 
@@ -226,6 +228,105 @@ describe("the HTTP rules", () => {
     assert.deepEqual(await health.json(), { status: "ok" });
     assert.equal((await fetch(`${base}/nope`)).status, 404);
     assert.equal((await fetch(`${base}/__journal`, { method: "POST" })).status, 405);
+  });
+});
+
+describe("the journal, as a scenario reads which name and which token", () => {
+  const digest = (value) => createHash("sha256").update(value).digest("hex");
+
+  it("keeps the Host a call was made to and the digest of the token it carried, never the token", async () => {
+    await call("web_search", { query: "who" });
+    const text = await (await fetch(`${base}/__journal`)).text();
+    const { calls } = JSON.parse(text);
+    assert.equal(calls[0].host, new URL(base).host);
+    assert.equal(calls[0].token_sha256, digest(TOKEN));
+    assert.ok(!text.includes(TOKEN), "the journal must not hold the token");
+  });
+
+  it("tells two names of the same server apart by the Host the request named", async () => {
+    // fetch() will not set `Host`; a client that connects to an address and names another host does, as an orchestrator does with a name
+    const asked = (host) => new Promise((resolve, reject) => {
+      const body = JSON.stringify(rpc("tools/call", { name: "web_search", arguments: { query: host } }));
+      const req = request(`${base}/mcp`, { method: "POST", headers: { ...HEADERS, host, "content-length": Buffer.byteLength(body) } }, (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode));
+      });
+      req.on("error", reject);
+      req.end(body);
+    });
+    assert.equal(await asked("mock-mcp-search:8080"), 200);
+    assert.equal(await asked("search.private.test:8080"), 200);
+    const { calls, requests } = await (await fetch(`${base}/__journal`)).json();
+    assert.deepEqual(calls.map((c) => c.host), ["mock-mcp-search:8080", "search.private.test:8080"]);
+    assert.deepEqual(requests.map((r) => r.host), ["mock-mcp-search:8080", "search.private.test:8080"]);
+  });
+
+  it("lists every request that reached /mcp, a 401 and a GET too, with the Host and the JSON-RPC method", async () => {
+    await post(rpc("initialize", { protocolVersion: "2025-11-25" }));
+    await post({ jsonrpc: "2.0", method: "notifications/initialized" });
+    await post(rpc("tools/list"), { ...HEADERS, authorization: "Bearer not-the-token" });
+    await fetch(`${base}/mcp`, { headers: { ...HEADERS } });
+    const { requests } = await (await fetch(`${base}/__journal`)).json();
+    assert.deepEqual(
+      requests.map((r) => [r.method, r.rpc]),
+      [["POST", "initialize"], ["POST", "notifications/initialized"], ["POST", null], ["GET", null]],
+    );
+    assert.ok(requests.every((r) => Number.isFinite(Date.parse(r.at))));
+    assert.equal(requests[1].host, new URL(base).host);
+    // the digest of the token each carried, a refused one too (that is how a scenario shows a key was sent and refused)
+    assert.deepEqual(requests.map((r) => r.token_sha256), [digest(TOKEN), digest(TOKEN), digest("not-the-token"), digest(TOKEN)]);
+    // /healthz and /__journal are not requests to the server's endpoint
+    await fetch(`${base}/healthz`);
+    assert.equal((await (await fetch(`${base}/__journal`)).json()).requests.length, 4);
+    await fetch(`${base}/__journal`, { method: "DELETE" });
+    assert.deepEqual(await (await fetch(`${base}/__journal`)).json(), { calls: [], requests: [] });
+  });
+});
+
+describe("a token prefix", () => {
+  const PREFIX = "user-token-";
+  let prefixed;
+  let url;
+  before(async () => {
+    prefixed = createMockServer({ token: TOKEN, tokenPrefix: PREFIX, results });
+    await new Promise((resolve) => prefixed.listen(0, "127.0.0.1", resolve));
+    url = `http://127.0.0.1:${prefixed.address().port}`;
+  });
+  after(() => {
+    prefixed.closeAllConnections();
+    prefixed.close();
+  });
+  const withToken = (bearer) => fetch(`${url}/mcp`, {
+    method: "POST",
+    headers: { ...HEADERS, authorization: `Bearer ${bearer}` },
+    body: JSON.stringify(rpc("tools/call", { name: "web_search", arguments: { query: "football world cup 2014" } })),
+  });
+
+  it("accepts the required token, and any token that starts with the prefix, as a person's own", async () => {
+    await fetch(`${url}/__journal`, { method: "DELETE" });
+    const own = `${PREFIX}1760000000-4242-9f8e7d6c5b4a`;
+    assert.equal((await withToken(TOKEN)).status, 200);
+    assert.equal((await withToken(own)).status, 200);
+    const { calls } = await (await fetch(`${url}/__journal`)).json();
+    assert.deepEqual(calls.map((c) => c.token_sha256), [createHash("sha256").update(TOKEN).digest("hex"), createHash("sha256").update(own).digest("hex")]);
+  });
+
+  it("refuses the prefix alone, a token that merely contains it, and any other token", async () => {
+    for (const bad of [PREFIX, `x${PREFIX}abc`, "user-token", "not-the-token", PREFIX.toUpperCase() + "abc"]) {
+      assert.equal((await withToken(bad)).status, 401, bad);
+    }
+    assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: HEADERS.accept }, body: "{}" })).status, 401);
+  });
+
+  it("is refused at construction without a token to require, or when it is too short to mean anything", () => {
+    assert.throws(() => createMockServer({ tokenPrefix: PREFIX, results }), /prefix/);
+    assert.throws(() => createMockServer({ token: TOKEN, tokenPrefix: "u-", results }), /prefix/);
+  });
+
+  it("does not change a server that has none: a token with a would-be prefix is refused", async () => {
+    // `server` (the one of the tests above) was built without a prefix
+    const res = await fetch(`${base}/mcp`, { method: "POST", headers: { ...HEADERS, authorization: `Bearer ${PREFIX}abc` }, body: JSON.stringify(rpc("ping")) });
+    assert.equal(res.status, 401);
   });
 });
 

@@ -10,6 +10,10 @@
 #     matchers plus `"stream": true`, one priority above): the twins are played here too and must say what the plain script says.
 #     `mock-persona` also has `[mock:slow]` (dev/steer-e2e.sh): a request whose last message carries it is answered at once with a call of `ui_catalog`, the request with
 #     its result is answered after 20 s, plain and as a stream (the two probes run side by side, so the check takes about 20 s), and the next request of the conversation is answered at once.
+#   * the `[mock:own-search]` script of `mock-persona` (dev/user-tools-relay-e2e.sh, ADR 0046): the chat calls the tool of a server a person added, whose name has a
+#     random id (`u-<ten characters>__web_search`) that the script reads from the functions it is offered (WireMock's response templating over the request body), answers
+#     with the first link of the result, and says that no search server of the person's own is offered when none is (the deployment's `websearch__web_search` is not one);
+#     each turn is played with its SSE twin.
 #   * the `[mock:plan]` script of `mock-persona` (dev/agents-e2e.sh, ADR 0050): the chat calls its `planner` helper (a sub-agent of its folder), the helper's own run answers with a plan, and the chat shows it and waits for the person; each turn is played with its SSE twin.
 #   * the `[mock:football]` script of `mock-persona` (dev/mentions-e2e.sh, dev/README.md "Mentions"): the chat's model asks `mock-researcher`, `mock-browser` and
 #     `mock-coder` with the thread tool `ask_agent`, one call a turn, then names the three answers it finds in the results; each turn is played with its SSE twin.
@@ -35,7 +39,8 @@
 # model mocks (DELETE /__admin/requests, on both), so run it on a stack you are not in the middle of a scenario on.
 # MOCK_MCP_TOKEN names the bearer token (default: the one of compose.yaml).
 #
-# Needs: curl, jq. Exit status 0 when every check passes.
+# Needs: curl, jq, and sha256sum, shasum or openssl (the journal of the mock search holds the SHA-256 of the token a call carried; macOS has shasum, not sha256sum).
+# Exit status 0 when every check passes.
 set -eu
 
 SEARCH=${1:-http://127.0.0.1:${MOCK_MCP_SEARCH_PORT:-8096}}
@@ -44,6 +49,18 @@ CODER=${3:-http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}}
 SHARE_FILES=$(cd "$(dirname "$0")" && pwd)/wiremock/coder-share/files
 TOKEN=${MOCK_MCP_TOKEN:-dev-search-token}
 ICON_PREFIX='data:image/svg+xml;base64,'
+# sha256_stdin: the SHA-256 of what is read, in hex, with whichever of the three tools the machine has (sha256sum is GNU's; macOS has shasum; openssl is nearly everywhere).
+# Chosen here, at the top, so that a machine with none stops before the first check rather than in the middle of the run.
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_stdin() { sha256sum | cut -d ' ' -f 1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_stdin() { shasum -a 256 | cut -d ' ' -f 1; }
+elif command -v openssl >/dev/null 2>&1; then
+  sha256_stdin() { openssl dgst -sha256 -r | cut -d ' ' -f 1; }
+else
+  echo "sha256sum, shasum or openssl is required and none was found" >&2
+  exit 2
+fi
 fail=0
 TMPH=$(mktemp)
 TMPB=$(mktemp)
@@ -157,8 +174,31 @@ check "journal: every call says it carried the required token (a call without it
 mcp "$(search 'with a header')" -H 'X-Search-Tenant: probe' -H 'user-agent: probe' -o /dev/null
 check "journal: the X-* headers of a call are kept, lower-cased (dev/tools-e2e.sh reads the header a toolServers entry sends)" \
   "$(curl -fsS "$SEARCH/__journal" | jq -c '.calls[-1].headers')" '{"x-search-tenant":"probe"}'
+# A person's own token (dev/user-tools-relay-e2e.sh): any token that starts with MOCK_MCP_TOKEN_PREFIX (compose.yaml: `user-token-`) is accepted too,
+# and the journals say which token a call carried (its SHA-256, never the token) and the Host it named.
+OWN_PREFIX=${MOCK_MCP_TOKEN_PREFIX:-user-token-}
+OWN_TOKEN="${OWN_PREFIX}check-agent-mocks-$$"
+sha256_of() { printf '%s' "$1" | sha256_stdin; }
+curl -sS -X DELETE "$SEARCH/__journal" -o /dev/null
+check "a token that starts with the prefix of a person's own is accepted" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SEARCH/mcp" -H "Authorization: Bearer $OWN_TOKEN" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$(search 'own token')")" "200"
+check "the prefix alone is not a token" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SEARCH/mcp" -H "Authorization: Bearer $OWN_PREFIX" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$(rpc 1 ping)")" "401"
+check "a token that merely contains the prefix is not a token" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SEARCH/mcp" -H "Authorization: Bearer x$OWN_TOKEN" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$(rpc 1 ping)")" "401"
+mcp "$(search 'required token')" -o /dev/null
+journal=$(curl -fsS "$SEARCH/__journal")
+check "journal: a call says the SHA-256 of the token it carried (the person's own one, then the required one), never the token" \
+  "$(printf '%s' "$journal" | jq -r '[.calls[].token_sha256] | join(" ")')" "$(sha256_of "$OWN_TOKEN") $(sha256_of "$TOKEN")"
+check "journal: the token itself is in neither journal" \
+  "$(printf '%s' "$journal" | grep -c -e "$OWN_TOKEN" -e "$TOKEN" || true)" "0"
+check "journal: a call says the Host it named (the way a scenario tells two names of this server apart)" \
+  "$(printf '%s' "$journal" | jq -r '[.calls[].host | length > 0] | unique | join(",")')" "true"
+check "journal: every request that reached /mcp is listed, a refused one too, with the digest of the token it carried" \
+  "$(printf '%s' "$journal" | jq -r '[.requests[] | "\(.method):\(.rpc // "-"):\(.token_sha256 == null)"] | join(" ")')" \
+  "POST:tools/call:false POST:-:false POST:-:false POST:tools/call:false"
 check "journal: DELETE empties it" \
-  "$(curl -fsS -X DELETE "$SEARCH/__journal" -o /dev/null && curl -fsS "$SEARCH/__journal" | jq -c .calls)" "[]"
+  "$(curl -fsS -X DELETE "$SEARCH/__journal" -o /dev/null && curl -fsS "$SEARCH/__journal" | jq -c '[.calls, .requests]')" "[[],[]]"
 
 # --- the scripted models of the agents that are only a folder (WireMock, dev/wiremock/model) ---------
 echo "== $MODEL (the model mock: mock-persona, mock-researcher, mock-browse, mock-title, mock-description)"
@@ -264,6 +304,39 @@ check "mock-persona [mock:websearch]: after a detach (a search in the history, n
 check "mock-persona [mock:websearch]: with the search offered again, the next question searches again" \
   "$(completion mock-persona "[$ws_system, $ws_user, $(call websearch-call-1 websearch__web_search), $(result websearch-call-1 "$ws_results"), $(assistant 'Done.'), $(user '[mock:websearch] And now?')]" "$ws_with" | jq -r '.message.tool_calls[0].function.name')" \
   "websearch__web_search"
+# `[mock:own-search]`: the chat with a server a person added attached to the conversation (dev/user-tools-relay-e2e.sh). The name of the tool has a random id,
+# `u-<ten lower-case letters or digits>__web_search`, so the script reads it from the functions it is offered: with one of that shape among them the model calls it
+# (whatever the id), once the result is in it names the first link, and without one (the deployment's `websearch__web_search` is not one) it says that no search
+# server of the person's own is offered, whatever the history holds.
+os_user=$(user '[mock:own-search] Who won the football world cup in 2014?')
+os_tool() { jq -cn --arg n "$1" '{type: "function", function: {name: $n, parameters: {type: "object"}}}'; }
+os_with="[$(os_tool turn_output), $(os_tool websearch__web_search), $(os_tool u-k3j9x2m1q7__web_search)]"
+os_other="[$(os_tool turn_output), $(os_tool u-0a1b2c3d4e__web_search)]"
+os_without="[$(os_tool turn_output), $(os_tool websearch__web_search)]"
+os_call=$(completion mock-persona "[$ws_system, $os_user]" "$os_with")
+check "mock-persona [mock:own-search]: with a person's search offered, the first turn calls it by the name it was offered under (id own-search-call-1)" \
+  "$(printf '%s' "$os_call" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")')" \
+  "tool_calls | own-search-call-1 | u-k3j9x2m1q7__web_search"
+check "mock-persona [mock:own-search]: the query holds the words the mock search knows (world cup)" \
+  "$(printf '%s' "$os_call" | jq -r '.message.tool_calls[0].function.arguments | fromjson | .query | test("world cup")')" "true"
+check "mock-persona [mock:own-search]: another id, another name: the script reads it from the request, it does not know one" \
+  "$(completion mock-persona "[$ws_system, $os_user]" "$os_other" | jq -r '.message.tool_calls[0].function.name')" "u-0a1b2c3d4e__web_search"
+os_results=$(printf '1. A (mock) — https://example.org/mock-search/world-cup-2014\n   Germany won\n2. B — https://example.org/mock-search/world-cup-winners')
+check "mock-persona [mock:own-search]: the result is in, it answers with the first link" \
+  "$(completion mock-persona "[$ws_system, $os_user, $(call own-search-call-1 u-k3j9x2m1q7__web_search), $(result own-search-call-1 "$os_results")]" "$os_with" | jq -r '[.finish_reason, .message.content] | join(" | ")')" \
+  "stop | I searched with the server you added. The best source I found is https://example.org/mock-search/world-cup-2014."
+check "mock-persona [mock:own-search]: without one of a person's offered (the deployment's websearch is not one) it says that none is offered" \
+  "$(completion mock-persona "[$ws_system, $os_user]" "$os_without" | jq -r '[.finish_reason, (.message.content | startswith("No search server of your own is offered"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:own-search]: with no tools at all it says so too" \
+  "$(completion mock-persona "[$ws_system, $os_user]" | jq -r '.message.content | startswith("No search server of your own is offered")')" "true"
+check "mock-persona [mock:own-search]: after a detach (a call in the history, none offered) a new question gets the same answer" \
+  "$(completion mock-persona "[$ws_system, $os_user, $(call own-search-call-1 u-k3j9x2m1q7__web_search), $(result own-search-call-1 "$os_results"), $(assistant 'Done.'), $(user '[mock:own-search] And now?')]" "$os_without" | jq -r '.message.content | startswith("No search server of your own is offered")')" "true"
+check "mock-persona [mock:own-search]: offered again, the next question searches again" \
+  "$(completion mock-persona "[$ws_system, $os_user, $(call own-search-call-1 u-k3j9x2m1q7__web_search), $(result own-search-call-1 "$os_results"), $(assistant 'Done.'), $(user '[mock:own-search] And now?')]" "$os_with" | jq -r '.message.tool_calls[0].function.name')" \
+  "u-k3j9x2m1q7__web_search"
+check "mock-persona [mock:websearch] is not [mock:own-search]: a person's tool offered beside the deployment's, the websearch script calls the deployment's" \
+  "$(completion mock-persona "[$ws_system, $ws_user]" "$os_with" | jq -r '.message.tool_calls[0].function.name')" "websearch__web_search"
 check "mock-persona: without the keyword the search is ignored: a greeting, whatever is offered" \
   "$(completion mock-persona "[$ws_system, $(user hi)]" "$ws_with" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
@@ -330,6 +403,11 @@ twin "mock-persona [mock:websearch], search" mock-persona "[$ws_system, $ws_user
 twin "mock-persona [mock:websearch], the words with the first link" mock-persona \
   "[$ws_system, $ws_user, $(call websearch-call-1 websearch__web_search), $(result websearch-call-1 "$ws_results")]" 2 "$ws_with"
 twin "mock-persona [mock:websearch], none attached" mock-persona "[$ws_system, $ws_user]" 2 "$ws_without"
+twin "mock-persona [mock:own-search], search (the name is read from the request in the stream too)" mock-persona "[$ws_system, $os_user]" "" "$os_with"
+twin "mock-persona [mock:own-search], another id" mock-persona "[$ws_system, $os_user]" "" "$os_other"
+twin "mock-persona [mock:own-search], the words with the first link" mock-persona \
+  "[$ws_system, $os_user, $(call own-search-call-1 u-k3j9x2m1q7__web_search), $(result own-search-call-1 "$os_results")]" 2 "$os_with"
+twin "mock-persona [mock:own-search], none offered" mock-persona "[$ws_system, $os_user]" 2 "$os_without"
 check "twin: a request that does not ask for a stream still gets the plain JSON answer" \
   "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
@@ -700,8 +778,8 @@ else
   check "mock-coder [mock:share]: then it shows (sh-call-9): a Text and two Images" \
     "$(printf '%s' "$t8" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | [.blocks[].component] | join("+"))] | join(" | ")')" \
     "tool_calls | sh-call-9 | show | Text+Image+Image"
-  _svg_sha=$(sha256sum "$SHARE_FILES/chart.svg" | cut -d ' ' -f 1)
-  _png_sha=$(sha256sum "$SHARE_FILES/square.png" | cut -d ' ' -f 1)
+  _svg_sha=$(sha256_stdin <"$SHARE_FILES/chart.svg")
+  _png_sha=$(sha256_stdin <"$SHARE_FILES/square.png")
   check "mock-coder [mock:share]: the Images name the files by the SHA-256 of the fixtures (the SVG, then the PNG), each with an alt" \
     "$(printf '%s' "$t8" | args_of | jq -r '[.blocks[] | select(.component == "Image") | .artifact + ":" + ((.alt | length > 0) | tostring)] | join(" ")')" \
     "$_svg_sha:true $_png_sha:true"

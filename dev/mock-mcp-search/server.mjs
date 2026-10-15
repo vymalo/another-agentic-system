@@ -20,13 +20,22 @@
 //   - `[mock:empty]` in the query answers "No results.", `[mock:error]` a tool execution error (isError);
 //   - an empty or missing `query` is also a tool execution error (the spec's way to let a model self-correct).
 // Other routes (no authentication, like WireMock's admin): GET /healthz; GET /__journal lists the calls of
-// the tool, `{"calls": [{"tool", "arguments", "at", "bearer", "headers"}]}`, and DELETE /__journal empties it. `bearer` is
-// true when the call carried the token the server requires (a call without it is a 401 and is not journaled; false when no
-// token is required), and `headers` holds the request headers named `X-*` (lower-cased), the way an orchestrator's
-// `toolServers[].headers` reach a server (dev/tools-e2e.sh reads them to prove the configured header was sent).
+// the tool, `{"calls": [{"tool", "arguments", "at", "bearer", "headers", "host", "token_sha256"}], "requests": [...]}`, and
+// DELETE /__journal empties both. `bearer` is true when the call carried the token the server requires (a call without it is a
+// 401 and is not journaled; false when no token is required), `headers` holds the request headers named `X-*` (lower-cased), the
+// way an orchestrator's `toolServers[].headers` reach a server (dev/tools-e2e.sh reads them to prove the configured header was
+// sent), `host` is the `Host` header the call was made to (so a scenario can tell which NAME of this server was used), and
+// `token_sha256` is the SHA-256 of the bearer token the call carried, in hex (null when it carried none): the token itself is
+// never kept, and a scenario that knows the token it gave an orchestrator compares digests (dev/user-tools-relay-e2e.sh).
+// `requests` lists EVERY request that reached /mcp, whatever came of it (the handshake, a notification, a 401, a GET):
+// `{"at", "method", "host", "rpc", "token_sha256"}` (`rpc` is the JSON-RPC method when the body was read, else null; the digest is
+// of the bearer token the request carried, a refused one too), which is how a scenario shows that nothing at all, not even a
+// handshake, was sent to a name, and that a key was sent and refused.
 //
 // Environment: PORT (8080), MOCK_MCP_TOKEN (when set, `Authorization: Bearer <it>` is required on /mcp, else
-// 401), MOCK_MCP_RESULTS (a path; default results.json beside this file).
+// 401), MOCK_MCP_TOKEN_PREFIX (when set, with MOCK_MCP_TOKEN: a token that STARTS with it is accepted too, whatever
+// follows, as a token a person gives the orchestrator for their own server: a scenario makes one up for each run, so the stack
+// holds nothing that is the token, only the prefix), MOCK_MCP_RESULTS (a path; default results.json beside this file).
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -37,6 +46,7 @@ export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_JOURNAL = 1000;
 const MAX_QUERY_CHARS = 500;
+const MIN_TOKEN_PREFIX_CHARS = 4;
 
 const ICON_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4a8c4d" stroke-width="2" ' +
@@ -85,10 +95,14 @@ export function validateResults(results) {
   return results;
 }
 
-export function createMockServer({ token = "", results, log = () => {} }) {
+export function createMockServer({ token = "", tokenPrefix = "", results, log = () => {} }) {
   validateResults(results);
+  if (tokenPrefix !== "" && (token === "" || tokenPrefix.length < MIN_TOKEN_PREFIX_CHARS)) {
+    throw new Error(`a token prefix needs a token to require and at least ${MIN_TOKEN_PREFIX_CHARS} characters`);
+  }
   const keywords = Object.entries(results.keywords ?? {}).map(([k, list]) => [k.toLowerCase(), list]);
   const journal = [];
+  const requests = [];
   const expected = token ? sha256(token) : null;
 
   function reply(res, status, body, headers = {}) {
@@ -100,10 +114,15 @@ export function createMockServer({ token = "", results, log = () => {} }) {
     return res.end(JSON.stringify(body));
   }
 
+  /** The bearer token a request carries, or null. */
+  const bearerOf = (req) => /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "")?.[1] ?? null;
+
   const authorized = (req) => {
     if (!expected) return true;
-    const match = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "");
-    return match !== null && timingSafeEqual(sha256(match[1]), expected);
+    const presented = bearerOf(req);
+    if (presented === null) return false;
+    if (timingSafeEqual(sha256(presented), expected)) return true;
+    return tokenPrefix !== "" && presented.length > tokenPrefix.length && presented.startsWith(tokenPrefix);
   };
 
   // The spec's DNS-rebinding guard: a request that names an Origin must come from a page of this very host.
@@ -145,7 +164,16 @@ export function createMockServer({ token = "", results, log = () => {} }) {
     if (params.name !== TOOL.name) return [-32602, `Unknown tool: ${String(params.name)}`];
     const args = params.arguments ?? {};
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.startsWith("x-")));
-    journal.push({ tool: TOOL.name, arguments: args, at: new Date().toISOString(), bearer: expected !== null, headers });
+    const presented = bearerOf(req);
+    journal.push({
+      tool: TOOL.name,
+      arguments: args,
+      at: new Date().toISOString(),
+      bearer: expected !== null,
+      headers,
+      host: req.headers.host ?? "",
+      token_sha256: presented === null ? null : sha256(presented).toString("hex"),
+    });
     if (journal.length > MAX_JOURNAL) journal.shift();
     const query = args !== null && typeof args === "object" ? args.query : undefined;
     if (typeof query !== "string" || query.trim() === "" || query.length > MAX_QUERY_CHARS) {
@@ -183,6 +211,16 @@ export function createMockServer({ token = "", results, log = () => {} }) {
   }
 
   async function mcp(req, res) {
+    const carried = bearerOf(req);
+    const seen = {
+      at: new Date().toISOString(),
+      method: req.method,
+      host: req.headers.host ?? "",
+      rpc: null,
+      token_sha256: carried === null ? null : sha256(carried).toString("hex"),
+    };
+    requests.push(seen);
+    if (requests.length > MAX_JOURNAL) requests.shift();
     const bad = (status, message, headers) => reply(res, status, rpcError(null, -32000, message), headers);
     if (!originAllowed(req)) return bad(403, "Origin not allowed");
     if (req.method !== "POST") return bad(405, "This server offers no SSE stream and no sessions: POST only", { allow: "POST" });
@@ -206,6 +244,7 @@ export function createMockServer({ token = "", results, log = () => {} }) {
     }
     const hasId = typeof message.id === "string" || typeof message.id === "number";
     const hasMethod = typeof message.method === "string";
+    if (hasMethod) seen.rpc = message.method.slice(0, 64);
     if (!(hasMethod && hasId)) {
       // A notification, or a client's answer to a server request (this server sends none): accepted, no body.
       const notification = hasMethod && !("id" in message);
@@ -225,10 +264,11 @@ export function createMockServer({ token = "", results, log = () => {} }) {
       if (pathname === "/mcp") return await mcp(req, res);
       if (pathname === "/healthz" && req.method === "GET") return reply(res, 200, { status: "ok" });
       if (pathname === "/__journal") {
-        if (req.method === "GET") return reply(res, 200, { calls: journal });
+        if (req.method === "GET") return reply(res, 200, { calls: journal, requests });
         if (req.method === "DELETE") {
           journal.length = 0;
-          return reply(res, 200, { calls: [] });
+          requests.length = 0;
+          return reply(res, 200, { calls: [], requests: [] });
         }
         return reply(res, 405, { error: "GET or DELETE" }, { allow: "GET, DELETE" });
       }
@@ -243,11 +283,13 @@ export function createMockServer({ token = "", results, log = () => {} }) {
 function main() {
   const port = Number(process.env.PORT ?? 8080);
   const token = process.env.MOCK_MCP_TOKEN ?? "";
+  const tokenPrefix = process.env.MOCK_MCP_TOKEN_PREFIX ?? "";
   const file = process.env.MOCK_MCP_RESULTS ?? new URL("./results.json", import.meta.url);
   const results = JSON.parse(readFileSync(file, "utf8"));
-  const server = createMockServer({ token, results, log: (line) => console.log(line) });
+  const server = createMockServer({ token, tokenPrefix, results, log: (line) => console.log(line) });
   server.listen(port, "0.0.0.0", () => {
-    console.log(`mock-mcp-search: POST /mcp on :${port}, ${token ? "bearer token required" : "no authentication"}`);
+    const auth = token ? `bearer token required${tokenPrefix ? " (or one with a prefix of its own)" : ""}` : "no authentication";
+    console.log(`mock-mcp-search: POST /mcp on :${port}, ${auth}`);
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {
     process.on(signal, () => {

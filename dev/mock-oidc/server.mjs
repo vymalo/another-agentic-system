@@ -10,7 +10,9 @@
 //                                            302 to the `redirect_uri` with `code` and `state`. PKCE (S256, plain) is checked
 //   POST /token                              grant_type=authorization_code (an ID token and an access token),
 //                                            grant_type=client_credentials with the extension parameters `user` (an e-mail of
-//                                            users.json, default the default user) and `audience` (default the client id): the
+//                                            users.json, default the default user), `audience` (default the client id) and `roles`
+//                                            (a comma list that replaces the user's roles in this token, empty for none: the same
+//                                            person, whose role was taken away; dev/auth-header.sh sends it for OIDC_ROLES): the
 //                                            access token of that user, for a script. The client authenticates with
 //                                            client_secret_post or client_secret_basic
 //   GET  /userinfo                           the claims of the bearer access token (a DPoP-bound one: `Authorization: DPoP` and a proof)
@@ -78,6 +80,7 @@ const CODE_TTL_MS = 60 * 1000;
 const MAX_CODES = 1000;
 const MAX_REFRESH_TOKENS = 5000;
 const MAX_PROOFS = 5000;
+const MAX_ROLES_OVERRIDE = 32;
 const USER_COOKIE = "mock_oidc_user";
 const WEB_SCOPES = ["openid", "email", "profile", "offline_access"];
 // What a page may call across origins: the endpoints a browser client uses.
@@ -247,7 +250,7 @@ export function createMockServer({
   const revokeUrls = [...new Set([`${issuer}/revoke`, `${publicUrl}/revoke`])];
   const userinfoUrls = [...new Set([`${issuer}/userinfo`, `${publicUrl}/userinfo`])];
 
-  function token(email, { audience, audiences, nonce, azp, ttl, jkt } = {}) {
+  function token(email, { audience, audiences, nonce, azp, ttl, jkt, roles } = {}) {
     const user = table[email];
     const iat = now();
     const claims = {
@@ -262,7 +265,7 @@ export function createMockServer({
       email_verified: true,
       name: user.name ?? email,
       preferred_username: email,
-      [rolesClaim]: user.roles ?? [],
+      [rolesClaim]: roles ?? user.roles ?? [],
     };
     if (nonce) claims.nonce = nonce;
     if (jkt) claims.cnf = { jkt };
@@ -432,8 +435,15 @@ export function createMockServer({
       const email = (form.get("user") ?? defaultUser).trim().toLowerCase();
       if (!known(email)) return oauthError(res, 400, "invalid_request", `user ${JSON.stringify(email)} is not a user of this issuer`);
       const audience = form.get("audience") || undefined;
-      log(`client_credentials: ${email}, aud ${audience ?? clientId}`);
-      const access = token(email, { audience });
+      // `roles=` (present, empty) is no role at all; absent is the user's own
+      const roles = form.has("roles")
+        ? form.get("roles").split(",").map((role) => role.trim()).filter((role) => role !== "")
+        : undefined;
+      if (roles !== undefined && (roles.length > MAX_ROLES_OVERRIDE || roles.some((role) => role.length > 64))) {
+        return oauthError(res, 400, "invalid_request", `roles is at most ${MAX_ROLES_OVERRIDE} names of at most 64 characters`);
+      }
+      log(`client_credentials: ${email}, aud ${audience ?? clientId}${roles === undefined ? "" : `, roles ${JSON.stringify(roles)}`}`);
+      const access = token(email, { audience, roles });
       return reply(res, 200, { access_token: access, id_token: access, token_type: "Bearer", expires_in: ttlSecs, scope: "openid email profile" });
     }
     if (grant === "authorization_code") {

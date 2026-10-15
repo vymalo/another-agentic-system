@@ -129,8 +129,11 @@ toolServers:
 # `tools.user.add` (the role `tool-maker` below; no other role holds it) adds an MCP server of their own, with a token, a key or no authentication, and
 # the orchestrator keeps the token or the key sealed (AES-256-GCM, in the orchestrator's Postgres) under the key `USER_SECRETS_KEY`, a dummy of
 # compose.yaml. Plain `http` and a server on the compose network are development's: `allowHttp` is refused in production, and `allow` names the one host
-# this stack has (`mock-mcp-search`), which also lifts the ban on private addresses for it; every other host is refused here (`url_refused`), so
-# dev/user-tools-e2e.sh can show the guard. Take both sections out and the routes are 404, the roles below still parse. dev/user-tools-e2e.sh.
+# this stack has (`mock-mcp-search`), which also lifts the ban on private addresses for it; a host that no entry names is refused here (`url_refused`), so
+# dev/user-tools-e2e.sh can show the guard. The entry `*.strangers.test` admits a NAME and nothing else: it never lifts the ban on a private address,
+# and `mock-mcp-search.strangers.test` is an alias of the same container (compose.yaml), so a server added at that name is accepted and attached and
+# is refused at the connection, with nothing sent (dev/user-tools-relay-e2e.sh). Take both sections out and the routes are 404, the roles below still
+# parse. dev/user-tools-e2e.sh, dev/user-tools-relay-e2e.sh.
 secrets:
   store: pg
   pg:
@@ -140,7 +143,7 @@ userToolServers:
   enabled: true
   egress:
     allowHttp: true
-    allow: [mock-mcp-search]
+    allow: [mock-mcp-search, "*.strangers.test"]
 
 # The MCP server: Claude Code, opencode or dev/mcp-e2e.sh reach it through the `edge`, which does not put it behind oauth2-proxy: the
 # server authenticates a static bearer token itself. The token is named by mcp-tokens.yaml and belongs to dev@example.com with the
