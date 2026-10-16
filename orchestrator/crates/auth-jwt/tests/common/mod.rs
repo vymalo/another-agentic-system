@@ -124,3 +124,15 @@ pub async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+/// How long [`exactly`] usually lets a count settle: an extra, later request would have come by then.
+pub const SETTLE: Duration = Duration::from_millis(300);
+
+/// `count()` reaches `want` and stays there. [`eventually`] on `count() == want` is true the first time the
+/// count is right and so cannot see a second, later request that a fault makes; this waits for `want`, lets
+/// `settle` go by with the test asking for nothing, and asserts the count is still `want`.
+pub async fn exactly(what: &str, count: impl Fn() -> usize, want: usize, settle: Duration) {
+    eventually(what, || count() >= want).await;
+    tokio::time::sleep(settle).await;
+    assert_eq!(count(), want, "{what}: more than {want} after a settle");
+}

@@ -67,10 +67,12 @@
   than 10 minutes and within the hour is used at once*, and a refresh starts in the background; `ready()` answers at once while a copy can verify.
   (3) *With no copy, or one past the grace, a request waits for the fetch* (bounded: each request to the issuer times out); a token that names an
   unknown `kid` waits for the fetch and no other request does. (4) *A request that is dropped does not cancel the fetch*, and the keys it brings
-  are recorded. *Behaviour a deployment could see:* the first request after a long quiet is verified against the copy it finds, which may be up to
+  are recorded. A fetch task that has begun records its outcome however it ends (an answer, a panic, the runtime stopping) and only then wakes
+  its waiters; a task that never ran (its runtime stopped with it still queued) records nothing, its waiters wake and the next request starts a
+  fetch. *Behaviour a deployment could see:* the first request after a long quiet is verified against the copy it finds, which may be up to
   70 minutes old, and the keys an issuer withdrew stop verifying when the refresh is over, not when it starts; a slow or hanging issuer holds up
   no request that has a copy, and `/readyz` does not wait on it while one verifies. *Verified 2026-10-16:* `tests/slow.rs` of the crate, over real
-  sockets, seven of its cases failing on the previous code; the behaviour against a real issuer is *unverified*. The diagrams of the cache as built
+  sockets, seven of its cases failing on the previous code, and the unit tests of `src/lib.rs` for the ways a fetch task ends; the behaviour against a real issuer is *unverified*. The diagrams of the cache as built
   are in the [crate's README](../../orchestrator/crates/auth-jwt/README.md).
 
 ## Context

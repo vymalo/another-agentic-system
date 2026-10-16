@@ -17,7 +17,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
 use axum::routing::get;
-use common::eventually;
+use common::{SETTLE, eventually, exactly};
 use orch_auth_jwt::testkit::TestIdp;
 use orch_auth_jwt::{JwtAuth, JwtConfig};
 use orch_ports::testkit::bearer::{Alg, Signing};
@@ -302,8 +302,13 @@ async fn a_stale_copy_is_served_at_once_and_refreshed_in_the_background_once() {
         waited < Duration::from_millis(1500),
         "eight tokens took {waited:?} with the issuer hanging: the stale copy was not served at once"
     );
-    eventually("the refresh to be running", || s.keys.started() == 2).await;
-    assert_eq!(s.keys.started(), 2, "one refresh, however many requests");
+    exactly(
+        "one refresh, however many requests",
+        || s.keys.started(),
+        2,
+        SETTLE,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -398,8 +403,14 @@ async fn requests_on_many_threads_make_one_fetch_and_one_refresh() {
         "thirty-two tokens took {:?} against a stale copy: they waited for the refresh",
         began.elapsed()
     );
-    eventually("the refresh to be answered", || s.keys.answered() == 2).await;
-    assert_eq!(s.keys.started(), 2, "one refresh, however many requests");
+    eventually("the refresh to be answered", || s.keys.answered() >= 2).await;
+    exactly(
+        "one refresh, however many requests",
+        || s.keys.started(),
+        2,
+        SETTLE,
+    )
+    .await;
 }
 
 // ---- a request that gives up does not take the fetch with it ------------------------------------------------------
@@ -419,7 +430,8 @@ async fn a_request_cancelled_during_a_slow_fetch_does_not_lose_the_keys_it_asked
     let rotated = s.unknown();
     let cancelled = tokio::time::timeout(Duration::from_millis(100), s.check(&rotated)).await;
     assert!(cancelled.is_err(), "the request was cancelled");
-    assert_eq!(s.keys.started(), 2);
+    // The fetch is a task of its own: it reaches the issuer whether or not the request is still there to see it.
+    eventually("the fetch to reach the issuer", || s.keys.started() == 2).await;
 
     // Once the fetch is over, the keys it brought are the copy: the next request with that key is accepted,
     // well inside the interval of the fetch that brought them.
@@ -439,7 +451,7 @@ async fn a_first_request_cancelled_during_the_fetch_does_not_lose_the_keys() {
     let good = s.good();
     let cancelled = tokio::time::timeout(Duration::from_millis(100), s.check(&good)).await;
     assert!(cancelled.is_err(), "the first request was cancelled");
-    assert_eq!(s.keys.started(), 1);
+    eventually("the fetch to reach the issuer", || s.keys.started() == 1).await;
 
     // The fetch goes on, and its keys are the copy: the next request is answered from it, with no fetch of its own.
     eventually("the fetch to be answered", || s.keys.answered() == 1).await;
