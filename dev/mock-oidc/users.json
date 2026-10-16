@@ -29,6 +29,13 @@
         "user"
       ]
     },
+    "holder@example.com": {
+      "name": "Holder of platform-restricted",
+      "roles": [
+        "user",
+        "agent.use:platform-restricted"
+      ]
+    },
     "tool-maker@example.com": {
       "name": "Tool Maker",
       "roles": [

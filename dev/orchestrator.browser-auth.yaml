@@ -47,7 +47,9 @@ agents:
   # The platform's agent registry (agent-registry/v1, ADR 0022), here the WireMock `mock-registry`: its agents are
   # read live beside the ones of agents.yaml (which come first), so an agent added to the mock shows in the picker
   # without a restart, and a mock that is down leaves the static agents and says so (dev/README.md, "The agent
-  # registry"). Take `registry` out and only agents.yaml is read.
+  # registry"). Take `registry` out and only agents.yaml is read. Who may use a registry agent is also its item's `audience` (ADR 0045):
+  # `["*"]` everybody, a value of the roles claim of the token, and no audience, or a malformed one, administrators only; the agents of
+  # agents.yaml have none and are decided by `auth.roles` alone (dev/wiremock/registry, dev/mock-oidc/users.json, dev/registry-e2e.sh).
   registry:
     url: http://mock-registry:8080/registry/v1/agents
     agentToken: { env: AGENT_REGISTRY_AGENT_TOKEN } # sent to every agent the registry lists; the mocks accept any token

@@ -272,9 +272,11 @@ services:
       - ./dev/wiremock/verifier/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/verifier/__files:/home/wiremock/__files:ro
 
-  # The platform's agent registry (agent-registry/v1, ADR 0022) as a WireMock stub: a linkset that lists one agent,
-  # `platform-coder`, at the card of `mock-agent-releases`. The orchestrator reads it (AGENT_REGISTRY_URL); dev/registry-e2e.sh
-  # changes it through WireMock's admin API (adds an agent, makes it answer 503) and checks the picker follows.
+  # The platform's agent registry (agent-registry/v1, ADR 0022) as a WireMock stub: a linkset that lists `platform-coder` (for
+  # everybody) at the card of `mock-agent-releases` and, at the card of `mock-agent`, three agents that show what an item's `audience`
+  # does (ADR 0045): one for the holders of a role value, one with no audience (administrators only) and one with a malformed audience
+  # (the same). The orchestrator reads it (AGENT_REGISTRY_URL); dev/registry-e2e.sh changes it through WireMock's admin API (adds an
+  # agent, makes it answer 503) and checks the picker follows, and who is listed which agent.
   mock-registry:
     <<: *wiremock
     ports:

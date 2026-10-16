@@ -1,5 +1,5 @@
 {
-  "name": "The registry document of agent-registry/v1: one agent, platform-coder (the card of mock-agent-releases)",
+  "name": "The registry document of agent-registry/v1: platform-coder (for everybody, the card of mock-agent-releases) and three agents of the audience scenario (restricted to one role value, no audience, a malformed audience; the card of mock-agent)",
   "priority": 2,
   "request": {
     "method": "GET",

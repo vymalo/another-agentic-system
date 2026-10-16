@@ -10,7 +10,10 @@
 #   docker compose --profile app up -d --build --wait
 #
 # The registry document is `agent-registry/v1` of another-agentic-platform (docs/extensions/agent-registry-v1.md there):
-# a linkset of agent cards, here dev/wiremock/registry, which lists `platform-coder` at the card of `mock-agent-releases`.
+# a linkset of agent cards, here dev/wiremock/registry, which lists `platform-coder` at the card of `mock-agent-releases` and three
+# agents of the audience scenario at the card of `mock-agent`: `platform-restricted` (audience `["agent.use:platform-restricted"]`),
+# `platform-admins` (no audience) and `platform-malformed` (audience `["*","x"]`, which is none). An item's `audience` says who may
+# use the agent (ADR 0045, decision 1): `["*"]` everybody, a value of the person's roles claim, and otherwise administrators only.
 # The script changes what `mock-registry` answers through WireMock's admin API (POST /__admin/mappings, then
 # POST /__admin/mappings/reset), and asks the orchestrator through the edge, as the UI does.
 #
@@ -27,12 +30,27 @@
 #       `platform` is `unavailable`, a run on `platform-coder` is a 503 with Retry-After (never a 404), and a thread on a
 #       static agent still ends `done`;
 #   (d) the registry is read again when it answers: after POST /__admin/mappings/reset, within 10 s `platform-coder` is
-#       back, `platform-helper` is gone, and the sources are `ok`.
-# The registry is left as it was found (reset). Exit status 0 when every check passed.
+#       back, `platform-helper` is gone, and the sources are `ok`;
+#   (e) the audience decides who sees an agent (ADR 0045, decision 1; the file's four agents, asked by four people):
+#       - `dev` (role `user`) is listed the static agents and `platform-coder` and none of the other three, GET /api/me still
+#         says the roles' patterns (`["*"]`), and for each of the three the capabilities (GET /agui/agents/{id}/capabilities) and a
+#         run (POST /agui/agents/{id}) are the 404 of an id that does not exist, body for body, a run writes no thread, and a fork
+#         onto it (POST /api/threads/{id}/fork with a `target`) is the 400 "unknown agent" of an id that does not exist;
+#       - `holder@example.com` (roles `user` and `agent.use:platform-restricted`) is listed `platform-coder` and
+#         `platform-restricted`, reads the capabilities of the second, starts a thread on it that ends `done` (the card of
+#         `mock-agent` answers it), and meets the 404 of an id that does not exist for the other two;
+#       - `admin@example.com` (role `admin`) is listed all four, including the agent with no audience and the malformed one, reads
+#         their capabilities and starts a thread on the one with no audience that ends `done`;
+#       - the audience is not a grant: `chat-only@example.com` with the value `agent.use:platform-restricted` added to its roles
+#         (OIDC_ROLES of dev/auth-header.sh) is still listed the agent `chat` and no agent of the registry, because no role of
+#         theirs covers those ids (`auth.roles`).
+# The registry is left as it was found (reset). Exit status 0 when every check passed. It leaves four threads behind (dev's on
+# `platform-coder` and on `mock-coder`, the holder's and the administrator's).
 #
 # Environment (defaults match compose.yaml on one machine):
 #   BASE_URL              http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
-#   AUTH_EMAIL            dev@example.com, the user: the token of dev/auth-header.sh is theirs
+#   AUTH_EMAIL            dev@example.com, the user: the token of dev/auth-header.sh is theirs. (e) calls them `dev` and needs them to be
+#                         a plain `user` (not an administrator, and holding no `agent.use:` value)
 #   MOCK_REGISTRY_URL     http://127.0.0.1:${MOCK_REGISTRY_PORT:-8084}, the registry's WireMock (its admin API)
 #   MOCK_RELEASES_URL     http://127.0.0.1:${MOCK_AGENT_RELEASES_PORT:-8082}, the WireMock that is `platform-coder`
 #   TIMEOUT               60     seconds to wait for a thread to stop
@@ -40,7 +58,8 @@
 #
 # It RESETS the stubs of `mock-registry` first (a stub left by an earlier run would be in the way) and EMPTIES the
 # request journal of `mock-agent-releases`, so run it on a stack you are not in the middle of another scenario on.
-# Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml.
+# Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only: the job `coder-e2e` of .github/workflows/coder-e2e.yml
+# runs it as the scenario `registry` of dev/e2e-all.sh.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -48,6 +67,13 @@ base=${base%/}
 email=${AUTH_EMAIL:-dev@example.com}
 # The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
 id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
+# The other people of (e) are users of dev/mock-oidc/users.json, which the `mock-oidc` image holds: an image built before `holder@example.com`
+# was added refuses its token (docker compose build mock-oidc, then docker compose up -d --wait mock-oidc). The last is `chat-only` with one more
+# role-claim value (the same subject, the roles of the token replaced: OIDC_ROLES of dev/auth-header.sh), a person the audience would admit
+# and whose roles do not.
+holder_header=$(sh "$(dirname "$0")/auth-header.sh" holder@example.com)
+admin_header=$(sh "$(dirname "$0")/auth-header.sh" admin@example.com)
+chat_only_header=$(OIDC_ROLES='chat-only,agent.use:platform-restricted' sh "$(dirname "$0")/auth-header.sh" chat-only@example.com)
 registry=${MOCK_REGISTRY_URL:-http://127.0.0.1:${MOCK_REGISTRY_PORT:-8084}}
 registry=${registry%/}
 releases=${MOCK_RELEASES_URL:-http://127.0.0.1:${MOCK_AGENT_RELEASES_PORT:-8082}}
@@ -90,10 +116,16 @@ done
 static_ids=$(sed -n 's/^- id: *//p' "$agents_file" | paste -sd' ' -)
 [ -n "$static_ids" ] || { echo "FAIL $agents_file lists no agent" >&2; exit 1; }
 
-# ids SOURCE: the ids GET /api/agents lists, in order, as one line; SOURCE `all` lists every agent.
-ids() {
-  api GET /api/agents 2>/dev/null | jq -r --arg source "$1" \
+# ids_as HEADER SOURCE: the ids GET /api/agents lists to the person HEADER is the credential of, in order, as one line; SOURCE `all`
+# lists every agent.
+ids_as() {
+  curl --fail-with-body -sS --max-time 30 "$base/api/agents" -H "$1" 2>/dev/null | jq -r --arg source "$2" \
     '[.[] | select($source == "all" or .source == $source) | .id] | join(" ")' 2>/dev/null || true
+}
+
+# ids SOURCE: ids_as the user of AUTH_EMAIL.
+ids() {
+  ids_as "$id_header" "$1"
 }
 
 # lists ID: succeeds when GET /api/agents lists the agent ID.
@@ -133,6 +165,84 @@ listing() {
     status: 200,
     headers: {"Content-Type": "application/linkset+json", "Cache-Control": "private, max-age=2"},
     jsonBody: {linkset: [{profile: [{href: "https://agents.vymalo.com/registry/v1"}], item: $items}]}}'
+}
+
+# --- helpers of (e): one person's view of an agent ---------------------------------------------------------------
+
+# agui_input THREAD TEXT: the body of an AG-UI run that sends TEXT as the first message of THREAD.
+agui_input() {
+  jq -n --arg thread "$1" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$2" '{
+    threadId: $thread, runId: $run, state: {}, tools: [], context: [],
+    messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}'
+}
+
+# status_as HEADER METHOD PATH OUTFILE [BODY]: the HTTP status of a call as the person HEADER is the credential of (000 when
+# nothing answered), the body of the answer written to OUTFILE. A BODY is sent as JSON and asks for an event stream, as an AG-UI
+# run does; a run that is accepted streams to its end, so the wait is TIMEOUT seconds.
+status_as() {
+  if [ "$#" -ge 5 ]; then
+    curl -sS -N --max-time "$timeout" -o "$4" -w '%{http_code}' -X "$2" "$base$3" -H "$1" \
+      -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$5" 2>/dev/null || true
+  else
+    curl -sS --max-time 30 -o "$4" -w '%{http_code}' -X "$2" "$base$3" -H "$1" 2>/dev/null || true
+  fi
+}
+
+# state_as HEADER THREAD: the state of a thread of the person HEADER is the credential of.
+state_as() {
+  curl -sS --max-time 30 "$base/api/threads/$2" -H "$1" 2>/dev/null | jq -r '.state // empty' 2>/dev/null || true
+}
+
+# wait_state_as HEADER THREAD: the state the thread stops in, within TIMEOUT seconds (the last one seen when it does not).
+wait_state_as() {
+  _state=
+  _deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    _state=$(state_as "$1" "$2")
+    case $_state in done | blocked | failed | cancelled) break ;; esac
+    if [ "$(date +%s)" -ge "$_deadline" ]; then break; fi
+    sleep 1
+  done
+  echo "$_state"
+}
+
+# not_there_as HEADER LABEL PARENT AGENT...: for each AGENT the person is not offered, the answer is the one for an id nobody lists, word
+# for word: the capabilities and an AG-UI run are the same 404 as for a made-up id (status and body), a run writes no thread, and a fork
+# of PARENT (a thread of that person) onto it is the same 400 "unknown agent" (the id the only difference). LABEL names the person in
+# the messages.
+not_there_as() {
+  _header=$1
+  _who=$2
+  _parent=$3
+  shift 3
+  _nowhere=platform-nowhere-$(uuid | cut -c1-8)
+  _cap_status=$(status_as "$_header" GET "/agui/agents/$_nowhere/capabilities" "$tmp/nowhere.cap")
+  _run_thread=$(uuid)
+  _run_status=$(status_as "$_header" POST "/agui/agents/$_nowhere" "$tmp/nowhere.run" "$(agui_input "$_run_thread" hi)")
+  _fork_status=$(status_as "$_header" POST "/api/threads/$_parent/fork" "$tmp/nowhere.fork" \
+    "$(jq -n --arg agent "$_nowhere" '{after: 1, target: {agentId: $agent}}')")
+  check "$_who: the capabilities of an agent nobody lists are a 404 'no such agent'" \
+    "$_cap_status $(jq -r '.detail // empty' "$tmp/nowhere.cap" 2>/dev/null || true)" "404 no such agent"
+  check "$_who: a run on an agent nobody lists is a 404 'no such agent'" \
+    "$_run_status $(jq -r '.detail // empty' "$tmp/nowhere.run" 2>/dev/null || true)" "404 no such agent"
+  check "$_who: a fork onto an agent nobody lists is a 400 \"unknown agent\"" \
+    "$_fork_status $(jq -r '.detail // empty' "$tmp/nowhere.fork" 2>/dev/null | sed "s/$_nowhere/_/" || true)" "400 unknown agent '_'"
+  for _agent in "$@"; do
+    _status=$(status_as "$_header" GET "/agui/agents/$_agent/capabilities" "$tmp/hidden.cap")
+    check "$_who: the capabilities of $_agent are that 404, status and body" "$_status" "$_cap_status"
+    check "$_who:   the same body, byte for byte" "$(cat "$tmp/hidden.cap")" "$(cat "$tmp/nowhere.cap")"
+    _run_thread=$(uuid)
+    _status=$(status_as "$_header" POST "/agui/agents/$_agent" "$tmp/hidden.run" "$(agui_input "$_run_thread" hi)")
+    check "$_who: a run on $_agent is that 404, status and body" "$_status" "$_run_status"
+    check "$_who:   the same body, byte for byte" "$(cat "$tmp/hidden.run")" "$(cat "$tmp/nowhere.run")"
+    check "$_who:   and it wrote no thread" \
+      "$(status_as "$_header" GET "/api/threads/$_run_thread" "$tmp/hidden.thread")" "404"
+    _status=$(status_as "$_header" POST "/api/threads/$_parent/fork" "$tmp/hidden.fork" \
+      "$(jq -n --arg agent "$_agent" '{after: 1, target: {agentId: $agent}}')")
+    check "$_who: a fork onto $_agent is that 400, status" "$_status" "$_fork_status"
+    check "$_who:   and the same words, the id the only difference" \
+      "$(jq -r '.detail // empty' "$tmp/hidden.fork" 2>/dev/null | sed "s/$_agent/_/" || true)" "unknown agent '_'"
+  done
 }
 
 # --- is the stack there, and does it read a registry? -----------------------------------------------------------
@@ -200,8 +310,8 @@ check "the mock agent saw the bearer token of AGENT_REGISTRY_AGENT_TOKEN" "$sent
 # --- (b) an agent added to the registry shows up, without a restart ---------------------------------------------
 echo "== (b) an agent added to the registry"
 items=$(jq -n --arg releases "$card_releases" --arg agent "$card_agent" '[
-  {href: $releases, type: "application/json", title: "Platform coder", service: ["platform-coder"], tags: ["coding", "git"]},
-  {href: $agent, type: "application/json", title: "Platform helper", service: ["platform-helper"], tags: ["writing"]}]')
+  {href: $releases, type: "application/json", title: "Platform coder", service: ["platform-coder"], tags: ["coding", "git"], audience: ["*"]},
+  {href: $agent, type: "application/json", title: "Platform helper", service: ["platform-helper"], tags: ["writing"], audience: ["*"]}]')
 stub "registry lists platform-helper too" "$(listing "$items")"
 wait_for "GET /api/agents lists platform-helper within 10 s, with no restart" lists platform-helper
 check "the registry's agents follow the static ones, in the registry's order" \
@@ -256,5 +366,53 @@ wait_for "GET /api/agents lists platform-coder again within 10 s" lists platform
 check "platform-helper is gone with the stub that listed it" "$(ids all)" "$static_ids platform-coder"
 check "GET /api/registry says both sources are ok again" \
   "$(api GET /api/registry 2>/dev/null | jq -c '[.sources[] | "\(.name):\(.status)"]' 2>/dev/null || true)" '["static:ok","platform:ok"]'
+
+# --- (e) the audience decides who sees an agent ------------------------------------------------------------------
+# The file's four agents (dev/wiremock/registry/__files/agents.json) are back, read again in (d): platform-coder for everybody,
+# platform-restricted for the holders of `agent.use:platform-restricted`, platform-admins with no audience and platform-malformed
+# with one that is none (`["*","x"]`). An agent a person may not use is, to them, an agent that does not exist (ADR 0045, decision 1).
+echo "== (e) the audience of each agent"
+dev_thread=$thread # dev's thread on mock-coder, from (c): done, so a thread dev may fork
+
+echo "-- $email: role user, no audience value"
+check "dev: GET /api/agents lists the static agents and platform-coder, not platform-restricted, platform-admins or platform-malformed" \
+  "$(ids_as "$id_header" all)" "$static_ids platform-coder"
+check "dev: GET /api/me still says the roles patterns, agents read and invoke are the pattern * (point 9 of the decision)" \
+  "$(api GET /api/me 2>/dev/null | jq -cS '.agents' 2>/dev/null || true)" '{"invoke":["*"],"read":["*"]}'
+not_there_as "$id_header" dev "$dev_thread" platform-restricted platform-admins platform-malformed
+
+echo "-- holder@example.com: roles user and agent.use:platform-restricted"
+check "holder: GET /api/agents lists platform-coder and platform-restricted of the registry, in its order, and no other" \
+  "$(ids_as "$holder_header" registry)" "platform-coder platform-restricted"
+check "holder: the agents of dev/agents.yaml are all there, first" "$(ids_as "$holder_header" static)" "$static_ids"
+check "holder: the capabilities of platform-restricted are a 200" \
+  "$(status_as "$holder_header" GET /agui/agents/platform-restricted/capabilities "$tmp/holder.cap")" "200"
+holder_thread=$(uuid)
+echo "thread $holder_thread (platform-restricted, as the holder): hi from the holder"
+status=$(status_as "$holder_header" POST /agui/agents/platform-restricted "$tmp/holder.run" "$(agui_input "$holder_thread" "hi from the holder")")
+check "holder: a run on platform-restricted is accepted" "$status" "200"
+if [ "$status" = 200 ]; then
+  check "holder: the thread on platform-restricted is delegated and ends done" "$(wait_state_as "$holder_header" "$holder_thread")" "done"
+  not_there_as "$holder_header" holder "$holder_thread" platform-admins platform-malformed
+fi
+
+echo "-- admin@example.com: role admin"
+check "admin: GET /api/agents lists all four of the registry, the one with no audience and the malformed one among them" \
+  "$(ids_as "$admin_header" registry)" "platform-coder platform-restricted platform-admins platform-malformed"
+for agent in platform-restricted platform-admins platform-malformed; do
+  check "admin: the capabilities of $agent are a 200" \
+    "$(status_as "$admin_header" GET "/agui/agents/$agent/capabilities" "$tmp/admin.cap")" "200"
+done
+admin_thread=$(uuid)
+echo "thread $admin_thread (platform-admins, as the administrator): hi from the administrator"
+status=$(status_as "$admin_header" POST /agui/agents/platform-admins "$tmp/admin.run" "$(agui_input "$admin_thread" "hi from the administrator")")
+check "admin: a run on platform-admins, which has no audience, is accepted" "$status" "200"
+if [ "$status" = 200 ]; then
+  check "admin: the thread on platform-admins is delegated and ends done" "$(wait_state_as "$admin_header" "$admin_thread")" "done"
+fi
+
+echo "-- chat-only@example.com with agent.use:platform-restricted added to its roles"
+check "chat-only: GET /api/agents lists the agent chat and no agent of the registry, the audience being no grant of its roles" \
+  "$(ids_as "$chat_only_header" all)" "chat"
 
 finish
