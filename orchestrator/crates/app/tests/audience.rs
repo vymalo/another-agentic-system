@@ -20,7 +20,7 @@ use orch_app::{
 };
 use orch_core::{
     AgentId, AgentSource, AgentTarget, Classify, ErrorClass, Input, Mention, Origin, ThreadId,
-    ThreadState,
+    ThreadState, UiActionData, UiVersion,
 };
 use orch_ports::memory::{
     MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds,
@@ -551,6 +551,33 @@ async fn a_thread_whose_agent_the_person_may_no_longer_use_is_read_only_not_hidd
         origin: Origin::default(),
         catalog: None,
         mentions: Vec::new(),
+        tier: None,
+    };
+    refused(app.submit(&holder, t.id, input, None).await.unwrap_err());
+    // "Stop & send" and a click on a card start the agent's work as much as a message does, and
+    // reach `App::submit` as the inputs a surface translated
+    let input = Input::StopAndSend {
+        user: holder.user.clone(),
+        text: "stop, via submit".to_owned(),
+        message_id: None,
+        run_id: None,
+        origin: Origin::default(),
+        catalog: None,
+        mentions: Vec::new(),
+        tier: None,
+    };
+    refused(app.submit(&holder, t.id, input, None).await.unwrap_err());
+    let input = Input::UiAction {
+        user: holder.user.clone(),
+        action: UiActionData {
+            surface_id: "s1".to_owned(),
+            name: "go".to_owned(),
+            source_component_id: "go".to_owned(),
+            context: serde_json::Map::new(),
+            version: UiVersion::V0_9_1,
+            run_id: None,
+        },
+        catalog: None,
         tier: None,
     };
     refused(app.submit(&holder, t.id, input, None).await.unwrap_err());

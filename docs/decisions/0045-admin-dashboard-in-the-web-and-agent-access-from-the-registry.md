@@ -257,7 +257,8 @@ text above is as it was accepted. What was built, and where it needed a choice:
   already has in a thread of their own is not secret to them, so what writes to that thread (a message, stop and send, the action of a
   card, attaching a server; the AG-UI run on it) is **403** `forbidden` "your roles do not grant agent.invoke for the agent x", the answer
   when `agent.invoke` stops covering it; the thread, its events, its export and its place in the list stay theirs, and so do renaming,
-  describing, sharing and deleting it, and taking servers off it.
+  describing, sharing and deleting it, taking servers off it and cancelling its running job (`Input::Cancel` is not gated: stopping work
+  is not starting it).
 - **`GET /api/me`'s `agents` stays the roles' patterns** (1.9). The web draws its read-only line from those patterns today
   (`web/src/features/me/lib/access.ts`), so a thread whose agent the audience took away shows a composer until the server answers 403; the
   web should read the thread's agent in `GET /api/agents` (a web slice, not this one).
@@ -291,7 +292,7 @@ stateDiagram-v2
   [*] --> Writable: created while a role and the audience cover the agent
   Writable --> ReadOnly: the audience, or the roles, stop covering the agent
   ReadOnly --> Writable: they cover it again
-  ReadOnly --> ReadOnly: read, list, export, rename, share, delete, take servers off
+  ReadOnly --> ReadOnly: read, list, export, rename, share, delete, take servers off, cancel
   Writable --> Writable: send, answer a card, attach a server, fork
   ReadOnly --> [*]: deleted by its owner
   Writable --> [*]: deleted by its owner
@@ -310,6 +311,17 @@ Three choices the decision text leaves open, **for the owner to confirm or chang
 3. **Attaching a server is an act on the agent**, so `PUT /api/threads/{id}/tools` with a server the thread does not have takes
    `agent.invoke` over the thread's agent, **roles included** (before, it took `thread.write` alone). Taking servers off does not.
 
+Two limits of the rule, stated so that nobody reads more into it:
+
+- **A narrowed audience takes time to arrive, and a running job outlives it.** The orchestrator reads the audience from its registry
+  reader's copy, which is fresh for the response's `max-age` less its `Age` and never more than `agents.registry.maxAgeSecs` (default 60 s,
+  at most 3600; a stale copy is never served: `orch-registry-platform`, `freshness.rs`), so a change reaches a process within that time,
+  60 s by default. A job already running keeps its `job.mentioned`, and `ask_agent` asks only whether anyone could use the agent (the
+  person's roles are not at hand), so an agent mentioned before the change can still be asked until that job ends (choice 1 above is the one exception).
+- **A shared link's reader sees the agent's id and name whatever its audience** (FYI). `app/share.rs` `agent_display_name` and the reader's
+  view (`reader.rs`) resolve the agent with no audience filter: every reader gets the id, a signed-in one the display name. The owner
+  chose to share, and the content already shows the agent.
+
 Two **known differences from the platform's contract** (`docs/extensions/agent-registry-v1.md` there, section *Audience*, "the consumer's
 rule"), each for the owner to confirm or change:
 
@@ -317,7 +329,9 @@ rule"), each for the owner to confirm or change:
   only when their own roles hold `"*"` or one of its values. This decision (1.4) says they do: a role of theirs that holds `admin` passes
   the audience, and still needs a role that grants the permission over the agent's id. The orchestrator follows this ADR, which the owner
   accepted. The contract's remedy for a deployment that wants it, an `agent.use:` composite for each administrator, is not needed here, and
-  a deployment that wants the contract's rule gives no role `admin`.
+  a deployment that wants the contract's rule gives no role `admin`. Read it as wide as it is: a person whose roles hold `admin` sees and
+  may use **every** platform agent, hidden ones and agents with no audience included (still only over ids a role of theirs names in
+  `agents`), and so does everyone who falls back to `auth.defaultRole` when a deployment gives that role `admin`.
 - **The roles claim.** The contract's rule 2 reads a claim with an element that is not a text as *no roles at all*. The orchestrator's
   reader (`orch-auth-jwt`, `claims.rs`, `roles()`) skips such an element and keeps the texts, and reads a claim that is a single text as
   one role; this build uses the roles as that reader gives them and does not change it. The difference matters only for a claim from the

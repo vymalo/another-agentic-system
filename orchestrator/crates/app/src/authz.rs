@@ -490,7 +490,8 @@ pub enum Resource<'a> {
     },
     /// An agent, with whom it is for (ADR 0045): `agent.read` and `agent.invoke` are asked of an
     /// agent together with its audience, which the registry's entry holds. Asking only the roles'
-    /// side of the question, before the registry has been asked, is [`Access::check_scope`].
+    /// side of the question, before the registry has been asked, is `Access::check_scope`, which
+    /// the crate keeps to itself.
     Agent {
         /// The agent's id.
         id: &'a AgentId,
@@ -665,7 +666,7 @@ impl<'p> Access<'p> {
     ///
     /// # Errors
     /// As [`check`](Self::check), without [`Denied::Audience`].
-    pub fn check_scope(&self, permission: Permission, id: &AgentId) -> Result<(), Denied> {
+    pub(crate) fn check_scope(&self, permission: Permission, id: &AgentId) -> Result<(), Denied> {
         self.check(
             permission,
             &Resource::Agent {

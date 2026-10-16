@@ -247,7 +247,7 @@ check "the media type is application/linkset+json" \
   "$(sed -n 's/^[Cc]ontent-[Tt]ype: *\([^;]*\).*/\1/p' "$HEADERS_FILE" | tr -d '\r')" "application/linkset+json"
 check "it can be cached for two seconds, and has an ETag" \
   "$(sed -n 's/^[Cc]ache-[Cc]ontrol: *//p' "$HEADERS_FILE" | tr -d '\r'), $(sed -n 's/^[Ee][Tt]ag: *//p' "$HEADERS_FILE" | tr -d '\r')" \
-  'private, max-age=2, "r-2026-10-01T09:00:00Z"'
+  'private, max-age=2, "r-2026-10-16T00:00:00Z"'
 check "one context object that names the v1 profile" \
   "$(printf '%s' "$doc" | jq -r '[.linkset[] | select(.profile[]?.href == "https://agents.vymalo.com/registry/v1")] | length')" "1"
 check "it lists platform-coder, at the card of mock-agent-releases, with its title and tags" \
@@ -260,7 +260,7 @@ check "and their audiences: everybody, one role value, none and a malformed one 
   "$(printf '%s' "$doc" | jq -r '[.linkset[0].item[] | "\(.service[0])=\(if has("audience") then (.audience | tojson) else "none" end)"] | join(" ")')" \
   'platform-coder=["*"] platform-restricted=["agent.use:platform-restricted"] platform-admins=none platform-malformed=["*","x"]'
 check "a request that asks with the ETag is answered 304" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "r-2026-10-01T09:00:00Z"' "$REGISTRY/registry/v1/agents")" "304"
+  "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "r-2026-10-16T00:00:00Z"' "$REGISTRY/registry/v1/agents")" "304"
 check "another validator gets the document again" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "other"' "$REGISTRY/registry/v1/agents")" "200"
 

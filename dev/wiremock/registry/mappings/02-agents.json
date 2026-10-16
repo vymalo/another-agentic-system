@@ -10,7 +10,7 @@
     "headers": {
       "Content-Type": "application/linkset+json; profile=\"https://www.rfc-editor.org/info/rfc9727\"",
       "Cache-Control": "private, max-age=2",
-      "ETag": "\"r-2026-10-01T09:00:00Z\"",
+      "ETag": "\"r-2026-10-16T00:00:00Z\"",
       "Vary": "Authorization"
     },
     "bodyFileName": "agents.json"

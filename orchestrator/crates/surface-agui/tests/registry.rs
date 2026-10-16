@@ -8,6 +8,7 @@ mod support;
 use orch_app::{Policy, RoleGrant};
 use orch_core::{AgentId, AgentSource};
 use orch_ports::{AgentAudience, AgentEndpoint, RegistryEntry, Role};
+use serde_json::json;
 use support::*;
 
 fn platform_agent(id: &str) -> RegistryEntry {
@@ -191,4 +192,112 @@ async fn a_message_to_a_thread_whose_agent_the_audience_took_away_is_a_403_not_a
     // and somebody else's thread id on it is not found either
     let r = h.refused("helper", Some("bob@example.com"), &more).await;
     assert_eq!(r.status, 404);
+}
+
+#[tokio::test]
+async fn a_card_action_or_a_stop_and_send_on_a_thread_the_audience_took_away_is_a_403_and_writes_nothing()
+ {
+    let h = Harness::start().await;
+    h.registry.add(platform_agent("helper"));
+    let thread = new_thread_id();
+    let frames = h
+        .run(
+            "helper",
+            ALICE,
+            &input(&thread, "run-a", &[("m-1", "ui pick one")]),
+        )
+        .await
+        .all()
+        .await;
+    assert_eq!(frames.last().unwrap().event["outcome"]["type"], "interrupt");
+    h.wait_state(ALICE, &thread, "blocked").await;
+    let written = h.events(ALICE, &thread).await.len();
+
+    // the platform narrows the audience to somebody else
+    h.registry.add(platform_agent_for(
+        "helper",
+        AgentAudience::from_values(["agent.use:somebody-else"]),
+    ));
+
+    // a click on the card the agent asked with is the agent's work to start, like a message
+    let action = input_with(
+        &thread,
+        "run-b",
+        &[],
+        json!({"forwardedProps": {"a2uiAction": {"userAction": {
+            "name": "go", "surfaceId": "s1", "sourceComponentId": "go", "context": {}}}}}),
+    );
+    // and so is "Stop & send"
+    let stop = input_with(
+        &thread,
+        "run-c",
+        &[("m-1", "ui pick one"), ("m-2", "echo instead")],
+        json!({"forwardedProps": {"vymalo.send": "interrupt"}}),
+    );
+    for (what, body) in [("the card action", action), ("stop & send", stop)] {
+        let r = h.refused("helper", Some(ALICE), &body).await;
+        assert_eq!(
+            r.status,
+            403,
+            "{what}: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+        assert_eq!(
+            r.json()["detail"],
+            "your roles do not grant agent.invoke for the agent helper",
+            "{what}"
+        );
+    }
+    assert_eq!(
+        h.events(ALICE, &thread).await.len(),
+        written,
+        "nothing was written"
+    );
+}
+
+#[tokio::test]
+async fn ones_own_thread_of_another_agent_run_against_a_hidden_agent_is_no_such_agent() {
+    let h = Harness::start().await;
+    h.registry
+        .add(platform_agent_for("fresh", AgentAudience::AdminsOnly));
+    h.registry.add(platform_agent_for(
+        "theirs",
+        AgentAudience::from_values(["agent.use:theirs"]),
+    ));
+
+    // a thread of their own, on an agent they may use
+    let thread = new_thread_id();
+    let frames = h
+        .run(
+            "plain",
+            ALICE,
+            &input(&thread, "run-a", &[("msg-1", "echo hi")]),
+        )
+        .await
+        .all()
+        .await;
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+    h.wait_state(ALICE, &thread, "done").await;
+
+    // run against another agent that is hidden from them, or that nobody lists, with that thread's
+    // id: the same 404 for both. A thread of another agent is a `WrongAgent` that names both
+    // agents, for an agent they may see; for one they may not it must say nothing of the thread
+    let more = input(
+        &thread,
+        "run-b",
+        &[("msg-1", "echo hi"), ("msg-2", "echo more")],
+    );
+    let nowhere = h.refused("nowhere", Some(ALICE), &more).await;
+    assert_eq!(nowhere.status, 404);
+    assert_eq!(nowhere.json()["detail"], "no such agent");
+    for agent in ["fresh", "theirs"] {
+        let hidden = h.refused(agent, Some(ALICE), &more).await;
+        assert_eq!(
+            hidden.status,
+            404,
+            "{agent}: {}",
+            String::from_utf8_lossy(&hidden.body)
+        );
+        assert_eq!(hidden.json(), nowhere.json(), "{agent}: the same problem");
+    }
 }

@@ -538,7 +538,15 @@ auth:
   provider's to grant (by convention `agent.use:<agent-name>`, a client role of the identity provider; it need not be a key of `auth.roles`).
   An agent whose audience leaves a person out is **not there** for them: not in `GET /api/agents`, a 404 for its capabilities and a run,
   "unknown agent" for starting a thread, a fork or a mention. A thread of their own on it stays theirs, **read-only**: they read it, and a
-  message, a card's action or attaching a server is a 403. `GET /api/me` still says the patterns of `agents`.
+  message, "Stop & send", a card's action or attaching a server is a 403; cancelling a running job still works. `GET /api/me` still says the patterns of `agents`.
+  **A role that holds `admin` sees and may use every platform agent, hidden ones and agents with no audience included**, still over the
+  ids a role of theirs names in `agents`; `auth.defaultRole` counts, so a deployment that gives the role everybody falls back to `admin`
+  makes all of them administrators here, and one that wants the contract's rule (an administrator is held to the audience too) gives no
+  role `admin`. **A narrowed audience reaches the orchestrator when its registry reader's copy refreshes**: at most
+  [`agents.registry.maxAgeSecs`](#agents) (default 60 s), and sooner when the registry's own `max-age` is shorter. A job already running keeps the
+  agents it was given by mention (`job.mentioned`), so one mentioned before the change can still be asked until that job ends. The view of
+  a shared thread names its agent (the id to every reader, the display name to a signed-in one) with no audience filter: the owner chose
+  to share, and the content already shows it.
 - **A cap on the access tier** ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
   [`access-tier-v1.md`](access-tier-v1.md#8-roles-and-the-web)). A role may carry `maxTier`, one of `plan`, `edits`, `auto`, `bypass` (in
   that order of how much an agent does alone): a message from a person whose roles allow no more than `auto` that names `bypass` is

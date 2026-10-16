@@ -12,9 +12,11 @@
 //!
 //! The audience of an entry (ADR 0045) round-trips: what the fixture makes the source say is what
 //! [`list`](AgentRegistry::list) and [`get`](AgentRegistry::get) give back, for each of the three
-//! audiences a registry's agent has.
+//! audiences a registry's agent has. An entry whose `origin` is [`AgentSource::Registry`] never
+//! carries [`AgentAudience::Static`], which is the deployment's own list's alone.
 //!
-//! What is deliberately not asserted: the wording of a detail, and which `origin` an entry has.
+//! What is deliberately not asserted: the wording of a detail, and which `origin` an entry has
+//! (only that one which says `Registry` has no `Static` audience).
 
 use std::future::Future;
 use std::time::Duration;
@@ -75,6 +77,17 @@ async fn within<T>(case: impl Future<Output = T>) -> T {
 
 fn id(raw: &str) -> AgentId {
     AgentId::new(raw)
+}
+
+/// An entry a registry lists never carries [`AgentAudience::Static`] (ADR 0045): the audience
+/// that lets in whoever `auth.roles` lets is the deployment's own list's, and a registry agent
+/// that had it would be open to every role that names its id.
+fn assert_audience_is_not_static(entry: &RegistryEntry) {
+    assert!(
+        entry.origin != AgentSource::Registry || entry.audience != AgentAudience::Static,
+        "the entry {} comes from a registry and carries the static audience",
+        entry.id()
+    );
 }
 
 async fn ids<F: RegistryFixture>(f: &F) -> Vec<String> {
@@ -257,6 +270,7 @@ pub async fn recovers_when_up<F: RegistryFixture>(f: F) {
 
 /// The audience of an agent is the source's, whole: `["*"]`, a set of values and none (an agent the
 /// source gives no audience), by `list` and by `get`, and a change of it shows on the next read.
+/// No entry the registry lists carries [`AgentAudience::Static`], whatever the source says.
 pub async fn audience_round_trips<F: RegistryFixture>(f: F) {
     within(async {
         let with = |id: &str, audience: AgentAudience| RegistryEntry {
@@ -269,6 +283,10 @@ pub async fn audience_round_trips<F: RegistryFixture>(f: F) {
         f.add(with("some", values.clone()));
         f.add(with("none", AgentAudience::AdminsOnly));
         let listing = f.registry().list().await;
+        listing
+            .entries
+            .iter()
+            .for_each(assert_audience_is_not_static);
         let audience_of = |id: &str| {
             listing
                 .entries
@@ -286,6 +304,7 @@ pub async fn audience_round_trips<F: RegistryFixture>(f: F) {
         ] {
             let found = f.registry().get(&self::id(id)).await.unwrap().unwrap();
             assert_eq!(found.audience, want, "get {id}");
+            assert_audience_is_not_static(&found);
         }
 
         // a change of it shows on the next read, like any other change (the source lists an id
@@ -296,8 +315,10 @@ pub async fn audience_round_trips<F: RegistryFixture>(f: F) {
         f.add(with("some", AgentAudience::AdminsOnly));
         let found = f.registry().get(&id("none")).await.unwrap().unwrap();
         assert_eq!(found.audience, AgentAudience::Everyone);
+        assert_audience_is_not_static(&found);
         let found = f.registry().get(&id("some")).await.unwrap().unwrap();
         assert_eq!(found.audience, AgentAudience::AdminsOnly);
+        assert_audience_is_not_static(&found);
     })
     .await;
 }
