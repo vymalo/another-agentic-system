@@ -40,6 +40,24 @@
   identity layer answers 401, before any handler runs, and an agent's own 401 is a 502 (`orch-api` `auth.rs`, `problem.rs`, and the
   test `tests/only_identity_answers_401.rs` that keeps it so). (4) *Assumption:* the web-only fix assumes Keycloak's Revoke Refresh
   Token is off (*unverified* for this realm); with rotation on, a Redis session store for oauth2-proxy is required. *Amended 2026-10-07 by [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md):* the orchestrator also takes DPoP-bound access tokens (`auth.dpop`), the web signs in as a public client of its own, and the edge no longer gates the web when `auth.browser` is on.
+  **Amended (2026-10-16): how keys and claims are read (section 2), after a review of the platform's port of this checker
+  (`aap-auth-oidc` in `vymalo/another-agentic-platform`).** The policy of section 2 stands (the four algorithms, the 60 s leeway, `iat`
+  required and `email_verified` not `false` as they were, the key cache and its bounds); what changes is how the keys and the claims are read.
+  (1) *Keys:* a JWK member is read as the number it is, not as the text an issuer writes. An RSA `n` and `e` by their magnitude (a leading
+  zero or a sign byte is dropped, and the 2048 bits are counted on it), a P-256 coordinate left-padded to its 32 octets (refused when it has
+  more than 32 significant octets or is empty), an Ed25519 key as exactly its 32 octets (a zero in front is a part of it), and the `=` padding some
+  issuers write is accepted. A key of one of those shapes was admitted and never verified, and an Ed25519 key that starts with a zero octet
+  (about one in 256) was skipped. (2) *Every key under a token's `kid` is tried* (a rotation that kept the name, two sets merged), where only
+  the first was. (3) *`iss` is one text:* a list that holds the issuer, which the library accepts, is refused. (4) *The reason is the same
+  every time:* `iss` and `aud` are checked here, after the library has checked the signature, `exp` and `nbf`, in the order `exp`, `nbf`, `iss`,
+  `aud`, `iat`, `email_verified`, the user; the library's own required-claims check names the first it finds in the order of a hash set, so a
+  token that lacked several was refused with another reason from one request to the next. (5) *The user is somebody:* the value of `userClaim`
+  is refused when it holds a control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F; the whole value is looked at, before it is trimmed) as well as when it is blank. (6) *Discovery:*
+  exactly one terminating `/` of the issuer is removed before `/.well-known/openid-configuration` is appended (all of them were). (7) *A warning*
+  is logged once, at startup, for an issuer or `jwksUrl` over plain `http`; the URL is not in it, and `production` still refuses it. (8) The crypto
+  provider of `jsonwebtoken` is installed explicitly (aws-lc-rs), so that a second backend linked into the binary cannot make the first
+  verification panic. *Behaviour a deployment could see:* a token whose `iss` is a list, or whose user claim holds a control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), was
+  accepted and is refused; a JWKS key of the shapes in (1), or a second key under a shared `kid`, that did not verify now does.
 
 ## Context
 
@@ -132,6 +150,8 @@ sequenceDiagram
   O-->>P: 200 with the Principal in the request, or 401, or 503
 ```
 
+*Amended 2026-10-16: the order and the rules are in the Status block.*
+
 ```mermaid
 stateDiagram-v2
   [*] --> NoKeys: the process starts (nothing is persisted)
@@ -148,7 +168,7 @@ stateDiagram-v2
   bits, a symmetric key, a key for encryption or another curve is skipped.
 - **Claims:** `iss` equals `auth.jwt.issuer` exactly; one of `auth.jwt.audiences` is among `aud`; `exp`, `iat`, `iss`
   and `aud` are required; `nbf` is honoured; 60 s of leeway; `email_verified` must not be `false` (boolean or text).
-  A token over 16 KiB is refused unread.
+  A token over 16 KiB is refused unread. *Amended 2026-10-16: the order and the rules are in the Status block.*
 - **The keys** are fetched from `auth.jwt.jwksUrl`, or from the `jwks_uri` of `{issuer}/.well-known/openid-configuration`
   whose `issuer` must be the configured one. They are a copy this process may lose ([ADR 0001](0001-rust-state-machine-on-postgres.md)):
   fetched on first use and by `ready()`, refreshed after 10 minutes, **fetched again for an unknown `kid` at most once

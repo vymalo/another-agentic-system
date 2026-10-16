@@ -36,9 +36,14 @@ aws-lc-rs = "1.15"
 axum = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The tests of this crate run the testkit it ships, so `cargo test -p orch-auth-jwt` works on its own (and
+# tests/conformance.rs, tests/dpop.rs and tests/jwks.rs do not compile to nothing when the feature is off).
+orch-auth-jwt = { workspace = true, features = ["testkit"] }
 orch-ports = { workspace = true, features = ["testkit"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+# The log of tests/logs.rs, captured.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

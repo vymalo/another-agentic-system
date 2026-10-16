@@ -265,7 +265,11 @@ async fn an_answer_that_is_not_a_key_set_or_has_no_usable_key_is_unavailable() {
 #[tokio::test]
 async fn a_key_the_build_cannot_use_beside_a_good_one_does_not_spoil_the_set() {
     let idp = TestIdp::start().await;
-    let real: Value = reqwest::Client::new()
+    // A client of the test's own: the environment's proxy is for the authenticator's, not for an issuer on the loopback.
+    let real: Value = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
         .get(idp.jwks_url())
         .send()
         .await
@@ -343,6 +347,36 @@ async fn an_issuer_with_a_trailing_slash_is_discovered_without_a_double_slash() 
         1,
         "the document was found at one slash"
     );
+}
+
+#[tokio::test]
+async fn only_one_terminating_slash_of_the_issuer_is_removed_to_find_the_discovery_document() {
+    // OpenID Connect Discovery 1.0, 4: "a terminating /" is removed, one, and the path is appended.
+    let paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&paths);
+    let base = odd_issuer(move |_| {
+        Router::new().fallback(move |uri: axum::http::Uri| {
+            seen.lock().unwrap().push(uri.path().to_owned());
+            async { StatusCode::NOT_FOUND }
+        })
+    })
+    .await;
+    for slashes in ["", "/", "//", "///"] {
+        paths.lock().unwrap().clear();
+        let auth = JwtAuth::new(odd_config(&format!("{base}{slashes}"))).unwrap();
+        let error = auth.ready().await.unwrap_err();
+        assert!(matches!(error, AuthError::Unavailable { .. }), "{error:?}");
+        let expected = format!(
+            "{}/.well-known/openid-configuration",
+            slashes.strip_prefix('/').unwrap_or("")
+        );
+        assert_eq!(
+            *paths.lock().unwrap(),
+            [expected],
+            "{} terminating slashes",
+            slashes.len()
+        );
+    }
 }
 
 #[test]

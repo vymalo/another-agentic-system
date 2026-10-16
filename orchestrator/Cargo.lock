@@ -2433,6 +2433,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "jsonwebtoken",
+ "orch-auth-jwt",
  "orch-core",
  "orch-ports",
  "reqwest",
@@ -2442,6 +2443,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "url",
 ]
 
