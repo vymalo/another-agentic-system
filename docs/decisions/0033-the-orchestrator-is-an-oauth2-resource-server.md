@@ -58,6 +58,20 @@
   provider of `jsonwebtoken` is installed explicitly (aws-lc-rs), so that a second backend linked into the binary cannot make the first
   verification panic. *Behaviour a deployment could see:* a token whose `iss` is a list, or whose user claim holds a control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), was
   accepted and is refused; a JWKS key of the shapes in (1), or a second key under a shared `kid`, that did not verify now does.
+  **Amended (2026-10-16, the key cache of section 2): the fetch no longer holds the lock, and a stale copy is served while it refreshes.**
+  Found by the review of the same port, where a good token waited 2.8 s behind a 3 s JWKS: the cache held its lock across the fetch, so one
+  token with an invented `kid` made every request wait behind the issuer, a copy past its refresh interval was not served while a refresh ran,
+  a request dropped mid-fetch cancelled the fetch, and `ready()` could wait on one. The policy of section 2 stands (10 minutes, an unknown `kid`
+  at most once in 30 s, 5 s after a failure, an hour of grace, `Unavailable` and never a refusal, the same log lines); what changes is who waits.
+  (1) *The fetch runs on a task of its own, one at a time*, and the lock is held to read or change the copy and nothing else. (2) *A copy older
+  than 10 minutes and within the hour is used at once*, and a refresh starts in the background; `ready()` answers at once while a copy can verify.
+  (3) *With no copy, or one past the grace, a request waits for the fetch* (bounded: each request to the issuer times out); a token that names an
+  unknown `kid` waits for the fetch and no other request does. (4) *A request that is dropped does not cancel the fetch*, and the keys it brings
+  are recorded. *Behaviour a deployment could see:* the first request after a long quiet is verified against the copy it finds, which may be up to
+  70 minutes old, and the keys an issuer withdrew stop verifying when the refresh is over, not when it starts; a slow or hanging issuer holds up
+  no request that has a copy, and `/readyz` does not wait on it while one verifies. *Verified 2026-10-16:* `tests/slow.rs` of the crate, over real
+  sockets, seven of its cases failing on the previous code; the behaviour against a real issuer is *unverified*. The diagrams of the cache as built
+  are in the [crate's README](../../orchestrator/crates/auth-jwt/README.md).
 
 ## Context
 
@@ -163,6 +177,8 @@ stateDiagram-v2
   Stale --> NoKeys: older than 10 minutes plus one hour
 ```
 
+*Amended 2026-10-16: who waits for the fetch is in the Status block, and the diagrams as built are in the crate's README.*
+
 - **Algorithms: RS256, RS384, ES256, EdDSA, and nothing else.** `none` and the HMAC family are refused whatever key
   they name (the algorithm confusion attack), and a key only verifies tokens of its own family; an RSA key under 2048
   bits, a symmetric key, a key for encryption or another curve is skipped.
@@ -173,7 +189,7 @@ stateDiagram-v2
   whose `issuer` must be the configured one. They are a copy this process may lose ([ADR 0001](0001-rust-state-machine-on-postgres.md)):
   fetched on first use and by `ready()`, refreshed after 10 minutes, **fetched again for an unknown `kid` at most once
   in 30 s**, not retried for 5 s after a failure, one request for any number of concurrent callers. A copy that cannot be
-  refreshed goes on verifying for one more hour (an issuer's blip is not an outage of the chat); after that, `Unavailable`.
+  refreshed goes on verifying for one more hour (an issuer's blip is not an outage of the chat); after that, `Unavailable`. *Amended 2026-10-16: the fetch runs on a task of its own and a stale copy is served while it refreshes; see the Status block.*
 - **The fetch is bounded:** a timeout, no redirect followed, a body of at most 1 MiB, a `jwks_uri` that is `http(s)`
   without credentials and never plain HTTP under an HTTPS issuer. There is no filter on the *address*: the issuer is the
   operator's own configuration, an identity provider in the cluster is a private address, and the repository applies no

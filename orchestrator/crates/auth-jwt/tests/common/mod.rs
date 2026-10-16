@@ -5,7 +5,7 @@
 //! set and the exact claims, and they run without the feature.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::routing::get;
@@ -112,5 +112,15 @@ pub fn refusal(result: Result<Principal, AuthError>, what: &str) -> String {
     match result {
         Err(AuthError::Invalid { detail, .. }) => detail,
         other => panic!("{what}: expected a refusal, got {other:?}"),
+    }
+}
+
+/// Polls `condition` every 10 ms until it holds, and fails after ten seconds. For what happens on a task of its
+/// own (a refresh in the background), which a request that was answered at once does not wait for.
+pub async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while !condition() {
+        assert!(Instant::now() < give_up, "gave up waiting for: {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
