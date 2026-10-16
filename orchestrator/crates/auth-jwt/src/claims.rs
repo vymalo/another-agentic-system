@@ -3,6 +3,7 @@
 //! The signature, the issuer, the audience and the times are checked before this runs; this reads
 //! the claims the deployment configured (ADR 0033: `auth.jwt.userClaim`, `auth.jwt.rolesClaim`).
 //! A reason it gives for a refusal names a claim by its configured name and never shows a value.
+//! The user must be somebody: text that is not blank and holds no control character.
 
 use std::collections::BTreeSet;
 
@@ -41,6 +42,17 @@ fn text<'a>(claims: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
         .filter(|t| !t.is_empty())
 }
 
+/// The user a claim names: text that is not blank and has no control character, trimmed. The user is written to
+/// logs, headers and rows, and a newline or a NUL in it would have to be escaped at each of them; the whole
+/// value is looked at, so a newline that trimming would have hidden is refused too.
+fn user<'a>(claims: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
+    let value = lookup(claims, name)?.as_str()?;
+    if value.chars().any(char::is_control) {
+        return None;
+    }
+    Some(value.trim()).filter(|t| !t.is_empty())
+}
+
 /// The roles at `path`: the texts of a list (anything else in it is skipped), or a single text.
 /// A claim that is absent or of another kind is no roles.
 fn roles(claims: &Map<String, Value>, path: &str) -> BTreeSet<Role> {
@@ -70,7 +82,7 @@ fn email_unverified(claims: &Map<String, Value>) -> bool {
 ///
 /// # Errors
 /// `Invalid` (a bearer) when the e-mail is not verified, or when the configured user claim is
-/// absent, is not text, or is empty.
+/// absent, is not text, is empty or blank, or holds a control character.
 pub(crate) fn principal(
     claims: &Map<String, Value>,
     user_claim: &str,
@@ -81,7 +93,7 @@ pub(crate) fn principal(
             "the token's e-mail is not verified",
         ));
     }
-    let user = text(claims, user_claim).ok_or_else(|| {
+    let user = user(claims, user_claim).ok_or_else(|| {
         AuthError::invalid_bearer(format!("the token has no usable {user_claim:?} claim"))
     })?;
     Ok(Principal {
@@ -184,6 +196,35 @@ mod tests {
             let err = principal(&claims(value), "email", None).unwrap_err();
             let shown = err.to_string();
             assert!(shown.contains("\"email\""), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_user_that_is_blank_or_holds_a_control_character_is_not_a_user() {
+        for bad in [
+            "",
+            "  ",
+            "\t",
+            " \n ",
+            "a\nb\0",
+            "a\u{7f}",
+            "\u{85}",
+            "\u{1b}[0m",
+            "x\ry",
+            "alice@example.com\n",
+        ] {
+            for claim in ["email", "sub"] {
+                let c = claims(json!({ claim: bad }));
+                let err = principal(&c, claim, None).unwrap_err().to_string();
+                assert!(err.contains(&format!("\"{claim}\"")), "{bad:?}: {err}");
+            }
+        }
+        for fine in ["Zoë", "a b", " padded ", "idp|42"] {
+            let c = claims(json!({ "sub": fine }));
+            assert_eq!(
+                principal(&c, "sub", None).unwrap().user.as_str(),
+                fine.trim().to_lowercase()
+            );
         }
     }
 

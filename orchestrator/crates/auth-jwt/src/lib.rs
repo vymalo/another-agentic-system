@@ -17,7 +17,7 @@
 //!   else the kid is unknown (at most once in 30 s)
 //!     A->>I: GET jwks again
 //!   end
-//!   A->>A: signature, iss, aud, exp, nbf, iat, email_verified
+//!   A->>A: signature, exp, nbf, iss, aud, iat, email_verified, user
 //!   A-->>C: the principal, or Invalid, or Unavailable
 //! ```
 //!
@@ -26,11 +26,16 @@
 //! - **Algorithm**: RS256, RS384, ES256 and EdDSA, and nothing else. `none` and the HMAC family are
 //!   refused whatever key they name (the algorithm confusion attack), and the key a token is
 //!   verified with must be of the algorithm's family.
-//! - **Key**: a key of the issuer's JWKS, found by the token's `kid`. A JWKS key that cannot verify
-//!   (symmetric, too small, for encryption, another curve) is skipped.
-//! - **Claims**: `iss` equal to the configured issuer, exactly; the configured audience among
-//!   `aud`; `exp`, `iat`, `iss` and `aud` present; `nbf` honoured; 60 seconds of leeway;
-//!   `email_verified` not `false`; the configured user claim a non-empty text.
+//! - **Key**: the keys of the issuer's JWKS that the token's `kid` names, **every one of them** (two
+//!   keys may share a `kid`; the token is good if any of them signed it). A JWKS key that cannot
+//!   verify (symmetric, too small, for encryption, another curve) is skipped. The members of a key
+//!   are read as the numbers they are: an RSA integer by its magnitude, a P-256 coordinate in its 32
+//!   octets, an Ed25519 key in its 32 octets, however the issuer cut, padded or signed them.
+//! - **Claims**, in this order: `exp` present and not past, `nbf` not in the future, both with 60
+//!   seconds of leeway; `iss` **one text** equal to the configured issuer, exactly (a list that
+//!   holds it is refused); the configured audience among `aud`; `iat` present; `email_verified`
+//!   not `false`; the configured user claim a text that is not blank and has no control
+//!   character. With several claims wrong, the reason is the first in this order.
 //! - **Size**: a token of more than 16 KiB is refused unread.
 //!
 //! # DPoP
@@ -66,7 +71,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::errors::ErrorKind;
-use jsonwebtoken::{Validation, decode, decode_header};
+use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, decode_header};
 use orch_ports::{
     AuthError, Authenticator, CredentialKind, Credentials, DpopCredentials, Principal,
 };
@@ -291,6 +296,7 @@ impl JwtAuth {
     /// [`BuildError`] for an issuer or a JWKS URL that is not an `http(s)` URL, no audience, an
     /// empty claim name, or a TLS backend that fails to start.
     pub fn new(cfg: JwtConfig) -> Result<Self, BuildError> {
+        install_crypto_provider();
         let issuer_url = http_url(&cfg.issuer)
             .filter(|u| u.query().is_none() && u.fragment().is_none())
             .ok_or(BuildError::BadIssuer)?;
@@ -305,10 +311,27 @@ impl JwtAuth {
         {
             return Err(BuildError::EmptyClaim);
         }
-        let source = match &cfg.jwks_url {
-            Some(url) => Source::Url(http_url(url).ok_or(BuildError::BadJwksUrl)?),
+        let jwks_url = cfg
+            .jwks_url
+            .as_deref()
+            .map(|url| http_url(url).ok_or(BuildError::BadJwksUrl))
+            .transpose()?;
+        // The keys every token is checked against travel in the clear: anyone on the network path can swap
+        // them. Said once, here, and not as a refusal: a Keycloak in the cluster is often reached over plain
+        // http, on purpose. The URL is not repeated (it is the operator's own, and may hold a secret).
+        if issuer_url.scheme() == "http" || jwks_url.as_ref().is_some_and(|u| u.scheme() == "http")
+        {
+            tracing::warn!(
+                "plain http is configured for the token issuer or its keys; anyone on the network path could swap the keys every token is checked against (use https unless the network is trusted)"
+            );
+        }
+        let source = match jwks_url {
+            Some(url) => Source::Url(url),
             None => {
-                let base = issuer_url.as_str().trim_end_matches('/');
+                // OpenID Connect Discovery 1.0, 4: a terminating `/` of the issuer is removed (one, never all
+                // of them), and the path is appended. `Url` writes a bare host as `http://host/`.
+                let base = issuer_url.as_str();
+                let base = base.strip_suffix('/').unwrap_or(base);
                 let document = Url::parse(&format!("{base}/.well-known/openid-configuration"))
                     .map_err(|_| BuildError::BadIssuer)?;
                 Source::Discover {
@@ -424,32 +447,100 @@ impl Inner {
         self.usable(&state).unwrap_or_else(|| Arc::clone(seen))
     }
 
-    fn validation(&self, alg: jsonwebtoken::Algorithm) -> Validation {
+    /// What the library checks: the signature, then `exp` (required, and not past) and `nbf`, both with the
+    /// leeway. `iss` and `aud` are checked after, by [`check_issuer_and_audience`], in that order: the library's
+    /// own checks of them read a list where a text is meant (an `iss` that is a list holding ours passes), and
+    /// the first of several required claims it finds missing is the first in the order of a hash set, so the
+    /// reason for a token that lacks several would change from one request to the next.
+    fn validation(&self, alg: Algorithm) -> Validation {
         let mut validation = Validation::new(alg);
         validation.leeway = LEEWAY_SECS;
         validation.validate_exp = true;
         validation.validate_nbf = true;
-        validation.validate_aud = true;
-        validation.set_issuer(&[&self.issuer]);
-        validation.set_audience(&self.audiences);
-        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+        validation.validate_aud = false;
+        validation.set_required_spec_claims(&["exp"]);
         validation
+    }
+
+    /// The token decoded with the first of `keys` that verifies its signature. Only a bad signature moves on to
+    /// the next key; any other reason (the times, a claim) is of a token that a key did verify, and ends it.
+    fn decode_with_any(
+        &self,
+        token: &str,
+        alg: Algorithm,
+        keys: &[DecodingKey],
+    ) -> Result<TokenData<Map<String, Value>>, AuthError> {
+        let validation = self.validation(alg);
+        for key in keys {
+            match decode::<Map<String, Value>>(token, key, &validation) {
+                Ok(data) => return Ok(data),
+                Err(e) if matches!(e.kind(), ErrorKind::InvalidSignature) => {}
+                Err(e) => return Err(refusal(e.kind())),
+            }
+        }
+        Err(refusal(&ErrorKind::InvalidSignature))
     }
 }
 
 /// Why a token was refused, in words fit for the caller. Never a value of the token.
 fn refusal(kind: &ErrorKind) -> AuthError {
-    let detail = match kind {
-        ErrorKind::ExpiredSignature => "the token has expired".to_owned(),
-        ErrorKind::ImmatureSignature => "the token is not valid yet".to_owned(),
-        ErrorKind::InvalidIssuer | ErrorKind::InvalidAudience => {
-            "the token is not for this API (issuer or audience)".to_owned()
+    match kind {
+        ErrorKind::ExpiredSignature => AuthError::invalid_bearer("the token has expired"),
+        ErrorKind::ImmatureSignature => AuthError::invalid_bearer("the token is not valid yet"),
+        ErrorKind::InvalidSignature => {
+            AuthError::invalid_bearer("the token's signature does not verify")
         }
-        ErrorKind::InvalidSignature => "the token's signature does not verify".to_owned(),
-        ErrorKind::MissingRequiredClaim(claim) => format!("the token has no {claim:?} claim"),
-        _ => "the token is not valid".to_owned(),
+        ErrorKind::MissingRequiredClaim(claim) => missing_claim(claim),
+        _ => AuthError::invalid_bearer("the token is not valid"),
+    }
+}
+
+fn missing_claim(claim: &str) -> AuthError {
+    AuthError::invalid_bearer(format!("the token has no {claim:?} claim"))
+}
+
+fn not_for_this_api() -> AuthError {
+    AuthError::invalid_bearer("the token is not for this API (issuer or audience)")
+}
+
+/// `iss` and `aud` of a token whose signature and times have passed, in that order. `iss` is one text, equal to
+/// the configured issuer (RFC 7519 4.1.1: a StringOrURI): a list that holds it is not it, and a token that names
+/// another issuer beside ours is not ours. `aud` is a text, or a list of texts, and one of the configured
+/// audiences is among them.
+fn check_issuer_and_audience(
+    claims: &Map<String, Value>,
+    issuer: &str,
+    audiences: &[String],
+) -> Result<(), AuthError> {
+    match claims.get("iss") {
+        None => return Err(missing_claim("iss")),
+        Some(Value::String(iss)) if iss == issuer => {}
+        Some(_) => return Err(not_for_this_api()),
+    }
+    let ours = |aud: &str| audiences.iter().any(|ours| ours == aud);
+    let named = match claims.get("aud") {
+        None => return Err(missing_claim("aud")),
+        Some(Value::String(aud)) => ours(aud),
+        Some(Value::Array(auds)) => {
+            auds.iter().all(Value::is_string) && auds.iter().filter_map(Value::as_str).any(ours)
+        }
+        Some(_) => false,
     };
-    AuthError::invalid_bearer(detail)
+    if named {
+        Ok(())
+    } else {
+        Err(not_for_this_api())
+    }
+}
+
+/// Makes the process-level crypto provider of `jsonwebtoken` this crate's, aws-lc-rs. The library chooses it from
+/// its features when exactly one backend is enabled, and **panics on the first verification when two are**, as
+/// they are in a binary that links another crate with the `rust_crypto` backend (Cargo unifies the features of
+/// the library across the whole build). Idempotent: the provider can be installed once per process, and one that
+/// is already there (ours, or one the binary chose) is left alone. Called before any key is read or token
+/// checked: the first use fixes the choice.
+fn install_crypto_provider() {
+    let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
 }
 
 impl Inner {
@@ -469,25 +560,26 @@ impl Inner {
                 "the token's algorithm is not allowed",
             ));
         }
-        let mut keys = self.current().await?;
-        let key = match keys.select(header.alg, header.kid.as_deref()) {
-            Some(key) => key.decoding.clone(),
-            None => {
-                keys = self.after_unknown_kid(&keys).await;
-                match keys.select(header.alg, header.kid.as_deref()) {
-                    Some(key) => key.decoding.clone(),
-                    None => {
-                        return Err(AuthError::invalid_bearer(
-                            "the token's signing key is not the issuer's",
-                        ));
-                    }
-                }
-            }
+        let candidates = |keys: &KeySet| -> Vec<DecodingKey> {
+            keys.select(header.alg, header.kid.as_deref())
+                .into_iter()
+                .map(|key| key.decoding.clone())
+                .collect()
         };
+        let mut keys = self.current().await?;
+        let mut decoding = candidates(&keys);
+        if decoding.is_empty() {
+            keys = self.after_unknown_kid(&keys).await;
+            decoding = candidates(&keys);
+            if decoding.is_empty() {
+                return Err(AuthError::invalid_bearer(
+                    "the token's signing key is not the issuer's",
+                ));
+            }
+        }
         debug_assert!(kind_of(header.alg).is_some());
-        let data = decode::<Map<String, Value>>(token, &key, &self.validation(header.alg))
-            .map_err(|e| refusal(e.kind()))?;
-        let claims = data.claims;
+        let claims = self.decode_with_any(token, header.alg, &decoding)?.claims;
+        check_issuer_and_audience(&claims, &self.issuer, &self.audiences)?;
         // `iat` is required, though the library checks no time against it.
         if !claims.get("iat").is_some_and(Value::is_number) {
             return Err(AuthError::invalid_bearer("the token has no \"iat\" claim"));
@@ -580,5 +672,90 @@ impl Authenticator for JwtAuth {
 
     fn accepts_dpop(&self) -> bool {
         self.inner.dpop.is_some()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const ISSUER: &str = "https://idp.example/realms/x";
+
+    fn claims(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    fn audiences() -> Vec<String> {
+        vec!["web".to_owned(), "cli".to_owned()]
+    }
+
+    /// The reason a token is refused for, or `None` when it passes.
+    fn reason(value: Value) -> Option<String> {
+        match check_issuer_and_audience(&claims(value), ISSUER, &audiences()) {
+            Ok(()) => None,
+            Err(AuthError::Invalid { detail, .. }) => Some(detail),
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn iss_is_one_text_equal_to_the_issuer() {
+        assert_eq!(reason(json!({"iss": ISSUER, "aud": "web"})), None);
+        for wrong in [
+            json!("https://idp.example/realms/x/"),
+            json!("HTTPS://IDP.EXAMPLE/realms/x"),
+            json!(""),
+            json!(7),
+            json!(null),
+            // The library lets a list through when it holds the issuer.
+            json!([ISSUER]),
+            json!([ISSUER, "https://evil.example"]),
+            json!(["https://evil.example", ISSUER]),
+            json!([]),
+        ] {
+            let why = reason(json!({"iss": wrong, "aud": "web"}));
+            assert!(why.unwrap().contains("not for this API"), "iss {wrong}");
+        }
+    }
+
+    #[test]
+    fn one_of_the_audiences_is_among_aud() {
+        for fine in [
+            json!("web"),
+            json!("cli"),
+            json!(["x", "cli"]),
+            json!(["web"]),
+        ] {
+            assert_eq!(reason(json!({"iss": ISSUER, "aud": fine})), None, "{fine}");
+        }
+        for wrong in [
+            json!("x"),
+            json!(""),
+            json!([]),
+            json!(["x", "y"]),
+            json!(["web", 5]),
+            json!(5),
+            json!(null),
+            json!({"web": true}),
+        ] {
+            let why = reason(json!({"iss": ISSUER, "aud": wrong}));
+            assert!(why.unwrap().contains("not for this API"), "aud {wrong}");
+        }
+    }
+
+    #[test]
+    fn a_claim_that_is_absent_is_named_and_the_issuer_comes_first() {
+        let why = |value| reason(value).unwrap();
+        assert!(why(json!({"aud": "web"})).contains("\"iss\""));
+        assert!(why(json!({"iss": ISSUER})).contains("\"aud\""));
+        assert!(
+            why(json!({})).contains("\"iss\""),
+            "the issuer is the first asked"
+        );
+        // Wrong in both: the word is the same, and the issuer's is the one given.
+        assert!(why(json!({"iss": "x", "aud": "y"})).contains("not for this API"));
+        assert!(why(json!({"iss": "x"})).contains("not for this API"));
     }
 }

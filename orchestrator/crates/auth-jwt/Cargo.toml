@@ -39,6 +39,8 @@ axum = { workspace = true, optional = true }
 orch-ports = { workspace = true, features = ["testkit"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+# The log of tests/logs.rs, captured.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
