@@ -102,6 +102,8 @@ run against the same fake agent. Offline, no environment
 variables. The WireMock stand-ins of `compose.yaml` are exercised by
 `orch-e2e`'s `wiremock_agent` test (see [`orch-e2e`](../e2e/README.md)).
 
+`tests/dependencies.rs` reads the workspace's `Cargo.lock` and fails if `hyper` is locked below 1.12.0 or `want` below 0.3.2: with hyper 1.11.1 a pooled HTTP/1.1 connection whose response still streams (this client's `SendStreamingMessage` and `SubscribeToTask`) can be handed to the next call to that agent, which then waits behind the stream. The test's header has the evidence (reproduced in another-agentic-platform, not seen here).
+
 ## See also
 
 [`orch-ports`](../ports/README.md),
