@@ -158,6 +158,7 @@ flowchart LR
   that cannot be read lists none of its agents, the file's agents stay, and
   `GET /api/registry` says which source is down, so the UI can. A delegation to one of its agents is
   retried while the registry cannot answer and dead-lettered only when it answers without the agent.
+  An item may carry an `audience` ([ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)): a person may read or invoke a registry's agent only when a role of theirs grants it and the audience holds `*` or a value of their roles claim, or a role of theirs holds `admin`; with none, only the administrators may. The deployment's own agents have none.
   The cards themselves are read live and never cached, and a release selection is offered only when
   the live card advertises the release-channels extension (ADR 0008): the registry lists no
   releases. Gate layers and the verifier are for the file's agents.

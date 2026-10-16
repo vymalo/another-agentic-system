@@ -10,6 +10,10 @@
 //! see the change on the very next read, so an implementation that keeps a copy (the platform's,
 //! for as long as the source's cache headers say) is given a source that says not to.
 //!
+//! The audience of an entry (ADR 0045) round-trips: what the fixture makes the source say is what
+//! [`list`](AgentRegistry::list) and [`get`](AgentRegistry::get) give back, for each of the three
+//! audiences a registry's agent has.
+//!
 //! What is deliberately not asserted: the wording of a detail, and which `origin` an entry has.
 
 use std::future::Future;
@@ -17,7 +21,7 @@ use std::time::Duration;
 
 use orch_core::{AgentId, AgentSource, Classify, ErrorClass, is_valid_agent_id};
 
-use crate::{AgentEndpoint, AgentRegistry, RegistryEntry};
+use crate::{AgentAudience, AgentEndpoint, AgentRegistry, RegistryEntry};
 
 /// How long a case may take before it fails.
 const CASE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -47,7 +51,8 @@ pub trait RegistryFixture: Send + Sync + 'static {
 }
 
 /// The entry the cases add: an A2A agent `id` named `name`, with the card URL
-/// `http://<id>.test/.well-known/agent-card.json`, no bearer and no tags.
+/// `http://<id>.test/.well-known/agent-card.json`, no bearer, no tags and an audience of
+/// [`AgentAudience::Everyone`].
 pub fn entry(id: &str, name: &str) -> RegistryEntry {
     RegistryEntry {
         endpoint: AgentEndpoint::a2a(
@@ -58,6 +63,7 @@ pub fn entry(id: &str, name: &str) -> RegistryEntry {
         name: name.to_owned(),
         tags: Vec::new(),
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     }
 }
 
@@ -245,6 +251,53 @@ pub async fn recovers_when_up<F: RegistryFixture>(f: F) {
         );
         assert!(listing.is_complete(), "{:?}", listing.sources);
         assert!(f.registry().get(&id("alpha")).await.unwrap().is_some());
+    })
+    .await;
+}
+
+/// The audience of an agent is the source's, whole: `["*"]`, a set of values and none (an agent the
+/// source gives no audience), by `list` and by `get`, and a change of it shows on the next read.
+pub async fn audience_round_trips<F: RegistryFixture>(f: F) {
+    within(async {
+        let with = |id: &str, audience: AgentAudience| RegistryEntry {
+            audience,
+            ..entry(id, id)
+        };
+        let values = AgentAudience::from_values(["agent.use:beta", "agent.use:alpha"]);
+        assert!(matches!(values, AgentAudience::Roles(_)));
+        f.add(with("everyone", AgentAudience::Everyone));
+        f.add(with("some", values.clone()));
+        f.add(with("none", AgentAudience::AdminsOnly));
+        let listing = f.registry().list().await;
+        let audience_of = |id: &str| {
+            listing
+                .entries
+                .iter()
+                .find(|e| e.id().as_str() == id)
+                .map(|e| e.audience.clone())
+        };
+        assert_eq!(audience_of("everyone"), Some(AgentAudience::Everyone));
+        assert_eq!(audience_of("some"), Some(values.clone()));
+        assert_eq!(audience_of("none"), Some(AgentAudience::AdminsOnly));
+        for (id, want) in [
+            ("everyone", AgentAudience::Everyone),
+            ("some", values.clone()),
+            ("none", AgentAudience::AdminsOnly),
+        ] {
+            let found = f.registry().get(&self::id(id)).await.unwrap().unwrap();
+            assert_eq!(found.audience, want, "get {id}");
+        }
+
+        // a change of it shows on the next read, like any other change (the source lists an id
+        // once, so the change is the item taken out and put back)
+        f.remove(&id("none"));
+        f.add(with("none", AgentAudience::Everyone));
+        f.remove(&id("some"));
+        f.add(with("some", AgentAudience::AdminsOnly));
+        let found = f.registry().get(&id("none")).await.unwrap().unwrap();
+        assert_eq!(found.audience, AgentAudience::Everyone);
+        let found = f.registry().get(&id("some")).await.unwrap().unwrap();
+        assert_eq!(found.audience, AgentAudience::AdminsOnly);
     })
     .await;
 }

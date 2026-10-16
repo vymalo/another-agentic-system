@@ -12,6 +12,10 @@
 //! Two implementations live here: [`FixedRegistry`], the static list the deployment configures,
 //! and [`CompositeRegistry`], which reads two registries and merges them (the first wins on an
 //! id both list). The platform's registry is a crate of its own, `orch-registry-platform`.
+//!
+//! An entry says **whom it is for** ([`RegistryEntry::audience`], [`AgentAudience`], ADR 0045): the
+//! deployment's own agents have none and `auth.roles` alone decides, and an agent a registry
+//! lists carries the audience of its item, which fails closed.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -20,6 +24,112 @@ use std::sync::Arc;
 use orch_core::{AgentId, AgentSource, BoxError, Classify, ErrorClass};
 
 use crate::AgentEndpoint;
+
+/// The most distinct values an audience may hold (`agent-registry/v1`, section *Audience*).
+pub const MAX_AUDIENCE_VALUES: usize = 32;
+/// The most bytes of one audience value.
+pub const MAX_AUDIENCE_VALUE_BYTES: usize = 64;
+/// The audience value that admits everybody. It is only allowed alone.
+pub const AUDIENCE_EVERYONE: &str = "*";
+
+/// Whom an agent is for (ADR 0045, decision 1): the `audience` of a registry item, which the
+/// application reads against the roles claim of the person who asks.
+///
+/// Four cases that are never confused, because a bare list of texts could not tell them apart
+/// (an empty one would have to mean either "nobody" or "everybody"):
+///
+/// | Variant | Whose agent | Who may use it |
+/// |---|---|---|
+/// | [`Static`](Self::Static) | the deployment's own (`AGENTS_FILE`) | whoever `auth.roles` lets |
+/// | [`AdminsOnly`](Self::AdminsOnly) | a registry's, with *none* | people whose roles hold `admin` |
+/// | [`Everyone`](Self::Everyone) | a registry's, `["*"]` | whoever `auth.roles` lets |
+/// | [`Roles`](Self::Roles) | a registry's, with values | people whose roles claim holds one, and administrators |
+///
+/// Whoever builds one from the contract's text uses [`AgentAudience::from_values`], which is the
+/// contract's *Shape* and *Malformed* as a function: a value outside the grammar, more than
+/// [`MAX_AUDIENCE_VALUES`] distinct values, or `"*"` beside another value is *none*, so
+/// the result is [`AdminsOnly`](Self::AdminsOnly), never a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentAudience {
+    /// An agent of the deployment's own agents file: it has no audience, and `auth.roles` alone
+    /// decides who may use it (ADR 0045, decision 1.6). Only the static source builds this one.
+    Static,
+    /// An agent a registry lists with no audience: the item has no `audience`, has `[]`, or has one
+    /// the contract calls malformed. It is for people whose roles hold `admin`, and nobody else
+    /// (fail closed).
+    AdminsOnly,
+    /// `["*"]`: everybody whom `auth.roles` lets use the agent.
+    Everyone,
+    /// These values: the people whose roles claim holds one of them (byte for byte), and the
+    /// administrators.
+    Roles(AudienceRoles),
+}
+
+/// A set of 1 to [`MAX_AUDIENCE_VALUES`] role names that a registry item names as its audience:
+/// each is 1 to [`MAX_AUDIENCE_VALUE_BYTES`] bytes of `0x21` to `0x7E`, and none is `"*"`. It is
+/// built only by [`AgentAudience::from_values`], so a value of this type is always well formed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudienceRoles(BTreeSet<String>);
+
+impl AudienceRoles {
+    /// Whether `role` is one of the values, byte for byte: no trimming, no case folding.
+    pub fn contains(&self, role: &str) -> bool {
+        self.0.contains(role)
+    }
+
+    /// The values, each once, in byte order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(String::as_str)
+    }
+}
+
+impl AgentAudience {
+    /// The audience a registry item's `audience` array says, read as the contract's *Shape* and
+    /// *Malformed* say (`another-agentic-platform`, `docs/extensions/agent-registry-v1.md`):
+    ///
+    /// - the values are a **set**: a repeat counts once, and the order means nothing;
+    /// - a value is 1 to 64 bytes, every byte in `0x21` to `0x7E`;
+    /// - at most 32 **distinct** values;
+    /// - `"*"` is only allowed alone: `["*", "*"]` is `["*"]`, and `"*"` beside another value is
+    ///   malformed;
+    /// - no values at all (an empty array, or no `audience` member) is *none*, and so is anything
+    ///   malformed: [`AgentAudience::AdminsOnly`].
+    ///
+    /// A caller that read a member that is not an array of texts has nothing to pass: that is
+    /// malformed too, and it builds [`AgentAudience::AdminsOnly`] itself.
+    pub fn from_values<I, S>(values: I) -> AgentAudience
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        for value in values {
+            let value = value.as_ref();
+            if !is_audience_value(value) {
+                return AgentAudience::AdminsOnly;
+            }
+            if !set.contains(value) {
+                if set.len() == MAX_AUDIENCE_VALUES {
+                    return AgentAudience::AdminsOnly;
+                }
+                set.insert(value.to_owned());
+            }
+        }
+        match (set.len(), set.contains(AUDIENCE_EVERYONE)) {
+            (0, _) => AgentAudience::AdminsOnly,
+            (1, true) => AgentAudience::Everyone,
+            (_, true) => AgentAudience::AdminsOnly,
+            (_, false) => AgentAudience::Roles(AudienceRoles(set)),
+        }
+    }
+}
+
+/// Whether `value` is a well-formed audience value: 1 to 64 bytes, each in `0x21` to `0x7E`.
+/// Bytes, not characters: a non-ASCII character has bytes above `0x7E`.
+fn is_audience_value(value: &str) -> bool {
+    (1..=MAX_AUDIENCE_VALUE_BYTES).contains(&value.len())
+        && value.bytes().all(|b| (0x21..=0x7E).contains(&b))
+}
 
 /// One agent a registry lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +143,9 @@ pub struct RegistryEntry {
     pub tags: Vec<String>,
     /// Which kind of source lists it.
     pub origin: AgentSource,
+    /// Whom it is for (ADR 0045). [`AgentAudience::Static`] for an agent of the deployment's own
+    /// list and for no other; a registry's agent always has one of the other three.
+    pub audience: AgentAudience,
 }
 
 impl RegistryEntry {
@@ -286,6 +399,10 @@ mod tests {
             name: name.to_owned(),
             tags: Vec::new(),
             origin,
+            audience: match origin {
+                AgentSource::Static => AgentAudience::Static,
+                AgentSource::Registry => AgentAudience::Everyone,
+            },
         }
     }
 
@@ -399,5 +516,200 @@ mod tests {
             orch_core::report(&e),
             "agent registry platform unavailable: the registry could not be reached: connection refused"
         );
+    }
+
+    // ---- the audience of an item (ADR 0045; the platform's agent-registry/v1, section Audience) ----
+
+    fn audience<const N: usize>(values: [&str; N]) -> AgentAudience {
+        AgentAudience::from_values(values)
+    }
+
+    fn roles_of(audience: &AgentAudience) -> Vec<&str> {
+        match audience {
+            AgentAudience::Roles(roles) => roles.iter().collect(),
+            other => panic!("not a set of values: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_values_is_none_and_none_is_for_administrators_only() {
+        assert_eq!(audience([]), AgentAudience::AdminsOnly);
+        assert_eq!(
+            AgentAudience::from_values(Vec::<String>::new()),
+            AgentAudience::AdminsOnly
+        );
+    }
+
+    #[test]
+    fn a_star_alone_is_everyone_and_a_repeat_of_it_is_the_same() {
+        assert_eq!(audience(["*"]), AgentAudience::Everyone);
+        assert_eq!(audience(["*", "*"]), AgentAudience::Everyone);
+        assert_eq!(audience(["*", "*", "*"]), AgentAudience::Everyone);
+    }
+
+    #[test]
+    fn a_star_beside_another_value_is_malformed_whatever_the_order() {
+        assert_eq!(audience(["*", "x"]), AgentAudience::AdminsOnly);
+        assert_eq!(audience(["x", "*"]), AgentAudience::AdminsOnly);
+        assert_eq!(audience(["x", "*", "x"]), AgentAudience::AdminsOnly);
+        assert_eq!(audience(["*", "**"]), AgentAudience::AdminsOnly);
+    }
+
+    #[test]
+    fn the_values_are_a_set_a_repeat_counts_once_and_the_order_means_nothing() {
+        let a = audience(["agent.use:b", "agent.use:a", "agent.use:b"]);
+        let b = audience(["agent.use:a", "agent.use:b"]);
+        assert_eq!(a, b);
+        assert_eq!(roles_of(&a), ["agent.use:a", "agent.use:b"]);
+    }
+
+    #[test]
+    fn values_are_compared_byte_for_byte_with_no_folding_or_trimming() {
+        let AgentAudience::Roles(roles) = audience(["Agent.Use:A"]) else {
+            panic!("a set of one value");
+        };
+        assert!(roles.contains("Agent.Use:A"));
+        assert!(!roles.contains("agent.use:a"), "case is kept");
+        assert!(!roles.contains("Agent.Use:A "), "nothing is trimmed");
+        assert!(!roles.contains(""), "the empty text is no value");
+    }
+
+    #[test]
+    fn a_value_is_one_to_sixty_four_bytes() {
+        assert_eq!(
+            audience(["x".repeat(MAX_AUDIENCE_VALUE_BYTES).as_str()]),
+            AgentAudience::Roles(AudienceRoles(BTreeSet::from(["x".repeat(64)])))
+        );
+        assert_eq!(
+            audience(["x".repeat(MAX_AUDIENCE_VALUE_BYTES + 1).as_str()]),
+            AgentAudience::AdminsOnly
+        );
+        assert_eq!(audience([""]), AgentAudience::AdminsOnly);
+        // the whole item is malformed for one bad value, the good ones notwithstanding
+        assert_eq!(audience(["good", ""]), AgentAudience::AdminsOnly);
+    }
+
+    #[test]
+    fn a_byte_is_between_0x21_and_0x7e() {
+        // the edges that are in
+        assert_eq!(roles_of(&audience(["!"])), ["!"]);
+        assert_eq!(roles_of(&audience(["~"])), ["~"]);
+        // the edges that are out: space (0x20), DEL (0x7F), controls, the line ends, non-ASCII
+        for bad in [
+            " ",
+            "a b",
+            " a",
+            "a ",
+            "\u{7f}",
+            "a\u{7f}",
+            "\t",
+            "a\n",
+            "\n",
+            "a\r",
+            "\0",
+            "é",
+            "agent.use:é",
+            "\u{a0}",
+            "\u{3000}",
+            "日本",
+        ] {
+            assert_eq!(audience([bad]), AgentAudience::AdminsOnly, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn thirty_two_distinct_values_are_allowed_and_thirty_three_are_not() {
+        let many = |n: usize| (0..n).map(|i| format!("role-{i:02}")).collect::<Vec<_>>();
+        assert_eq!(roles_of(&AgentAudience::from_values(many(32))).len(), 32);
+        assert_eq!(
+            AgentAudience::from_values(many(33)),
+            AgentAudience::AdminsOnly
+        );
+        // distinct, not listed: any number of repeats of 32 is 32
+        let mut repeated = many(32);
+        repeated.extend(many(32));
+        repeated.extend(many(32));
+        assert_eq!(roles_of(&AgentAudience::from_values(repeated)).len(), 32);
+        // a thirty-third that is a repeat of "*" is not distinct either: *alone* needs one value
+        let mut with_star = many(31);
+        with_star.push("*".to_owned());
+        assert_eq!(
+            AgentAudience::from_values(with_star),
+            AgentAudience::AdminsOnly
+        );
+    }
+
+    mod audience_properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// Any text, and the ones near the grammar's edges.
+        fn text() -> impl Strategy<Value = String> {
+            prop_oneof![
+                "[!-~]{1,64}",
+                "[!-~]{0,70}",
+                ".{0,70}",
+                Just("*".to_owned()),
+                Just(String::new()),
+                "[ -\u{7f}]{1,8}",
+            ]
+        }
+
+        /// The contract's rule for one value, written out again by hand.
+        fn well_formed(value: &str) -> bool {
+            !value.is_empty()
+                && value.len() <= 64
+                && value.bytes().all(|b| matches!(b, 0x21..=0x7E))
+        }
+
+        proptest! {
+            #[test]
+            fn the_result_is_what_the_contracts_rules_say(values in prop::collection::vec(text(), 0..40)) {
+                let distinct: BTreeSet<&str> = values.iter().map(String::as_str).collect();
+                let result = AgentAudience::from_values(&values);
+                let ok = distinct.iter().all(|v| well_formed(v)) && distinct.len() <= 32;
+                match result {
+                    AgentAudience::Static => prop_assert!(false, "a registry never builds a static audience"),
+                    AgentAudience::AdminsOnly => prop_assert!(
+                        !ok || distinct.is_empty() || (distinct.contains("*") && distinct.len() > 1),
+                        "{distinct:?}"
+                    ),
+                    AgentAudience::Everyone => prop_assert!(ok && distinct == BTreeSet::from(["*"])),
+                    AgentAudience::Roles(roles) => {
+                        prop_assert!(ok && !distinct.contains("*") && !distinct.is_empty());
+                        prop_assert_eq!(roles.iter().collect::<BTreeSet<_>>(), distinct);
+                    }
+                }
+            }
+
+            #[test]
+            fn order_and_repeats_change_nothing(
+                values in prop::collection::vec(text(), 0..20),
+                again in prop::collection::vec(any::<prop::sample::Index>(), 0..20),
+            ) {
+                let base = AgentAudience::from_values(&values);
+                let mut reversed: Vec<String> = values.iter().rev().cloned().collect();
+                prop_assert_eq!(&AgentAudience::from_values(&reversed), &base);
+                for i in again {
+                    if !values.is_empty() {
+                        reversed.push(values[i.index(values.len())].clone());
+                    }
+                }
+                prop_assert_eq!(&AgentAudience::from_values(&reversed), &base);
+            }
+
+            #[test]
+            fn a_set_of_values_never_holds_a_star_or_a_value_the_grammar_refuses(
+                values in prop::collection::vec(text(), 0..40)
+            ) {
+                if let AgentAudience::Roles(roles) = AgentAudience::from_values(&values) {
+                    let held: Vec<&str> = roles.iter().collect();
+                    prop_assert!(!held.is_empty() && held.len() <= 32);
+                    prop_assert!(held.iter().all(|v| well_formed(v) && *v != "*"));
+                    prop_assert!(held.windows(2).all(|w| w[0] < w[1]), "byte order, each once");
+                }
+            }
+        }
     }
 }

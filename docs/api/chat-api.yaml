@@ -117,7 +117,9 @@ paths:
         The caller's identity (`user` is the key of what they own: the e-mail, lower-cased), the roles
         that count (the roles of the credential that `auth.roles` defines, or `auth.defaultRole` when
         none is), what those roles grant (`permissions`, each with its `scope` where it has one) and
-        the agents `agent.read` and `agent.invoke` are about (`["*"]` for every agent). A client uses it
+        the agents `agent.read` and `agent.invoke` are about (`["*"]` for every agent; these are the patterns of the
+        roles' `agents`, and **do not say the audience of an agent the platform's registry lists**, which `listAgents` does: it
+        is filtered by it). A client uses it
         to show what its person may do and to hide what they may not; **it is never a check**: the
         orchestrator enforces every request whatever a client shows. It is the one operation that
         answers a person whose roles grant nothing (`roles` and `permissions` are then empty), so that
@@ -135,8 +137,12 @@ paths:
       operationId: listAgents
       summary: Agents the user can target
       description: |
-        Only the agents the caller's roles may read (`agent.read` and the agents of their roles); the
-        first of them is the one `getMe`'s `invoke` names first, which clients preselect.
+        Only the agents the caller may read: a role of theirs grants `agent.read` over the agent (`auth.roles`)
+        **and**, for an agent the platform's registry lists, its **audience** lets them in
+        ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)): the registry item's `audience`
+        holds `"*"`, or one of the values of the caller's roles claim, or a role of theirs holds `admin`. A registry agent with no
+        audience is therefore for administrators only; the deployment's own agents (`source: static`) have no audience. So this list,
+        and not the patterns of `getMe`'s `agents` (which cannot say an audience), is what a client offers.
 
         The agents the deployment lists (`AGENTS_FILE`, `source: static`) and, when it reads one,
         the agents of the platform's registry (`source: registry`, [ADR 0022](../decisions/0022-platform-provisions-agents-system-discovers-them.md)).
@@ -767,6 +773,10 @@ paths:
         thread has already is not checked again: a deployment that stopped listing it, or a server of the person's that needs a
         new key, leaves the thread its attachment, and a person can detach it. Attaching asks the credential broker for nothing.
         A thread that is not the caller's is a **404** indistinguishable from one that does not exist, whatever their roles.
+        Attaching a server the thread does not have is for the agent that will use it, so it takes `agent.invoke` for the
+        thread's agent, **its audience included** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)):
+        for a thread whose agent the caller may no longer use, which is **read-only** for them, it is a **403**. Keeping the
+        servers the thread has, or taking them off, is not attaching and is still theirs.
 
         A server of the person's that is not `ready` is a **422** with a `code` a client acts on: `tool_server_needs_auth` when
         the person has something to do (the server has no key or authorization yet, its key or authorization ended, it was
@@ -788,7 +798,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ThreadTools" }
         "400": { description: "A body that is not exactly an object with a `servers` array of strings, or an id that is not `^[a-z0-9][a-z0-9-]{0,30}$`", $ref: "#/components/responses/Problem" }
-        "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing; or the set adds a server and the caller may not use the thread's agent (`agent.invoke`: no role names it, or its audience leaves them out)", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "422": { description: "A server the deployment does not list, or does not offer for the thread's agent, or more than 16 servers (the two kinds together); an id that is not a server of the thread owner's (the same answer for another person's, a missing one and a deployment with the feature off); or a server of the person's own that is not ready, with `code: tool_server_needs_auth` or `code: tool_server_unavailable`. The detail names the server's id, never a URL", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/export:
@@ -880,7 +890,8 @@ paths:
         offers that is not above the lower of its `default` and the cap, as for a new thread.
 
         `target` names the agent and release the fork talks to (the parent's when absent), validated as for a new
-        thread. `id` is a UUID the caller chose for the new thread: a repeat of the request with the same `id` answers
+        thread: an agent the caller's audience leaves out ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md))
+        is a 400 "unknown agent" in the words, and with the shape, of one that is not listed. `id` is a UUID the caller chose for the new thread: a repeat of the request with the same `id` answers
         the fork it made (200) and writes nothing; the id of another thread is a 409. The caller's own threads only;
         someone else's is a 404.
       requestBody:
@@ -1292,7 +1303,7 @@ paths:
         "400": { description: "The body is not JSON or not a `RunAgentInput`; `threadId` is not a UUID; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one; a `forwardedProps[\"vymalo.gate\"]` (the verification gate, [`agui.md`](agui.md#verification-the-gate)) that is malformed, removes a required source, asks for attempts outside the deployment's cap, or needs what the build does not honour yet; a `forwardedProps[\"vymalo.send\"]` that is not `steer` or `interrupt`; a `forwardedProps[\"vymalo.fork\"]` that is not exactly `{from: <thread UUID>, after: <integer>}`, or that comes with `vymalo.gate` or `vymalo.tools`; a `forwardedProps[\"vymalo.tier\"]` that is not one of `plan`, `edits`, `auto`, `bypass`", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles do not hold `thread.write`, or do not name the agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
-        "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it), or the thread belongs to someone else (whatever the caller's roles; indistinguishable from one that does not exist, including a minted id that collides with another owner's thread); for a `vymalo.fork`, the thread to fork (`from`) is not the caller's or does not exist", $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it) **or its audience leaves the caller out** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md): the same problem, \"no such agent\"; but a message to the caller's own thread on that agent is a 403, the thread is read-only for them), or the thread belongs to someone else (whatever the caller's roles; indistinguishable from one that does not exist, including a minted id that collides with another owner's thread); for a `vymalo.fork`, the thread to fork (`from`) is not the caller's or does not exist", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: turn_open`: the turn a `vymalo.fork` would copy is still going on, try again when it has ended; a `vymalo.fork` on a thread that exists and is not the fork this request made. Or: the thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
@@ -1498,7 +1509,7 @@ paths:
               schema: { $ref: "#/components/schemas/AgUiAgentCapabilities" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles do not name the agent for `agent.read`, or grant nothing", $ref: "#/components/responses/Problem" }
-        "404": { description: "The agent is not listed (the registry answered without it)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The agent is not listed (the registry answered without it), **or its audience leaves the caller out** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)): the same problem, so an agent the caller may not read looks like one that does not exist", $ref: "#/components/responses/Problem" }
         "503": { description: "The agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:

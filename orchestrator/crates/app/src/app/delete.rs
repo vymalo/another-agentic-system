@@ -129,7 +129,7 @@ impl<P: Ports> App<P> {
         ) {
             Ok(()) => {}
             Err(Denied::Permission(p)) => return Err(AppError::missing_permission(p)),
-            Err(Denied::OutOfScope(_)) => return Err(AppError::NotFound),
+            Err(Denied::OutOfScope(_) | Denied::Audience(_)) => return Err(AppError::NotFound),
         }
         let deleted = self.erase(user, id).await?;
         // The files, now that nothing can reference them. A failure is the sweep's, never the

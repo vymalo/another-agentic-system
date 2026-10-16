@@ -320,6 +320,7 @@ macro_rules! agent_registry_conformance {
             lists_in_order get_finds_by_id unknown_id_is_none a_change_shows_on_the_next_read
             down_lists_nothing_and_says_so get_while_down_is_unavailable_not_none
             recovers_when_up invalid_entries_never_listed an_id_is_listed_once
+            audience_round_trips
         );
     };
     (@cases $make:path; $($case:ident)*) => {

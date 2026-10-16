@@ -24,7 +24,7 @@ use orch_core::{
 use orch_ports::{AgentTransport, MentionInfo, Ports, RegistryEntry};
 use serde_json::Value;
 
-use crate::{Access, App, AppError, Permission, Resource};
+use crate::{Access, App, AppError, Permission};
 
 /// The key of a run's `forwardedProps` that carries the message's mentions (`mentions/v1`): an
 /// array of references.
@@ -256,17 +256,19 @@ impl<P: Ports> App<P> {
         for mention in mentions {
             // A mention of an alias is a mention of the agent it names (ADR 0049).
             let id = &self.canonical_agent(&mention.agent_id);
-            // What a person may invoke does not depend on the registry, and is asked first, as
-            // for a thread's own agent: an agent they may not use is not described to them as
-            // unknown or known.
-            if !access.allows(Permission::AgentInvoke, &Resource::Agent { id }) {
+            // What the roles let a person invoke does not depend on the registry, and is asked
+            // first, as for a thread's own agent: an agent they may not use is not described to
+            // them as unknown or known.
+            if access.check_scope(Permission::AgentInvoke, id).is_err() {
                 return Err(AppError::Unprocessable(format!(
                     "you may not use '{}'",
                     shown(id)
                 )));
             }
+            // An agent whose audience leaves the person out is unknown to them (ADR 0045).
             let listed = if is_valid_agent_id(id.as_str()) {
-                self.resolve_agent(id).await?
+                self.visible_agent(access, Permission::AgentInvoke, id)
+                    .await?
             } else {
                 // every source holds its ids to this form: no agent has this one
                 None

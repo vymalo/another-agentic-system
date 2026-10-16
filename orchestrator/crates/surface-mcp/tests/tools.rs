@@ -6,7 +6,7 @@ mod support;
 use orch_core::{
     AgentId, AgentSource, AgentUpdate, EventBody, EventKind, GatePolicy, Input, Origin,
 };
-use orch_ports::{AgentEndpoint, RegistryEntry, ThreadStore};
+use orch_ports::{AgentAudience, AgentEndpoint, RegistryEntry, ThreadStore};
 use serde_json::{Value, json};
 use support::*;
 
@@ -20,6 +20,7 @@ fn platform_agent(id: &str) -> RegistryEntry {
         name: "Helper".to_owned(),
         tags: Vec::new(),
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     }
 }
 
@@ -44,6 +45,63 @@ async fn list_agents_gives_the_configured_agents_in_order() {
     assert_eq!(out.value["agents"][0]["description"], "scripted agent");
     // The result is text for the model as well as structured.
     assert!(out.text.contains("\"plain\""), "{}", out.text);
+}
+
+#[tokio::test]
+async fn a_token_lists_and_starts_the_registry_agents_whose_audience_names_its_role() {
+    // ADR 0045: the roles of the token are the claim an audience is read against
+    let h = Harness::start().await;
+    h.registry.add(platform_agent("open"));
+    h.registry.add(RegistryEntry {
+        audience: AgentAudience::AdminsOnly,
+        ..platform_agent("fresh")
+    });
+    let ids = |out: &Outcome| -> Vec<String> {
+        out.value["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let alice = h.client(ALICE_TOKEN).await;
+    let root = h.client(ROOT_TOKEN).await;
+    assert_eq!(
+        ids(&call(&alice, "list_agents", json!({})).await),
+        ["plain", "coder", "open"]
+    );
+    assert_eq!(
+        ids(&call(&root, "list_agents", json!({})).await),
+        ["plain", "coder", "open", "fresh"]
+    );
+
+    // an agent that is for administrators only is told to a user as one that is not there
+    let hidden = call(
+        &alice,
+        "start_job",
+        json!({"text": "echo hi", "agent": "fresh"}),
+    )
+    .await;
+    let nowhere = call(
+        &alice,
+        "start_job",
+        json!({"text": "echo hi", "agent": "nowhere"}),
+    )
+    .await;
+    assert!(
+        hidden.is_error && nowhere.is_error,
+        "{hidden:?} {nowhere:?}"
+    );
+    assert_eq!(hidden.text, "unknown agent 'fresh'");
+    assert_eq!(nowhere.text, "unknown agent 'nowhere'");
+    assert!(h.threads_of(ALICE).await.is_empty(), "nothing was written");
+    let started = call(
+        &root,
+        "start_job",
+        json!({"text": "echo hi", "agent": "fresh"}),
+    )
+    .await;
+    assert!(!started.is_error, "{started:?}");
 }
 
 #[tokio::test]

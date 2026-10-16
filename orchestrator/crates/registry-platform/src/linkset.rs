@@ -14,12 +14,17 @@
 //!   a string. One that repeats an id already listed is skipped (the first wins).
 //! - **Tags** are advisory: a malformed `tags` value (not an array of strings, an empty or
 //!   over-long tag, more than 16) is dropped as a whole and the item is kept.
+//! - The **audience** says who may use the agent (the contract's section *Audience*, ADR 0045). An
+//!   item with none, an empty one or a malformed one is kept, and is for administrators only: the
+//!   item is read, never guessed at ([`AgentAudience::from_values`] holds the grammar). A malformed
+//!   one is reported in [`Document::malformed_audience`] for the operator.
 //! - Members and attributes this reader does not know are ignored.
 //!
 //! Two rules are this reader's own, for safety: an `href` that carries a user name or password is
 //! skipped (the card URL is shown to every user), and a title is cut at 200 characters.
 
 use orch_core::is_valid_agent_id;
+use orch_ports::AgentAudience;
 use serde_json::Value;
 use url::Url;
 
@@ -48,6 +53,9 @@ pub struct Item {
     pub title: String,
     /// The labels, as given; empty when the item has none or they were malformed.
     pub tags: Vec<String>,
+    /// Whom the agent is for: never [`AgentAudience::Static`]. An item with no `audience`, an
+    /// empty one or a malformed one has [`AgentAudience::AdminsOnly`].
+    pub audience: AgentAudience,
 }
 
 /// An item that was left out, and why (for the operator's log, never for a user).
@@ -66,6 +74,9 @@ pub struct Document {
     pub items: Vec<Item>,
     /// The items that were left out.
     pub skipped: Vec<Skipped>,
+    /// The service ids of the items that are listed with an `audience` that was there and
+    /// malformed (so they are for administrators only), in the document's order.
+    pub malformed_audience: Vec<String>,
 }
 
 /// Why a document is unreadable.
@@ -121,13 +132,16 @@ pub fn parse(body: &[u8]) -> Result<Document, Unreadable> {
     let mut document = Document::default();
     for (index, item) in items.iter().enumerate() {
         match read_item(item) {
-            Ok(item) => {
+            Ok((item, audience_read)) => {
                 if document.items.iter().any(|i| i.service == item.service) {
                     document.skipped.push(Skipped {
                         index,
                         reason: "the service id is listed twice (the first is kept)",
                     });
                 } else {
+                    if audience_read == AudienceRead::Malformed {
+                        document.malformed_audience.push(item.service.clone());
+                    }
                     document.items.push(item);
                 }
             }
@@ -149,7 +163,18 @@ fn carries_profile(context: &Value) -> bool {
         })
 }
 
-fn read_item(item: &Value) -> Result<Item, &'static str> {
+/// How an item's `audience` member read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudienceRead {
+    /// Absent, or `[]`: *none* by the contract, and nothing to report.
+    Unset,
+    /// Present, and well formed.
+    Well,
+    /// Present, and *malformed*: *none*, reported.
+    Malformed,
+}
+
+fn read_item(item: &Value) -> Result<(Item, AudienceRead), &'static str> {
     let Some(item) = item.as_object() else {
         return Err("the item is not an object");
     };
@@ -187,12 +212,43 @@ fn read_item(item: &Value) -> Result<Item, &'static str> {
         Some(_) => return Err("the title is not a string"),
     };
     let tags = item.get("tags").and_then(read_tags).unwrap_or_default();
-    Ok(Item {
-        service,
-        href,
-        title,
-        tags,
-    })
+    let (audience, audience_read) = read_audience(item.get("audience"));
+    Ok((
+        Item {
+            service,
+            href,
+            title,
+            tags,
+            audience,
+        },
+        audience_read,
+    ))
+}
+
+/// The audience of an item (the contract's *Audience*, "the consumer's rule", point 1): the set of
+/// its values when it is an array of texts that [`AgentAudience::from_values`] accepts; *none*
+/// ([`AgentAudience::AdminsOnly`]) when the member is absent, is `[]`, is not an array, has an
+/// element that is not a text, or is malformed in any other way. Never [`AgentAudience::Static`]:
+/// an agent a registry lists is not one of the deployment's own.
+fn read_audience(member: Option<&Value>) -> (AgentAudience, AudienceRead) {
+    let none = AgentAudience::AdminsOnly;
+    let Some(member) = member else {
+        return (none, AudienceRead::Unset);
+    };
+    let Some(values) = member.as_array() else {
+        return (none, AudienceRead::Malformed);
+    };
+    if values.is_empty() {
+        return (none, AudienceRead::Unset);
+    }
+    let texts: Option<Vec<&str>> = values.iter().map(Value::as_str).collect();
+    let Some(texts) = texts else {
+        return (none, AudienceRead::Malformed);
+    };
+    match AgentAudience::from_values(texts) {
+        AgentAudience::AdminsOnly => (none, AudienceRead::Malformed),
+        audience => (audience, AudienceRead::Well),
+    }
 }
 
 /// The tags, or `None` when they are malformed (then none are kept).
@@ -254,6 +310,7 @@ mod tests {
                     href: "https://coder.agents.example.com/.well-known/agent-card.json".into(),
                     title: "Coder".into(),
                     tags: vec!["coding".into(), "git".into()],
+                    audience: AgentAudience::AdminsOnly,
                 },
                 Item {
                     service: "researcher".into(),
@@ -261,6 +318,7 @@ mod tests {
                         .into(),
                     title: "Researcher".into(),
                     tags: vec![],
+                    audience: AgentAudience::AdminsOnly,
                 },
             ]
         );
@@ -441,5 +499,144 @@ mod tests {
             document.items[1].href,
             "http://b.internal:9000/.well-known/agent-card.json"
         );
+    }
+
+    // ---- the audience (the contract's section "Audience") ----
+
+    fn with_audience(audience: Value) -> Vec<u8> {
+        let mut with = item("coder");
+        with["audience"] = audience;
+        doc(json!([with]))
+    }
+
+    fn read_audience_of(audience: Value) -> AgentAudience {
+        let document = parse(&with_audience(audience)).unwrap();
+        assert_eq!(document.items.len(), 1, "the item is kept");
+        assert!(document.skipped.is_empty());
+        document.items.into_iter().next().unwrap().audience
+    }
+
+    #[test]
+    fn the_contracts_example_item_with_its_audience_reads() {
+        let body = serde_json::to_vec(&json!({"linkset": [{
+        "anchor": "https://platform.example.com/registry/v1/agents",
+        "profile": [{"href": PROFILE}],
+        "item": [{
+            "href": "http://coder-me.another-agentic-system.svc:8080/.well-known/agent-card.json",
+            "type": "application/json", "title": "Coder (me)", "service": ["coder-me"],
+            "tags": ["coding", "git"], "audience": ["agent.use:coder-me"]
+        }]}]}))
+        .unwrap();
+        let document = parse(&body).unwrap();
+        assert_eq!(
+            document.items[0].audience,
+            AgentAudience::from_values(["agent.use:coder-me"])
+        );
+        assert!(document.malformed_audience.is_empty());
+    }
+
+    #[test]
+    fn an_absent_audience_and_an_empty_one_are_none_and_are_not_reported() {
+        let absent = parse(&doc(json!([item("coder")]))).unwrap();
+        assert_eq!(absent.items[0].audience, AgentAudience::AdminsOnly);
+        assert!(absent.malformed_audience.is_empty());
+        let empty = parse(&with_audience(json!([]))).unwrap();
+        assert_eq!(empty.items[0].audience, AgentAudience::AdminsOnly);
+        assert!(empty.malformed_audience.is_empty());
+    }
+
+    #[test]
+    fn the_three_cases_a_server_publishes() {
+        assert_eq!(read_audience_of(json!(["*"])), AgentAudience::Everyone);
+        // a repeat of "*" is a repeat
+        assert_eq!(read_audience_of(json!(["*", "*"])), AgentAudience::Everyone);
+        let AgentAudience::Roles(roles) = read_audience_of(json!(["agent.use:b", "agent.use:a"]))
+        else {
+            panic!("values");
+        };
+        assert_eq!(
+            roles.iter().collect::<Vec<_>>(),
+            ["agent.use:a", "agent.use:b"],
+            "a set, in byte order whatever the document's"
+        );
+    }
+
+    #[test]
+    fn every_malformed_audience_is_none_the_item_is_kept_and_it_is_reported() {
+        let long = "x".repeat(65);
+        let many: Vec<String> = (0..33).map(|i| format!("r{i}")).collect();
+        let malformed = [
+            json!("agent.use:coder"),
+            json!({"0": "x"}),
+            json!(7),
+            json!(true),
+            json!(null),
+            json!([7]),
+            json!(["ok", null]),
+            json!(["ok", ["nested"]]),
+            json!([{"role": "x"}]),
+            json!([""]),
+            json!(["has space"]),
+            json!([" lead"]),
+            json!(["trail "]),
+            json!(["tab\there"]),
+            json!(["new\nline"]),
+            json!(["trailing-newline\n"]),
+            json!(["del\u{7f}"]),
+            json!(["café"]),
+            json!([long]),
+            json!(many),
+            json!(["*", "x"]),
+            json!(["x", "*"]),
+        ];
+        for audience in malformed {
+            let document = parse(&with_audience(audience.clone())).unwrap();
+            assert_eq!(document.items.len(), 1, "{audience}: the item is kept");
+            assert_eq!(
+                document.items[0].audience,
+                AgentAudience::AdminsOnly,
+                "{audience}"
+            );
+            assert_eq!(document.malformed_audience, ["coder"], "{audience}");
+            assert!(document.skipped.is_empty(), "{audience}");
+        }
+    }
+
+    #[test]
+    fn the_edges_of_the_grammar_read_as_the_contract_says() {
+        let max = "x".repeat(64);
+        let thirty_two: Vec<String> = (0..32).map(|i| format!("r{i:02}")).collect();
+        for ok in [
+            json!(["!"]),
+            json!(["~"]),
+            json!([max]),
+            json!(thirty_two),
+            // repeats do not count twice
+            json!(["a", "a", "a"]),
+        ] {
+            assert!(
+                matches!(read_audience_of(ok.clone()), AgentAudience::Roles(_)),
+                "{ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_audience_reaches_no_other_attribute_and_a_bad_one_hides_nothing_else() {
+        let mut bad = item("bad");
+        bad["audience"] = json!(7);
+        let mut good = item("good");
+        good["audience"] = json!(["*"]);
+        let document = parse(&doc(json!([bad, good]))).unwrap();
+        let by_service = |s: &str| {
+            document
+                .items
+                .iter()
+                .find(|i| i.service == s)
+                .map(|i| i.audience.clone())
+        };
+        assert_eq!(by_service("bad"), Some(AgentAudience::AdminsOnly));
+        assert_eq!(by_service("good"), Some(AgentAudience::Everyone));
+        assert_eq!(document.malformed_audience, ["bad"]);
     }
 }

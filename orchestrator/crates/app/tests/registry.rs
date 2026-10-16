@@ -14,8 +14,8 @@ use orch_ports::memory::{
     MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds,
 };
 use orch_ports::{
-    AgentEndpoint, CompositeRegistry, FixedRegistry, OutboxStatus, PortSet, RegistryEntry,
-    SystemClock, ThreadStore,
+    AgentAudience, AgentEndpoint, CompositeRegistry, FixedRegistry, OutboxStatus, PortSet,
+    RegistryEntry, SystemClock, ThreadStore,
 };
 use support::*;
 use tokio_util::sync::CancellationToken;
@@ -69,6 +69,7 @@ fn platform_agent(id: &str, name: &str, tags: &[&str]) -> RegistryEntry {
         name: name.to_owned(),
         tags: tags.iter().map(|t| (*t).to_owned()).collect(),
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     }
 }
 

@@ -22,7 +22,7 @@ use orch_core::{
 };
 use orch_ports::memory::ScriptedModel;
 use orch_ports::{
-    AgentEndpoint, BindingUpdate, NewTimer, PortSet, Role, TIMER_SOURCE, ThreadStore,
+    AgentAudience, AgentEndpoint, BindingUpdate, NewTimer, PortSet, Role, TIMER_SOURCE, ThreadStore,
 };
 use support::*;
 
@@ -579,8 +579,8 @@ async fn an_agent_no_role_may_invoke_is_403_and_nothing_is_written() {
         Some(Role::new("user")),
     )
     .unwrap();
-    assert!(!policy.any_role_may_invoke(&AgentId::new("coder")));
-    assert!(policy.any_role_may_invoke(&AgentId::new("reviewer")));
+    assert!(!policy.any_role_may_invoke(&AgentId::new("coder"), &AgentAudience::Static));
+    assert!(policy.any_role_may_invoke(&AgentId::new("reviewer"), &AgentAudience::Static));
     let strict = app_with(
         &w,
         AppConfig {
@@ -672,7 +672,7 @@ async fn the_log_is_followed_for_the_tool_without_an_owner() {
 async fn a_registry_that_cannot_say_is_a_retry_not_a_refusal_and_a_repeat_does_not_ask_it() {
     use orch_core::AgentSource;
     use orch_ports::memory::{MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
-    use orch_ports::{CompositeRegistry, FixedRegistry, RegistryEntry, SystemClock};
+    use orch_ports::{AgentAudience, CompositeRegistry, FixedRegistry, RegistryEntry, SystemClock};
 
     type RegistryPorts = PortSet<
         MemoryStore,
@@ -691,6 +691,7 @@ async fn a_registry_that_cannot_say_is_a_retry_not_a_refusal_and_a_repeat_does_n
         name: "Reviewer".to_owned(),
         tags: Vec::new(),
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     });
     let directory = directory(&["plain", "coder"]);
     let app: Arc<App<RegistryPorts>> = Arc::new(
@@ -749,4 +750,123 @@ async fn a_registry_that_cannot_say_is_a_retry_not_a_refusal_and_a_repeat_does_n
     // and when it answers again, the call goes through
     registry.set_down(false);
     app.ask(call(&t, "reviewer", Some("c2"))).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_agent_whose_audience_is_none_is_asked_only_when_somebody_could_use_it() {
+    use orch_core::AgentSource;
+    use orch_ports::memory::{MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
+    use orch_ports::{AgentAudience, CompositeRegistry, FixedRegistry, RegistryEntry, SystemClock};
+
+    type RegistryPorts = PortSet<
+        MemoryStore,
+        MemoryWakeup,
+        ScriptedAgent,
+        SystemClock,
+        SeqIds,
+        ScriptedModel,
+        CompositeRegistry<FixedRegistry, MemoryRegistry>,
+    >;
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let reviewer = |audience| RegistryEntry {
+        endpoint: entry("reviewer").endpoint,
+        name: "Reviewer".to_owned(),
+        tags: Vec::new(),
+        origin: AgentSource::Registry,
+        audience,
+    };
+    registry.add(reviewer(AgentAudience::Everyone));
+    let app_with_policy = |policy: Policy| -> Arc<App<RegistryPorts>> {
+        let directory = directory(&["plain", "coder"]);
+        Arc::new(
+            App::new(
+                PortSet {
+                    artifacts: orch_ports::NoArtifacts,
+                    store: w.store.clone(),
+                    wakeup: w.wakeup.clone(),
+                    agents: w.agent.clone(),
+                    clock: SystemClock,
+                    ids: w.ids.clone(),
+                    model: w.model.clone(),
+                    auth: orch_ports::RefuseAll,
+                    registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
+                    user_tools: orch_ports::NoUserTools::off(),
+                },
+                directory,
+                AppConfig {
+                    policy,
+                    ..AppConfig::default()
+                },
+            )
+            .expect("a valid gate"),
+        )
+    };
+    // a deployment with a role that holds `admin`, and one with none
+    let with_admin = app_with_policy(Policy::default());
+    let without_admin = app_with_policy(
+        Policy::new(
+            BTreeMap::from([(Role::new("user"), RoleGrant::user())]),
+            Some(Role::new("user")),
+        )
+        .unwrap(),
+    );
+
+    // the thread mentions `reviewer` while it is for everybody
+    let id = ThreadId(uuid::Uuid::now_v7());
+    with_admin
+        .create_thread_as(
+            &alice(),
+            id,
+            NewThread {
+                title: None,
+                target: target("plain"),
+                text: TEXT.to_owned(),
+            },
+            Inbound {
+                mentions: mentions(),
+                ..Inbound::default()
+            },
+        )
+        .await
+        .unwrap();
+    with_admin
+        .apply(id, working_status(), None, None, None)
+        .await
+        .unwrap();
+    let t = with_admin.get_thread(&alice(), id).await.unwrap();
+    let head = t.last_seq;
+
+    // then the platform gives it no audience: it is for administrators, and a deployment that
+    // has none cannot have anybody use it
+    registry.add(reviewer(AgentAudience::AdminsOnly));
+    let err = without_admin
+        .ask(call(&t, "reviewer", Some("c1")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Unprocessable(m) if m == "agent 'reviewer' is no longer listed"),
+        "what the audience refuses is what an agent nobody lists is told: {err:?}"
+    );
+    assert_eq!(
+        with_admin.get_thread(&alice(), id).await.unwrap().last_seq,
+        head,
+        "nothing was written"
+    );
+    // the static agent is not the registry's, and an agent with values or `*` can have somebody in
+    without_admin
+        .ask(call(&t, "coder", Some("c2")))
+        .await
+        .unwrap();
+    registry.add(reviewer(AgentAudience::from_values(["agent.use:reviewer"])));
+    without_admin
+        .ask(call(&t, "reviewer", Some("c3")))
+        .await
+        .unwrap();
+    // a deployment with an administrator can
+    registry.add(reviewer(AgentAudience::AdminsOnly));
+    with_admin
+        .ask(call(&t, "reviewer", Some("c4")))
+        .await
+        .unwrap();
 }

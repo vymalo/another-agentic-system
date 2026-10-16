@@ -10,7 +10,8 @@ use orch_app::{AgentDirectory, AgentEntry, App, AppConfig};
 use orch_core::{AgentId, AgentSource};
 use orch_ports::memory::{MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds};
 use orch_ports::{
-    AgentEndpoint, CompositeRegistry, FixedRegistry, NoModel, PortSet, RegistryEntry, SystemClock,
+    AgentAudience, AgentEndpoint, CompositeRegistry, FixedRegistry, NoModel, PortSet,
+    RegistryEntry, SystemClock,
 };
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -125,6 +126,7 @@ fn platform_agent(id: &str, name: &str, tags: &[&str]) -> RegistryEntry {
         name: name.to_owned(),
         tags: tags.iter().map(|t| (*t).to_owned()).collect(),
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     }
 }
 
