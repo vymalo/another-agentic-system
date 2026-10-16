@@ -56,9 +56,9 @@ stateDiagram-v2
   there). A token with no `kid` takes the one key of its kind, when there is exactly one, and none otherwise.
 - **How a key is read** (`src/keys.rs`): as the numbers its members are, however the issuer wrote them. An RSA `n`
   and `e` by their magnitude, without leading zeros (a sign byte is dropped; the 2048 bits are counted on the
-  magnitude, so a sign byte does not make a 2040-bit modulus big enough; an exponent of zeros is none). A P-256
+  magnitude, so a sign byte does not make a 2040-bit modulus big enough, and 256 octets whose first is `0x01` are 2041 bits, not a key; an exponent of zeros is none). A P-256
   coordinate left-padded to its 32 octets (cut, in full, or with a sign byte), refused when it has more than 32
-  significant octets or none. An Ed25519 key is exactly its 32 octets, a zero in front included: nothing is cut and
+  significant octets or is empty. An Ed25519 key is exactly its 32 octets, a zero in front included: nothing is cut and
   nothing is added, and 31 or 33 octets are not a key. The `=` padding that RFC 7515 forbids and some issuers write
   is accepted on every member.
 - **Claims**, checked in this order, so that a token with several wrong is always refused for the first: the
@@ -66,7 +66,8 @@ stateDiagram-v2
   `iss` **one text** equal to the configured issuer exactly (a list that holds it is refused, and so is a token that
   names another issuer beside ours); one of the configured audiences is among `aud` (a text, or a list of texts);
   `iat` present; `email_verified` is not `false` (a boolean or the text); the user claim (`userClaim`, default
-  `email`) is text that is **not blank and has no control character**, trimmed and lower-cased by `UserId::new`.
+  `email`) is text that is **not blank and has no control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F)**, trimmed and lower-cased by `UserId::new`.
+  Format characters (Cf, such as U+200B or U+202E) and the line and paragraph separators U+2028 and U+2029 are not refused. Only the issuer can put them in a token.
   The e-mail and the name are `Principal.email` and `.name`, and the token's `exp` is `Principal.expires_at` (it bounds the streams opened with the token, ADR 0033). The roles are the texts at
   the dotted path `rolesClaim` (`realm_access.roles`, `groups`): a claim whose own name has dots is found by that
   name first; a list gives its texts, a text is one role, anything else is none, and a bad roles claim never
@@ -130,9 +131,10 @@ empty claim name, a bad `jwksUrl`, and for DPoP no origin, an origin that has a 
 
 ## Tests
 
-- **Which tests run**: `tests/conformance.rs`, `tests/dpop.rs` and `tests/jwks.rs` need the feature `testkit`. `cargo test
-  --workspace` has it (`orch-api` and the binary depend on this crate with it); `cargo test -p orch-auth-jwt` alone does
-  not, and compiles those three to nothing: run `cargo test -p orch-auth-jwt --features testkit` for all of them. Every
+- **Which tests run**: all of them, with a plain `cargo test -p orch-auth-jwt`. `tests/conformance.rs`, `tests/dpop.rs` and
+  `tests/jwks.rs` need the feature `testkit`, and the crate's `[dev-dependencies]` name itself with it (`orch-auth-jwt = { workspace
+  = true, features = ["testkit"] }`, as the platform's `aap-auth-oidc` does), so they are built whether the run is the crate's alone
+  or the workspace's: none compiles to nothing and no `--features` is needed (110 tests: *run 2026-10-16*). Every
   client a test builds for itself takes no proxy, and so does every authenticator (`without_system_proxy()`), so the
   suite passes with `HTTP_PROXY` and `HTTPS_PROXY` set and no `NO_PROXY` (*run 2026-10-16* with both on a closed port).
 - `tests/conformance.rs`: `orch_ports::bearer_token_conformance!` through a `TokenFixture` over a `TestIdp` (the
@@ -150,13 +152,13 @@ empty claim name, a bad `jwksUrl`, and for DPoP no origin, an origin that has a 
 - `tests/keys.rs` (no `testkit`; a server that serves the key set the test builds, **real keys** made with aws-lc-rs
   that sign real tokens): an Ed25519 key whose public key starts with a zero octet; Ed25519 keys of 31, 33 and no octets
   are not keys; a P-256 key whose `x` or `y` starts with a zero octet, written in full, cut, with a sign byte and with
-  padding; P-256 coordinates of 33 significant octets and of none are not keys; an RSA key written with a sign byte before
+  padding; P-256 coordinates of 33 significant octets and empty ones are not keys; an RSA key written with a sign byte before
   `n`, an exponent written `AAEAAQ`, and padding; a 2040-bit modulus with a sign byte is not 2048 bits; `=` padding on an
   Ed25519 key; two keys under one `kid` (a token signed by either, one signed by neither, no `kid` and two keys, and the
   claims read from the key that verified).
 - `tests/claims.rs` (no `testkit`; an Ed25519 key): `iss` one text, and a list that holds it refused; `aud` among a text,
   a list, a list with a non-text, other types; a user claim (`email`, `sub`, `preferred_username`) that is blank or holds a
-  control character (a newline that trimming would hide included) and one that is fine; the reason for a token with
+  control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F; a newline that trimming would hide included) and one that is fine; the reason for a token with
   several claims missing is the same in 40 rounds and goes `exp`, `iss`, `aud`, `iat`, the user; the times come before the
   issuer; the leeway of `exp` and `nbf` is 60 s (just inside at 55 s and 30 s, just outside at 65 s and 120 s).
 - `tests/logs.rs` (a test binary of its own, with a captured log): one `WARN` for a plain-`http` issuer and for plain-`http`

@@ -273,7 +273,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.issuer` | `http(s)` URL without credentials, query or fragment; required with a mode that reads tokens. `iss` must equal it exactly, as **one text** (a list that holds it is refused). Over plain `http` (development only; `production` refuses it) the process logs one warning at startup: the keys then travel in the clear | — | now; the warning and the one-text `iss` 2026-10-16 |
 | `auth.jwt.audiences` | list of at least one non-empty text; required with `issuer` | — | now |
 | `auth.jwt.jwksUrl` | `http(s)` URL without credentials, none (the keys are found from `<issuer>/.well-known/openid-configuration`) | — | now |
-| `auth.jwt.userClaim` | the claim whose value is the user, `email`. Its value must be text that is not blank and has no control character, or the token is refused | — | now; the control character 2026-10-16 |
+| `auth.jwt.userClaim` | the claim whose value is the user, `email`. Its value must be text that is not blank and has no control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), or the token is refused | — | now; the control character 2026-10-16 |
 | `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
 | `auth.dpop.publicOrigins` | list of at least one `http(s)` origin (`https://chat.example.com`: no path, query, fragment or credentials, no trailing slash); required with `auth.dpop`, which is only for a mode that reads tokens. **A proof's `htu` must be one of them followed by the request's path** (the process sits behind a proxy and cannot rebuild the public URL). `production` refuses `http://` except for `localhost`, `127.0.0.1` and `[::1]` | — | now; [ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md) |
 | `auth.dpop.maxAgeSeconds` | 1 to 600, 60: how old a proof's `iat` may be; a proof's `jti` is remembered this long and `futureSkewSeconds` more | — | now; ADR 0054 |
@@ -431,8 +431,8 @@ auth:
   (`server.role: worker`) needs no authenticator.
 - **The token** must be signed with RS256, RS384, ES256 or EdDSA by a key of the issuer's JWKS, and carry `iss` equal to
   `issuer` (one text, not a list), one of `audiences` in `aud`, `exp` and `iat`; 60 seconds of leeway; `email_verified`
-  must not be `false`. The user is `userClaim`, trimmed and lower-cased; blank, or with a control character, it is no user.
-  A token with several of these wrong is refused for the first in the order `exp`, `nbf`, `iss`, `aud`, `iat`, the user. A
+  must not be `false`. The user is `userClaim`, trimmed and lower-cased; blank, or with a control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), it is no user.
+  A token with several of these wrong is refused for the first in the order `exp`, `nbf`, `iss`, `aud`, `iat`, `email_verified`, the user. A
   key of the issuer is read as the numbers it holds (a leading zero cut or covered by a sign byte does not make it unusable),
   and every key under the token's `kid` is tried. See [ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md#2-the-jwt-authenticator-orch-auth-jwt-authmode-jwt)
   for the key cache (10 minutes; an unknown `kid` at most once in 30 seconds; an hour of grace) and what is bounded.

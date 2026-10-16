@@ -26,8 +26,9 @@ pub(crate) const ALLOWED: [Algorithm; 4] = [
     Algorithm::EdDSA,
 ];
 
-/// The smallest RSA modulus, in bytes (2048 bits), counted on its magnitude: a sign byte makes it no bigger.
-const MIN_RSA_MODULUS_BYTES: usize = 256;
+/// The smallest RSA modulus, in bits, counted on its magnitude (the bits from its highest set bit): a sign byte
+/// makes it no bigger, and 256 octets whose first is `0x01` are 2041 bits, which aws-lc refuses at verification.
+const MIN_RSA_MODULUS_BITS: usize = 2048;
 
 /// The size of a P-256 coordinate, in bytes.
 const P256_COORDINATE_BYTES: usize = 32;
@@ -125,12 +126,22 @@ fn magnitude(bytes: &[u8]) -> &[u8] {
     &bytes[zeros..]
 }
 
+/// The bits of an unsigned big-endian integer from its highest set bit: 0 for no octets (`magnitude` has taken
+/// the zeros off, so the first octet, when there is one, is not zero).
+fn bit_length(magnitude: &[u8]) -> usize {
+    match magnitude.first() {
+        None => 0,
+        Some(top) => magnitude.len() * 8 - top.leading_zeros() as usize,
+    }
+}
+
 fn base64url(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// A P-256 coordinate written by an issuer in any of its ways (cut, full, with a sign byte), as the 32 octets
-/// the key is made of, in base64url. `None` for what cannot be one: nothing, or more than 32 significant octets.
+/// the key is made of, in base64url. `None` for what cannot be one: an empty member, or more than 32 significant
+/// octets. Zeros are a value: x = 0 is a valid abscissa of P-256.
 fn p256_coordinate(text: &str) -> Option<String> {
     let bytes = octets(text)?;
     let value = magnitude(&bytes);
@@ -166,7 +177,7 @@ fn read_key(jwk: &Jwk) -> Option<Key> {
             // The library takes the integers as they are written: a sign byte in front would make a key that
             // is admitted and never verifies.
             let (n, e) = (magnitude(&n), magnitude(&e));
-            if n.len() < MIN_RSA_MODULUS_BYTES || e.is_empty() {
+            if e.is_empty() || bit_length(n) < MIN_RSA_MODULUS_BITS {
                 return None;
             }
             (
@@ -362,7 +373,7 @@ mod tests {
         ] {
             assert_eq!(parse(vec![ec(&written, &y)]).set.keys.len(), 1);
         }
-        // More than 32 significant octets, and none, cannot be a coordinate.
+        // More than 32 significant octets, and an empty member, cannot be a coordinate.
         assert!(
             parse(vec![ec(&[&[1u8][..], &y].concat(), &y)])
                 .set
@@ -370,6 +381,49 @@ mod tests {
         );
         assert!(parse(vec![ec(&[], &y)]).set.is_empty());
         assert!(parse(vec![ec(&x, &[])]).set.is_empty());
+    }
+
+    #[test]
+    fn the_rsa_minimum_is_2048_bits_not_256_octets() {
+        let rsa = |octets: usize, top: u8| {
+            let mut n = vec![0xC3u8; octets];
+            n[0] = top;
+            json!({"kty": "RSA", "kid": "k", "n": URL_SAFE_NO_PAD.encode(n), "e": "AQAB"})
+        };
+        // 256 octets whose first is 0x01 are 2041 bits: admitted by a count of octets, and refused by aws-lc when a
+        // token is verified. The same for 0x7F (2047 bits).
+        assert!(parse(vec![rsa(256, 0x01)]).set.is_empty());
+        assert!(parse(vec![rsa(256, 0x7F)]).set.is_empty());
+        // Exactly 2048 bits, and more.
+        assert_eq!(parse(vec![rsa(256, 0x80)]).set.keys.len(), 1);
+        assert_eq!(parse(vec![rsa(256, 0xFF)]).set.keys.len(), 1);
+        assert_eq!(parse(vec![rsa(257, 0x01)]).set.keys.len(), 1); // 2049 bits
+        // A sign byte in front changes neither the count nor the answer.
+        let signed = |n: &Value| {
+            let octets = URL_SAFE_NO_PAD.decode(n["n"].as_str().unwrap()).unwrap();
+            let mut jwk = n.clone();
+            jwk["n"] = json!(URL_SAFE_NO_PAD.encode([&[0u8][..], &octets].concat()));
+            jwk
+        };
+        assert!(parse(vec![signed(&rsa(256, 0x01))]).set.is_empty());
+        assert_eq!(parse(vec![signed(&rsa(256, 0x80))]).set.keys.len(), 1);
+    }
+
+    #[test]
+    fn a_p256_coordinate_of_zeros_is_a_value_and_only_an_empty_one_is_refused() {
+        let enc = |bytes: &[u8]| URL_SAFE_NO_PAD.encode(bytes);
+        let zeros = [0u8; 32];
+        assert_eq!(p256_coordinate(&enc(&zeros)), Some(enc(&zeros)));
+        assert_eq!(p256_coordinate(&enc(&[0u8])), Some(enc(&zeros)));
+        assert_eq!(p256_coordinate(""), None);
+        // x = 0 is a valid abscissa of P-256 (b is a square modulo p): this is y for it, so the point is on the curve.
+        let y: [u8; 32] = [
+            0x66, 0x48, 0x5c, 0x78, 0x0e, 0x2f, 0x83, 0xd7, 0x24, 0x33, 0xbd, 0x5d, 0x84, 0xa0,
+            0x6b, 0xb6, 0x54, 0x1c, 0x2a, 0xf3, 0x1d, 0xae, 0x87, 0x17, 0x28, 0xbf, 0x85, 0x6a,
+            0x17, 0x4f, 0x93, 0xf4,
+        ];
+        let ec = json!({"kty": "EC", "crv": "P-256", "kid": "k", "x": enc(&zeros), "y": enc(&y)});
+        assert_eq!(parse(vec![ec]).set.keys.len(), 1);
     }
 
     #[test]

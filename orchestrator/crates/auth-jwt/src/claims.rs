@@ -3,7 +3,8 @@
 //! The signature, the issuer, the audience and the times are checked before this runs; this reads
 //! the claims the deployment configured (ADR 0033: `auth.jwt.userClaim`, `auth.jwt.rolesClaim`).
 //! A reason it gives for a refusal names a claim by its configured name and never shows a value.
-//! The user must be somebody: text that is not blank and holds no control character.
+//! The user must be somebody: text that is not blank and holds no control character
+//! (Unicode Cc: U+0000–U+001F, U+007F–U+009F).
 
 use std::collections::BTreeSet;
 
@@ -42,9 +43,10 @@ fn text<'a>(claims: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
         .filter(|t| !t.is_empty())
 }
 
-/// The user a claim names: text that is not blank and has no control character, trimmed. The user is written to
-/// logs, headers and rows, and a newline or a NUL in it would have to be escaped at each of them; the whole
-/// value is looked at, so a newline that trimming would have hidden is refused too.
+/// The user a claim names: text that is not blank and has no control character (Unicode Cc: U+0000–U+001F,
+/// U+007F–U+009F), trimmed. The user is written to logs, headers and rows, and a newline or a NUL in it would have
+/// to be escaped at each of them; the whole value is looked at, so a newline that trimming would have hidden is
+/// refused too.
 fn user<'a>(claims: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
     let value = lookup(claims, name)?.as_str()?;
     if value.chars().any(char::is_control) {
@@ -82,7 +84,8 @@ fn email_unverified(claims: &Map<String, Value>) -> bool {
 ///
 /// # Errors
 /// `Invalid` (a bearer) when the e-mail is not verified, or when the configured user claim is
-/// absent, is not text, is empty or blank, or holds a control character.
+/// absent, is not text, is empty or blank, or holds a control character (Unicode Cc: U+0000–U+001F,
+/// U+007F–U+009F).
 pub(crate) fn principal(
     claims: &Map<String, Value>,
     user_claim: &str,
