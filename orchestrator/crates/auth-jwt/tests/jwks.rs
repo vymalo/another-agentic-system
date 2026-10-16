@@ -3,6 +3,8 @@
 #![cfg(feature = "testkit")]
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+mod common;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -11,6 +13,7 @@ use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
+use common::{SETTLE, exactly};
 use orch_auth_jwt::testkit::TestIdp;
 use orch_auth_jwt::{BuildError, JwtAuth, JwtConfig, MAX_TOKEN_BYTES};
 use orch_ports::testkit::bearer::{Alg, Signing};
@@ -70,8 +73,15 @@ async fn the_keys_are_fetched_again_when_they_are_old() {
     let token = idp.token(AUDIENCE, ALICE);
     check(&auth, &token).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // The copy is old: it answers this request, and the refresh runs in the background.
     check(&auth, &token).await.unwrap();
-    assert_eq!(idp.jwks_fetches(), 2);
+    exactly(
+        "the refresh, and only one",
+        || idp.jwks_fetches(),
+        2,
+        SETTLE,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -129,7 +139,15 @@ async fn keys_that_cannot_be_refreshed_go_on_verifying_for_the_grace_and_no_long
     tokio::time::sleep(Duration::from_millis(400)).await;
     // Older than the refresh interval, the refresh fails, the copy is still inside the grace.
     check(&auth, &token).await.expect("the stale copy verifies");
-    assert!(idp.jwks_fetches() >= 2, "a refresh was tried");
+    // One request on a stale copy, one refresh (the test asks for nothing while it settles; `ready()` below may
+    // start the next one, 50 ms after this one failed).
+    exactly(
+        "one refresh tried",
+        || idp.jwks_fetches(),
+        2,
+        Duration::from_millis(100),
+    )
+    .await;
     auth.ready().await.expect("ready while the copy verifies");
 
     tokio::time::sleep(Duration::from_millis(1200)).await;

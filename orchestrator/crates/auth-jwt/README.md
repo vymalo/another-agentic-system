@@ -20,16 +20,28 @@ default), and builds one for `auth.mode: jwt` and `jwt_or_proxy_header`. Depends
 sequenceDiagram
   participant C as Client (the web through oauth2-proxy, a CLI, CI)
   participant A as JwtAuth
+  participant F as Fetch task (one at a time)
   participant I as Issuer (discovery, JWKS)
   C->>A: Authorization: Bearer token
   A->>A: header: alg allowed? kid?
   alt keys held and fresh
-    A->>A: pick the key of the kid
-  else never fetched, or older than 10 minutes
-    A->>I: GET discovery, GET jwks
-    I-->>A: keys
-  else the kid is unknown (at most once in 30 s)
-    A->>I: GET jwks again
+    A->>A: use the copy
+  else keys older than 10 minutes, within the hour of grace
+    A->>A: use the stale copy, at once
+    A-)F: start a refresh, unless one runs or one failed just now
+    F->>I: GET discovery, GET jwks
+    I-->>F: keys (recorded when they come)
+  else never fetched, or past the grace
+    A->>F: start a fetch, or join the one that runs
+    F->>I: GET discovery, GET jwks
+    I-->>F: keys
+    F-->>A: done, the keys are recorded
+  end
+  A->>A: pick the key of the kid in the copy used
+  opt the copy has no key of that kid
+    A->>F: join the fetch that runs, or start one (not if one was tried in the last 30 s)
+    F-->>A: done, the keys are recorded
+    A->>A: pick the key of the kid again
   end
   A->>A: signature, exp, nbf, iss, aud, iat, email_verified, user
   A-->>C: the principal, Invalid, or Unavailable
@@ -38,12 +50,22 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> NoKeys: the process starts, nothing is persisted
-  NoKeys --> Fresh: a fetch gives at least one usable key
-  NoKeys --> NoKeys: the fetch fails; not again for 5 s, Unavailable meanwhile
+  NoKeys --> Fresh: a fetch gives at least one usable key; every caller waits for it
+  NoKeys --> NoKeys: the fetch fails or times out; not again for 5 s, Unavailable meanwhile
+  Fresh --> Fresh: an unknown kid starts a fetch (at most one in 30 s); only that request waits
   Fresh --> Stale: 10 minutes old
-  Stale --> Fresh: a fetch succeeds
-  Stale --> Stale: the fetch fails; still verifies, for up to an hour more
+  Stale --> Fresh: the refresh, started by the first request to find the copy old, succeeds
+  Stale --> Stale: the refresh fails; requests are answered by the copy, up to an hour more; not again for 5 s
   Stale --> NoKeys: older than 10 minutes plus the hour, or the copy is dropped
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle: no task, no lock held
+  Idle --> Running: a request needs a fetch and none failed less than 5 s ago (a token of an unknown kid asks only that none was tried in the last 30 s, failed or not); one task is spawned
+  Running --> Running: other requests that need a fetch wait for this one; none starts a second
+  Running --> Idle: the task ends (keys recorded, or a failure recorded), then its waiters wake
+  Running --> Idle: a task dropped before it ever ran records nothing, its waiters wake and the next request finds no fetch running
 ```
 
 - **Algorithm**: RS256, RS384, ES256 and EdDSA, and nothing else. `none` and the HMAC family are refused whatever
@@ -78,15 +100,33 @@ stateDiagram-v2
   of JSON ends before any key is looked at: no fetch, no key.
 - **The key cache** is a copy this process may lose at any time (ADR 0001). Fetched on first use and by `ready()`
   (which `/readyz` calls), refreshed once 10 minutes old, fetched again when a token names a `kid` the copy lacks
-  **at most once in 30 s** (any fetch counts), and not again for 5 s after a failure. One request at a time:
-  concurrent first requests make one fetch. While there is no copy, or it is older than the refresh interval plus an
-  hour, every request is `AuthError::Unavailable` (fail closed; not a refusal, `Transient`); in between, the copy
-  goes on verifying while the issuer is down.
+  **at most once in 30 s** (any fetch counts), and not again for 5 s after a failure. While there is no copy, or it
+  is older than the refresh interval plus an hour, every request is `AuthError::Unavailable` (fail closed; not a
+  refusal, `Transient`); in between, the copy goes on verifying while the issuer is down.
+  **A fetch runs on a task of its own (`tokio::spawn`), one at a time, and no lock is held while it runs.** The lock
+  (a `std::sync::Mutex`, which no `.await` is under) is held to read or change the copy, the times and the handle of
+  the fetch that runs. Requests that need a fetch wait for that one, on a `tokio::sync::watch` channel whose sender is
+  dropped when the task has recorded what came of it; none starts a second, so concurrent first requests make one
+  fetch. A request waits for a fetch only when it must: with no copy, or one past its grace, it waits and is
+  `Unavailable` if the fetch left nothing to verify with; a request whose token names a `kid` the copy lacks waits
+  for the fetch (the one that runs, or its own if none was tried in 30 s), and **no other request does**. **A copy
+  older than the refresh interval and within the grace is used at once**, and the first request to find it old
+  starts a refresh in the background (unless one runs, or one failed less than 5 s ago): a slow or hanging issuer
+  holds up nobody who has a copy, and `ready()` answers at once while a copy can verify. The price is that a request
+  after a long quiet is verified against the copy it finds, which may be up to 70 minutes old, and that the keys an
+  issuer withdrew stop verifying when the refresh is over, not when it starts. **A request that is dropped while it
+  waits leaves the fetch running**, and the keys it brings are recorded all the same (the fetch is not the request's
+  future). Nothing ends the task early and it holds the authenticator's state, so a fetch outlives the last clone of
+  the authenticator by at most what its requests may take (the discovery document, then the keys, each with the
+  request timeout). A task that has begun records its outcome, however it ends (an answer, a panic, the runtime
+  stopping), and only then wakes its waiters: a failure is the same failure as before (`Unavailable`, the same log
+  lines, no URL, token or `kid`). **A task that never ran records nothing** (a runtime that stops with it still queued
+  drops it unpolled): its waiters wake, the fetch it stood for is found over, and the next request starts a fetch.
 - **Where the keys are**: `jwksUrl`, or the `jwks_uri` of `{issuer}/.well-known/openid-configuration` (exactly one
   terminating `/` of the issuer is removed before the path is appended, OpenID Connect Discovery 1.0, 4), whose `issuer`
   must be the configured one (4.3). `jwks_uri` must be `http(s)` without credentials
   and not plain HTTP under an HTTPS issuer. **No redirect is followed**, a body over 1 MiB is refused, a request times
-  out (5 s), `HTTP(S)_PROXY` is honoured like the A2A client's. There is no filter on the issuer's *address*: it is the
+  out (`JwtConfig::timeout`, 5 s, for the whole request: connecting, the answer and a body that drips in), `HTTP(S)_PROXY` is honoured like the A2A client's. There is no filter on the issuer's *address*: it is the
   operator's own configuration, and an identity provider in the cluster is a private address.
 - **The log**: a `WARN`, once, when the authenticator is built with an issuer or a `jwksUrl` over plain `http` (the keys
   every token is checked against then travel in the clear; not a refusal, since a Keycloak in the cluster is often
@@ -131,10 +171,10 @@ empty claim name, a bad `jwksUrl`, and for DPoP no origin, an origin that has a 
 
 ## Tests
 
-- **Which tests run**: all of them, with a plain `cargo test -p orch-auth-jwt`. `tests/conformance.rs`, `tests/dpop.rs` and
-  `tests/jwks.rs` need the feature `testkit`, and the crate's `[dev-dependencies]` name itself with it (`orch-auth-jwt = { workspace
+- **Which tests run**: all of them, with a plain `cargo test -p orch-auth-jwt`. `tests/conformance.rs`, `tests/dpop.rs`,
+  `tests/jwks.rs` and `tests/slow.rs` need the feature `testkit`, and the crate's `[dev-dependencies]` name itself with it (`orch-auth-jwt = { workspace
   = true, features = ["testkit"] }`, as the platform's `aap-auth-oidc` does), so they are built whether the run is the crate's alone
-  or the workspace's: none compiles to nothing and no `--features` is needed (110 tests: *run 2026-10-16*). Every
+  or the workspace's: none compiles to nothing and no `--features` is needed (128 tests: *run 2026-10-16*). Every
   client a test builds for itself takes no proxy, and so does every authenticator (`without_system_proxy()`), so the
   suite passes with `HTTP_PROXY` and `HTTPS_PROXY` set and no `NO_PROXY` (*run 2026-10-16* with both on a closed port).
 - `tests/conformance.rs`: `orch_ports::bearer_token_conformance!` through a `TokenFixture` over a `TestIdp` (the
@@ -144,7 +184,7 @@ empty claim name, a bad `jwksUrl`, and for DPoP no origin, an origin that has a 
   published; the issuer down (`Unavailable`, `ready` failing, garbage still `Invalid` with no fetch); no bearer,
   an identity header alone, and malformed tokens; `email_verified`; the configured user claim; the roles claim; no
   error shows a token.
-- `tests/jwks.rs`: discovery and `jwksUrl`; refresh when old; one fetch for concurrent first requests; the retry
+- `tests/jwks.rs`: discovery and `jwksUrl`; refresh when old (in the background: the test waits for it, and a settle shows there is no second); one fetch for concurrent first requests; the retry
   interval; the stale copy and its grace; a discovery document for another issuer, without a `jwks_uri`; a redirect
   never followed; an answer over 1 MiB; a set with no usable key; unusable keys beside good ones; the token cap;
   a trailing slash on the issuer, and exactly one of several removed to find the discovery document; what a build
@@ -164,9 +204,10 @@ empty claim name, a bad `jwksUrl`, and for DPoP no origin, an origin that has a 
 - `tests/logs.rs` (a test binary of its own, with a captured log): one `WARN` for a plain-`http` issuer and for plain-`http`
   keys behind an `https` issuer, none for `https`, and none that names the URL; a secret in the query of a configured
   URL, a `kid` and a claim in no line, whatever fails (the connection, a 404, a key set with no usable key, a refused token).
-- `tests/common/mod.rs`: what `keys.rs`, `claims.rs` and `logs.rs` share.
+- `tests/slow.rs` (13; needs `testkit`; real HTTP against servers on local ports whose delays a test sets, with wide margins: the issuer is slow by seconds and a request that must not wait for it is bounded well under that): a good token is answered (five of them in under 1.5 s) while a fetch for an unknown `kid` is stuck behind a 3 s JWKS, and only the request that named the unknown key waits; sixteen and then four more unknown `kid`s join one fetch; a stale copy is served at once (eight tokens in under 1.5 s) while the refresh hangs, and one refresh starts however many requests (the count is read again after a 300 ms settle, so a second, later fetch is seen); `ready()` returns at once while a copy can verify and waits for the one fetch when there is none; the first requests wait for the one fetch and are `Unavailable` together when it times out; on four threads, 32 first requests make one fetch and 32 requests on a stale copy one refresh; **a request cancelled during a slow fetch does not lose the keys it asked for** (the next request with the rotated key is accepted, nothing is fetched again), for a stale-copy refresh and for the very first fetch; an unknown `kid` joins the refresh of a stale copy that is running; a fetch ends at the timeout when the authenticator that started it is gone (the issuer sees the connection close); and every request to the issuer is bounded by the timeout: a discovery request, a JWKS request after a good discovery, and a body that drips in, each `Unavailable` within the bound.
+- `tests/common/mod.rs`: what `keys.rs`, `claims.rs`, `logs.rs`, `jwks.rs` and `slow.rs` share.
 - `tests/dpop.rs` (32 cases): a valid ES256 and EdDSA proof; `expires_at` is the token's; the roles are read; each public origin and no other; `htu` compared without query or fragment and normalized; a wrong `htm` (case-sensitive), `htu` origin, path and scheme; `iat` too old and too far ahead, and the window configured; a replayed `jti` (refused, but not for another key, and not spent by a refused request), 16 concurrent requests with one proof let exactly one in, and a full cache refuses as `Unavailable` and never forgets; `ath` of another token, empty, not text, missing; a missing `jti`, `htm`, `htu`, `iat`; a key with each private member, for both algorithms; `typ` wrong or missing; `alg` HS256, HS512, RS256, PS256, ES384, `none` (also unsigned), unknown; a key that did not sign, of another kind than its algorithm, absent, of another curve, short; a tampered, malformed, empty and oversized proof; none, two and the same twice; a token bound to another key (the thief's proof, either algorithm), with no `cnf.jkt` (and `cnf` of another shape), expired, of another audience or issuer, unpublished key, `none`, HS256, empty; **a bound token as a bearer** (any `cnf`); a plain bearer unchanged with DPoP on; `DPoP` scheme without `auth.dpop` refused and a bearer, bound or not, as before; a DPoP request never falls back to the bearer; no refusal shows a token or a proof; what a build refuses. A unit test of the replay queue (`src/dpop.rs`) pins eviction and the cap with explicit instants.
-- Unit tests in `src/`: how a key is read and the choice of keys (`keys.rs`), the claims and the user (`claims.rs`), `iss` and `aud` (`lib.rs`), the `jwks_uri` rule (`fetch.rs`), the replay cache, origins and `htu` (`dpop.rs`).
+- Unit tests in `src/`: how a key is read and the choice of keys (`keys.rs`), the claims and the user (`claims.rs`), `iss` and `aud` (`lib.rs`), the `jwks_uri` rule (`fetch.rs`), the replay cache, origins and `htu` (`dpop.rs`). **The ways a fetch task ends** (`lib.rs`, driving `Flight` and `State` directly, since no issuer can make a task panic or a runtime stop): waiters wake only after the outcome is recorded (the test holds the lock, drops a flight on another thread, sees a waiter stay asleep, releases the lock and sees it wake with the failure recorded); a panic in the task records a failure, clears the fetch and wakes the waiter; a task dropped before its first poll leaves a closed sender, so the waiter returns at once, `State::running` clears it, no failure is recorded, and the next request starts a fetch of its own (`Unavailable` if that fails too); a runtime that stops mid-fetch records a failure and clears the fetch.
 
 ## See also
 

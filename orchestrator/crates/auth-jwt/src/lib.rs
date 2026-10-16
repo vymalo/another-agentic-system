@@ -6,16 +6,28 @@
 //! sequenceDiagram
 //!   participant C as Client (the web through oauth2-proxy, a CLI, CI)
 //!   participant A as JwtAuth
+//!   participant F as Fetch task (one at a time)
 //!   participant I as Issuer (discovery, JWKS)
 //!   C->>A: Authorization: Bearer token
 //!   A->>A: header: alg allowed? kid?
 //!   alt keys held and fresh
-//!     A->>A: pick the key of the kid
-//!   else never fetched, or older than 10 minutes
-//!     A->>I: GET discovery, GET jwks
-//!     I-->>A: keys
-//!   else the kid is unknown (at most once in 30 s)
-//!     A->>I: GET jwks again
+//!     A->>A: use the copy
+//!   else keys older than 10 minutes, within the hour of grace
+//!     A->>A: use the stale copy, at once
+//!     A-)F: start a refresh, unless one runs or one failed just now
+//!     F->>I: GET discovery, GET jwks
+//!     I-->>F: keys (recorded when they come)
+//!   else never fetched, or past the grace
+//!     A->>F: start a fetch, or join the one that runs
+//!     F->>I: GET discovery, GET jwks
+//!     I-->>F: keys
+//!     F-->>A: done, the keys are recorded
+//!   end
+//!   A->>A: pick the key of the kid in the copy used
+//!   opt the copy has no key of that kid
+//!     A->>F: join the fetch that runs, or start one (not if one was tried in the last 30 s)
+//!     F-->>A: done, the keys are recorded
+//!     A->>A: pick the key of the kid again
 //!   end
 //!   A->>A: signature, exp, nbf, iss, aud, iat, email_verified, user
 //!   A-->>C: the principal, or Invalid, or Unavailable
@@ -56,6 +68,19 @@
 //! plus an hour, every request is [`AuthError::Unavailable`] (fail closed, and not a refusal: a
 //! caller may retry); between the two, the copy goes on verifying while the issuer is down.
 //!
+//! **A fetch runs on a task of its own, one at a time, and no lock is held while it runs** (the lock
+//! is held to read or change the copy, never across a request to the issuer). A request waits for a
+//! fetch only when it must: with no copy of the keys, or one past its grace, it waits for the fetch
+//! (each request to the issuer times out) and is `Unavailable` if there is still nothing to verify with;
+//! a request whose token names a `kid` the copy lacks waits for the fetch, and no other request
+//! does. A copy older than the refresh interval and within the grace **is used at once** and is
+//! refreshed in the background, so a slow or hanging issuer holds up nobody who has a copy, and
+//! [`Authenticator::ready`] answers at once while a copy can verify. A request that is dropped
+//! while it waits leaves the fetch running, and the keys it brings are recorded all the same. The
+//! task holds the authenticator's state and nothing ends it early, so a fetch outlives the last
+//! clone of the authenticator by at most what its requests may take (the discovery document, then
+//! the keys: the request timeout each).
+//!
 //! The keys are read from `jwksUrl`, or from the `jwks_uri` of
 //! `{issuer}/.well-known/openid-configuration`, whose `issuer` must be the configured one. No
 //! redirect is followed, a body over 1 MiB is refused, and a request times out.
@@ -67,7 +92,7 @@ mod keys;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::errors::ErrorKind;
@@ -76,13 +101,13 @@ use orch_ports::{
     AuthError, Authenticator, CredentialKind, Credentials, DpopCredentials, Principal,
 };
 use serde_json::{Map, Value};
-use tokio::sync::Mutex;
+use tokio::sync::watch;
 use url::Url;
 
 use crate::dpop::Dpop;
 pub use crate::dpop::DpopConfig;
 use crate::fetch::{Fetcher, Source};
-use crate::keys::{ALLOWED, KeySet, kind_of};
+use crate::keys::{ALLOWED, KeySet, Parsed, kind_of};
 
 /// The longest token read.
 pub const MAX_TOKEN_BYTES: usize = 16 * 1024;
@@ -249,15 +274,39 @@ fn http_url(text: &str) -> Option<Url> {
     .then_some(url)
 }
 
-/// The copy of the keys, and what is known about fetching them.
+/// The copy of the keys, and what is known about fetching them. Behind a lock that is held to read or to
+/// change this and for nothing else: never across a request to the issuer.
 #[derive(Default)]
 struct State {
-    /// The keys of the last successful fetch, and when it finished.
+    /// The keys of the last successful fetch, and when it started.
     keys: Option<(Arc<KeySet>, Instant)>,
     /// When the last fetch, successful or not, started.
     last_attempt: Option<Instant>,
     /// When the last fetch failed, until one succeeds.
     last_failure: Option<Instant>,
+    /// The fetch that is running, if one is: what a request waits on. It ends when its sender is dropped.
+    in_flight: Option<watch::Receiver<()>>,
+}
+
+impl State {
+    /// The fetch that is running, if there is one.
+    fn running(&mut self) -> Option<watch::Receiver<()>> {
+        match &self.in_flight {
+            // A fetch whose sender is gone is over; a task that was dropped before it ran leaves such a mark.
+            Some(wait) if wait.has_changed().is_err() => {
+                self.in_flight = None;
+                None
+            }
+            Some(wait) => Some(wait.clone()),
+            None => None,
+        }
+    }
+
+    /// Whether the last fetch failed less than `retry` ago.
+    fn backing_off(&self, retry: Duration) -> bool {
+        self.last_failure
+            .is_some_and(|failed| failed.elapsed() < retry)
+    }
 }
 
 struct Inner {
@@ -272,6 +321,28 @@ struct Inner {
     fetcher: Fetcher,
     state: Mutex<State>,
     dpop: Option<Dpop>,
+}
+
+/// A running fetch, from inside the task that does it. Once the task has begun, however it ends (it finished, it
+/// panicked, the runtime stopped), the outcome is recorded and the fetch is over: the waiters wake after, and find
+/// it. A task that never ran has no `Flight` and records nothing: its sender is dropped with it, its waiters wake,
+/// and [`State::running`] finds the fetch over.
+struct Flight {
+    inner: Arc<Inner>,
+    started: Instant,
+    outcome: Option<Result<Parsed, String>>,
+    /// Dropped after the outcome is recorded: the waiters wake when it is gone.
+    _done: watch::Sender<()>,
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        let outcome = self
+            .outcome
+            .take()
+            .unwrap_or_else(|| Err("the fetch ended without an answer".to_owned()));
+        self.inner.record(self.started, outcome);
+    }
 }
 
 /// The JWT authenticator. Cheap to clone: clones share the keys.
@@ -368,40 +439,78 @@ fn unavailable() -> AuthError {
 }
 
 impl Inner {
-    /// Fetches the keys, under the lock, and records what came of it.
-    async fn fetch(&self, state: &mut State) {
-        let started = Instant::now();
-        state.last_attempt = Some(started);
-        let fetched = match self.fetcher.jwks().await {
-            Ok(document) => match KeySet::parse(&document) {
-                Some(parsed) if !parsed.set.is_empty() => Ok(parsed),
-                Some(_) => Err("the key set has no key this build can verify with".to_owned()),
-                None => Err("the answer is not a key set".to_owned()),
-            },
-            Err(error) => Err(error.to_string()),
-        };
-        match fetched {
-            Ok(parsed) => {
-                if state.last_failure.take().is_some() {
-                    tracing::info!("the token issuer's keys can be fetched again");
-                }
-                if parsed.skipped > 0 {
-                    tracing::debug!(
-                        skipped = parsed.skipped,
-                        "keys of the issuer this build cannot use"
-                    );
-                }
-                state.keys = Some((Arc::new(parsed.set), started));
-            }
-            Err(cause) => {
-                if state.last_failure.is_none() {
-                    tracing::warn!(%cause, "the token issuer's keys cannot be fetched; tokens are refused until they can");
-                } else {
-                    tracing::debug!(%cause, "the token issuer's keys still cannot be fetched");
-                }
-                state.last_failure = Some(Instant::now());
-            }
+    fn state(&self) -> MutexGuard<'_, State> {
+        // A panic with the lock held (a spawn outside a runtime) leaves a state that was valid: nothing is half-written.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Asks the issuer for its keys. Holds no lock: the state is touched after, by [`record`](Self::record).
+    async fn fetch_keys(&self) -> Result<Parsed, String> {
+        let document = self.fetcher.jwks().await.map_err(|e| e.to_string())?;
+        match KeySet::parse(&document) {
+            Some(parsed) if !parsed.set.is_empty() => Ok(parsed),
+            Some(_) => Err("the key set has no key this build can verify with".to_owned()),
+            None => Err("the answer is not a key set".to_owned()),
         }
+    }
+
+    /// Records what came of the fetch that started at `started`, and ends it.
+    fn record(&self, started: Instant, outcome: Result<Parsed, String>) {
+        let (recovered, skipped, failed) = {
+            let mut state = self.state();
+            state.in_flight = None;
+            match outcome {
+                Ok(parsed) => {
+                    let recovered = state.last_failure.take().is_some();
+                    let skipped = parsed.skipped;
+                    state.keys = Some((Arc::new(parsed.set), started));
+                    (recovered, skipped, None)
+                }
+                Err(cause) => {
+                    let first = state.last_failure.is_none();
+                    state.last_failure = Some(Instant::now());
+                    (false, 0, Some((cause, first)))
+                }
+            }
+        };
+        if recovered {
+            tracing::info!("the token issuer's keys can be fetched again");
+        }
+        if skipped > 0 {
+            tracing::debug!(skipped, "keys of the issuer this build cannot use");
+        }
+        match failed {
+            Some((cause, true)) => {
+                tracing::warn!(%cause, "the token issuer's keys cannot be fetched; tokens are refused until they can");
+            }
+            Some((cause, false)) => {
+                tracing::debug!(%cause, "the token issuer's keys still cannot be fetched");
+            }
+            None => {}
+        }
+    }
+
+    /// Starts a fetch of the keys on a task of its own, and gives what to wait on for it to be over. **A fetch
+    /// belongs to nobody who waits for it**: a request that is dropped while it waits leaves it running, and the
+    /// keys it brings are recorded all the same. Called with the lock held, and not to be called while a fetch is
+    /// running (`state.running()`).
+    fn start_fetch(self: &Arc<Self>, state: &mut State) -> watch::Receiver<()> {
+        let started = Instant::now();
+        let (done, wait) = watch::channel(());
+        let inner = Arc::clone(self);
+        // The task cannot record before this returns: `record` takes the lock the caller holds.
+        tokio::spawn(async move {
+            let mut flight = Flight {
+                inner,
+                started,
+                outcome: None,
+                _done: done,
+            };
+            flight.outcome = Some(flight.inner.fetch_keys().await);
+        });
+        state.last_attempt = Some(started);
+        state.in_flight = Some(wait.clone());
+        wait
     }
 
     /// The copy, if it may still verify: no older than the refresh interval and the grace.
@@ -410,40 +519,67 @@ impl Inner {
         (at.elapsed() <= self.refresh_interval + self.stale_grace).then(|| Arc::clone(keys))
     }
 
-    /// The keys to verify with: the copy while it is fresh, else a fetch (not sooner than the
-    /// retry interval after a failure), else the stale copy within its grace.
-    async fn current(&self) -> Result<Arc<KeySet>, AuthError> {
-        let mut state = self.state.lock().await;
-        if let Some((keys, at)) = &state.keys
-            && at.elapsed() < self.refresh_interval
-        {
-            return Ok(Arc::clone(keys));
-        }
-        let waiting = state
-            .last_failure
-            .is_some_and(|failed| failed.elapsed() < self.retry_interval);
-        if !waiting {
-            self.fetch(&mut state).await;
-        }
+    /// The keys to verify with.
+    ///
+    /// - A fresh copy is used at once.
+    /// - A copy older than the refresh interval and within its grace is used at once too, and a refresh is
+    ///   started in the background if none is running and the last one did not fail just now: **a request does
+    ///   not wait for a refresh while a copy can verify**.
+    /// - With no copy, or one past its grace, the request waits for the fetch that is running (it starts one
+    ///   unless the last failed just now) and fails closed if there is still nothing to verify with.
+    async fn current(self: &Arc<Self>) -> Result<Arc<KeySet>, AuthError> {
+        let wait = {
+            let mut state = self.state();
+            if let Some((keys, at)) = &state.keys {
+                let age = at.elapsed();
+                if age < self.refresh_interval {
+                    return Ok(Arc::clone(keys));
+                }
+                if age <= self.refresh_interval + self.stale_grace {
+                    let keys = Arc::clone(keys);
+                    if state.running().is_none() && !state.backing_off(self.retry_interval) {
+                        self.start_fetch(&mut state);
+                    }
+                    return Ok(keys);
+                }
+            }
+            match state.running() {
+                Some(wait) => wait,
+                None if state.backing_off(self.retry_interval) => return Err(unavailable()),
+                None => self.start_fetch(&mut state),
+            }
+        };
+        finished(wait).await;
+        let state = self.state();
         self.usable(&state).ok_or_else(unavailable)
     }
 
-    /// The keys after a token named a `kid` that `seen` lacks: fetched again, unless a fetch was
-    /// tried within the interval, or someone else already did. Never fails: without a better
-    /// copy, `seen` is it.
-    async fn after_unknown_kid(&self, seen: &Arc<KeySet>) -> Arc<KeySet> {
-        let mut state = self.state.lock().await;
-        if let Some((keys, _)) = &state.keys
-            && !Arc::ptr_eq(keys, seen)
-        {
-            return Arc::clone(keys);
+    /// The keys after a token named a `kid` that `seen` lacks: the fetch that is running, or one of its own
+    /// unless a fetch was tried within the interval (any fetch counts), or someone else already brought
+    /// better keys. Only the request that names the unknown key waits. Never fails: without a better copy,
+    /// `seen` is it.
+    async fn after_unknown_kid(self: &Arc<Self>, seen: &Arc<KeySet>) -> Arc<KeySet> {
+        let wait = {
+            let mut state = self.state();
+            if let Some((keys, _)) = &state.keys
+                && !Arc::ptr_eq(keys, seen)
+            {
+                return Arc::clone(keys);
+            }
+            match state.running() {
+                Some(wait) => Some(wait),
+                None => {
+                    let recent = state
+                        .last_attempt
+                        .is_some_and(|at| at.elapsed() < self.kid_refetch_interval);
+                    (!recent).then(|| self.start_fetch(&mut state))
+                }
+            }
+        };
+        if let Some(wait) = wait {
+            finished(wait).await;
         }
-        let recent = state
-            .last_attempt
-            .is_some_and(|at| at.elapsed() < self.kid_refetch_interval);
-        if !recent {
-            self.fetch(&mut state).await;
-        }
+        let state = self.state();
         self.usable(&state).unwrap_or_else(|| Arc::clone(seen))
     }
 
@@ -480,6 +616,11 @@ impl Inner {
         }
         Err(refusal(&ErrorKind::InvalidSignature))
     }
+}
+
+/// Waits for a fetch to be over: its sender is dropped, and nothing is ever sent.
+async fn finished(mut wait: watch::Receiver<()>) {
+    let _ = wait.changed().await;
 }
 
 /// Why a token was refused, in words fit for the caller. Never a value of the token.
@@ -546,7 +687,7 @@ fn install_crypto_provider() {
 impl Inner {
     /// The claims of `token`, once its header, key, signature and claims have passed; the same for a
     /// bearer and for a DPoP token. A refusal is [`CredentialKind::Bearer`]'s.
-    async fn verify(&self, token: &str) -> Result<Map<String, Value>, AuthError> {
+    async fn verify(self: &Arc<Self>, token: &str) -> Result<Map<String, Value>, AuthError> {
         if token.is_empty() || token.len() > MAX_TOKEN_BYTES {
             return Err(AuthError::invalid_bearer("the token is malformed"));
         }
@@ -676,7 +817,7 @@ impl Authenticator for JwtAuth {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -757,5 +898,209 @@ mod tests {
         // Wrong in both: the word is the same, and the issuer's is the one given.
         assert!(why(json!({"iss": "x", "aud": "y"})).contains("not for this API"));
         assert!(why(json!({"iss": "x"})).contains("not for this API"));
+    }
+
+    // ---- the end of a fetch: what is recorded, and when the waiters wake ----------------------------------------
+    //
+    // `Flight` is what a fetch task holds. These tests drive it, and `State`, directly: the ways a task can end
+    // (it finished, it panicked, it never ran, its runtime stopped) are not ones a test of the whole crate can
+    // make an issuer cause.
+
+    /// The state of an authenticator whose issuer is at `base`. Nothing is asked of the issuer unless a test
+    /// starts a fetch.
+    fn state_of(base: &str) -> Arc<Inner> {
+        let mut config = JwtConfig::new(base, ["web"])
+            .with_jwks_url(format!("{base}/jwks"))
+            .without_system_proxy();
+        config.timeout = Duration::from_secs(2);
+        JwtAuth::new(config).unwrap().inner
+    }
+
+    /// The address of an issuer that refuses every connection: a port that was free and is closed again.
+    fn closed_port() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// What `start_fetch` sets up, without the fetch: the state says a fetch runs, and the flight is what its
+    /// task holds. Returns what a waiter waits on.
+    fn flight_of(inner: &Arc<Inner>) -> (Flight, watch::Receiver<()>) {
+        let (done, wait) = watch::channel(());
+        inner.state().in_flight = Some(wait.clone());
+        let flight = Flight {
+            inner: Arc::clone(inner),
+            started: Instant::now(),
+            outcome: None,
+            _done: done,
+        };
+        (flight, wait)
+    }
+
+    /// A fetch whose task was dropped before it was first polled, as a runtime that stops with the task still
+    /// queued does. Nothing ran, so nothing was recorded: the state still says the fetch runs, and the sender
+    /// the waiters wait on is gone.
+    fn fetch_that_never_ran(inner: &Arc<Inner>) -> watch::Receiver<()> {
+        let rt = runtime();
+        let wait = {
+            let _enter = rt.enter();
+            let mut state = inner.state();
+            inner.start_fetch(&mut state)
+        };
+        drop(rt);
+        wait
+    }
+
+    /// `finished`, with a bound, so that a waiter that is never woken fails the test and does not hang it.
+    async fn woken(wait: watch::Receiver<()>) {
+        tokio::time::timeout(Duration::from_secs(5), finished(wait))
+            .await
+            .expect("the waiter was never woken");
+    }
+
+    #[test]
+    fn waiters_wake_only_after_the_outcome_is_recorded() {
+        let inner = state_of(&closed_port());
+        let (flight, wait) = flight_of(&inner);
+        let mut waiter = wait.clone();
+
+        // The lock is held by the test, so a flight dropped on another thread blocks in `record`. Its sender must
+        // outlive that: if it were dropped first, the waiter would wake while the outcome is still unwritten, find
+        // the fetch "running" and no keys, and be told `Unavailable` for a fetch that was about to succeed.
+        let held = inner.state();
+        let (started, running) = std::sync::mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            drop(flight);
+        });
+        running.recv().unwrap();
+        let rt = runtime();
+        let woke = rt
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(400), waiter.changed()).await
+            })
+            .is_ok();
+        assert!(
+            !woke,
+            "a waiter woke while the outcome was not yet recorded"
+        );
+        assert!(
+            !dropper.is_finished(),
+            "the flight ended without the lock: it recorded nothing"
+        );
+
+        drop(held);
+        dropper.join().unwrap();
+        rt.block_on(woken(wait));
+        assert!(rt.block_on(waiter.changed()).is_err());
+        let state = inner.state();
+        assert!(state.last_failure.is_some(), "the failure is recorded");
+        assert!(state.in_flight.is_none(), "the fetch is over");
+        assert!(state.keys.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_panic_in_the_fetch_task_records_a_failure_and_wakes_the_waiters() {
+        let inner = state_of(&closed_port());
+        let (flight, wait) = flight_of(&inner);
+        let task = tokio::spawn(async move {
+            let _flight = flight;
+            panic!("the fetch task panics");
+        });
+        assert!(task.await.unwrap_err().is_panic());
+
+        woken(wait).await;
+        let state = inner.state();
+        assert!(state.last_failure.is_some(), "the panic is a failed fetch");
+        assert!(state.in_flight.is_none(), "and the fetch is over");
+        assert!(state.keys.is_none(), "and no keys were made up");
+    }
+
+    #[test]
+    fn a_task_dropped_before_its_first_poll_wakes_its_waiters_and_is_not_a_fetch_that_runs() {
+        let inner = state_of(&closed_port());
+        let wait = fetch_that_never_ran(&inner);
+        // No flight was ever made, so nothing was recorded: the handle is there and its sender is gone.
+        assert!(inner.state().in_flight.is_some());
+        assert!(inner.state().last_failure.is_none());
+        assert!(wait.has_changed().is_err());
+
+        runtime().block_on(async {
+            woken(wait).await;
+            assert!(
+                inner.state().running().is_none(),
+                "a fetch whose sender is gone is over"
+            );
+            assert!(inner.state().in_flight.is_none(), "and it is cleared");
+        });
+        assert!(
+            inner.state().last_failure.is_none(),
+            "a task that never ran records no failure"
+        );
+    }
+
+    #[test]
+    fn the_next_request_after_a_task_that_never_ran_starts_a_fetch_of_its_own() {
+        let inner = state_of(&closed_port());
+        let _wait = fetch_that_never_ran(&inner);
+
+        let error = runtime().block_on(async {
+            tokio::time::timeout(Duration::from_secs(8), inner.current())
+                .await
+                .expect("the request hangs behind the fetch that never ran")
+                .unwrap_err()
+        });
+        // The issuer refuses, so it is `Unavailable`, as it would be after any failed fetch. Only a fetch of its
+        // own can have recorded that: the one that never ran recorded nothing.
+        assert!(matches!(error, AuthError::Unavailable { .. }), "{error:?}");
+        let state = inner.state();
+        assert!(state.last_failure.is_some(), "a new fetch ran and failed");
+        assert!(state.in_flight.is_none());
+    }
+
+    #[test]
+    fn a_runtime_that_stops_in_the_middle_of_a_fetch_records_a_failure() {
+        // An issuer that takes the connection and never answers.
+        let issuer = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        issuer.set_nonblocking(true).unwrap();
+        let inner = state_of(&format!("http://{}", issuer.local_addr().unwrap()));
+        let rt = runtime();
+        let (wait, _connection) = rt.block_on(async {
+            let wait = {
+                let mut state = inner.state();
+                inner.start_fetch(&mut state)
+            };
+            // The task has run, and holds its flight, once the issuer has been connected to.
+            let give_up = Instant::now() + Duration::from_secs(5);
+            let connection = loop {
+                match issuer.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < give_up =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(e) => panic!("the fetch never reached the issuer: {e}"),
+                }
+            };
+            (wait, connection)
+        });
+        assert!(inner.state().in_flight.is_some(), "the fetch is running");
+
+        drop(rt);
+        {
+            let state = inner.state();
+            assert!(state.in_flight.is_none(), "the fetch is over");
+            assert!(state.last_failure.is_some(), "and it is a failure");
+            assert!(state.keys.is_none());
+        }
+        runtime().block_on(woken(wait));
     }
 }

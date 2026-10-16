@@ -28,7 +28,9 @@ serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+# `rt` for `tokio::spawn`: a fetch of the keys runs on a task of its own, so that no request holds a lock while it
+# runs or loses the fetch by being dropped.
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing.workspace = true
 url.workspace = true
 # The SHA-256 of a DPoP proof's `ath`: the backend `jsonwebtoken` and `rustls` already use.
@@ -41,7 +43,7 @@ axum = { workspace = true, optional = true }
 orch-auth-jwt = { workspace = true, features = ["testkit"] }
 orch-ports = { workspace = true, features = ["testkit"] }
 axum.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util"] }
 # The log of tests/logs.rs, captured.
 tracing-subscriber.workspace = true
 
