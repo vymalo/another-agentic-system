@@ -219,6 +219,18 @@ impl Origin {
     pub fn is_default(&self) -> bool {
         *self == Origin::default()
     }
+
+    /// Whether a `user_message` of this origin is the person's own words: what an asked agent is
+    /// told the person said ([`PersonSaid`](crate::PersonSaid), ADR 0026 amended 2026-10-17). Both
+    /// origins are: the chat is the person, and an MCP client is a program holding the person's
+    /// token. A webhook writes no `user_message` (it writes a `ci_result`), so nothing is left out
+    /// today; an origin added later that is not a person's is decided here, and the match asks for
+    /// it.
+    pub const fn is_person(self) -> bool {
+        match self {
+            Origin::Agui | Origin::Mcp => true,
+        }
+    }
 }
 
 /// How a person's message reached a job that was running when they sent it (ADR 0036). Closed

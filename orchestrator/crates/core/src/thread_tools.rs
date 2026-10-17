@@ -6,7 +6,12 @@
 //! travels inside the orchestrator: [`ToolsGrant`], who the token is for, and [`Caller`], which
 //! side of the thread the call is made on. Both are on the send request; the token is not, and it
 //! is never written to the event log, to the outbox or to a log line.
+//!
+//! An asked agent's grant also carries what the person said in the thread ([`PersonSaid`], ADR
+//! 0026 amended 2026-10-17): the person's own words, bounded, which the agent applies its own rule
+//! to (adam-coder reads which repositories were named). The orchestrator writes it, never a model.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::str::FromStr;
 
@@ -110,6 +115,134 @@ pub struct ToolsGrant {
     /// caller but [`Caller::Main`]. The adapter activates the extension only when this is `Some` and
     /// the card it read for the very message lists `uploads/v1` and `thread-tools/v1`.
     pub uploads: Option<UploadOffer>,
+    /// What the person said in the thread, **told to an asked agent only** (`person` of the
+    /// message metadata, ADR 0026 amended 2026-10-17): the texts of the person's messages, oldest
+    /// first, within [`MAX_PERSON_SAID_BYTES`]. `None` for [`Caller::Main`], which has the messages
+    /// themselves, and the adapter never mints a grant that says otherwise (`is_consistent`).
+    pub person: Option<PersonSaid>,
+}
+
+/// Most bytes of one entry of [`PersonSaid::said`]: a longer message is cut there, on a character
+/// boundary (the same number as [`MAX_HISTORY_ENTRY_BYTES`](crate::MAX_HISTORY_ENTRY_BYTES)).
+pub const MAX_PERSON_SAID_ENTRY_BYTES: usize = 4 * 1024;
+/// Most bytes of [`PersonSaid::said`], every entry together: beyond it the oldest entries are left
+/// out whole, and [`PersonSaid::omitted`] counts them.
+pub const MAX_PERSON_SAID_BYTES: usize = 64 * 1024;
+
+/// What the person said in a thread, as an asked agent is told it (`person` of the `thread-tools/v1`
+/// metadata, ADR 0026 amended 2026-10-17): the `text` of every `user_message` of the thread whose
+/// origin is a person's ([`Origin::is_person`](crate::Origin::is_person)), every job of the thread,
+/// oldest first, as written, a steered message among them. Whitespace-only texts are skipped, each
+/// entry is cut to its first [`MAX_PERSON_SAID_ENTRY_BYTES`] on a character boundary, and when the
+/// entries together would exceed [`MAX_PERSON_SAID_BYTES`] the oldest are left out whole and
+/// counted in `omitted`.
+///
+/// It is the person's words and not a list of repositories, because the rule of what names one is
+/// the agent's; the orchestrator knows nothing of repositories. Built by [`PersonSaidBuilder`] or
+/// [`PersonSaid::from_texts`]; the A2A adapter writes it into the message (`{said, omitted?}`,
+/// `omitted` only above 0). `Debug` prints counts and bytes, never the text, so no log line of a
+/// send can carry what the person wrote.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct PersonSaid {
+    /// The kept texts, oldest first.
+    pub said: Vec<String>,
+    /// How many older texts were left out for [`MAX_PERSON_SAID_BYTES`].
+    pub omitted: u32,
+}
+
+impl PersonSaid {
+    /// The person's words from `texts`, oldest first, under the bounds above.
+    pub fn from_texts<I, S>(texts: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut builder = PersonSaidBuilder::new();
+        for text in texts {
+            builder.push(text.as_ref());
+        }
+        builder.finish()
+    }
+
+    /// The bytes of every kept text together.
+    pub fn bytes(&self) -> usize {
+        self.said.iter().map(String::len).sum()
+    }
+}
+
+impl fmt::Debug for PersonSaid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersonSaid")
+            .field("entries", &self.said.len())
+            .field("bytes", &self.bytes())
+            .field("omitted", &self.omitted)
+            .finish()
+    }
+}
+
+/// Builds a [`PersonSaid`] from texts given oldest first, keeping the bounds as it goes: a reader
+/// that pages a long log forward never holds more than [`MAX_PERSON_SAID_BYTES`] of it.
+#[derive(Default)]
+pub struct PersonSaidBuilder {
+    kept: VecDeque<String>,
+    bytes: usize,
+    omitted: u32,
+}
+
+impl PersonSaidBuilder {
+    /// Nothing said yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The next text the person wrote, newer than every one pushed before. A whitespace-only text
+    /// is skipped; a long one is cut to [`MAX_PERSON_SAID_ENTRY_BYTES`]; and the oldest kept texts
+    /// go, whole, while the total is over [`MAX_PERSON_SAID_BYTES`].
+    pub fn push(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let entry = cut_at_char_boundary(text, MAX_PERSON_SAID_ENTRY_BYTES).to_owned();
+        self.bytes += entry.len();
+        self.kept.push_back(entry);
+        while self.bytes > MAX_PERSON_SAID_BYTES {
+            let Some(oldest) = self.kept.pop_front() else {
+                break;
+            };
+            self.bytes -= oldest.len();
+            self.omitted = self.omitted.saturating_add(1);
+        }
+    }
+
+    /// What was kept.
+    pub fn finish(self) -> PersonSaid {
+        PersonSaid {
+            said: self.kept.into(),
+            omitted: self.omitted,
+        }
+    }
+}
+
+impl fmt::Debug for PersonSaidBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersonSaidBuilder")
+            .field("entries", &self.kept.len())
+            .field("bytes", &self.bytes)
+            .field("omitted", &self.omitted)
+            .finish()
+    }
+}
+
+/// The first `max` bytes of `text` at most, cut on a character boundary.
+fn cut_at_char_boundary(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// What a deployment offers an agent for large files (`uploads/v1`, `docs/api/uploads-v1.md`
@@ -147,7 +280,15 @@ impl ToolsGrant {
             depth: 0,
             attached: Vec::new(),
             uploads: None,
+            person: None,
         }
+    }
+
+    /// The same grant, told what the person said in the thread (`None` tells nothing): only an
+    /// asked agent's grant is told, and one of the addressed agent's that is becomes inconsistent.
+    #[must_use]
+    pub fn with_person(self, person: Option<PersonSaid>) -> Self {
+        ToolsGrant { person, ..self }
     }
 
     /// The same grant, told of these attached servers.
@@ -163,8 +304,8 @@ impl ToolsGrant {
     }
 
     /// Whether the fields agree: a job from 1, an `ask:<n>` with n from 1, depth 0 exactly for
-    /// [`Caller::Main`], and an upload offer only for the addressed agent, with usable numbers. A
-    /// grant that does not is never minted.
+    /// [`Caller::Main`], an upload offer only for the addressed agent, with usable numbers, and
+    /// what the person said only for an asked agent. A grant that does not is never minted.
     pub fn is_consistent(&self) -> bool {
         self.job >= 1
             && match self.caller {
@@ -174,6 +315,7 @@ impl ToolsGrant {
             && self
                 .uploads
                 .is_none_or(|offer| self.caller.is_main() && offer.is_valid())
+            && (self.person.is_none() || !self.caller.is_main())
     }
 }
 
@@ -283,6 +425,133 @@ mod tests {
         ] {
             assert!(ok.is_valid(), "{ok:?}");
         }
+    }
+
+    fn said(texts: &[&str]) -> PersonSaid {
+        PersonSaid::from_texts(texts)
+    }
+
+    #[test]
+    fn what_the_person_said_is_kept_oldest_first_as_written_and_blank_texts_are_skipped() {
+        let person = said(&[
+            "Set up acme/widgets for me, branch main",
+            "   ",
+            "",
+            "\n\t",
+            "  yes, go ahead  ",
+        ]);
+        assert_eq!(
+            person.said,
+            [
+                "Set up acme/widgets for me, branch main",
+                "  yes, go ahead  "
+            ]
+        );
+        assert_eq!(person.omitted, 0);
+        assert_eq!(said(&[]), PersonSaid::default());
+        assert!(said(&[]).said.is_empty());
+        assert_eq!(said(&["", "  "]), PersonSaid::default());
+    }
+
+    #[test]
+    fn a_long_text_is_cut_to_the_entry_bound_on_a_character_boundary() {
+        // `é` is two bytes: one starts on the last byte before the bound and would be split
+        let mut text = "a".repeat(MAX_PERSON_SAID_ENTRY_BYTES - 1);
+        text.push_str("ééé");
+        let person = said(&[&text]);
+        assert_eq!(person.said.len(), 1);
+        assert_eq!(person.said[0].len(), MAX_PERSON_SAID_ENTRY_BYTES - 1);
+        assert_eq!(person.said[0], "a".repeat(MAX_PERSON_SAID_ENTRY_BYTES - 1));
+        // a text that ends exactly on the bound is kept whole; one byte more is cut
+        let exact = "b".repeat(MAX_PERSON_SAID_ENTRY_BYTES);
+        assert_eq!(said(&[&exact]).said[0], exact);
+        let over = "c".repeat(MAX_PERSON_SAID_ENTRY_BYTES + 1);
+        assert_eq!(said(&[&over]).said[0].len(), MAX_PERSON_SAID_ENTRY_BYTES);
+        let four = "é".repeat(MAX_PERSON_SAID_ENTRY_BYTES / 2 + 1);
+        let cut = &said(&[&four]).said[0];
+        assert_eq!(cut.len(), MAX_PERSON_SAID_ENTRY_BYTES);
+        assert!(cut.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn over_the_total_the_oldest_texts_go_whole_and_are_counted() {
+        // 20 texts of 4 KiB each: 80 KiB; 16 fit in 64 KiB exactly, so the oldest 4 go
+        let texts: Vec<String> = (0..20)
+            .map(|i| format!("{i:02}{}", "x".repeat(MAX_PERSON_SAID_ENTRY_BYTES - 2)))
+            .collect();
+        let person = PersonSaid::from_texts(&texts);
+        assert_eq!(person.omitted, 4);
+        assert_eq!(person.said.len(), 16);
+        assert_eq!(person.bytes(), MAX_PERSON_SAID_BYTES);
+        assert_eq!(&person.said[0][..2], "04", "the oldest kept is the fifth");
+        assert_eq!(&person.said[15][..2], "19", "the newest is kept");
+        assert_eq!(person.said, texts[4..]);
+        // one more byte over the total and the next oldest goes whole: never a partial entry
+        let mut more = texts.clone();
+        more.push("y".to_owned());
+        let person = PersonSaid::from_texts(&more);
+        assert_eq!(person.omitted, 5);
+        assert_eq!(person.said.len(), 16);
+        assert_eq!(&person.said[0][..2], "05");
+        assert_eq!(person.said[15], "y");
+        // the builder gives the same as the constructor, pushed one at a time
+        let mut builder = PersonSaidBuilder::new();
+        for text in &more {
+            builder.push(text);
+        }
+        assert_eq!(builder.finish(), person);
+    }
+
+    #[test]
+    fn debug_of_what_the_person_said_shows_counts_and_never_the_text() {
+        let person = said(&["acme/widgets is the repository", "yes"]);
+        let shown = format!("{person:?}");
+        assert_eq!(
+            shown, "PersonSaid { entries: 2, bytes: 33, omitted: 0 }",
+            "{shown}"
+        );
+        assert!(!shown.contains("acme"));
+        let mut builder = PersonSaidBuilder::new();
+        builder.push("acme/widgets is the repository");
+        let shown = format!("{builder:?}");
+        assert!(!shown.contains("acme"), "{shown}");
+        assert!(shown.contains("entries: 1"), "{shown}");
+        // and the grant that carries it shows no text either
+        let grant = ToolsGrant {
+            caller: Caller::Ask(1),
+            depth: 1,
+            ..ToolsGrant::main(ThreadId(uuid::Uuid::nil()), 1, AgentId::new("coder"))
+        }
+        .with_person(Some(person));
+        assert!(!format!("{grant:?}").contains("acme"));
+    }
+
+    #[test]
+    fn what_the_person_said_is_for_an_asked_agent_only() {
+        let thread = ThreadId(uuid::Uuid::nil());
+        let main = ToolsGrant::main(thread, 1, AgentId::new("coder"));
+        assert!(
+            main.person.is_none(),
+            "the addressed agent has the messages"
+        );
+        let person = said(&["hello"]);
+        assert!(
+            !main
+                .clone()
+                .with_person(Some(person.clone()))
+                .is_consistent(),
+            "never on a main message"
+        );
+        let ask = ToolsGrant {
+            caller: Caller::Ask(1),
+            depth: 1,
+            ..main
+        };
+        assert!(ask.clone().is_consistent());
+        let told = ask.clone().with_person(Some(person.clone()));
+        assert!(told.is_consistent());
+        assert_eq!(told.person, Some(person));
+        assert_eq!(told.with_person(None), ask);
     }
 
     #[test]

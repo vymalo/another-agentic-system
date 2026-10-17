@@ -457,6 +457,9 @@ async fn a_delegation_carries_the_grant_of_the_threads_tools_and_no_secret() {
         "the job of each message, and the thread's agent"
     );
     assert!(grants.iter().flatten().all(ToolsGrant::is_consistent));
+    // the thread's own agent has the person's messages: a main turn is told nothing of them (ADR
+    // 0026, amended 2026-10-17, fourth note; an ask is, `tests/ask_dispatch.rs`)
+    assert!(grants.iter().flatten().all(|g| g.person.is_none()));
     run.shutdown().await;
 }
 

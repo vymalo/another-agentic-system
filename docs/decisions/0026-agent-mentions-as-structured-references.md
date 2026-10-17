@@ -10,7 +10,10 @@
   sent without its thread-tools grant: an adapter that cannot mint the token fails the ask instead of sending a plain message
   ([status note](#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)). **Amended (2026-10-17, third):** an
   asked agent is sent a **forms catalog** derived from the thread's, `Choices` alone, so that it can draw a form and nothing
-  else ([status note](#status-note-2026-10-17-third-an-asked-agent-is-sent-a-forms-only-catalog)).
+  else ([status note](#status-note-2026-10-17-third-an-asked-agent-is-sent-a-forms-only-catalog)). **Amended (2026-10-17, fourth):**
+  an asked agent is told what the person said in the thread, the person's own words under `thread-tools/v1`, written by the
+  orchestrator and never by a model, so that it decides what the person named from them
+  ([status note](#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)).
 
 ## Context
 
@@ -326,3 +329,48 @@ words ended the ask under the fail-closed rule, because the rule cannot tell sur
   adapter, in `orchestrator/crates/e2e/tests/ask_agent.rs` (no asked mock of `dev/` lists `ui-catalog/v1`, so
   `dev/mentions-e2e.sh` cannot see it and no mock was invented).
 
+## Status note, 2026-10-17 (fourth): an asked agent is told what the person said
+
+**Amended (2026-10-17), the owner's decision** (with adam-rs ADR 0036, "Decided, a follow-up"). When another agent's model asks
+an agent (`ask_agent`), the asked agent sees only the asking model's words. adam-coder decides which repositories it may touch
+without consent from "the repositories the person named in their own words"; in a run another agent started, the only words it
+had were the asking model's, so a prompt-injected chat model could name any repository. The owner decided that in such a run only
+the repositories the person named count, and that **the orchestrator** passes the material, as a structured field it writes,
+never a model. This note is the orchestrator's side; the adam-rs side (the coder reading it) is a separate PR of that repository.
+
+- **What is passed: the person's words, not a list of repositories.** The rule of what names a repository (hosts, the default
+  host, bare names, URLs, `git@` forms) is the agent's (`bin/adam-coder/src/tools/named.rs` of adam-rs), and this orchestrator
+  is protocol-agnostic and knows nothing of repositories (invariants 1 and 7). So the field carries what the person wrote in the
+  thread, and the asked agent applies its own rule to it.
+- **Thread-wide, not job-wide.** The thread's person messages, all of them, oldest first: that is the rule adam-coder applies to
+  its own conversation (a repository named in the first task is one the person named), and a job-only field would strand a
+  repository the person named in an earlier job (person: "set up acme/widgets" → the agent asks a question → the person
+  answers in a new job → the ask of that job would carry only the answer).
+- **The wire shape.** Under the message's `thread-tools/v1` metadata, **only on an ask's message** (`ToolsGrant.caller` is
+  `Caller::Ask(_)`), a member `person: {said, omitted?}` ([`thread-tools-v1.md`](../api/thread-tools-v1.md#the-person-member)).
+  `said` is the `text` of every `user_message` of the thread whose origin is a person's (`Origin::is_person`: `agui` and `mcp`,
+  both are; a webhook writes no `user_message`), oldest first, as written, steered messages among them, whitespace-only texts
+  skipped, each entry cut to its first `MAX_PERSON_SAID_ENTRY_BYTES` (4 KiB, the bound of a fork's history entry) on a
+  character boundary; when the entries together would exceed `MAX_PERSON_SAID_BYTES` (64 KiB) the oldest are left out whole
+  and `omitted` counts them, present only above 0. Never on a `Caller::Main` message (the addressed agent has the messages;
+  `is_consistent` refuses such a grant, so it is never minted), never for the verifier, never without a token. A fork's log
+  begins with a copy of its parent's events up to the cut ([ADR 0029](0029-forking-a-thread-copies-its-log.md); both stores copy
+  every kind), so the copied messages count on their own.
+- **Where.** `PersonSaid` and `PersonSaidBuilder` in the core (pure; `Debug` prints counts and bytes, never the text, so no log
+  line of a send can carry the person's words) and `ToolsGrant.person`; `App::person_said` pages the thread's log forward
+  through `ThreadStore::list_events` (no store reads by kind and a trait method would break every implementer, invariant 6: the
+  read is O(log) per ask send, bounded while paging); the dispatcher reads it where it reads the forms catalog, and a read that
+  fails leaves the row to be claimed again, as the catalog's does; the A2A adapter writes the member beside `url`, `token`,
+  `expiresAt` and `attached`.
+- **What stays a gap.** A person's **form answers** (`ui_action`: typed fields and notes) are not carried: the orchestrator
+  cannot tell a typed field from a chosen option without the form. The person can write the name in a message; the effect is
+  fail-closed, fewer repositories count, never more.
+- **Tests.** The core: order kept, blank texts skipped, the cut on a character boundary, the oldest dropped whole and counted,
+  `Debug` without the text, an empty input, and a `main` grant that carries it inconsistent. The dispatcher
+  (`orchestrator/crates/app/tests/ask_dispatch.rs`): a thread of two jobs with two person messages, the agent's message between
+  and a steered one: the ask's grant carries exactly the person's three texts in order and nothing of the agent's; a
+  delegation's carries none (`tests/dispatcher.rs`). The adapter (`orchestrator/crates/agent-a2a`): the member on an ask's
+  message as given, `omitted` only above 0, no member on the addressed agent's or on an ask told nothing, nothing to a card
+  without the extension, and no log line of a send holds the words. End to end, through the real adapter, on both stores
+  (`orchestrator/crates/e2e/tests/ask_agent.rs`): the asked agent is told the person's messages of both jobs and the thread's
+  agent is told nothing of them.

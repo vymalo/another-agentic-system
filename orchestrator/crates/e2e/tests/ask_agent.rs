@@ -431,9 +431,86 @@ async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(ba
     );
 }
 
+/// An asked agent is told what the person said in the thread (ADR 0026, amended 2026-10-17, fourth
+/// note), through the real adapter: `person.said` of its grant is the text of the person's messages,
+/// every job of the thread, oldest first, as written; the thread's own agent, which has the messages,
+/// is told nothing of them on either of its own.
+async fn an_asked_agent_is_told_what_the_person_said_in_the_thread(backend: Backend) {
+    let world = world(backend, None).await;
+    let orch = world.instance_with_thread_tools("orch-1", true).await;
+    let chat = world.chat(&orch);
+    let thread = Uuid::now_v7().to_string();
+    // job 1: a message the thread's agent answers by itself, nothing asked
+    let first = "echo set up acme/widgets for me, branch main";
+    let body = Chat::agui_input(&thread, "run-1", &[("m-1", first)], json!({}));
+    let mut sse = chat.agui_run("plain", &body).await;
+    assert_eq!(sse.status.as_u16(), 200);
+    sse.collect_frames(WAIT).await;
+    chat.wait_state(&thread, "done").await;
+    // job 2: the person's go-ahead, mentioning the agent the chat then asks
+    let second = "coordinate @coder -- yes, go ahead";
+    let body = Chat::agui_input(
+        &thread,
+        "run-2",
+        &[("m-1", first), ("m-2", second)],
+        json!({"forwardedProps": {"vymalo.mentions": [mention(second, "coder")]}}),
+    );
+    let mut sse = chat.agui_run("plain", &body).await;
+    assert_eq!(sse.status.as_u16(), 200);
+    sse.collect_frames(WAIT).await;
+    chat.wait_state(&thread, "done").await;
+
+    // the asked agent: the person's words of both jobs, oldest first, beside its endpoint
+    let asked = world.coder.executions();
+    assert_eq!(asked.len(), 1);
+    let grant = asked[0]
+        .thread_tools
+        .clone()
+        .expect("the asked agent's grant");
+    assert_eq!(grant["person"], json!({"said": [first, second]}));
+    assert_eq!(
+        grant.as_object().unwrap().len(),
+        4,
+        "url, token, expiresAt and person: {}",
+        grant
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    assert_eq!(
+        asked[0].text, "echo coder",
+        "the ask's own text is the asking agent's"
+    );
+    // the thread's agent has the messages: no `person` on either of its own
+    let plain = world.plain.executions();
+    assert_eq!(plain.len(), 2);
+    for call in &plain {
+        let own = call
+            .thread_tools
+            .as_ref()
+            .expect("the thread's agent's grant");
+        assert!(own.get("person").is_none(), "{own}");
+    }
+    // which is what the log holds as the person's messages, and the ask finished
+    let events = chat.events(&thread).await;
+    let said: Vec<&Value> = kinds_of(&events, "user_message")
+        .into_iter()
+        .map(|e| &e["data"]["text"])
+        .collect();
+    assert_eq!(said, [first, second]);
+    assert_eq!(
+        kinds_of(&events, "ask_finished")[0]["data"]["state"],
+        "completed"
+    );
+}
+
 backends!(
     the_coordinator_asks_the_agents_the_person_mentioned_in_order_and_uses_their_answers,
     an_asked_agent_may_ask_and_the_third_level_is_refused_and_the_persons_cancel_ends_every_ask,
     a_mention_is_the_only_way_to_be_asked_and_the_limits_are_the_deployments,
     an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads,
+    an_asked_agent_is_told_what_the_person_said_in_the_thread,
 );
