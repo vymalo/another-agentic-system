@@ -10,7 +10,9 @@
   [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). When it is accepted,
   [ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note on the coder's consent forms gets a dated amendment. The wire
-  contract is [`api/access-tier-v1.md`](../api/access-tier-v1.md).
+  contract is [`api/access-tier-v1.md`](../api/access-tier-v1.md). **Amended 2026-10-17:** decision 6 (the person's cap is kept
+  when no tier could be decided, and a mention pins the cap on the mentioned agent), question 1 (an ask is sent under that cap) and
+  question 2 (a form an asked agent shows is not answered by a model; a question in words is a known gap).
 
 ## Context
 
@@ -79,7 +81,7 @@ What exists, and what the design rests on:
    unfinished job, an action, an edit) is capped by the role of whoever gives it and rounded down to the highest tier the live card
    still honours, never raised, and is refused with a word when it cannot be kept. An MCP message to a finished thread starts a new
    job and continues nothing. The cap of a person for an agent is over the roles that let them invoke it.
-   *Amended 2026-10-11 (the second review of the orchestrator's side), two holes:* (1) **A cap with no tier to pin.** A capped
+   *Amended 2026-10-17 (the second review of the orchestrator's side), two holes:* (1) **A cap with no tier to pin.** A capped
    person whose agent's card offered no tier when the message was written was sent none, and nothing recorded that a cap applied: an
    agent redeployed with `access-tier/v1` while a rework, a retried delegation, a steer that became a delegation, a held Stop & send
    text or a redelivered row was queued then ran at its own default. The cap is now pinned beside the tier (`user_message.tierCap`,
@@ -207,7 +209,7 @@ role has a cap unless a deployment writes one, so the built-in `user` may pick `
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** `ask_agent` carries
    no tier in v1. An asked agent works under its own default, and the asking agent keeps its helpers to its tier by its own means
    (duty 1 of the contract).
-   *Amended 2026-10-11 (decision 6):* an asked agent works under its own default **unless a role of the person caps the
+   *Amended 2026-10-17 (decision 6):* an asked agent works under its own default **unless a role of the person caps the
    mentioned agent**, in which case the ask is sent under the highest tier it offers within that cap (the person's own cap on that
    agent, pinned on the mention; never the parent's tier). `ask_agent` still takes no tier from the asking agent.
 2. **Which consent forms stay where.** The owner named the form for a repository the person did not name under `edits`, and the
@@ -216,10 +218,11 @@ role has a cap unless a deployment writes one, so the built-in `user` may pick `
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** a bare repository
    name counts as named at `auto` and `bypass`. At `plan` and `edits` the consent form stays. This is adam's side (adam-rs); the
    orchestrator does nothing for it, and it is recorded here so the adam-rs pull request has the answer.
-   *Amended 2026-10-17:* those consent forms are the person's own grant, so an asked agent's form is never answered by a model: the
-   ask ends and the agent is not asked again in the job ([ADR 0026](0026-agent-mentions-as-structured-references.md), status
-   note of 2026-10-17). Without it, `ask_agent` would be a way round the person's consent, as it was a way round their cap
-   (decision 6, amended).
+   *Amended 2026-10-17:* those consent forms are the person's own grant, so a form an asked agent **shows** is not answered by a
+   model: the ask ends and the agent is not asked again in the job ([ADR 0026](0026-agent-mentions-as-structured-references.md),
+   status note of 2026-10-17). A consent that an asked agent asks **in words** is not covered, and is a **known gap**: an ask
+   carries no UI catalog, so adam-coder's consent question is one, and it is protected only once adam-rs refuses to park on
+   consent in a run another agent started.
 3. **"Repository creation by default."** Read as: at `auto` the coder has `create_repository` and no form, and `CREATE_REPO_OWNERS`
    still decides for which owners (today an empty list offers no tool). Does the owner mean to change that default as well?
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** creation by default
