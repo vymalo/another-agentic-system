@@ -11,7 +11,8 @@
 //!   the identity header of a proxy), failing closed (ADR 0033);
 //! - [`ChatModel`]: one question to a language model and its answer (the orchestrator's titles);
 //! - [`AgentRegistry`]: which agents exist right now, read live and failing closed (ADR 0022), with
-//!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one);
+//!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one); each
+//!   entry says whom it is for ([`AgentAudience`], ADR 0045);
 //! - [`ArtifactStore`]: where the files agents hand over are kept, by the hash of their content;
 //!   the log keeps only the reference (ADR 0032); [`NoArtifacts`] is a deployment without one;
 //! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
@@ -103,8 +104,9 @@ pub use pending::{
     PendingAuthorizations, StateDigest,
 };
 pub use registry::{
-    AgentListing, AgentRegistry, CompositeRegistry, FixedRegistry, RegistryEntry, RegistryError,
-    STATIC_SOURCE, SourceStatus,
+    AUDIENCE_EVERYONE, AgentAudience, AgentListing, AgentRegistry, AudienceRoles,
+    CompositeRegistry, FixedRegistry, MAX_AUDIENCE_VALUE_BYTES, MAX_AUDIENCE_VALUES, RegistryEntry,
+    RegistryError, STATIC_SOURCE, SourceStatus,
 };
 pub use route::ByTransport;
 pub use secrets::{

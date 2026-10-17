@@ -8,7 +8,7 @@ mod support;
 
 use orch_core::{AgentId, AgentSource};
 use orch_ports::memory::Call;
-use orch_ports::{AgentEndpoint, RegistryEntry};
+use orch_ports::{AgentAudience, AgentEndpoint, RegistryEntry};
 use serde_json::{Value, json};
 use support::*;
 
@@ -432,6 +432,7 @@ async fn an_agent_that_the_registry_lists_can_be_mentioned_the_moment_it_is_list
         name: "Helper".to_owned(),
         tags: vec![],
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     });
     let frames = h
         .run("plain", ALICE, &run_with(&thread, "run-2", text, &helper))
@@ -458,6 +459,7 @@ async fn a_registry_that_cannot_say_is_503_retryable_and_nothing_is_written() {
         name: "Helper".to_owned(),
         tags: vec![],
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     });
     h.registry.set_down(true);
     let text = "\u{1F604} @helper go";

@@ -8,7 +8,7 @@ mod support;
 use std::time::Duration;
 
 use orch_core::AgentSource;
-use orch_ports::{AgentRegistry, AgentTransport};
+use orch_ports::{AgentAudience, AgentRegistry, AgentTransport};
 use orch_registry_platform::{BuildError, PlatformConfig, PlatformRegistry};
 use secrecy::SecretString;
 use serde_json::json;
@@ -62,6 +62,93 @@ async fn an_entry_is_an_a2a_endpoint_at_the_item_with_its_title_and_tags() {
         other => panic!("{other:?}"),
     }
     assert!(listing.sources.iter().all(|s| s.name == "platform"));
+}
+
+#[tokio::test]
+async fn an_entry_carries_the_audience_of_its_item_and_an_item_without_one_is_for_administrators_only()
+ {
+    let server = Server::start().await;
+    let mut everyone = item("everyone", "Everyone");
+    everyone["audience"] = json!(["*"]);
+    let mut some = item("some", "Some");
+    some["audience"] = json!(["agent.use:some", "agent.use:also", "agent.use:some"]);
+    let mut empty = item("empty", "Empty");
+    empty["audience"] = json!([]);
+    let mut broken = item("broken", "Broken");
+    broken["audience"] = json!(["*", "agent.use:broken"]);
+    let mut wrong_type = item("wrong-type", "Wrong type");
+    wrong_type["audience"] = json!("agent.use:wrong-type");
+    server.set_items(vec![
+        everyone,
+        some,
+        item("absent", "Absent"),
+        empty,
+        broken,
+        wrong_type,
+    ]);
+    let registry = registry_for(&server);
+
+    let listing = registry.list().await;
+    assert_eq!(
+        ids(&listing.entries),
+        [
+            "everyone",
+            "some",
+            "absent",
+            "empty",
+            "broken",
+            "wrong-type"
+        ],
+        "an audience never takes an agent out of the list: the application decides who sees it"
+    );
+    let audience_of = |id: &str| {
+        listing
+            .entries
+            .iter()
+            .find(|e| e.id().as_str() == id)
+            .unwrap()
+            .audience
+            .clone()
+    };
+    assert_eq!(audience_of("everyone"), AgentAudience::Everyone);
+    assert_eq!(
+        audience_of("some"),
+        AgentAudience::from_values(["agent.use:also", "agent.use:some"])
+    );
+    for none in ["absent", "empty", "broken", "wrong-type"] {
+        assert_eq!(audience_of(none), AgentAudience::AdminsOnly, "{none}");
+    }
+    // `get` agrees with `list`
+    let got = registry.get(&agent_id("some")).await.unwrap().unwrap();
+    assert_eq!(got.audience, audience_of("some"));
+}
+
+#[tokio::test]
+async fn an_audience_that_changes_shows_on_the_next_read() {
+    let server = Server::start().await;
+    let mut coder = item("coder", "Coder");
+    coder["audience"] = json!(["agent.use:coder"]);
+    server.set_items(vec![coder]);
+    let registry = registry_for(&server);
+    let before = registry.get(&agent_id("coder")).await.unwrap().unwrap();
+    assert_eq!(
+        before.audience,
+        AgentAudience::from_values(["agent.use:coder"])
+    );
+
+    let mut widened = item("coder", "Coder");
+    widened["audience"] = json!(["*"]);
+    server.set_items(vec![widened]);
+    let after = registry.get(&agent_id("coder")).await.unwrap().unwrap();
+    assert_eq!(after.audience, AgentAudience::Everyone);
+
+    server.set_items(vec![item("coder", "Coder")]);
+    let after = registry.get(&agent_id("coder")).await.unwrap().unwrap();
+    assert_eq!(
+        after.audience,
+        AgentAudience::AdminsOnly,
+        "an audience taken away is none, not the last one"
+    );
 }
 
 #[tokio::test]

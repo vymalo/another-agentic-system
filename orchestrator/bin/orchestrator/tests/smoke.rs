@@ -4171,7 +4171,8 @@ async fn the_platforms_agents_are_served_with_no_agent_file_and_leave_when_the_r
     .await;
     let platform = platform::start(serde_json::json!([{
         "href": agent.card_url(), "type": "application/json",
-        "title": "Platform fake", "service": ["platform-fake"], "tags": ["testing"]
+        "title": "Platform fake", "service": ["platform-fake"], "tags": ["testing"],
+        "audience": ["*"]
     }]))
     .await;
 

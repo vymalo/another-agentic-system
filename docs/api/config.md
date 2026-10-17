@@ -203,7 +203,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 |---|---|---|---|
 | `agents.file` | path; required unless `agents.registry.url` is set | `AGENTS_FILE` | now. The file's format (`{id, name, aliases?, transport?, cardUrl?, tokenEnv?, agent?, gate?}`) gains `aliases`, a list of other names of the agent ([ADR 0049](../decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)); a file without it is read as before |
 | `agents.localConcurrency` | ≥ 1, `4`; a build without the feature `agent-local` refuses the key (78) | `AGENT_LOCAL_CONCURRENCY` | now |
-| `agents.registry.url` | `http(s)` URL without credentials; a build without `registry-platform` refuses it (78) | `AGENT_REGISTRY_URL` | now |
+| `agents.registry.url` | `http(s)` URL without credentials; a build without `registry-platform` refuses it (78). **Who may use an agent it lists is the item's `audience`, not `agents.file` or a role's `agents` alone** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md), [who may use a platform agent](#who-may-use-a-platform-agent)): an item with none is for administrators only | `AGENT_REGISTRY_URL` | now |
 | `agents.registry.token` | **secret**, none | `AGENT_REGISTRY_TOKEN` | now |
 | `agents.registry.agentToken` | **secret**, none | `AGENT_REGISTRY_AGENT_TOKEN` | now |
 | `agents.registry.timeoutSecs` | 1 to 60, `3` | `AGENT_REGISTRY_TIMEOUT_SECS` | now |
@@ -505,8 +505,8 @@ auth:
 
 | Permission | What it lets the person do |
 |---|---|
-| `agent.read` | See an agent in `GET /api/agents`, read its AG-UI capabilities, see `GET /api/registry`. Limited to the role's `agents` |
-| `agent.invoke` | Start a thread on an agent, send a message to a thread on it (a fork too). Limited to the role's `agents` |
+| `agent.read` | See an agent in `GET /api/agents`, read its AG-UI capabilities, see `GET /api/registry`. Limited to the role's `agents`, and for an agent the platform's registry lists, to its [audience](#who-may-use-a-platform-agent) |
+| `agent.invoke` | Start a thread on an agent, send a message to a thread on it (a fork too), mention it, attach a server for it. Limited to the role's `agents`, and for an agent the platform's registry lists, to its [audience](#who-may-use-a-platform-agent) |
 | `thread.read` | Read a thread: `GET /api/threads/{id}`, its export, its branches, its AG-UI stream, and list one's own (`GET /api/threads`). Over the person's own threads |
 | `thread.write` | Start a thread, send, answer, cancel, rename, describe, fork. Over the person's own threads |
 | `thread.share` | Share one's own thread by a link, widen or narrow it, make a new link ([`sharing`](#sharing), [ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). It takes no scope (the only thread a person can act on is their own). **Taking a link down is not gated by it**: the owner can always revoke, so a role that loses `thread.share` never leaves a link up that its owner cannot remove. Moot while `sharing.mode` is `disabled` |
@@ -526,6 +526,27 @@ auth:
   (the answer for one that does not exist, so existence never leaks), **403
   `forbidden`** for a permission their roles lack (the same for every id, so it says nothing of what exists) and for an
   agent their roles do not name, **403 `no_access`** when their roles grant nothing.
+- <a id="who-may-use-a-platform-agent"></a>**Who may use a platform agent** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md),
+  decision 1). The agents of `AGENTS_FILE` have no audience and `agents` of the roles alone decides. For an agent the platform's registry
+  (`AGENT_REGISTRY_URL`, `agent-registry/v1`) lists, a person may read (`agent.read`) or invoke (`agent.invoke`) it only when **both** hold:
+  a role of theirs grants the permission over the agent's id (`agents`, as above), **and** the item's `audience` holds `"*"`, or a value
+  equal, byte for byte, to one of the roles in the credential's roles claim (`auth.jwt.rolesClaim`; the roles `auth.roles` defines or not),
+  **or** a role of theirs holds `admin`. An item with no `audience`, an empty one or a malformed one is for people whose roles hold `admin`
+  only (fail closed): an agent just made is seen by the administrators and tried by them, until it is given an audience and somebody holds
+  it. So a deployment that reads a platform registry whose items carry no `audience` shows those agents to its administrators only; and
+  `agents: ["*"]` for `user` no longer shows everything the registry lists. The audience is the registry's to set and the identity
+  provider's to grant (by convention `agent.use:<agent-name>`, a client role of the identity provider; it need not be a key of `auth.roles`).
+  An agent whose audience leaves a person out is **not there** for them: not in `GET /api/agents`, a 404 for its capabilities and a run,
+  "unknown agent" for starting a thread, a fork or a mention. A thread of their own on it stays theirs, **read-only**: they read it, and a
+  message, "Stop & send", a card's action or attaching a server is a 403; cancelling a running job still works. `GET /api/me` still says the patterns of `agents`.
+  **A role that holds `admin` sees and may use every platform agent, hidden ones and agents with no audience included**, still over the
+  ids a role of theirs names in `agents`; `auth.defaultRole` counts, so a deployment that gives the role everybody falls back to `admin`
+  makes all of them administrators here, and one that wants the contract's rule (an administrator is held to the audience too) gives no
+  role `admin`. **A narrowed audience reaches the orchestrator when its registry reader's copy refreshes**: at most
+  [`agents.registry.maxAgeSecs`](#agents) (default 60 s), and sooner when the registry's own `max-age` is shorter. A job already running keeps the
+  agents it was given by mention (`job.mentioned`), so one mentioned before the change can still be asked until that job ends. The view of
+  a shared thread names its agent (the id to every reader, the display name to a signed-in one) with no audience filter: the owner chose
+  to share, and the content already shows it.
 - **A cap on the access tier** ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
   [`access-tier-v1.md`](access-tier-v1.md#8-roles-and-the-web)). A role may carry `maxTier`, one of `plan`, `edits`, `auto`, `bypass` (in
   that order of how much an agent does alone): a message from a person whose roles allow no more than `auto` that names `bypass` is

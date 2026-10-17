@@ -17,6 +17,15 @@
 //! is no wider [`Scope`] to grant, so a configuration cannot grant one by accident. `admin` is an
 //! operational permission that gives no access to what people wrote.
 //!
+//! **An agent a registry lists has a second condition, its audience** (ADR 0045, decision 1). To
+//! read it (`agent.read`) or invoke it (`agent.invoke`) a person needs **both** that a role of
+//! theirs grants the permission over the agent's id (`auth.roles`, as always), **and** that the
+//! agent's [`AgentAudience`] lets them in: it holds `"*"`, or one of the values of their roles
+//! claim, or a role of theirs holds `admin`. An agent with no audience is for administrators only
+//! (fail closed). The deployment's own agents have no audience and keep the first condition alone.
+//! Both conditions are asked in one place, [`Access::allows`] over a [`Resource::Agent`] that
+//! carries the agent's audience, so a check cannot be made without it.
+//!
 //! **Reading through a link is a second check, not a scope** (ADR 0040). A [`Resource::SharedThread`]
 //! is a thread somebody else shared: `thread.read` (and `artifact.read` for its files) is granted
 //! over it, at any role, when the thread is *effectively* shared with signed-in people or wider,
@@ -33,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use orch_core::{AccessTier, AgentId, UserId, Visibility};
-use orch_ports::{Principal, Role};
+use orch_ports::{AgentAudience, Principal, Role};
 
 /// What a role may be granted. The names follow the platform's vocabulary
 /// (`another-agentic-platform` `docs/architecture/08-security.md`, section 52).
@@ -361,14 +370,29 @@ impl Policy {
         self.default_role.as_ref()
     }
 
-    /// Whether some role of the policy lets its holders invoke `agent` (`agent.invoke` over an
-    /// agent scope that names it). For a caller that acts for a person whose roles it does not
-    /// have (a role is a claim of a request's credential, never stored): the question that can be
-    /// asked is whether anyone could, so an agent no role names is refused for everybody.
-    pub fn any_role_may_invoke(&self, agent: &AgentId) -> bool {
-        self.roles
+    /// Whether somebody could invoke `agent`, whose audience is `audience`: some role of the
+    /// policy lets its holders invoke it (`agent.invoke` over an agent scope that names it), and
+    /// the audience can let somebody in. For a caller that acts for a person whose roles it does
+    /// not have (a role is a claim of a request's credential, never stored): the question that can
+    /// be asked is whether anyone could, so an agent no role names is refused for everybody.
+    ///
+    /// The values of an audience are names the identity provider gives and the policy does not
+    /// know, so an audience of `"*"` or of values can let somebody in; one that is for
+    /// administrators only ([`AgentAudience::AdminsOnly`]) can only when some role of the policy
+    /// holds `admin`. Whom it lets in is [`Access::allows`]'s to say, with the person's roles.
+    pub fn any_role_may_invoke(&self, agent: &AgentId, audience: &AgentAudience) -> bool {
+        let covered = self
+            .roles
             .values()
-            .any(|grant| grant.holds(Permission::AgentInvoke) && grant.agents.admits(agent))
+            .any(|grant| grant.holds(Permission::AgentInvoke) && grant.agents.admits(agent));
+        covered
+            && match audience {
+                AgentAudience::Static | AgentAudience::Everyone | AgentAudience::Roles(_) => true,
+                AgentAudience::AdminsOnly => self
+                    .roles
+                    .values()
+                    .any(|grant| grant.holds(Permission::Admin)),
+            }
     }
 
     /// What `who` may do: the union of the grants of the roles they carry that the policy knows,
@@ -389,6 +413,7 @@ impl Policy {
         roles.dedup_by(|a, b| a.0 == b.0);
         Access {
             user: who.user().clone(),
+            claims: who.roles().into_iter().cloned().collect(),
             roles,
         }
     }
@@ -463,10 +488,16 @@ pub enum Resource<'a> {
         /// `min(visibility, cap)`.
         effective: Visibility,
     },
-    /// An agent.
+    /// An agent, with whom it is for (ADR 0045): `agent.read` and `agent.invoke` are asked of an
+    /// agent together with its audience, which the registry's entry holds. Asking only the roles'
+    /// side of the question, before the registry has been asked, is `Access::check_scope`, which
+    /// the crate keeps to itself.
     Agent {
         /// The agent's id.
         id: &'a AgentId,
+        /// Whom the agent is for: [`AgentAudience::Static`] for one of the deployment's own, the
+        /// entry's audience for one a registry lists.
+        audience: &'a AgentAudience,
     },
     /// Nothing in particular: the permission itself (`admin`, or the right to start a thread).
     Anything,
@@ -481,12 +512,22 @@ pub enum Denied {
     /// The roles hold the permission, not over this resource: another person's thread, or an
     /// agent a role's `agents` do not name.
     OutOfScope(Permission),
+    /// The roles hold the permission over the agent, and the agent's audience leaves the person
+    /// out (ADR 0045). An agent that is for people the person is not one of must look, to a person
+    /// who asks for it by name, like an agent that does not exist: a caller answers this as it
+    /// answers an agent the registry does not list, unless the person already has the agent in a
+    /// thread of their own.
+    Audience(Permission),
 }
 
 /// What one person may do: the grants of their known roles. Built by [`Policy::access`].
 #[derive(Debug, Clone)]
 pub struct Access<'p> {
     user: UserId,
+    /// Every role the credential carried, known to the policy or not, as the identity provider
+    /// spelled them: what an agent's audience is read against (ADR 0045). Unlike `roles`, which
+    /// holds only the roles the policy maps to permissions.
+    claims: Vec<Role>,
     roles: Vec<(&'p Role, &'p RoleGrant)>,
 }
 
@@ -572,10 +613,67 @@ impl<'p> Access<'p> {
 
     /// Whether the person may use `permission` on `resource`. Any one role may say yes; a
     /// permission asked of a resource of another kind is no.
+    ///
+    /// **For an agent this is the one rule of ADR 0045, decision 1.4**: some role grants the
+    /// permission over the agent's id, **and** the agent's audience lets the person in
+    /// ([`meets_audience`](Self::meets_audience)). Every check of an agent goes through here.
     pub fn allows(&self, permission: Permission, resource: &Resource<'_>) -> bool {
+        self.granted(permission, resource) && self.audience_allows(resource)
+    }
+
+    /// Whether some role grants `permission` over `resource` (the roles' half of [`allows`](Self::allows)).
+    fn granted(&self, permission: Permission, resource: &Resource<'_>) -> bool {
         self.roles
             .iter()
             .any(|(_, grant)| self.grant_allows(grant, permission, resource))
+    }
+
+    /// Whether the audience of an agent resource lets the person in; true for every other
+    /// resource, which has none.
+    fn audience_allows(&self, resource: &Resource<'_>) -> bool {
+        match resource {
+            Resource::Agent { audience, .. } => self.meets_audience(audience),
+            Resource::Thread { .. } | Resource::SharedThread { .. } | Resource::Anything => true,
+        }
+    }
+
+    /// Whether `audience` lets the person in (ADR 0045, decision 1.4): it is the deployment's own
+    /// agent's ([`AgentAudience::Static`]), or `"*"`, or it holds one of the values of the roles
+    /// claim the credential carried (byte for byte, whether the policy knows that role or not), or
+    /// a role of the person holds `admin`. An agent with no audience is therefore for
+    /// administrators only.
+    ///
+    /// This is half of [`allows`](Self::allows) and never enough on its own: it says nothing of
+    /// `auth.roles`.
+    pub fn meets_audience(&self, audience: &AgentAudience) -> bool {
+        match audience {
+            AgentAudience::Static | AgentAudience::Everyone => true,
+            AgentAudience::AdminsOnly => self.has(Permission::Admin),
+            AgentAudience::Roles(wanted) => {
+                self.has(Permission::Admin)
+                    || self
+                        .claims
+                        .iter()
+                        .any(|role| wanted.contains(role.as_str()))
+            }
+        }
+    }
+
+    /// [`check`](Self::check) with the roles' half only, for an agent known by its id alone: the
+    /// question that can be asked before the registry is, so that what a role's `agents` refuse is
+    /// refused for every id alike, listed or not. **It never lets a person use an agent a registry
+    /// lists**: when the registry's entry is at hand, ask [`check`](Self::check) with it.
+    ///
+    /// # Errors
+    /// As [`check`](Self::check), without [`Denied::Audience`].
+    pub(crate) fn check_scope(&self, permission: Permission, id: &AgentId) -> Result<(), Denied> {
+        self.check(
+            permission,
+            &Resource::Agent {
+                id,
+                audience: &AgentAudience::Static,
+            },
+        )
     }
 
     fn grant_allows(
@@ -604,7 +702,7 @@ impl<'p> Access<'p> {
             ) => *effective >= Visibility::Internal,
             // Starting a thread is not about anyone's: it is a thread of the person's own.
             (Permission::ThreadWrite, Resource::Anything) => true,
-            (Permission::AgentRead | Permission::AgentInvoke, Resource::Agent { id }) => {
+            (Permission::AgentRead | Permission::AgentInvoke, Resource::Agent { id, .. }) => {
                 grant.agents.admits(id)
             }
             (Permission::AgentRead | Permission::AgentInvoke, Resource::Anything) => {
@@ -625,15 +723,18 @@ impl<'p> Access<'p> {
     /// [`allows`](Self::allows), saying why not.
     ///
     /// # Errors
-    /// [`Denied::Permission`] when no role holds `permission`, and [`Denied::OutOfScope`] when
-    /// some does but none over `resource`.
+    /// [`Denied::Permission`] when no role holds `permission`, [`Denied::OutOfScope`] when
+    /// some does but none over `resource`, and [`Denied::Audience`] when one does and the audience
+    /// of an agent leaves the person out.
     pub fn check(&self, permission: Permission, resource: &Resource<'_>) -> Result<(), Denied> {
         if !self.has(permission) {
             Err(Denied::Permission(permission))
-        } else if self.allows(permission, resource) {
-            Ok(())
-        } else {
+        } else if !self.granted(permission, resource) {
             Err(Denied::OutOfScope(permission))
+        } else if !self.audience_allows(resource) {
+            Err(Denied::Audience(permission))
+        } else {
+            Ok(())
         }
     }
 }
@@ -788,7 +889,10 @@ mod tests {
                 Resource::SharedThread {
                     effective: Visibility::Internal,
                 },
-                Resource::Agent { id: &coder },
+                Resource::Agent {
+                    id: &coder,
+                    audience: &AgentAudience::Static,
+                },
                 Resource::Anything,
             ] {
                 let expected = matches!(
@@ -1071,7 +1175,10 @@ mod tests {
         assert!(!maker.allows(
             &m,
             Permission::ToolsUserAdd,
-            &Resource::Agent { id: &coder }
+            &Resource::Agent {
+                id: &coder,
+                audience: &AgentAudience::Static
+            }
         ));
         // and it gives nothing else
         assert!(!maker.allows(&m, Permission::ThreadRead, &thread_of(&alice)));
@@ -1203,9 +1310,27 @@ mod tests {
         // Invoking is limited by the role that holds it; reading agents by the one that does.
         let coder = AgentId::new("coder");
         let chat = AgentId::new("chat");
-        assert!(access.allows(Permission::AgentInvoke, &Resource::Agent { id: &coder }));
-        assert!(!access.allows(Permission::AgentInvoke, &Resource::Agent { id: &chat }));
-        assert!(access.allows(Permission::AgentRead, &Resource::Agent { id: &chat }));
+        assert!(access.allows(
+            Permission::AgentInvoke,
+            &Resource::Agent {
+                id: &coder,
+                audience: &AgentAudience::Static
+            }
+        ));
+        assert!(!access.allows(
+            Permission::AgentInvoke,
+            &Resource::Agent {
+                id: &chat,
+                audience: &AgentAudience::Static
+            }
+        ));
+        assert!(access.allows(
+            Permission::AgentRead,
+            &Resource::Agent {
+                id: &chat,
+                audience: &AgentAudience::Static
+            }
+        ));
         // A role's agents do not leak into a permission it does not hold.
         assert_eq!(access.agents(Permission::AgentInvoke).patterns(), ["coder"]);
         assert_eq!(access.agents(Permission::AgentRead).patterns(), ["*"]);
@@ -1278,7 +1403,10 @@ mod tests {
         assert!(!policy.allows(
             &alice,
             Permission::AgentInvoke,
-            &Resource::Agent { id: &coder }
+            &Resource::Agent {
+                id: &coder,
+                audience: &AgentAudience::Static
+            }
         ));
         assert!(!policy.allows(&alice, Permission::AgentInvoke, &Resource::Anything));
         // The thread permissions are not about agents.
@@ -1315,7 +1443,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            only_chat.check(&a, Permission::AgentInvoke, &Resource::Agent { id: &coder }),
+            only_chat.check(
+                &a,
+                Permission::AgentInvoke,
+                &Resource::Agent {
+                    id: &coder,
+                    audience: &AgentAudience::Static
+                }
+            ),
             Err(Denied::OutOfScope(Permission::AgentInvoke))
         );
     }
@@ -1359,5 +1494,621 @@ mod tests {
         assert_eq!(admin.permissions, expected);
         assert!(admin.permissions.contains(&Permission::Admin));
         assert_eq!(admin.agents, AgentScope::All);
+    }
+
+    // ---- an agent's audience (ADR 0045, decision 1) ----
+
+    fn values<const N: usize>(values: [&str; N]) -> AgentAudience {
+        AgentAudience::from_values(values)
+    }
+
+    /// May `who`, under `policy`, use `permission` on the agent `id` whose audience is `audience`?
+    fn may(
+        policy: &Policy,
+        who: &Principal,
+        permission: Permission,
+        id: &str,
+        audience: &AgentAudience,
+    ) -> bool {
+        let id = AgentId::new(id);
+        policy.allows(who, permission, &Resource::Agent { id: &id, audience })
+    }
+
+    #[test]
+    fn a_static_agent_has_no_audience_and_the_roles_alone_decide() {
+        let policy = Policy::default();
+        let id = AgentId::new("coder");
+        for who in [
+            principal("a@x.io", &["user"]),
+            principal("a@x.io", &[]),
+            principal("a@x.io", &["something-unknown"]),
+            principal("a@x.io", &["admin"]),
+        ] {
+            for permission in [Permission::AgentRead, Permission::AgentInvoke] {
+                assert!(
+                    policy.allows(
+                        &who,
+                        permission,
+                        &Resource::Agent {
+                            id: &id,
+                            audience: &AgentAudience::Static
+                        }
+                    ),
+                    "{who:?} {permission}"
+                );
+            }
+        }
+        // and the roles still say no where they say no
+        let only_chat = Policy::new(
+            BTreeMap::from([(
+                Role::new("chatter"),
+                RoleGrant {
+                    agents: AgentScope::from_patterns(["chat"]),
+                    ..RoleGrant::user()
+                },
+            )]),
+            None,
+        )
+        .unwrap();
+        let chatter = principal("a@x.io", &["chatter"]);
+        assert!(!may(
+            &only_chat,
+            &chatter,
+            Permission::AgentInvoke,
+            "coder",
+            &AgentAudience::Static
+        ));
+    }
+
+    #[test]
+    fn a_registry_agent_with_none_is_for_administrators_only() {
+        let policy = Policy::default();
+        let none = AgentAudience::AdminsOnly;
+        for permission in [Permission::AgentRead, Permission::AgentInvoke] {
+            assert!(
+                !may(
+                    &policy,
+                    &principal("a@x.io", &["user"]),
+                    permission,
+                    "new",
+                    &none
+                ),
+                "a user"
+            );
+            assert!(
+                !may(&policy, &principal("a@x.io", &[]), permission, "new", &none),
+                "a person with no roles, who is a user by default"
+            );
+            assert!(
+                !may(
+                    &policy,
+                    &principal("a@x.io", &["agent.use:new"]),
+                    permission,
+                    "new",
+                    &none
+                ),
+                "a use permission is a value of an audience, and there is none"
+            );
+            assert!(
+                may(
+                    &policy,
+                    &principal("a@x.io", &["admin"]),
+                    permission,
+                    "new",
+                    &none
+                ),
+                "an administrator"
+            );
+        }
+    }
+
+    #[test]
+    fn star_admits_everyone_the_roles_let_in() {
+        let policy = Policy::default();
+        for who in [
+            principal("a@x.io", &["user"]),
+            principal("a@x.io", &[]),
+            principal("a@x.io", &["admin"]),
+        ] {
+            assert!(may(
+                &policy,
+                &who,
+                Permission::AgentInvoke,
+                "chat",
+                &AgentAudience::Everyone
+            ));
+            assert!(may(
+                &policy,
+                &who,
+                Permission::AgentRead,
+                "chat",
+                &AgentAudience::Everyone
+            ));
+        }
+    }
+
+    #[test]
+    fn values_are_met_by_one_of_the_roles_claim_known_to_the_policy_or_not() {
+        let policy = Policy::default();
+        let some = values(["agent.use:coder-me", "agent.use:coder-vymalo"]);
+        let who = |roles: &[&str]| principal("a@x.io", roles);
+        // the claim holds one of the values: `agent.use:coder-me` is a role of the identity
+        // provider that `auth.roles` knows nothing of
+        assert!(may(
+            &policy,
+            &who(&["user", "agent.use:coder-me"]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        assert!(may(
+            &policy,
+            &who(&["agent.use:coder-vymalo"]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        // none of them
+        assert!(!may(
+            &policy,
+            &who(&["user"]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        assert!(!may(
+            &policy,
+            &who(&[]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        assert!(!may(
+            &policy,
+            &who(&["user", "agent.use:chat"]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        // byte for byte: no case folding, no trimming, no prefix
+        assert!(!may(
+            &policy,
+            &who(&["user", "Agent.Use:Coder-Me"]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        assert!(!may(
+            &policy,
+            &who(&["user", "agent.use:coder-me "]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        assert!(!may(
+            &policy,
+            &who(&["user", "agent.use:coder"]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+        // an administrator needs no value
+        assert!(may(
+            &policy,
+            &who(&["admin"]),
+            Permission::AgentInvoke,
+            "coder-me",
+            &some
+        ));
+    }
+
+    #[test]
+    fn a_person_who_has_no_role_grant_is_refused_whatever_the_audience() {
+        // `agent.use:x` is in the claim and in the audience, and no role of the policy is known
+        // and there is no default role: (a) fails, and (b) cannot make up for it
+        let policy = Policy::new(
+            BTreeMap::from([(Role::new("user"), RoleGrant::user())]),
+            None,
+        )
+        .unwrap();
+        let stranger = principal("a@x.io", &["agent.use:x"]);
+        let audiences = [
+            AgentAudience::Everyone,
+            AgentAudience::AdminsOnly,
+            values(["agent.use:x"]),
+            AgentAudience::Static,
+        ];
+        for audience in &audiences {
+            for permission in [Permission::AgentRead, Permission::AgentInvoke] {
+                assert!(
+                    !may(&policy, &stranger, permission, "x", audience),
+                    "{audience:?}"
+                );
+                let id = AgentId::new("x");
+                assert_eq!(
+                    policy
+                        .access(&stranger)
+                        .check(permission, &Resource::Agent { id: &id, audience }),
+                    Err(Denied::Permission(permission)),
+                    "{audience:?}"
+                );
+            }
+        }
+        // a role that grants the permission over other agents only: out of scope, audience or not
+        let only_chat = Policy::new(
+            BTreeMap::from([
+                (
+                    Role::new("chatter"),
+                    RoleGrant {
+                        agents: AgentScope::from_patterns(["chat"]),
+                        ..RoleGrant::user()
+                    },
+                ),
+                (Role::new("admin"), RoleGrant::admin()),
+            ]),
+            None,
+        )
+        .unwrap();
+        let chatter = principal("a@x.io", &["chatter", "agent.use:x"]);
+        assert!(!may(
+            &only_chat,
+            &chatter,
+            Permission::AgentInvoke,
+            "x",
+            &values(["agent.use:x"])
+        ));
+        let id = AgentId::new("x");
+        assert_eq!(
+            only_chat.access(&chatter).check(
+                Permission::AgentInvoke,
+                &Resource::Agent {
+                    id: &id,
+                    audience: &values(["agent.use:x"])
+                }
+            ),
+            Err(Denied::OutOfScope(Permission::AgentInvoke))
+        );
+    }
+
+    #[test]
+    fn an_administrator_passes_the_audience_and_still_needs_a_role_over_the_agent() {
+        // `ops` holds `admin` and `agent.invoke` over `chat` only
+        let policy = Policy::new(
+            BTreeMap::from([(
+                Role::new("ops"),
+                RoleGrant {
+                    agents: AgentScope::from_patterns(["chat"]),
+                    ..RoleGrant::admin()
+                },
+            )]),
+            None,
+        )
+        .unwrap();
+        let ops = principal("a@x.io", &["ops"]);
+        // (b) by `admin`, (a) over `chat`
+        assert!(may(
+            &policy,
+            &ops,
+            Permission::AgentInvoke,
+            "chat",
+            &AgentAudience::AdminsOnly
+        ));
+        assert!(may(
+            &policy,
+            &ops,
+            Permission::AgentInvoke,
+            "chat",
+            &values(["agent.use:chat"])
+        ));
+        // (b) by `admin`, but (a) is not over `coder`
+        assert!(!may(
+            &policy,
+            &ops,
+            Permission::AgentInvoke,
+            "coder",
+            &AgentAudience::AdminsOnly
+        ));
+        assert!(!may(
+            &policy,
+            &ops,
+            Permission::AgentRead,
+            "coder",
+            &AgentAudience::Everyone
+        ));
+        // `admin` held by one role and the grant over the agent by another is still an administrator
+        let split = Policy::new(
+            BTreeMap::from([
+                (
+                    Role::new("watch"),
+                    RoleGrant {
+                        permissions: BTreeSet::from([Permission::Admin]),
+                        max_tier: None,
+                        agents: AgentScope::Only(BTreeSet::new()),
+                    },
+                ),
+                (
+                    Role::new("chatter"),
+                    RoleGrant {
+                        agents: AgentScope::from_patterns(["chat"]),
+                        ..RoleGrant::user()
+                    },
+                ),
+            ]),
+            None,
+        )
+        .unwrap();
+        let both = principal("a@x.io", &["watch", "chatter"]);
+        assert!(may(
+            &split,
+            &both,
+            Permission::AgentInvoke,
+            "chat",
+            &AgentAudience::AdminsOnly
+        ));
+        let chatter_only = principal("a@x.io", &["chatter"]);
+        assert!(!may(
+            &split,
+            &chatter_only,
+            Permission::AgentInvoke,
+            "chat",
+            &AgentAudience::AdminsOnly
+        ));
+    }
+
+    #[test]
+    fn check_tells_the_audience_from_the_roles_and_check_scope_leaves_it_out() {
+        let policy = Policy::default();
+        let id = AgentId::new("new");
+        let alice = principal("a@x.io", &["user"]);
+        let access = policy.access(&alice);
+        let none = AgentAudience::AdminsOnly;
+        assert_eq!(
+            access.check(
+                Permission::AgentInvoke,
+                &Resource::Agent {
+                    id: &id,
+                    audience: &none
+                }
+            ),
+            Err(Denied::Audience(Permission::AgentInvoke))
+        );
+        assert_eq!(
+            access.check(
+                Permission::AgentRead,
+                &Resource::Agent {
+                    id: &id,
+                    audience: &none
+                }
+            ),
+            Err(Denied::Audience(Permission::AgentRead))
+        );
+        // the roles' half alone: yes, which is why it must never be the last word
+        assert_eq!(access.check_scope(Permission::AgentInvoke, &id), Ok(()));
+        assert!(access.meets_audience(&AgentAudience::Everyone));
+        assert!(!access.meets_audience(&none));
+        let root = principal("r@x.io", &["admin"]);
+        assert_eq!(
+            policy.access(&root).check(
+                Permission::AgentInvoke,
+                &Resource::Agent {
+                    id: &id,
+                    audience: &none
+                }
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_audience_is_about_agents_and_no_other_permission_or_resource() {
+        let policy = Policy::default();
+        let alice = principal("a@x.io", &["user"]);
+        let owner = user("a@x.io");
+        let none = AgentAudience::AdminsOnly;
+        let id = AgentId::new("new");
+        // a thread is the person's whatever the audience of the agent it talks to
+        assert!(policy.allows(&alice, Permission::ThreadRead, &thread_of(&owner)));
+        // and a permission over threads asked of an agent is still no
+        assert!(!policy.allows(
+            &alice,
+            Permission::ThreadRead,
+            &Resource::Agent {
+                id: &id,
+                audience: &AgentAudience::Everyone
+            }
+        ));
+        assert!(!policy.allows(
+            &alice,
+            Permission::ThreadWrite,
+            &Resource::Agent {
+                id: &id,
+                audience: &none
+            }
+        ));
+        // the permission itself, for the listing, is not an agent's
+        assert!(policy.allows(&alice, Permission::AgentInvoke, &Resource::Anything));
+    }
+
+    #[test]
+    fn somebody_could_invoke_an_agent_when_a_role_may_and_its_audience_can_let_somebody_in() {
+        let user_only = Policy::new(
+            BTreeMap::from([(Role::new("user"), RoleGrant::user())]),
+            Some(Role::new("user")),
+        )
+        .unwrap();
+        let with_admin = Policy::default();
+        let coder = AgentId::new("coder");
+        let everyone = AgentAudience::Everyone;
+        let some = values(["agent.use:coder"]);
+        let none = AgentAudience::AdminsOnly;
+        for audience in [&AgentAudience::Static, &everyone, &some] {
+            assert!(
+                user_only.any_role_may_invoke(&coder, audience),
+                "{audience:?}"
+            );
+            assert!(
+                with_admin.any_role_may_invoke(&coder, audience),
+                "{audience:?}"
+            );
+        }
+        // none: only a deployment with an administrator can have anybody in
+        assert!(!user_only.any_role_may_invoke(&coder, &none));
+        assert!(with_admin.any_role_may_invoke(&coder, &none));
+        // and the roles' side still decides first
+        let only_chat = Policy::new(
+            BTreeMap::from([
+                (
+                    Role::new("chatter"),
+                    RoleGrant {
+                        agents: AgentScope::from_patterns(["chat"]),
+                        ..RoleGrant::user()
+                    },
+                ),
+                (
+                    Role::new("admin"),
+                    RoleGrant {
+                        permissions: BTreeSet::from([Permission::Admin]),
+                        max_tier: None,
+                        agents: AgentScope::Only(BTreeSet::new()),
+                    },
+                ),
+            ]),
+            None,
+        )
+        .unwrap();
+        assert!(!only_chat.any_role_may_invoke(&coder, &none));
+        assert!(!only_chat.any_role_may_invoke(&coder, &everyone));
+        assert!(only_chat.any_role_may_invoke(&AgentId::new("chat"), &none));
+    }
+
+    mod audience_properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        const NAMES: [&str; 5] = ["a", "b", "c", "admin", "user"];
+
+        /// An audience made of the same few names the claims are, so that a match is likely.
+        fn audience() -> impl Strategy<Value = AgentAudience> {
+            prop_oneof![
+                Just(AgentAudience::Static),
+                Just(AgentAudience::Everyone),
+                Just(AgentAudience::AdminsOnly),
+                prop::collection::vec(
+                    prop::sample::select(vec!["a", "b", "c", "admin", "user", "*", "z"]),
+                    0..5
+                )
+                .prop_map(AgentAudience::from_values),
+            ]
+        }
+
+        fn claims() -> impl Strategy<Value = Vec<&'static str>> {
+            prop::collection::vec(prop::sample::select(NAMES.to_vec()), 0..5)
+        }
+
+        /// The rule of ADR 0045 decision 1.4, written out once more, independently.
+        fn model(granted: bool, is_admin: bool, claims: &[&str], audience: &AgentAudience) -> bool {
+            let met = match audience {
+                AgentAudience::Static | AgentAudience::Everyone => true,
+                AgentAudience::AdminsOnly => is_admin,
+                AgentAudience::Roles(wanted) => {
+                    is_admin || claims.iter().any(|c| wanted.contains(c))
+                }
+            };
+            granted && met
+        }
+
+        /// A policy where `a` grants both agent permissions over `x`, `b` over `y`, `admin` holds
+        /// `admin` and everything over every agent; the rest of the names are unknown.
+        fn policy() -> Policy {
+            Policy::new(
+                BTreeMap::from([
+                    (
+                        Role::new("a"),
+                        RoleGrant {
+                            agents: AgentScope::from_patterns(["x"]),
+                            ..RoleGrant::user()
+                        },
+                    ),
+                    (
+                        Role::new("b"),
+                        RoleGrant {
+                            agents: AgentScope::from_patterns(["y"]),
+                            ..RoleGrant::user()
+                        },
+                    ),
+                    (Role::new("admin"), RoleGrant::admin()),
+                ]),
+                None,
+            )
+            .unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn the_rule_is_both_halves(claims in claims(), audience in audience(), on_y in any::<bool>()) {
+                let policy = policy();
+                let who = principal("p@x.io", &claims);
+                let agent = if on_y { "y" } else { "x" };
+                let granted = claims.contains(&"admin")
+                    || claims.contains(&if on_y { "b" } else { "a" });
+                let is_admin = claims.contains(&"admin");
+                for permission in [Permission::AgentRead, Permission::AgentInvoke] {
+                    prop_assert_eq!(
+                        may(&policy, &who, permission, agent, &audience),
+                        model(granted, is_admin, &claims, &audience),
+                        "{:?} {} {:?}", claims, agent, audience
+                    );
+                }
+            }
+
+            #[test]
+            fn an_audience_never_grants_what_the_roles_do_not(claims in claims(), audience in audience()) {
+                let policy = policy();
+                let who = principal("p@x.io", &claims);
+                let id = AgentId::new("x");
+                let access = policy.access(&who);
+                let by_scope = access.check_scope(Permission::AgentInvoke, &id);
+                let full = access.check(Permission::AgentInvoke, &Resource::Agent { id: &id, audience: &audience });
+                // the audience can refuse what the roles allow, and never allow what they refuse
+                if by_scope.is_err() {
+                    prop_assert!(full.is_err());
+                    prop_assert!(!matches!(full, Err(Denied::Audience(_))), "the roles refuse first");
+                }
+                if full.is_ok() {
+                    prop_assert!(by_scope.is_ok());
+                }
+            }
+
+            #[test]
+            fn more_roles_in_the_claim_never_lose_access(
+                claims in claims(), more in claims(), audience in audience()
+            ) {
+                // only the audience's half is monotone: a role can also take the policy's
+                // default away, so ask the audience alone
+                let few = principal("p@x.io", &claims);
+                let mut all = claims.clone();
+                all.extend(more);
+                let many = principal("p@x.io", &all);
+                let policy = policy();
+                if policy.access(&few).meets_audience(&audience) {
+                    prop_assert!(policy.access(&many).meets_audience(&audience));
+                }
+            }
+
+            #[test]
+            fn everyone_and_static_admit_all_and_the_administrator_is_admitted_by_all(
+                claims in claims(), audience in audience()
+            ) {
+                let policy = policy();
+                let access = policy.access(&principal("p@x.io", &claims));
+                if matches!(audience, AgentAudience::Everyone | AgentAudience::Static) {
+                    prop_assert!(access.meets_audience(&audience));
+                }
+                if claims.contains(&"admin") {
+                    prop_assert!(access.meets_audience(&audience));
+                }
+            }
+        }
     }
 }

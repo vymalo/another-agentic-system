@@ -7,7 +7,8 @@
   who owns `coder` and `chat` (question 9, decision 4: the dashboard takes them over). Question 2 followed from the first (decision 2), and
   question 6 was taken as recommended with the owner's addition that "RBAC should normally answer this" (decision 1); the rest were taken
   as recommended. "The same one" is confirmed as one dashboard inside this repository's web, with its sign-in and look, not a second app. **Nothing of this is
-  built.** The dashboard itself (its Platform API, the custom resources it writes, its screens and slices) is specified in
+  built** *(amended 2026-10-16: decision 1, the audience, is built in the orchestrator, slice D8a, see
+  [the note at the end](#implemented-2026-10-16-d8a--decision-1-in-the-orchestrator); the rest is not)*. The dashboard itself (its Platform API, the custom resources it writes, its screens and slices) is specified in
   another-agentic-platform, architecture §60a "Admin dashboard v0", and decided there as AD-026 to AD-033
   ([`11-decisions.md`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/11-decisions.md); they
   were the proposals P-007 to P-012 until today). This ADR is the system's side: decision 1 is AD-028 there, decision 2 is
@@ -224,3 +225,122 @@ and a static export has no route handlers that read a request and no server to r
   build. Not decided here.
 
 The rest of the decision (permissions as composite roles, the audience, the takeover of `coder` and `chat`) stands.
+
+## Implemented 2026-10-16 (D8a) — decision 1 in the orchestrator
+
+Decision 1, points 1 to 9, is built in `orchestrator/` (slice D8a, the Rust half of D8). The dev stack (slice D8b, the same day) gives the
+mock registry's agents their audiences and proves the rule in `dev/registry-e2e.sh` (`dev`, `holder@example.com` and `admin`;
+*verified 2026-10-16*: its 79 checks passed in CI's `coder-e2e` job against the real orchestrator, edge and oauth2-proxy, run 38979721632 at `63a67ee`). The decision
+text above is as it was accepted. What was built, and where it needed a choice:
+
+- **The audience is a type that cannot be confused** (`orch_ports::AgentAudience`, in `crates/ports/src/registry.rs`; `RegistryEntry`
+  gains `audience`). Four cases, never a bare list of texts whose empty value could mean "everybody": `Static` (an agent of the agents
+  file, which has no audience: `auth.roles` alone decides), `AdminsOnly` (a registry's agent with *none*: no member, `[]` or a malformed
+  one), `Everyone` (`["*"]`) and `Roles(AudienceRoles)` (1 to 32 distinct values, none of them `"*"`). `AgentAudience::from_values` is the
+  platform contract's *Shape* and *Malformed* as one function (a set; 1 to 64 bytes of `0x21` to `0x7E`; at most 32 distinct values;
+  `"*"` only alone, so `["*","*"]` is `["*"]` and `["*","x"]` is malformed; byte for byte; malformed is *none*). `orch-registry-platform`
+  reads the item's `audience` into it and logs, once for each change, the agents whose audience was there and malformed.
+- **One predicate** (`orch_app::authz`): `Access::allows` and `Access::check` over `Resource::Agent { id, audience }` are decision 1.4, both
+  halves: some role grants the permission over the id, **and** `Access::meets_audience` (`Static` or `Everyone`; or a role of the person
+  holds `admin`; or the roles claim the credential carried, known to `auth.roles` or not, holds one of the values byte for byte). It is
+  asked of every check in decision 1.7: `App::list_agents`, `describe_agent` (so `GET /api/agents` and the AG-UI capabilities),
+  `default_agent`, `validate_target` (starting a thread and forking), `may_invoke` (sending, an answer to a card, stop and send), the
+  mentions of a message (`mentions.rs`), `check_askable` (`asks.rs`), `set_tools` (attaching a server) and the AG-UI run's "no such
+  agent" (`App::find_agent`, which asks the audience's half alone, because the run's roles are asked further on by `validate_target`
+  and `submit`, as they were). A check that has only an id asks the roles first, with `Access::check_scope` (the roles' half alone, which never lets a person
+  use a registry's agent), and then the registry, as invoking already did. The roles' refusal is therefore what it was, a 403, for every id
+  alike, listed or not.
+- **A refusal of the audience is the answer for an agent that is not there**, word for word, wherever a person asks for an agent by name
+  (decision 1.5's "fail closed" would otherwise tell them it exists): `describe_agent` is `None` (404 "no such agent"), starting or
+  forking is 400 "unknown agent 'x'", a mention is 422 "unknown agent 'x' in mentions", `ask_agent` is 422 "agent 'x' is no longer
+  listed", the AG-UI run is 404 "no such agent". The list leaves the agent out. **One exception, decision 1.8:** an agent the person
+  already has in a thread of their own is not secret to them, so what writes to that thread (a message, stop and send, the action of a
+  card, attaching a server; the AG-UI run on it) is **403** `forbidden` "your roles do not grant agent.invoke for the agent x", the answer
+  when `agent.invoke` stops covering it; the thread, its events, its export and its place in the list stay theirs, and so do renaming,
+  describing, sharing and deleting it, taking servers off it and cancelling its running job (`Input::Cancel` is not gated: stopping work
+  is not starting it).
+- **`GET /api/me`'s `agents` stays the roles' patterns** (1.9). The web draws its read-only line from those patterns today
+  (`web/src/features/me/lib/access.ts`), so a thread whose agent the audience took away shows a composer until the server answers 403; the
+  web should read the thread's agent in `GET /api/agents` (a web slice, not this one).
+
+```mermaid
+sequenceDiagram
+  participant P as Person
+  participant A as App
+  participant R as Registry
+  P->>A: start a thread, fork, mention or describe agent X
+  A->>A: the roles' half, Access::check_scope (no registry)
+  alt no role grants the permission over X
+    A-->>P: 403 forbidden (X listed or not)
+  else a role grants it
+    A->>R: get X, live
+    alt the registry cannot say
+      R-->>A: unavailable
+      A-->>P: 503 (never "unknown")
+    else X is not listed, or its audience leaves the person out
+      R-->>A: none, or the entry with its audience
+      A-->>P: the answer for an agent that is not there
+    else X is listed and its audience lets the person in
+      R-->>A: the entry with its audience
+      A-->>P: done
+    end
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Writable: created while a role and the audience cover the agent
+  Writable --> ReadOnly: the audience, or the roles, stop covering the agent
+  ReadOnly --> Writable: they cover it again
+  ReadOnly --> ReadOnly: read, list, export, rename, share, delete, take servers off, cancel
+  Writable --> Writable: send, answer a card, attach a server, fork
+  ReadOnly --> [*]: deleted by its owner
+  Writable --> [*]: deleted by its owner
+```
+
+Three choices the decision text leaves open, **for the owner to confirm or change**:
+
+1. **`ask_agent` cannot read the person's roles** (a role is a claim of a request's credential, never stored, and the asker may not be
+   in the room), so the audience is asked as `Policy::any_role_may_invoke` asks the roles: *could anyone?* Only an agent with no audience,
+   in a deployment where no role of `auth.roles` holds `admin`, is refused there. The person's own roles were asked against the audience
+   when they mentioned the agent.
+2. **Sending reads the registry now.** `may_invoke` resolves the thread's agent as starting does, so a message to a thread of a
+   registry's agent is a 503 while the registry cannot be read (before, it was accepted and the delivery waited). An agent the registry
+   no longer lists has no audience to keep a person out of: the message is accepted and the dispatcher says it is no longer listed, as
+   before. A static agent never asks the registry.
+3. **Attaching a server is an act on the agent**, so `PUT /api/threads/{id}/tools` with a server the thread does not have takes
+   `agent.invoke` over the thread's agent, **roles included** (before, it took `thread.write` alone). Taking servers off does not.
+
+Two limits of the rule, stated so that nobody reads more into it:
+
+- **A narrowed audience takes time to arrive, and a running job outlives it.** The orchestrator reads the audience from its registry
+  reader's copy, which is fresh for the response's `max-age` less its `Age` and never more than `agents.registry.maxAgeSecs` (default 60 s,
+  at most 3600; a stale copy is never served: `orch-registry-platform`, `freshness.rs`), so a change reaches a process within that time,
+  60 s by default. A job already running keeps its `job.mentioned`, and `ask_agent` asks only whether anyone could use the agent (the
+  person's roles are not at hand), so an agent mentioned before the change can still be asked until that job ends (choice 1 above is the one exception).
+- **A shared link's reader sees the agent's id and name whatever its audience** (FYI). `app/share.rs` `agent_display_name` and the reader's
+  view (`reader.rs`) resolve the agent with no audience filter: every reader gets the id, a signed-in one the display name. The owner
+  chose to share, and the content already shows the agent.
+
+Two **known differences from the platform's contract** (`docs/extensions/agent-registry-v1.md` there, section *Audience*, "the consumer's
+rule"), each for the owner to confirm or change:
+
+- **The `admin` exception.** The contract's rule 4 gives administrators no exception: an administrator sees an item with an audience
+  only when their own roles hold `"*"` or one of its values. This decision (1.4) says they do: a role of theirs that holds `admin` passes
+  the audience, and still needs a role that grants the permission over the agent's id. The orchestrator follows this ADR, which the owner
+  accepted. The contract's remedy for a deployment that wants it, an `agent.use:` composite for each administrator, is not needed here, and
+  a deployment that wants the contract's rule gives no role `admin`. Read it as wide as it is: a person whose roles hold `admin` sees and
+  may use **every** platform agent, hidden ones and agents with no audience included (still only over ids a role of theirs names in
+  `agents`), and so does everyone who falls back to `auth.defaultRole` when a deployment gives that role `admin`.
+- **The roles claim.** The contract's rule 2 reads a claim with an element that is not a text as *no roles at all*. The orchestrator's
+  reader (`orch-auth-jwt`, `claims.rs`, `roles()`) skips such an element and keeps the texts, and reads a claim that is a single text as
+  one role; this build uses the roles as that reader gives them and does not change it. The difference matters only for a claim from the
+  identity provider that holds something other than texts, which Keycloak's mapper does not write (*unverified* on the realm).
+
+*Verified 2026-10-16* by tests, not against a real platform: `orch-ports` (the audience's grammar as unit and property tests, the
+registry conformance case `audience_round_trips`), `orch-registry-platform` (the item's member and every malformed case, over HTTP),
+`orch_app::authz` (the predicate, unit and property tests against a model written apart), `crates/app/tests/audience.rs` and
+`ask_call.rs` (one test for each place above), `crates/api/tests/audience.rs`, `crates/surface-agui/tests/registry.rs`,
+`crates/surface-mcp/tests/tools.rs` and `crates/e2e/tests/registry.rs` (the real reader over HTTP, down to the AG-UI answer). The
+fixtures that listed a registry's agent with no audience now say `["*"]` (D8b does the same for the dev stack's mock registry, and gives
+its test users the roles the audiences name; the dev scenarios were not run).

@@ -12,7 +12,7 @@ use orch_app::{
 };
 use orch_core::{AgentId, AgentTarget, Mention, ThreadId};
 use orch_ports::memory::ScriptedModel;
-use orch_ports::{AgentEndpoint, PortSet, SystemClock};
+use orch_ports::{AgentAudience, AgentEndpoint, PortSet, SystemClock};
 use support::*;
 
 fn entry(id: &str, name: &str) -> AgentEntry {
@@ -263,8 +263,14 @@ async fn a_role_and_a_tool_server_that_name_an_alias_are_about_the_agent() {
     )
     .unwrap();
     // the role is about `adam`; a request asks with the canonical id
-    assert!(app.policy().any_role_may_invoke(&AgentId::new("adam")));
-    assert!(!app.policy().any_role_may_invoke(&AgentId::new("plain")));
+    assert!(
+        app.policy()
+            .any_role_may_invoke(&AgentId::new("adam"), &AgentAudience::Static)
+    );
+    assert!(
+        !app.policy()
+            .any_role_may_invoke(&AgentId::new("plain"), &AgentAudience::Static)
+    );
     // the server is offered for the agent under each of its names: a thread keeps the id it
     // was created with
     let offered = |id: &str| {

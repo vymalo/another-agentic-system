@@ -866,7 +866,7 @@ agent while the person is not in the room, so the orchestrator cannot ask the pe
 mention was checked against them when it was written. What is checked again is the deployment's: **some role of the policy
 lets its holders invoke the agent** (`Policy::any_role_may_invoke`), so an agent the configuration no longer names for
 any role is refused for everybody ("the person may not use that agent", 403 at `App::ask`), and the registry still lists it
-(422 "agent '<id>' is no longer listed"; a registry that cannot answer is a retry). Both checks are made only for an agent
+(422 "agent '<id>' is no longer listed"; a registry that cannot answer is a retry). The agent's **audience** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)) is asked the same way, as *could anyone?*: an agent a registry lists with no audience is for administrators only, and is refused here with the same 422 when no role of the policy holds `admin`; the person's own roles were asked against the audience when they mentioned it. Both checks are made only for an agent
 the person mentioned and for a call that is not a repeat: a repeat is answered from the ledger whatever has become of the
 agent since.
 

@@ -142,7 +142,7 @@ impl<P: Ports> App<P> {
         ) {
             Ok(()) => Ok(thread),
             Err(Denied::Permission(p)) => Err(AppError::missing_permission(p)),
-            Err(Denied::OutOfScope(_)) => Err(AppError::NotFound),
+            Err(Denied::OutOfScope(_) | Denied::Audience(_)) => Err(AppError::NotFound),
         }
     }
 

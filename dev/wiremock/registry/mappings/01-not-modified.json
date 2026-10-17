@@ -6,7 +6,7 @@
     "urlPath": "/registry/v1/agents",
     "headers": {
       "If-None-Match": {
-        "equalTo": "\"r-2026-10-01T09:00:00Z\""
+        "equalTo": "\"r-2026-10-16T00:00:00Z\""
       }
     }
   },
@@ -14,7 +14,7 @@
     "status": 304,
     "headers": {
       "Cache-Control": "private, max-age=2",
-      "ETag": "\"r-2026-10-01T09:00:00Z\""
+      "ETag": "\"r-2026-10-16T00:00:00Z\""
     }
   }
 }

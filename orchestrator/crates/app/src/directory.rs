@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use orch_core::{AgentId, AgentSource};
-use orch_ports::{AgentEndpoint, FixedRegistry, RegistryEntry};
+use orch_ports::{AgentAudience, AgentEndpoint, FixedRegistry, RegistryEntry};
 
 /// One configured agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,13 +13,15 @@ pub struct AgentEntry {
 }
 
 impl From<&AgentEntry> for RegistryEntry {
-    /// A configured agent as the registry lists it: from the static source, with no tags.
+    /// A configured agent as the registry lists it: from the static source, with no tags and no
+    /// audience ([`AgentAudience::Static`]: `auth.roles` alone decides who may use it, ADR 0045).
     fn from(entry: &AgentEntry) -> Self {
         RegistryEntry {
             endpoint: entry.endpoint.clone(),
             name: entry.name.clone(),
             tags: Vec::new(),
             origin: AgentSource::Static,
+            audience: AgentAudience::Static,
         }
     }
 }

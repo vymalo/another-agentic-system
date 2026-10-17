@@ -27,9 +27,9 @@ use orch_core::{
 };
 use orch_ports::memory::{Call, MemoryRegistry};
 use orch_ports::{
-    AgentClient, AgentEndpoint, AgentError, Clock as _, CompositeRegistry, FixedRegistry, Lease,
-    OutboxItem, OutboxKind, OutboxStatus, PortSet, RegistryEntry, SendContent, SendRequest,
-    SystemClock, ThreadStore,
+    AgentAudience, AgentClient, AgentEndpoint, AgentError, Clock as _, CompositeRegistry,
+    FixedRegistry, Lease, OutboxItem, OutboxKind, OutboxStatus, PortSet, RegistryEntry,
+    SendContent, SendRequest, SystemClock, ThreadStore,
 };
 use support::*;
 use tokio_util::sync::CancellationToken;
@@ -843,6 +843,7 @@ fn platform_scout() -> RegistryEntry {
         name: "Scout".to_owned(),
         tags: Vec::new(),
         origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
     }
 }
 

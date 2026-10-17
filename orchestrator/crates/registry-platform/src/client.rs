@@ -195,6 +195,8 @@ struct State {
     /// The skipped items already reported, so that a registry read on every request does not
     /// repeat the warning for the same ones.
     reported_skips: Vec<Skipped>,
+    /// The same for the items listed with a malformed audience.
+    reported_audience: Vec<String>,
 }
 
 struct Inner {
@@ -344,6 +346,7 @@ enum Fetched {
         agents: Agents,
         policy: Policy,
         skipped: Vec<Skipped>,
+        malformed_audience: Vec<String>,
     },
 }
 
@@ -373,6 +376,7 @@ impl Inner {
                 agents,
                 policy,
                 skipped,
+                malformed_audience,
             }) => {
                 if skipped != state.reported_skips {
                     if !skipped.is_empty() {
@@ -385,6 +389,15 @@ impl Inner {
                         );
                     }
                     state.reported_skips = skipped;
+                }
+                if malformed_audience != state.reported_audience {
+                    if !malformed_audience.is_empty() {
+                        tracing::warn!(
+                            agents = ?malformed_audience,
+                            "the agent registry lists agents whose audience is malformed; they are for administrators only"
+                        );
+                    }
+                    state.reported_audience = malformed_audience;
                 }
                 if was_failing {
                     tracing::info!("the agent registry can be read again");
@@ -478,8 +491,11 @@ impl Inner {
             }
             body.extend_from_slice(&chunk);
         }
-        let Document { items, skipped } =
-            linkset::parse(&body).map_err(|e| Failure::new(UNREADABLE, e.to_string()))?;
+        let Document {
+            items,
+            skipped,
+            malformed_audience,
+        } = linkset::parse(&body).map_err(|e| Failure::new(UNREADABLE, e.to_string()))?;
         let agents = items
             .into_iter()
             .map(|item| RegistryEntry {
@@ -491,12 +507,14 @@ impl Inner {
                 name: item.title,
                 tags: item.tags,
                 origin: AgentSource::Registry,
+                audience: item.audience,
             })
             .collect();
         Ok(Fetched::Document {
             agents,
             policy,
             skipped,
+            malformed_audience,
         })
     }
 }

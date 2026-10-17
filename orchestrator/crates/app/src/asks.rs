@@ -15,8 +15,9 @@
 //!   listed", a registry that cannot answer is `RegistryUnavailable`, never a guess) and invocable
 //!   under the deployment's roles. A role is a claim of a request's credential and is never stored,
 //!   so what can be asked of a thread's owner who is not in the room is whether **some role of the
-//!   policy** lets its holders invoke the agent ([`Policy::any_role_may_invoke`]); the agent was
-//!   also checked against the person's own roles when the mention was written;
+//!   policy** lets its holders invoke the agent and its audience (ADR 0045) can let somebody in
+//!   ([`Policy::any_role_may_invoke`]); the agent was also checked against the person's own roles
+//!   and the audience when the mention was written;
 //! * **the call**: the call key `ask:<thread>:<caller>:<callId>` the core deduplicates by, the
 //!   step the ask is shown under, and the deadline (the configured one, lowered by the call).
 //!
@@ -31,7 +32,7 @@ use orch_core::{
     Actor, AgentId, AskRefusal, Caller, EventBody, Input, ThreadId, ThreadRecord, TransitionError,
     ask_step_id,
 };
-use orch_ports::{Ports, ThreadStore};
+use orch_ports::{AgentAudience, Ports, ThreadStore};
 
 use crate::{App, AppError, ApplyOutcome, Permission};
 
@@ -230,18 +231,30 @@ impl<P: Ports> App<P> {
         }
     }
 
-    /// The agent can be asked now: some role of the deployment lets its holders invoke it, and the
-    /// registry lists it.
+    /// The agent can be asked now: some role of the deployment lets its holders invoke it, the
+    /// registry lists it, and its audience can let somebody in. An audience is read against a
+    /// person's roles, which are not here (a role is a claim of a request's credential, never
+    /// stored), so the question is whether anyone could: only an agent for administrators only, in
+    /// a deployment where no role holds `admin`, is refused on its audience (ADR 0045). The
+    /// person's own roles were asked against the audience when they mentioned the agent. What the
+    /// audience refuses is "no longer listed", as for an agent the registry does not list.
     async fn check_askable(&self, agent: &AgentId) -> Result<(), AppError> {
+        let canonical = self.canonical_agent(agent);
         if !self
             .policy()
-            .any_role_may_invoke(&self.canonical_agent(agent))
+            .any_role_may_invoke(&canonical, &AgentAudience::Static)
         {
             return Err(AppError::agent_not_allowed(Permission::AgentInvoke, agent));
         }
         match self.resolve_agent(agent).await? {
-            Some(_) => Ok(()),
-            None => Err(AppError::Unprocessable(format!(
+            Some(entry)
+                if self
+                    .policy()
+                    .any_role_may_invoke(&canonical, &entry.audience) =>
+            {
+                Ok(())
+            }
+            Some(_) | None => Err(AppError::Unprocessable(format!(
                 "agent '{agent}' is no longer listed"
             ))),
         }

@@ -106,12 +106,29 @@ impl Platform {
         }
     }
 
-    /// The platform lists `agent` (served at `card_url`).
+    /// The platform lists `agent` (served at `card_url`), for everybody (`"audience": ["*"]`, ADR
+    /// 0045): without an audience an agent is for administrators only, which is not what the tests
+    /// of the registry's mechanics mean.
     fn list(&self, service: &str, title: &str, card_url: &str, tags: &[&str]) {
+        self.list_for(service, title, card_url, tags, Some(json!(["*"])));
+    }
+
+    /// The platform lists `agent` with this `audience` member as it writes it, or none at all.
+    fn list_for(
+        &self,
+        service: &str,
+        title: &str,
+        card_url: &str,
+        tags: &[&str],
+        audience: Option<Value>,
+    ) {
         let mut item = json!({"href": card_url, "type": "application/json",
                               "title": title, "service": [service]});
         if !tags.is_empty() {
             item["tags"] = json!(tags);
+        }
+        if let Some(audience) = audience {
+            item["audience"] = audience;
         }
         self.items.lock().unwrap().push(item);
     }
@@ -408,4 +425,62 @@ async fn a_delegation_to_an_agent_the_platform_no_longer_lists_is_dead_with_the_
     token.cancel();
     dispatcher.await.unwrap();
     instance.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_is_offered_to_the_people_its_audience_names_and_is_not_there_for_the_others() {
+    let w = world().await;
+    let instance = TestInstance::spawn(
+        Arc::clone(&w.app),
+        ApiConfig::default(),
+        fast_dispatcher(),
+        "e2e",
+    )
+    .await;
+    // the platform lists three agents: for everybody, for the holders of a use permission nobody
+    // here holds, and with no audience at all (an agent just made)
+    let card = w.coder.card_url();
+    w.platform
+        .list_for("open", "Open", &card, &[], Some(json!(["*"])));
+    w.platform.list_for(
+        "mine",
+        "Mine",
+        &card,
+        &[],
+        Some(json!(["agent.use:mine", "agent.use:mine"])),
+    );
+    w.platform.list_for("fresh", "Fresh", &card, &[], None);
+    w.platform.list_for(
+        "broken",
+        "Broken",
+        &card,
+        &[],
+        Some(json!(["*", "agent.use:broken"])),
+    );
+    let chat = Chat::new(&instance.base_url, ALICE);
+
+    let (_, agents) = chat.get("/api/agents").await;
+    assert_eq!(ids(&agents), ["plain", "open"]);
+    // `GET /api/me` still says what the roles say
+    let (_, me) = chat.get("/api/me").await;
+    assert_eq!(me["agents"], json!({"read": ["*"], "invoke": ["*"]}));
+
+    // an agent nobody lists, and the three it shuts the person out of, are all "no such agent"
+    for hidden in ["mine", "fresh", "broken", "nowhere"] {
+        let (status, capabilities) = chat.agui_capabilities(hidden).await;
+        assert_eq!(status, 404, "{hidden}");
+        assert_eq!(capabilities["detail"], "no such agent", "{hidden}");
+        let (status, problem) = chat.try_create_thread(hidden, "echo hi", None).await;
+        assert_eq!(status, 404, "{hidden}: {problem}");
+        assert_eq!(problem["detail"], "no such agent", "{hidden}");
+    }
+    assert!(
+        w.coder.executions().is_empty(),
+        "nothing was sent to any of them"
+    );
+
+    // the one that is for everybody runs
+    let thread = chat.create_thread("open", "echo hello", None).await;
+    chat.wait_state(&thread, "done").await;
+    assert_eq!(w.coder.executions().len(), 1);
 }

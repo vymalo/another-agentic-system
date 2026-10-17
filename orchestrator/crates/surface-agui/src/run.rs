@@ -70,8 +70,14 @@ pub(crate) async fn run<P: Ports>(
     // A request that names an agent by an alias is about the agent (ADR 0049).
     let agent = state.app.canonical_agent(&AgentId::new(agent_id));
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
-    // and a registry that cannot say is a 503, never a 404.
-    if state.app.resolve_agent(&agent).await?.is_none() {
+    // and a registry that cannot say is a 503, never a 404. So is an agent whose audience leaves
+    // the person out (ADR 0045): what they may not read is, to them, not there. The one exception
+    // is the person's own thread on that agent, which they already have: a message to it is
+    // refused further on, 403, as when `agent.invoke` stops covering its agent (decision 1.8).
+    if state.app.find_agent(&principal, &agent).await?.is_none()
+        && !(state.app.resolve_agent(&agent).await?.is_some()
+            && continues_own_thread(&state.app, &principal, &agent, thread).await?)
+    {
         return Err(Problem::not_found("no such agent").into());
     }
     for _ in 0..MAX_ATTEMPTS {
@@ -101,6 +107,21 @@ pub(crate) async fn run<P: Ports>(
     }
     // Another request for this thread kept winning the race.
     Err(AppError::Contended.into())
+}
+
+/// Whether `thread` is the person's own and talks to `agent` (an alias of it counts, ADR 0049).
+async fn continues_own_thread<P: Ports>(
+    app: &std::sync::Arc<App<P>>,
+    principal: &Principal,
+    agent: &AgentId,
+    thread: ThreadId,
+) -> Result<bool, ApiError> {
+    match app.find_thread(principal, thread).await {
+        Ok(Some(record)) => Ok(app.canonical_agent(&record.target.agent_id) == *agent),
+        // not theirs, not there, or a person who may not write: not a continuation
+        Ok(None) | Err(AppError::NotFound | AppError::Forbidden { .. }) => Ok(false),
+        Err(other) => Err(other.into()),
+    }
 }
 
 /// The gate the run asks for, `forwardedProps["vymalo.gate"]` (ADR 0018): `{require?,

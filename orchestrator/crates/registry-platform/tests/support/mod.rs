@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use orch_core::{AgentId, AgentSource};
-use orch_ports::{AgentEndpoint, AgentTransport, RegistryEntry};
+use orch_ports::{AgentAudience, AgentEndpoint, AgentTransport, RegistryEntry};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
@@ -248,6 +248,14 @@ pub fn item_of(entry: &RegistryEntry) -> Value {
                           "title": entry.name, "service": [entry.endpoint.id.as_str()]});
     if !entry.tags.is_empty() {
         item["tags"] = json!(entry.tags);
+    }
+    // The three cases a server publishes (the contract's section *Audience*): `["*"]`, the values,
+    // and for none no member at all.
+    match &entry.audience {
+        AgentAudience::Everyone => item["audience"] = json!(["*"]),
+        AgentAudience::Roles(roles) => item["audience"] = json!(roles.iter().collect::<Vec<_>>()),
+        AgentAudience::AdminsOnly => {}
+        AgentAudience::Static => panic!("a registry's agent is not a static one"),
     }
     item
 }

@@ -11,7 +11,7 @@ An **adapter** of the `AgentRegistry` port in [`orch-ports`](../ports/README.md)
 contract is the platform's, named by the URI `https://agents.vymalo.com/registry/v1`:
 [`docs/extensions/agent-registry-v1.md`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/agent-registry-v1.md)
 there. A JSON linkset in the shape of an RFC 9727 API catalog, one `item` per agent service: its
-service id, a title, optional tags and the URL of its agent card. Nothing else crosses: no release
+service id, a title, optional tags, an optional `audience` and the URL of its agent card. Nothing else crosses: no release
 (each agent's own card says which it offers, [ADR 0008](../../../docs/decisions/0008-platform-integration-via-a2a-extension.md)),
 no prompt, no UI concept; and the orchestrator needs no Kubernetes access and no platform SDK
 ([ADR 0007](../../../docs/decisions/0007-protocol-only-dependencies.md)). Only the binary
@@ -74,7 +74,23 @@ stateDiagram-v2
   sensitive in the request, a redirect is never followed, and `Debug` of the configuration and the
   registry print `<redacted>`.
 - **Its agents** are `AgentEndpoint::a2a(service id, card URL, agent token)` with origin
-  `AgentSource::Registry`, the title as the name and the tags as given. `agent_token`
+  `AgentSource::Registry`, the title as the name, the tags as given and the item's **audience**.
+- **The audience says who may use the agent** ([ADR 0045](../../../docs/decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md),
+  the contract's section *Audience*). It is read, never guessed at, into an
+  [`AgentAudience`](../ports/README.md): `["*"]` is `Everyone`; an array of valid texts is the set of
+  its values (`Roles`); and **everything else is *none*, `AdminsOnly`**, which the application shows to
+  administrators only: no `audience` member, `[]`, a value that is not an array, an element that is
+  not a text, a text outside the contract's grammar (1 to 64 bytes, each `0x21` to `0x7E`), more than
+  32 distinct values, or `"*"` beside another value. The grammar is
+  `AgentAudience::from_values` in `orch-ports`, so no adapter can build what the contract calls
+  malformed; this crate does the JSON half (is it an array of texts at all). **An audience never
+  takes an agent out of the list or skips the item**: whether a person sees it is the application's
+  to say, with their roles. A malformed one (there, and not readable) is logged at `warn`, with the
+  service ids, once for each change, because it makes an agent vanish for everyone but the
+  administrators; a missing one and `[]` are the contract's *none* and are not reported.
+  Two things differ from the contract's text on purpose and are for the application:
+  administrators pass an audience they are not named in, and the roles come from the orchestrator's
+  reader of the roles claim (ADR 0045, *Implemented 2026-10-16*). `agent_token`
   (`AGENT_REGISTRY_AGENT_TOKEN`) is one deployment-wide bearer sent to every agent the registry
   lists, until authentication to the agents is decided (open question 11).
 
@@ -86,7 +102,7 @@ stateDiagram-v2
 | `PlatformConfig::new(url)`, `.with_token`, `.with_agent_token`, `.with_timeout`, `.with_max_age`, `.without_system_proxy` | `url` is the registry's full URL (an absolute `http(s)` URL with a host and no user name or password); `token` the bearer for the registry; `agent_token` the bearer for every listed agent (`SecretString`s, an empty one is none); `timeout` how long one read may take (3 s); `max_age` the longest a copy stays fresh (60 s); the environment's proxy is honoured unless turned off |
 | `BuildError` | `BadUrl`, `BadToken("registry" \| "agent")` (not a header value), `Http` (the TLS backend did not start) |
 | `SOURCE` (`"platform"`), `PROFILE` | the name of the source in `SourceStatus` and `RegistryError`; the contract's profile URI |
-| `linkset::parse(&[u8]) -> Result<Document, Unreadable>` | the pure reader of the document: `Document { items, skipped }` |
+| `linkset::parse(&[u8]) -> Result<Document, Unreadable>` | the pure reader of the document: `Document { items, skipped, malformed_audience }`; an `Item { service, href, title, tags, audience }` |
 | `freshness::policy(&CacheHeaders, cap) -> Policy` | the pure reader of the cache headers: `Policy { lifetime, validator }` |
 
 The document's rules (the contract's): the source is **unavailable, not empty**, when the body is
@@ -110,12 +126,25 @@ conditional requests, can be taken down, delayed, made to answer oddly, and jour
   refusals, not truncations; thirteen kinds of invalid item skipped with the rest kept; duplicate
   ids; malformed tags; `max-age` with `Age`, the cap, `no-store`, `no-cache`, a `max-age` given
   twice, a quoted comma, `stale-if-error` buying nothing, the validator.
+* `src/linkset.rs` (unit, the audience): the contract's own example item with its `audience`; an absent
+  member and `[]` are *none* and are not reported; the three cases a server publishes (`["*"]`, a repeat of
+  it, a set in byte order); every malformed case (22 of them: not an array, `null`, a number, an element
+  that is not a text or is nested, `""`, a space, a tab, a newline, a trailing newline, DEL, non-ASCII,
+  65 bytes, 33 distinct values, `"*"` beside another value in either order) is *none*, **the item is
+  kept** and the service is reported; the edges that are in (`!`, `~`, 64 bytes, 32 values, repeats);
+  and a bad audience hides nothing else.
 * `tests/linkset_props.rs` (proptest): the reader never panics on arbitrary bytes or JSON, and
   whatever it is given, every item it lists has a valid agent id (once), an `http(s)` URL with a host
-  and no credentials, a title within bounds and valid tags.
+  and no credentials, a title within bounds, valid tags, and an audience that is never `Static`; and
+  for any `audience` member, the item is kept and its audience is `AgentAudience::from_values` of the
+  texts when the member is an array of texts and *none* otherwise, and it is reported exactly when it
+  was there and unreadable.
 * `tests/conformance.rs`: the `agent_registry_conformance!` suite of `orch-ports` against the real
-  client over HTTP (`Cache-Control: no-store`).
-* `tests/platform.rs`: the entries (endpoint, title, tags, origin, the agent token and no secret in
+  client over HTTP (`Cache-Control: no-store`), `audience_round_trips` included (its fixture writes an
+  entry's audience as the contract does).
+* `tests/platform.rs`: the entries (endpoint, title, tags, origin, **audience** (an entry carries its item's,
+  an item without one, with `[]`, with `["*", "x"]` and with a string is for administrators only, and an
+  audience taken away is none and not the last one), the agent token and no secret in
   any `Debug`); the request (`Accept`, the bearer, no `Authorization` without a token); a `max-age`
   serves without a request; `no-store` and no `max-age` ask every time; a stale copy is asked about
   with its `ETag` and a `304` renews it (with the 304's own `max-age`); a changed document replaces

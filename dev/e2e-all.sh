@@ -107,7 +107,10 @@
 #   registry          the platform's agent registry (mock-registry): its agent is     registry-e2e.sh
 #                     listed after dev/agents.yaml's with the releases of its own card,
 #                     an agent added to it shows up with no restart, a registry that
-#                     is down leaves the static agents and says so (503 for its agents)
+#                     is down leaves the static agents and says so (503 for its agents),
+#                     and an agent's audience decides who sees it: dev, the holder of a
+#                     role value and admin are listed different agents, and a hidden one
+#                     is answered as one that does not exist (ADR 0045)
 #   rbac              who may do what: the mock issuer signs four users in behind     rbac-e2e.sh
 #                     oauth2-proxy, /api/me says what each one's roles grant, a user
 #                     sees only their own threads, an administrator too: nobody lists

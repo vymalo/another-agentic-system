@@ -496,11 +496,16 @@ fn validate_text(text: &str) -> Result<(), AppError> {
 }
 
 /// What a refused agent permission is to the caller: a permission the roles lack, or an agent the
-/// roles do not name. Agents are not secret (the web lists them), so both are 403.
+/// roles do not name, or (ADR 0045) an agent whose audience leaves the person out. All are 403,
+/// for an agent the person already has in a thread of their own: it is their thread's, so the
+/// refusal tells them nothing. A caller that asks for an agent **by name** answers an audience
+/// differently, as it answers an agent that is not listed: see [`App::visible_agent`].
 fn denied_agent(denied: Denied, agent: &AgentId) -> AppError {
     match denied {
         Denied::Permission(permission) => AppError::missing_permission(permission),
-        Denied::OutOfScope(permission) => AppError::agent_not_allowed(permission, agent),
+        Denied::OutOfScope(permission) | Denied::Audience(permission) => {
+            AppError::agent_not_allowed(permission, agent)
+        }
     }
 }
 
@@ -777,8 +782,9 @@ impl<P: Ports> App<P> {
     /// none of its agents and says so in `sources`. A card that cannot be read in time yields an
     /// agent without `description` and `releases` (fail closed, ADR 0008).
     ///
-    /// Only the agents `who` may read (`agent.read` and the agents of their roles, ADR 0033) are
-    /// listed; the sources are as they are.
+    /// Only the agents `who` may read are listed (`agent.read`, the agents of their roles, ADR 0033,
+    /// **and**, for an agent a registry lists, its audience, ADR 0045); the sources are as they
+    /// are.
     ///
     /// # Errors
     /// [`AppError::Forbidden`] when no role of `who` holds `agent.read`.
@@ -797,6 +803,7 @@ impl<P: Ports> App<P> {
                 Permission::AgentRead,
                 &Resource::Agent {
                     id: &entry.endpoint.id,
+                    audience: &entry.audience,
                 },
             )
         });
@@ -860,8 +867,8 @@ impl<P: Ports> App<P> {
     }
 
     /// The agent a job is started on when the caller does not name one: the first agent listed
-    /// that `who` may invoke (ADR 0014: the first is the default; ADR 0033), `None` when nothing
-    /// is listed or they may invoke none of it.
+    /// that `who` may invoke (ADR 0014: the first is the default; ADR 0033; ADR 0045: its audience
+    /// lets them in), `None` when nothing is listed or they may invoke none of it.
     pub async fn default_agent(&self, who: &impl Requester) -> Option<AgentId> {
         let access = self.access(who);
         self.ports
@@ -870,24 +877,84 @@ impl<P: Ports> App<P> {
             .await
             .entries
             .into_iter()
+            .find(|e| {
+                access.allows(
+                    Permission::AgentInvoke,
+                    &Resource::Agent {
+                        id: &e.endpoint.id,
+                        audience: &e.audience,
+                    },
+                )
+            })
             .map(|e| e.endpoint.id)
-            .find(|id| access.allows(Permission::AgentInvoke, &Resource::Agent { id }))
+    }
+
+    /// The agent `id` as the registry lists it now, when the audience of an agent a registry lists
+    /// lets `who` meet it (ADR 0045); `None` when no agent has this id **and when its audience
+    /// leaves `who` out**, which are the same answer: an agent a person may not read looks, to
+    /// them, like one that does not exist.
+    ///
+    /// For a surface that has to say "no such agent" before it knows what the person will do with
+    /// the agent. It asks the audience and **not the roles' `agents`**, which each act asks for
+    /// itself (a refusal for a role is a 403 and names no listing); it is never a grant to use the
+    /// agent. [`AppError::RegistryUnavailable`] when the registry cannot say.
+    pub async fn find_agent(
+        &self,
+        who: &impl Requester,
+        id: &AgentId,
+    ) -> Result<Option<RegistryEntry>, AppError> {
+        let access = self.access(who);
+        Ok(self
+            .resolve_agent(id)
+            .await?
+            .filter(|entry| access.meets_audience(&entry.audience)))
+    }
+
+    /// The agent `id` as the registry lists it now, when `access` may use `permission` on it:
+    /// a role grants it over the id **and** the agent's audience lets the person in (ADR 0045).
+    /// `None` for an agent nobody lists, and for one the person may not use for either reason, in
+    /// the same words: **what a person may not read is, to them, not there.**
+    ///
+    /// Asked after [`Access::check_scope`], which refuses what the roles' `agents` do not name
+    /// before the registry is read, as it always has. [`AppError::RegistryUnavailable`] when the
+    /// registry cannot say.
+    pub(crate) async fn visible_agent(
+        &self,
+        access: &Access<'_>,
+        permission: Permission,
+        id: &AgentId,
+    ) -> Result<Option<RegistryEntry>, AppError> {
+        Ok(self.resolve_agent(id).await?.filter(|entry| {
+            access.allows(
+                permission,
+                &Resource::Agent {
+                    id,
+                    audience: &entry.audience,
+                },
+            )
+        }))
     }
 
     /// One listed agent and its live card, read now and never cached; `None` when no agent has
-    /// this id. `card` is `None` when the card cannot be read in time (fail closed, ADR 0008).
+    /// this id, **or its audience leaves `who` out** (ADR 0045: the same answer, so what a person
+    /// may not read does not look different from what is not there). `card` is `None` when the
+    /// card cannot be read in time (fail closed, ADR 0008).
     /// [`AppError::RegistryUnavailable`] when the registry cannot say, and [`AppError::Forbidden`]
-    /// for an agent `who` may not read (`agent.read`, ADR 0033).
+    /// for an agent the roles of `who` do not let them read (`agent.read`, ADR 0033).
     pub async fn describe_agent(
         &self,
         who: &impl Requester,
         id: &AgentId,
     ) -> Result<Option<AgentDescription>, AppError> {
         let id = &self.agents.canonical(id);
-        self.access(who)
-            .check(Permission::AgentRead, &Resource::Agent { id })
+        let access = self.access(who);
+        access
+            .check_scope(Permission::AgentRead, id)
             .map_err(|denied| denied_agent(denied, id))?;
-        let Some(entry) = self.resolve_agent(id).await? else {
+        let Some(entry) = self
+            .visible_agent(&access, Permission::AgentRead, id)
+            .await?
+        else {
             return Ok(None);
         };
         Ok(Some(AgentDescription {
@@ -902,17 +969,13 @@ impl<P: Ports> App<P> {
         access: &Access<'_>,
         target: &AgentTarget,
     ) -> Result<(), AppError> {
-        // Before the registry is asked: what a person may invoke does not depend on it.
+        // Before the registry is asked: what the roles let a person invoke does not depend on it.
         access
-            .check(
-                Permission::AgentInvoke,
-                &Resource::Agent {
-                    id: &target.agent_id,
-                },
-            )
+            .check_scope(Permission::AgentInvoke, &target.agent_id)
             .map_err(|denied| denied_agent(denied, &target.agent_id))?;
+        // An agent whose audience leaves the person out is unknown to them (ADR 0045).
         let entry = self
-            .resolve_agent(&target.agent_id)
+            .visible_agent(access, Permission::AgentInvoke, &target.agent_id)
             .await?
             .ok_or_else(|| AppError::Invalid(format!("unknown agent '{}'", target.agent_id)))?;
         let Some(release) = &target.release else {
@@ -1183,7 +1246,7 @@ impl<P: Ports> App<P> {
         ) {
             Ok(()) => Ok(thread),
             Err(Denied::Permission(p)) => Err(AppError::missing_permission(p)),
-            Err(Denied::OutOfScope(_)) => Err(AppError::NotFound),
+            Err(Denied::OutOfScope(_) | Denied::Audience(_)) => Err(AppError::NotFound),
         }
     }
 
@@ -1201,7 +1264,7 @@ impl<P: Ports> App<P> {
         match access.check(Permission::ThreadWrite, &resource) {
             Ok(()) => Ok(thread),
             Err(Denied::Permission(p)) => Err(AppError::missing_permission(p)),
-            Err(Denied::OutOfScope(_)) => Err(AppError::NotFound),
+            Err(Denied::OutOfScope(_) | Denied::Audience(_)) => Err(AppError::NotFound),
         }
     }
 
@@ -1226,13 +1289,32 @@ impl<P: Ports> App<P> {
         self.for_writing(access, thread)
     }
 
-    /// A message to the agent of `thread` takes `agent.invoke` for it, beside `thread.write`.
-    fn may_invoke(&self, access: &Access<'_>, thread: &ThreadRecord) -> Result<(), AppError> {
+    /// A message to the agent of `thread` takes `agent.invoke` for it, beside `thread.write`: a
+    /// role grants it over the agent, **and** the agent's audience lets the person in (ADR 0045).
+    /// A thread whose agent the person may no longer use is therefore **read-only** for them: they
+    /// read it, and everything they could write to the agent is a 403 (decision 1.8).
+    ///
+    /// The agent is read from the registry now, as sending will; one the registry does not list has
+    /// no audience to keep the person out of, and the dispatcher says it is no longer listed. A
+    /// registry that cannot say is [`AppError::RegistryUnavailable`].
+    async fn may_invoke(&self, access: &Access<'_>, thread: &ThreadRecord) -> Result<(), AppError> {
         // The thread keeps the id it was created with, which may be an alias since (ADR 0049):
         // the roles speak of the canonical one.
         let id = self.agents.canonical(&thread.target.agent_id);
         access
-            .check(Permission::AgentInvoke, &Resource::Agent { id: &id })
+            .check_scope(Permission::AgentInvoke, &id)
+            .map_err(|denied| denied_agent(denied, &id))?;
+        let Some(entry) = self.resolve_agent(&id).await? else {
+            return Ok(());
+        };
+        access
+            .check(
+                Permission::AgentInvoke,
+                &Resource::Agent {
+                    id: &id,
+                    audience: &entry.audience,
+                },
+            )
             .map_err(|denied| denied_agent(denied, &id))
     }
 
@@ -2030,7 +2112,7 @@ impl<P: Ports> App<P> {
     ) -> Result<Event, AppError> {
         let access = self.access(who);
         let thread = self.writable_thread(&access, id).await?;
-        self.may_invoke(&access, &thread)?;
+        self.may_invoke(&access, &thread).await?;
         validate_text(&text)?;
         let user = who.user().clone();
         let input = if stop {
@@ -2091,7 +2173,7 @@ impl<P: Ports> App<P> {
             input,
             Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
         ) {
-            self.may_invoke(&access, &thread)?;
+            self.may_invoke(&access, &thread).await?;
         }
         match &input {
             Input::UserMessage { text, catalog, .. } | Input::StopAndSend { text, catalog, .. } => {
@@ -2330,7 +2412,17 @@ impl<P: Ports> App<P> {
         id: ThreadId,
         servers: Vec<String>,
     ) -> Result<ThreadRecord, AppError> {
-        let record = self.writable_thread(&self.access(who), id).await?;
+        let access = self.access(who);
+        let record = self.writable_thread(&access, id).await?;
+        // Attaching a server is for the agent that will use it (ADR 0045): a person who may no
+        // longer use the thread's agent attaches nothing to it. Taking servers off is not
+        // attaching, and a thread's owner can always do it.
+        if servers
+            .iter()
+            .any(|server| !record.job.tools.contains(server))
+        {
+            self.may_invoke(&access, &record).await?;
+        }
         let wanted = self
             .checked_tools(
                 who,

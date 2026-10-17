@@ -12,8 +12,9 @@
 # that go with it are played as well: the `verdict` artifact a verifier answers with for a commit of forty
 # `a` and for any other, and what the rework prompt that quotes the verifier's findings does to the coder.
 #
-# The registry mock (`mock-registry`, agent-registry/v1, ADR 0022) is probed too: the linkset it serves, its cache headers, and a
-# conditional request answered 304.
+# The registry mock (`mock-registry`, agent-registry/v1, ADR 0022) is probed too: the linkset it serves (`platform-coder` for everybody and the
+# three agents of the audience scenario of dev/registry-e2e.sh, with their audiences, ADR 0045), its cache headers, and a conditional request
+# answered 304.
 #
 # The football example (dev/mentions-e2e.sh, dev/README.md "Mentions") is probed last: the researcher and the browser (`mock-researcher`,
 # `mock-browser`, WireMock agents with one answer of their own each), and the marker `[mock:football]`, which makes the first mock
@@ -246,14 +247,20 @@ check "the media type is application/linkset+json" \
   "$(sed -n 's/^[Cc]ontent-[Tt]ype: *\([^;]*\).*/\1/p' "$HEADERS_FILE" | tr -d '\r')" "application/linkset+json"
 check "it can be cached for two seconds, and has an ETag" \
   "$(sed -n 's/^[Cc]ache-[Cc]ontrol: *//p' "$HEADERS_FILE" | tr -d '\r'), $(sed -n 's/^[Ee][Tt]ag: *//p' "$HEADERS_FILE" | tr -d '\r')" \
-  'private, max-age=2, "r-2026-10-01T09:00:00Z"'
+  'private, max-age=2, "r-2026-10-16T00:00:00Z"'
 check "one context object that names the v1 profile" \
   "$(printf '%s' "$doc" | jq -r '[.linkset[] | select(.profile[]?.href == "https://agents.vymalo.com/registry/v1")] | length')" "1"
 check "it lists platform-coder, at the card of mock-agent-releases, with its title and tags" \
-  "$(printf '%s' "$doc" | jq -r '.linkset[0].item[] | [.service[0], .href, .title, (.tags | join("+"))] | join(" ")')" \
+  "$(printf '%s' "$doc" | jq -r '.linkset[0].item[] | select(.service[0] == "platform-coder") | [.service[0], .href, .title, (.tags | join("+"))] | join(" ")')" \
   "platform-coder http://mock-agent-releases:8080/.well-known/agent-card.json Platform coder coding+git"
+check "it lists the three agents of the audience scenario, at the card of mock-agent, with their titles and tags" \
+  "$(printf '%s' "$doc" | jq -r '[.linkset[0].item[] | select(.service[0] != "platform-coder") | [.service[0], .href, .title, (.tags | join("+"))] | join(" ")] | join(" | ")')" \
+  "platform-restricted http://mock-agent:8080/.well-known/agent-card.json Platform restricted restricted | platform-admins http://mock-agent:8080/.well-known/agent-card.json Platform admins only admin | platform-malformed http://mock-agent:8080/.well-known/agent-card.json Platform malformed audience malformed"
+check "and their audiences: everybody, one role value, none and a malformed one (agent-registry/v1, Audience), in this order" \
+  "$(printf '%s' "$doc" | jq -r '[.linkset[0].item[] | "\(.service[0])=\(if has("audience") then (.audience | tojson) else "none" end)"] | join(" ")')" \
+  'platform-coder=["*"] platform-restricted=["agent.use:platform-restricted"] platform-admins=none platform-malformed=["*","x"]'
 check "a request that asks with the ETag is answered 304" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "r-2026-10-01T09:00:00Z"' "$REGISTRY/registry/v1/agents")" "304"
+  "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "r-2026-10-16T00:00:00Z"' "$REGISTRY/registry/v1/agents")" "304"
 check "another validator gets the document again" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "other"' "$REGISTRY/registry/v1/agents")" "200"
 

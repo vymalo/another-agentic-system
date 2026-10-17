@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::is_valid_agent_id;
+use orch_ports::AgentAudience;
 use orch_registry_platform::linkset::{self, PROFILE};
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -50,7 +51,7 @@ fn item() -> impl Strategy<Value = Value> {
         prop::collection::vec(".{0,80}", 0..20).prop_map(|t| json!(t)),
         any_json(),
     ];
-    (href, service, title, tags).prop_map(|(href, service, title, tags)| {
+    (href, service, title, tags, audience()).prop_map(|(href, service, title, tags, audience)| {
         let mut item = json!({"href": href, "service": service});
         if !title.is_null() {
             item["title"] = title;
@@ -58,8 +59,28 @@ fn item() -> impl Strategy<Value = Value> {
         if !tags.is_null() {
             item["tags"] = tags;
         }
+        if !audience.is_null() {
+            item["audience"] = audience;
+        }
         item
     })
+}
+
+/// An `audience` member that is right, nearly right, or nothing like it.
+fn audience() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        Just(Value::Null),
+        Just(json!(["*"])),
+        Just(json!([])),
+        prop::collection::vec("[!-~]{0,70}", 0..40).prop_map(|t| json!(t)),
+        prop::collection::vec(".{0,70}", 0..5).prop_map(|t| json!(t)),
+        prop::collection::vec(
+            prop_oneof![Just(json!("*")), Just(json!("a")), any_json()],
+            0..6
+        )
+        .prop_map(Value::Array),
+        any_json(),
+    ]
 }
 
 fn document(items: Vec<Value>) -> Vec<u8> {
@@ -94,6 +115,35 @@ proptest! {
             prop_assert!(listed.title.chars().count() <= linkset::MAX_TITLE_CHARS);
             prop_assert!(listed.tags.len() <= linkset::MAX_TAGS);
             prop_assert!(listed.tags.iter().all(|t| !t.is_empty() && t.chars().count() <= linkset::MAX_TAG_CHARS));
+            prop_assert!(
+                listed.audience != AgentAudience::Static,
+                "a registry's agent is never one of the deployment's own: {:?}", listed
+            );
         }
+    }
+
+    /// An audience is read as the contract says or it is none: never anything else, whatever the
+    /// member holds, and whatever it holds the item is kept.
+    #[test]
+    fn an_audience_is_read_or_it_is_none(member in audience()) {
+        let mut item = json!({"href": "https://a.example.com/card", "service": ["a"]});
+        if !member.is_null() {
+            item["audience"] = member.clone();
+        }
+        let parsed = linkset::parse(&document(vec![item])).unwrap();
+        prop_assert_eq!(parsed.items.len(), 1);
+        let want = match &member {
+            Value::Array(values) if values.iter().all(Value::is_string) => {
+                AgentAudience::from_values(values.iter().filter_map(Value::as_str))
+            }
+            _ => AgentAudience::AdminsOnly,
+        };
+        prop_assert_eq!(&parsed.items[0].audience, &want);
+        // it is reported when it was there and could not be read, and only then
+        let was_there = member.as_array().is_none_or(|a| !a.is_empty()) && !member.is_null();
+        prop_assert_eq!(
+            !parsed.malformed_audience.is_empty(),
+            was_there && want == AgentAudience::AdminsOnly
+        );
     }
 }
