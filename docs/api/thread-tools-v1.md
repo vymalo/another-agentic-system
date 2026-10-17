@@ -911,13 +911,15 @@ about 200 bytes is refused ("the callId is too long").
   task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
   not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The other asks of that agent that still run when the form ends end `canceled` with it (and the asks they asked), with an
   `error` that says why; the dispatcher cancels their tasks and the task the form parked, once the ask is recorded. A question in words, with no interface, is the asking agent's to answer as
-  before. **The ask is sent the job's UI catalog** (the one the thread's screen gave, inline, and only to an agent whose card
-  lists `ui-catalog/v1`; none when the thread has none), so an asked agent that asks the person something **with choices**
+  before. **The ask is sent the job's UI catalog** (the one the thread's screen gave; only to an agent whose card lists
+  `ui-catalog/v1`, and inline only to one that accepts inline catalogs, any other getting a reference it cannot resolve; none
+  when the thread has none), so an asked agent that asks the person something **with choices**
   (adam-coder's consent is one) draws a form and the ask ends with `form`. *The cost, accepted by the owner:* every question
   with choices ends the ask, even one the asking model could have answered; the model tells the person to talk to that agent
-  directly. A claim that **re-attaches** to the task after a crash cannot know what it drew before, so it takes any
-  `input_required` or `auth_required` end for a form (it reads no history), a question in words included. **Known gap, narrowed,
-  not fixed here:** a question in words (no `choices`), an asked agent that ignores the catalog and a thread with no catalog
+  directly. A claim that **re-attaches** to the task after a crash or a broken stream cannot know what it drew before, so it takes
+  any `input_required` or `auth_required` end for a form (it reads no history), a question in words included, and the agent is
+  refused for the rest of the job. **Known gap, narrowed,
+  not fixed here:** a question in words (no `choices`), an asked agent that ignores the catalog or does not accept inline catalogs, and a thread with no catalog
   still end `input_required` with no interface and can have their question, a consent included, answered by the asking model.
   Such an agent's consent is protected only once the agent refuses to park on it in a run another agent started (an adam-rs
   follow-up, defence in depth). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the

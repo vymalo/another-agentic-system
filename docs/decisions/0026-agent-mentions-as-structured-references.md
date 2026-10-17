@@ -179,9 +179,9 @@ as a form answer, so an injected `ask_agent("The person answered through the int
 repository.
 
 **2. An asked agent is sent the job's UI catalog.** The dispatcher sends every ask the catalog the thread's screen gave the
-job (`App::thread_ui_catalog`), **inline** (`UiDelivery::Inline`): an asked agent has no `get_ui_catalog` tool, so a reference
-alone would leave adam-ui unable to read the catalog and its question would degrade to text. The adapter still sends it only
-to an agent whose live card lists `ui-catalog/v1`. A thread whose screen sent no catalog sends none. A catalog that cannot be
+job (`App::thread_ui_catalog`), asking for it **inline** (`UiDelivery::Inline`), because an asked agent has no `get_ui_catalog`
+tool. The adapter sends it only to an agent whose live card lists `ui-catalog/v1`, and inline only to one whose A2UI entry
+accepts inline catalogs; any other gets a reference it cannot resolve, so its questions stay in words (it is in the gap below). A thread whose screen sent no catalog sends none. A catalog that cannot be
 read is no reason to ask without one: the row is claimed again.
 
 *An earlier version of this note refused the catalog because it "would turn every clarifying question into a form". That was
@@ -205,17 +205,19 @@ in a checkout, not run:*
 **The cost, accepted by the owner.** With a catalog, **every question with choices** that an asked agent puts ends the ask, even
 one an asking model could have answered (a choice between two branches, say): the model is told that the person must answer it
 by talking to the agent directly. A question in words (no `choices`) keeps the ask and continue flow. And a claim that
-**re-attaches** after a crash cannot know whether the task drew a surface before (it reads the rest of the stream, or a snapshot
+**re-attaches** after a crash or a broken stream cannot know whether the task drew a surface before (it reads the rest of the stream, or a snapshot
 of the status and the artifacts, never the interfaces drawn earlier), so it **fails closed**: any `input_required` or
 `auth_required` end after a re-attach is taken for a form, with no read of the task's history. A question in words that is
-asked again after a crash ends the ask like a form does.
+asked again after a crash or a broken stream ends the ask like a form does, and the agent is refused for the rest of the job
+(the next job asks it afresh). A surface that is not a form (cards, a graph) followed by a question in words ends the ask too:
+an asked agent's surfaces are not shown to anyone, and the rule cannot tell them apart.
 
 **Scope: what this closes and what it does not.** What is closed: an asked agent that draws a form, which includes the coder's
 consent in a thread whose screen sent a catalog with `Choices` to a coder that lists `ui-catalog/v1`. After #111 the coder does
 not even accept words for a question that went out as a form. What stays a **known gap, narrowed and not fixed here**:
 
 - a question **in words**, which a model can answer, because the agent asked without `choices`;
-- an asked agent that **ignores the catalog** (its card does not list `ui-catalog/v1`, or it cannot draw `Choices`);
+- an asked agent that **ignores the catalog** (its card does not list `ui-catalog/v1`, its A2UI entry does not accept inline catalogs, or it cannot draw `Choices`);
 - a thread whose screen sent **no catalog** (a client other than the web), where nothing is sent and the coder's consent parks
   in words, accepted only as the label naming the subject after #111, and as bare `yes` at the pin.
 

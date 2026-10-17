@@ -38,14 +38,17 @@
 //!   person, who cannot see an asked agent's screens. The answer is read with `form` set
 //!   ([`AskResult::form`](orch_core::AskResult::form)); the core never continues that task and refuses
 //!   a further ask of the agent in the job ([`AskRefusal::FormPending`](orch_core::AskRefusal)), and
-//!   once the ask is recorded the dispatcher cancels the parked task. **The ask is sent the job's
-//!   UI catalog**, inline, so that an agent which asks the person something with choices (adam's
-//!   `ask_user`, the coder's consent) draws a surface and the rule above fires; the cost is that
-//!   every question with choices ends the ask. A claim that re-attaches to a task that waits
-//!   cannot know what the task drew before, and **fails closed**: any turn that ends waiting is
-//!   taken for a form, with no read of the task's history ([`Answer::assume_form`]). A question in
-//!   words stays the asking agent's to answer, and that is the known gap: a question without
-//!   choices, an agent that ignores the catalog, and a thread with no catalog (none is sent).
+//!   once the ask is recorded the dispatcher cancels the parked task, which is then refused for
+//!   the rest of the job. **The ask is sent the job's UI catalog**, inline when the agent's A2UI
+//!   entry accepts inline catalogs (an asked agent has no `get_ui_catalog` tool), so that an agent
+//!   which asks the person something with choices (adam's `ask_user`, the coder's consent) draws a
+//!   surface and the rule above fires; the cost is that every question with choices ends the ask.
+//!   A claim that re-attaches to a task that waits, after a crash or a broken stream, cannot know
+//!   what the task drew before, and **fails closed**: any turn that ends waiting is taken for a
+//!   form, with no read of the task's history ([`Answer::assume_form`]). A question in words stays
+//!   the asking agent's to answer, and that is the known gap: a question without choices, an agent
+//!   that ignores the catalog or does not accept inline catalogs, and a thread with no catalog
+//!   (none is sent).
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
 //!   while the ledger says it runs, and it stops being wanted when the core ends it (the deadline,
 //!   the person's stop, the end of the task that asked, the end of the ask above it). The row looks
