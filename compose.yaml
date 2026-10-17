@@ -109,10 +109,20 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-10-09 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-5581d40` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 5581d40194181d005538a2f4c0aeee15035cd742, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `0bfea49` plus adam-rs #107 (a remote sub-agent whose answer
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-10-17 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-8847c28` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 8847c28ac6c435dacb9d1c412c0390a29f545997, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `5581d40` plus adam-rs #108 (a child's notice no longer keeps
+# a finishing parent going), #109 (a turn that asks nothing completes, a scratch project lives for the conversation, an icon on every tool step),
+# #110 (`ask_user` forms with a title, a description and typed questions: Questions v5, adam-rs ADR 0035), #111 (access tiers per message,
+# `access-tier/v1`, adam-rs ADR 0036 and ADR 0061 here: the coder keeps to the tier a message names, `create_repository` asks unless the tier is
+# `bypass`, merge, rename and delete under gates, a typed line that reads as a form's answer is marked `(typed)`, and words answer only a question
+# that went out as text, with the label of its yes option), #112 (dependency locks), #113 (adam-rs ADRs 0037 to 0039, docs only), #114 (a shared
+# package cache at /cache for adam-rs's chart and operator: nothing here mounts one) and #115 (an agent that another agent asked never parks on a
+# person's consent: every adam agent reads the `caller` claim of its thread-tools token into the context key `vymalo.caller`, and the coder's
+# consent tools ask nobody in such a run, ADR 0026 here), with adam-rs's own bump commits. The vendored instructions now say that a scratch
+# project stays for the conversation and that `create_repository` needs `auto`, and the folder's `mcp.json` no longer lists `get_me`.
+# `5581d40` is `0bfea49` plus adam-rs #107 (a remote sub-agent whose answer
 # carries only files, as the browser's screenshot does, keeps its words: the chat gets the browser's answer beside the screenshot, which
 # dev/chat-browser-e2e.sh caught). `0bfea49` is `09291a6` plus adam-rs #100 (the operator's
 # `model.contextWindow`: nothing here runs the operator, and nothing sets MODEL_CONTEXT_WINDOW through a chart's `extraEnv`), #103 (built on the
@@ -139,7 +149,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-5581d40@sha256:ab72fad47471b6c2fc76dbb691f5fe93368f376285e44495d46a63d451c51d95
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-8847c28@sha256:ecbd173142b9473b8583dc9acc4713b28588be3caf19f11124ab5238d082e499
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.

@@ -191,10 +191,15 @@ A summary: the contract is the page above, and the adam-rs pull request has its 
   the owners the coder's GitHub App is installed on.
 - **Children:** the coder keeps its own helpers (OpenCode, folder sub-agents) to the tier in force, by its own means, and does not
   ask another agent for a change its tier forbids.
-- **Facts:** the coder at the pin (adam-rs `5581d40`) has `create_repository`, asked each time, and its GitHub tools in this
+- **Facts:** the coder at the pin of 2026-10-11 (adam-rs `5581d40`) had `create_repository`, asked each time, and its GitHub tools in this
   repository's vendored folder are read-only (*verified 2026-10-11* by reading `dev/coder/agent/mcp.json` and searching the repository:
-  `merge_pull_request`, `rename_repository` and `delete_repository` appear nowhere here). Whether adam-rs has those three tools is
-  *unverified*, its code not being in this repository.
+  `merge_pull_request`, `rename_repository` and `delete_repository` appear nowhere here). Whether adam-rs had those three tools was
+  *unverified* then, its code not being in this repository. *Verified 2026-10-17, the pin moved to adam-rs `8847c28`
+  ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note of that day), by reading adam-rs at that commit:* the three tools exist
+  under their gates (`bin/adam-coder/src/tools/admin.rs`, adam-rs #111, adam-rs ADR 0036); the coder's card lists `access-tier/v1` with the
+  tiers up to its `MAX_ACCESS_TIER` (`auto` unless the deployment raises it, `bin/adam-coder/src/config.rs`), so `bypass` is offered only
+  where it is configured; `create_repository` asks unless the tier is `bypass`; `adam-agent` lists no tier at that commit, so the chat's
+  row stays as it was; and the vendored GitHub MCP tools stay read-only (`get_me` was dropped).
 
 ## Questions settled
 

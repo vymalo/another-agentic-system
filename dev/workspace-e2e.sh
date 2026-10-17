@@ -45,7 +45,7 @@
 #
 # second-repo (yes): the task names local/sandbox and asks for the shared greeting, which lives in local/library (seeded, never
 # named): the coder prepares the sandbox and calls `request_repository`, so the thread is `blocked` on a Choices (`consent`, options
-# `Yes, add local/library` and `No`) whose question names the repository and quotes the reason, no pull request exists, and git-server
+# `Yes, add local/library` and `No`) whose lead names the repository and whose description quotes the reason, no pull request exists, and git-server
 # has not been asked for local/library since the script began (the repository is seeded, so only git-server's access log tells:
 # GIT_SERVER_LOGS). After `yes`: the thread ends `done`, hello.txt on the branch holds the library's greeting, git-server was asked
 # for local/library AFTER the answer, and the gate, the checks and the one pull request hold as above, for local/sandbox.
@@ -572,8 +572,18 @@ second_repo() {
     why "$events"
   fi
   case $said in *"May I add the repository local/library"*) ok "$label: the question names local/library" ;; *) bad "$label: the coder's words do not hold the question 'May I add the repository local/library'" ;; esac
-  case $said in *'The agent says why: "the shared greeting lives in greeting.txt there"'*) ok "$label: the question quotes the reason" ;; *) bad "$label: the question does not quote the reason" ;; esac
   expect_consent "$label" "Yes, add local/library"
+  # The reason the model gave is the form's description (adam-rs 8847c28: `ask_user`'s `description`, which a screen that draws the
+  # form shows under its title); it is in the words only when no form was drawn.
+  reason='The agent says why: "the shared greeting lives in greeting.txt there"'
+  if printf '%s' "$choices" | jq -e --arg r "$reason" '.[0].description // "" | contains($r)' >/dev/null 2>&1; then
+    ok "$label: the form's description quotes the reason"
+  else
+    case $said in
+      *"$reason"*) ok "$label: the question quotes the reason in words (no form)" ;;
+      *) bad "$label: neither the form's description ('$(printf '%s' "$choices" | jq -r '.[0].description // "none"' | head -c 200)') nor the words quote the reason" ;;
+    esac
+  fi
   if [ "$(count_of POST '/repos/.*/pulls')" = 0 ]; then ok "$label: no pull request was opened while the coder waits for the answer"; else bad "$label: a pull request was opened before the person answered"; fi
   library_waiting=$(library_requests)
   if [ "$library_before" = '?' ]; then

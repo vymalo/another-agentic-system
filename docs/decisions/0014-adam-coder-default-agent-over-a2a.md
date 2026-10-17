@@ -645,3 +645,51 @@ the words: the status message comes first, then the file lines. Nothing else cha
   fourteen layers), label `org.opencontainers.image.revision` `5581d40194181d005538a2f4c0aeee15035cd742`, `/opt/obscura/bin` on its `PATH`,
   digest `sha256:ab72fad4...` (the registry's `Docker-Content-Digest` and the sha-256 of the manifest it returned), published by adam-rs's
   `coder` run 37948442409.
+
+### Status note, 2026-10-17: access tiers, Questions v5 forms, and a coder that asks nobody for consent when another agent asked it (adam-rs 8847c28)
+
+The pin moves to adam-rs `8847c28`, which is `5581d40` plus [#108](https://github.com/vymalo/another-adam-rs/pull/108) (a child's notice no
+longer keeps a finishing parent going), [#109](https://github.com/vymalo/another-adam-rs/pull/109) (a turn that asks nothing completes, a
+scratch project lives for the conversation, an icon on every tool step), [#110](https://github.com/vymalo/another-adam-rs/pull/110)
+(`ask_user` forms with a title, a description and typed questions: Questions v5, adam-rs ADR 0035),
+[#111](https://github.com/vymalo/another-adam-rs/pull/111) (access tiers per message, `access-tier/v1`, adam-rs ADR 0036: the coder keeps to
+the tier a message names, [ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md) here; `merge_pull_request`,
+`rename_repository` and `delete_repository` under gates; a typed line that reads as a form's answer is marked `(typed)`, and words answer only
+a question that went out as text, with the label of its yes option, never a bare `yes`), [#112](https://github.com/vymalo/another-adam-rs/pull/112)
+(dependency locks), [#113](https://github.com/vymalo/another-adam-rs/pull/113) (adam-rs ADRs 0037 to 0039, docs only),
+[#114](https://github.com/vymalo/another-adam-rs/pull/114) (a shared package cache at `/cache` for adam-rs's chart and operator: nothing here
+mounts one) and [#115](https://github.com/vymalo/another-adam-rs/pull/115) (an agent that another agent asked never parks on a person's consent:
+every adam agent reads the `caller` claim of its thread-tools token into the context key `vymalo.caller`, and the coder's consent tools ask
+nobody in such a run, no words being a consent there for the rest of the run; the other half of
+[ADR 0026](0026-agent-mentions-as-structured-references.md)'s amendment of this day), with adam-rs's own bump commits. The chart's `chat.image`
+moves with it (the same tag and digest).
+
+- **Re-copied.** `git diff --stat 5581d40 8847c28 -- dev bin/adam-coder/agent` is not empty: `bin/adam-coder/agent/instructions.md` (a scratch
+  project stays for the conversation, `create_repository` needs `auto` and asks unless the tier is `bypass`, shorter wording), and
+  `bin/adam-coder/agent/mcp.json` and `dev/coder-agent/mcp.json` (`get_me` dropped from the GitHub MCP tool list) are copied again. No mapping,
+  seed, `git-server` or `podman` file changed. Of the four files that are ours on purpose, upstream's `dev/coder-e2e.sh` changed (a yes is sent
+  as the label of the yes option, a no as the form's answer, since #111 reads neither a bare `yes` nor a typed `no` as a consent): nothing of
+  it to port, `dev/workspace-e2e.sh` answers the coder's consent as the web does, with one A2UI action on the form, and reports a consent that
+  came as text as a failure. **Two scripts of ours did need a port, which the pull request's first Coder E2E run found** (28 of 30 scenarios
+  passed): `dev/workspace-e2e.sh` read the reason of `request_repository` in the coder's words, and the coder now puts it in the form's
+  description (`ask_user`'s `description`, adam-rs #110: the `Choices` of catalog v5 and later carries a `title` and a `description`, and the
+  reason is in the words only when no screen draws the form), so the script reads the form's description and falls back to the words; and
+  `dev/artifact-e2e.sh` compared `share_file`'s whole line, which for an image now ends with how to use it as the picture of an `ask_user`
+  option (`pass image {sha256: ..., alt}`, adam-rs #110), so the script expects that sentence with the file's own hash.
+- **The crates move with it, and no code changed.** The seven `rev` lines of `orchestrator/Cargo.toml` name `8847c28`; `cargo update -p
+  adam-host --precise` re-resolved the nine adam-rs packages and nothing else. The change is additive for the crates this repository uses
+  (`adam_a2a::AccessTiers`, `adam_a2a_runtime::{CONTEXT_CALLER, asked_by_an_agent, CONTEXT_ACCESS_TIER}` and the like are new; no `pub` item of
+  `adam-runtime`, `adam-a2a` or `adam-a2a-runtime` was removed or changed, read in `git diff 5581d40 8847c28 -- crates/*/src`), the store and
+  notifier crates did not change, and nothing here calls the new items: `orch-agent-adam` runs the coder's A2A backend as it is.
+- *Verified 2026-10-17* (anonymous ghcr API, HTTP 200): `coder:sha-8847c28` is one `linux/amd64` manifest (3.01 GB of compressed layers,
+  fourteen layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision`
+  `8847c28ac6c435dacb9d1c412c0390a29f545997`, `/opt/obscura/bin` on its `PATH`, digest `sha256:ecbd1731...` (the registry's
+  `Docker-Content-Digest` and the sha-256 of the manifest it returned), published by adam-rs's `coder` run 39039846841 about ten minutes after
+  the merge. `dev/coder/check-vendored.sh` passes at that commit, and `docker compose --profile '*' config -q` is clean. In `orchestrator/`, on a fresh target, `cargo fmt --all --check`, `cargo clippy
+  --workspace --all-targets --locked -- -D warnings` and `cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D
+  warnings` pass, `cargo test -p orchestrator --features agent-local --locked` passes (312 tests in four suites) and `cargo test -p
+  orch-agent-adam --locked` passes (41 tests in five); `node tools/docs-check/check-docs.mjs` says `docs OK`.
+- *Unverified where this was written* (no Docker daemon on the machine, so the image was not pulled): every scenario in containers, the first
+  run of which is the Coder E2E workflow of the pull request that pins it, in particular `dev/workspace-e2e.sh` against a coder that marks typed
+  lines and takes a consent from its form alone, `dev/choices-e2e.sh` on the coder's Questions v5 forms, and `dev/mentions-e2e.sh`; the Postgres
+  cases of the orchestrator's tests; the chart's render check (`deploy.yml` runs it); the chat on netcup on the new image.

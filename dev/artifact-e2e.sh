@@ -360,17 +360,20 @@ for tool in start_scratch write_file run share_file ui_catalog show; do
     *) bad "the model was not offered $tool (tools: ${offered:-none}): is the image pinned in compose.yaml an adam-rs commit with share_file (0e44c14 or later)?" ;;
   esac
 done
-for pair in "sh-call-5:chart.svg:$svg_size:image/svg+xml" "sh-call-6:square.png:$png_size:image/png" "sh-call-7:report.json:$json_size:application/json"; do
+for pair in "sh-call-5:chart.svg:$svg_size:image/svg+xml:$svg_sha" "sh-call-6:square.png:$png_size:image/png:$png_sha" "sh-call-7:report.json:$json_size:application/json:$json_sha"; do
   id=${pair%%:*}
   rest=${pair#*:}
   file=${rest%%:*}
   rest=${rest#*:}
   size=${rest%%:*}
-  type=${rest#*:}
-  # The line starts with this; an image's goes on with how to show it (adam-rs ADR 0033, since 0bfea49): by its file name, never a path.
+  rest=${rest#*:}
+  type=${rest%%:*}
+  sha=${rest#*:}
+  # The line starts with this; an image's goes on with how to show it (adam-rs ADR 0033, since 0bfea49): by its file name, never a path,
+  # and, since adam-rs 8847c28 (#110), how to use it as the picture of an `ask_user` option: by its sha256.
   want="Shared $file ($size bytes, $type)."
   case $type in
-    image/*) want="$want To show it in your answer, write ![description]($file)." ;;
+    image/*) want="$want To show it in your answer, write ![description]($file). To use it as the picture of an \`ask_user\` option, pass image {sha256: \"$sha\", alt}." ;;
   esac
   got=$(tool_result "$reqs" "$id")
   case $got in

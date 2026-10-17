@@ -476,12 +476,16 @@ the real one):
 - A `SendStreamingMessage` stream that returns a task "MUST begin with the Task object"
   ([`steer-v1.md`](steer-v1.md#verified-and-unverified-2026-10-02)), so the first event carries the echo.
 
-*Verified 2026-10-11 in this repository:* the coder at the pin (`dev/coder/UPSTREAM`, adam-rs `5581d40`) has
+*Verified 2026-10-11 in this repository:* the coder at the pin of that day (`dev/coder/UPSTREAM`, adam-rs `5581d40`) had
 `create_repository`, asked each time, for the owners in `CREATE_REPO_OWNERS`
 ([ADR 0014](../decisions/0014-adam-coder-default-agent-over-a2a.md)); its vendored GitHub tools are read-only
 (`dev/coder/agent/mcp.json`); `merge_pull_request`, `rename_repository` and `delete_repository` appear nowhere in this repository.
 
-*Unverified:* whether adam-rs has those three tools yet (its code is not in this repository); which A2A error an agent should
+*Verified 2026-10-17, the pin moved to adam-rs `8847c28` ([ADR 0014](../decisions/0014-adam-coder-default-agent-over-a2a.md)'s note of that
+day):* adam-rs has the three tools, under its gates (`bin/adam-coder/src/tools/admin.rs`, adam-rs #111), the coder's card lists the extension,
+`create_repository` asks unless the tier is `bypass`, and the vendored GitHub MCP tools stay read-only (`get_me` was dropped).
+
+*Unverified:* which A2A error an agent should
 answer with for a tier it does not honour (the specification's names are not tabulated for this page); whether a plain agent
 such as kagent ignores or rejects a metadata key it did not ask for, which does not matter here because nothing is sent to an
 agent whose card does not list the URI.
