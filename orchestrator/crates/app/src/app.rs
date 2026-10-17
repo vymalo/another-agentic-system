@@ -10,11 +10,11 @@ use orch_core::{
     AccessTier, AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint,
     Classify, Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource,
     GatePolicy, Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin,
-    Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, TierListing,
-    Timestamp, TitleSource, ToolsError, UiCatalogData, UserId, WatchKey, branch_points,
-    check_answer, check_description, check_servers, check_title, copied, family_root, file_refs,
-    fork_commit, fork_cut, fork_message, is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key,
-    report, start_thread, transition,
+    PersonSaid, PersonSaidBuilder, Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord,
+    ThreadState, TierListing, Timestamp, TitleSource, ToolsError, UiCatalogData, UserId, WatchKey,
+    branch_points, check_answer, check_description, check_servers, check_title, copied,
+    family_root, file_refs, fork_commit, fork_cut, fork_message, is_commit_hash, is_fork_at,
+    rail_parent_of_fork, repo_key, report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -67,8 +67,8 @@ pub const DEFAULT_MAX_EXPORT_EVENTS: usize = 50_000;
 /// [`AppConfig::max_export_bytes`] says otherwise. The event count alone does not bound memory:
 /// an event may carry up to 100 000 characters of text.
 pub const DEFAULT_MAX_EXPORT_BYTES: usize = 32 * 1024 * 1024;
-/// Events read from the store per page when exporting.
-const EXPORT_PAGE: u32 = 500;
+/// Events read from the store per page when a whole log is read: an export, what the person said.
+const LOG_PAGE: u32 = 500;
 /// How long a stream that has heard nothing waits before it looks for its thread's row again, to
 /// end when the thread was deleted (ADR 0043) even if the notification of the delete was missed.
 const RECHECK_ROW: Duration = Duration::from_secs(5);
@@ -1846,11 +1846,7 @@ impl<P: Ports> App<P> {
         let mut events: Vec<Event> = Vec::new();
         let mut after = 0;
         while after < last_seq {
-            let page = self
-                .ports
-                .store()
-                .list_events(id, after, EXPORT_PAGE)
-                .await?;
+            let page = self.ports.store().list_events(id, after, LOG_PAGE).await?;
             let Some(last) = page.last() else { break };
             after = last.seq;
             events.extend(page.into_iter().filter(|e| e.seq <= last_seq));
@@ -2033,6 +2029,51 @@ impl<P: Ports> App<P> {
         Ok(forms)
     }
 
+    /// What the person said in thread `id`, as an **asked** agent is told it (ADR 0026, amended
+    /// 2026-10-17, fourth note; `person` of the `thread-tools/v1` metadata): the `text` of every
+    /// `user_message` whose origin is a person's ([`Origin::is_person`]), every job of the thread,
+    /// oldest first, as written, a steered message among them, under the bounds of [`PersonSaid`]
+    /// (an entry cut at [`MAX_PERSON_SAID_ENTRY_BYTES`](orch_core::MAX_PERSON_SAID_ENTRY_BYTES),
+    /// the oldest left out whole beyond [`MAX_PERSON_SAID_BYTES`](orch_core::MAX_PERSON_SAID_BYTES)
+    /// and counted). A fork's log begins with a copy of its parent's events (ADR 0029), so the
+    /// copied messages count on their own. The person's form answers (`ui_action`) are not carried:
+    /// without the form the orchestrator cannot tell a typed field from a chosen option. Empty for
+    /// a thread that does not exist.
+    ///
+    /// The log is read forward in pages through [`ThreadStore::list_events`], up to the thread's
+    /// `last_seq`; nothing new is asked of the store (no store reads by kind, and a trait method
+    /// would break every implementer), so the read is O(log) per ask send, and what is kept while
+    /// paging is bounded by the builder. No user check: the dispatcher reads it for the thread an
+    /// ask is on.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Store`] when the store fails.
+    pub async fn person_said(&self, id: ThreadId) -> Result<PersonSaid, AppError> {
+        let store = self.ports.store();
+        let Some(thread) = store.get_thread(None, id).await? else {
+            return Ok(PersonSaid::default());
+        };
+        let mut said = PersonSaidBuilder::new();
+        let mut after = 0;
+        'pages: while after < thread.last_seq {
+            let page = store.list_events(id, after, LOG_PAGE).await?;
+            let Some(last) = page.last() else { break };
+            after = last.seq;
+            for event in page {
+                if event.seq > thread.last_seq {
+                    break 'pages;
+                }
+                if let orch_core::EventBody::UserMessage(m) = &event.body
+                    && m.origin.is_person()
+                {
+                    said.push(&m.text);
+                }
+            }
+        }
+        Ok(said.finish())
+    }
+
     /// A snapshot of one of the user's threads for sharing: the thread with its job ledger, its
     /// binding and its whole event log. Someone else's thread is `NotFound`, like every read.
     ///
@@ -2051,7 +2092,7 @@ impl<P: Ports> App<P> {
         let mut bytes = 0_usize;
         let mut after = 0;
         'pages: while after < thread.last_seq {
-            let page = store.list_events(id, after, EXPORT_PAGE).await?;
+            let page = store.list_events(id, after, LOG_PAGE).await?;
             let Some(last) = page.last() else { break };
             after = last.seq;
             for event in page {

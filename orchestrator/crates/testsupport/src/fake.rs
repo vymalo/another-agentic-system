@@ -432,10 +432,12 @@ pub struct Call {
     pub ui_catalog: Option<Value>,
     /// The catalogs the message carried inline: the `inlineCatalogs` of its renderer capabilities.
     pub inline_catalogs: Vec<Value>,
-    /// `metadata[<thread-tools/v1 URI>]` of the message: `{url, token, expiresAt, attached?}`, the
-    /// grant of the thread's MCP endpoint, when it carried one (ADR 0023), and `attached`
+    /// `metadata[<thread-tools/v1 URI>]` of the message: `{url, token, expiresAt, attached?,
+    /// person?}`, the grant of the thread's MCP endpoint, when it carried one (ADR 0023), `attached`
     /// (`[{server, name, description?}]`) when MCP servers are attached to the thread that the
-    /// agent may use (ADR 0024). Recorded as received, so a test can assert what an agent is told.
+    /// agent may use (ADR 0024), and, on an asked agent's message, `person` (`{said, omitted?}`),
+    /// what the person said in the thread (ADR 0026, amended 2026-10-17). Recorded as received, so
+    /// a test can assert what an agent is told.
     pub thread_tools: Option<Value>,
     /// `metadata[<mentions/v1 URI>]` of the message: `{mentions: [{agentId, name?, label, start,
     /// end, cardUrl?}], coordinate?}`, the agents the person mentioned, when it carried one (ADR

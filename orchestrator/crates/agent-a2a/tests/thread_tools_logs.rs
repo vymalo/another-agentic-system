@@ -1,6 +1,7 @@
 //! The thread-tools token reaches the agent's message and no log line (`thread-tools/v1`, ADR 0023):
 //! everything the adapter, the A2A SDK and the in-process agent log while a message is sent, at the
-//! most verbose level, is kept and searched for the token and the key.
+//! most verbose level, is kept and searched for the token and the key; and, for an ask, for what the
+//! person said (`person`, ADR 0026 amended 2026-10-17), which rides in the same metadata.
 //!
 //! One test in a file of its own: a thread-local `tracing` subscriber hears the callsites of a
 //! process only when no other test of the process has registered them first, so it cannot share a
@@ -14,7 +15,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use jiff::Timestamp;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
-use orch_core::{AgentId, THREAD_TOOLS_EXTENSION, ThreadId, ToolsGrant};
+use orch_core::{AgentId, Caller, PersonSaid, THREAD_TOOLS_EXTENSION, ThreadId, ToolsGrant};
 use orch_ports::{AgentClient, SendContent, SendRequest};
 use orch_testsupport::{FakeAgent, FakeAgentOptions};
 use orch_thread_token::{ThreadToolsIssuer, ThreadToolsKeys};
@@ -88,7 +89,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         ..A2aConfig::default()
     })
     .unwrap();
-    let req = SendRequest {
+    let request = || SendRequest {
         endpoint: fake.endpoint("coder", None),
         message_id: "msg-1".to_owned(),
         context_id: Some("ctx-1".to_owned()),
@@ -104,6 +105,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         tier: None,
         tier_cap: None,
     };
+    let req = request();
     let shown_request = format!("{req:?}");
     let mut stream = client.send_stream(req).await.unwrap();
     while let Some(item) = tokio::time::timeout(Duration::from_secs(20), stream.next())
@@ -117,6 +119,35 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         .as_str()
         .unwrap()
         .to_owned();
+    // and an ask, told what the person said: a word of the person's that nothing else says
+    const SAID: &str = "pumpernickel-widgets";
+    let ask = ToolsGrant {
+        caller: Caller::Ask(1),
+        depth: 1,
+        ..grant()
+    }
+    .with_person(Some(PersonSaid::from_texts([format!(
+        "set up acme/{SAID} for me"
+    )])));
+    let shown_ask = format!("{ask:?}");
+    let req = SendRequest {
+        message_id: "msg-2".to_owned(),
+        context_id: Some("ctx-2".to_owned()),
+        thread_tools: Some(ask),
+        ..request()
+    };
+    let mut stream = client.send_stream(req).await.unwrap();
+    while let Some(item) = tokio::time::timeout(Duration::from_secs(20), stream.next())
+        .await
+        .unwrap()
+    {
+        item.unwrap();
+    }
+    let said = fake.executions().pop().unwrap().thread_tools.unwrap()["person"]["said"].clone();
+    assert_eq!(
+        said,
+        serde_json::json!([format!("set up acme/{SAID} for me")])
+    );
     drop(guard);
 
     // What the request holds is the grant, which is no secret; the token is not in it.
@@ -143,6 +174,14 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
     );
     assert!(!log.contains(&token), "the token reached a log line");
     assert!(!log.contains(KEY), "the key reached a log line");
+    // Nor what the person said: `Debug` of the grant counts it and no log line of the ask's send
+    // quotes it.
+    assert!(shown_ask.contains("PersonSaid"), "{shown_ask}");
+    assert!(!shown_ask.contains(SAID), "{shown_ask}");
+    assert!(
+        !log.contains(SAID),
+        "what the person said reached a log line"
+    );
     // nor does a segment of it alone (the header and the claims are only base64)
     for segment in token.split('.') {
         assert!(

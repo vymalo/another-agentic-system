@@ -11,10 +11,10 @@ use futures::StreamExt;
 use jiff::Timestamp;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_core::{
-    AgentId, Caller, THREAD_TOOLS_EXTENSION, ThreadId, ToolsGrant, UI_CATALOG_EXTENSION,
+    AgentId, Caller, PersonSaid, THREAD_TOOLS_EXTENSION, ThreadId, ToolsGrant, UI_CATALOG_EXTENSION,
 };
 use orch_ports::{AgentClient, AgentEndpoint, AgentStream, SendContent, SendRequest};
-use orch_testsupport::{Call, FakeAgent, FakeAgentOptions};
+use orch_testsupport::{Call, FakeAgent, FakeAgentOptions, integral_numbers};
 use orch_thread_token::{ThreadToolsIssuer, ThreadToolsKeys, verify};
 use secrecy::SecretString;
 
@@ -370,6 +370,87 @@ async fn the_card_is_read_for_every_message_and_never_remembered() {
             .thread_tools
             .is_some()
     );
+}
+
+/// ADR 0026, amended 2026-10-17 (fourth note): an asked agent's message says what the person said in
+/// the thread, under the same key as the endpoint (`person`: `said` as given, `omitted` only when
+/// some was); the addressed agent's message carries no `person`, an ask told nothing has no member,
+/// and a card without the extension gets the message it got before, the words nowhere in it.
+#[tokio::test]
+async fn an_asked_agent_is_told_what_the_person_said_and_the_addressed_agent_is_not() {
+    let fake = agent(&[THREAD_TOOLS_EXTENSION]).await;
+    let client = client(Some(issuer()));
+    let words = ["Set up acme/widgets for me, branch main", "yes, go ahead"];
+    let ask = |person: Option<PersonSaid>| {
+        ToolsGrant {
+            caller: Caller::Ask(1),
+            depth: 1,
+            agent: AgentId::new("researcher"),
+            ..grant()
+        }
+        .with_person(person)
+    };
+    let call = send(
+        &client,
+        &fake,
+        request(
+            &fake,
+            "msg-1",
+            Some(ask(Some(PersonSaid::from_texts(words)))),
+        ),
+    )
+    .await;
+    let metadata = call.thread_tools.clone().expect("a grant");
+    assert_eq!(metadata["person"], serde_json::json!({"said": words}));
+    assert_eq!(
+        metadata.as_object().unwrap().len(),
+        4,
+        "url, token, expiresAt and person: {metadata}"
+    );
+    assert_eq!(
+        call.text, "echo hi",
+        "the words ride in the metadata, not in the text"
+    );
+    assert!(call.activates(THREAD_TOOLS_EXTENSION));
+    // `omitted` only when some older text was left out
+    let cut = PersonSaid {
+        said: vec![words[1].to_owned()],
+        omitted: 2,
+    };
+    let call = send(
+        &client,
+        &fake,
+        request(&fake, "msg-2", Some(ask(Some(cut)))),
+    )
+    .await;
+    // (the fake's server reads every number of the metadata as a double)
+    assert_eq!(
+        integral_numbers(&call.thread_tools.unwrap()["person"]),
+        serde_json::json!({"said": [words[1]], "omitted": 2})
+    );
+    // an ask told nothing has no member
+    let call = send(&client, &fake, request(&fake, "msg-3", Some(ask(None)))).await;
+    assert!(call.thread_tools.unwrap().get("person").is_none());
+    // the addressed agent's message: exactly the endpoint, the token and the expiry
+    let call = send(&client, &fake, request(&fake, "msg-4", Some(grant()))).await;
+    let (_, _, _) = grant_of(&call);
+    // a card without the extension: the message it got before, the words nowhere in it
+    fake.set_extensions(&[]);
+    let call = send(
+        &client,
+        &fake,
+        request(
+            &fake,
+            "msg-5",
+            Some(ask(Some(PersonSaid::from_texts(words)))),
+        ),
+    )
+    .await;
+    assert_eq!(call.thread_tools, None);
+    assert!(!call.activates(THREAD_TOOLS_EXTENSION));
+    assert!(call.extensions_header.is_empty());
+    assert_eq!(call.text, "echo hi");
+    assert!(!format!("{call:?}").contains("acme"), "{call:?}");
 }
 
 #[tokio::test]

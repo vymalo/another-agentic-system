@@ -505,6 +505,8 @@ impl<P: Ports> Dispatcher<P> {
             attached: self.app.attached_for(&a.agent, &thread.job.tools),
             // the orchestrator keeps no file of an asked agent (uploads/v1, ADR 0058)
             uploads: None,
+            // told in `send_ask`, read from the thread's log beside the forms catalog
+            person: None,
         };
         self.send_ask(&a, text, continue_task, reference_task_ids, grant)
             .await
@@ -649,6 +651,14 @@ impl<P: Ports> Dispatcher<P> {
             .thread_forms_catalog(a.thread)
             .await?
             .map(UiDelivery::Inline);
+        // What the person said in the thread goes with the ask too (ADR 0026, amended 2026-10-17,
+        // fourth note): the person's own words, every job of the thread, oldest first, written by
+        // the orchestrator and never by a model, so that an asked agent that decides anything from
+        // what the person named (adam-coder: the repositories it may touch without consent) decides
+        // it from the person's words and not from the asking model's. Only an ask carries it; the
+        // addressed agent has the messages. A log that cannot be read is no reason to send without
+        // it: the row is claimed again, as for the catalog.
+        let grant = grant.with_person(Some(self.app.person_said(a.thread).await?));
         // The reads above take time: an ask that ended meanwhile (the person's stop, the deadline,
         // the end of the task that asked) is not sent.
         if !self.ask_wanted(a).await {

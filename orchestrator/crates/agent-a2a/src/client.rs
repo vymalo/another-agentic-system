@@ -586,15 +586,15 @@ fn user_message(
         );
     }
     // The endpoint of the thread and the token that opens it: only in the message, never stored
-    // or logged anywhere else (see `crate::thread_tools`).
+    // or logged anywhere else (see `crate::thread_tools`); with it the servers attached and, for
+    // an asked agent, what the person said in the thread.
     if let Some(grant) = riders.thread_tools {
-        let attached = req
-            .thread_tools
-            .as_ref()
-            .map_or(&[][..], |g| g.attached.as_slice());
+        let (attached, person) = req.thread_tools.as_ref().map_or((&[][..], None), |g| {
+            (g.attached.as_slice(), g.person.as_ref())
+        });
         metadata.insert(
             THREAD_TOOLS_EXTENSION.to_owned(),
-            thread_tools_metadata(grant, attached),
+            thread_tools_metadata(grant, attached, person),
         );
     }
     // The agents the person addressed, as references: only to an agent whose live card lists the
