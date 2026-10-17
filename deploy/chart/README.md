@@ -412,7 +412,7 @@ name's path does. Nothing below has run on a cluster: rehearse it in a scratch n
 10. **Deal with the old server's folder.** It stays in the bucket and no longer expires ([above](#how-long-a-deleted-thread-stays-in-the-backups)). Keep it until the new cluster has run well, then delete it or give its prefix a
     lifecycle rule: it holds people's threads.
 
-The restore on netcup is the proof the chart does not have (see *Unverified*). The same restore on a kind cluster is what [the end-to-end below](#the-end-to-end-on-kind) does, once CI has run it.
+The restore on netcup is the proof the chart does not have (see *Unverified*). The same restore on a kind cluster is what [the end-to-end below](#the-end-to-end-on-kind) does; it passed in CI (run 39008626108 at `0e017d3`, *verified 2026-10-17* in its log).
 
 ### The end-to-end on kind
 
@@ -469,7 +469,7 @@ installs only on a cluster that is `kind-*` (`BACKUP_E2E_ALLOW_ANY_CONTEXT=1` fo
 
 ```sh
 kind create cluster --name backup-e2e --image "$(sed -n 's/^kind_node_image=//p' deploy/chart/tests/backup-e2e/UPSTREAM)"
-sh deploy/chart/tests/backup-e2e/backup-e2e.sh            # expected 10 to 20 minutes, most of it image pulls (unverified)
+sh deploy/chart/tests/backup-e2e/backup-e2e.sh            # about 6 minutes in CI (run 39008626108), most of it image pulls
 sh deploy/chart/tests/backup-e2e/backup-e2e.sh render     # helm only: the objects it would apply
 kind delete cluster --name backup-e2e
 ```
