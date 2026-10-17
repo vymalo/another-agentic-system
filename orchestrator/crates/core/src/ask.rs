@@ -564,6 +564,8 @@ pub(crate) fn request(
             continue_task,
             reference_task_ids,
             context,
+            // a mention pinned the cap of the person's role on the agent (ADR 0061)
+            tier_cap: job.mentioned_caps.get(ask.agent).copied(),
         },
         Command::Schedule {
             after: ask.limits.timeout,

@@ -645,7 +645,18 @@ pub async fn a_tier_is_refused_by_an_agent_that_does_not_list_the_extension<F: A
             "a tier to an agent without the extension",
         );
         assert!(!err.is_retryable());
-        // nothing was started: the same message without a tier is the first the agent hears
+        // nothing was started: the agent holds no task for the refused message (an adapter that
+        // cannot look a message up says so; it may never name a task)
+        match fx
+            .client()
+            .find_task_by_message(&fx.endpoint(), Some("ctx-tier"), "m-tier")
+            .await
+        {
+            Ok(None) | Err(AgentError::Unsupported(_)) => {}
+            Ok(Some(task)) => panic!("the refused message started the task {task}"),
+            Err(e) => panic!("looking the refused message up failed: {e}"),
+        }
+        // and the same message without a tier is the first the agent hears
         let envs = drain(send(&fx, Script::Echo, "m-plain", "ctx-tier").await).await;
         assert!(!envs.is_empty(), "a plain message is sent as it was");
     })

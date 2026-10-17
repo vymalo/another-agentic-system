@@ -223,6 +223,7 @@ fn an_ask_of_a_mentioned_agent_is_logged_sent_and_given_a_deadline() {
             continue_task,
             reference_task_ids,
             context,
+            tier_cap: None,
         },
         Command::Schedule { after, timer },
     ] = cmds.as_slice()
@@ -871,6 +872,7 @@ fn stop_and_send_ends_the_asks_of_the_job_it_replaces_and_the_next_job_has_none(
     let snap = running(Working, &["a"]);
     let (snap, _) = step(&snap, &ask("a"));
     let stop = Input::StopAndSend {
+        tier_cap: None,
         user: user(),
         text: "do this instead".into(),
         message_id: None,
@@ -901,6 +903,7 @@ fn a_new_job_starts_a_ledger_of_its_own_and_an_old_deadline_is_stale_in_it() {
     let (next, _) = step(
         &done,
         &Input::UserMessage {
+            tier_cap: None,
             user: user(),
             text: "again, with @a".into(),
             message_id: None,
@@ -908,6 +911,7 @@ fn a_new_job_starts_a_ledger_of_its_own_and_an_old_deadline_is_stale_in_it() {
             origin: Origin::Agui,
             catalog: None,
             mentions: vec![Mention {
+                tier_cap: None,
                 agent_id: agent("a"),
                 label: "@a".into(),
                 start: 12,
@@ -936,6 +940,7 @@ fn what_an_earlier_jobs_ask_reports_is_not_the_later_jobs_ask() {
     let (next, _) = step(
         &done,
         &Input::UserMessage {
+            tier_cap: None,
             user: user(),
             text: "again, with @a".into(),
             message_id: None,
@@ -943,6 +948,7 @@ fn what_an_earlier_jobs_ask_reports_is_not_the_later_jobs_ask() {
             origin: Origin::Agui,
             catalog: None,
             mentions: vec![Mention {
+                tier_cap: None,
                 agent_id: agent("a"),
                 label: "@a".into(),
                 start: 12,
@@ -1347,6 +1353,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             let mentions = names
                 .iter()
                 .map(|n| Mention {
+                    tier_cap: None,
                     agent_id: agent(n),
                     label: format!("@{n}"),
                     start: 0,
@@ -1355,6 +1362,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 })
                 .collect();
             Input::UserMessage {
+                tier_cap: None,
                 user: user(),
                 text: "go".into(),
                 message_id: None,
@@ -1365,6 +1373,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             }
         }),
         1 => agent_name().prop_map(|n| Input::StopAndSend {
+            tier_cap: None,
             user: user(),
             text: "instead".into(),
             message_id: None,
@@ -1372,6 +1381,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             origin: Origin::Agui,
             catalog: None,
             mentions: vec![Mention {
+                tier_cap: None,
                 agent_id: agent(n),
                 label: format!("@{n}"),
                 start: 0,
@@ -1382,7 +1392,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
         1 => (any::<bool>(), "[a-z]{1,4}").prop_map(|(retryable, reason)|
             Input::DeliveryFailed { reason, retryable }),
         1 => Just(Input::CancelledBeforeStart),
-        1 => Just(Input::Redeliver { text: "again".into(), sent: false, mentions: vec![], tier: None, }),
+        1 => Just(Input::Redeliver { tier_cap: None, text: "again".into(), sent: false, mentions: vec![], tier: None, }),
     ]
 }
 
@@ -1416,6 +1426,7 @@ proptest! {
         inputs in prop::collection::vec(arb_input(), 0..80),
     ) {
         let first = Input::UserMessage {
+            tier_cap: None,
             user: user(),
             text: "go".into(),
             message_id: None,
@@ -1425,6 +1436,7 @@ proptest! {
             mentions: mentions
                 .iter()
                 .map(|n| Mention {
+                    tier_cap: None,
                     agent_id: agent(n),
                     label: format!("@{n}"),
                     start: 0,

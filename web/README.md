@@ -910,8 +910,10 @@ they did.
   /agui/agents/{id}/capabilities`, `useAgentCapabilities().entry`), which the orchestrator fills from the agent's **live card** and leaves out
   when the params are badly formed; `lib/tier.ts` reads it as strictly as the contract has it (`tiers` a non-empty list of the four words,
   each once, and a `default` among them), and anything else is no offer. The menu opening reads the card again.
-- **What it offers.** The tiers the card honours, up to `maxTier` of `GET /api/me` (the highest cap of the roles that let the person invoke
-  an agent; absent when there is none). The cap is a hint: the orchestrator decides per agent, each time it writes a message (422). Until the
+- **What it offers.** The tiers the card honours, up to `maxTier` of the **selected agent's** capabilities entry (`custom[<access-tier URI>] =
+  {tiers, default, maxTier?}`: the highest cap of the roles that let the person invoke *that* agent, absent when none caps it; `parseOffer`
+  reads it as `max`). Not `maxTier` of `GET /api/me`, which spans every agent and is only a hint: a person capped on one agent and not on
+  another sees a chip that follows the agent. The cap is a hint: the orchestrator decides per agent, each time it writes a message (422). Until the
   person picks, the chip shows what the message runs under without a pick, marked *default*, and **sends nothing**: the card's `default`
   for a person with no cap, and for one whose cap is lower the highest tier below it that the cap allows (`defaultFor` in `lib/tier.ts`, the
   rule the orchestrator applies, so the chip never shows a tier the message does not get; its words say "the most your role allows"). A person
@@ -938,7 +940,7 @@ they did.
 - **The mock** lists the extension for no agent until a test says so for its own session: `POST /__mock/tiers?session=<name>` with
   `{agent, params}` sets what the card of an agent lists (`params` raw, so a badly formed one can be tried; `"unreadable"` is a card that
   cannot be read; `null` takes the listing away). The profile `capped` (`POST /__mock/config?me=capped`) has `maxTier: edits`, and `?maxTier=plan|edits|auto|bypass|none`
-  sets the session's cap over the profile's. The run route and `forkThread` answer as the orchestrator does (`resolveTier` in `mock/tier.ts`,
+  sets the session's cap over the profile's (the mock has one role, so the capabilities of every agent carry it as `maxTier`). The run route and `forkThread` answer as the orchestrator does (`resolveTier` in `mock/tier.ts`,
   which reads the contract on its own, not through the web's parser): 400 unless one of the four words, 422 above the cap or for a card that
   does not honour it, 503 with `Retry-After` when the card cannot be read, each before anything is written; a capped person who names none
   is run at the highest tier within the lower of the card's default and the cap (422 when there is none, none for a card with no extension);

@@ -44,6 +44,24 @@ describe("what a card lists (parseOffer)", () => {
     });
   });
 
+  it("reads the person's cap on this agent beside them, when the document has one", () => {
+    expect(
+      parseOffer({ tiers: ["plan", "edits", "auto"], default: "auto", maxTier: "edits" }),
+    ).toEqual({ tiers: ["plan", "edits", "auto"], default: "auto", max: "edits" });
+    // no cap on this agent: no member, and no key in the offer
+    expect(parseOffer({ tiers: ["plan"], default: "plan" })).toEqual({
+      tiers: ["plan"],
+      default: "plan",
+    });
+    // a cap that is not one of the four is no offer: fail closed, no chip
+    for (const maxTier of ["yolo", "Plan", "", 1, null, ["plan"]]) {
+      expect(
+        parseOffer({ tiers: ["plan"], default: "plan", maxTier }),
+        JSON.stringify(maxTier),
+      ).toBeNull();
+    }
+  });
+
   it("is nothing for anything the contract does not allow, so no chip is drawn", () => {
     for (const bad of [
       undefined,
@@ -69,21 +87,23 @@ describe("what the person is offered (offeredTiers)", () => {
   const offer = { tiers: [...TIERS], default: "auto" as const };
 
   it("is every tier the agent honours when the roles have no cap", () => {
-    expect(offeredTiers(offer, undefined)).toEqual([...TIERS]);
+    expect(offeredTiers(offer)).toEqual([...TIERS]);
   });
 
   it("stops at the highest the person's roles allow", () => {
-    expect(offeredTiers(offer, "auto")).toEqual(["plan", "edits", "auto"]);
-    expect(offeredTiers(offer, "plan")).toEqual(["plan"]);
-    expect(offeredTiers(offer, "bypass")).toEqual([...TIERS]);
+    expect(offeredTiers({ ...offer, max: "auto" })).toEqual(["plan", "edits", "auto"]);
+    expect(offeredTiers({ ...offer, max: "plan" })).toEqual(["plan"]);
+    expect(offeredTiers({ ...offer, max: "bypass" })).toEqual([...TIERS]);
   });
 
   it("keeps only what the agent honours under the cap", () => {
-    expect(offeredTiers({ tiers: ["plan", "bypass"], default: "plan" }, "auto")).toEqual(["plan"]);
+    expect(offeredTiers({ tiers: ["plan", "bypass"], default: "plan", max: "auto" })).toEqual([
+      "plan",
+    ]);
   });
 
   it("can be nothing: a cap below everything the agent honours", () => {
-    expect(offeredTiers({ tiers: ["auto", "bypass"], default: "auto" }, "plan")).toEqual([]);
+    expect(offeredTiers({ tiers: ["auto", "bypass"], default: "auto", max: "plan" })).toEqual([]);
   });
 });
 
@@ -92,28 +112,28 @@ describe("what runs without a pick (defaultFor)", () => {
 
   it("is the agent's default when the person's roles hold nothing back", () => {
     expect(defaultFor(offer, [...TIERS])).toBe("auto");
-    expect(defaultFor(offer, offeredTiers(offer, "bypass"))).toBe("auto");
-    expect(defaultFor(offer, offeredTiers(offer, "auto"))).toBe("auto");
+    expect(defaultFor(offer, offeredTiers({ ...offer, max: "bypass" }))).toBe("auto");
+    expect(defaultFor(offer, offeredTiers({ ...offer, max: "auto" }))).toBe("auto");
   });
 
   it("is the highest tier below the default that the person's role allows", () => {
-    expect(defaultFor(offer, offeredTiers(offer, "edits"))).toBe("edits");
-    expect(defaultFor(offer, offeredTiers(offer, "plan"))).toBe("plan");
+    expect(defaultFor(offer, offeredTiers({ ...offer, max: "edits" }))).toBe("edits");
+    expect(defaultFor(offer, offeredTiers({ ...offer, max: "plan" }))).toBe("plan");
   });
 
   it("skips a tier the card does not list", () => {
     const skipping = { tiers: ["plan", "auto"] as const, default: "auto" as const };
-    expect(defaultFor(skipping, offeredTiers(skipping, "edits"))).toBe("plan");
+    expect(defaultFor(skipping, offeredTiers({ ...skipping, max: "edits" }))).toBe("plan");
   });
 
   it("is never above the default, however much the role allows", () => {
     const low = { tiers: ["plan", "edits", "auto"] as const, default: "plan" as const };
-    expect(defaultFor(low, offeredTiers(low, "auto"))).toBe("plan");
+    expect(defaultFor(low, offeredTiers({ ...low, max: "auto" }))).toBe("plan");
   });
 
   it("is nothing when the agent offers no tier the person may use", () => {
     const high = { tiers: ["auto", "bypass"] as const, default: "auto" as const };
-    expect(defaultFor(high, offeredTiers(high, "edits"))).toBeUndefined();
+    expect(defaultFor(high, offeredTiers({ ...high, max: "edits" }))).toBeUndefined();
   });
 });
 
@@ -146,7 +166,7 @@ describe("what the chip shows (shownTier)", () => {
 
   it("is the highest the role allows, not the agent's default, for a capped person who picked nothing", () => {
     // the cap is `edits` and the agent works under `auto`: the orchestrator runs the message at `edits`
-    expect(shownTier(offer, offeredTiers(offer, "edits"), undefined)).toEqual({
+    expect(shownTier(offer, offeredTiers({ ...offer, max: "edits" }), undefined)).toEqual({
       tier: "edits",
       picked: false,
       capped: true,
@@ -155,6 +175,6 @@ describe("what the chip shows (shownTier)", () => {
 
   it("is nothing when the person may use no tier of the agent and picked none", () => {
     const high = { tiers: ["auto", "bypass"] as const, default: "auto" as const };
-    expect(shownTier(high, offeredTiers(high, "edits"), undefined)).toBeNull();
+    expect(shownTier(high, offeredTiers({ ...high, max: "edits" }), undefined)).toBeNull();
   });
 });

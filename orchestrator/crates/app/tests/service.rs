@@ -839,6 +839,7 @@ async fn submit_applies_under_a_key_and_a_replay_is_a_duplicate() {
     let app = w.app();
     let t = create(&app, &alice(), "plain", "ask me").await;
     let answer = || Input::UserMessage {
+        tier_cap: None,
         user: alice(),
         text: "main".to_owned(),
         message_id: Some("m-2".to_owned()),
@@ -878,6 +879,7 @@ async fn submit_validates_the_text_and_checks_the_owner() {
     let app = w.app();
     let t = create(&app, &alice(), "plain", "echo hi").await;
     let message = |text: &str| Input::UserMessage {
+        tier_cap: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,

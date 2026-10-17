@@ -27,9 +27,11 @@ const unreadable: AgentCapabilities = {
 };
 const unknown: AgentCapabilities = { status: "unknown", supports: () => null, refresh: () => {} };
 
-type Props = { threadId: string | null; capabilities: AgentCapabilities; max?: Tier };
-const mount = (initial: Props) =>
-  renderHook((p: Props) => useTier({ max: undefined, ...p }), { initialProps: initial });
+type Props = { threadId: string | null; capabilities: AgentCapabilities };
+const mount = (initial: Props) => renderHook((p: Props) => useTier(p), { initialProps: initial });
+
+/** The card's offer with the person's cap on this agent beside it, as the capabilities document has it. */
+const capped = (cap: Tier, entry: object = ALL) => ready({ ...entry, maxTier: cap });
 
 describe("useTier: the chip exists only for an agent whose card lists the extension", () => {
   it("has no offer, no chip and nothing to send for a card that lists nothing, badly, or cannot be read", () => {
@@ -56,13 +58,32 @@ describe("useTier: the chip exists only for an agent whose card lists the extens
   });
 
   it("is capped by the person's role: only the tiers up to the cap are offered", () => {
-    const { result } = mount({ threadId: "t-1", capabilities: ready(ALL), max: "edits" });
+    const { result } = mount({ threadId: "t-1", capabilities: capped("edits") });
     expect(result.current.offered).toEqual(["plan", "edits"]);
+  });
+
+  it("follows the cap of the selected agent: the same person is capped on one and not on another", () => {
+    const { result, rerender } = mount({ threadId: null, capabilities: capped("plan") });
+    expect(result.current.offered).toEqual(["plan"]);
+    expect(result.current.shown).toEqual({ tier: "plan", picked: false, capped: true });
+    // another agent, where no role of theirs caps them: the whole offer, at the agent's default
+    rerender({ threadId: null, capabilities: ready(ALL) });
+    expect(result.current.offered).toEqual(["plan", "edits", "auto", "bypass"]);
+    expect(result.current.shown).toEqual({ tier: "auto", picked: false, capped: false });
+  });
+
+  it("shows nothing for a document whose cap is not one of the four", () => {
+    const { result } = mount({
+      threadId: "t-1",
+      capabilities: ready({ ...ALL, maxTier: "everything" }),
+    });
+    expect(result.current.offer).toBeNull();
+    expect(result.current.shown).toBeNull();
   });
 
   it("shows a capped person the tier their message runs under, not the agent's default, and sends nothing", () => {
     // the cap is `edits` and the agent works under `auto`: the orchestrator runs the message at `edits`
-    const { result } = mount({ threadId: "t-1", capabilities: ready(ALL), max: "edits" });
+    const { result } = mount({ threadId: "t-1", capabilities: capped("edits") });
     expect(result.current.shown).toEqual({ tier: "edits", picked: false, capped: true });
     expect(result.current.send).toBeUndefined();
   });
@@ -70,8 +91,7 @@ describe("useTier: the chip exists only for an agent whose card lists the extens
   it("shows nothing to a person who may use no tier of the agent", () => {
     const { result } = mount({
       threadId: "t-1",
-      capabilities: ready({ tiers: ["auto", "bypass"], default: "auto" }),
-      max: "edits",
+      capabilities: capped("edits", { tiers: ["auto", "bypass"], default: "auto" }),
     });
     expect(result.current.offered).toEqual([]);
     expect(result.current.shown).toBeNull();
@@ -131,7 +151,7 @@ describe("useTier: a pick that is not offered any more is forgotten, and said on
   it("when the person's cap goes below it", () => {
     writePick("t-1", "auto");
     const { result, rerender } = mount({ threadId: "t-1", capabilities: ready(ALL) });
-    rerender({ threadId: "t-1", capabilities: ready(ALL), max: "edits" });
+    rerender({ threadId: "t-1", capabilities: capped("edits") });
     expect(result.current.send).toBeUndefined();
     expect(result.current.forgotten).toBe("auto");
   });

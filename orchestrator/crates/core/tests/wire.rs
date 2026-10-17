@@ -86,6 +86,8 @@ fn every_kind_roundtrips_and_never_emits_null() {
             operations: vec![json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": "s"}})],
         }),
         EventBody::UiAction(UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s".into(),
             name: "go".into(),
             source_component_id: "b".into(),
@@ -779,6 +781,7 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
 
     let named = event(
         EventBody::UserMessage(UserMessageData {
+            tier_cap: None,
             text: "hi".into(),
             message_id: Some("msg-1".into()),
             run_id: Some("run-1".into()),
@@ -910,6 +913,7 @@ fn a_message_that_mentions_agents_stores_them_as_sent_and_an_old_one_mentions_no
     let message = UserMessageData {
         mentions: vec![
             Mention {
+                tier_cap: None,
                 agent_id: AgentId::new("mock-researcher"),
                 label: "@researcher".into(),
                 start: 3,
@@ -917,6 +921,7 @@ fn a_message_that_mentions_agents_stores_them_as_sent_and_an_old_one_mentions_no
                 card_url: Some("http://mock-researcher:8080/.well-known/agent-card.json".into()),
             },
             Mention {
+                tier_cap: None,
                 agent_id: AgentId::new("mock-coder"),
                 label: "@coder".into(),
                 start: 20,
@@ -991,6 +996,7 @@ fn a_message_that_mentions_agents_stores_them_as_sent_and_an_old_one_mentions_no
     let with = Job {
         mentioned: [AgentId::new("mock-researcher"), AgentId::new("mock-coder")].into(),
         after_stop_mentions: vec![Mention {
+            tier_cap: None,
             agent_id: AgentId::new("mock-coder"),
             label: "@coder".into(),
             start: 0,
@@ -1049,6 +1055,8 @@ fn ui_events_use_the_contract_spelling() {
     context.insert("email".into(), json!("a@b.c"));
     let action = event(
         EventBody::UiAction(UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".into(),
             name: "submit".into(),
             source_component_id: "btn".into(),

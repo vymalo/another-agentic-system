@@ -26,6 +26,7 @@ fn set_description(text: &str) -> Input {
 
 fn message(text: &str) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: None,

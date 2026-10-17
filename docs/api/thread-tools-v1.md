@@ -780,6 +780,13 @@ The addressed agent asks an agent the person **mentioned** to do part of the wor
 runs the asked agent as a **child task of the same thread**, in a context of its own, with its steps nested under the step of
 the agent that asked, and returns its result to the tool call with progress notifications.
 
+**The access tier of an ask** ([`access-tier-v1.md`](access-tier-v1.md#6-the-orchestrators-own-messages-and-sub-agents), ADR 0061): the
+tier of the asking agent's thread is not passed down, and `ask_agent` takes no tier argument. What passes is the **cap of the
+person's roles on the asked agent**, pinned on its mention when the message was accepted: the orchestrator sends the ask under the
+highest tier the asked agent's live card offers within the lower of its `default` and that cap, and the ask fails (no task starts,
+`ask_finished` says why) when the card has no tier that low or lists the extension badly. A person with no cap on the asked agent
+asks it under none, and an agent whose card lists no tier is asked as it always was.
+
 The provider owns the name `ask_agent` for every caller. `tools/list` includes it only when the thread runs, the token's
 job is its current one, the job has mentioned agents and the caller may still ask (its depth is below the limit); a call that
 arrives when it is not offered (a list that went stale during a turn) is a **result with `isError`** that says why, not

@@ -93,6 +93,8 @@ fn action(seq: i64, run_id: Option<&str>) -> Event {
         seq,
         alice(),
         EventBody::UiAction(UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s0".into(),
             name: "go".into(),
             source_component_id: "btn".into(),

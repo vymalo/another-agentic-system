@@ -92,6 +92,9 @@ fn delegate(n: u128) -> NewOutbox {
             ui_catalog: None,
             mentions: Vec::new(),
             tier: Some(orch_core::AccessTier::Plan),
+            // the application sets one of the two; the store keeps whatever it is given, so a row
+            // with both pins that each comes back
+            tier_cap: Some(orch_core::AccessTier::Edits),
         },
     }
 }
@@ -105,6 +108,7 @@ fn steer_row(n: u128) -> NewOutbox {
             ui_catalog: None,
             mentions: Vec::new(),
             tier: Some(orch_core::AccessTier::Bypass),
+            tier_cap: Some(orch_core::AccessTier::Auto),
         },
     }
 }
@@ -138,6 +142,8 @@ fn ask_row(n: u128, ask: u32) -> NewOutbox {
     NewOutbox {
         id: outbox_id(n),
         payload: OutboxPayload::Ask {
+            // ADR 0061: the cap of the person's role on the asked agent
+            tier_cap: Some(orch_core::AccessTier::Plan),
             job: 1,
             ask,
             agent: AgentId::new("researcher"),
@@ -283,7 +289,9 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             // ADR 0036: how a message sent while a job ran reached it comes back as written
             delivery: Some(orch_core::Delivery::Interrupt),
             mentions: Vec::new(),
-            tier: None,
+            // ADR 0061: the tier it was sent under comes back as written
+            tier: Some(orch_core::AccessTier::Edits),
+            tier_cap: None,
         }),
         idempotency_key: None,
     };
@@ -296,6 +304,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             delivery: None,
             mentions: Vec::new(),
             tier: None,
+            // ADR 0061: the cap that applied when no tier could be pinned comes back too
+            tier_cap: Some(orch_core::AccessTier::Plan),
         }),
         ..user_event("unused", None)
     };
@@ -339,7 +349,11 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         NewEvent {
             at: t0(),
             actor: Actor::user(&alice()),
-            body: EventBody::UiAction(action.clone()),
+            // ADR 0061: the tier the action went out under is logged with it
+            body: EventBody::UiAction(orch_core::UiActionData {
+                tier: Some(orch_core::AccessTier::Edits),
+                ..action.clone()
+            }),
             idempotency_key: None,
         },
         // ADR 0019: a message an MCP client sent says so; the chat's leave the member out.
@@ -374,6 +388,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             body: EventBody::UserMessage(UserMessageData {
                 mentions: vec![
                     orch_core::Mention {
+                        // ADR 0061: the cap pinned for the mentioned agent comes back
+                        tier_cap: Some(orch_core::AccessTier::Plan),
                         agent_id: AgentId::new("researcher"),
                         label: "@researcher".into(),
                         start: 3,
@@ -381,6 +397,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
                         card_url: Some("http://researcher:8080/.well-known/agent-card.json".into()),
                     },
                     orch_core::Mention {
+                        tier_cap: None,
                         agent_id: AgentId::new("coder"),
                         label: "@coder".into(),
                         start: 20,
@@ -402,6 +419,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             release: Some("staging".into()),
             ui_catalog: Some(UiDelivery::Ref(catalog_data(2, "chat").reference())),
             tier: Some(orch_core::AccessTier::Auto),
+            tier_cap: Some(orch_core::AccessTier::Edits),
         },
     };
     let rows = vec![delegate(1), action_row.clone()];
@@ -427,7 +445,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(
         data[0],
         serde_json::json!({
-            "text": "with ids", "messageId": "msg-1", "runId": "run-1", "delivery": "interrupt"
+            "text": "with ids", "messageId": "msg-1", "runId": "run-1", "delivery": "interrupt",
+            "tier": "edits"
         })
     );
     assert_eq!(data[1], serde_json::json!({"text": "no ids"}));
@@ -444,7 +463,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(
         data[6],
         serde_json::json!({"surfaceId": "s1", "name": "go", "sourceComponentId": "btn",
-                           "context": {"choice": "a"}, "version": "v0.9.1", "runId": "run-3"})
+                           "context": {"choice": "a"}, "version": "v0.9.1", "runId": "run-3",
+                           "tier": "edits"})
     );
     assert_eq!(
         data[7],
@@ -468,7 +488,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         data[11],
         serde_json::json!({"text": "\u{1F604} @researcher then @coder", "mentions": [
             {"agentId": "researcher", "label": "@researcher", "start": 3, "end": 14,
-             "cardUrl": "http://researcher:8080/.well-known/agent-card.json"},
+             "cardUrl": "http://researcher:8080/.well-known/agent-card.json", "tierCap": "plan"},
             {"agentId": "coder", "label": "@coder", "start": 20, "end": 26}
         ]})
     );
@@ -483,6 +503,8 @@ fn ui_action() -> orch_core::UiActionData {
     let mut context = serde_json::Map::new();
     context.insert("choice".into(), serde_json::json!("a"));
     orch_core::UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: "s1".into(),
         name: "go".into(),
         source_component_id: "btn".into(),
@@ -1432,6 +1454,7 @@ pub async fn ask_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadStor
     assert_eq!(claim(&store, "a", t0()).await.len(), 2);
     let mut second = ask_row(102, 2);
     second.payload = OutboxPayload::Ask {
+        tier_cap: None,
         job: 1,
         ask: 2,
         agent: AgentId::new("browser"),
@@ -1457,6 +1480,7 @@ pub async fn ask_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadStor
     assert_eq!(
         stored.payload,
         OutboxPayload::Ask {
+            tier_cap: None,
             job: 1,
             ask: 1,
             agent: AgentId::new("researcher"),
@@ -2123,6 +2147,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             ui_catalog: None,
             mentions: Vec::new(),
             tier: Some(orch_core::AccessTier::Bypass),
+            tier_cap: Some(orch_core::AccessTier::Auto),
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -2244,6 +2269,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             ui_catalog: None,
             mentions: Vec::new(),
             tier: Some(orch_core::AccessTier::Bypass),
+            tier_cap: Some(orch_core::AccessTier::Auto),
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -2613,12 +2639,15 @@ fn busy_job() -> Job {
         after_stop: Some("do X instead".to_owned()),
         // ADR 0026: the agents the job's messages mentioned, and the mentions of the held text
         mentioned: [AgentId::new("researcher"), AgentId::new("coder")].into(),
+        // ADR 0061: the cap of the person's role on a mentioned agent, pinned by the mention
+        mentioned_caps: [(AgentId::new("coder"), orch_core::AccessTier::Plan)].into(),
         after_stop_mentions: vec![orch_core::Mention {
             agent_id: AgentId::new("coder"),
             label: "@coder".to_owned(),
             start: 3,
             end: 9,
             card_url: Some("http://coder:8080/.well-known/agent-card.json".to_owned()),
+            tier_cap: Some(orch_core::AccessTier::Plan),
         }],
         // ADR 0026: one ask that ended with its task recorded, and one that runs
         asks: vec![
@@ -2646,7 +2675,11 @@ fn busy_job() -> Job {
             },
         ],
         after_stop_tier: Some(orch_core::AccessTier::Edits),
+        // ADR 0061: a cap kept when no tier could be decided (here beside a tier, to pin that
+        // both round-trip)
+        after_stop_tier_cap: Some(orch_core::AccessTier::Edits),
         tier: Some(orch_core::AccessTier::Auto),
+        tier_cap: Some(orch_core::AccessTier::Bypass),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.
@@ -3357,6 +3390,7 @@ pub async fn a_fork_starts_with_the_description_it_is_given<S: ThreadStore>(stor
 pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
     let mentions = vec![
         orch_core::Mention {
+            tier_cap: None,
             agent_id: AgentId::new("researcher"),
             label: "@researcher".into(),
             start: 3,
@@ -3364,6 +3398,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             card_url: Some("http://researcher:8080/.well-known/agent-card.json".into()),
         },
         orch_core::Mention {
+            tier_cap: None,
             agent_id: AgentId::new("coder"),
             label: "@coder".into(),
             start: 20,
@@ -3374,6 +3409,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
     let row = |n: u128, mentions: Vec<orch_core::Mention>| NewOutbox {
         id: outbox_id(n),
         payload: OutboxPayload::Delegate {
+            tier_cap: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -3417,6 +3453,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
 pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
     let mentions = vec![
         orch_core::Mention {
+            tier_cap: None,
             agent_id: AgentId::new("researcher"),
             label: "@researcher".into(),
             start: 3,
@@ -3424,6 +3461,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             card_url: Some("http://researcher:8080/.well-known/agent-card.json".into()),
         },
         orch_core::Mention {
+            tier_cap: None,
             agent_id: AgentId::new("coder"),
             label: "@coder".into(),
             start: 20,
@@ -3434,6 +3472,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
     let row = |n: u128, mentions: Vec<orch_core::Mention>| NewOutbox {
         id: outbox_id(n),
         payload: OutboxPayload::Steer {
+            tier_cap: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             ui_catalog: None,
@@ -3485,6 +3524,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
     assert_eq!(
         back.payload,
         OutboxPayload::Delegate {
+            tier_cap: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -3521,6 +3561,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
     assert_eq!(
         back.payload,
         OutboxPayload::Delegate {
+            tier_cap: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -3546,6 +3587,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
     let row = |n: u128, delivery: UiDelivery| NewOutbox {
         id: outbox_id(n),
         payload: OutboxPayload::Delegate {
+            tier_cap: None,
             text: format!("do {n}"),
             release: None,
             new_job: false,
@@ -3582,6 +3624,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(
         stored.payload,
         OutboxPayload::Delegate {
+            tier_cap: None,
             text: "do 1".into(),
             release: None,
             new_job: false,

@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::StreamExt;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, ForkHistory, KnownExtension, LiveChunk, LiveEnd,
-    Releases, StepKind, StepReport, StepState, TierOffer, ToolsGrant, UiActionData, UiDelivery,
-    UiVersion,
+    Releases, StepKind, StepReport, StepState, TierListing, TierOffer, ToolsGrant, UiActionData,
+    UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -264,7 +264,7 @@ impl ScriptedAgent {
                 releases: Some(releases),
                 ui: None,
                 extensions: BTreeSet::new(),
-                access_tier: None,
+                access_tier: TierListing::Absent,
                 build: std::collections::BTreeMap::new(),
             },
         );
@@ -304,7 +304,18 @@ impl ScriptedAgent {
             .cards
             .entry(AgentId::new(agent))
             .or_insert_with(default_card);
-        card.access_tier = offer;
+        card.access_tier = offer.map_or(TierListing::Absent, TierListing::Offered);
+    }
+
+    /// Makes `agent`'s card list `access-tier/v1` with `params` that cannot be read. Takes effect
+    /// on the next read.
+    pub fn set_access_tier_malformed(&self, agent: &str) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.access_tier = TierListing::Malformed;
     }
 
     /// Makes reading `agent`'s card fail.
@@ -404,7 +415,7 @@ fn default_card() -> AgentCardInfo {
         releases: None,
         ui: None,
         extensions: BTreeSet::new(),
-        access_tier: None,
+        access_tier: TierListing::Absent,
         build: std::collections::BTreeMap::new(),
     }
 }
@@ -1080,7 +1091,7 @@ impl AgentClient for ScriptedAgent {
                 && !st
                     .cards
                     .get(&req.endpoint.id)
-                    .and_then(|card| card.access_tier.as_ref())
+                    .and_then(|card| card.access_tier.offer())
                     .is_some_and(|offer| offer.honours(tier))
             {
                 return Err(AgentError::Unsupported(format!(

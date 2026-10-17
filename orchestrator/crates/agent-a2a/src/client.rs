@@ -671,7 +671,7 @@ impl AgentClient for A2aAgentClient {
         );
         let mentions = mentions_metadata(&req, &known, thread_tools.is_some(), self.cfg.asks);
         // A message that names a tier is sent only to a card that still honours it (ADR 0061).
-        let tier = tier_metadata(&req, access_tier_from_card(&card).as_ref())?;
+        let tier = tier_metadata(&req, access_tier_from_card(&card).offer())?;
         // The limits of a large file, when the extension is activated for this message (ADR 0058).
         let uploads = uploads_metadata(&req, &known, thread_tools.is_some());
         let reporting = if req.steer {

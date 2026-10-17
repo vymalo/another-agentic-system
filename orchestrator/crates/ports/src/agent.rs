@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, ForkHistory,
-    KnownExtension, LiveChunk, Releases, TierOffer, Timestamp, ToolsGrant, UiActionData,
+    KnownExtension, LiveChunk, Releases, TierListing, Timestamp, ToolsGrant, UiActionData,
     UiDelivery, UiVersion,
 };
 
@@ -119,10 +119,12 @@ pub struct AgentCardInfo {
     /// ([`KnownExtension`]); empty for a card that lists none. Read live like the rest of the
     /// card (ADR 0008).
     pub extensions: BTreeSet<KnownExtension>,
-    /// Present only when the card lists `access-tier/v1` with well-formed `params` (ADR 0061): the
-    /// tiers the agent honours and the one it works under by default. A card with bad `params` is
-    /// a card that does not list it. Read live like the rest of the card (ADR 0008).
-    pub access_tier: Option<TierOffer>,
+    /// What the card says about `access-tier/v1` (ADR 0061): not listed, listed with `params` that
+    /// cannot be read (a message is then given no tier at all: nothing can be said to such an
+    /// agent, and one that must keep to a cap is not run), or listed well formed with the tiers the
+    /// agent honours and the one it works under by default. Read live like the rest of the card
+    /// (ADR 0008).
+    pub access_tier: TierListing,
     /// The parameters of a build extension the card lists, as text (ADR 0053): empty for a card
     /// that lists none. Read live like the rest of the card, bounded by the core when recorded,
     /// never read as an instruction.
@@ -228,7 +230,10 @@ pub struct SendRequest {
     /// for this very call still honours it, and otherwise **sends nothing** and answers
     /// [`AgentError::Unsupported`]: a tier is never dropped, and a message the person gave a tier
     /// never reaches an agent that would work under its default. `None` for a message that names
-    /// none, a steer included when the person picked none, the verifier and an asked agent.
+    /// none, a steer included when the person picked none, the verifier, and an asked agent whose
+    /// mention pinned no cap. It is the tier the dispatcher **decided from the live card** (a
+    /// named tier the card still honours, or the highest tier within the cap of the person's role),
+    /// never the cap itself.
     pub tier: Option<orch_core::AccessTier>,
 }
 

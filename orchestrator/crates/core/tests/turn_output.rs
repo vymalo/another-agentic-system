@@ -50,6 +50,7 @@ fn message(id: &str, text: &str, purpose: Option<MessagePurpose>) -> Input {
 
 fn user_says(text: &str) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: UserId::new("me@example.com"),
         text: text.into(),
         message_id: None,
@@ -288,8 +289,11 @@ fn a_new_turn_forgets_the_announcement() {
 
     // the person answers a card
     let acted = Input::UiAction {
+        tier_cap: None,
         user: UserId::new("me@example.com"),
         action: UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".into(),
             name: "go".into(),
             source_component_id: "go".into(),

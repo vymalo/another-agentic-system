@@ -101,6 +101,7 @@ async fn verifying_with(
             &alice(),
             t.id,
             Input::UserMessage {
+                tier_cap: None,
                 user: alice(),
                 text: "and mind the style".into(),
                 message_id: None,

@@ -79,6 +79,18 @@ What exists, and what the design rests on:
    unfinished job, an action, an edit) is capped by the role of whoever gives it and rounded down to the highest tier the live card
    still honours, never raised, and is refused with a word when it cannot be kept. An MCP message to a finished thread starts a new
    job and continues nothing. The cap of a person for an agent is over the roles that let them invoke it.
+   *Amended 2026-10-11 (the second review of the orchestrator's side), two holes:* (1) **A cap with no tier to pin.** A capped
+   person whose agent's card offered no tier when the message was written was sent none, and nothing recorded that a cap applied: an
+   agent redeployed with `access-tier/v1` while a rework, a retried delegation, a steer that became a delegation, a held Stop & send
+   text or a redelivered row was queued then ran at its own default. The cap is now pinned beside the tier (`user_message.tierCap`,
+   `Job.tier_cap`, a `tierCap` on the `delegate`, `steer` and action rows) and the dispatcher decides the tier from the **live** card
+   at every send: none while the card lists none, the highest within `min(default, cap)` once it lists tiers, and a failed job (and
+   a 422 at the message) when it has none that low or lists the extension badly. (2) **A mention was a way round the cap.** The
+   thread's agent may ask any agent the person mentioned, and the ask was sent under none, so a person capped at `plan` on the
+   coder could have the chat's `ask_agent` run the coder at its own default. The cap of the person's roles **on the mentioned agent**
+   is pinned on the mention (`mentions[].tierCap`) and the ask is sent under the highest tier the asked agent offers within it
+   (failing the ask when it has none). **The parent's tier is still not passed down**: a person with no cap on the mentioned agent
+   asks it under none, whatever the thread runs at.
 7. **The web** shows a tier chip in the composer **only when** the selected agent's capabilities document carries the extension.
    Hidden otherwise, never a disabled or invented control. It sends a tier once the person has picked one.
 8. **A role may cap the tier**: `auth.roles.<role>.maxTier`, optional, one of the four; absent means no cap. A person's cap for an
@@ -195,6 +207,9 @@ role has a cap unless a deployment writes one, so the built-in `user` may pick `
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** `ask_agent` carries
    no tier in v1. An asked agent works under its own default, and the asking agent keeps its helpers to its tier by its own means
    (duty 1 of the contract).
+   *Amended 2026-10-11 (decision 6):* an asked agent works under its own default **unless a role of the person caps the
+   mentioned agent**, in which case the ask is sent under the highest tier it offers within that cap (the person's own cap on that
+   agent, pinned on the mention; never the parent's tier). `ask_agent` still takes no tier from the asking agent.
 2. **Which consent forms stay where.** The owner named the form for a repository the person did not name under `edits`, and the
    bare name under `auto`. Read as: `plan` keeps the form as `edits` does (it concerns reading), and a bare name counts as named at
    `auto` and `bypass` only.

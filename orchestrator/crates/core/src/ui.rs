@@ -321,6 +321,17 @@ pub struct UiActionData {
     /// The id of the run the action started or continued, when the surface named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// The access tier the action was sent under (ADR 0061): what the job was working under when
+    /// the person acted, lowered to what their role and the agent's card allowed. Set by the
+    /// orchestrator when it logs the action, so that the log rebuilds the job's tier; whatever a
+    /// surface puts here is overwritten, and the agent is not told it. Absent when the action
+    /// went out under none, and in every log written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<crate::AccessTier>,
+    /// The cap of the person's role that went with the action when it carried no `tier` (see
+    /// [`UserMessageData::tier_cap`](crate::UserMessageData::tier_cap)). Set like `tier`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_cap: Option<crate::AccessTier>,
 }
 
 /// Why an action is refused.
@@ -549,6 +560,8 @@ mod tests {
 
     fn action() -> UiActionData {
         UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".into(),
             name: "submit".into(),
             source_component_id: "btn".into(),

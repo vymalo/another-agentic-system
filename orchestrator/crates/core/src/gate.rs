@@ -7,7 +7,7 @@
 //! [`transition`](crate::transition); this module only holds the shapes, the recognition of the
 //! two artifacts an agent reports and the rules that keep findings bounded (ADR 0018).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use jiff::SignedDuration;
@@ -387,6 +387,12 @@ pub struct Job {
     /// stored before the field existed has none.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub mentioned: BTreeSet<AgentId>,
+    /// The cap of the person's role on each agent of [`Job::mentioned`] that has one (ADR 0061,
+    /// `max_tier`): what an ask of that agent is sent under at most. The lowest cap any message
+    /// that mentioned the agent pinned on the mention ([`Mention::tier_cap`](crate::Mention)); an
+    /// agent with no entry has no cap. A ledger stored before the field existed has none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mentioned_caps: BTreeMap<AgentId, AccessTier>,
     /// The mentions of the text [`Job::after_stop`] holds, as they stand **in that text** (each
     /// message of it is joined behind the earlier ones, so its offsets are moved by the length of
     /// what is in front of it): at most [`MAX_MENTIONS`](crate::MAX_MENTIONS), the first ones, so
@@ -399,6 +405,10 @@ pub struct Job {
     /// existed has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_stop_tier: Option<AccessTier>,
+    /// The cap of the person's role that goes with [`Job::after_stop_tier`] when no tier could be
+    /// decided for the newest message that held (see [`Job::tier_cap`]). Cleared with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_stop_tier_cap: Option<AccessTier>,
     /// The access tier the newest message of the person was sent under (ADR 0061), named or not:
     /// what the job is working under. The orchestrator's own messages on the thread's behalf, a
     /// gate's rework and the delegation of an A2UI action, are sent under it, so that an agent
@@ -407,6 +417,16 @@ pub struct Job {
     /// ledger stored before the field existed has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<AccessTier>,
+    /// The cap of the person's role (`max_tier`, ADR 0061) on the agent, kept **when the newest
+    /// message could not be given a tier** because the agent's card offered none at the time
+    /// ([`Job::tier`] is `None`). It is what the orchestrator's own messages on the thread's behalf
+    /// (a rework, a held Stop & send text, a steer that became a delegation, the action of a
+    /// surface) are sent under at most: the dispatcher reads the live card when it sends, and an
+    /// agent that has since started to offer tiers is given the highest one within the cap, never
+    /// its own default. `None` for a person with no cap and in a ledger stored before the field
+    /// existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier_cap: Option<AccessTier>,
     /// The agents the job's agents asked (ADR 0026, `ask_agent`): who asked whom, and how each ask
     /// stands, in the order they were accepted. Belongs to the job: [`Job::next`] forgets it, and no
     /// ask runs once the job's task has ended (see [`crate::ask`]). A ledger stored before the
@@ -452,9 +472,12 @@ impl Default for Job {
             builds: Vec::new(),
             after_stop: None,
             mentioned: BTreeSet::new(),
+            mentioned_caps: BTreeMap::new(),
             after_stop_mentions: Vec::new(),
             after_stop_tier: None,
+            after_stop_tier_cap: None,
             tier: None,
+            tier_cap: None,
             asks: Vec::new(),
             usage: UsageLedger::default(),
         }
@@ -467,6 +490,21 @@ impl Job {
         Job {
             gate,
             ..Job::default()
+        }
+    }
+
+    /// Records that a message of the job mentioned `mentions` (ADR 0026): the agents may be asked
+    /// from now on ([`Job::mentioned`]), each under the lowest cap that any message pinned for it
+    /// ([`Job::mentioned_caps`], ADR 0061).
+    pub fn note_mentions(&mut self, mentions: &[crate::Mention]) {
+        for mention in mentions {
+            self.mentioned.insert(mention.agent_id.clone());
+            if let Some(cap) = mention.tier_cap {
+                self.mentioned_caps
+                    .entry(mention.agent_id.clone())
+                    .and_modify(|held| *held = (*held).min(cap))
+                    .or_insert(cap);
+            }
         }
     }
 

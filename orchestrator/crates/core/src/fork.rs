@@ -362,6 +362,9 @@ pub struct Replacement {
     /// The access tier the person picked for the message (ADR 0061), already checked against the
     /// person's cap and the fork's agent (an edit names none: the person picks again).
     pub tier: Option<AccessTier>,
+    /// The cap of the person's role on the fork's agent when `tier` is `None` because its card
+    /// offered no tier (see [`Input::UserMessage`](crate::Input::UserMessage)).
+    pub tier_cap: Option<AccessTier>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
     /// Where the message came from.
@@ -378,6 +381,7 @@ impl Replacement {
             catalog,
             mentions: Vec::new(),
             tier: None,
+            tier_cap: None,
             run_id: None,
             origin: Origin::Agui,
         }
@@ -417,6 +421,7 @@ pub fn fork_commit(
             catalog: replacement.catalog,
             mentions: replacement.mentions,
             tier: replacement.tier,
+            tier_cap: replacement.tier_cap,
         },
     )?;
     commands.extend(more);

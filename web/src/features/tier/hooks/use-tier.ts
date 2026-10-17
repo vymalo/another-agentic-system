@@ -43,16 +43,15 @@ export type TierView = {
  * sent**; a pick is sent with every message of the thread, remembered in the browser per thread
  * (a new chat keeps it in memory until the run that creates the thread is accepted: `created`), and
  * forgotten, with a word about it, once the agent no longer honours it or the person's cap no longer
- * allows it. `max` is `maxTier` of `GET /api/me`.
+ * allows it. The cap is the one **for this agent**, which the capabilities document carries beside its
+ * offer (`maxTier`): the cap of `GET /api/me` spans every agent and can be higher.
  */
 export function useTier({
   threadId,
   capabilities,
-  max,
 }: {
   threadId: string | null;
   capabilities: AgentCapabilities;
-  max: Tier | undefined;
 }): TierView {
   const [pick, setPick] = useState<Tier | undefined>(() =>
     threadId === null ? undefined : readPick(threadId),
@@ -61,7 +60,7 @@ export function useTier({
 
   const entry = capabilities.status === "ready" ? capabilities.entry?.(ACCESS_TIER_URI) : undefined;
   const offer = useMemo(() => (entry === undefined ? null : parseOffer(entry)), [entry]);
-  const offered = useMemo(() => (offer ? offeredTiers(offer, max) : []), [offer, max]);
+  const offered = useMemo(() => (offer ? offeredTiers(offer) : []), [offer]);
 
   // A pick the card or the cap no longer allows is gone, and said. Only once the card has been read:
   // a card not read yet (or not readable) says nothing, and a remembered pick waits for it.

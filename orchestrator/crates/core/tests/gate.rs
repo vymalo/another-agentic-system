@@ -59,6 +59,7 @@ fn completed() -> Input {
 }
 fn message(text: &str) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -2177,6 +2178,8 @@ fn delivery_failures_and_cancel_outcomes_while_verifying() {
     assert_eq!(cmds.len(), 1);
     // A user action answers like a message.
     let action = UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: "s".into(),
         name: "go".into(),
         source_component_id: "b".into(),
@@ -2187,6 +2190,7 @@ fn delivery_failures_and_cancel_outcomes_while_verifying() {
     let (queued, _) = step(
         &verifying,
         &Input::UiAction {
+            tier_cap: None,
             user: user(),
             action,
             catalog: None,
@@ -3291,6 +3295,7 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
             },
         },
         &[Input::Redeliver {
+            tier_cap: None,
             text: "second".into(),
             sent: false,
             mentions: Vec::new(),

@@ -31,6 +31,7 @@ const TEXT: &str = "gather @coder and @reviewer";
 
 fn mentions() -> Vec<Mention> {
     let mention = |id: &str, start, end| Mention {
+        tier_cap: None,
         agent_id: AgentId::new(id),
         label: format!("@{id}"),
         start,

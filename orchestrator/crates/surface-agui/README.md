@@ -111,7 +111,7 @@ There is no run route for a link: a reader sends nothing, and the thread's own r
 ### The capabilities request
 
 `App::describe_agent` reads the agent from the registry now (ADR 0022) and its card live (bounded by `AppConfig::card_timeout`, never
-cached) and `orch_agui_projection::agent_capabilities` builds the document, which lists the A2UI extensions and the extensions of the orchestrator's own (`ui-catalog/v1`, …) the card lists under `custom`, so the web can flag an agent before it sends anything (for `access-tier/v1` the entry is `{tiers, default}` and the key is there only while the card lists the URI with well-formed params); the answer is
+cached) and `orch_agui_projection::agent_capabilities` builds the document, which lists the A2UI extensions and the extensions of the orchestrator's own (`ui-catalog/v1`, …) the card lists under `custom`, so the web can flag an agent before it sends anything (for `access-tier/v1` the entry is `{tiers, default}` plus `maxTier`, the person's cap on **this** agent from `App::access(..).max_tier_for(agent)`, and the key is there only while the card lists the URI with well-formed params); the answer is
 `application/json` with `Cache-Control: no-store`. An unreadable card gives the smaller document;
 an agent the registry answers without, or whose audience leaves the person out ([ADR 0045](../../../docs/decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), is a 404 problem (the same one), and a registry that cannot say is a 503 ("the agent registry is unreachable"), as for a run: `App::describe_agent` asks the roles, the registry and the audience, in that order.
 

@@ -57,6 +57,8 @@ fn go(surface: &str) -> UiActionData {
     let mut context = serde_json::Map::new();
     context.insert("choice".into(), json!("a"));
     UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: surface.into(),
         name: "go".into(),
         source_component_id: "go".into(),

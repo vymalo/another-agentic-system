@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
-use orch_core::{ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate, STEER_EXTENSION};
+use orch_core::{
+    ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate, STEER_EXTENSION, TierListing,
+};
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, SendContent, SendRequest,
 };
@@ -87,12 +89,23 @@ async fn the_card_is_read_with_its_tiers_and_default() {
         .read_card(&fake.endpoint("coder", None))
         .await
         .unwrap();
-    let offer = card.access_tier.expect("the card lists the extension");
+    let offer = card
+        .access_tier
+        .offer()
+        .cloned()
+        .expect("the card lists the extension");
     assert_eq!(offer.tiers(), AccessTier::ALL);
     assert_eq!(offer.default_tier(), AccessTier::Auto);
-    // a card that lists nothing, or lists it badly, offers nothing
+    // a card that lists nothing lists nothing; one that lists it badly is told apart from it, so
+    // that a person capped below the agent's default is not run on an agent that cannot say its
+    // tiers
+    let fake = agent(None).await;
+    let card = client()
+        .read_card(&fake.endpoint("coder", None))
+        .await
+        .unwrap();
+    assert_eq!(card.access_tier, TierListing::Absent);
     for params in [
-        None,
         Some(json!({})),
         Some(json!({"tiers": ["plan"], "default": "bypass"})),
         Some(json!({"tiers": ["plan", "plan"], "default": "plan"})),
@@ -103,7 +116,7 @@ async fn the_card_is_read_with_its_tiers_and_default() {
             .read_card(&fake.endpoint("coder", None))
             .await
             .unwrap();
-        assert_eq!(card.access_tier, None, "{params:?}");
+        assert_eq!(card.access_tier, TierListing::Malformed, "{params:?}");
     }
 }
 

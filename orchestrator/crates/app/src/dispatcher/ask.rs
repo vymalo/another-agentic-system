@@ -26,6 +26,13 @@
 //!   that ended waiting for an answer (`continue_task`), else a new task that refers to the
 //!   earlier ones (ADR 0021). The asked agent is given the thread's tools as `ask:<n>`, at its
 //!   depth.
+//! * **The person's cap goes with the ask, the parent's tier does not** (ADR 0061, question 1 and its
+//!   amendment): a mention pinned the cap of the person's role on the asked agent, the ask row
+//!   carries it, and the live card decides the tier when the ask is sent ([`App::tier_for_send`]):
+//!   the highest tier it offers within the lower of its default and the cap. An agent with none
+//!   that low, or whose card lists the extension badly, is not asked (the ask fails, `ask_finished`
+//!   says why, no task starts); one whose card lists no tier is asked as it always was. A person
+//!   with no cap on the agent has the ask sent under none.
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
 //!   while the ledger says it runs, and it stops being wanted when the core ends it (the deadline,
 //!   the person's stop, the end of the task that asked, the end of the ask above it). The row looks
@@ -62,8 +69,8 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, AskArtifact, AskOutcome, AskResult, Caller, Classify,
-    Input, MAX_ASK_ANSWER_BYTES, MessagePurpose, ThreadId, ThreadRecord, ToolsGrant,
+    AccessTier, AgentId, AgentTaskState, AgentUpdate, AskArtifact, AskOutcome, AskResult, Caller,
+    Classify, Input, MAX_ASK_ANSWER_BYTES, MessagePurpose, ThreadId, ThreadRecord, ToolsGrant,
     TransitionError, UsageUpdate, ask_context, report,
 };
 use orch_ports::{
@@ -128,6 +135,9 @@ struct Asking {
     /// The A2A context the message names: the one the agent assigned to its earlier asks of the
     /// job, `None` for its first (ADR 0055).
     context: Option<String>,
+    /// The cap of the person's role on the asked agent (ADR 0061), from the mention that made it
+    /// askable: the ask is sent under the highest tier its live card offers within it.
+    tier_cap: Option<AccessTier>,
 }
 
 /// What the asked agent has said so far. Read, never applied to the thread.
@@ -361,6 +371,7 @@ impl<P: Ports> Dispatcher<P> {
             continue_task,
             reference_task_ids,
             context,
+            tier_cap,
         } = row.payload.clone()
         else {
             return self
@@ -413,6 +424,7 @@ impl<P: Ports> Dispatcher<P> {
             ask,
             agent,
             endpoint,
+            tier_cap,
             row,
         };
         let grant = ToolsGrant {
@@ -547,6 +559,15 @@ impl<P: Ports> Dispatcher<P> {
             }
         }
         let continues = continue_task.is_some();
+        // The tier of a parent never passes down (ADR 0061, question 1), but the cap of the person's
+        // role on the asked agent does: a mention does not let them run the agent above it. The
+        // live card decides now, as for a delegation. An agent that has no tier within the cap, or
+        // lists the extension badly, is not asked: the ask fails with the reason and no task is
+        // started. An agent whose card lists no tier is asked as it always was.
+        let tier = match self.app.tier_for_send(&a.endpoint, None, a.tier_cap).await {
+            Ok(tier) => tier,
+            Err(e) => return self.ask_send_failed(a, e).await,
+        };
         let request = SendRequest {
             endpoint: a.endpoint.clone(),
             message_id: a.row.id.to_string(),
@@ -563,8 +584,7 @@ impl<P: Ports> Dispatcher<P> {
             steer: false,
             // it was not addressed by the person, so it is told of no mentions
             mentions: Vec::new(),
-            // and nothing is passed down: an asked agent works under its own default (ADR 0061)
-            tier: None,
+            tier,
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)

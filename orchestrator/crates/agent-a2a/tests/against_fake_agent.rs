@@ -452,6 +452,8 @@ async fn an_action_is_never_given_a_conversation_and_an_empty_one_changes_nothin
     action.message_id = "msg-action".to_owned();
     action.content = SendContent::UiAction {
         action: orch_core::UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".to_owned(),
             name: "go".to_owned(),
             source_component_id: "btn".to_owned(),

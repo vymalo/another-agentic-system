@@ -54,7 +54,6 @@ import { TiersProvider } from "@/features/tier/components/tier-badge";
 import { TierChip, TierNotice } from "@/features/tier/components/tier-chip";
 import { useTier } from "@/features/tier/hooks/use-tier";
 import { SentTiers } from "@/features/tier/lib/sent";
-import { parseTier } from "@/features/tier/lib/tier";
 import { ToolServersProvider } from "@/features/tools/components/tool-servers-context";
 import { ToolsPicker, ToolsWarning } from "@/features/tools/components/tools-picker";
 import { useThreadTools } from "@/features/tools/hooks/use-thread-tools";
@@ -170,7 +169,7 @@ function Chat({ threadId }: { threadId: string | null }) {
     threadId === null ? effective.agentId : (meta.thread?.target.agentId ?? null);
   const capabilities = useAgentCapabilities(toolsAgentId);
   // The access tier (ADR 0061): a chip while the card lists the extension, up to what the roles allow
-  const tier = useTier({ threadId, capabilities, max: parseTier(me?.maxTier) });
+  const tier = useTier({ threadId, capabilities });
   const [sentTiers] = useState(() => new SentTiers());
 
   // A send goes to the thread's own agent; only a new thread takes the picker's choice. The access

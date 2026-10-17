@@ -31,6 +31,7 @@ fn a_card_with_releases_is_declared_under_the_extension_uri() {
         ui: vec![],
         extensions: BTreeSet::new(),
         access_tier: None,
+        max_tier: None,
     };
     let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&card));
     assert_capabilities_conform(&doc);
@@ -65,6 +66,7 @@ fn a_card_without_the_extension_declares_no_releases() {
         ui: vec![],
         extensions: BTreeSet::new(),
         access_tier: None,
+        max_tier: None,
     };
     let doc = agent_capabilities(&AgentId::new("plain"), "Plain", Some(&card));
     assert_capabilities_conform(&doc);
@@ -204,6 +206,37 @@ fn a_card_that_lists_the_access_tier_declares_its_tiers_and_default_under_the_ur
         json["custom"],
         json!({ACCESS_TIER_EXTENSION: {"tiers": ["plan", "edits", "bypass"], "default": "edits"}}),
         "lowest first, the card's default"
+    );
+}
+
+#[test]
+fn the_cap_of_the_person_asking_rides_in_the_entry_beside_the_agents_offer() {
+    let offer = || {
+        TierOffer::from_params(&json!({"tiers": ["plan", "edits", "auto"], "default": "auto"}))
+            .unwrap()
+    };
+    let capped = CardFacts {
+        access_tier: Some(offer()),
+        max_tier: Some(orch_core::AccessTier::Edits),
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&capped));
+    assert_capabilities_conform(&doc);
+    assert_eq!(
+        serde_json::to_value(&doc).unwrap()["custom"][ACCESS_TIER_EXTENSION],
+        json!({"tiers": ["plan", "edits", "auto"], "default": "auto", "maxTier": "edits"})
+    );
+    // a cap on an agent that lists no tier says nothing: there is no chip to limit
+    let nothing = CardFacts {
+        max_tier: Some(orch_core::AccessTier::Edits),
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&nothing));
+    assert!(
+        serde_json::to_value(&doc)
+            .unwrap()
+            .get("custom")
+            .is_none_or(|c| c.get(ACCESS_TIER_EXTENSION).is_none())
     );
 }
 

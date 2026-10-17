@@ -190,7 +190,9 @@ asking agent put in the `ask_agent` message.
 
 ## 5. In the log and on screen
 
-The `user_message` event carries `mentions` ([`chat-api.yaml`](chat-api.yaml), `Mention`). Every agent that works on the message appears nested under the step that started it, because every ask is a child
+The `user_message` event carries `mentions` ([`chat-api.yaml`](chat-api.yaml), `Mention`), each with `tierCap` when a role of the person caps the mentioned agent
+([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): set by the orchestrator when the message is checked, refused as an unknown
+member if a client sends it, and never told to the agent. The ask is sent under the highest tier the asked agent offers within it. Every agent that works on the message appears nested under the step that started it, because every ask is a child
 task of the thread recorded in the log ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent),
 [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)).
 

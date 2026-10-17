@@ -215,6 +215,7 @@ mod tests {
             seq,
             Actor::user(&UserId::new("alice@example.com")),
             EventBody::UserMessage(UserMessageData {
+                tier_cap: None,
                 text: text.to_owned(),
                 message_id: Some(format!("m-{seq}")),
                 run_id: Some(run.to_owned()),

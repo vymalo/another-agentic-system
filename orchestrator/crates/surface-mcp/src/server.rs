@@ -438,6 +438,7 @@ impl<P: Ports> McpServer<P> {
             return Ok(refused("no such job"));
         };
         let input = Input::UserMessage {
+            tier_cap: None,
             user: who.user.clone(),
             text: args.text,
             message_id: None,

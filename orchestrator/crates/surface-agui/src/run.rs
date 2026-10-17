@@ -290,94 +290,23 @@ struct ForkRun {
 
 /// Gives the mentions of the run to the first input that is a message (a stop included), once:
 /// they are the message's own, and offsets index its text. Every other input is left as it is.
-fn mentioning(input: Input, mentions: &mut Vec<Mention>) -> Input {
-    match input {
-        Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: _,
-            tier,
-        } => Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: std::mem::take(mentions),
-            tier,
-        },
-        Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: _,
-            tier,
-        } => Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: std::mem::take(mentions),
-            tier,
-        },
-        other => other,
+fn mentioning(mut input: Input, mentions: &mut Vec<Mention>) -> Input {
+    if let Input::UserMessage { mentions: own, .. } | Input::StopAndSend { mentions: own, .. } =
+        &mut input
+    {
+        *own = std::mem::take(mentions);
     }
+    input
 }
 
 /// Gives the access tier of the run to the first input that is a message (a stop included), once:
 /// it is the message's own. Every other input is left as it is.
-fn tiering(input: Input, tier: &mut Option<AccessTier>) -> Input {
-    match input {
-        Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: _,
-        } => Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: tier.take(),
-        },
-        Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: _,
-        } => Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: tier.take(),
-        },
-        other => other,
+fn tiering(mut input: Input, tier: &mut Option<AccessTier>) -> Input {
+    if let Input::UserMessage { tier: own, .. } | Input::StopAndSend { tier: own, .. } = &mut input
+    {
+        *own = tier.take();
     }
+    input
 }
 
 /// Gives the first input that is a message or an action the catalog the run carried, once.
@@ -392,6 +321,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             catalog: _,
             mentions,
             tier,
+            tier_cap,
         } => Input::UserMessage {
             user,
             text,
@@ -401,6 +331,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             catalog: catalog.take(),
             mentions,
             tier,
+            tier_cap,
         },
         Input::StopAndSend {
             user,
@@ -411,6 +342,7 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             catalog: _,
             mentions,
             tier,
+            tier_cap,
         } => Input::StopAndSend {
             user,
             text,
@@ -420,17 +352,20 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
             catalog: catalog.take(),
             mentions,
             tier,
+            tier_cap,
         },
         Input::UiAction {
             user,
             action,
             catalog: _,
             tier,
+            tier_cap,
         } => Input::UiAction {
             user,
             action,
             catalog: catalog.take(),
             tier,
+            tier_cap,
         },
         other @ (Input::Redeliver { .. }
         | Input::Cancel { .. }
@@ -892,6 +827,7 @@ mod tests {
 
     fn message() -> Input {
         Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("a@b.c"),
             text: "hi".to_owned(),
             message_id: None,
@@ -905,8 +841,11 @@ mod tests {
 
     fn action() -> Input {
         Input::UiAction {
+            tier_cap: None,
             user: UserId::new("a@b.c"),
             action: UiActionData {
+                tier: None,
+                tier_cap: None,
                 surface_id: "s".to_owned(),
                 name: "go".to_owned(),
                 source_component_id: "b".to_owned(),

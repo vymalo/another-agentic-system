@@ -149,3 +149,55 @@ async fn the_access_tier_is_declared_with_its_tiers_and_default_only_while_the_c
     h.agent.set_card_down("plain", true);
     assert!(get().await.get("custom").is_none());
 }
+
+#[tokio::test]
+async fn the_document_says_what_the_person_asking_may_use_of_this_agent() {
+    // the web draws its chip from this document, so the cap goes in it per agent: the highest
+    // cap of the roles that let the person use *this* agent (`App::max_tier_for`; the per-agent
+    // arithmetic is pinned in the application's tests), never a hint over all their roles
+    use std::collections::BTreeSet;
+
+    use orch_app::{AgentScope, Permission, Policy, RoleGrant};
+    use orch_core::AccessTier;
+    use orch_ports::Role;
+
+    let uri = orch_core::ACCESS_TIER_EXTENSION;
+    for (cap, expected) in [
+        (
+            Some(AccessTier::Plan),
+            json!({"tiers": ["plan", "edits", "auto"], "default": "plan", "maxTier": "plan"}),
+        ),
+        (
+            None,
+            json!({"tiers": ["plan", "edits", "auto"], "default": "plan"}),
+        ),
+    ] {
+        let grant = RoleGrant {
+            permissions: BTreeSet::from([
+                Permission::AgentRead,
+                Permission::AgentInvoke,
+                Permission::ThreadRead,
+                Permission::ThreadWrite,
+            ]),
+            agents: AgentScope::All,
+            max_tier: cap,
+        };
+        let policy = Policy::new(
+            [(Role::new("careful"), grant)].into(),
+            Some(Role::new("careful")),
+        )
+        .unwrap();
+        let h = Harness::start_with_policy(policy).await;
+        h.agent.set_access_tier(
+            "plain",
+            orch_core::TierOffer::from_params(
+                &json!({"tiers": ["plan", "edits", "auto"], "default": "plan"}),
+            ),
+        );
+        let doc = h.get("/agui/agents/plain/capabilities", Some(ALICE)).await;
+        assert_eq!(doc.status, 200);
+        let doc = doc.json();
+        assert_capabilities_json_conforms(&doc);
+        assert_eq!(doc["custom"][uri], expected, "cap {cap:?}: {doc}");
+    }
+}

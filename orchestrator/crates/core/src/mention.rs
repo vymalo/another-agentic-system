@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::access_tier::AccessTier;
 use crate::ids::AgentId;
 
 /// The most references one message may carry.
@@ -45,6 +46,14 @@ pub struct Mention {
     /// registry's at the time the message was checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_url: Option<String>,
+    /// The cap of the person's roles on **this agent** when the message was accepted (ADR 0061,
+    /// `max_tier`), set by the application and never read from a client: an agent this reference
+    /// names is asked under at most this tier (`ask_agent` sends it the highest tier it offers
+    /// within it), so that a mention does not let the person run the mentioned agent above their
+    /// own cap. `None` when no role of theirs caps the agent. The agent that is told of the
+    /// mention does not see it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_cap: Option<AccessTier>,
 }
 
 impl Mention {
@@ -86,6 +95,7 @@ mod tests {
             start: 3,
             end: 14,
             card_url: None,
+            tier_cap: None,
         };
         let json = serde_json::to_value(&mention).unwrap();
         assert_eq!(
@@ -110,6 +120,7 @@ mod tests {
             start: 4,
             end: 6,
             card_url: Some("u".to_owned()),
+            tier_cap: None,
         };
         let moved = mention.shifted(10);
         assert_eq!((moved.start, moved.end), (14, 16));

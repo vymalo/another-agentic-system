@@ -58,6 +58,7 @@ fn directory3() -> AgentDirectory {
 
 fn mentions() -> Vec<Mention> {
     let at = |id: &str, start, end| Mention {
+        tier_cap: None,
         agent_id: AgentId::new(id),
         label: format!("@{id}"),
         start,
@@ -464,6 +465,7 @@ async fn the_threads_own_delegation_and_an_ask_do_not_wait_for_each_other() {
             },
             Inbound {
                 mentions: vec![Mention {
+                    tier_cap: None,
                     agent_id: AgentId::new("coder"),
                     label: "@coder".to_owned(),
                     start: 5,
@@ -573,6 +575,7 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_to_the_agent_continues_it
     assert_eq!(
         second.payload,
         orch_ports::OutboxPayload::Ask {
+            tier_cap: None,
             job: 1,
             ask: 2,
             agent: AgentId::new("coder"),

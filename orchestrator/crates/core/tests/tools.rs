@@ -117,6 +117,7 @@ fn the_set_is_carried_to_the_next_job() {
     let (next, cmds) = transition(
         &before,
         &Input::UserMessage {
+            tier_cap: None,
             user: user(),
             text: "again".into(),
             message_id: None,

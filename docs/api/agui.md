@@ -70,7 +70,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **Access tier** (2026-10-11, [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), contract
 > [`access-tier-v1.md`](access-tier-v1.md), orchestrator and web built, the agent side is adam-rs's): `forwardedProps["vymalo.tier"]` on
 > the run that carries a message, checked before anything is written, shown on `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the
-> message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default}`; see [Access tier](#access-tier).
+> message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default, maxTier?}`; see [Access tier](#access-tier).
 
 ## Endpoints
 
@@ -1255,12 +1255,12 @@ orchestrator and web). The contract, with the card, the activation, the agent's 
 
 - **In:** `forwardedProps["vymalo.tier"]` on the run that carries the message (the [inbound table](#inbound-ag-ui--core-input)).
   The person picks it for each message; the web remembers the pick in the browser and sends it with every message of the thread.
-- **Log:** `user_message.tier`, the tier the message was sent under (named, continued from the job or decided for a capped role), written only after the checks. The agent's echo is `agent_status.data.tier`.
+- **Log:** `user_message.tier`, the tier the message was sent under (named, continued from the job or decided for a capped role), written only after the checks; `user_message.tierCap` when a cap applied and the agent's card offered no tier then (the dispatcher decides the tier from the live card at every send); `mentions[].tierCap`, the person's cap on a mentioned agent; and `ui_action.tier` / `ui_action.tierCap`, what an action went out under. The agent's echo is `agent_status.data.tier`.
 - **Out:** `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the user message, so a reload and another tab show the badge. A run
   does not hear its own message back, so it is on the connect stream and on a later load of the thread.
-- **Capabilities:** `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default}` while the live card
-  lists the extension with well-formed `params` (see [Capabilities document](#capabilities-document)). The web draws its chip from
-  it and from `maxTier` of `GET /api/me`.
+- **Capabilities:** `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default, maxTier?}` while the live
+  card lists the extension with well-formed `params` (see [Capabilities document](#capabilities-document)); `maxTier` is the highest
+  tier the person asking may use **of this agent**. The web draws its chip from it.
 - **To the agent:** only when the live card read at the send still honours the tier; any other agent is sent the message it always
   was. What the orchestrator sends on the thread's behalf (the gate's rework, the delegation of an A2UI action, an answer to a
   blocked job) goes under the tier of the person's last message of the job, so the web sends nothing for them; an answer or an
@@ -1546,9 +1546,11 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
 - `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1`, `…/steer/v1` and `…/usage/v1` (ADR 0008, ADR 0036, ADR 0056; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
-- `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default}` only while the live card lists the
+- `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default, maxTier?}` only while the live card lists the
   extension with well-formed `params` (ADR 0061, [`access-tier-v1.md`](access-tier-v1.md)): `tiers` are the tiers the agent honours,
-  lowest first (`plan`, `edits`, `auto`, `bypass`), `default` the one it works under when a message names none. A card that lists
+  lowest first (`plan`, `edits`, `auto`, `bypass`), `default` the one it works under when a message names none, and `maxTier`, the
+  person's own, not the card's, the highest tier they may use of **this** agent over the roles that let them invoke it (absent when
+  no role of theirs caps it; the document is per person and `no-store`). A card that lists
   the URI badly (a `default` that is not among the `tiers`, a repeated or unknown tier) is a card that does not list it: no key.
   The web draws its tier chip from this key, and shows none without it;
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under

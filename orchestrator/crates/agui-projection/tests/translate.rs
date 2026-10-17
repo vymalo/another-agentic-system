@@ -75,6 +75,7 @@ fn idle_known() -> KnownThread {
 
 fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: alice(),
         text: text.to_owned(),
         message_id: message_id.map(str::to_owned),
@@ -445,6 +446,7 @@ fn sending(how: Value) -> RunAgentInput {
 
 fn stop(text: &str, message_id: &str, run_id: &str) -> Input {
     Input::StopAndSend {
+        tier_cap: None,
         user: alice(),
         text: text.to_owned(),
         message_id: Some(message_id.to_owned()),
@@ -738,8 +740,11 @@ fn expected_action() -> Input {
     let mut context = serde_json::Map::new();
     context.insert("choice".into(), json!("a"));
     Input::UiAction {
+        tier_cap: None,
         user: alice(),
         action: UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".into(),
             name: "go".into(),
             source_component_id: "btn".into(),
@@ -1004,6 +1009,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             1,
             Actor::user(&alice()),
             EventBody::UserMessage(UserMessageData {
+                tier_cap: None,
                 text: "go".into(),
                 message_id: Some("client-1".into()),
                 run_id: Some("run-a".into()),
@@ -1064,6 +1070,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
         4,
         Actor::user(&alice()),
         EventBody::UserMessage(UserMessageData {
+            tier_cap: None,
             text: text.clone(),
             message_id: message_id.clone(),
             run_id: run_id.clone(),

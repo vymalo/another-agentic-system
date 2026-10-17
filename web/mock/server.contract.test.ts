@@ -3990,6 +3990,16 @@ describe("the access tier (ADR 0061, docs/api/access-tier-v1.md), as the mock do
     expect(await custom("adam", s.headers)).toBeUndefined();
   });
 
+  it("the capabilities carry the person's cap on the agent beside its offer, and only for a capped role", async () => {
+    // the chip is drawn from this document (the cap of GET /api/me spans every agent)
+    const capped = await session("capped");
+    await capped.lists("adam", ALL);
+    expect(await custom("adam", capped.headers)).toEqual({ ...ALL, maxTier: "edits" });
+    const free = await session("user");
+    await free.lists("adam", ALL);
+    expect(await custom("adam", free.headers)).toEqual(ALL);
+  });
+
   it("a card that lists it badly does not list it", async () => {
     const s = await session();
     for (const params of [

@@ -36,6 +36,7 @@ fn catalog(version: u32, tag: &str) -> UiCatalogData {
 
 fn message(text: &str, catalog: Option<&UiCatalogData>) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -162,6 +163,8 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
     wait_state(&app, &alice(), t.id, ThreadState::Blocked).await;
 
     let action = UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: "s1".into(),
         name: "answer".into(),
         source_component_id: "choices".into(),
@@ -173,6 +176,7 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
         &alice(),
         t.id,
         Input::UiAction {
+            tier_cap: None,
             user: alice(),
             action,
             catalog: Some(v1.clone()),

@@ -2348,8 +2348,10 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const agent = agentOrRefuse(req, res, agentId);
     if (!agent) return;
     res.setHeader("Cache-Control", "no-store");
-    // the card's tiers, only when well formed (a card that lists the extension badly does not list it)
-    const offered = readOffer(registryOf(sessionOf(req)).tiers.get(agent.id));
+    // the card's tiers, only when well formed (a card that lists the extension badly does not list it),
+    // with the person's cap on this agent beside them (the mock has one role: the same for every agent)
+    const card = readOffer(registryOf(sessionOf(req)).tiers.get(agent.id));
+    const offered = card && { ...card, ...(me.maxTier ? { maxTier: me.maxTier } : {}) };
     sendJson(res, 200, {
       identity: {
         name: agent.name,

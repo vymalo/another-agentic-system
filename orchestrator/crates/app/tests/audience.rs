@@ -552,6 +552,7 @@ async fn a_thread_whose_agent_the_person_may_no_longer_use_is_read_only_not_hidd
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     };
     refused(app.submit(&holder, t.id, input, None).await.unwrap_err());
     // "Stop & send" and a click on a card start the agent's work as much as a message does, and
@@ -565,11 +566,14 @@ async fn a_thread_whose_agent_the_person_may_no_longer_use_is_read_only_not_hidd
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     };
     refused(app.submit(&holder, t.id, input, None).await.unwrap_err());
     let input = Input::UiAction {
         user: holder.user.clone(),
         action: UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".to_owned(),
             name: "go".to_owned(),
             source_component_id: "go".to_owned(),
@@ -579,6 +583,7 @@ async fn a_thread_whose_agent_the_person_may_no_longer_use_is_read_only_not_hidd
         },
         catalog: None,
         tier: None,
+        tier_cap: None,
     };
     refused(app.submit(&holder, t.id, input, None).await.unwrap_err());
     assert_eq!(
@@ -734,6 +739,7 @@ fn mention_of(agent: &str) -> (String, Vec<Mention>) {
             start: 4,
             end: 4 + u32::try_from(label.len()).unwrap(),
             card_url: None,
+            tier_cap: None,
         }],
     )
 }
@@ -796,6 +802,7 @@ async fn a_mention_in_a_message_to_an_existing_thread_is_judged_the_same_way() {
         catalog: None,
         mentions,
         tier: None,
+        tier_cap: None,
     };
     let said = unprocessable(app.submit(&user(), t.id, input, None).await.unwrap_err());
     assert_eq!(said, "unknown agent 'fresh' in mentions");

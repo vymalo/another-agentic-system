@@ -26,6 +26,7 @@ fn agent() -> AgentId {
 }
 fn um(text: &str) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -108,6 +109,7 @@ fn row1_user_message_in_queued_or_working() {
         assert_eq!(
             cmds[1],
             Command::Steer {
+                tier_cap: None,
                 text: "hi".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -120,6 +122,7 @@ fn row1_user_message_in_queued_or_working() {
 #[test]
 fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
     let input = Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: "hi".into(),
         message_id: Some("m-1".into()),
@@ -135,6 +138,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
             Command::Append(d) => assert_eq!(
                 d.body,
                 EventBody::UserMessage(UserMessageData {
+                    tier_cap: None,
                     text: "hi".into(),
                     message_id: Some("m-1".into()),
                     run_id: Some("r-1".into()),
@@ -154,6 +158,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
             cmds[1],
             if matches!(s, Queued | Working) {
                 Command::Steer {
+                    tier_cap: None,
                     text,
                     catalog: None,
                     mentions: Vec::new(),
@@ -161,6 +166,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                 }
             } else {
                 Command::Delegate {
+                    tier_cap: None,
                     text,
                     catalog: None,
                     mentions: Vec::new(),
@@ -174,6 +180,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
 #[test]
 fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
     let input = Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: "hi".into(),
         message_id: None,
@@ -206,6 +213,7 @@ fn row2_user_message_in_blocked_requeues() {
     assert_eq!(
         cmds[1],
         Command::Delegate {
+            tier_cap: None,
             text: "main".into(),
             catalog: None,
             mentions: Vec::new(),
@@ -238,6 +246,7 @@ fn row3_user_message_in_terminal_starts_the_next_job() {
         assert_eq!(
             cmds[2],
             Command::Delegate {
+                tier_cap: None,
                 text: "again".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -360,7 +369,12 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 // the finished job's count of its model calls (ADR 0056): the next job counts its own
                 usage: UsageLedger::of(12, 0),
                 after_stop_tier: None,
+                // the cap the finished job kept for an agent that offered no tier (ADR 0061) is
+                // the job's, and so are those its mentions pinned: the next job has its own
+                after_stop_tier_cap: Some(orch_core::AccessTier::Edits),
                 tier: None,
+                tier_cap: Some(orch_core::AccessTier::Plan),
+                mentioned_caps: [(AgentId::new("researcher"), orch_core::AccessTier::Plan)].into(),
             },
         };
         let (after, cmds) = orch_core::transition(&before, &um("next")).unwrap();
@@ -399,6 +413,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
 #[test]
 fn a_redelivery_that_was_sent_changes_the_thread_as_one_that_was_not_and_delegates_nothing() {
     let sent = |text: &str| Input::Redeliver {
+        tier_cap: None,
         text: text.into(),
         sent: true,
         mentions: Vec::new(),
@@ -448,6 +463,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
         let (next, cmds) = run(
             s,
             &Input::Redeliver {
+                tier_cap: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -463,6 +479,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
         assert_eq!(
             cmds[1],
             Command::Delegate {
+                tier_cap: None,
                 text: "x".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -474,6 +491,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
         run(
             Cancelled,
             &Input::Redeliver {
+                tier_cap: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -488,6 +506,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             run(
                 s,
                 &Input::Redeliver {
+                    tier_cap: None,
                     text: "x".into(),
                     sent: false,
                     mentions: Vec::new(),
@@ -497,6 +516,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             (
                 expected,
                 vec![Command::Delegate {
+                    tier_cap: None,
                     text: "x".into(),
                     catalog: None,
                     mentions: Vec::new(),
@@ -1236,6 +1256,8 @@ fn ui(update: AgentUpdate) -> Input {
 }
 fn act() -> UiActionData {
     UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: "s1".into(),
         name: "submit".into(),
         source_component_id: "btn".into(),
@@ -1246,6 +1268,7 @@ fn act() -> UiActionData {
 }
 fn ui_action(action: UiActionData) -> Input {
     Input::UiAction {
+        tier_cap: None,
         user: user(),
         action,
         catalog: None,
@@ -1314,6 +1337,7 @@ fn row_ui4_an_action_is_a_user_event_and_a_delegation() {
         assert_eq!(
             cmds[1],
             Command::DelegateAction {
+                tier_cap: None,
                 action: act(),
                 catalog: None,
                 tier: None,
@@ -1391,6 +1415,7 @@ fn catalog(version: u32, tag: &str) -> UiCatalogData {
 }
 fn um_with(text: &str, catalog: &UiCatalogData) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -1403,6 +1428,7 @@ fn um_with(text: &str, catalog: &UiCatalogData) -> Input {
 }
 fn action_with(catalog: &UiCatalogData) -> Input {
     Input::UiAction {
+        tier_cap: None,
         user: user(),
         action: act(),
         catalog: Some(catalog.clone()),
@@ -1605,6 +1631,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
         let (after, cmds) = orch_core::transition(
             &before,
             &Input::Redeliver {
+                tier_cap: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -1624,6 +1651,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
         let (_, cmds) = orch_core::transition(
             &before,
             &Input::Redeliver {
+                tier_cap: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),

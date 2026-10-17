@@ -247,6 +247,15 @@ pub enum OutboxPayload {
         /// fails and nothing is sent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<orch_core::AccessTier>,
+        /// The cap of the person's role (`max_tier`) when the message could be given no `tier`
+        /// because the agent's card offered none when it was written. The dispatcher reads the
+        /// card again when it sends: an agent that offers tiers by then is sent the highest one
+        /// within the cap, and the job fails (nothing is sent) when it has none or lists the
+        /// extension badly; an agent that still offers none gets the plain message. Absent for a
+        /// message with a `tier`, for a person with no cap and in a row written before the field
+        /// existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier_cap: Option<orch_core::AccessTier>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -266,6 +275,9 @@ pub enum OutboxPayload {
         /// existed has none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<orch_core::AccessTier>,
+        /// The cap that goes with `tier`, as for [`OutboxPayload::Delegate`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier_cap: Option<orch_core::AccessTier>,
     },
     /// Cancel. `job` is the job of the thread the person asked to stop (ADR 0020): a row claimed
     /// after that job ended and the next began is finished without calling the agent. A row
@@ -328,6 +340,11 @@ pub enum OutboxPayload {
         /// into the running task, and the delegation it becomes keeps it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<orch_core::AccessTier>,
+        /// The cap that goes with `tier`, as for [`OutboxPayload::Delegate`]: a steer that cannot be
+        /// given a tier under it is not sent into the task but becomes the delegation, which fails
+        /// with the reason.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier_cap: Option<orch_core::AccessTier>,
     },
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
@@ -361,6 +378,14 @@ pub enum OutboxPayload {
         /// [`ask_context`](orch_core::ask_context), and the dispatcher falls back to it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<String>,
+        /// The cap of the person's role on the asked agent (`max_tier`, ADR 0061), from the mention
+        /// that made it askable. The dispatcher sends the ask under the highest tier the agent's
+        /// live card offers within the lower of its default and the cap, and fails the ask (no task
+        /// started) when it has none or lists the extension badly; a card that offers no tier gets
+        /// the plain message. Absent when no role of the person caps the agent, and in a row
+        /// written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier_cap: Option<orch_core::AccessTier>,
     },
 }
 
@@ -390,6 +415,7 @@ impl OutboxPayload {
                 ui_catalog,
                 mentions,
                 tier,
+                tier_cap,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
                 release: release.clone(),
@@ -397,6 +423,7 @@ impl OutboxPayload {
                 ui_catalog: ui_catalog.clone(),
                 mentions: mentions.clone(),
                 tier: *tier,
+                tier_cap: *tier_cap,
             }),
             OutboxPayload::Delegate { .. }
             | OutboxPayload::Action { .. }
@@ -1274,6 +1301,7 @@ mod payload_tests {
 
     fn mention() -> Mention {
         Mention {
+            tier_cap: None,
             agent_id: AgentId::new("coder"),
             label: "@coder".to_owned(),
             start: 5,
@@ -1299,6 +1327,7 @@ mod payload_tests {
         );
 
         let with = OutboxPayload::Steer {
+            tier_cap: None,
             text: "echo @coder".to_owned(),
             release: None,
             ui_catalog: None,
