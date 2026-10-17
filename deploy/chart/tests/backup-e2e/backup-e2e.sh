@@ -458,7 +458,7 @@ archiving() {
   [ "$_st" = True ]
 }
 until_ok "$wal_timeout" "the Cluster condition ContinuousArchiving to be True" archiving
-ok "the Cluster's ContinuousArchiving is True (set by the instance manager after an archive through the plugin)"
+ok "the Cluster's ContinuousArchiving is True (set by the instance manager after each wal-archive run that did not fail; here that run is the plugin's upload, which the WAL objects of the bucket prove below)"
 new_backup() { # a completed Backup of the schedule that was not there when the first thread was written
   k -n "$ns" get "$r_backup" -l "cnpg.io/scheduled-backup=$db" -o json | jq -r '.items[] | "\(.metadata.name) \(.status.phase // "no phase") \(.status.error // "")"'
   k -n "$ns" get "$r_backup" -l "cnpg.io/scheduled-backup=$db" -o json | jq -r '.items[] | select(.status.phase == "completed") | .metadata.name' \
@@ -568,8 +568,11 @@ until_ok 120 "a WAL switch on the restored cluster" switch_restored
 sleep 30
 folders=$(s3_folders "$prefix/")
 [ "$folders" = "$expected_folders" ] || die "the restored cluster wrote to the bucket: folders under $prefix/ are '$folders', expected only $expected_folders"
-[ "$(cond "$r_cluster/$db_restore" ContinuousArchiving)" != True ] || die "the restored cluster says it archives continuously (ContinuousArchiving is True)"
-ok "after a WAL switch on the restored cluster and 30 s the bucket still holds one server folder, $expected_folders, and the restored cluster does not say it archives"
+# Not the condition ContinuousArchiving: the instance manager sets it True after every run of `wal-archive` that does not fail, and for a cluster with no
+# archiver configured that run does nothing and succeeds (CloudNativePG v1.30.1, pkg/management/postgres/archiver/archiver.go, "Backup not configured, skip
+# WAL archiving"; internal/cmd/manager/walarchive/cmd.go), so the restored cluster says True and archives nothing. The bucket is the proof.
+note "the restored cluster's ContinuousArchiving (information only, True after any wal-archive run that did nothing): $(cond "$r_cluster/$db_restore" ContinuousArchiving)"
+ok "after a WAL switch on the restored cluster and 30 s the bucket still holds one server folder, $expected_folders: the restore archived nothing"
 
 step "9. the credentials are in no log and in no object"
 : > "$work/everything"
