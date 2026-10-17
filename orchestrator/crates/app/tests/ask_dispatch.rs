@@ -23,8 +23,8 @@ use orch_app::{
 };
 use orch_core::{
     Actor, AgentId, AgentSource, AgentTaskState, AgentUpdate, AskFinishedData, AskLimits,
-    AskOutcome, Caller, EventBody, EventKind, Input, Mention, ThreadId, ThreadRecord, ThreadState,
-    UiCatalogData, UiDelivery, catalog_digest,
+    AskOutcome, Caller, Delivery, EventBody, EventKind, Input, Mention, Origin, ThreadId,
+    ThreadRecord, ThreadState, ToolsGrant, UiCatalogData, UiDelivery, catalog_digest,
 };
 use orch_ports::memory::{Call, MemoryRegistry};
 use orch_ports::{
@@ -308,6 +308,17 @@ fn catalogs_sent_to(w: &World, agent: &str) -> Vec<Option<UiDelivery>> {
         .into_iter()
         .filter_map(|c| match c {
             Call::Send { ui_catalog, .. } => Some(ui_catalog.map(|boxed| *boxed)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What each send to `agent` told it of the thread's tools: its grant.
+fn grants_sent_to(w: &World, agent: &str) -> Vec<Option<ToolsGrant>> {
+    sends_to(w, agent)
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Send { thread_tools, .. } => Some(thread_tools.map(|boxed| *boxed)),
             _ => None,
         })
         .collect()
@@ -869,6 +880,125 @@ async fn an_ask_is_sent_a_forms_catalog_derived_from_the_jobs_screen_and_none_wi
         .filter(|e| e.kind() == EventKind::UiCatalog)
         .count();
     assert_eq!(recorded, 1);
+}
+
+/// `@coder` is at 4..10 and `@scout` at 15..21, as in [`TEXT`]: the second job's own mentions.
+const TEXT_2: &str = "ok, @coder and @scout: go on";
+
+/// An asked agent is told what the person said in the thread (ADR 0026, amended 2026-10-17, fourth
+/// note): the texts of the person's messages, every job of the thread and a steered message among
+/// them, oldest first and as written, nothing of what the agent said; the thread's own agent is told
+/// nothing (`tests/dispatcher.rs` compares its whole grant), it has the messages.
+#[tokio::test]
+async fn an_ask_carries_what_the_person_said_in_the_whole_thread_and_nothing_of_the_agents() {
+    let w = World::new();
+    let app = app3(&w);
+    // job 1: the person's first message, the agent's question, the end of the job
+    let t = working_thread(&*app, &w.store).await;
+    app.apply(
+        t.id,
+        plain_says(AgentUpdate::Message {
+            message_id: "m1".into(),
+            text: "Which branch?".into(),
+            is_final: true,
+            purpose: None,
+        }),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    app.apply(
+        t.id,
+        plain_says(status(AgentTaskState::Completed)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // job 2: the person's answer, from an MCP client, mentioning the agents again (a job's mentions
+    // are its own); the agent works on it
+    app.submit(
+        &alice(),
+        t.id,
+        Input::UserMessage {
+            user: alice(),
+            text: TEXT_2.to_owned(),
+            message_id: None,
+            run_id: None,
+            origin: Origin::Mcp,
+            catalog: None,
+            mentions: mentions(),
+            tier: None,
+            tier_cap: None,
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    w.store
+        .skip_unsent_delegates(t.id, SystemClock.now())
+        .await
+        .unwrap();
+    app.apply(
+        t.id,
+        plain_says(status(AgentTaskState::Working)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // a message sent while it works is steered, and the person's all the same
+    let steered = app
+        .post_message(&alice(), t.id, "  and the docs too  ".to_owned())
+        .await
+        .unwrap();
+    assert!(
+        matches!(&steered.body, EventBody::UserMessage(m) if m.delivery == Some(Delivery::Steer)),
+        "{steered:?}"
+    );
+    w.store
+        .skip_unsent_delegates(t.id, SystemClock.now())
+        .await
+        .unwrap();
+    put(&*app, &w.store, t.id, ask_of("coder", "echo one", "k1")).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    run.shutdown().await;
+    assert_eq!(done.state, AskOutcome::Completed, "{done:?}");
+
+    let grants = grants_sent_to(&w, "coder");
+    let [Some(grant)] = grants.as_slice() else {
+        panic!("one ask, sent with its grant: {grants:?}");
+    };
+    assert_eq!((grant.caller, grant.job), (Caller::Ask(1), 2));
+    assert!(grant.is_consistent());
+    let person = grant.person.as_ref().expect("told what the person said");
+    assert_eq!(
+        person.said,
+        [TEXT, TEXT_2, "  and the docs too  "],
+        "every job of the thread, oldest first, as written"
+    );
+    assert_eq!(person.omitted, 0);
+    assert!(
+        !person.said.iter().any(|s| s.contains("Which branch")),
+        "nothing of what the agent said"
+    );
+    // which is what the log holds as the person's messages, in that order, and `Debug` of the
+    // request shows none of it
+    let log: Vec<String> = events(&app, &alice(), t.id)
+        .await
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::UserMessage(m) => Some(m.text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(log, person.said);
+    assert!(!format!("{grant:?}").contains("docs too"), "{grant:?}");
 }
 
 /// An asked agent that asks the person something **with choices** (adam's `ask_user`, the coder's

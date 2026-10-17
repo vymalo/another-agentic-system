@@ -109,7 +109,10 @@ pub use task::{
     TaskPrompt, check_task_language, conversation_language, task_prompt,
 };
 pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
-pub use thread_tools::{Caller, CallerError, ToolsGrant, UploadOffer};
+pub use thread_tools::{
+    Caller, CallerError, MAX_PERSON_SAID_BYTES, MAX_PERSON_SAID_ENTRY_BYTES, PersonSaid,
+    PersonSaidBuilder, ToolsGrant, UploadOffer,
+};
 pub use title::{
     MAX_MODEL_TITLE_CHARS, MAX_TITLE_ASKS, MAX_TITLE_CHARS, ThreadTitledData, TitleError,
     TitleLanguageError, TitleLedger, TitleSource, TitledBy, check_title, check_title_language,

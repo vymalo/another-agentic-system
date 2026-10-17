@@ -182,8 +182,11 @@ An agent that receives mentions SHOULD:
 - add the instruction block that names the agents (and says to ask in the order the person asked) **only when the message
   has mentions**.
 
-The mentioned agents are not sent the message and get no mentions metadata: an agent that is asked receives only what the
-asking agent put in the `ask_agent` message.
+The mentioned agents are not sent the message and get no mentions metadata: an agent that is asked receives what the
+asking agent put in the `ask_agent` message and, under `thread-tools/v1`, what the person said in the thread
+([`person`](thread-tools-v1.md#the-person-member), *2026-10-17*: the person's own words, every job of the thread, written by the
+orchestrator and never by a model, for the asked agent to apply its own rule to, adam-coder's of which repositories the person
+named).
 
 `mentions/v1` metadata rides on the same message as the `thread-tools/v1` grant and, for a steered message, on the
 [`steer/v1`](steer-v1.md) message.

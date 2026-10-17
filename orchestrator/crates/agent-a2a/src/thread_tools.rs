@@ -23,7 +23,7 @@
 //! nothing reaches the agent; the dispatcher records the reason as the ask's failure. A card that
 //! does not list the extension could not read a grant anyway and is sent the plain message.
 
-use orch_core::{AttachedServer, Caller, KnownExtension, ToolsGrant};
+use orch_core::{AttachedServer, Caller, KnownExtension, PersonSaid, ToolsGrant};
 use orch_ports::AgentError;
 use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
 use secrecy::ExposeSecret;
@@ -86,19 +86,35 @@ fn without_token(grant: &ToolsGrant, reason: &str) -> Result<(), AgentError> {
     }
 }
 
-/// The value of the extension's key in the message metadata: `{url, token, expiresAt}` and, when
+/// The value of the extension's key in the message metadata: `{url, token, expiresAt}`; when
 /// servers are attached to the thread that the agent may use, `attached`
 /// (`[{server, name, description?}]`, [`docs/api/thread-tools-v1.md`]): ids, names and
-/// descriptions, **never a URL, a header or a credential** (`AttachedServer` has none). `expiresAt`
-/// is the token's `exp` as RFC 3339.
+/// descriptions, **never a URL, a header or a credential** (`AttachedServer` has none); and, on an
+/// asked agent's message only, `person` (`{said, omitted?}`, [the `person` member]): what the
+/// person said in the thread, as the dispatcher read it off the log (ADR 0026, amended 2026-10-17,
+/// fourth note), `omitted` only above 0. The core keeps the addressed agent's grant from carrying
+/// it (`ToolsGrant::is_consistent`), so such a grant is never minted. `expiresAt` is the token's
+/// `exp` as RFC 3339.
 ///
 /// [`docs/api/thread-tools-v1.md`]: ../../../../docs/api/thread-tools-v1.md#the-attached-member
-pub fn thread_tools_metadata(grant: &ThreadToolsGrant, attached: &[AttachedServer]) -> Value {
+/// [the `person` member]: ../../../../docs/api/thread-tools-v1.md#the-person-member
+pub fn thread_tools_metadata(
+    grant: &ThreadToolsGrant,
+    attached: &[AttachedServer],
+    person: Option<&PersonSaid>,
+) -> Value {
     let mut metadata = json!({
         "url": grant.url,
         "token": grant.token.expose_secret(),
         "expiresAt": grant.expires_at.to_string(),
     });
+    if let Some(person) = person {
+        let mut said = json!({"said": person.said});
+        if person.omitted > 0 {
+            said["omitted"] = json!(person.omitted);
+        }
+        metadata["person"] = said;
+    }
     if !attached.is_empty() {
         let servers: Vec<Value> = attached
             .iter()
@@ -251,12 +267,66 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let metadata = thread_tools_metadata(&minted, &[]);
+        let metadata = thread_tools_metadata(&minted, &[], None);
         assert_eq!(metadata["url"], json!(minted.url));
         assert_eq!(metadata["token"], json!(minted.token.expose_secret()));
         assert_eq!(metadata["expiresAt"], "2026-10-01T14:00:00Z");
         assert_eq!(metadata.as_object().unwrap().len(), 3);
         // and `Debug` of the grant it came from never shows the token
         assert!(!format!("{minted:?}").contains(minted.token.expose_secret()));
+    }
+
+    /// ADR 0026, amended 2026-10-17 (fourth note): an asked agent's metadata also says what the
+    /// person said, `{said, omitted?}`, `omitted` only above 0; a grant told nothing has no member;
+    /// and the addressed agent's grant that would carry it is never minted.
+    #[test]
+    fn an_asks_metadata_tells_what_the_person_said_and_omitted_only_when_some_was() {
+        let listed = offers(&[KnownExtension::ThreadTools]);
+        let minted = mint(Some(&issuer()), Some(&ask()), "m-1", &listed, now())
+            .unwrap()
+            .unwrap();
+        let words = ["Set up acme/widgets for me, branch main", "yes, go ahead"];
+        let person = PersonSaid::from_texts(words);
+        let metadata = thread_tools_metadata(&minted, &[], Some(&person));
+        assert_eq!(metadata["person"], json!({"said": words}));
+        assert_eq!(
+            metadata.as_object().unwrap().len(),
+            4,
+            "url, token, expiresAt and person: {metadata}"
+        );
+        let cut = PersonSaid {
+            said: vec![words[1].to_owned()],
+            omitted: 3,
+        };
+        let metadata = thread_tools_metadata(&minted, &servers(), Some(&cut));
+        assert_eq!(
+            metadata["person"],
+            json!({"said": [words[1]], "omitted": 3})
+        );
+        assert_eq!(metadata["attached"].as_array().unwrap().len(), 1);
+        assert_eq!(metadata.as_object().unwrap().len(), 5);
+        // nothing said, nothing told: `said` is empty and `omitted` absent
+        let metadata = thread_tools_metadata(&minted, &[], Some(&PersonSaid::default()));
+        assert_eq!(metadata["person"], json!({"said": []}));
+        // a grant that was told nothing has no member: the metadata an agent always read
+        let metadata = thread_tools_metadata(&minted, &[], None);
+        assert!(metadata.get("person").is_none());
+        assert_eq!(metadata.as_object().unwrap().len(), 3);
+        // the addressed agent's grant that carries it is inconsistent and never minted
+        let told = grant().with_person(Some(person));
+        assert!(!told.is_consistent());
+        assert!(
+            mint(Some(&issuer()), Some(&told), "m-1", &listed, now())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    fn servers() -> Vec<AttachedServer> {
+        vec![AttachedServer {
+            id: "docs".to_owned(),
+            name: "Documentation".to_owned(),
+            description: None,
+        }]
     }
 }

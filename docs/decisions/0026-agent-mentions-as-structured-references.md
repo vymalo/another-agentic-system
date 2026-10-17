@@ -10,7 +10,10 @@
   sent without its thread-tools grant: an adapter that cannot mint the token fails the ask instead of sending a plain message
   ([status note](#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)). **Amended (2026-10-17, third):** an
   asked agent is sent a **forms catalog** derived from the thread's, `Choices` alone, so that it can draw a form and nothing
-  else ([status note](#status-note-2026-10-17-third-an-asked-agent-is-sent-a-forms-only-catalog)).
+  else ([status note](#status-note-2026-10-17-third-an-asked-agent-is-sent-a-forms-only-catalog)). **Amended (2026-10-17, fourth):**
+  an asked agent is told what the person said in the thread, the person's own words under `thread-tools/v1`, written by the
+  orchestrator and never by a model, so that it decides what the person named from them
+  ([status note](#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)).
 
 ## Context
 
@@ -326,3 +329,47 @@ words ended the ask under the fail-closed rule, because the rule cannot tell sur
   adapter, in `orchestrator/crates/e2e/tests/ask_agent.rs` (no asked mock of `dev/` lists `ui-catalog/v1`, so
   `dev/mentions-e2e.sh` cannot see it and no mock was invented).
 
+## Status note, 2026-10-17 (fourth): an asked agent is told what the person said
+
+**Amended (2026-10-17), the owner's decision** (with adam-rs ADR 0036, the bullet "Decided, a follow-up" under its "Amended
+2026-10-17 (an asked agent)": *verified 2026-10-17*, adam-rs `main` at `a3c3f01`). When another agent's model asks an agent
+(`ask_agent`), the asked agent sees only the asking model's words. adam-coder decides which repositories it may touch without
+consent from "the repositories the person named in their own words"; in a run another agent started, the only words it had were
+the asking model's, so a prompt-injected chat model could name any repository. The owner decided that in such a run only the
+repositories the person named count, and that **the orchestrator** passes the material, as a structured field it writes, never
+a model. This note is the orchestrator's side; the adam-rs side (the coder reading it) is a separate PR of that repository.
+
+- **What is passed: the person's words, not a list of repositories.** The rule of what names a repository (hosts, the default
+  host, bare names, URLs, `git@` forms) is the agent's (`bin/adam-coder/src/tools/named.rs` of adam-rs, *verified 2026-10-17* at
+  `a3c3f01`), and this orchestrator is protocol-agnostic and knows nothing of repositories (invariants 1 and 7). So the field
+  carries what the person wrote in the thread, and the asked agent applies its own rule to it.
+- **Thread-wide, not job-wide.** The thread's person messages, all of them, oldest first: that is the rule adam-coder applies to
+  its own conversation (a repository named in the first task is one the person named), and a job-only field would strand a
+  repository the person named in an earlier job (person: "set up acme/widgets" → the agent asks a question → the person
+  answers in a new job → the ask of that job would carry only the answer).
+- **The wire shape.** Under the message's `thread-tools/v1` metadata, **only on an ask's message**, a member
+  `person: {said, omitted?}`: the person's messages of every origin that is a person's (`agui` and `mcp`: an `mcp` message is
+  written by a program holding the person's token, often a model-driven client such as Claude Code or opencode, and it is the
+  **token, not the hand, that makes a message the person's**, the rule the addressed agent already lives under, since
+  adam-coder counts a repository named to it over MCP as the person's, so the same rule holds here), oldest first, as written,
+  credential-shaped text redacted as a step's text is (`redact_text`), each entry cut at 4 KiB and the oldest left out whole
+  beyond 64 KiB. The members, the bounds, the origins, forks and what never carries it are the contract's:
+  [`thread-tools-v1.md`, "The `person` member"](../api/thread-tools-v1.md#the-person-member).
+- **Where.** `PersonSaid` and `PersonSaidBuilder` in the core (pure; `Debug` prints counts and bytes, never the text, so no log
+  line of a send can carry the person's words) and `ToolsGrant.person`; `App::person_said` pages the thread's log forward
+  through `ThreadStore::list_events` (no store reads by kind and a trait method would break every implementer, invariant 6: the
+  read is O(log) per ask send, bounded while paging); the dispatcher reads it where it reads the forms catalog, and a read that
+  fails leaves the row to be claimed again, as the catalog's does; the A2A adapter writes the member beside `url`, `token`,
+  `expiresAt` and `attached`.
+- **What stays a gap.** A person's **form answers** (`ui_action`: typed fields and notes) are not carried: the orchestrator
+  cannot tell a typed field from a chosen option without the form. The person can write the name in a message; the effect is
+  fail-closed, fewer repositories count, never more.
+- **Consequence.** An agent mentioned only in a later job (a registry agent included) now receives the person's messages of
+  the whole thread, those written for another agent in earlier jobs included: the first time the person's words leave the
+  addressed agent for one the person did not address when writing them. They go bounded (64 KiB) and redacted (above); the
+  precedent is the verifier's prompt and a fork's history, which forward the person's words too.
+- **Tests.** The core's bounds and redaction, the dispatcher's two-job thread with a steered message, the adapter's member
+  and its absence on every other message, and the end-to-end run on both stores are listed in the crate READMEs
+  ([`core`](../../orchestrator/crates/core/README.md), [`app`](../../orchestrator/crates/app/README.md),
+  [`agent-a2a`](../../orchestrator/crates/agent-a2a/README.md), [`e2e`](../../orchestrator/crates/e2e/README.md)) and in the
+  contract's *Tested* line.

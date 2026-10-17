@@ -740,7 +740,7 @@ stateDiagram-v2
   task that refers to the agent's earlier ones. The asked agent is given the thread's tools as `ask:<n>` at its depth and the servers
   attached to the thread that it may use (never without them: an adapter that cannot mint the grant for a card that lists
   `thread-tools/v1` sends nothing and answers `NotSent`, which fails the ask at once with the reason and starts no task, ADR 0026
-  amended 2026-10-17); it is sent the forms catalog derived from the job's UI catalog (`App::thread_forms_catalog`: `Choices` alone under `<id>/forms`, the thread's version, a digest of its own; inline, when the thread has a catalog with `Choices`; never recorded) and told nothing of the release, the conversation of a fork or the
+  amended 2026-10-17); it is sent the forms catalog derived from the job's UI catalog (`App::thread_forms_catalog`: `Choices` alone under `<id>/forms`, the thread's version, a digest of its own; inline, when the thread has a catalog with `Choices`; never recorded), is told what the person said in the thread (`App::person_said`: the text of every person message of the thread, every job, oldest first, as written and bounded, as `person` under the grant's metadata, ADR 0026 amended 2026-10-17, fourth note) and told nothing of the release, the conversation of a fork or the
   mentions. The agent is looked up in the registry at every claim: an agent it no longer lists fails the ask (`AskFailed`, "agent is no
   longer listed"), a registry that cannot answer leaves the row to be tried again (bounded by the ask's own deadline).
 - **What comes back.** The envelopes are read, never applied to the thread: the asked agent's `completed` does not complete the job and

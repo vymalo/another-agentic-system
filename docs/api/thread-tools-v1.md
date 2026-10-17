@@ -17,7 +17,10 @@
   projection), [below](#ask_agent); what the adam-rs side does with it is that repository's PR. **Built 2026-10-15
 ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 5a):** the servers a
 person added themselves, attached to their threads and relayed with a fresh credential for every request,
-[below](#a-persons-own-servers). "Not yet" is marked where it matters. The adam-rs side (an agent
+[below](#a-persons-own-servers). **Built 2026-10-17:** the `person` member of an asked agent's message, what the person
+said in the thread ([below](#the-person-member);
+[ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)).
+"Not yet" is marked where it matters. The adam-rs side (an agent
   that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
   support's fake agent is the reference of what an agent does.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
@@ -117,7 +120,8 @@ to a thread (a request to the verifier agent does not), and the orchestrator has
 `url` is `THREAD_TOOLS_URL` plus `/thread-tools/<threadId>/mcp`. `expiresAt` is the token's `exp` as RFC 3339. The URI
 is also added to the `A2A-Extensions` header and to `message.extensions`. **Every message gets its own token**, a
 follow-up included; an agent keeps using the newest one it was given, and a task that outlives its token is why the
-lifetime is long (below). When servers are attached to the thread the metadata also has [`attached`](#the-attached-member).
+lifetime is long (below). When servers are attached to the thread the metadata also has [`attached`](#the-attached-member),
+and an asked agent's message also has [`person`](#the-person-member), what the person said in the thread (*2026-10-17*).
 
 The orchestrator never writes the token to the event log, to the outbox payload or to any log or trace field. What
 travels inside the orchestrator is a non-secret grant (the thread, the job, the agent, the caller and the depth) on the
@@ -185,6 +189,73 @@ keys and a request without a grant (the verifier's) get exactly the message they
 orchestrator's end-to-end tests is one whose card lists the extension (told) and one whose card does not (not told, the
 message untouched). *(When this paragraph was written the relay was not built, so the endpoint listed `get_ui_catalog` and `turn_output` whatever was
 attached. The relay is built, 2026-10-02: see below.)*
+
+### The `person` member
+
+*Built 2026-10-17* ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said),
+the owner's decision with adam-rs ADR 0036, the bullet "Decided, a follow-up" under its "Amended 2026-10-17 (an asked agent)":
+*verified 2026-10-17*, adam-rs `main` at `a3c3f01`). The message of an **asked** agent
+([`ask_agent`](#ask_agent), `caller = ask:<n>`) also says what the person said in the thread:
+
+```json
+{"https://agents.vymalo.com/a2a/extensions/thread-tools/v1": {
+  "url": "https://orchestrator.example/thread-tools/1b4e28ba-2fa1-11d2-883f-0016d3cca427/mcp",
+  "token": "<the JWT>",
+  "expiresAt": "2026-10-17T14:00:00Z",
+  "person": {"said": ["Set up acme/widgets for me, branch main", "yes, go ahead"], "omitted": 3}
+}}
+```
+
+| Member | Meaning |
+|---|---|
+| `said` | The `text` of every `user_message` of the thread that is a person's, **oldest first, as written**: no fork preamble, no rewriting. Whitespace-only texts are skipped. Credential-shaped text is redacted as a step's text is (`redact_text`, [ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)): a pasted token never travels to an asked agent, a repository name or URL survives. Each entry is then cut to its first 4096 bytes (`MAX_PERSON_SAID_ENTRY_BYTES`, the same number as a fork's history entry), on a character boundary. |
+| `omitted` | How many of the **oldest** texts were left out whole so that the entries together stay within 64 KiB (`MAX_PERSON_SAID_BYTES`). Present only when above 0. |
+
+- **Why.** An asked agent sees only the asking model's words. adam-coder decides which repositories it may touch without
+  consent from the repositories the person named in their own words; in a run another agent started, the only words it had
+  were a model's, so a prompt-injected chat model could name any repository. The owner decided (2026-10-17) that in such a run
+  only the repositories the person named count, and that **the orchestrator** passes the material, as a structured field it
+  writes itself, never a model.
+- **Words, not a list of repositories.** The rule of what names a repository (hosts, the default host, a bare name, a URL, a
+  `git@` form) is the agent's (`bin/adam-coder/src/tools/named.rs` of adam-rs, *verified 2026-10-17* at `a3c3f01`); this
+  orchestrator is protocol-agnostic and
+  knows nothing of repositories (invariants 1 and 7). The field carries what the person wrote, and the asked agent applies its
+  own rule to it.
+- **The whole thread, not the job.** The person's messages of every job, oldest first: adam-coder's own rule counts a
+  repository named in the first task as one the person named, and a job-only field would strand one the person named in an
+  earlier job (person: "set up acme/widgets" → the agent asks a question → the person answers in a new job → that job's ask
+  would carry only the answer). A message sent while the agent works (`delivery: steer` or `interrupt`) is the person's and
+  counts.
+- **Which origins.** `Origin` has two values and both are a person's: `agui` (the chat) and `mcp` (a program holding the
+  person's token). An `mcp` message is written by a program holding the person's token, often a model-driven client (Claude
+  Code, opencode): it is the **token, not the hand, that makes a message the person's**, and that is the rule the addressed
+  agent already lives under (adam-coder counts a repository named to it over MCP as the person's), so the same rule holds
+  here. A webhook writes no `user_message` (it writes a `ci_result`), so nothing is left out today; an origin added later
+  that is not a person's is left out by `Origin::is_person` in the core, which the match forces a decision on.
+- **Forks.** A fork's log begins with a copy of its parent's events up to the cut
+  ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md); *verified 2026-10-17*: the Postgres store copies
+  `… FROM events WHERE thread_id = $2 AND seq <= $3`, every kind, and the memory store filters `seq <= cut`), so the copied
+  `user_message`s count on their own, and the agent of a fork is told what the person said in the parent too.
+- **Only on an ask.** Never on the addressed agent's message (it has the messages themselves; the core refuses to mint a
+  `main` grant that carries it, `ToolsGrant::is_consistent`), never for the verifier (no grant), never without a token (it rides
+  under the URI, so a card without the extension gets nothing, as before). `said` may be empty (a thread whose person
+  messages are all blank).
+- **Known gap.** A person's **form answers** (`ui_action`: typed fields and notes) are not carried: without the form the
+  orchestrator cannot tell a typed field from a chosen option. The person can write the name in a message. The effect is
+  fail-closed: fewer repositories count, never more. A cut entry carries no mark either, so a repository name split at byte
+  4096 is a shorter, different name; the asked agent's rule then refuses it, and the effect stays fail-closed (never a
+  repository the person did not name).
+- **Cost.** The dispatcher reads the thread's log forward in pages for every ask it sends (`App::person_said`; no store reads
+  by kind, and a new trait method would break every store), keeping at most 64 KiB while it pages. A log that cannot be read
+  leaves the row to be claimed again, as a catalog that cannot be read does.
+- **The adam-rs side** (the coder reading `person` in a run another agent started, and applying `named.rs` to it) is a
+  separate PR of that repository; this is the orchestrator's.
+
+*Tested (2026-10-17):* the bounds in the core (order, blank texts, the cut on a character boundary, the oldest dropped whole and
+counted, `Debug` without the text, a `main` grant that carries it inconsistent); the dispatcher sends the person's three
+messages of a two-job thread, the steered one among them, and nothing of the agent's, and a delegation carries none; the adapter
+writes the member only on an ask, `omitted` only above 0, nothing to a card without the extension, and no log line of a send
+holds the words; end to end, through the real adapter, on both stores (`orchestrator/crates/e2e/tests/ask_agent.rs`).
 
 ### Trying it
 
@@ -921,7 +992,8 @@ about 200 bytes is refused ("the callId is too long").
   `ask_agent` only while its depth is below the limit; it gets **no** `get_ui_catalog`, no `turn_output` (only the addressed
   agent announces the turn's answer) and no mentions metadata. It is never left out: an ask to an agent whose card lists
   `thread-tools/v1` is sent with its token or not at all (no issuer, or a token that cannot be minted: the ask fails with
-  `state: failed` and the reason as `error`, `NotSent`, no task; [The message](#the-message), *2026-10-17*).
+  `state: failed` and the reason as `error`, `NotSent`, no task; [The message](#the-message), *2026-10-17*). Its message also
+  carries [`person`](#the-person-member), what the person said in the thread, oldest first and bounded (*2026-10-17*).
 - **Continuation.** Asking again is a new ask (a new number). An ask to an agent whose last ask in this job ended `input_required` or `auth_required` continues that
   task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
   not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The other asks of that agent that still run when the form ends end `canceled` with it (and the asks they asked), with an
