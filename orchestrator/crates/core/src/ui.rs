@@ -323,7 +323,7 @@ pub struct UiActionData {
     pub run_id: Option<String>,
     /// The access tier the action was sent under (ADR 0061): what the job was working under when
     /// the person acted, lowered to what their role and the agent's card allowed. Set by the
-    /// orchestrator when it logs the action, so that the log rebuilds the job's tier; whatever a
+    /// orchestrator when it logs the action, so that the log records what the action went out under; whatever a
     /// surface puts here is overwritten, and the agent is not told it. Absent when the action
     /// went out under none, and in every log written before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

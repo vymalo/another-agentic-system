@@ -911,7 +911,11 @@ about 200 bytes is refused ("the callId is too long").
   task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
   not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The dispatcher cancels the
   task the form parked, once the ask is recorded. A question in words, with no interface, is the asking agent's to answer as
-  before. *Decided 2026-10-17 on the owner's choice "end the ask"; the alternative, showing the form to the person, is not built.*
+  before. **Known gap, not fixed here:** the orchestrator sends an ask no UI catalog, so an asked agent that asks in words
+  (adam-coder today: its `ask_user` parks in words when it has no catalog) ends `input_required` with no interface and can have
+  its question, a consent included, answered by the asking model. Such an agent's consent is protected only once the agent
+  refuses to park on it in a run another agent started (an adam-rs follow-up); giving asked agents a catalog would turn every
+  clarifying question into a form that ends the ask. *Decided 2026-10-17 on the owner's choice "end the ask"; the alternative, showing the form to the person, is not built.*
   The orchestrator does not read the words of a message for an agent's convention of what a form answer looks like: that an
   agent takes no such answer from a text part is that agent's duty. Otherwise it is a new task in the same context with `referenceTaskIds` naming the earlier ask tasks to that agent in
   this job ([ADR 0021](../decisions/0021-context-across-a2a-tasks.md)).

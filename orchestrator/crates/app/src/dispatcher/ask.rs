@@ -39,7 +39,8 @@
 //!   ([`AskResult::form`](orch_core::AskResult::form)); the core never continues that task and refuses
 //!   a further ask of the agent in the job ([`AskRefusal::FormPending`](orch_core::AskRefusal)), and
 //!   once the ask is recorded the dispatcher cancels the parked task. A question in words, with no
-//!   interface, stays the asking agent's to answer.
+//!   interface, stays the asking agent's to answer: an ask carries no UI catalog, so an agent such as
+//!   adam-coder asks in words, and that is a known gap (ADR 0026, status note of 2026-10-17).
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
 //!   while the ledger says it runs, and it stops being wanted when the core ends it (the deadline,
 //!   the person's stop, the end of the task that asked, the end of the ask above it). The row looks

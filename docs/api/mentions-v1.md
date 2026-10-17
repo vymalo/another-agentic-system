@@ -194,10 +194,13 @@ The `user_message` event carries `mentions` ([`chat-api.yaml`](chat-api.yaml), `
 ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): set by the orchestrator when the message is checked, refused as an unknown
 member if a client sends it, and never told to the agent. The ask is sent under the highest tier the asked agent offers within it.
 
-An asked agent's **form** is not a model's to answer. When the agent shows an interface and waits, the ask ends with `form: true`
+An asked agent's **form** is not a model's to answer: when the agent *shows an interface* and waits, the ask ends with `form: true`
 (`ask_finished`), its task is cancelled and the agent is not asked again in that job
 ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)).
-A person who wants to answer it talks to that agent in a thread of their own. Every agent that works on the message appears nested under the step that started it, because every ask is a child
+A person who wants to answer it talks to that agent in a thread of their own. This does not cover an agent that asks **in words**
+(an ask carries no UI catalog, so adam-coder's consent question is one): a known gap, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md).
+
+Every agent that works on the message appears nested under the step that started it, because every ask is a child
 task of the thread recorded in the log ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent),
 [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)).
 

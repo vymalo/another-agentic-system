@@ -11,11 +11,11 @@
 //!   is not a running ask, the agent was not mentioned in this job, it is the asker or one of the
 //!   agents waiting for the asker, or a limit is reached (nesting depth, asks in the job, asks
 //!   running at once);
-//! * **a model never answers a form.** An asked agent whose turn ends waiting after it showed an interface
-//!   (an A2UI surface) is waiting for the *person*, who cannot see it: its ask ends with `form`
-//!   ([`AskResult::form`]), is never continued, and the agent is not asked again in this job
-//!   ([`AskRefusal::FormPending`]). What an asked agent says in words stays the asking agent's to
-//!   answer;
+//! * **a form an asked agent shows is not a model's to answer.** An asked agent whose turn ends waiting after it
+//!   showed an interface (an A2UI surface) is waiting for the *person*, who cannot see it: its ask ends
+//!   with `form` ([`AskResult::form`]), is never continued, and the agent is not asked again in this
+//!   job ([`AskRefusal::FormPending`]). What an asked agent says in words stays the asking agent's to
+//!   answer (a known gap: ADR 0026, status note of 2026-10-17);
 //! * an ask that is accepted logs `ask_started`, writes the `ask` outbox row that sends it
 //!   ([`Command::Ask`](crate::Command::Ask)) and arms its deadline
 //!   ([`Timer::AskDeadline`](crate::Timer::AskDeadline));
