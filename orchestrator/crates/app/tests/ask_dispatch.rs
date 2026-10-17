@@ -119,23 +119,55 @@ async fn working_thread<P: orch_ports::Ports>(
     working_thread_with(app, store, None).await
 }
 
-/// The UI catalog of the screen that opened the thread: one with the component that draws a
-/// question with choices.
-fn screen_catalog() -> UiCatalogData {
-    let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
-    let catalog = serde_json::json!({
-        "catalogId": id,
-        "components": {"Choices": {
-            "type": "object",
-            "properties": {"component": {"const": "Choices"}},
-        }},
-    });
+const SCREEN_ID: &str = "https://agents.vymalo.com/a2ui/catalogs/chat";
+
+fn catalog_of(version: u32, components: serde_json::Value) -> UiCatalogData {
+    let catalog = serde_json::json!({"catalogId": SCREEN_ID, "components": components});
     UiCatalogData {
-        catalog_id: id.to_owned(),
-        version: 1,
+        catalog_id: SCREEN_ID.to_owned(),
+        version,
         digest: catalog_digest(&catalog).unwrap(),
         catalog,
     }
+}
+
+/// The UI catalog of the screen that opened the thread: one with the component that draws a
+/// question with choices, beside one that draws cards.
+fn screen_catalog() -> UiCatalogData {
+    catalog_of(
+        3,
+        serde_json::json!({
+            "Choices": {
+                "type": "object",
+                "properties": {"component": {"const": "Choices"}},
+            },
+            "Cards": {
+                "type": "object",
+                "properties": {"component": {"const": "Cards"}},
+            },
+        }),
+    )
+}
+
+/// A screen's catalog that has no form component.
+fn screen_catalog_without_choices() -> UiCatalogData {
+    catalog_of(
+        2,
+        serde_json::json!({"Text": {
+            "type": "object",
+            "properties": {"component": {"const": "Text"}},
+        }}),
+    )
+}
+
+/// The names of the components of a catalog.
+fn components(catalog: &UiCatalogData) -> Vec<String> {
+    catalog.catalog["components"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
 }
 
 /// [`working_thread`] for a thread whose screen sent `catalog` with the message that created it.
@@ -767,15 +799,20 @@ async fn a_question_in_words_is_not_a_form() {
 
 // ---- the UI catalog of an ask (ADR 0026, amended 2026-10-17) --------------------------------
 
-/// An ask is sent the catalog the job's screen gave, **inline** (an asked agent has no tool to fetch
-/// it); a thread whose screen sent none sends none.
+/// An ask is sent a **forms catalog** derived from the one the job's screen gave, **inline** (an
+/// asked agent has no tool to fetch it): `Choices` alone, under the screen's id and `/forms`, the
+/// screen's version and a digest of its own that checks out over the derived catalog. A thread
+/// whose screen sent none, or one whose catalog has no `Choices`, sends none. The derived catalog
+/// is never recorded as the thread's.
 #[tokio::test]
-async fn an_ask_is_sent_the_catalog_of_the_jobs_screen_and_none_when_the_screen_sent_none() {
+async fn an_ask_is_sent_a_forms_catalog_derived_from_the_jobs_screen_and_none_without_choices() {
     let w = World::new();
     let app = app3(&w);
     let catalog = screen_catalog();
     let with = working_thread_with(&*app, &w.store, Some(catalog.clone())).await;
     let without = working_thread(&*app, &w.store).await;
+    let no_choices =
+        working_thread_with(&*app, &w.store, Some(screen_catalog_without_choices())).await;
     put(&*app, &w.store, with.id, ask_of("coder", "echo one", "k1")).await;
     put(
         &*app,
@@ -784,15 +821,54 @@ async fn an_ask_is_sent_the_catalog_of_the_jobs_screen_and_none_when_the_screen_
         ask_of("scout", "echo two", "k2"),
     )
     .await;
+    put(
+        &*app,
+        &w.store,
+        no_choices.id,
+        ask_of("scout", "echo three", "k3"),
+    )
+    .await;
     let run = spawn_dispatcher(&app, fast(), "d1");
     finished(&app, with.id, 1).await;
     finished(&app, without.id, 1).await;
+    finished(&app, no_choices.id, 1).await;
     run.shutdown().await;
+
+    let sent = catalogs_sent_to(&w, "coder");
+    let [Some(UiDelivery::Inline(sent))] = sent.as_slice() else {
+        panic!("one inline delivery: {sent:?}");
+    };
+    assert_ne!(*sent, catalog, "not the screen's own catalog");
     assert_eq!(
-        catalogs_sent_to(&w, "coder"),
-        [Some(UiDelivery::Inline(catalog))]
+        sent.catalog_id,
+        "https://agents.vymalo.com/a2ui/catalogs/chat/forms"
     );
-    assert_eq!(catalogs_sent_to(&w, "scout"), [None]);
+    assert_eq!(sent.version, catalog.version);
+    assert_eq!(components(sent), ["Choices"]);
+    assert_eq!(
+        sent.catalog["components"]["Choices"],
+        catalog.catalog["components"]["Choices"]
+    );
+    assert_eq!(sent.catalog["catalogId"], sent.catalog_id);
+    assert_ne!(sent.digest, catalog.digest);
+    assert_eq!(catalog_digest(&sent.catalog).unwrap(), sent.digest);
+    assert_eq!(Some(sent.clone()), catalog.forms_only());
+    // a thread with no catalog, and one whose catalog has no form, send none
+    assert_eq!(catalogs_sent_to(&w, "scout"), [None, None]);
+    // the derived catalog is never recorded: the thread still names the screen's, and the log
+    // holds the one `ui_catalog` event the screen wrote
+    let thread = app.get_thread(&alice(), with.id).await.unwrap();
+    assert_eq!(
+        thread.job.catalog.current().map(|c| c.digest.as_str()),
+        Some(catalog.digest.as_str())
+    );
+    assert!(!thread.job.catalog.knows(&sent.digest));
+    let recorded = events(&app, &alice(), with.id)
+        .await
+        .into_iter()
+        .filter(|e| e.kind() == EventKind::UiCatalog)
+        .count();
+    assert_eq!(recorded, 1);
 }
 
 /// An asked agent that asks the person something **with choices** (adam's `ask_user`, the coder's

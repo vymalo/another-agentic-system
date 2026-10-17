@@ -924,16 +924,19 @@ about 200 bytes is refused ("the callId is too long").
   task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
   not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The other asks of that agent that still run when the form ends end `canceled` with it (and the asks they asked), with an
   `error` that says why; the dispatcher cancels their tasks and the task the form parked, once the ask is recorded. A question in words, with no interface, is the asking agent's to answer as
-  before. **The ask is sent the job's UI catalog** (the one the thread's screen gave; only to an agent whose card lists
-  `ui-catalog/v1`, and inline only to one that accepts inline catalogs, any other getting a reference it cannot resolve; none
-  when the thread has none), so an asked agent that asks the person something **with choices**
-  (adam-coder's consent is one) draws a form and the ask ends with `form`. *The cost, accepted by the owner:* every question
+  before. **The ask is sent a forms catalog derived from the job's** (*2026-10-17, third note of ADR 0026*: the `Choices` of
+  the thread's current catalog alone, under `<catalog id>/forms`, with the thread's version and a digest of its own,
+  [`ui-catalog-v1.md`](ui-catalog-v1.md#the-forms-catalog-of-an-ask); derived at every send, never recorded; only to an agent
+  whose card lists `ui-catalog/v1`, and inline only to one that accepts inline catalogs, any other getting a reference it cannot
+  resolve; none when the thread has no catalog or its catalog has no `Choices`), so an asked agent that asks the person
+  something **with choices** (adam-coder's consent is one) draws a form and the ask ends with `form`, and can draw nothing
+  else. *The cost, accepted by the owner:* every question
   with choices ends the ask, even one the asking model could have answered; the model tells the person to talk to that agent
   directly. A claim that **re-attaches** to the task after a crash or a broken stream cannot know what it drew before, so it takes
   any `input_required` or `auth_required` end for a form (it reads no history), a question in words included, and the agent is
   refused for the rest of the job. **Known gap, narrowed,
   not fixed here:** a question in words (no `choices`), an asked agent that ignores the catalog or does not accept inline catalogs, and a thread with no catalog
-  still end `input_required` with no interface and can have their question, a consent included, answered by the asking model.
+  or whose catalog has no `Choices` still end `input_required` with no interface and can have their question, a consent included, answered by the asking model.
   Such an agent's consent is protected only once the agent refuses to park on it in a run another agent started (adam-coder does
   since adam-rs #115, `8847c28`, in the pin since 2026-10-17: its consent tools ask nobody there and no words are a consent; defence in
   depth), which needs the token: since 2026-10-17 an ask to a card that lists `thread-tools/v1` never goes out without it (above). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the

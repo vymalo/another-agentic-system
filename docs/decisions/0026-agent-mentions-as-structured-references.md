@@ -8,7 +8,9 @@
   the asking agent's, and that leaves a narrower known gap
   ([status note](#status-note-2026-10-17-a-form-is-the-persons-to-answer)). **Amended (2026-10-17, second):** an ask is never
   sent without its thread-tools grant: an adapter that cannot mint the token fails the ask instead of sending a plain message
-  ([status note](#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)).
+  ([status note](#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)). **Amended (2026-10-17, third):** an
+  asked agent is sent a **forms catalog** derived from the thread's, `Choices` alone, so that it can draw a form and nothing
+  else ([status note](#status-note-2026-10-17-third-an-asked-agent-is-sent-a-forms-only-catalog)).
 
 ## Context
 
@@ -286,3 +288,37 @@ the orchestrator sends with no grant"), and it is closed:
   no issuer and that the agent saw no call; a dispatcher test proves the ask ends failed with the reason and no task is recorded.
   It is the adapter's rule, not a case of the `AgentClient` conformance testkit: "no issuer" is the A2A adapter's configuration,
   which the scripted agent of the testkit has no counterpart for.
+
+## Status note, 2026-10-17 (third): an asked agent is sent a forms-only catalog
+
+**Amended (2026-10-17), on the owner's delegation.** The note of this day that sends asks the job's catalog accepted a cost:
+with the whole catalog an asked agent could draw cards or a graph, and a surface that is not a form followed by a question in
+words ended the ask under the fail-closed rule, because the rule cannot tell surfaces apart. The catalog an ask is sent is now
+**derived**, and the asked agent can no longer draw one:
+
+- **What is sent.** The thread's current catalog is read as before (`App::thread_ui_catalog`) and reduced to a **forms
+  catalog** (`UiCatalogData::forms_only`, in the core: it is pure, and it sits beside the digest it reuses):
+  `{catalogId: <the thread's catalog id>/forms, components: {Choices: <the thread's Choices schema, unchanged>}}`, with the
+  thread's **`version`** (adam-ui decides from the version whether a `Choices` has a title, a description and typed questions,
+  `CATALOG_V5` in its `ask.rs`) and a **digest** recomputed over the canonical JSON of the derived catalog, by the one
+  canonicaliser the orchestrator has ([`ui-catalog-v1.md`](../api/ui-catalog-v1.md#the-forms-catalog-of-an-ask), section 2).
+  `App::thread_forms_catalog` is the read the dispatcher makes; the delivery path is unchanged (`UiDelivery::Inline`, only to a
+  card that lists `ui-catalog/v1`, inline only to one that accepts inline catalogs), so the adapter relays it like any catalog.
+- **The id.** `<the thread's catalog id>/forms` (a trailing slash on the thread's id is not doubled): an absolute https URL that
+  differs from the screen's, so that an agent that holds to A2UI never takes the two for one, under the screen's own namespace,
+  so that it is as stable as the screen's id across versions and needs no configuration. It is an id, never fetched. One that
+  would exceed the contract's 256 bytes gives no catalog (none is sent), as a thread whose catalog has no `Choices`, or no
+  catalog, gives none, as before.
+- **Never recorded.** The derived catalog is computed at every send from the recorded one and is the same every time (a test
+  proves it); it is not a `ui_catalog` event, not on the ledger, and the thread's current catalog stays the screen's.
+- **What remains of the cost.** A question with choices still ends the ask (that is the point). The known gap is now: a
+  question in words (no `choices`), an agent that ignores the catalog or does not accept inline catalogs, and a thread with no
+  catalog or whose catalog has no `Choices` (none is sent, and the agent asks in words). A non-form surface no longer ends an
+  ask, because an asked agent has nothing to draw one with.
+- **Tests.** The derivation in the core (the filter, the id, the version kept, the digest recomputed over the canonical form,
+  stable across calls, `None` without `Choices`, without a catalog, or when the id would not fit); the dispatcher sends the
+  forms catalog and not the thread's, and none to a thread without `Choices`, and records nothing; the adapter delivers it whole
+  and consistent (metadata, first supported id and the inline catalog agree, `Choices` alone); end to end, through the real
+  adapter, in `orchestrator/crates/e2e/tests/ask_agent.rs` (no asked mock of `dev/` lists `ui-catalog/v1`, so
+  `dev/mentions-e2e.sh` cannot see it and no mock was invented).
+

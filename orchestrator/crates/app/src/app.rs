@@ -1999,6 +1999,25 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// The catalog an **asked** agent is sent (ADR 0026, amended 2026-10-17): the forms catalog
+    /// derived from the thread's current one ([`UiCatalogData::forms_only`]), `Choices` alone under
+    /// `<catalog id>/forms`, with the thread's version and a digest of its own. Derived here from
+    /// what [`thread_ui_catalog`](Self::thread_ui_catalog) reads, at every send, and never
+    /// recorded. `None` when the thread has no catalog, or its catalog has no `Choices`.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`thread_ui_catalog`](Self::thread_ui_catalog).
+    pub async fn thread_forms_catalog(
+        &self,
+        id: ThreadId,
+    ) -> Result<Option<UiCatalogData>, AppError> {
+        Ok(self
+            .thread_ui_catalog(id)
+            .await?
+            .and_then(|catalog| catalog.forms_only()))
+    }
+
     /// A snapshot of one of the user's threads for sharing: the thread with its job ledger, its
     /// binding and its whole event log. Someone else's thread is `NotFound`, like every read.
     ///

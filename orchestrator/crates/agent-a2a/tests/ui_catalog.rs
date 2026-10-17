@@ -152,6 +152,62 @@ async fn an_inline_catalog_goes_inline_to_an_agent_that_lists_the_extension_and_
     assert!(call.activates(A2UI_EXTENSION_V0_9_1));
 }
 
+/// The forms catalog an ask carries (ADR 0026, amended 2026-10-17) travels like any inline
+/// delivery, and everything the agent reads agrees: the `ui-catalog/v1` metadata, the first
+/// supported id and the catalog in `inlineCatalogs` all name the derived catalog, which holds
+/// `Choices` alone, and the digest recomputed over what arrived is the one announced; nothing of
+/// the screen's own catalog is in the message.
+#[tokio::test]
+async fn a_forms_catalog_is_delivered_whole_with_choices_alone_and_its_own_id_and_digest() {
+    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], true).await;
+    let screen_catalog = json!({"catalogId": ID, "components": {
+        "Note": {"type": "object", "properties": {"component": {"const": "Note"}}},
+        "Choices": {
+            "type": "object",
+            "properties": {"component": {"const": "Choices"}, "questions": {"type": "array"}},
+            "required": ["component", "questions"],
+        },
+    }});
+    let screen = UiCatalogData {
+        catalog_id: ID.to_owned(),
+        version: 4,
+        digest: catalog_digest(&screen_catalog).unwrap(),
+        catalog: screen_catalog,
+    };
+    let forms = screen.forms_only().unwrap();
+    let forms_id = format!("{ID}/forms");
+
+    let call = send(&client(), &fake, Some(UiDelivery::Inline(forms.clone()))).await;
+    let told = told(&call).unwrap();
+    assert_eq!(
+        told,
+        json!({"catalogId": forms_id, "version": 4, "digest": forms.digest, "inline": true})
+    );
+    let inline = inline_of(&call);
+    assert_eq!(inline, vec![forms.catalog.clone()]);
+    let names: Vec<&String> = inline[0]["components"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(names, ["Choices"]);
+    assert_eq!(
+        inline[0]["components"]["Choices"],
+        screen.catalog["components"]["Choices"]
+    );
+    assert_eq!(json!(catalog_digest(&inline[0]).unwrap()), told["digest"]);
+    assert_ne!(told["digest"], json!(screen.digest));
+    assert_eq!(supported(&call, "v0.9.1")[0], forms_id);
+    assert!(call.activates(UI_CATALOG_EXTENSION));
+    // nothing of the screen's own catalog: not its id, not its other components
+    assert!(!supported(&call, "v0.9.1").contains(&ID.to_owned()));
+    assert!(
+        !serde_json::to_string(&call.inline_catalogs)
+            .unwrap()
+            .contains("Note")
+    );
+}
+
 #[tokio::test]
 async fn an_agent_that_does_not_take_a_catalog_inline_is_told_which_one_and_asks_for_it() {
     let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], false).await;
