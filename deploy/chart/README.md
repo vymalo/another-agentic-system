@@ -412,7 +412,72 @@ name's path does. Nothing below has run on a cluster: rehearse it in a scratch n
 10. **Deal with the old server's folder.** It stays in the bucket and no longer expires ([above](#how-long-a-deleted-thread-stays-in-the-backups)). Keep it until the new cluster has run well, then delete it or give its prefix a
     lifecycle rule: it holds people's threads.
 
-The restore on netcup is the proof the chart does not have (see *Unverified*).
+The restore on netcup is the proof the chart does not have (see *Unverified*). The same restore on a kind cluster is what [the end-to-end below](#the-end-to-end-on-kind) does; it passed in CI (run 39008626108 at `0e017d3`, *verified 2026-10-17* in its log).
+
+### The end-to-end on kind
+
+[`.github/workflows/backup-e2e.yml`](../../.github/workflows/backup-e2e.yml) (job `backup-e2e`, 40 minutes at most; on a pull request that touches the database objects, `_validate.tpl`, the values, the two restore examples or
+[`tests/backup-e2e/`](tests/backup-e2e), weekly, and on demand; **required by nothing**) runs [`tests/backup-e2e/backup-e2e.sh`](tests/backup-e2e/backup-e2e.sh) on a fresh kind cluster. It installs cert-manager, the CloudNativePG operator
+and the barman-cloud plugin from their charts, each pinned by version and SHA-256 with its sources ([`UPSTREAM`](tests/backup-e2e/UPSTREAM)), and a RustFS (the image of `compose.yaml`) as the S3 server. It then applies **the chart's own
+objects**, `helm template -s templates/cnpg-clusters.yaml -s templates/cnpg-backup.yaml` with [`tests/backup-e2e/values.yaml`](tests/backup-e2e/values.yaml) over `examples/netcup.values.yaml` (backups on, no chat agent, ExternalSecrets off so that the
+Secret `another-agentic-db-backup` is the test's, a cron of every minute, the checksum workaround of [`sidecar.env`](#the-values) set because RustFS is an S3-compatible server and the failure it guards against would hide the rest), and
+[`examples/restore-cluster.yaml`](examples/restore-cluster.yaml) **as it is written**: the kind cluster is given a StorageClass named `longhorn`, the chart's default and the example's, with the provisioner of `standard`.
+
+```mermaid
+sequenceDiagram
+  participant T as backup-e2e.sh
+  participant K as kind cluster (operator, plugin, cert-manager)
+  participant PG as database pod (Postgres + sidecar)
+  participant S3 as RustFS
+  T->>K: install the three charts (pinned, checksummed), RustFS and its bucket
+  T->>K: apply the chart's Cluster, ObjectStore and ScheduledBackup
+  T->>PG: the orchestrator's migrations as the owner, thread A, switch the WAL segment
+  PG->>S3: WAL segment (the plugin's sidecar)
+  K->>S3: a base backup that started after thread A (the ScheduledBackup, every minute)
+  T->>K: suspend the schedule, wait for no backup to run
+  T->>PG: thread B, switch the WAL segment
+  PG->>S3: the segment that holds B (waited for in pg_stat_archiver and in the bucket)
+  T->>K: apply examples/restore-cluster.yaml
+  K->>S3: read the newest base backup and the WAL
+  T->>K: SELECT title FROM threads on the restored cluster returns A (base backup) and B (WAL)
+  T->>S3: still one server folder (the restored cluster archives nothing)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Guarded: a kind-* context, no CRDs of the three, no namespace of its names
+  Guarded --> Installed: charts downloaded and checksummed, three Helm releases, RustFS, bucket
+  Installed --> Archiving: Cluster Ready, ContinuousArchiving True
+  Archiving --> BackedUp: a Backup made by the plugin after thread A is completed, base backup and WAL in the bucket
+  BackedUp --> WalOnly: schedule suspended, thread B archived in the WAL
+  WalOnly --> Restored: restore-cluster.yaml Ready, both titles returned
+  Restored --> Clean: no new server folder, no credential in a log
+  Clean --> [*]: schedule, clusters, releases, namespaces, CRDs and StorageClass removed
+  Guarded --> [*]: refused
+  Installed --> [*]: failed, state printed, removed
+  Archiving --> [*]: failed, state printed, removed
+  BackedUp --> [*]: failed, state printed, removed
+  WalOnly --> [*]: failed, state printed, removed
+  Restored --> [*]: failed, state printed, removed
+```
+
+What it asserts: the Cluster has the plugin's sidecar and its condition `ContinuousArchiving` becomes True (the instance manager sets it after each `wal-archive` run that does not fail; here the run is the plugin's upload, and the WAL objects in the bucket prove it); a `Backup` of the `ScheduledBackup`, made **after** thread A was written, is `completed`, with
+`method: plugin` and a backup id, and `LastBackupSucceeded` is True and the `ObjectStore`'s `status.serverRecoveryWindow` names a first recoverability point and a last good backup (the checks of step 6 of [the list](#what-the-owner-does-in-this-order));
+the bucket holds `<prefix>/another-agentic-db/base/<backup id>/backup.info` and WAL under `wals/`; with the schedule suspended, a second thread is written, its segment is switched and waited for in `pg_stat_archiver` and in the bucket, so **only the WAL has it**;
+the restored cluster is Ready, `SELECT title FROM threads` as the owner `orchestrator` returns both titles, with the source's tables, and the bucket still holds one server folder after a WAL switch of the restored cluster. No credential of the run is in a log or in an object. It
+installs only on a cluster that is `kind-*` (`BACKUP_E2E_ALLOW_ANY_CONTEXT=1` for another throwaway one) that has none of the three CRDs, and removes what it made. Locally, on a cluster of its own:
+
+```sh
+kind create cluster --name backup-e2e --image "$(sed -n 's/^kind_node_image=//p' deploy/chart/tests/backup-e2e/UPSTREAM)"
+sh deploy/chart/tests/backup-e2e/backup-e2e.sh            # about 6 minutes in CI (run 39008626108), most of it image pulls
+sh deploy/chart/tests/backup-e2e/backup-e2e.sh render     # helm only: the objects it would apply
+kind delete cluster --name backup-e2e
+```
+
+What it does **not** prove: netcup (its CloudNativePG version, Argo CD, storage class, the pod rolling when the Cluster gains the plugin, an AWS bucket and its IAM user), the ExternalSecret that makes the credentials, the retention (nothing here ages a backup), the cutover of
+[*Replace a lost cluster*](#replace-a-lost-cluster), a point in time, or a database with the chat agent's and the coders' roles. **Status: written on 2026-10-17 where no container daemon runs.** The script was walked end to end against a fake `kubectl` with a real RustFS (the
+pinned image, run as a process), a real PostgreSQL 16 (the migrations, the inserts, `pg_stat_archiver`) and the real `helm template`, and the objects it applies were validated against the vendored CRD schemas; the cluster half, the three charts, the operator, the plugin, a
+base backup, WAL archiving through the plugin and the restore, **is unverified until the first run of the job**. It runs the operator's default PostgreSQL image (18.6 at CloudNativePG 1.30.1), the orchestrator's own tests PostgreSQL 16.
 
 ### Facts and where they come from
 
@@ -431,6 +496,7 @@ The restore on netcup is the proof the chart does not have (see *Unverified*).
 - CloudNativePG (`main`): a Cluster with two bootstrap methods is refused with "Only one bootstrap method can be specified at a time", and the bootstrap is not among the checks on a changed Cluster, nor does its type carry an immutability rule on it, and `initdb` is the method when none is given (`internal/webhook/v1/cluster_webhook.go`, `validateBootstrapMethod`, `validateClusterChanges`; `api/v1/cluster_types.go`); a `ScheduledBackup`'s schedule is parsed with a cron parser and refused if it does not parse (`internal/webhook/v1/scheduledbackup_webhook.go`); a recovery without a named `secret` gets an app Secret with a random password, and a cluster whose archive path already holds files stays in `Setting up primary` with `Expected empty archive` (`docs/src/recovery.md`, "Configure the application database", "Restoring into a Cluster with a Backup Section").
 - `s3Credentials.region` is a Secret reference that becomes `AWS_DEFAULT_REGION` for barman-cloud (cloudnative-pg/barman-cloud v0.6.0, `pkg/credentials/env.go`); the commands run with the sidecar's own environment as their base (plugin v0.15.1, `internal/cnpgi/instance/retention.go`, `…/restore/restore.go`, `os.Environ()`), so `instanceSidecarConfiguration.env` reaches them, and the sidecar of a recovery source gets its store's `env` (`internal/cnpgi/operator/lifecycle_envs.go`). That the restore job does see it is *unverified* (the code path was read, not run).
 - The plugin makes a `Role` that reads exactly the Secrets the ObjectStore names (`internal/cnpgi/operator/specs/role.go`); the Cluster's conditions are `ContinuousArchiving` and `LastBackupSucceeded` (cloudnative-pg `api/v1/cluster_types.go`); `status.serverRecoveryWindow` holds `firstRecoverabilityPoint` and `lastSuccessfulBackupTime` (`objectstore_types.go`).
+- The conditions and objects the end-to-end reads (*verified 2026-10-17* by reading CloudNativePG v1.30.1 and plugin v0.15.1 from the module proxy; none of it run): the instance manager's `wal-archive` command, PostgreSQL's `archive_command`, sets `ContinuousArchiving` True after each run that does not fail, through the plugin or not, and the plugin sets no condition of its own; for a cluster with no archiver configured (a restored cluster with no `plugins` entry) the run does nothing and succeeds, so the condition is True there and proves nothing (`internal/cmd/manager/walarchive/cmd.go`, `pkg/management/postgres/archiver/archiver.go`, `pkg/management/postgres/webserver/local.go`; the first run of the end-to-end showed it: the restored cluster said True and wrote nothing to the bucket). With backups on, a failing upload makes it False, so it is still the health signal of the live cluster; a plugin backup sets `LastBackupSucceeded` (`pkg/management/postgres/webserver/plugin_backup.go`); a `Backup` that a `ScheduledBackup` makes carries the label `cnpg.io/scheduled-backup=<its name>`, and its phases are pending, started, running, finalizing, completed, failed and walArchivingFailing (`api/v1`); the plugin writes `status.serverRecoveryWindow` after each backup (`internal/cnpgi/instance/recovery_window.go`). The plugin's sidecar is a native sidecar, an init container named `plugin-barman-cloud` with `restartPolicy: Always`, and for a cluster that only recovers from a store (`restore-cluster.yaml`) it is in the pod until the cluster has a primary, after which CloudNativePG rolls the pod to drop it (`internal/cnpgi/operator/lifecycle.go`, `shouldInjectBarmanSidecar`): the restored cluster may restart once after it was first Ready. The layout barman-cloud writes into the bucket (`<server>/base/<backup id>/backup.info`, `<server>/wals/<16 hex>/<segment>[.gz]`) is from barman's documentation, not from a file read here.
 - A target Secret of an ExternalSecret whose template has only metadata keeps the keys of `data` (external-secrets `externalsecret_controller_template.go`: no data template means the fetched keys are included).
 - The CRD schemas CI validates against are the datree catalog's at the commit the other CNPG schemas come from ([tests/schemas](tests/schemas/README.md)).
 
@@ -1510,5 +1576,5 @@ routes behave as the table says, but no real web, orchestrator or Traefik was be
 across preview releases with data on the volume. With `rustfs.ingress.enabled`: the files host on netcup (Traefik's TLS, its entrypoint timeouts and access log, the proxy's NetworkPolicy under Cilium, an agent reaching the public name from a pod, a real browser's CORS and `DPoP` preflight). With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
-With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `backup.enabled`: everything on netcup ([the list](#facts-and-where-they-come-from)): the plugin, a backup, the WAL, a restore.
+With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `backup.enabled`: everything on netcup ([the list](#facts-and-where-they-come-from)): the plugin, a backup, the WAL, a restore; and, anywhere, the [kind end-to-end](#the-end-to-end-on-kind) until CI has run it once.
 With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

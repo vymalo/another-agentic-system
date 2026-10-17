@@ -1,0 +1,41 @@
+# Layered over examples/netcup.values.yaml by backup-e2e.sh (in this directory): the database cluster with continuous backups
+# on, as a small deployment would set it, to a RustFS in the test's namespace. Only the database objects are rendered and applied
+# (`-s templates/cnpg-clusters.yaml -s templates/cnpg-backup.yaml`), so everything else here is what the chart needs to render at all.
+# The endpoint (it names the test's namespace) and nothing else is set on the command line.
+#
+#   * no chat agent, no browser agent, no coder: the cluster holds the one database `orchestrator`, whose owner CloudNativePG creates
+#     itself; the managed roles of the other agents would want Secrets that an ExternalSecret makes;
+#   * ExternalSecrets off: the credentials Secret `another-agentic-db-backup` is the test's own (backup-e2e.sh makes it);
+#   * the cron is every minute (six fields, seconds first), so that the second base backup does not wait for 03:17, and `immediate` stays
+#     the chart's default (true): the schedule and the first backup are the chart's, not the test's;
+#   * the storage (10Gi, class `longhorn`) is the chart's default, so that examples/restore-cluster.yaml, whose storage is the same,
+#     applies as written: backup-e2e.sh gives the kind cluster a StorageClass of that name.
+chat:
+  enabled: false
+agents:
+  - id: coder
+    name: Adam
+    cardUrl: "http://coder.backup-e2e.svc:8080/.well-known/agent-card.json"
+    tokenEnv: CODER_A2A_TOKEN
+externalSecrets:
+  enabled: false
+networkPolicy:
+  enabled: false
+backup:
+  enabled: true
+  s3:
+    bucket: backup-e2e
+    # endpoint: set by backup-e2e.sh (http://rustfs.<namespace>.svc:9000)
+    region: us-east-1
+    prefix: e2e
+  schedule:
+    cron: "0 * * * * *"
+  # RustFS is one of the S3-compatible servers the plugin names as tested, and a server may refuse the checksum headers of the newer AWS SDKs
+  # (plugin issue #393; deploy/chart/README.md "Backups", "The values"). The workaround is set so that the failure it guards against cannot be
+  # what stops the run. Whether RustFS 1.0.1-preview.17 needs it is not known: the run sets it every time and cannot say.
+  sidecar:
+    env:
+      - name: AWS_REQUEST_CHECKSUM_CALCULATION
+        value: when_required
+      - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+        value: when_required

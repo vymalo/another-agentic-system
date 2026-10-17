@@ -1,0 +1,176 @@
+# The S3 server of backup-e2e.sh: one RustFS, the image of compose.yaml's `rustfs` service (UPSTREAM, `rustfs_image`), on an emptyDir, with a bucket made by a
+# Job. It is the shape of the chart's own RustFS (templates/rustfs.yaml: the same environment, probes and bucket Job, SigV4 with the image's curl, path style),
+# in the test's namespace, with the test's credentials (the Secret `rustfs-credentials`, which the script makes with random values; they are the sidecar's as
+# well). The script replaces __RUSTFS_IMAGE__, __BUCKET__ and __REGION__ (the bucket and the region are the ones the chart renders for the ObjectStore) and
+# applies the result with `kubectl -n <namespace>`; the label is how the script knows the objects are its own.
+#
+# The volume is an emptyDir: nothing of it outlives the pod, and the test needs nothing to. Its console is off; the version check it makes at startup goes to a
+# proxy port nobody listens on (compose.yaml, "verified 2026-10-09 through a capturing proxy"). The root filesystem is not read-only here (the chart's is: the
+# test does not need to prove that again).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  labels:
+    app.kubernetes.io/name: rustfs
+    another-agentic-e2e/made-by: backup-e2e
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rustfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rustfs
+        another-agentic-e2e/made-by: backup-e2e
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's `rustfs` user; the volume is given its group.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rustfs
+          image: __RUSTFS_IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: s3
+              containerPort: 9000
+              protocol: TCP
+          env:
+            - name: RUSTFS_VOLUMES
+              value: /data
+            - name: RUSTFS_ADDRESS
+              value: ":9000"
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "false"
+            # Logs on stdout, not in a directory of the image.
+            - name: RUSTFS_OBS_LOG_DIRECTORY
+              value: ""
+            # The version check goes nowhere.
+            - name: HTTPS_PROXY
+              value: http://127.0.0.1:9
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-credentials
+                  key: RUSTFS_ACCESS_KEY
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-credentials
+                  key: RUSTFS_SECRET_KEY
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: s3
+            periodSeconds: 3
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: s3
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  labels:
+    app.kubernetes.io/name: rustfs
+    another-agentic-e2e/made-by: backup-e2e
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rustfs
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+      protocol: TCP
+---
+# The bucket: RustFS's own image and its curl (SigV4, path style, the key and the secret on curl's standard input, never on a command line). A bucket that
+# exists answers 200 again, so the Job can be run twice.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rustfs-bucket
+  labels:
+    app.kubernetes.io/name: rustfs-bucket
+    another-agentic-e2e/made-by: backup-e2e
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rustfs-bucket
+        another-agentic-e2e/made-by: backup-e2e
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bucket
+          image: __RUSTFS_IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              i=0
+              until curl -fsS -o /dev/null "$ENDPOINT/health/ready"; do
+                i=$((i + 1)); [ "$i" -lt 100 ] || { echo "RustFS is not ready at $ENDPOINT" >&2; exit 1; }; sleep 3
+              done
+              printf 'user = "%s:%s"\n' "$RUSTFS_ACCESS_KEY" "$RUSTFS_SECRET_KEY" |
+                curl -fsS -o /dev/null -K - --aws-sigv4 "aws:amz:$REGION:s3" -X PUT "$ENDPOINT/$BUCKET"
+              echo "bucket $BUCKET is there"
+          env:
+            - name: ENDPOINT
+              value: http://rustfs:9000
+            - name: BUCKET
+              value: __BUCKET__
+            - name: REGION
+              value: __REGION__
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-credentials
+                  key: RUSTFS_ACCESS_KEY
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-credentials
+                  key: RUSTFS_SECRET_KEY
