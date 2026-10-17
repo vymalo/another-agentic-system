@@ -428,6 +428,27 @@ async fn a_form_is_the_persons_to_answer_and_the_agent_that_showed_it_is_not_ask
 }
 
 #[tokio::test]
+async fn two_asks_of_one_agent_made_together_do_not_both_go_on_after_a_form() {
+    let h = start().await;
+    let thread = thread(&h).await;
+    let client = connect(&h.url(thread), &grant_token(thread, "plain")).await;
+    // the script `slow` holds its task until it is cancelled, `ui` draws a form and waits; made
+    // together, either is accepted first: if the form comes first the other ask is refused, if
+    // it comes second the running ask ends with it. Neither reaches the agent after the form.
+    let (slow, form) = tokio::join!(
+        ask(&client, "coder", "slow wait", Some("c1")),
+        ask(&client, "coder", "ui pick one", Some("c2")),
+    );
+    assert!(!form.is_error, "{form:?}");
+    assert_eq!(form.value["form"], true, "{form:?}");
+    assert!(slow.is_error, "{slow:?}");
+    assert!(slow.text.contains("form"), "says why: {slow:?}");
+    // and the agent is not asked again
+    let again = ask(&client, "coder", "yes", Some("c3")).await;
+    assert!(again.is_error && again.value.is_null(), "{again:?}");
+}
+
+#[tokio::test]
 async fn a_failed_task_is_an_error_result_that_says_how_it_failed() {
     let h = start().await;
     let thread = thread(&h).await;

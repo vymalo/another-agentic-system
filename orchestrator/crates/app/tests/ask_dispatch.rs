@@ -724,6 +724,55 @@ async fn a_question_in_words_is_not_a_form() {
     run.shutdown().await;
 }
 
+/// A second ask of the agent that was accepted while the first ran must not reach its conversation
+/// after the agent showed a form: `FormPending` refuses only the asks that come later, so the ask
+/// that ran meanwhile ends with the form and its task is cancelled.
+#[tokio::test]
+async fn an_ask_that_runs_when_the_agent_shows_a_form_ends_with_it_and_its_task_is_cancelled() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    // ask 1: the coder holds its task until it is cancelled
+    let first = put(&*app, &w.store, t.id, ask_of("coder", "slow wait", "k1")).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("ask 1 is sent", || async {
+        let thread = app.get_thread(&alice(), t.id).await.unwrap();
+        thread.job.asks.first().and_then(|a| a.task_id.clone())
+    })
+    .await;
+    // ask 2 of the same agent is accepted while ask 1 runs, and the coder shows a form
+    app.apply(t.id, ask_of("coder", "ui pick one", "k2"), None, None, None)
+        .await
+        .unwrap();
+    let (form, _) = finished(&app, t.id, 2).await;
+    assert_eq!(form.state, AskOutcome::InputRequired);
+    assert!(form.form, "{form:?}");
+    // ask 1 ended with it, with the reason, and is not left to run into the agent's conversation
+    let (one, _) = finished(&app, t.id, 1).await;
+    assert_eq!(one.state, AskOutcome::Canceled, "{one:?}");
+    assert!(!one.form);
+    assert!(
+        one.error.as_deref().is_some_and(|e| e.contains("form")),
+        "{one:?}"
+    );
+    // both tasks are cancelled: the one that was running and the one the form parked
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    let tasks: Vec<String> = thread
+        .job
+        .asks
+        .iter()
+        .map(|a| a.task_id.clone().expect("both asks were sent"))
+        .collect();
+    eventually("both tasks are cancelled", || async {
+        let done = cancels(&w);
+        tasks.iter().all(|t| done.contains(t)).then_some(())
+    })
+    .await;
+    row_ends(&w, &first).await;
+    assert_eq!(finished_count(&app, t.id).await, 2);
+    run.shutdown().await;
+}
+
 /// A real agent's stream for a message that continues a task begins with the task as it stands:
 /// still waiting. The ask that continues it must not end with that question.
 #[tokio::test]

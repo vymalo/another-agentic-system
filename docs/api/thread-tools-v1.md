@@ -909,8 +909,8 @@ about 200 bytes is refused ("the callId is too long").
   agent announces the turn's answer) and no mentions metadata.
 - **Continuation.** Asking again is a new ask (a new number). An ask to an agent whose last ask in this job ended `input_required` or `auth_required` continues that
   task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
-  not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The dispatcher cancels the
-  task the form parked, once the ask is recorded. A question in words, with no interface, is the asking agent's to answer as
+  not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The other asks of that agent that still run when the form ends end `canceled` with it (and the asks they asked), with an
+  `error` that says why; the dispatcher cancels their tasks and the task the form parked, once the ask is recorded. A question in words, with no interface, is the asking agent's to answer as
   before. **Known gap, not fixed here:** the orchestrator sends an ask no UI catalog, so an asked agent that asks in words
   (adam-coder today: its `ask_user` parks in words when it has no catalog) ends `input_required` with no interface and can have
   its question, a consent included, answered by the asking model. Such an agent's consent is protected only once the agent

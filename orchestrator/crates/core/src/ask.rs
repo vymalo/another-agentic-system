@@ -454,6 +454,8 @@ pub(crate) const PERSON_STOPPED: &str = "the person stopped the job";
 /// Why asks end when the task that asked is over.
 pub(crate) const ASKER_ENDED: &str = TASK_ENDED;
 const DEADLINE_PASSED: &str = "the asked agent did not answer in time";
+/// Why the other running asks of an agent end when one of them ends with a form.
+const FORM_SHOWN: &str = "the asked agent is waiting for the person to answer a form it showed, so this ask ended with it";
 
 fn find(job: &Job, n: u32) -> Option<&Ask> {
     job.asks.iter().find(|a| a.n == n)
@@ -771,7 +773,11 @@ fn canceled(n: u32, why: &str) -> AskFinishedData {
 }
 
 /// Ends ask `n` with `data`, once, and the asks it asked, `canceled`: an ask that ended is not
-/// waiting for them any more. `None` of it when the ask has ended already.
+/// waiting for them any more. When it ends with a form ([`AskFinishedData::form`]) the other asks
+/// of the same agent that still run end `canceled` too, with their own children: a second ask
+/// accepted while the first ran would otherwise reach the agent's conversation after the form
+/// ([`AskRefusal::FormPending`] refuses only the asks that come later). `None` of it when the ask has
+/// ended already.
 fn end(job: &mut Job, n: u32, actor: Actor, data: AskFinishedData) -> Vec<Command> {
     let Some(ask) = job.asks.iter_mut().find(|a| a.n == n) else {
         return Vec::new();
@@ -781,6 +787,7 @@ fn end(job: &mut Job, n: u32, actor: Actor, data: AskFinishedData) -> Vec<Comman
     }
     ask.outcome = Some(data.state);
     ask.form = data.form;
+    let (form, agent) = (data.form, ask.agent.clone());
     let mut cmds = vec![append(actor, EventBody::AskFinished(data))];
     // children are numbered after their parent: one pass, in order, reaches every descendant
     let mut ended = vec![n];
@@ -792,6 +799,23 @@ fn end(job: &mut Job, n: u32, actor: Actor, data: AskFinishedData) -> Vec<Comman
             cmds.push(append(
                 Actor::system(),
                 EventBody::AskFinished(canceled(child.n, TASK_ENDED)),
+            ));
+        }
+    }
+    if form {
+        let others: Vec<u32> = job
+            .asks
+            .iter()
+            .filter(|a| a.n != n && a.agent == agent && a.is_running())
+            .map(|a| a.n)
+            .collect();
+        for other in others {
+            // one the cascade above reached has ended already, and `end` says nothing for it
+            cmds.extend(end(
+                job,
+                other,
+                Actor::system(),
+                canceled(other, FORM_SHOWN),
             ));
         }
     }

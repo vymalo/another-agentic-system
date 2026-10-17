@@ -197,7 +197,9 @@ not fixed here**:
 - **What the core does.** The ask ends as ever, with `ask_finished.form` (omitted when false) and the ledger's `Ask.form`. Such a
   task is **never continued** (`continuation`), and **no further ask of that agent in the job is accepted**
   (`AskRefusal::FormPending`, by whoever asks), because a new task in the same A2A context could resolve the parked one. The
-  dispatcher then cancels the parked task, once the end is recorded.
+  other asks of that agent that still run when the form ends end `canceled` with it, and their children (a second ask accepted
+  while the first ran would otherwise reach the agent's conversation after the form); their rows drop and their tasks are
+  cancelled. The dispatcher also cancels the task the form parked, once the end is recorded.
 - **What the model is told.** The result has `form: true` with the agent's question, and the tool description says that only
   the person can answer it; the next ask of that agent is a refusal that tells the model to tell the person that the agent
   needs them and that they can answer by talking to it directly. `auth_required` is treated the same only when a form was shown:

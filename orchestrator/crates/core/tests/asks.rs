@@ -1334,6 +1334,74 @@ fn the_same_call_again_is_the_same_ask_even_after_the_agent_asked_for_a_form() {
 }
 
 #[test]
+fn the_other_running_asks_of_an_agent_that_shows_a_form_end_with_it() {
+    let snap = running(Working, &["a", "b"]);
+    let (snap, _) = step(&snap, &with_key(ask("a"), "c1"));
+    let (snap, _) = step(&snap, &sent(1, "t-1"));
+    // accepted while ask 1 runs, so that nothing refuses it: ask 2 of the same agent, a child of
+    // it asking b, and an ask of b
+    let (snap, _) = step(&snap, &with_key(ask("a"), "c2"));
+    let (snap, _) = step(&snap, &with_key(ask_by(Caller::Ask(2), "b", "help"), "c3"));
+    let (snap, _) = step(&snap, &with_key(ask("b"), "c4"));
+    assert_eq!(
+        outcomes(&snap),
+        [(1, None), (2, None), (3, None), (4, None)],
+        "all four run"
+    );
+    let (snap, cmds) = step(&snap, &finished_form(1, AskOutcome::InputRequired));
+    assert_eq!(
+        outcomes(&snap),
+        [
+            (1, Some(AskOutcome::InputRequired)),
+            (2, Some(AskOutcome::Canceled)),
+            (3, Some(AskOutcome::Canceled)),
+            (4, None)
+        ],
+        "the agent's other ask and its child end; the ask of another agent goes on"
+    );
+    let order: Vec<u32> = finishes(&cmds).iter().map(|(_, d)| d.ask).collect();
+    assert_eq!(
+        order,
+        [1, 2, 3],
+        "the form first, then the ask it ended, then its child"
+    );
+    assert!(finish_of(&cmds, 1).form);
+    let second = finish_of(&cmds, 2);
+    assert_eq!(second.state, AskOutcome::Canceled);
+    assert!(!second.form, "{second:?}");
+    assert!(
+        second.error.as_deref().is_some_and(|e| e.contains("form")),
+        "{second:?}"
+    );
+    assert_eq!(
+        finish_of(&cmds, 3).error.as_deref(),
+        Some("the asking task ended")
+    );
+    // and none of the agent's asks is accepted from now on
+    assert_eq!(
+        refused(&snap, &ask("a")),
+        AskRefusal::FormPending { agent: agent("a") }
+    );
+}
+
+#[test]
+fn an_ask_that_ended_before_the_form_is_left_as_it_ended() {
+    let snap = running(Working, &["a"]);
+    let (snap, _) = step(&snap, &with_key(ask("a"), "c1"));
+    let (snap, _) = step(&snap, &with_key(ask("a"), "c2"));
+    let (snap, _) = step(&snap, &finished(2, AskOutcome::Completed));
+    let (snap, cmds) = step(&snap, &finished_form(1, AskOutcome::InputRequired));
+    assert_eq!(
+        outcomes(&snap),
+        [
+            (1, Some(AskOutcome::InputRequired)),
+            (2, Some(AskOutcome::Completed))
+        ]
+    );
+    assert_eq!(finishes(&cmds).len(), 1);
+}
+
+#[test]
 fn a_form_is_a_refusal_of_the_state_of_the_job_and_not_of_the_question() {
     let why = TransitionError::AskRefused(AskRefusal::FormPending { agent: agent("a") });
     assert_eq!(why.class(), ErrorClass::Rejected);
