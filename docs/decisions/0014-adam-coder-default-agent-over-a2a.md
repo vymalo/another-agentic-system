@@ -680,10 +680,10 @@ moves with it (the same tag and digest).
   fourteen layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision`
   `8847c28ac6c435dacb9d1c412c0390a29f545997`, `/opt/obscura/bin` on its `PATH`, digest `sha256:ecbd1731...` (the registry's
   `Docker-Content-Digest` and the sha-256 of the manifest it returned), published by adam-rs's `coder` run 39039846841 about ten minutes after
-  the merge. `dev/coder/check-vendored.sh` passes at that commit, and `docker compose --profile '*' config -q` is clean. In `orchestrator/`, `cargo fmt --all --check` and `cargo clippy --workspace
-  --all-targets --locked -- -D warnings` pass; `node tools/docs-check/check-docs.mjs` says `docs OK`. The `agent-local` clippy and the tests of
-  `orchestrator` (`agent-local`) and `orch-agent-adam` were still running when this was written: the pull request that pins it says how they
-  ended.
+  the merge. `dev/coder/check-vendored.sh` passes at that commit, and `docker compose --profile '*' config -q` is clean. In `orchestrator/`, on a fresh target, `cargo fmt --all --check`, `cargo clippy
+  --workspace --all-targets --locked -- -D warnings` and `cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D
+  warnings` pass, `cargo test -p orchestrator --features agent-local --locked` passes (312 tests in four suites) and `cargo test -p
+  orch-agent-adam --locked` passes (41 tests in five); `node tools/docs-check/check-docs.mjs` says `docs OK`.
 - *Unverified where this was written* (no Docker daemon on the machine, so the image was not pulled): every scenario in containers, the first
   run of which is the Coder E2E workflow of the pull request that pins it, in particular `dev/workspace-e2e.sh` against a coder that marks typed
   lines and takes a consent from its form alone, `dev/choices-e2e.sh` on the coder's Questions v5 forms, and `dev/mentions-e2e.sh`; the Postgres
