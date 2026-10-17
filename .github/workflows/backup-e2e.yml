@@ -1,0 +1,85 @@
+name: Backup E2E
+
+# Does what the chart renders for the database backups (issue #151; deploy/chart/README.md, "Backups") back the database up to S3, and does
+# deploy/chart/examples/restore-cluster.yaml, applied as written, bring the data back? On a kind cluster: cert-manager, the CloudNativePG operator and the
+# barman-cloud plugin (their charts pinned by version and SHA-256, deploy/chart/tests/backup-e2e/UPSTREAM), a RustFS as the S3 server (the image compose.yaml pins),
+# the chart's own Cluster, ObjectStore and ScheduledBackup (`helm template -s`, the values of deploy/chart/tests/backup-e2e/values.yaml), the orchestrator's migrations
+# and a thread written as the owner, a base backup and WAL in the bucket, and a restore into a new cluster that returns the thread.
+# deploy/chart/tests/backup-e2e/backup-e2e.sh says what each step asserts and what the run does not prove (netcup, AWS S3, the retention, the cutover).
+#
+# Not required by anything: it needs a cluster and pulls a few GB of images, so it runs when the objects it applies or its own files change, weekly (the pins
+# move: a new patch of an operator, the plugin or RustFS) and on demand. Not part of Deploy (nothing there touches a cluster) nor of Coder E2E.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/chart/templates/cnpg-*.yaml"
+      - "deploy/chart/templates/_helpers.tpl"
+      - "deploy/chart/templates/_validate.tpl"
+      - "deploy/chart/values.yaml"
+      - "deploy/chart/examples/restore-*.yaml"
+      - "deploy/chart/tests/backup-e2e/**"
+      - ".github/workflows/backup-e2e.yml"
+  schedule:
+    - cron: "23 4 * * 2" # Tuesdays, 04:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backup-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install kind, kubectl and helm at pinned versions (checksums checked)
+        # kind v0.33.0 and kubectl v1.35.9 are the versions of kagent-e2e.yml (checksums recomputed on 2026-10-17: kind's .sha256sum, dl.k8s.io's .sha256);
+        # helm v3.19.0 is the version deploy.yml checks the chart with (get.helm.sh's .sha256sum). The node image is the pin of UPSTREAM, read below.
+        env:
+          KIND_VERSION: v0.33.0
+          KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          KUBECTL_VERSION: v1.35.9
+          KUBECTL_SHA256: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+          HELM_VERSION: v3.19.0
+          HELM_SHA256: a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/bin/kind" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $RUNNER_TEMP/bin/kubectl" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP/helm"
+          cp "$RUNNER_TEMP/helm/linux-amd64/helm" "$RUNNER_TEMP/bin/helm"
+          chmod +x "$RUNNER_TEMP/bin/"*
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: The objects the chart renders (no cluster)
+        # Fails in seconds when the chart no longer renders what the scenario applies (the Cluster, the ObjectStore and the ScheduledBackup, the Secret
+        # and the keys they name, the storage that examples/restore-cluster.yaml has).
+        run: sh deploy/chart/tests/backup-e2e/backup-e2e.sh render > /dev/null
+      - name: The cluster (the node image of deploy/chart/tests/backup-e2e/UPSTREAM)
+        run: |
+          set -eu
+          image=$(sed -n 's/^kind_node_image=//p' deploy/chart/tests/backup-e2e/UPSTREAM)
+          test -n "$image"
+          kind create cluster --name backup-e2e --image "$image" --wait 120s
+          kubectl config current-context
+          kubectl get nodes -o wide
+      - name: The scenario (deploy/chart/tests/backup-e2e/backup-e2e.sh)
+        # It prints the state of the cluster itself when it fails, and undoes what it made.
+        run: sh deploy/chart/tests/backup-e2e/backup-e2e.sh
+      - name: What the cluster says
+        if: failure()
+        run: |
+          echo "== pods"; kubectl get pods -A -o wide || true
+          echo "== events"; kubectl get events -A --sort-by=.lastTimestamp | tail -n 60 || true
+      - name: Tear down
+        if: always()
+        run: kind delete cluster --name backup-e2e || true

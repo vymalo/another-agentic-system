@@ -454,7 +454,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
-        run: shellcheck deploy/chart/bump-tag.sh deploy/chart/tests/*.sh deploy/keycloak/tests/*.sh
+        run: shellcheck deploy/chart/bump-tag.sh deploy/chart/tests/*.sh deploy/chart/tests/backup-e2e/*.sh deploy/keycloak/tests/*.sh
       - name: bump-tag.sh is idempotent and edits only the image tags
         run: sh deploy/chart/tests/bump-tag-test.sh
       - name: The Keycloak exports are JSON and hold no secret

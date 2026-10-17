@@ -1,0 +1,62 @@
+# Where the pins of deploy/chart/tests/backup-e2e/ come from, and what each was verified against. `backup-e2e.sh` reads the `key=value` lines
+# (the comments are for people), downloads each chart from its URL and refuses one whose SHA-256 is not the pinned one. The workflow
+# (.github/workflows/backup-e2e.yml) reads `kind_node_image` from here and pins the three tools it installs (kind, kubectl, helm) with their
+# checksums in its own `env`, as kagent-e2e.yml does (dev/kagent/UPSTREAM). Move a pin and its comment together.
+#
+# NOTHING OF THE CLUSTER HALF HAS RUN where this was written (no container daemon, no kind): the pins are checked against their sources, the script
+# against shellcheck, dash, a real RustFS and a real PostgreSQL 16 process, and the rendered objects against the CRD schemas the chart vendors. The first
+# run of the job `backup-e2e` is the proof or the disproof.
+#
+# VERIFIED 2026-10-17, from the sources below (anonymous requests through the sandbox's proxy; the module proxy's zips READ, not run):
+#
+#   * CloudNativePG operator 1.30.1 = chart `cloudnative-pg` 0.29.1 (Chart.yaml of cloudnative-pg/charts, `main`; the Helm repository's index.yaml lists the release
+#     with the digest below, created 2026-09-23). The chart carries the CRDs in its templates (`crds.create: true`, each with `helm.sh/resource-policy: keep`),
+#     the Deployment `cnpg-cloudnative-pg` for a release called `cnpg` and the webhook Service `cnpg-webhook-service`. Its `kubeVersion` is >=1.29, and the
+#     operator's own table (docs/src/supported_releases.md at `main`) lists 1.30.x as supported on Kubernetes 1.34, 1.35 and 1.36: the node image below is 1.35.
+#     The operator's default PostgreSQL image is ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie (pkg/versions/versions.go at v1.30.1): the chart sets no
+#     `database.imageName`, so the cluster, and the restored one beside it, run that (the orchestrator's own tests run on PostgreSQL 16).
+#   * plugin-barman-cloud v0.15.1 = chart `plugin-barman-cloud` 0.8.1 (Chart.yaml, `main`; the index lists it with the digest below, created 2026-09-30). It must be
+#     installed in the operator's namespace (web/docs/installation.mdx, "The plugin must be installed in the same namespace as the CloudNativePG operator"), needs
+#     cert-manager (its Certificates and Issuer are in the chart) and creates the Service `barman-cloud` the operator finds by its label `cnpg.io/pluginName`.
+#     Its CRD `ObjectStore` is a template of the chart (`crds.create: true`).
+#   * cert-manager v1.21.2, the newest stable in https://charts.jetstack.io/index.yaml on 2026-10-17 (chart created 2026-09-11, `kubeVersion` >=1.22). The chart
+#     installs its CRDs with `crds.enabled=true` (off by default) and runs a post-install check of the webhook (`startupapicheck`), which `helm --wait` waits for.
+#     That cert-manager 1.21 is tested on Kubernetes 1.35 is *unverified* (its supported-releases page was not found where it was looked for).
+#   * RustFS: the image of compose.yaml's service `rustfs` (rustfs/rustfs:1.0.1-preview.17, the index digest below; Docker Hub answers it for the tag and the
+#     digest), as the chart's own RustFS (templates/rustfs.yaml) and the S3 artifact store's tests run it. backup-e2e.sh refuses a pin that is not compose.yaml's.
+#     Run on 2026-10-17 from its image's layers as a process (uid 10001, `RUSTFS_VOLUMES=/data`): `/health/ready` answers 200; a bucket is made with the image's
+#     own curl (8.22.0, SigV4, path style), a second PUT of it answers 200, and ListObjectsV2 with `prefix` and `delimiter` answers the XML backup-e2e.sh reads.
+#   * kind v0.33.0, kubectl v1.35.9 and helm v3.19.0: the release assets' checksums, recomputed on 2026-10-17 (kind's .sha256sum, dl.k8s.io's .sha256, get.helm.sh's
+#     .sha256sum). kind and kubectl are the versions dev/kagent/UPSTREAM pins; helm is the version of deploy.yml, the one the chart is checked with.
+#   * the node image kindest/node:v1.35.0 is the one dev/kagent/UPSTREAM pins: Docker Hub answers the tag with the digest below (Docker-Content-Digest, 2026-10-17).
+#   * the facts the assertions rest on are from the operator's and the plugin's sources at the tags above (module zips from proxy.golang.org):
+#       - `ContinuousArchiving` is set on the Cluster by the instance manager's `wal-archive` command after each archive, plugin or not (cloudnative-pg
+#         internal/cmd/manager/walarchive/cmd.go, pkg/management/postgres/webserver/local.go): the plugin sets no condition of its own, and the condition is True
+#         only after a WAL segment was archived, which is why the script switches the segment after it seeds;
+#       - a Backup made by a ScheduledBackup carries the label `cnpg.io/scheduled-backup=<its name>` (internal/controller/scheduledbackup_controller.go), its
+#         phases are pending, started, running, finalizing, completed, failed and walArchivingFailing (api/v1/backup_types.go), and a plugin backup sets the
+#         Cluster condition `LastBackupSucceeded` (pkg/management/postgres/webserver/plugin_backup.go);
+#       - after each base backup the plugin writes `status.serverRecoveryWindow.<server>.{firstRecoverabilityPoint,lastSuccessfulBackupTime}` of the ObjectStore
+#         (plugin internal/cnpgi/instance/backup.go, recovery_window.go).
+#     That the objects barman-cloud writes are `<prefix>/<server>/base/<backup id>/backup.info` and `<prefix>/<server>/wals/<16 hex>/<segment>[.gz]` is from
+#     barman's documentation and memory, not from a file read here (barman-cloud is Python, in the image): the script prints what it finds when it does not.
+#
+# Release assets and charts (URL, then SHA-256 of the file; the Helm repositories' index.yaml carries the same digests for the two CloudNativePG charts and the
+# cert-manager one):
+cnpg_chart_version=0.29.1
+cnpg_chart_url=https://github.com/cloudnative-pg/charts/releases/download/cloudnative-pg-v0.29.1/cloudnative-pg-0.29.1.tgz
+cnpg_chart_sha256=b53d3991fe84bcf38767e7702cae78666265427a127a26fff168ab4207d2b1df
+plugin_chart_version=0.8.1
+plugin_chart_url=https://github.com/cloudnative-pg/charts/releases/download/plugin-barman-cloud-v0.8.1/plugin-barman-cloud-0.8.1.tgz
+plugin_chart_sha256=9ad0b9e56da2777a1a0269feaf7215e18297e9c8b5730e04acb27b5d462e9456
+cert_manager_version=v1.21.2
+cert_manager_chart_url=https://charts.jetstack.io/charts/cert-manager-v1.21.2.tgz
+cert_manager_chart_sha256=73a56e1728edd6c99f1f31082618c3259d279a76b7ebd3d4bdc5475c2442d34a
+# By tag and digest, the pin of compose.yaml (`rustfs`):
+rustfs_image=rustfs/rustfs:1.0.1-preview.17@sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
+# The cluster the workflow makes (the pin of dev/kagent/UPSTREAM):
+kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+# The tools the workflow installs (each checked against its checksum, which is in the workflow):
+#   kind v0.33.0    sha256 aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+#   kubectl v1.35.9 sha256 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+#   helm v3.19.0    sha256 a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
