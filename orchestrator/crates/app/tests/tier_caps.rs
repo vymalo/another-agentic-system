@@ -13,11 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use orch_app::{
-    AgentDirectory, AgentEntry, AgentScope, App, AppConfig, AppError, Creation, Inbound, NewThread,
-    Permission, Policy, RoleGrant,
+    AgentDirectory, AgentEntry, AgentScope, App, AppConfig, AppError, Creation, FirstMessage,
+    ForkAt, ForkRequest, Inbound, NewThread, Permission, Policy, RoleGrant,
 };
 use orch_core::{
-    AccessTier, AgentId, EventBody, Input, KnownExtension, Origin, ThreadId, ThreadState, TierOffer,
+    AccessTier, AgentId, EventBody, EventKind, Input, KnownExtension, Origin, ThreadId,
+    ThreadState, TierOffer,
 };
 use orch_ports::memory::Call;
 use orch_ports::{
@@ -256,6 +257,74 @@ async fn the_rework_of_a_capped_person_is_sent_under_the_cap_when_the_agent_gain
         "the rework is under the cap, not the agent's `auto`"
     );
     run.shutdown().await;
+}
+
+/// A fork's first message is a message of the person like any other (`App::fork_thread` resolves its
+/// tier after the mentions): when the card offers no tier the message and the delegation hold the
+/// cap, and the message is sent under it once the card has tiers, never at the agent's own default.
+#[tokio::test]
+async fn the_first_message_of_a_fork_keeps_the_cap_when_the_card_offers_no_tier_and_is_sent_under_it_later()
+ {
+    let w = World::new();
+    let app = capped_at(&w, Some(Edits));
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let thread = start(&app, "echo go").await.unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    run.shutdown().await;
+    let seq = events(&app, &alice(), thread)
+        .await
+        .into_iter()
+        .find(|e| e.kind() == EventKind::UserMessage)
+        .unwrap()
+        .seq;
+
+    // the card still lists no tier: the fork's message is plain A2A and holds the cap
+    let forked = app
+        .fork_thread(
+            &alice(),
+            thread,
+            ForkRequest {
+                at: ForkAt::AfterTurn {
+                    seq,
+                    first: Some(FirstMessage {
+                        text: "echo next".to_owned(),
+                        message_id: None,
+                        run_id: None,
+                        origin: Origin::Agui,
+                        ui_catalog: None,
+                        mentions: Vec::new(),
+                        tier: None,
+                    }),
+                },
+                target: None,
+                id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let fork = forked.thread.id;
+    assert_eq!(
+        pins(&app, fork).await.pop(),
+        Some((None, Some(Edits))),
+        "the log says that a cap applied to the fork's own message"
+    );
+    assert_eq!(
+        row_pin(&w, fork).await,
+        (None, Some(Edits)),
+        "and so does its delegation"
+    );
+
+    // the agent is redeployed with tiers, working under `auto`, before the dispatcher sends it
+    w.agent.set_access_tier("plain", Some(all_tiers()));
+    let before = sent(&w).len();
+    let run = spawn_dispatcher(&app, fast(), "d2");
+    wait_state(&app, &alice(), fork, ThreadState::Done).await;
+    run.shutdown().await;
+    assert_eq!(
+        sent(&w)[before..],
+        [("echo next".to_owned(), false, Some(Edits))],
+        "never the agent's `auto`"
+    );
 }
 
 #[tokio::test]
