@@ -459,16 +459,9 @@ async fn post_message_to_an_agent_the_person_may_not_use_is_still_refused() {
 
 // ---- an agent the registry no longer places (m3) ---------------------------------------------
 
-#[tokio::test]
-async fn an_answer_to_an_agent_the_registry_lost_keeps_the_cap_instead_of_the_jobs_uncapped_tier() {
-    let w = World::new();
-    w.agent.set_access_tier("plain", Some(all_tiers()));
-    let open = w.app();
-    let run = spawn_dispatcher(&open, fast(), "d1");
-    let thread = start(&open, "ui pick one").await.unwrap();
-    wait_state(&open, &alice(), thread, ThreadState::Blocked).await;
-    run.shutdown().await;
-    // the person's role is capped now, and the registry no longer lists the thread's agent
+/// The application of a deployment whose registry no longer lists `plain`, with every person
+/// capped at `cap`.
+fn lost_registry_app(w: &World, cap: Option<AccessTier>) -> Arc<TestApp> {
     let lost = AgentDirectory::new(vec![AgentEntry {
         endpoint: AgentEndpoint::a2a(
             AgentId::new("coder"),
@@ -477,7 +470,7 @@ async fn an_answer_to_an_agent_the_registry_lost_keeps_the_cap_instead_of_the_jo
         ),
         name: "Coder".to_owned(),
     }]);
-    let app = Arc::new(
+    Arc::new(
         App::new(
             PortSet {
                 artifacts: orch_ports::NoArtifacts,
@@ -492,10 +485,45 @@ async fn an_answer_to_an_agent_the_registry_lost_keeps_the_cap_instead_of_the_jo
                 user_tools: orch_ports::NoUserTools::off(),
             },
             lost,
-            config(Some(Edits)),
+            config(cap),
         )
         .unwrap(),
-    );
+    )
+}
+
+/// A thread of `plain` that waits for the person, begun by the uncapped application with `tier`
+/// named (the agent lists all four).
+async fn blocked_thread(w: &World, tier: Option<AccessTier>) -> ThreadId {
+    w.agent.set_access_tier("plain", Some(all_tiers()));
+    let open = w.app();
+    let run = spawn_dispatcher(&open, fast(), "d1");
+    let thread = id();
+    open.create_thread_as(
+        &alice(),
+        thread,
+        NewThread {
+            title: None,
+            target: target("plain"),
+            text: "ui pick one".to_owned(),
+        },
+        Inbound {
+            tier,
+            ..Inbound::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_state(&open, &alice(), thread, ThreadState::Blocked).await;
+    run.shutdown().await;
+    thread
+}
+
+#[tokio::test]
+async fn an_answer_to_an_agent_the_registry_lost_keeps_the_cap_instead_of_the_jobs_uncapped_tier() {
+    let w = World::new();
+    let thread = blocked_thread(&w, None).await;
+    // the person's role is capped now, and the registry no longer lists the thread's agent
+    let app = lost_registry_app(&w, Some(Edits));
     app.submit(&alice(), thread, message("yes"), None)
         .await
         .unwrap();
@@ -506,4 +534,34 @@ async fn an_answer_to_an_agent_the_registry_lost_keeps_the_cap_instead_of_the_jo
     );
     let job = app.get_thread(&alice(), thread).await.unwrap().job;
     assert_eq!((job.tier, job.tier_cap), (None, Some(Edits)));
+}
+
+/// A tier is never silently dropped: the job's own, which the answer continues, is kept when the
+/// registry cannot place the agent, lowered to the cap and never raised, and the send checks it
+/// against the live card.
+#[tokio::test]
+async fn an_answer_to_an_agent_the_registry_lost_keeps_the_jobs_tier_lowered_to_the_cap() {
+    for (cap, kept) in [
+        (Some(Edits), Some(Edits)),
+        (Some(AccessTier::Bypass), Some(AccessTier::Bypass)),
+        (None, Some(AccessTier::Bypass)),
+    ] {
+        let w = World::new();
+        let thread = blocked_thread(&w, Some(AccessTier::Bypass)).await;
+        let app = lost_registry_app(&w, cap);
+        assert_eq!(
+            app.get_thread(&alice(), thread).await.unwrap().job.tier,
+            Some(AccessTier::Bypass)
+        );
+        app.submit(&alice(), thread, message("yes"), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            pins(&app, thread).await.last(),
+            Some(&(kept, None)),
+            "cap {cap:?}"
+        );
+        let job = app.get_thread(&alice(), thread).await.unwrap().job;
+        assert_eq!((job.tier, job.tier_cap), (kept, None), "cap {cap:?}");
+    }
 }

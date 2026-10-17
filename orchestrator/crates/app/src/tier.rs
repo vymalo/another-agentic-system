@@ -127,11 +127,16 @@ impl<P: Ports> App<P> {
         }
         let Some(entry) = self.resolve_agent(&id).await? else {
             // an agent that is not there is refused when the message is sent: a named tier is
-            // refused now; the others are left to that, with the cap kept so that nothing is
-            // sent above it should the agent come back
-            return match named {
-                Some(tier) => Err(not_taken(tier)),
-                None => Ok(TierPin { tier: None, cap }),
+            // refused now; the others are left to that. A tier the person's last choice carries is
+            // kept, lowered to the cap (the send checks it against the live card, and fails when
+            // the agent no longer honours it), never dropped; with none, the cap is kept so that
+            // nothing is sent above it should the agent come back
+            return match (named, inherited) {
+                (Some(tier), _) => Err(not_taken(tier)),
+                (None, Some(chosen)) => {
+                    Ok(TierPin::tier(cap.map_or(chosen, |cap| chosen.min(cap))))
+                }
+                (None, None) => Ok(TierPin { tier: None, cap }),
             };
         };
         let listing = match self.card_listing(&entry.endpoint).await {

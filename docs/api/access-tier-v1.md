@@ -247,8 +247,9 @@ kept) before anything is written.
 The role's cap is checked each time the orchestrator writes a message: for a tier the person names, for one that is inherited (a cap
 lowered since lowers it, and the job continues under the lower tier, which is also what a later rework is sent under) and for one it
 decides. The dispatcher that sends a rework has no principal, so the rework goes under the tier already pinned on the job, or under
-the cap pinned on it when there was no tier to pin. An agent the registry cannot place when an answer is written keeps the cap the
-same way (it is not given the job's uncapped tier).
+the cap pinned on it when there was no tier to pin. An agent the registry cannot place when an answer is written keeps what the answer
+continues the same way: the job's tier, lowered to the cap and never raised, or the cap when the job has no tier (the answer is
+not given the job's uncapped tier, and a tier is never dropped). The dispatcher checks it against the live card when it sends.
 
 **The tier of a parent is not passed to children; the person's cap is.** The orchestrator sends no tier on:
 
