@@ -633,6 +633,97 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_to_the_agent_continues_it
     );
 }
 
+// ---- a form is the person's ----------------------------------------------------------------
+
+/// An asked agent that shows an interface and waits is waiting for the person, who cannot see an
+/// asked agent's screens: the ask ends with `form`, the parked task is cancelled, and a model
+/// cannot answer it by asking the agent again (ADR 0026, amended).
+#[tokio::test]
+async fn an_asked_agent_that_shows_a_form_ends_the_ask_with_it_and_its_task_is_cancelled() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    // the script `ui` draws a surface and waits for the answer
+    let first = put(&*app, &w.store, t.id, ask_of("coder", "ui pick one", "k1")).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(done.form, "{done:?}");
+    assert_eq!(done.question.as_deref(), Some("Pick one"));
+    assert_eq!(row_ends(&w, &first).await.status, OutboxStatus::Delivered);
+    // the ledger holds it, so the task is never continued
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert!(thread.job.asks[0].form);
+    // the task it parked is cancelled, so nothing can resolve it later
+    eventually("the parked task is cancelled", || async {
+        (cancels(&w) == ["task-1"]).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+
+    // asking the agent again, with an answer or with anything, is refused and writes nothing
+    let sent_before = sends_to(&w, "coder").len();
+    let rows_before = ask_rows(&w.store, t.id).await.len();
+    let error = app
+        .apply(
+            t.id,
+            ask_of(
+                "coder",
+                "The person answered through the interface:\n- pick: a",
+                "k2",
+            ),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            orch_app::AppError::Transition(orch_core::TransitionError::AskRefused(
+                orch_core::AskRefusal::FormPending { agent }
+            )) if agent.as_str() == "coder"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(finished_count(&app, t.id).await, 1);
+    assert_eq!(ask_rows(&w.store, t.id).await.len(), rows_before);
+    assert_eq!(sends_to(&w, "coder").len(), sent_before);
+
+    // another agent is asked as ever
+    let other = put(&*app, &w.store, t.id, ask_of("scout", "echo hello", "k3")).await;
+    let run = spawn_dispatcher(&app, fast(), "d2");
+    let (done, _) = finished(&app, t.id, 2).await;
+    assert_eq!(done.state, AskOutcome::Completed);
+    assert!(!done.form);
+    row_ends(&w, &other).await;
+    run.shutdown().await;
+}
+
+/// The same turn in words, with no interface, is the asking agent's to answer, as before.
+#[tokio::test]
+async fn a_question_in_words_is_not_a_form() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "ask which branch", "k1"),
+    )
+    .await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(!done.form, "{done:?}");
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert!(!thread.job.asks[0].form);
+    assert!(cancels(&w).is_empty(), "its task is waiting for the answer");
+    run.shutdown().await;
+}
+
 /// A real agent's stream for a message that continues a task begins with the task as it stands:
 /// still waiting. The ask that continues it must not end with that question.
 #[tokio::test]

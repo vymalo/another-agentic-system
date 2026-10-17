@@ -210,6 +210,7 @@ fn an_ask_of_a_mentioned_agent_is_logged_sent_and_given_a_deadline() {
             task_id: None,
             context_id: None,
             outcome: None,
+            form: false,
         }]
     );
     let [
@@ -575,6 +576,7 @@ fn the_asked_agents_answer_ends_the_ask_with_its_words_and_its_name() {
             mime_type: Some("text/csv".into()),
         }],
         error: None,
+        form: false,
     };
     let (snap, cmds) = step(
         &snap,
@@ -668,6 +670,7 @@ fn a_long_answer_is_cut_and_a_long_list_of_artifacts_is_capped() {
         question: Some("q".repeat(MAX_ASK_NOTE_BYTES + 10)),
         artifacts: (0..MAX_ASK_ARTIFACTS + 5).map(artifact).collect(),
         error: Some("e".repeat(MAX_ASK_NOTE_BYTES + 10)),
+        form: false,
     };
     let (_, cmds) = step(
         &snap,
@@ -1219,6 +1222,125 @@ fn only_the_latest_earlier_tasks_are_referred_to() {
         &format!("t-{}", MAX_ASK_REFERENCES + 3)
     );
     assert_eq!(refs.first().unwrap(), "t-4");
+}
+
+// ---- a form is the person's ------------------------------------------------------------------
+
+/// The asked agent showed an interface and waits: `outcome` with `form` and the question in words.
+fn finished_form(ask: u32, outcome: AskOutcome) -> Input {
+    Input::AskFinished {
+        job: 1,
+        ask,
+        revision: None,
+        result: AskResult {
+            question: Some("Pick one".into()),
+            form: true,
+            ..AskResult::of(outcome)
+        },
+    }
+}
+
+#[test]
+fn an_ask_that_ends_waiting_for_a_form_says_so_in_the_event_and_in_the_ledger() {
+    for outcome in [AskOutcome::InputRequired, AskOutcome::AuthRequired] {
+        let snap = running(Working, &["a"]);
+        let (snap, _) = step(&snap, &ask("a"));
+        let (snap, _) = step(&snap, &sent(1, "t-1"));
+        let (snap, cmds) = step(&snap, &finished_form(1, outcome));
+        assert!(finish_of(&cmds, 1).form, "{outcome:?}");
+        assert!(snap.job.asks[0].form, "{outcome:?}");
+        assert_eq!(
+            serde_json::to_value(finish_of(&cmds, 1)).unwrap(),
+            json!({"ask": 1, "state": outcome.as_str(), "question": "Pick one", "form": true})
+        );
+        // the ledger writes it only when it is true, and reads a ledger without it as false
+        let held = serde_json::to_value(&snap.job.asks[0]).unwrap();
+        assert_eq!(held["form"], json!(true));
+        let mut older = held;
+        older.as_object_mut().unwrap().remove("form");
+        assert!(!serde_json::from_value::<Ask>(older).unwrap().form);
+    }
+}
+
+#[test]
+fn a_question_in_words_is_not_a_form_and_the_event_has_no_member_for_it() {
+    let snap = running(Working, &["a"]);
+    let (snap, _) = step(&snap, &ask("a"));
+    let (snap, cmds) = step(&snap, &finished(1, AskOutcome::InputRequired));
+    assert!(!finish_of(&cmds, 1).form);
+    assert!(!snap.job.asks[0].form);
+    let data = serde_json::to_value(finish_of(&cmds, 1)).unwrap();
+    assert!(data.get("form").is_none(), "{data}");
+}
+
+#[test]
+fn only_a_task_that_waits_can_wait_for_a_form() {
+    for outcome in [
+        AskOutcome::Completed,
+        AskOutcome::Failed,
+        AskOutcome::Rejected,
+        AskOutcome::Canceled,
+        AskOutcome::TimedOut,
+    ] {
+        let snap = running(Working, &["a"]);
+        let (snap, _) = step(&snap, &ask("a"));
+        let (snap, cmds) = step(&snap, &finished_form(1, outcome));
+        assert!(!finish_of(&cmds, 1).form, "{outcome:?}");
+        assert!(!snap.job.asks[0].form, "{outcome:?}");
+    }
+}
+
+#[test]
+fn the_task_of_a_form_is_never_continued_and_its_agent_is_not_asked_again_in_the_job() {
+    for outcome in [AskOutcome::InputRequired, AskOutcome::AuthRequired] {
+        let snap = running(Working, &["a", "b"]);
+        let (snap, _) = step(&snap, &ask("a"));
+        let (snap, _) = step(&snap, &sent_in(1, "t-1", "ctx-a"));
+        let (snap, _) = step(&snap, &finished_form(1, outcome));
+        // a new task in the same context could resolve the parked one just as well: refused
+        assert_eq!(
+            refused(&snap, &ask("a")),
+            AskRefusal::FormPending { agent: agent("a") },
+            "{outcome:?}"
+        );
+        // whoever asks: a running ask of b may not ask it either
+        let (with_b, _) = step(&snap, &ask("b"));
+        assert_eq!(
+            refused(&with_b, &ask_by(Caller::Ask(2), "a", "help")),
+            AskRefusal::FormPending { agent: agent("a") }
+        );
+        // nothing else is held back: another agent is asked, and the refusal wrote nothing
+        assert_eq!(snap.job.asks.len(), 1);
+        let (_, cmds) = step(&snap, &ask("b"));
+        assert_eq!(started(&cmds).len(), 1);
+    }
+}
+
+#[test]
+fn the_same_call_again_is_the_same_ask_even_after_the_agent_asked_for_a_form() {
+    let snap = running(Working, &["a"]);
+    let (snap, _) = step(&snap, &with_key(ask("a"), "c1"));
+    let (snap, _) = step(&snap, &sent(1, "t-1"));
+    let (snap, _) = step(&snap, &finished_form(1, AskOutcome::InputRequired));
+    // a caller that lost the answer reads it again: nothing is written, nothing is refused
+    let (again, cmds) = step(&snap, &with_key(ask("a"), "c1"));
+    assert!(cmds.is_empty(), "{cmds:?}");
+    assert_eq!(again.job.asks, snap.job.asks);
+    // another call for the same agent is the refused one
+    assert_eq!(
+        refused(&snap, &with_key(ask("a"), "c2")),
+        AskRefusal::FormPending { agent: agent("a") }
+    );
+}
+
+#[test]
+fn a_form_is_a_refusal_of_the_state_of_the_job_and_not_of_the_question() {
+    let why = TransitionError::AskRefused(AskRefusal::FormPending { agent: agent("a") });
+    assert_eq!(why.class(), ErrorClass::Rejected);
+    assert_eq!(
+        why.to_string(),
+        "ask refused: 'a' is waiting for the person to answer a form it showed; a model cannot answer it"
+    );
 }
 
 // ---- the wire ------------------------------------------------------------------------------

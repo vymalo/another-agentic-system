@@ -288,6 +288,7 @@ fn with_ask(state: ThreadState) -> Snapshot {
         task_id: Some("ask-task".into()),
         context_id: None,
         outcome: None,
+        form: false,
     });
     snap
 }

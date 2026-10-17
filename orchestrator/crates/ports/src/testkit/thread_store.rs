@@ -1671,6 +1671,7 @@ pub async fn ask_events_roundtrip<S: ThreadStore>(store: S) {
                 mime_type: Some("text/csv".to_owned()),
             }],
             error: None,
+            form: true,
         }),
         idempotency_key: None,
     };
@@ -1684,6 +1685,7 @@ pub async fn ask_events_roundtrip<S: ThreadStore>(store: S) {
             question: None,
             artifacts: Vec::new(),
             error: Some("the asked agent did not answer in time".to_owned()),
+            form: false,
         }),
         idempotency_key: None,
     };
@@ -2661,6 +2663,7 @@ fn busy_job() -> Job {
                 task_id: Some("task-r".to_owned()),
                 context_id: Some("ctx-r".to_owned()),
                 outcome: Some(orch_core::AskOutcome::InputRequired),
+                form: true,
             },
             orch_core::Ask {
                 n: 2,
@@ -2672,6 +2675,7 @@ fn busy_job() -> Job {
                 task_id: None,
                 context_id: None,
                 outcome: None,
+                form: false,
             },
         ],
         after_stop_tier: Some(orch_core::AccessTier::Edits),

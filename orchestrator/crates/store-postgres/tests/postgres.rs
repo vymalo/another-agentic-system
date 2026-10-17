@@ -2350,6 +2350,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             // a row an older build wrote names no context (ADR 0055)
             context_id: None,
             outcome: Some(orch_core::AskOutcome::TimedOut),
+            form: false,
         }]
     );
     // and a row that names the context the agent assigned reads back with it

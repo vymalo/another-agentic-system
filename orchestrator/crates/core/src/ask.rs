@@ -11,6 +11,11 @@
 //!   is not a running ask, the agent was not mentioned in this job, it is the asker or one of the
 //!   agents waiting for the asker, or a limit is reached (nesting depth, asks in the job, asks
 //!   running at once);
+//! * **a model never answers a form.** An asked agent whose turn ends waiting after it showed an interface
+//!   (an A2UI surface) is waiting for the *person*, who cannot see it: its ask ends with `form`
+//!   ([`AskResult::form`]), is never continued, and the agent is not asked again in this job
+//!   ([`AskRefusal::FormPending`]). What an asked agent says in words stays the asking agent's to
+//!   answer;
 //! * an ask that is accepted logs `ask_started`, writes the `ask` outbox row that sends it
 //!   ([`Command::Ask`](crate::Command::Ask)) and arms its deadline
 //!   ([`Timer::AskDeadline`](crate::Timer::AskDeadline));
@@ -116,10 +121,11 @@ pub enum AskOutcome {
     /// The asked agent answered.
     Completed,
     /// The asked agent asked a question back: the ask ends, and asking the same agent again
-    /// continues its task (the question is answered by the next ask).
+    /// continues its task (the question is answered by the next ask) **unless the question is a
+    /// form** ([`Ask::form`]): that is the person's to answer, and the agent is not asked again.
     InputRequired,
     /// The asked agent needs the person to authenticate somewhere; continued like
-    /// [`AskOutcome::InputRequired`].
+    /// [`AskOutcome::InputRequired`] (and not continued when it showed a form, as there).
     AuthRequired,
     /// The asked agent failed, or could not be reached.
     Failed,
@@ -146,7 +152,8 @@ impl AskOutcome {
         }
     }
 
-    /// Whether asking the same agent again continues its task: it is waiting for something.
+    /// Whether the asked agent's task is waiting for something, so that asking the same agent
+    /// again continues it, unless what it waits for is a form ([`Ask::form`]).
     pub const fn is_continuable(self) -> bool {
         match self {
             AskOutcome::InputRequired | AskOutcome::AuthRequired => true,
@@ -196,6 +203,11 @@ pub struct Ask {
     /// How it ended; `None` while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<AskOutcome>,
+    /// The ask ended waiting after the asked agent showed an interface: it waits for the person's
+    /// answer to a form, which a model must not give. Its task is never continued and the agent is
+    /// not asked again in this job ([`AskRefusal::FormPending`]). Written only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub form: bool,
 }
 
 impl Ask {
@@ -289,6 +301,10 @@ pub struct AskResult {
     pub artifacts: Vec<AskArtifact>,
     /// Why it failed, when it did. Cut at [`MAX_ASK_NOTE_BYTES`].
     pub error: Option<String>,
+    /// The turn ended waiting after the agent showed an interface: it waits for the person's
+    /// answer to a form. Only [`AskOutcome::InputRequired`] and [`AskOutcome::AuthRequired`] can
+    /// carry it; for any other outcome the core drops it.
+    pub form: bool,
 }
 
 impl AskResult {
@@ -300,6 +316,7 @@ impl AskResult {
             question: None,
             artifacts: Vec::new(),
             error: None,
+            form: false,
         }
     }
 }
@@ -325,6 +342,12 @@ pub struct AskFinishedData {
     /// Why it did not complete.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// With `input_required` or `auth_required`: the asked agent showed an interface, so what it
+    /// waits for is a form for the **person**. A model cannot answer it: the ask is over, the task
+    /// is not continued and the agent is not asked again in this job. Absent when false and in
+    /// older logs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub form: bool,
 }
 
 /// Why an ask was refused. Nothing was written. Closed (ADR 0004).
@@ -350,6 +373,16 @@ pub enum AskRefusal {
         agent: AgentId,
         /// The agents that may be asked.
         mentioned: Vec<AgentId>,
+    },
+    /// An earlier ask of this agent in this job ended waiting for the person to answer a form it
+    /// showed ([`Ask::form`]). A model cannot answer a form, and a new message into the agent's
+    /// conversation could resolve it: the agent is not asked again in this job.
+    #[error(
+        "'{agent}' is waiting for the person to answer a form it showed; a model cannot answer it"
+    )]
+    FormPending {
+        /// The agent that was asked.
+        agent: AgentId,
     },
     /// The agent is the asker, or one of the agents waiting for the asker: asking it would be a
     /// cycle.
@@ -503,6 +536,12 @@ pub(crate) fn request(
             agent: ask.agent.clone(),
         });
     }
+    // What waits for the person is not the model's to answer, whoever asks (ADR 0026, amended).
+    if job.asks.iter().any(|a| &a.agent == ask.agent && a.form) {
+        return refuse(AskRefusal::FormPending {
+            agent: ask.agent.clone(),
+        });
+    }
     let depth = asker_depth.saturating_add(1);
     if depth > ask.limits.depth {
         return refuse(AskRefusal::DepthReached {
@@ -541,6 +580,7 @@ pub(crate) fn request(
         task_id: None,
         context_id: None,
         outcome: None,
+        form: false,
     });
     Ok(vec![
         append(
@@ -597,8 +637,10 @@ fn chain(job: &Job, ask: &Ask) -> Vec<AgentId> {
 fn continuation(job: &Job, agent: &AgentId) -> (Option<String>, Vec<String>, Option<String>) {
     let earlier: Vec<&Ask> = job.asks.iter().filter(|a| &a.agent == agent).collect();
     let context = earlier.iter().rev().find_map(|a| a.context_id.clone());
+    // never the task of a form: what it waits for is the person's (a model's text is no answer)
     if let Some(last) = earlier.last()
         && last.outcome.is_some_and(AskOutcome::is_continuable)
+        && !last.form
         && let Some(task) = &last.task_id
     {
         return (Some(task.clone()), Vec::new(), context);
@@ -654,6 +696,8 @@ pub(crate) fn finished(job: &mut Job, n: u32, actor: Actor, result: &AskResult) 
             .error
             .as_deref()
             .map(|t| truncate_to(t, MAX_ASK_NOTE_BYTES).to_owned()),
+        // only a task that waits can wait for a form
+        form: result.form && result.outcome.is_continuable(),
     };
     end(job, n, actor, data)
 }
@@ -672,6 +716,7 @@ pub(crate) fn failed(job: &mut Job, n: u32, reason: &str) -> Vec<Command> {
             question: None,
             artifacts: Vec::new(),
             error: Some(truncate_to(reason.trim(), MAX_ASK_NOTE_BYTES).to_owned()),
+            form: false,
         },
     )
 }
@@ -693,6 +738,7 @@ pub(crate) fn deadline(job: &mut Job, of: u32, n: u32) -> Vec<Command> {
             question: None,
             artifacts: Vec::new(),
             error: Some(DEADLINE_PASSED.to_owned()),
+            form: false,
         },
     )
 }
@@ -720,6 +766,7 @@ fn canceled(n: u32, why: &str) -> AskFinishedData {
         question: None,
         artifacts: Vec::new(),
         error: Some(why.to_owned()),
+        form: false,
     }
 }
 
@@ -733,6 +780,7 @@ fn end(job: &mut Job, n: u32, actor: Actor, data: AskFinishedData) -> Vec<Comman
         return Vec::new();
     }
     ask.outcome = Some(data.state);
+    ask.form = data.form;
     let mut cmds = vec![append(actor, EventBody::AskFinished(data))];
     // children are numbered after their parent: one pass, in order, reaches every descendant
     let mut ended = vec![n];

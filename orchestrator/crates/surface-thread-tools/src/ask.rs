@@ -191,7 +191,9 @@ fn definition(mentioned: &[String], timeout: Duration) -> Tool {
         "Ask one of the agents the person mentioned to do part of the work and wait for its \
          answer. The agent does not see this conversation: put everything it needs in message. \
          Asking the same agent again continues its conversation, and answers its question if it \
-         asked one. Agents you can ask: {}.",
+         asked one in words. If the result has form: true, the agent showed the person a form: \
+         only the person can answer it, so tell them, and do not ask that agent again (the call \
+         is refused). Agents you can ask: {}.",
         mentioned.join(", ")
     );
     let input = object(json!({
@@ -230,6 +232,7 @@ fn definition(mentioned: &[String], timeout: Duration) -> Tool {
                 }
             }},
             "question": {"type": "string"},
+            "form": {"type": "boolean"},
             "error": {"type": "string"}
         }
     }));
@@ -270,6 +273,11 @@ fn refusal_text(why: &AskRefusal) -> String {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
+        ),
+        AskRefusal::FormPending { agent } => format!(
+            "{agent} is waiting for the person to answer a form it showed, and only the person \
+             can answer it: you cannot ask it again in this job. Tell the person that {agent} \
+             needs them, and that they can answer by talking to {agent} directly."
         ),
         AskRefusal::Cycle { .. } => {
             "an agent cannot ask itself or an agent already in its chain".to_owned()
@@ -332,6 +340,11 @@ fn result_of(finished: &AskFinishedData, agent: &str) -> CallToolResult {
     }
     if let Some(question) = &finished.question {
         value.insert("question".to_owned(), json!(question));
+    }
+    // a form is the person's to answer: said, so that the model does not try (and the next ask of
+    // this agent is refused)
+    if finished.form {
+        value.insert("form".to_owned(), json!(true));
     }
     if let Some(error) = &finished.error {
         value.insert("error".to_owned(), json!(error));
@@ -562,6 +575,12 @@ mod tests {
                 .unwrap()
                 .ends_with("Agents you can ask: a, b.")
         );
+        // a form is the person's: the description says so, and the output has a member for it
+        let description = tool.description.as_deref().unwrap();
+        assert!(description.contains("answers its question if it asked one in words"));
+        assert!(description.contains("form: true"));
+        let output = tool.output_schema.as_ref().expect("an output schema");
+        assert_eq!(output["properties"]["form"], json!({"type": "boolean"}));
         let schema = &tool.input_schema;
         assert_eq!(schema["required"], json!(["agent", "message"]));
         assert_eq!(schema["additionalProperties"], json!(false));
@@ -610,6 +629,14 @@ mod tests {
             (
                 AskRefusal::CallKeyReused,
                 "this callId was used for another ask",
+            ),
+            (
+                AskRefusal::FormPending {
+                    agent: AgentId::new("coder"),
+                },
+                "coder is waiting for the person to answer a form it showed, and only the person \
+                 can answer it: you cannot ask it again in this job. Tell the person that coder \
+                 needs them, and that they can answer by talking to coder directly.",
             ),
         ] {
             assert_eq!(refusal_text(&why), text);
@@ -673,6 +700,7 @@ mod tests {
                 mime_type: Some("image/png".into()),
             }],
             error: (state == AskOutcome::Failed).then(|| "it broke".to_owned()),
+            form: false,
         };
         for (state, error) in [
             (AskOutcome::Completed, false),
@@ -699,6 +727,22 @@ mod tests {
             };
             assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), value);
         }
+        // a form is said, and only when it is one (the question stays: the person is told it)
+        for state in [AskOutcome::InputRequired, AskOutcome::AuthRequired] {
+            let waiting = AskFinishedData {
+                form: true,
+                ..finished(state, None)
+            };
+            let result = result_of(&waiting, "coder");
+            assert_eq!(result.is_error, Some(false), "{state:?}");
+            let value = result.structured_content.unwrap();
+            assert_eq!(value["form"], json!(true), "{state:?}");
+            assert_eq!(value["state"], state.as_str());
+        }
+        let in_words = result_of(&finished(AskOutcome::InputRequired, None), "coder")
+            .structured_content
+            .unwrap();
+        assert!(in_words.get("form").is_none(), "{in_words}");
         // absent members are absent
         let bare = result_of(&finished(AskOutcome::Canceled, None), "a")
             .structured_content

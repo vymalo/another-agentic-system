@@ -1832,6 +1832,7 @@ fn an_error_before_an_ask_event_still_explains_the_thread_state_that_follows() {
             question: None,
             artifacts: Vec::new(),
             error: None,
+            form: false,
         }),
     );
     let failing = [

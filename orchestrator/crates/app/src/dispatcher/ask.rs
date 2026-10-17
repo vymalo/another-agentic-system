@@ -33,6 +33,13 @@
 //!   that low, or whose card lists the extension badly, is not asked (the ask fails, `ask_finished`
 //!   says why, no task starts); one whose card lists no tier is asked as it always was. A person
 //!   with no cap on the agent has the ask sent under none.
+//! * **A form is not a model's to answer** (ADR 0026, amended): an asked agent that shows an
+//!   interface and then waits (`input_required`, or `auth_required`) is waiting for the person,
+//!   who cannot see an asked agent's screens. The answer is read with `form` set
+//!   ([`AskResult::form`](orch_core::AskResult::form)); the core never continues that task and refuses
+//!   a further ask of the agent in the job ([`AskRefusal::FormPending`](orch_core::AskRefusal)), and
+//!   once the ask is recorded the dispatcher cancels the parked task. A question in words, with no
+//!   interface, stays the asking agent's to answer.
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
 //!   while the ledger says it runs, and it stops being wanted when the core ends it (the deadline,
 //!   the person's stop, the end of the task that asked, the end of the ask above it). The row looks
@@ -154,6 +161,10 @@ struct Answer {
     artifacts: Vec<(AskArtifact, Option<String>)>,
     /// The revision that served the task.
     revision: Option<String>,
+    /// The task that showed an interface (an A2UI surface, even one that was refused) while this
+    /// answer was read. A task that then waits waits for the person's answer to a form, which a
+    /// model must not give (ADR 0026, amended): see [`Answer::form`].
+    interface: Option<String>,
 }
 
 impl Answer {
@@ -212,15 +223,19 @@ impl Answer {
                 },
                 None,
             ),
-            // not for an asked agent: it cannot show an interface or have steps of its own here
+            // An asked agent cannot show an interface here: it is not applied and not drawn. But
+            // that it tried is remembered: a task that then waits is waiting for a form that
+            // only the person could answer, and a person who cannot see it never will.
+            Some(AgentUpdate::Ui { .. } | AgentUpdate::UiRejected { .. }) => {
+                self.interface = Some(env.task_id.clone());
+            }
+            // not for an asked agent: it cannot have steps of its own here
             Some(
                 AgentUpdate::Status { .. }
                 | AgentUpdate::Message { .. }
                 | AgentUpdate::Reasoning { .. }
                 | AgentUpdate::FileKept { .. }
                 | AgentUpdate::FileRefused { .. }
-                | AgentUpdate::Ui { .. }
-                | AgentUpdate::UiRejected { .. }
                 | AgentUpdate::Step(_)
                 // its tokens are applied to the thread on their own (`Dispatcher::ask_usage`)
                 | AgentUpdate::Usage(_)
@@ -270,6 +285,16 @@ impl Answer {
             .or_else(|| self.said.clone())
     }
 
+    /// Whether the turn that ended waiting waits for a form: the agent showed an interface and
+    /// then waited, for input or for authentication. Never for a task that ended any other way.
+    fn form(&self, state: AgentTaskState) -> bool {
+        self.interface.is_some()
+            && matches!(
+                state,
+                AgentTaskState::InputRequired | AgentTaskState::AuthRequired
+            )
+    }
+
     fn result(&self, state: AgentTaskState) -> AskResult {
         let artifacts = self.artifacts.iter().map(|(a, _)| a.clone()).collect();
         match state {
@@ -281,11 +306,13 @@ impl Answer {
             AgentTaskState::InputRequired => AskResult {
                 question: self.question(),
                 artifacts,
+                form: self.form(state),
                 ..AskResult::of(AskOutcome::InputRequired)
             },
             AgentTaskState::AuthRequired => AskResult {
                 question: self.question(),
                 artifacts,
+                form: self.form(state),
                 ..AskResult::of(AskOutcome::AuthRequired)
             },
             AgentTaskState::Failed => AskResult {
@@ -870,11 +897,13 @@ impl<P: Ports> Dispatcher<P> {
         if !self.ask_wanted(a).await {
             return self.ask_unwanted(a).await;
         }
+        let result = answer.result(state);
+        let form = result.form;
         let input = Input::AskFinished {
             job: a.job,
             ask: a.ask,
             revision: answer.revision.clone(),
-            result: answer.result(state),
+            result,
         };
         self.end_ask(
             &a.row,
@@ -882,7 +911,33 @@ impl<P: Ports> Dispatcher<P> {
             format!("askfin:{}", a.row.id),
             OutboxFinal::Delivered,
         )
-        .await
+        .await?;
+        // The ledger holds that the agent waits for a form (it is never continued and not asked
+        // again in this job); the task it parked is cancelled after that is durable.
+        if form {
+            self.cancel_form(a, answer).await;
+        }
+        Ok(())
+    }
+
+    /// The asked agent's task waits for a form that only the person could answer, and the person
+    /// cannot see it: cancel it, so that nothing can resolve it later. Once, and best effort: a task
+    /// left parked is a waste and not a risk, because nothing it says is applied and the ledger
+    /// refuses to ask the agent again in this job.
+    async fn cancel_form(&self, a: &Asking, answer: &Answer) {
+        let Some(task_id) = answer.interface.clone() else {
+            return;
+        };
+        let handle = TaskHandle {
+            endpoint: a.endpoint.clone(),
+            task_id,
+        };
+        match self.app.ports().agents().cancel(&handle).await {
+            Ok(_) | Err(AgentError::NotCancelable(_) | AgentError::TaskNotFound(_)) => {}
+            Err(e) => {
+                tracing::warn!(id = %a.row.id, ask = a.ask, error = %report(&e), "the asked agent's task, parked on a form, could not be cancelled");
+            }
+        }
     }
 
     /// The message could not be delivered: retry while it can help, then fail the ask.
@@ -1025,6 +1080,55 @@ mod tests {
             ended(AgentTaskState::Completed, None),
         ];
         assert_eq!(answer_of(&all).text(), None);
+    }
+
+    fn surface() -> AgentEnvelope {
+        let mut shown = env(AgentUpdate::Ui {
+            operations: vec![serde_json::json!({"version": "v0.9.1"})],
+        });
+        shown.task_id = "task-form".to_owned();
+        shown
+    }
+
+    #[test]
+    fn a_turn_that_showed_an_interface_and_waits_waits_for_a_form() {
+        for (state, outcome) in [
+            (AgentTaskState::InputRequired, AskOutcome::InputRequired),
+            (AgentTaskState::AuthRequired, AskOutcome::AuthRequired),
+        ] {
+            let answer = answer_of(&[surface(), ended(state, Some("Pick one"))]);
+            let result = answer.result(state);
+            assert_eq!(result.outcome, outcome);
+            assert!(result.form, "{state:?}");
+            assert_eq!(result.question.as_deref(), Some("Pick one"));
+            // the task to cancel is the one that showed it
+            assert_eq!(answer.interface.as_deref(), Some("task-form"));
+        }
+        // an interface the core refused is an interface that was shown: fail closed
+        let refused = answer_of(&[
+            env(AgentUpdate::UiRejected {
+                reason: "no".to_owned(),
+            }),
+            ended(AgentTaskState::InputRequired, Some("Pick one")),
+        ]);
+        assert!(refused.result(AgentTaskState::InputRequired).form);
+    }
+
+    #[test]
+    fn a_question_in_words_is_not_a_form_and_no_other_end_waits_for_one() {
+        let words = answer_of(&[ended(AgentTaskState::InputRequired, Some("Which branch?"))]);
+        assert!(!words.result(AgentTaskState::InputRequired).form);
+        assert!(words.interface.is_none());
+        // an interface in a turn that did not wait is just a screen the agent drew
+        let drew = answer_of(&[surface(), ended(AgentTaskState::Completed, None)]);
+        for state in [
+            AgentTaskState::Completed,
+            AgentTaskState::Failed,
+            AgentTaskState::Rejected,
+            AgentTaskState::Canceled,
+        ] {
+            assert!(!drew.result(state).form, "{state:?}");
+        }
     }
 
     #[test]

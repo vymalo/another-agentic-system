@@ -620,9 +620,11 @@ pub enum Command {
         depth: u8,
         /// What it is asked (untrusted).
         text: String,
-        /// The task to continue: the last ask of this agent in the job ended waiting for the
-        /// person's answer ([`AskOutcome::is_continuable`](crate::AskOutcome::is_continuable)), so
-        /// this ask answers it (ADR 0021). `None` for a new task.
+        /// The task to continue: the last ask of this agent in the job ended waiting for an
+        /// answer in words ([`AskOutcome::is_continuable`](crate::AskOutcome::is_continuable)), so
+        /// this ask answers it (ADR 0021). Never the task of a form, which is the person's to
+        /// answer ([`Ask::form`](crate::Ask::form)): the agent is not asked again. `None` for a
+        /// new task.
         continue_task: Option<String>,
         /// For a new task, the earlier tasks of this agent in this job it refers to, oldest
         /// first, at most [`MAX_ASK_REFERENCES`](crate::MAX_ASK_REFERENCES).
@@ -700,6 +702,7 @@ impl Classify for TransitionError {
             TransitionError::AskRefused(why) => match why {
                 AskRefusal::TaskOver
                 | AskRefusal::UnknownCaller { .. }
+                | AskRefusal::FormPending { .. }
                 | AskRefusal::DepthReached { .. }
                 | AskRefusal::TooManyInJob { .. }
                 | AskRefusal::TooManyRunning { .. } => ErrorClass::Rejected,

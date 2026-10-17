@@ -365,6 +365,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     task_id: Some("t".into()),
                     context_id: None,
                     outcome: Some(AskOutcome::Canceled),
+                    form: false,
                 }],
                 // the finished job's count of its model calls (ADR 0056): the next job counts its own
                 usage: UsageLedger::of(12, 0),
