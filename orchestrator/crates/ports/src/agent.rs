@@ -329,7 +329,8 @@ pub type AgentStream = BoxStream<'static, Result<AgentEnvelope, AgentError>>;
 /// `Rejected`, `TaskNotFound`, `Unsupported` and `NotCancelable` carry the peer's own message.
 /// `Unreachable` and `Protocol` describe this side; the transport error is their `source`
 /// (adapters box theirs: ADR 0009) and may hold URLs, so it never reaches the chat log:
-/// [`AgentError::public_detail`] is what may.
+/// [`AgentError::public_detail`] is what may. `NotSent` is this side's refusal to send a message
+/// without what it must carry; its detail is written for the chat.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AgentError {
@@ -375,6 +376,17 @@ pub enum AgentError {
         /// How long the peer asked to wait, when it said.
         retry_after: Option<Duration>,
     },
+    /// Nothing was sent, because this side could not give the message what it must carry: an
+    /// ask's grant (`Caller::Ask`) to an agent whose live card lists `thread-tools/v1`, when the
+    /// adapter has no issuer or the token could not be minted (ADR 0026, amended 2026-10-17: an
+    /// asked agent that gets no token cannot tell the ask from a person's run). The deployment's
+    /// configuration, or a bug: never the agent's doing, and never cured by a retry
+    /// ([`ErrorClass::Internal`], so that an operator is told).
+    #[error("the message was not sent: {detail}")]
+    NotSent {
+        /// Why, in this side's words, without URLs or secrets: what the chat may show.
+        detail: String,
+    },
 }
 
 impl AgentError {
@@ -401,6 +413,13 @@ impl AgentError {
         }
     }
 
+    /// The message was not sent, for want of what it must carry.
+    pub fn not_sent(detail: impl Into<String>) -> Self {
+        AgentError::NotSent {
+            detail: detail.into(),
+        }
+    }
+
     /// Keeps `source` as the cause of an `Unreachable` or `Protocol` error; the other variants
     /// carry peer text and have no source, so they are returned unchanged.
     #[must_use]
@@ -413,7 +432,8 @@ impl AgentError {
             | AgentError::Unsupported(_)
             | AgentError::NotCancelable(_)
             | AgentError::Unauthenticated { .. }
-            | AgentError::RateLimited { .. } => {}
+            | AgentError::RateLimited { .. }
+            | AgentError::NotSent { .. } => {}
         }
         self
     }
@@ -433,6 +453,7 @@ impl AgentError {
                 "the agent did not accept the orchestrator's credentials".to_owned()
             }
             AgentError::RateLimited { .. } => "the agent is limiting requests".to_owned(),
+            AgentError::NotSent { detail } => detail.clone(),
         }
     }
 }
@@ -447,6 +468,7 @@ impl Classify for AgentError {
             AgentError::TaskNotFound(_) => ErrorClass::NotFound,
             AgentError::Unsupported(_) => ErrorClass::Unsupported,
             AgentError::NotCancelable(_) => ErrorClass::Rejected,
+            AgentError::NotSent { .. } => ErrorClass::Internal,
         }
     }
 
@@ -518,6 +540,7 @@ mod tests {
             AgentError::protocol("odd answer"),
             AgentError::unauthenticated("401"),
             AgentError::RateLimited { retry_after: None },
+            AgentError::not_sent("the ask was not sent: no thread-tools token could be minted"),
         ]
     }
 
@@ -563,6 +586,7 @@ mod tests {
                 AgentError::TaskNotFound(_) => ErrorClass::NotFound,
                 AgentError::Unsupported(_) => ErrorClass::Unsupported,
                 AgentError::NotCancelable(_) => ErrorClass::Rejected,
+                AgentError::NotSent { .. } => ErrorClass::Internal,
             };
             assert_eq!(e.class(), expected, "{e}");
             assert_eq!(e.is_retryable(), expected.is_retryable());

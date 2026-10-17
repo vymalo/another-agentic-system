@@ -6,7 +6,9 @@
   **Amended (2026-10-17):** a form an asked agent *draws* (an interface) is the person's to answer, not a model's, and an asked
   agent is sent the job's UI catalog so that a question with choices draws one; a question in words, with no choices, still is
   the asking agent's, and that leaves a narrower known gap
-  ([status note](#status-note-2026-10-17-a-form-is-the-persons-to-answer)).
+  ([status note](#status-note-2026-10-17-a-form-is-the-persons-to-answer)). **Amended (2026-10-17, second):** an ask is never
+  sent without its thread-tools grant: an adapter that cannot mint the token fails the ask instead of sending a plain message
+  ([status note](#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)).
 
 ## Context
 
@@ -260,3 +262,27 @@ stateDiagram-v2
     Over --> [*]: no further ask of this agent in the job
     Done --> [*]
 ```
+
+## Status note, 2026-10-17 (second): an ask never goes out without its grant
+
+**Amended (2026-10-17), on the owner's delegation.** The protection of adam-rs #115 (the asked coder reads the `caller` claim of
+its thread-tools token and asks nobody for consent in a run another agent started) rests on the token being there. Until now the
+A2A adapter minted it when it could and never failed a message for it: an ask sent from a deployment with no issuer
+(`THREAD_TOOLS_SECRET` and `THREAD_TOOLS_URL` unset), or whose token could not be minted, went out as a plain message, and the
+asked coder could not tell it from a person's run. That is the orchestrator's side of the gap adam-rs's ADR 0036 names ("an ask
+the orchestrator sends with no grant"), and it is closed:
+
+- **Rule.** When the request carries a grant whose caller is `ask:<n>` **and** the live card read for this very call lists
+  `thread-tools/v1`, the message carries the minted grant or is not sent. The adapter answers `AgentError::NotSent` ("the ask was
+  not sent: no thread-tools token could be minted (no issuer is configured)", or the mint error in the parentheses), not retryable
+  (a missing issuer is the deployment's configuration and a mint error is a bug; the class is `Internal`, so an operator is told),
+  and nothing reaches the agent. The dispatcher records it as the ask's failure (`ask_finished` with `state: failed` and that
+  `error`), at once, with no task on the row or the ledger; the job goes on.
+- **Unchanged.** A card that does not list the extension cannot read a grant and is sent the plain message, ask or not (an agent
+  that does not speak the extension is in the known gap above, whatever the token). The addressed agent's message (`main`) from an
+  adapter without keys, or whose grant cannot be minted, goes out without tools, which every tool degrades to.
+- **Where.** The decision is one function of the adapter (`orchestrator/crates/agent-a2a/src/thread_tools.rs`, `mint`), unit
+  tested; a wire test against the fake agent proves that an ask to a card that lists the extension is refused by an adapter with
+  no issuer and that the agent saw no call; a dispatcher test proves the ask ends failed with the reason and no task is recorded.
+  It is the adapter's rule, not a case of the `AgentClient` conformance testkit: "no issuer" is the A2A adapter's configuration,
+  which the scripted agent of the testkit has no counterpart for.

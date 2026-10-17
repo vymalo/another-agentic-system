@@ -26,6 +26,14 @@
 //!   that ended waiting for an answer (`continue_task`), else a new task that refers to the
 //!   earlier ones (ADR 0021). The asked agent is given the thread's tools as `ask:<n>`, at its
 //!   depth.
+//! * **An ask never goes out without its grant** (ADR 0026, amended 2026-10-17): the asked agent
+//!   knows from the token's `caller` that an agent asked it, and asks nobody for consent in such a
+//!   run; without the token it would take the ask for a person's. The A2A adapter sends an ask to
+//!   a card that lists `thread-tools/v1` with its token or not at all: with no issuer, or a token it
+//!   cannot mint, it answers [`AgentError::NotSent`] and nothing reaches the agent. That is not
+//!   retried (the deployment's configuration, or a bug): the ask ends `failed` with the reason, no
+//!   task on the row or the ledger, and the job goes on. A card without the extension is sent the
+//!   plain message as before.
 //! * **The person's cap goes with the ask, the parent's tier does not** (ADR 0061, question 1 and its
 //!   amendment): a mention pinned the cap of the person's role on the asked agent, the ask row
 //!   carries it, and the live card decides the tier when the ask is sent ([`App::tier_for_send`]):

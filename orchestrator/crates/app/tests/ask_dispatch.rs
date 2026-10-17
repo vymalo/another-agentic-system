@@ -1027,6 +1027,33 @@ async fn a_request_the_agent_refuses_fails_the_ask_at_once() {
     run.shutdown().await;
 }
 
+/// ADR 0026, amended 2026-10-17: an adapter that cannot mint an ask's token sends nothing and
+/// answers `NotSent`. The ask ends `failed` with that reason, at once (the deployment's
+/// configuration is not cured by a retry), and no task is recorded anywhere.
+#[tokio::test]
+async fn an_ask_whose_token_cannot_be_minted_is_not_sent_and_fails_with_the_reason() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    let row = put(&*app, &w.store, t.id, ask_of("coder", "echo hi", "k1")).await;
+    const REASON: &str =
+        "the ask was not sent: no thread-tools token could be minted (no issuer is configured)";
+    w.agent.fail_next_sends(1, || AgentError::not_sent(REASON));
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, actor) = finished(&app, t.id, 1).await;
+    assert_eq!((done.state, actor), (AskOutcome::Failed, Actor::system()));
+    assert_eq!(done.error.as_deref(), Some(REASON));
+    let ended = row_ends(&w, &row).await;
+    assert_eq!(ended.status, OutboxStatus::Dead);
+    assert_eq!(ended.task_id, None, "no task was started");
+    assert_eq!(sends_to(&w, "coder").len(), 1, "not retried");
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(thread.job.asks[0].task_id, None);
+    assert_eq!(thread.state, ThreadState::Working, "the job goes on");
+    assert!(cancels(&w).is_empty());
+    run.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_agent_that_cannot_be_reached_is_tried_again_and_then_the_ask_fails() {
     let w = World::new();

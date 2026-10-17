@@ -661,14 +661,15 @@ impl AgentClient for A2aAgentClient {
         // it), only what rides along on any message (the thread tools).
         let ui = ui_from_card(&card).filter(|_| !req.steer);
         let catalog = catalog_for(&req, &known).filter(|_| !req.steer);
-        // Minted for this message only, from the card read for this very call (ADR 0008).
+        // Minted for this message only, from the card read for this very call (ADR 0008). An ask
+        // whose token cannot be minted is not sent (`crate::thread_tools`).
         let thread_tools = mint(
             self.cfg.thread_tools.as_deref(),
             req.thread_tools.as_ref(),
             &req.message_id,
             &known,
             jiff::Timestamp::now(),
-        );
+        )?;
         let mentions = mentions_metadata(&req, &known, thread_tools.is_some(), self.cfg.asks);
         // A message that names a tier is sent only to a card that still honours it (ADR 0061).
         let listing = access_tier_from_card(&card);

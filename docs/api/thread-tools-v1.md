@@ -133,6 +133,16 @@ find neither the token, nor a segment of it, nor the key; the end-to-end test re
 export, every AG-UI frame of the runs and, on Postgres, **every row of every table of the schema**, and finds none; a
 test that makes the adapter log the metadata fails.
 
+**An ask is never sent without the grant** (*2026-10-17*,
+[ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)).
+The rule above has one exception: a message whose grant names an asked agent (`caller = ask:<n>`), to a card that lists the
+extension, is sent with the grant or not at all. When no token can be minted (no key or URL configured, or a mint error) the
+adapter sends nothing and answers `NotSent`; the ask fails at once, with `ask_finished.error` "the ask was not sent: no
+thread-tools token could be minted (no issuer is configured)" (or the mint error in the parentheses), no task starts and the
+job goes on. The reason is that the asked agent reads `caller` from the token to know that an agent asked it (adam-coder
+asks nobody for consent in such a run): without the token it would take the ask for a person's. The addressed agent's message
+is still sent without the grant in that case, and a card without the URI still gets the plain message, ask or not.
+
 ### The `attached` member
 
 *Built 2026-10-02 (slice 8, first half).* When MCP servers are attached to the thread
@@ -217,7 +227,8 @@ brevity.
 
 **Minting.** By the A2A adapter, when it sends the message, from a non-secret grant on the send request. The key comes
 from the configuration, so **any replica can verify** a token any replica minted (the processes stay stateless,
-[ADR 0001](../decisions/0001-rust-state-machine-on-postgres.md)). The key is at least 32 bytes.
+[ADR 0001](../decisions/0001-rust-state-machine-on-postgres.md)). The key is at least 32 bytes. For an asked agent the token
+is not optional: an ask to a card that lists the extension is sent with it or not at all ([The message](#the-message)).
 
 **Rotation.** `THREAD_TOOLS_SECRET_PREVIOUS` is verified, never used to sign. The header's `kid` says which key to try
 (the current or the previous one). Rotate by moving the current key to `…_PREVIOUS` and setting a new one; remove the
@@ -906,7 +917,9 @@ about 200 bytes is refused ("the callId is too long").
   `parentStepId` it names), and it ends with its ask ("this task is over", no step).
 - **The asked agent's token** has `caller = ask:<n>` and a `depth`. It gets the attached servers allowed for **it**, and
   `ask_agent` only while its depth is below the limit; it gets **no** `get_ui_catalog`, no `turn_output` (only the addressed
-  agent announces the turn's answer) and no mentions metadata.
+  agent announces the turn's answer) and no mentions metadata. It is never left out: an ask to an agent whose card lists
+  `thread-tools/v1` is sent with its token or not at all (no issuer, or a token that cannot be minted: the ask fails with
+  `state: failed` and the reason as `error`, `NotSent`, no task; [The message](#the-message), *2026-10-17*).
 - **Continuation.** Asking again is a new ask (a new number). An ask to an agent whose last ask in this job ended `input_required` or `auth_required` continues that
   task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
   not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The other asks of that agent that still run when the form ends end `canceled` with it (and the asks they asked), with an
@@ -923,7 +936,7 @@ about 200 bytes is refused ("the callId is too long").
   still end `input_required` with no interface and can have their question, a consent included, answered by the asking model.
   Such an agent's consent is protected only once the agent refuses to park on it in a run another agent started (adam-coder does
   since adam-rs #115, `8847c28`, in the pin since 2026-10-17: its consent tools ask nobody there and no words are a consent; defence in
-  depth). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the
+  depth), which needs the token: since 2026-10-17 an ask to a card that lists `thread-tools/v1` never goes out without it (above). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the
   alternative, showing the form to the person, is not built
   ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-persons-to-answer)).*
   The orchestrator does not read the words of a message for an agent's convention of what a form answer looks like: that an
