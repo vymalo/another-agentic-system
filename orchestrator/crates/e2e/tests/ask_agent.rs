@@ -12,8 +12,14 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use orch_core::{AskLimits, MENTIONS_EXTENSION, THREAD_TOOLS_EXTENSION};
-use orch_testsupport::{Chat, FakeAgentOptions, ask_agent, eventually};
+use orch_core::{
+    A2UI_EXTENSION_V0_9_1, AskLimits, MENTIONS_EXTENSION, THREAD_TOOLS_EXTENSION,
+    UI_CATALOG_EXTENSION, catalog_digest,
+};
+use orch_testsupport::{
+    Chat, FakeAgentOptions, UI_CATALOG_ID, ask_agent, eventually, integral_numbers, ui_catalog,
+    with_ui_catalog,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -326,8 +332,108 @@ async fn a_mention_is_the_only_way_to_be_asked_and_the_limits_are_the_deployment
     );
 }
 
+/// An asked agent is sent a **forms catalog** derived from the thread's (ADR 0026, amended
+/// 2026-10-17), through the real adapter: the thread's agent gets the screen's whole catalog, the
+/// asked agent `Choices` alone under `<id>/forms`, with the same version and a digest of its own
+/// that checks out over what it received, inline; the log records the screen's catalog once and
+/// never the derived one.
+async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(backend: Backend) {
+    let drawing = |extensions: &[&str]| FakeAgentOptions {
+        ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+        extensions: extensions.iter().map(|u| (*u).to_owned()).collect(),
+        accepts_inline_catalogs: true,
+        ..FakeAgentOptions::default()
+    };
+    let world = World::with(
+        backend,
+        Setup {
+            coder: drawing(&[THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION]),
+            plain: drawing(&[
+                THREAD_TOOLS_EXTENSION,
+                MENTIONS_EXTENSION,
+                UI_CATALOG_EXTENSION,
+            ]),
+            thread_tools: true,
+            ..Setup::default()
+        },
+    )
+    .await;
+    let orch = world.instance_with_thread_tools("orch-1", true).await;
+    let chat = world.chat(&orch);
+    // the run carries version 3 of the web's catalog, the first with `Choices`
+    let thread = Uuid::now_v7().to_string();
+    let text = "coordinate @coder -- go";
+    let mut extra = with_ui_catalog(3);
+    extra["forwardedProps"]["vymalo.mentions"] = json!([mention(text, "coder")]);
+    let body = Chat::agui_input(&thread, "run-1", &[("m-1", text)], extra);
+    let mut sse = chat.agui_run("plain", &body).await;
+    assert_eq!(sse.status.as_u16(), 200);
+    sse.collect_frames(WAIT).await;
+    chat.wait_state(&thread, "done").await;
+
+    let screen = ui_catalog(3);
+    let forms_id = format!("{UI_CATALOG_ID}/forms");
+    // the thread's agent was sent the screen's whole catalog
+    let plain = world.plain.executions();
+    assert_eq!(plain.len(), 1);
+    assert_eq!(
+        plain[0].ui_catalog.as_ref().unwrap()["catalogId"],
+        UI_CATALOG_ID
+    );
+    assert_eq!(
+        plain[0]
+            .inline_catalogs
+            .iter()
+            .map(integral_numbers)
+            .collect::<Vec<_>>(),
+        [screen["catalog"].clone()]
+    );
+    // the asked agent `Choices` alone, under the derived id, the same version, a digest of its own
+    let asked = world.coder.executions();
+    assert_eq!(asked.len(), 1);
+    let told = asked[0].ui_catalog.clone().expect("told of a catalog");
+    assert_eq!(told["catalogId"], forms_id);
+    assert_eq!(integral_numbers(&told)["version"], json!(3));
+    assert_eq!(told["inline"], true);
+    let inline: Vec<Value> = asked[0]
+        .inline_catalogs
+        .iter()
+        .map(integral_numbers)
+        .collect();
+    assert_eq!(inline.len(), 1, "{:?}", asked[0].inline_catalogs);
+    assert_eq!(inline[0]["catalogId"], forms_id);
+    let names: Vec<&String> = inline[0]["components"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(names, ["Choices"]);
+    assert_eq!(
+        inline[0]["components"]["Choices"],
+        screen["catalog"]["components"]["Choices"]
+    );
+    assert_eq!(json!(catalog_digest(&inline[0]).unwrap()), told["digest"]);
+    assert_ne!(told["digest"], screen["digest"]);
+    assert_eq!(
+        asked[0].a2ui_capabilities.as_ref().unwrap()["v0.9.1"]["supportedCatalogIds"][0],
+        forms_id
+    );
+    assert!(asked[0].thread_tools.is_some(), "and its grant, as ever");
+    // the log holds the screen's catalog once and nothing of the derived one
+    let events = chat.events(&thread).await;
+    let recorded = kinds_of(&events, "ui_catalog");
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["data"]["digest"], screen["digest"]);
+    assert!(!serde_json::to_string(&events).unwrap().contains(&forms_id));
+    assert_eq!(
+        kinds_of(&events, "ask_finished")[0]["data"]["state"],
+        "completed"
+    );
+}
+
 backends!(
     the_coordinator_asks_the_agents_the_person_mentioned_in_order_and_uses_their_answers,
     an_asked_agent_may_ask_and_the_third_level_is_refused_and_the_persons_cancel_ends_every_ask,
     a_mention_is_the_only_way_to_be_asked_and_the_limits_are_the_deployments,
+    an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads,
 );

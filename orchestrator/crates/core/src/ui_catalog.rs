@@ -49,6 +49,9 @@ pub const MAX_CATALOG_ID_BYTES: usize = 256;
 pub const MAX_CATALOG_VERSION: u32 = 1_000_000;
 /// How many digests a thread's ledger remembers; the oldest is forgotten first.
 pub const MAX_SEEN_CATALOGS: usize = 32;
+/// What is appended to a catalog's id to name the forms catalog derived from it
+/// ([`UiCatalogData::forms_only`]).
+pub const FORMS_CATALOG_SUFFIX: &str = "/forms";
 /// The largest integer a catalog may hold: the largest a JSON number holds exactly in JavaScript,
 /// which is where catalogs are written.
 const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
@@ -213,6 +216,41 @@ impl UiCatalogData {
             version: self.version,
             digest: self.digest.clone(),
         }
+    }
+
+    /// The **forms catalog** derived from this one: what an asked agent is sent (ADR 0026, amended
+    /// 2026-10-17), so that it can draw a form and nothing else. It is
+    /// `{catalogId: <this id>/forms, components: {Choices: <this catalog's Choices, unchanged>}}`,
+    /// with this catalog's `version` (the agent reads from the version what a `Choices` may hold)
+    /// and the digest of the contract computed over the canonical JSON of the derived catalog, as
+    /// for any catalog. It is derived at send time and never recorded: the same catalog gives the
+    /// same forms catalog every time. The id is this one with [`FORMS_CATALOG_SUFFIX`] appended
+    /// (after any trailing slash), so it stays an https URL beside the screen's own and the agent's
+    /// surfaces name it.
+    ///
+    /// `None` when this catalog has no `Choices`, when the derived id would not be an id the
+    /// contract accepts (longer than [`MAX_CATALOG_ID_BYTES`]), or when the catalog cannot be
+    /// canonicalised (never for one that [`from_json`](Self::from_json) accepted).
+    pub fn forms_only(&self) -> Option<UiCatalogData> {
+        let choices = self.catalog.get("components")?.get("Choices")?;
+        let catalog_id = format!(
+            "{}{FORMS_CATALOG_SUFFIX}",
+            self.catalog_id.trim_end_matches('/')
+        );
+        if !is_https_url(&catalog_id) {
+            return None;
+        }
+        let catalog = serde_json::json!({
+            "catalogId": catalog_id,
+            "components": {"Choices": choices},
+        });
+        let digest = catalog_digest(&catalog).ok()?;
+        Some(UiCatalogData {
+            catalog_id,
+            version: self.version,
+            digest,
+            catalog,
+        })
     }
 }
 
@@ -616,6 +654,93 @@ mod tests {
             digest: catalog_digest(&catalog).unwrap(),
             catalog,
         }
+    }
+
+    // ---- the forms catalog of an ask (ADR 0026, amended 2026-10-17) ----------------------
+
+    fn choices() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "component": {"const": "Choices"},
+                "questions": {"type": "array", "maxItems": 8},
+            },
+            "required": ["component", "questions"],
+        })
+    }
+
+    /// A screen's catalog with a form component among others.
+    fn screen(version: u32) -> UiCatalogData {
+        let catalog = catalog_with(json!({
+            "Note": note(),
+            "Choices": choices(),
+            "Cards": {"type": "object", "properties": {"component": {"const": "Cards"}}},
+        }));
+        UiCatalogData {
+            catalog_id: ID.to_owned(),
+            version,
+            digest: catalog_digest(&catalog).unwrap(),
+            catalog,
+        }
+    }
+
+    #[test]
+    fn the_forms_catalog_is_choices_alone_under_a_derived_id_with_the_version_and_a_digest_of_its_own()
+     {
+        let screen = screen(5);
+        let forms = screen.forms_only().unwrap();
+        assert_eq!(forms.catalog_id, format!("{ID}/forms"));
+        assert_eq!(forms.version, 5);
+        assert_eq!(
+            forms.catalog,
+            json!({"catalogId": format!("{ID}/forms"), "components": {"Choices": choices()}})
+        );
+        // the digest is the contract's: SHA-256 over the canonical form of the derived catalog
+        let canonical = canonical_json(&forms.catalog).unwrap();
+        let mut expected = String::from("sha256:");
+        for byte in Sha256::digest(canonical.as_bytes()) {
+            write!(expected, "{byte:02x}").unwrap();
+        }
+        assert_eq!(forms.digest, expected);
+        assert_ne!(forms.digest, screen.digest);
+        // a catalog the orchestrator would accept from a screen, and not the screen's
+        forms.check().unwrap();
+        assert_ne!(forms, screen);
+        assert_eq!(UiCatalogData::from_json(&json!(forms)).unwrap(), forms);
+    }
+
+    #[test]
+    fn the_forms_catalog_is_the_same_every_time() {
+        let second = screen(2);
+        let first = second.forms_only().unwrap();
+        for _ in 0..3 {
+            assert_eq!(second.forms_only().unwrap(), first);
+        }
+        // and the version is kept, whatever it is
+        assert_eq!(screen(7).forms_only().unwrap().version, 7);
+    }
+
+    #[test]
+    fn no_forms_catalog_without_choices_and_the_id_fits_or_there_is_none() {
+        assert_eq!(data(1, "no choices").forms_only(), None);
+        // a trailing slash on the screen's id is not doubled
+        let mut slashed = screen(1);
+        slashed.catalog_id = format!("{ID}/");
+        slashed.catalog["catalogId"] = json!(format!("{ID}/"));
+        assert_eq!(
+            slashed.forms_only().unwrap().catalog_id,
+            format!("{ID}/forms")
+        );
+        // an id at the limit leaves no room for the suffix: none, rather than an id the contract
+        // refuses
+        let long = format!(
+            "https://{}",
+            "a".repeat(MAX_CATALOG_ID_BYTES - "https://".len())
+        );
+        let mut edge = screen(1);
+        edge.catalog_id = long.clone();
+        edge.catalog["catalogId"] = json!(long);
+        assert_eq!(edge.forms_only(), None);
     }
 
     // ---- the digest ----------------------------------------------------------------------

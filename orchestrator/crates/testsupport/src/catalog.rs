@@ -7,8 +7,9 @@ use serde_json::{Value, json};
 pub const UI_CATALOG_ID: &str = "https://agents.vymalo.com/a2ui/catalogs/chat";
 
 /// Version `version` of the web's catalog, as it sends it: `{catalogId, version, digest,
-/// catalog}`, with the real digest. Version 1 has `Text`, later versions add `Column`; every
-/// version differs from the others, so each has a digest of its own.
+/// catalog}`, with the real digest. Version 1 has `Text`, later versions add `Column`, and version
+/// 3 and later `Choices` (the form an asked agent is sent, ADR 0026); every version differs from
+/// the others, so each has a digest of its own.
 pub fn ui_catalog(version: u32) -> Value {
     let mut components = json!({
         "Text": {
@@ -40,6 +41,24 @@ pub fn ui_catalog(version: u32) -> Value {
                 "align": {"enum": ["start", "center", "end", "stretch"]},
             },
             "required": ["id", "component", "children"],
+            "additionalProperties": false,
+        });
+    }
+    if version >= 3 {
+        components["Choices"] = json!({
+            "type": "object",
+            "description": "Questions with options, answered with one action.",
+            "properties": {
+                "id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "component": {"const": "Choices"},
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {"type": "object"},
+                },
+            },
+            "required": ["id", "component", "questions"],
             "additionalProperties": false,
         });
     }

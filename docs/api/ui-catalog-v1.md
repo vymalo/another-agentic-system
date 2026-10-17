@@ -1681,6 +1681,32 @@ better small. The orchestrator's path is the existing one (`ui_action`, the same
 as lines of text for its model: `- db: pg`, `- auth: other: "Keycloak"`, `- name: text: "Quokka"`, and a last line
 `Note: "Before Friday, please"`.
 
+### The forms catalog of an ask
+
+*2026-10-17,
+[ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-third-an-asked-agent-is-sent-a-forms-only-catalog).*
+An agent the addressed agent **asks** ([`thread-tools-v1.md`](thread-tools-v1.md#the-child-task)) is not sent the thread's
+catalog but a **forms catalog** derived from it, so that it can draw a form, which ends the ask as the person's to answer, and
+nothing else (nobody sees an asked agent's surfaces):
+
+| Member | Value |
+|---|---|
+| `catalogId` | the thread's `catalogId` with `/forms` appended (a trailing slash is not doubled): an https URL under the screen's own id, never fetched |
+| `version` | the thread's `version`, unchanged: an agent reads from it what a `Choices` may hold (titles, typed questions, [version 5](#version-5-questions-with-a-title-a-description-and-typed-options)) |
+| `components` | `{Choices: <the thread's Choices schema, unchanged>}` and nothing else |
+| `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#2-digest-version-and-the-lock) says |
+
+It is derived from the thread's current catalog at every send and **never recorded**: no `ui_catalog` event, nothing on the
+ledger, the thread's current catalog stays the screen's; the same catalog gives the same forms catalog every time. It
+travels like any delivery of [section 5](#5-to-the-agent-the-extension), inline (an asked agent has no `get_ui_catalog`),
+only to a card that lists the extension and inline only to one that accepts inline catalogs: the metadata, the first
+`supportedCatalogIds` entry and the entry of `inlineCatalogs` all name the derived catalog. A thread with no catalog, or
+whose catalog has no `Choices`, sends an asked agent none, and so does a derived id that would exceed 256 bytes; that last case
+is logged as a warning by the orchestrator (the thread and the length of the id, never the catalog), since nothing else would say
+why such a thread's asks carry no form. The suffix is appended to the thread's id as a string, after any `?` or `#` it carries
+(`https://h/c?v=1/forms`): legal for an opaque id that is never fetched. The addressed agent keeps getting the thread's whole
+catalog.
+
 ## 6. The refetch
 
 The agent can ask for the thread's current catalog at any time with the tool `get_ui_catalog` of the orchestrator's

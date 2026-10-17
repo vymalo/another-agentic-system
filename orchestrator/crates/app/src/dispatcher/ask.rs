@@ -26,6 +26,14 @@
 //!   that ended waiting for an answer (`continue_task`), else a new task that refers to the
 //!   earlier ones (ADR 0021). The asked agent is given the thread's tools as `ask:<n>`, at its
 //!   depth.
+//! * **An ask never goes out without its grant** (ADR 0026, amended 2026-10-17): the asked agent
+//!   knows from the token's `caller` that an agent asked it, and asks nobody for consent in such a
+//!   run; without the token it would take the ask for a person's. The A2A adapter sends an ask to
+//!   a card that lists `thread-tools/v1` with its token or not at all: with no issuer, or a token it
+//!   cannot mint, it answers [`AgentError::NotSent`] and nothing reaches the agent. That is not
+//!   retried (the deployment's configuration, or a bug): the ask ends `failed` with the reason, no
+//!   task on the row or the ledger, and the job goes on. A card without the extension is sent the
+//!   plain message as before.
 //! * **The person's cap goes with the ask, the parent's tier does not** (ADR 0061, question 1 and its
 //!   amendment): a mention pinned the cap of the person's role on the asked agent, the ask row
 //!   carries it, and the live card decides the tier when the ask is sent ([`App::tier_for_send`]):
@@ -39,16 +47,20 @@
 //!   ([`AskResult::form`](orch_core::AskResult::form)); the core never continues that task and refuses
 //!   a further ask of the agent in the job ([`AskRefusal::FormPending`](orch_core::AskRefusal)), and
 //!   once the ask is recorded the dispatcher cancels the parked task, which is then refused for
-//!   the rest of the job. **The ask is sent the job's UI catalog**, inline when the agent's A2UI
-//!   entry accepts inline catalogs (an asked agent has no `get_ui_catalog` tool), so that an agent
-//!   which asks the person something with choices (adam's `ask_user`, the coder's consent) draws a
-//!   surface and the rule above fires; the cost is that every question with choices ends the ask.
+//!   the rest of the job. **The ask is sent a forms catalog derived from the job's**
+//!   ([`App::thread_forms_catalog`]: the `Choices` of the thread's current catalog alone, under
+//!   `<catalog id>/forms`, the thread's version and a digest of its own, derived at every send and
+//!   never recorded), inline when the agent's A2UI entry accepts inline catalogs (an asked agent
+//!   has no `get_ui_catalog` tool), so that an agent which asks the person something with choices
+//!   (adam's `ask_user`, the coder's consent) draws a form and the rule above fires, and so that it
+//!   can draw nothing else (a card or a graph it drew before 2026-10-17 ended the ask too, for the
+//!   rule cannot tell surfaces apart); the cost is that every question with choices ends the ask.
 //!   A claim that re-attaches to a task that waits, after a crash or a broken stream, cannot know
 //!   what the task drew before, and **fails closed**: any turn that ends waiting is taken for a
 //!   form, with no read of the task's history ([`Answer::assume_form`]). A question in words stays
 //!   the asking agent's to answer, and that is the known gap: a question without choices, an agent
-//!   that ignores the catalog or does not accept inline catalogs, and a thread with no catalog
-//!   (none is sent).
+//!   that ignores the catalog or does not accept inline catalogs, and a thread with no catalog or
+//!   with no `Choices` in it (none is sent).
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
 //!   while the ledger says it runs, and it stops being wanted when the core ends it (the deadline,
 //!   the person's stop, the end of the task that asked, the end of the ask above it). The row looks
@@ -625,15 +637,16 @@ impl<P: Ports> Dispatcher<P> {
             Ok(tier) => tier,
             Err(e) => return self.ask_send_failed(a, e).await,
         };
-        // The job's own UI catalog goes with the ask (ADR 0026, amended 2026-10-17): with it an
-        // agent that asks the person something with choices draws a form, which ends the ask
-        // (`AskResult::form`) instead of parking a question no model can answer. Inline, because an
-        // asked agent has no tool to fetch it. A thread with no catalog sends none, and the agent
-        // asks in words as before. A catalog that cannot be read is no reason to send without one:
-        // the row is claimed again.
+        // The forms catalog derived from the job's own goes with the ask (ADR 0026, amended
+        // 2026-10-17): `Choices` alone, so that an agent that asks the person something with
+        // choices draws a form, which ends the ask (`AskResult::form`) instead of parking a question
+        // no model can answer, and can draw nothing else. Inline, because an asked agent has no
+        // tool to fetch it. A thread with no catalog, or one without `Choices`, sends none, and the
+        // agent asks in words as before. A catalog that cannot be read is no reason to send without
+        // one: the row is claimed again.
         let ui_catalog = self
             .app
-            .thread_ui_catalog(a.thread)
+            .thread_forms_catalog(a.thread)
             .await?
             .map(UiDelivery::Inline);
         // The reads above take time: an ask that ended meanwhile (the person's stop, the deadline,

@@ -1999,6 +1999,40 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// The catalog an **asked** agent is sent (ADR 0026, amended 2026-10-17): the forms catalog
+    /// derived from the thread's current one ([`UiCatalogData::forms_only`]), `Choices` alone under
+    /// `<catalog id>/forms`, with the thread's version and a digest of its own. Derived here from
+    /// what [`thread_ui_catalog`](Self::thread_ui_catalog) reads, at every send, and never
+    /// recorded. `None` when the thread has no catalog, or its catalog has no `Choices`; a catalog
+    /// that has `Choices` and still gives none (its id leaves no room for the suffix) is logged as
+    /// a warning, the thread and the id's length and never the catalog, since nothing else would
+    /// say why the thread's asks carry no form.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`thread_ui_catalog`](Self::thread_ui_catalog).
+    pub async fn thread_forms_catalog(
+        &self,
+        id: ThreadId,
+    ) -> Result<Option<UiCatalogData>, AppError> {
+        let Some(catalog) = self.thread_ui_catalog(id).await? else {
+            return Ok(None);
+        };
+        let forms = catalog.forms_only();
+        let has_choices = catalog
+            .catalog
+            .get("components")
+            .is_some_and(|c| c.get("Choices").is_some());
+        if forms.is_none() && has_choices {
+            tracing::warn!(
+                thread = %id,
+                catalog_id_bytes = catalog.catalog_id.len(),
+                "the thread's catalog has Choices but no forms catalog can be derived from it; its asks are sent none"
+            );
+        }
+        Ok(forms)
+    }
+
     /// A snapshot of one of the user's threads for sharing: the thread with its job ledger, its
     /// binding and its whole event log. Someone else's thread is `NotFound`, like every read.
     ///

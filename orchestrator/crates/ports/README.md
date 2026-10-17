@@ -48,7 +48,9 @@ in the composition root, not through runtime plugins. Depends on
 
 Errors are `StoreError`, `WakeupError`, `AgentError`, `RegistryError`, `ModelError`, `ArtifactError` and `AuthError`; each implements
 `orch_core::Classify`, so callers decide retry and status by `ErrorClass`, not
-by variant. The store and agent traits use `impl Future` methods (no
+by variant. `AgentError::NotSent { detail }` (`AgentError::not_sent`) is the variant an adapter answers for a message it would
+not send without what it must carry (an ask's `thread-tools/v1` grant to a card that lists the extension, [ADR 0026](../../../docs/decisions/0026-agent-mentions-as-structured-references.md)
+amended 2026-10-17): class `Internal`, so it is not retried and an operator is told; its `public_detail` is the reason, written for the chat. The store and agent traits use `impl Future` methods (no
 `async_trait`).
 
 ```rust

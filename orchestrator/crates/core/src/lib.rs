@@ -127,9 +127,9 @@ pub use ui::{
     check_operation_list, check_operations, inspect, serialized_len,
 };
 pub use ui_catalog::{
-    Accepted, CatalogError, MAX_CATALOG_BYTES, MAX_CATALOG_COMPONENTS, MAX_CATALOG_DEPTH,
-    MAX_CATALOG_ID_BYTES, MAX_CATALOG_VERSION, MAX_SEEN_CATALOGS, Observed, UiCatalogData,
-    UiCatalogLedger, UiCatalogRef, UiDelivery, canonical_json, catalog_digest,
+    Accepted, CatalogError, FORMS_CATALOG_SUFFIX, MAX_CATALOG_BYTES, MAX_CATALOG_COMPONENTS,
+    MAX_CATALOG_DEPTH, MAX_CATALOG_ID_BYTES, MAX_CATALOG_VERSION, MAX_SEEN_CATALOGS, Observed,
+    UiCatalogData, UiCatalogLedger, UiCatalogRef, UiDelivery, canonical_json, catalog_digest,
 };
 pub use usage::{
     MAX_TOKEN_COUNT, MAX_USAGE_CALLS_PER_JOB, MAX_USAGE_LABEL_BYTES, MAX_USAGE_TASK_BYTES,

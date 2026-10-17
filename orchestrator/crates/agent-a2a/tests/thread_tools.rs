@@ -289,6 +289,64 @@ async fn no_issuer_and_no_grant_mean_no_token_whatever_the_card_says() {
     assert!(call.thread_tools.is_some());
 }
 
+/// ADR 0026, amended 2026-10-17: an ask to a card that lists the extension never goes out without
+/// its token. An adapter with no issuer refuses it before anything reaches the agent, with the
+/// reason the dispatcher records as the ask's failure; the same ask to a card without the
+/// extension, and the addressed agent's message, are sent as they always were.
+#[tokio::test]
+async fn an_ask_to_a_card_that_lists_the_extension_is_refused_without_an_issuer_and_nothing_is_sent()
+ {
+    let fake = agent(&[THREAD_TOOLS_EXTENSION]).await;
+    let without_issuer = client(None);
+    let ask = || ToolsGrant {
+        caller: Caller::Ask(1),
+        depth: 1,
+        agent: AgentId::new("researcher"),
+        ..grant()
+    };
+    let error = without_issuer
+        .send_stream(request(&fake, "msg-1", Some(ask())))
+        .await
+        .err()
+        .expect("the ask is refused");
+    assert!(
+        matches!(error, orch_ports::AgentError::NotSent { .. }),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.public_detail(),
+        "the ask was not sent: no thread-tools token could be minted (no issuer is configured)"
+    );
+    assert!(!orch_core::Classify::is_retryable(&error));
+    assert!(fake.executions().is_empty(), "nothing reached the agent");
+    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+
+    // the addressed agent's message from the same adapter goes out, without the grant
+    let call = send(
+        &without_issuer,
+        &fake,
+        request(&fake, "msg-2", Some(grant())),
+    )
+    .await;
+    assert_eq!(call.thread_tools, None);
+
+    // a card that does not list the extension could not read a grant: the ask is sent plain
+    fake.set_extensions(&[]);
+    let call = send(&without_issuer, &fake, request(&fake, "msg-3", Some(ask()))).await;
+    assert_eq!(call.thread_tools, None);
+    assert!(!call.activates(THREAD_TOOLS_EXTENSION));
+
+    // and with an issuer the ask carries its token
+    fake.set_extensions(&[THREAD_TOOLS_EXTENSION]);
+    let call = send(
+        &client(Some(issuer())),
+        &fake,
+        request(&fake, "msg-4", Some(ask())),
+    )
+    .await;
+    assert!(call.thread_tools.is_some());
+}
+
 #[tokio::test]
 async fn the_card_is_read_for_every_message_and_never_remembered() {
     let fake = agent(&[THREAD_TOOLS_EXTENSION]).await;
