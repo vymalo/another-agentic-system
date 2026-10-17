@@ -1480,7 +1480,8 @@ pub async fn ask_rows_are_unordered_and_keep_their_task_on_the_row<S: ThreadStor
     assert_eq!(
         stored.payload,
         OutboxPayload::Ask {
-            tier_cap: None,
+            // ADR 0061: the cap pinned for the asked agent is kept on the row
+            tier_cap: Some(orch_core::AccessTier::Plan),
             job: 1,
             ask: 1,
             agent: AgentId::new("researcher"),
