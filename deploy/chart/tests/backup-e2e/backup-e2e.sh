@@ -112,7 +112,9 @@ check_render() {
   region=$(sed -n '/name: AWS_DEFAULT_REGION/{n;s/^ *value: "\(.*\)"$/\1/p;}' "$1")
   storage_class=$(sed -n 's/^ *storageClass: "\(.*\)"$/\1/p' "$1")
   storage_size=$(sed -n 's/^ *size: "\(.*\)"$/\1/p' "$1")
-  [ -n "$bucket" ] && [ -n "$prefix" ] && [ -n "$region" ] && [ -n "$storage_class" ] && [ -n "$storage_size" ] || die "the render lacks a bucket, prefix, region or storage"
+  if [ -z "$bucket" ] || [ -z "$prefix" ] || [ -z "$region" ] || [ -z "$storage_class" ] || [ -z "$storage_size" ]; then
+    die "the render lacks a bucket, prefix, region or storage"
+  fi
   # examples/restore-cluster.yaml is applied as written, and its README says its storage is the deployment's: here, the chart's default.
   _ex=$chart/examples/restore-cluster.yaml
   grep -q "^    size: $storage_size\$" "$_ex" || die "examples/restore-cluster.yaml does not have the storage size of the render ($storage_size): it would not be applied as written"
