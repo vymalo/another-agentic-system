@@ -192,7 +192,7 @@ fires and the ask ends.
 *Verified 2026-10-17 by reading adam-rs's source at the pin `5581d40` and at `8537181` (adam-rs#111, merged 2026-10-17T10:07Z),
 in a checkout, not run:*
 
-| What | At the pin `5581d40` | After #111 (`8537181`) |
+| What | At the pin before 2026-10-17 (`5581d40`) | After #111 (`8537181`; the pin since 2026-10-17 is `8847c28`, which has it) |
 |---|---|---|
 | `ask_user` with no `choices` | the question as text, whatever the catalog (`crates/adam-ui/src/ask.rs:383`) | same (`ask.rs:977`) |
 | `ask_user` with `choices`, a catalog with `Choices` | a surface (`ask.rs:390`) | same (`ask.rs:985`; `ask.rs` was rewritten for v5 forms, the rule is the same) |
@@ -222,7 +222,9 @@ not even accept words for a question that went out as a form. What stays a **kno
   in words, accepted only as the label naming the subject after #111, and as bare `yes` at the pin.
 
 The coder's consent is fully protected only once **adam-rs refuses to park on consent in a run that another agent started**
-(an adam-rs follow-up in progress, defence in depth; the orchestrator cannot see inside such a question). The orchestrator
+(adam-rs #115, `8847c28`, in the pin since 2026-10-17, [ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note of that day: the coder
+reads the `caller` claim of the thread-tools token, its consent tools ask nobody in such a run and no words are a consent there, for the rest of
+the run once a message said so; defence in depth, the orchestrator cannot see inside such a question). The orchestrator
 does **not** read the words of a message for any agent's convention of what a form answer looks like (that would tie it to one
 vendor's wording, ADR 0007 and ADR 0008).
 

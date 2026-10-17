@@ -921,8 +921,9 @@ about 200 bytes is refused ("the callId is too long").
   refused for the rest of the job. **Known gap, narrowed,
   not fixed here:** a question in words (no `choices`), an asked agent that ignores the catalog or does not accept inline catalogs, and a thread with no catalog
   still end `input_required` with no interface and can have their question, a consent included, answered by the asking model.
-  Such an agent's consent is protected only once the agent refuses to park on it in a run another agent started (an adam-rs
-  follow-up, defence in depth). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the
+  Such an agent's consent is protected only once the agent refuses to park on it in a run another agent started (adam-coder does
+  since adam-rs #115, `8847c28`, in the pin since 2026-10-17: its consent tools ask nobody there and no words are a consent; defence in
+  depth). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the
   alternative, showing the form to the person, is not built
   ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-persons-to-answer)).*
   The orchestrator does not read the words of a message for an agent's convention of what a form answer looks like: that an
