@@ -11,6 +11,8 @@ use orch_testsupport::{FakeAgent, FakeAgentOptions};
 struct Fixture {
     client: A2aAgentClient,
     agent: FakeAgent,
+    /// An agent whose card lists `access-tier/v1` with the four tiers.
+    tiered: FakeAgent,
     /// A card URL whose port was bound and released: nothing listens there.
     gone: String,
 }
@@ -28,6 +30,10 @@ impl AgentFixture for Fixture {
 
     fn unreachable(&self) -> AgentEndpoint {
         AgentEndpoint::a2a(AgentId::new("gone"), self.gone.clone(), None)
+    }
+
+    fn tiered_endpoint(&self) -> Option<AgentEndpoint> {
+        Some(self.tiered.endpoint("tiered", None))
     }
 
     fn release_gate(&self) {
@@ -49,6 +55,14 @@ async fn make() -> Option<Fixture> {
         })
         .unwrap(),
         agent: FakeAgent::spawn(FakeAgentOptions::default()).await,
+        tiered: FakeAgent::spawn(FakeAgentOptions {
+            access_tier: Some(serde_json::json!({
+                "tiers": ["plan", "edits", "auto", "bypass"],
+                "default": "plan"
+            })),
+            ..FakeAgentOptions::default()
+        })
+        .await,
         gone: format!("http://{addr}/.well-known/agent-card.json"),
     })
 }

@@ -1,7 +1,7 @@
 //! Runs the `AgentClient` conformance testkit against the scripted in-memory agent.
 #![allow(missing_docs)]
 
-use orch_core::AgentId;
+use orch_core::{AgentId, TierOffer};
 use orch_ports::AgentEndpoint;
 use orch_ports::memory::ScriptedAgent;
 use orch_ports::testkit::agent_client::{AgentFixture, Script};
@@ -31,6 +31,14 @@ impl AgentFixture for Scripted {
         )
     }
 
+    fn tiered_endpoint(&self) -> Option<AgentEndpoint> {
+        Some(AgentEndpoint::a2a(
+            AgentId::new("tiered"),
+            "https://tiered.example.com/.well-known/agent-card.json",
+            None,
+        ))
+    }
+
     fn release_gate(&self) {
         self.0.release_gate();
     }
@@ -50,6 +58,13 @@ impl AgentFixture for Scripted {
 async fn make() -> Option<Scripted> {
     let agent = ScriptedAgent::new();
     agent.set_unreachable("gone");
+    agent.set_access_tier(
+        "tiered",
+        TierOffer::from_params(&serde_json::json!({
+            "tiers": ["plan", "edits", "auto", "bypass"],
+            "default": "plan"
+        })),
+    );
     Some(Scripted(agent))
 }
 
