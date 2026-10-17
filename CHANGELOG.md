@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.6.0](https://github.com/vymalo/another-agentic-system/compare/v0.5.0...v0.6.0) (2026-10-17)
+
+
+### Features
+
+* **chart:** continuous backups of the database with the barman-cloud plugin, off by default ([#151](https://github.com/vymalo/another-agentic-system/issues/151)) ([#264](https://github.com/vymalo/another-agentic-system/issues/264)) ([9e682b2](https://github.com/vymalo/another-agentic-system/commit/9e682b2a2afda10f93a4608bcf165b5fa787373d))
+* **orchestrator:** a platform agent's audience decides who may use it (ADR 0045, D8) ([#263](https://github.com/vymalo/another-agentic-system/issues/263)) ([8df44c6](https://github.com/vymalo/another-agentic-system/commit/8df44c6f88f0d9eb47aa7c9f5874a914765c8376))
+
+
+### Bug Fixes
+
+* **auth-jwt:** never hold the key lock across a fetch; serve a stale copy while refreshing ([#262](https://github.com/vymalo/another-agentic-system/issues/262)) ([da4056d](https://github.com/vymalo/another-agentic-system/commit/da4056db6aea1230fe46b0eb0154e9b861a6b494))
+* **auth-jwt:** read every valid Ed25519, RSA and P-256 key; check iss and the user strictly ([#261](https://github.com/vymalo/another-agentic-system/issues/261)) ([b630adf](https://github.com/vymalo/another-agentic-system/commit/b630adff3b9bc91780a6ac05ae5af062a04ad3ff))
+* **orchestrator:** lock hyper 1.12.0 and want 0.3.2, and guard the lock against going back ([#258](https://github.com/vymalo/another-agentic-system/issues/258)) ([8af4f74](https://github.com/vymalo/another-agentic-system/commit/8af4f7490b45373a644460fe8882f8f18aa8f927))
+* **orchestrator:** lock rustls 0.23.46 for RUSTSEC-2026-0346 to 0349 ([#260](https://github.com/vymalo/another-agentic-system/issues/260)) ([1525e81](https://github.com/vymalo/another-agentic-system/commit/1525e81f3705a40c80b3b6e5adf8b33d73f3e8b3))
+
+
+### Documentation
+
+* the platform's registry is read by this orchestrator in the platform's CI ([#266](https://github.com/vymalo/another-agentic-system/issues/266)) ([33645d1](https://github.com/vymalo/another-agentic-system/commit/33645d199438507d2696e86012906c6f26874d70))
+
+
+### Tests
+
+* **chart:** a kind end-to-end backs up the database and restores it ([#151](https://github.com/vymalo/another-agentic-system/issues/151)) ([#265](https://github.com/vymalo/another-agentic-system/issues/265)) ([a2be5e2](https://github.com/vymalo/another-agentic-system/commit/a2be5e28e325e290084a7e572bd24f201d123722))
+
+
+### Chores
+
+* **deploy:** bump orchestrator to sha-1525e81 ([f367e0f](https://github.com/vymalo/another-agentic-system/commit/f367e0f551917b5803633482947c18c02b0a0624))
+* **deploy:** bump orchestrator to sha-8af4f74 ([cec9268](https://github.com/vymalo/another-agentic-system/commit/cec926856b9e08d19b428972c28c8ff97a4f479d))
+* **deploy:** bump orchestrator to sha-8df44c6 ([66bea6c](https://github.com/vymalo/another-agentic-system/commit/66bea6cf245e61430373a8df6983f11ae0599f3a))
+* **deploy:** bump orchestrator to sha-b630adf ([58cca23](https://github.com/vymalo/another-agentic-system/commit/58cca23e0604b727088112ba6554e9f25b264b35))
+* **deploy:** bump web to sha-8df44c6 ([2120423](https://github.com/vymalo/another-agentic-system/commit/2120423325ac12c3bb5f6525af527dd437fbed84))
+
 ## [0.5.0](https://github.com/vymalo/another-agentic-system/compare/v0.4.3...v0.5.0) (2026-10-15)
 
 
