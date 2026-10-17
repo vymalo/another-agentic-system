@@ -235,6 +235,13 @@ pub struct SendRequest {
     /// named tier the card still honours, or the highest tier within the cap of the person's role),
     /// never the cap itself.
     pub tier: Option<orch_core::AccessTier>,
+    /// The cap of the person's role (ADR 0061) the sender holds when `tier` is `None` **because the
+    /// card it read for the decision listed no tier** (`App::tier_for_send` answered none for an
+    /// agent that lists no `access-tier/v1`). The adapter reads the card again for this very call;
+    /// if that read lists the extension by now (the agent was redeployed in between) it answers a
+    /// retryable error and sends nothing, so that the sender decides again from the new card rather
+    /// than the agent running the message at its own default. `None` for every other message.
+    pub tier_cap: Option<orch_core::AccessTier>,
 }
 
 /// One mentioned agent as the addressed agent is told of it (`mentions/v1`,

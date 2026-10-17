@@ -201,6 +201,27 @@ async fn a_delegation_queued_before_the_agent_lists_tiers_is_sent_under_the_cap(
     run.shutdown().await;
 }
 
+/// The card the dispatcher read to decide listed no tier; the agent is redeployed with tiers before
+/// the adapter reads the card again for the send. The message must not go out plain (the agent would
+/// run it at its own `auto`, above the cap): the adapter refuses it, the dispatcher decides again
+/// from the card as it stands, and it goes out under the cap.
+#[tokio::test]
+async fn an_agent_redeployed_between_the_decision_and_the_send_is_not_sent_the_plain_message() {
+    let w = World::new();
+    let app = capped_at(&w, Some(Edits));
+    let thread = start(&app, "echo go").await.unwrap();
+    w.agent
+        .redeploy_with_tiers_after_next_card_read("plain", all_tiers());
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    assert_eq!(
+        sent(&w),
+        [("echo go".to_owned(), false, Some(Edits))],
+        "never the plain message, never the agent's `auto`"
+    );
+    run.shutdown().await;
+}
+
 #[tokio::test]
 async fn the_rework_of_a_capped_person_is_sent_under_the_cap_when_the_agent_gained_tiers_meanwhile()
 {

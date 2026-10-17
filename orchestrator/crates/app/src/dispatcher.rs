@@ -197,6 +197,14 @@ struct Ctx {
     files: files::Budget,
 }
 
+/// What a request tells the adapter of the cap it holds: the cap only when the message goes out
+/// with **no tier** because the card listed none ([`App::tier_for_send`]), so that the adapter,
+/// reading the card again for this very call, refuses (retryably) a message that would reach an
+/// agent that lists tiers by now (see `SendRequest::tier_cap`).
+pub(super) fn plain_cap(sent: Option<AccessTier>, cap: Option<AccessTier>) -> Option<AccessTier> {
+    if sent.is_none() { cap } else { None }
+}
+
 fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
     env.task_state.or(match &env.update {
         Some(AgentUpdate::Status { state, .. }) => Some(*state),
@@ -806,6 +814,7 @@ impl<P: Ports> Dispatcher<P> {
             steer: false,
             mentions,
             tier: sent_tier,
+            tier_cap: plain_cap(sent_tier, tier_cap),
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
@@ -996,6 +1005,7 @@ impl<P: Ports> Dispatcher<P> {
             steer: true,
             mentions,
             tier: sent_tier,
+            tier_cap: plain_cap(sent_tier, tier_cap),
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;

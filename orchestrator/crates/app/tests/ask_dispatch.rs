@@ -1251,6 +1251,7 @@ async fn sent_and_forgotten(
             steer: false,
             mentions: Vec::new(),
             tier: None,
+            tier_cap: None,
         },
     )
     .await

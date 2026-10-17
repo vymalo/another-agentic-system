@@ -104,6 +104,7 @@ fn request(
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     }
 }
 

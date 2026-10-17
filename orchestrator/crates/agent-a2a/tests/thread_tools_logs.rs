@@ -102,6 +102,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     };
     let shown_request = format!("{req:?}");
     let mut stream = client.send_stream(req).await.unwrap();

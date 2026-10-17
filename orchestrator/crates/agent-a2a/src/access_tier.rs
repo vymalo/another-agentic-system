@@ -41,6 +41,27 @@ pub fn access_tier_from_card(card: &AgentCard) -> TierListing {
         .map_or(TierListing::Malformed, TierListing::Offered)
 }
 
+/// Refuses a message that was sent plain because the card the sender read listed no tier, while the
+/// sender holds the cap of the person's role ([`SendRequest::tier_cap`]), if the card read for this
+/// very call lists the extension by now. The agent was redeployed between the two reads; sending
+/// would run the message at the agent's own default, above the cap. The error is retryable, so the
+/// sender decides again from the card as it stands. A message that holds no cap, or that names a
+/// tier, is not this check's.
+///
+/// # Errors
+/// [`AgentError::Protocol`] (retryable) as above: the caller sends nothing.
+pub(crate) fn check_plain_under_cap(
+    req: &SendRequest,
+    listing: &TierListing,
+) -> Result<(), AgentError> {
+    if req.tier.is_none() && req.tier_cap.is_some() && *listing != TierListing::Absent {
+        return Err(AgentError::protocol(
+            "the agent's access tiers changed while the message was being sent; it is decided again",
+        ));
+    }
+    Ok(())
+}
+
 /// The value of the extension's key in the message metadata, or `None` when the message gets none
 /// because it names no tier.
 ///
@@ -69,7 +90,7 @@ mod tests {
     use std::collections::HashMap;
 
     use a2a::{AgentCapabilities, AgentExtension};
-    use orch_core::{AccessTier, AgentId};
+    use orch_core::{AccessTier, AgentId, Classify};
     use orch_ports::{AgentEndpoint, SendContent};
 
     use super::*;
@@ -123,6 +144,7 @@ mod tests {
             steer: false,
             mentions: Vec::new(),
             tier,
+            tier_cap: None,
         }
     }
 
@@ -157,6 +179,49 @@ mod tests {
         ] {
             assert_eq!(access_tier_from_card(&card), TierListing::Absent);
         }
+    }
+
+    fn plain(cap: Option<AccessTier>, tier: Option<AccessTier>) -> SendRequest {
+        SendRequest {
+            endpoint: AgentEndpoint::a2a(AgentId::new("a"), "http://a/card", None),
+            message_id: "m".into(),
+            context_id: None,
+            task_id: None,
+            reference_task_ids: Vec::new(),
+            content: SendContent::Text("hi".into()),
+            release: None,
+            ui_catalog: None,
+            thread_tools: None,
+            history: None,
+            steer: false,
+            mentions: Vec::new(),
+            tier,
+            tier_cap: cap,
+        }
+    }
+
+    #[test]
+    fn a_plain_message_under_a_cap_is_refused_once_the_card_lists_the_extension() {
+        let offered = TierListing::Offered(
+            TierOffer::from_params(&json!({"tiers": ["plan", "auto"], "default": "auto"})).unwrap(),
+        );
+        for listing in [offered, TierListing::Malformed] {
+            let refused =
+                check_plain_under_cap(&plain(Some(AccessTier::Edits), None), &listing).unwrap_err();
+            assert!(refused.is_retryable(), "{refused:?}");
+        }
+        // the card still lists nothing: the plain message is the right one
+        check_plain_under_cap(&plain(Some(AccessTier::Edits), None), &TierListing::Absent).unwrap();
+        // no cap held, or a tier named: not this check's
+        let offered = TierListing::Offered(
+            TierOffer::from_params(&json!({"tiers": ["plan"], "default": "plan"})).unwrap(),
+        );
+        check_plain_under_cap(&plain(None, None), &offered).unwrap();
+        check_plain_under_cap(
+            &plain(Some(AccessTier::Edits), Some(AccessTier::Plan)),
+            &offered,
+        )
+        .unwrap();
     }
 
     #[test]

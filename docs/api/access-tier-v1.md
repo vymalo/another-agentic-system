@@ -327,6 +327,12 @@ gets the highest within `min(default, cap)`; one that has none that low, or list
 `unsupported`, a message that says why, nothing sent). A steer that cannot be given a tier is not sent into the task: it becomes the
 delegation it stands for, which fails the same way. A row with neither tier nor cap is the plain message and reads no card for a tier.
 
+**Two reads, one decision.** The dispatcher decides from a card it reads, and the adapter reads the card again for the send. A message sent
+plain because the first read listed no tier, while the row holds a cap, carries the cap in the request (`SendRequest.tier_cap`): if
+the adapter's own read lists the extension by then (the agent was redeployed in between), it sends nothing and answers a retryable
+error, and the dispatcher decides again from the card as it now stands. Otherwise the agent would run the message at its own default,
+above the cap. The cap is not the tier: it is never sent to the agent.
+
 The orchestrator reads the echo (`tier` in the task's metadata under the URI) and records it on the job's `agent_status` event
 (`data.tier`, settled 2026-10-11), so the log holds what was asked and what the agent said. It compares nothing. An agent that lists the
 extension and works above its tier has a defect, as in [`steer/v1`](steer-v1.md#4-refusals): the orchestrator cannot see inside a task.

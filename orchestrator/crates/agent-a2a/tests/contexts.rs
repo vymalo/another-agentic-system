@@ -36,6 +36,7 @@ fn request(ep: &AgentEndpoint, message: &str, context: Option<&str>) -> SendRequ
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     }
 }
 

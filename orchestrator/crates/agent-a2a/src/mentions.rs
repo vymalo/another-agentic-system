@@ -109,6 +109,7 @@ mod tests {
             steer: false,
             mentions,
             tier: None,
+            tier_cap: None,
         }
     }
 

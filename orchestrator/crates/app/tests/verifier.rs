@@ -882,6 +882,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             steer: false,
             mentions: Vec::new(),
             tier: None,
+            tier_cap: None,
         },
     )
     .await
@@ -985,6 +986,7 @@ async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
             steer: false,
             mentions: Vec::new(),
             tier: None,
+            tier_cap: None,
         },
     )
     .await

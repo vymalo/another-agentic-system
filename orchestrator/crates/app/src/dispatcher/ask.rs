@@ -89,7 +89,7 @@ use orch_ports::{
 };
 use tokio::time::MissedTickBehavior;
 
-use super::{DispatchError, Dispatcher, Done, env_state};
+use super::{DispatchError, Dispatcher, Done, env_state, plain_cap};
 use crate::{AppError, ApplyOutcome, UsageDrop};
 
 /// The error text a row carries that an earlier build parked (it could not send asks yet): its
@@ -615,6 +615,7 @@ impl<P: Ports> Dispatcher<P> {
             // it was not addressed by the person, so it is told of no mentions
             mentions: Vec::new(),
             tier,
+            tier_cap: plain_cap(tier, a.tier_cap),
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)

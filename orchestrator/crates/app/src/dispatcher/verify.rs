@@ -265,6 +265,7 @@ impl<P: Ports> Dispatcher<P> {
             mentions: Vec::new(),
             // the verifier is asked for a verdict, under no tier of the person's (ADR 0061)
             tier: None,
+            tier_cap: None,
         };
         self.app.record_agent_build(v.thread, &v.endpoint).await;
         match self.app.ports().agents().send_stream(request).await {

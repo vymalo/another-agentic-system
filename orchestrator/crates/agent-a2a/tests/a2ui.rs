@@ -50,6 +50,7 @@ fn text(ep: &AgentEndpoint, text: &str, task_id: Option<String>) -> SendRequest 
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     }
 }
 
@@ -410,6 +411,7 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     };
     let second = drain(c.send_stream(request).await.unwrap()).await;
     assert_eq!(
@@ -510,6 +512,7 @@ async fn an_action_speaks_the_version_of_its_surface_whatever_the_card_says() {
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     };
     drain(c.send_stream(request).await.unwrap()).await;
     let call = &fake.executions()[1];

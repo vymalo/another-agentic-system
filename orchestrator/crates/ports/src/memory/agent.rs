@@ -158,6 +158,9 @@ struct State {
     no_resubscribe: bool,
     /// Whether `get_task` fails as `Unreachable` ([`ScriptedAgent::set_get_task_failing`]).
     get_task_fails: bool,
+    /// Agents that are redeployed with tiers right after their card is next read
+    /// ([`ScriptedAgent::redeploy_with_tiers_after_next_card_read`]).
+    redeploys: HashMap<AgentId, TierOffer>,
     /// How many lookups by message id still fail as `Unreachable` (`usize::MAX`: all of them).
     find_failures: usize,
     /// Agents that play the verifier: every message is answered by the script.
@@ -384,6 +387,13 @@ impl ScriptedAgent {
     /// `false` makes `resubscribe` answer `Unsupported`, forcing the `get_task` polling path.
     pub fn set_resubscribe_supported(&self, supported: bool) {
         self.state().no_resubscribe = !supported;
+    }
+
+    /// Makes `agent` list `offer` under `access-tier/v1` from **right after** its card is next read:
+    /// the read that decides what a message is sent under sees the card as it was, and the adapter's
+    /// own read for the send sees it redeployed (the window `SendRequest::tier_cap` closes).
+    pub fn redeploy_with_tiers_after_next_card_read(&self, agent: &str, offer: TierOffer) {
+        self.state().redeploys.insert(AgentId::new(agent), offer);
     }
 
     /// `true` makes `get_task` fail as `Unreachable`, whatever the task.
@@ -1064,7 +1074,14 @@ impl AgentClient for ScriptedAgent {
         if st.cards_down.contains(&ep.id) || st.unreachable.contains(&ep.id) {
             return Err(AgentError::unreachable("card unreachable"));
         }
-        Ok(st.cards.get(&ep.id).cloned().unwrap_or_else(default_card))
+        let card = st.cards.get(&ep.id).cloned().unwrap_or_else(default_card);
+        if let Some(offer) = st.redeploys.remove(&ep.id) {
+            st.cards
+                .entry(ep.id.clone())
+                .or_insert_with(default_card)
+                .access_tier = TierListing::Offered(offer);
+        }
+        Ok(card)
     }
 
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
@@ -1112,6 +1129,20 @@ impl AgentClient for ScriptedAgent {
                 return Err(AgentError::Unsupported(format!(
                     "the agent no longer takes the access tier '{tier}'"
                 )));
+            }
+            // a message the sender sent plain under a cap, because the card it read listed no tier,
+            // is not sent to an agent that lists the extension by the time of this read (the
+            // adapter's own: `SendRequest::tier_cap`); the sender decides again
+            if req.tier.is_none()
+                && req.tier_cap.is_some()
+                && st
+                    .cards
+                    .get(&req.endpoint.id)
+                    .is_some_and(|card| card.access_tier != TierListing::Absent)
+            {
+                return Err(AgentError::protocol(
+                    "the agent's access tiers changed while the message was being sent; it is decided again",
+                ));
             }
             if req.steer {
                 let (envelope, fresh) = steer_into(&mut st, &req)?;
