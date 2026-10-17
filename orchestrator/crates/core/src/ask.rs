@@ -14,8 +14,10 @@
 //! * **a form an asked agent shows is not a model's to answer.** An asked agent whose turn ends waiting after it
 //!   showed an interface (an A2UI surface) is waiting for the *person*, who cannot see it: its ask ends
 //!   with `form` ([`AskResult::form`]), is never continued, and the agent is not asked again in this
-//!   job ([`AskRefusal::FormPending`]). What an asked agent says in words stays the asking agent's to
-//!   answer (a known gap: ADR 0026, status note of 2026-10-17);
+//!   job ([`AskRefusal::FormPending`]). The dispatcher sends an ask the job's UI catalog, so a question
+//!   with choices draws one; a claim that re-attached to a waiting task takes it for one, as it cannot
+//!   know what the task drew. What an asked agent says in words stays the asking agent's to answer
+//!   (a known gap, narrowed: ADR 0026, status note of 2026-10-17);
 //! * an ask that is accepted logs `ask_started`, writes the `ask` outbox row that sends it
 //!   ([`Command::Ask`](crate::Command::Ask)) and arms its deadline
 //!   ([`Timer::AskDeadline`](crate::Timer::AskDeadline));
@@ -203,8 +205,9 @@ pub struct Ask {
     /// How it ended; `None` while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<AskOutcome>,
-    /// The ask ended waiting after the asked agent showed an interface: it waits for the person's
-    /// answer to a form, which a model must not give. Its task is never continued and the agent is
+    /// The ask ended waiting after the asked agent showed an interface (or a claim that re-attached
+    /// to its task saw it wait): it waits for the person's answer to a form, which a model must not
+    /// give. Its task is never continued and the agent is
     /// not asked again in this job ([`AskRefusal::FormPending`]). Written only when true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub form: bool,
@@ -301,8 +304,8 @@ pub struct AskResult {
     pub artifacts: Vec<AskArtifact>,
     /// Why it failed, when it did. Cut at [`MAX_ASK_NOTE_BYTES`].
     pub error: Option<String>,
-    /// The turn ended waiting after the agent showed an interface: it waits for the person's
-    /// answer to a form. Only [`AskOutcome::InputRequired`] and [`AskOutcome::AuthRequired`] can
+    /// The turn ended waiting after the agent showed an interface, or a claim that re-attached to
+    /// the task saw it wait: it waits for the person's answer to a form. Only [`AskOutcome::InputRequired`] and [`AskOutcome::AuthRequired`] can
     /// carry it; for any other outcome the core drops it.
     pub form: bool,
 }
@@ -342,8 +345,8 @@ pub struct AskFinishedData {
     /// Why it did not complete.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// With `input_required` or `auth_required`: the asked agent showed an interface, so what it
-    /// waits for is a form for the **person**. A model cannot answer it: the ask is over, the task
+    /// With `input_required` or `auth_required`: the asked agent showed an interface (or a claim
+    /// that re-attached to its task saw it wait), so what it waits for is a form for the **person**. A model cannot answer it: the ask is over, the task
     /// is not continued and the agent is not asked again in this job. Absent when false and in
     /// older logs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

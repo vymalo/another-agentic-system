@@ -33,16 +33,19 @@
 //!   that low, or whose card lists the extension badly, is not asked (the ask fails, `ask_finished`
 //!   says why, no task starts); one whose card lists no tier is asked as it always was. A person
 //!   with no cap on the agent has the ask sent under none.
-//! * **A form is not a model's to answer** (ADR 0026, amended): an asked agent that shows an
-//!   interface and then waits (`input_required`, or `auth_required`) is waiting for the person,
-//!   who cannot see an asked agent's screens. The answer is read with `form` set
+//! * **A form is not a model's to answer** (ADR 0026, amended 2026-10-17): an asked agent that
+//!   shows an interface and then waits (`input_required`, or `auth_required`) is waiting for the
+//!   person, who cannot see an asked agent's screens. The answer is read with `form` set
 //!   ([`AskResult::form`](orch_core::AskResult::form)); the core never continues that task and refuses
 //!   a further ask of the agent in the job ([`AskRefusal::FormPending`](orch_core::AskRefusal)), and
-//!   once the ask is recorded the dispatcher cancels the parked task. A claim that re-attaches to a waiting
-//!   task reads the task for an interface (the rest of a stream lacks what was drawn before the crash),
-//!   and takes a task it cannot read for a form. A question in words, with no
-//!   interface, stays the asking agent's to answer: an ask carries no UI catalog, so an agent such as
-//!   adam-coder asks in words, and that is a known gap (ADR 0026, status note of 2026-10-17).
+//!   once the ask is recorded the dispatcher cancels the parked task. **The ask is sent the job's
+//!   UI catalog**, inline, so that an agent which asks the person something with choices (adam's
+//!   `ask_user`, the coder's consent) draws a surface and the rule above fires; the cost is that
+//!   every question with choices ends the ask. A claim that re-attaches to a task that waits
+//!   cannot know what the task drew before, and **fails closed**: any turn that ends waiting is
+//!   taken for a form, with no read of the task's history ([`Answer::assume_form`]). A question in
+//!   words stays the asking agent's to answer, and that is the known gap: a question without
+//!   choices, an agent that ignores the catalog, and a thread with no catalog (none is sent).
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
 //!   while the ledger says it runs, and it stops being wanted when the core ends it (the deadline,
 //!   the person's stop, the end of the task that asked, the end of the ask above it). The row looks
@@ -81,7 +84,7 @@ use futures::StreamExt;
 use orch_core::{
     AccessTier, AgentId, AgentTaskState, AgentUpdate, AskArtifact, AskOutcome, AskResult, Caller,
     Classify, Input, MAX_ASK_ANSWER_BYTES, MessagePurpose, ThreadId, ThreadRecord, ToolsGrant,
-    TransitionError, UsageUpdate, ask_context, report,
+    TransitionError, UiDelivery, UsageUpdate, ask_context, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, OutboxFinal,
@@ -165,8 +168,9 @@ struct Answer {
     /// The revision that served the task.
     revision: Option<String>,
     /// The task that showed an interface (an A2UI surface, even one that was refused) while this
-    /// answer was read. A task that then waits waits for the person's answer to a form, which a
-    /// model must not give (ADR 0026, amended): see [`Answer::form`].
+    /// answer was read, or that a claim which re-attached took for one that did
+    /// ([`Answer::assume_form`]). A task that then waits waits for the person's answer to a form,
+    /// which a model must not give (ADR 0026, amended): see [`Answer::form`].
     interface: Option<String>,
 }
 
@@ -226,9 +230,10 @@ impl Answer {
                 },
                 None,
             ),
-            // An asked agent cannot show an interface here: it is not applied and not drawn. But
-            // that it tried is remembered: a task that then waits is waiting for a form that
-            // only the person could answer, and a person who cannot see it never will.
+            // An asked agent is given the job's UI catalog, so it can draw a surface, but not here:
+            // it is not applied and not drawn. That it drew one is remembered: a task that then
+            // waits is waiting for a form that only the person could answer, and a person who
+            // cannot see it never will.
             Some(AgentUpdate::Ui { .. } | AgentUpdate::UiRejected { .. }) => {
                 self.interface = Some(env.task_id.clone());
             }
@@ -298,6 +303,23 @@ impl Answer {
                 state,
                 AgentTaskState::InputRequired | AgentTaskState::AuthRequired
             )
+    }
+
+    /// A claim that re-attached to a task cannot know what the task showed before: it reads the rest
+    /// of a stream, or a snapshot that holds the current status and the artifacts, never the
+    /// interfaces drawn earlier. A turn that ends waiting is therefore taken for one that waits for
+    /// a form, with no read of the task's history (**fails closed**): a model must not answer a
+    /// form, and nothing here says the question is not one. A claim that saw an interface itself
+    /// keeps the task it saw it in.
+    fn assume_form(&mut self, state: AgentTaskState, task_id: &str) {
+        if self.interface.is_none()
+            && matches!(
+                state,
+                AgentTaskState::InputRequired | AgentTaskState::AuthRequired
+            )
+        {
+            self.interface = Some(task_id.to_owned());
+        }
     }
 
     fn result(&self, state: AgentTaskState) -> AskResult {
@@ -600,6 +622,17 @@ impl<P: Ports> Dispatcher<P> {
             Ok(tier) => tier,
             Err(e) => return self.ask_send_failed(a, e).await,
         };
+        // The job's own UI catalog goes with the ask (ADR 0026, amended 2026-10-17): with it an
+        // agent that asks the person something with choices draws a form, which ends the ask
+        // (`AskResult::form`) instead of parking a question no model can answer. Inline, because an
+        // asked agent has no tool to fetch it. A thread with no catalog sends none, and the agent
+        // asks in words as before. A catalog that cannot be read is no reason to send without one:
+        // the row is claimed again.
+        let ui_catalog = self
+            .app
+            .thread_ui_catalog(a.thread)
+            .await?
+            .map(UiDelivery::Inline);
         let request = SendRequest {
             endpoint: a.endpoint.clone(),
             message_id: a.row.id.to_string(),
@@ -608,8 +641,7 @@ impl<P: Ports> Dispatcher<P> {
             reference_task_ids,
             content: SendContent::Text(text),
             release: None,
-            // the asked agent is told nothing of the person's screen: it cannot show one
-            ui_catalog: None,
+            ui_catalog,
             thread_tools: Some(grant),
             // nor of the conversation a fork of this thread continues
             history: None,
@@ -837,12 +869,7 @@ impl<P: Ports> Dispatcher<P> {
                 Flow::Ended(state) => {
                     // What this claim read is the rest of the task: an interface drawn before the
                     // crash, or before the stream broke, is not in it.
-                    if matches!(
-                        state,
-                        AgentTaskState::InputRequired | AgentTaskState::AuthRequired
-                    ) {
-                        self.read_for_form(a, &handle, answer).await;
-                    }
+                    answer.assume_form(state, &handle.task_id);
                     return self.ask_answered(a, answer, state).await;
                 }
                 Flow::Lost => return Ok(()),
@@ -854,33 +881,6 @@ impl<P: Ports> Dispatcher<P> {
             }
         }
         self.poll_ask(a, &handle, answer).await
-    }
-
-    /// A claim that re-attached to a task that waits asks whether it waits for a form it did not see:
-    /// the task is read, and an interface in it (drawn, or refused) is remembered. **Fails closed**:
-    /// a task that cannot be read is taken to wait for a form, because a model must not answer one
-    /// and nothing says it is not one. Nothing is read when the claim saw an interface itself.
-    async fn read_for_form(&self, a: &Asking, handle: &TaskHandle, answer: &mut Answer) {
-        if answer.interface.is_some() {
-            return;
-        }
-        match self.app.ports().agents().get_task(handle).await {
-            Ok(snap) => {
-                let shown = snap.envelopes.iter().any(|env| {
-                    matches!(
-                        env.update,
-                        Some(AgentUpdate::Ui { .. } | AgentUpdate::UiRejected { .. })
-                    )
-                });
-                if shown {
-                    answer.interface = Some(handle.task_id.clone());
-                }
-            }
-            Err(e) => {
-                tracing::warn!(id = %a.row.id, ask = a.ask, error = %report(&e), "the waiting task of an asked agent could not be read for a form; taking it for one");
-                answer.interface = Some(handle.task_id.clone());
-            }
-        }
     }
 
     /// Polls `get_task` with backoff until the asked agent's task ends its turn.
@@ -908,6 +908,9 @@ impl<P: Ports> Dispatcher<P> {
                         answer.revision.clone_from(&snap.revision);
                     }
                     if snap.state.ends_turn() {
+                        // a snapshot holds the current status and the artifacts, never the
+                        // interfaces drawn before: see `Answer::assume_form`
+                        answer.assume_form(snap.state, &handle.task_id);
                         return self.ask_answered(a, answer, snap.state).await;
                     }
                 }

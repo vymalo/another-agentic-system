@@ -156,8 +156,6 @@ struct State {
     unreachable: HashSet<AgentId>,
     fail_sends: VecDeque<AgentError>,
     no_resubscribe: bool,
-    /// Whether `get_task` fails as `Unreachable` ([`ScriptedAgent::set_get_task_failing`]).
-    get_task_fails: bool,
     /// Agents that are redeployed with tiers right after their card is next read
     /// ([`ScriptedAgent::redeploy_with_tiers_after_next_card_read`]).
     redeploys: HashMap<AgentId, TierOffer>,
@@ -206,6 +204,11 @@ struct Shared {
 /// - `ui-gate`: like `ui`, but the surface is drawn, then the task waits for
 ///   [`ScriptedAgent::release_gate`] before it says `input-required` (a stream that starts in
 ///   between never sees the surface);
+/// - `ask-gate`: like `ask`, but the task waits for [`ScriptedAgent::release_gate`] before it says
+///   `input-required` (a question in words, no surface);
+/// - `choices`: a question with choices, as adam's `ask_user` asks one: it is `ui` when the request
+///   carries a UI catalog (a surface, then `input-required`) and `ask` when it carries none (the
+///   question in words);
 /// - `steps`: `working`, a sub-agent step `OpenCode` with two commands under it (the second fails),
 ///   the sub-agent's end, an artifact `echo`, `completed` (the steps are reported the way an agent
 ///   that speaks `steps/v1` does; ids are prefixed with the task id);
@@ -394,11 +397,6 @@ impl ScriptedAgent {
     /// own read for the send sees it redeployed (the window `SendRequest::tier_cap` closes).
     pub fn redeploy_with_tiers_after_next_card_read(&self, agent: &str, offer: TierOffer) {
         self.state().redeploys.insert(AgentId::new(agent), offer);
-    }
-
-    /// `true` makes `get_task` fail as `Unreachable`, whatever the task.
-    pub fn set_get_task_failing(&self, failing: bool) {
-        self.state().get_task_fails = failing;
     }
 
     /// Lets one waiting `gate`/`drop` task continue (a permit is stored if none waits yet).
@@ -778,7 +776,11 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
     shared.push_status(&task, Working, None);
     match script.as_str() {
         "ask" if !resumed => shared.push_status(&task, InputRequired, Some("Which branch?")),
-        "ask" => {
+        "ask-gate" if !resumed => {
+            shared.gate.notified().await;
+            shared.push_status(&task, InputRequired, Some("Which branch?"));
+        }
+        "ask" | "ask-gate" => {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
             shared.push_status(&task, Completed, None);
         }
@@ -1248,6 +1250,18 @@ impl AgentClient for ScriptedAgent {
                 tokio::spawn(verify(Arc::clone(&self.shared), task.clone(), script));
             }
             None => {
+                // a question with choices is a form for an agent that was told of a screen
+                let text = match text.trim_start().strip_prefix("choices") {
+                    Some(rest) if script == "choices" => {
+                        let script = if req.ui_catalog.is_some() {
+                            "ui"
+                        } else {
+                            "ask"
+                        };
+                        format!("{script}{rest}")
+                    }
+                    _ => text,
+                };
                 tokio::spawn(drive(Arc::clone(&self.shared), task.clone(), text, resumed));
             }
         }
@@ -1314,7 +1328,7 @@ impl AgentClient for ScriptedAgent {
         st.calls.push(Call::GetTask {
             task_id: task.task_id.clone(),
         });
-        if st.unreachable.contains(&task.endpoint.id) || st.get_task_fails {
+        if st.unreachable.contains(&task.endpoint.id) {
             return Err(AgentError::unreachable("agent unreachable"));
         }
         snapshot(&st, &task.task_id)
@@ -1435,12 +1449,9 @@ fn snapshot(st: &State, task: &str) -> Result<TaskSnapshot, AgentError> {
     let mut envelopes: Vec<AgentEnvelope> = rec
         .log
         .iter()
-        .filter(|e| {
-            matches!(
-                e.update,
-                Some(AgentUpdate::Artifact { .. } | AgentUpdate::Ui { .. })
-            )
-        })
+        // what a real agent's task holds: its artifacts and its current status. Not the surfaces it
+        // drew, which only a stream carries.
+        .filter(|e| matches!(e.update, Some(AgentUpdate::Artifact { .. })))
         .cloned()
         .collect();
     envelopes.push(AgentEnvelope {

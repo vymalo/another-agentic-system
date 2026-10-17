@@ -24,6 +24,7 @@ use orch_app::{
 use orch_core::{
     Actor, AgentId, AgentSource, AgentTaskState, AgentUpdate, AskFinishedData, AskLimits,
     AskOutcome, Caller, EventBody, EventKind, Input, Mention, ThreadId, ThreadRecord, ThreadState,
+    UiCatalogData, UiDelivery, catalog_digest,
 };
 use orch_ports::memory::{Call, MemoryRegistry};
 use orch_ports::{
@@ -115,6 +116,34 @@ async fn working_thread<P: orch_ports::Ports>(
     app: &App<P>,
     store: &impl ThreadStore,
 ) -> ThreadRecord {
+    working_thread_with(app, store, None).await
+}
+
+/// The UI catalog of the screen that opened the thread: one with the component that draws a
+/// question with choices.
+fn screen_catalog() -> UiCatalogData {
+    let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
+    let catalog = serde_json::json!({
+        "catalogId": id,
+        "components": {"Choices": {
+            "type": "object",
+            "properties": {"component": {"const": "Choices"}},
+        }},
+    });
+    UiCatalogData {
+        catalog_id: id.to_owned(),
+        version: 1,
+        digest: catalog_digest(&catalog).unwrap(),
+        catalog,
+    }
+}
+
+/// [`working_thread`] for a thread whose screen sent `catalog` with the message that created it.
+async fn working_thread_with<P: orch_ports::Ports>(
+    app: &App<P>,
+    store: &impl ThreadStore,
+    catalog: Option<UiCatalogData>,
+) -> ThreadRecord {
     let id = ThreadId(uuid::Uuid::now_v7());
     let Creation::Created { thread, .. } = app
         .create_thread_as(
@@ -127,6 +156,7 @@ async fn working_thread<P: orch_ports::Ports>(
             },
             Inbound {
                 mentions: mentions(),
+                ui_catalog: catalog,
                 ..Inbound::default()
             },
         )
@@ -237,6 +267,17 @@ fn sends_to(w: &World, agent: &str) -> Vec<Call> {
         .sends()
         .into_iter()
         .filter(|c| matches!(c, Call::Send { agent: a, .. } if a.as_str() == agent))
+        .collect()
+}
+
+/// What each send to `agent` told it of the person's UI catalog.
+fn catalogs_sent_to(w: &World, agent: &str) -> Vec<Option<UiDelivery>> {
+    sends_to(w, agent)
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Send { ui_catalog, .. } => Some(ui_catalog.map(|boxed| *boxed)),
+            _ => None,
+        })
         .collect()
 }
 
@@ -721,6 +762,136 @@ async fn a_question_in_words_is_not_a_form() {
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
     assert!(!thread.job.asks[0].form);
     assert!(cancels(&w).is_empty(), "its task is waiting for the answer");
+    run.shutdown().await;
+}
+
+// ---- the UI catalog of an ask (ADR 0026, amended 2026-10-17) --------------------------------
+
+/// An ask is sent the catalog the job's screen gave, **inline** (an asked agent has no tool to fetch
+/// it); a thread whose screen sent none sends none.
+#[tokio::test]
+async fn an_ask_is_sent_the_catalog_of_the_jobs_screen_and_none_when_the_screen_sent_none() {
+    let w = World::new();
+    let app = app3(&w);
+    let catalog = screen_catalog();
+    let with = working_thread_with(&*app, &w.store, Some(catalog.clone())).await;
+    let without = working_thread(&*app, &w.store).await;
+    put(&*app, &w.store, with.id, ask_of("coder", "echo one", "k1")).await;
+    put(
+        &*app,
+        &w.store,
+        without.id,
+        ask_of("scout", "echo two", "k2"),
+    )
+    .await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    finished(&app, with.id, 1).await;
+    finished(&app, without.id, 1).await;
+    run.shutdown().await;
+    assert_eq!(
+        catalogs_sent_to(&w, "coder"),
+        [Some(UiDelivery::Inline(catalog))]
+    );
+    assert_eq!(catalogs_sent_to(&w, "scout"), [None]);
+}
+
+/// An asked agent that asks the person something **with choices** (adam's `ask_user`, the coder's
+/// consent) draws a surface when it is given the catalog: the ask ends with the form, its task is
+/// cancelled and the agent is not asked again in the job. That is the point of sending the catalog.
+#[tokio::test]
+async fn a_question_with_choices_draws_a_form_and_ends_the_ask_with_it() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread_with(&*app, &w.store, Some(screen_catalog())).await;
+    // the script `choices` is a surface for a request that carries the catalog and words for one
+    // that does not
+    put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "choices which branch", "k1"),
+    )
+    .await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(done.form, "{done:?}");
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert!(thread.job.asks[0].form);
+    eventually("the parked task is cancelled", || async {
+        (cancels(&w) == ["task-1"]).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    let error = app
+        .apply(
+            t.id,
+            ask_of("coder", "The person answered", "k2"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            orch_app::AppError::Transition(orch_core::TransitionError::AskRefused(
+                orch_core::AskRefusal::FormPending { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+}
+
+/// The same question in a thread whose screen sent no catalog is asked in words, and is the asking
+/// agent's to answer as before: the known gap of a thread with no catalog.
+#[tokio::test]
+async fn a_question_with_choices_in_a_thread_with_no_catalog_is_asked_in_words() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "choices which branch", "k1"),
+    )
+    .await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(!done.form, "{done:?}");
+    assert_eq!(done.question.as_deref(), Some("Which branch?"));
+    assert!(cancels(&w).is_empty(), "its task is waiting for the answer");
+    run.shutdown().await;
+}
+
+/// A question **without** choices stays a question in words whatever the catalog: the asking agent
+/// answers it, and the next ask continues the task. The cost of the catalog is only for questions
+/// that draw a form.
+#[tokio::test]
+async fn a_question_in_words_is_still_continued_when_the_ask_carries_a_catalog() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread_with(&*app, &w.store, Some(screen_catalog())).await;
+    put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "ask which branch", "k1"),
+    )
+    .await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(!done.form, "{done:?}");
+    let next = put(&*app, &w.store, t.id, ask_of("coder", "ask main", "k2")).await;
+    let (done, _) = finished(&app, t.id, 2).await;
+    assert_eq!(done.state, AskOutcome::Completed, "{done:?}");
+    assert_eq!(done.text.as_deref(), Some("answered: ask main"));
+    row_ends(&w, &next).await;
+    assert!(cancels(&w).is_empty());
     run.shutdown().await;
 }
 
@@ -1369,11 +1540,11 @@ async fn a_reclaimed_row_follows_the_asked_agents_task_instead_of_asking_again()
     second.shutdown().await;
 }
 
-/// The claimant that died after the agent drew its form and before it waited: the next one
-/// re-attaches to the rest of the task, never sees the surface, and sees the turn end waiting. It
-/// reads the task, finds the interface there, and ends the ask with the form.
+/// A claim that re-attaches to a task cannot know what it drew before: it reads the rest of the
+/// task (here, a task whose surface was drawn before the first claimant died), and a turn that ends
+/// waiting is taken for a form, with no read of the task's history (**fails closed**).
 #[tokio::test]
-async fn a_reclaimed_ask_that_missed_the_form_reads_the_task_and_ends_with_it() {
+async fn a_reclaimed_ask_that_ends_waiting_is_taken_for_a_form_with_no_read_of_the_task() {
     let w = World::new();
     let app = app3(&w);
     let t = working_thread(&*app, &w.store).await;
@@ -1405,11 +1576,11 @@ async fn a_reclaimed_ask_that_missed_the_form_reads_the_task_and_ends_with_it() 
     assert_eq!(done.state, AskOutcome::InputRequired);
     assert!(done.form, "{done:?}");
     assert!(
-        w.agent
+        !w.agent
             .calls()
             .iter()
             .any(|c| matches!(c, Call::GetTask { .. })),
-        "the task was read for the interface the stream did not carry"
+        "no read of the task's history: a real agent's task does not hold what it drew"
     );
     assert_eq!(sends_to(&w, "coder").len(), 1, "asked once");
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
@@ -1425,10 +1596,11 @@ async fn a_reclaimed_ask_that_missed_the_form_reads_the_task_and_ends_with_it() 
     second.shutdown().await;
 }
 
-/// The same claim, and the task cannot be read: nothing says the question is not a form, and a
-/// model must not answer one, so it is taken for one.
+/// The same claim for a question in words: nothing a claim that re-attached read says it is not a
+/// form, so it is taken for one. The cost is accepted (ADR 0026, amended 2026-10-17): a question in
+/// words that is asked again after a crash ends the ask like a form does.
 #[tokio::test]
-async fn a_reclaimed_ask_whose_waiting_task_cannot_be_read_is_taken_for_a_form() {
+async fn a_reclaimed_ask_whose_question_is_in_words_is_taken_for_a_form() {
     let w = World::new();
     let app = app3(&w);
     let t = working_thread(&*app, &w.store).await;
@@ -1436,7 +1608,7 @@ async fn a_reclaimed_ask_whose_waiting_task_cannot_be_read_is_taken_for_a_form()
         &*app,
         &w.store,
         t.id,
-        ask_of("coder", "ui-gate pick one", "k1"),
+        ask_of("coder", "ask-gate which branch", "k1"),
     )
     .await;
     let first = spawn_dispatcher(&app, fast(), "d1");
@@ -1454,31 +1626,71 @@ async fn a_reclaimed_ask_whose_waiting_task_cannot_be_read_is_taken_for_a_form()
             .then_some(())
     })
     .await;
-    w.agent.set_get_task_failing(true);
     w.agent.release_gate();
     let (done, _) = finished(&app, t.id, 1).await;
     assert_eq!(done.state, AskOutcome::InputRequired);
     assert!(done.form, "taken for a form: {done:?}");
+    assert_eq!(done.question.as_deref(), Some("Which branch?"));
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
     assert!(thread.job.asks[0].form);
+    let task = row_of(&w, &row)
+        .await
+        .task_id
+        .expect("the task is on the row");
+    eventually("the parked task is cancelled", || async {
+        cancels(&w).contains(&task).then_some(())
+    })
+    .await;
     second.shutdown().await;
 }
 
-/// The claimant that died after recording the task on the row and before telling the core: the
-/// next one tells it, so the next ask of the agent can continue the task.
+/// The same when the claim polls (the agent cannot be resubscribed to): a snapshot holds the
+/// status and the artifacts, never what was drawn, so a turn that ends waiting is a form.
 #[tokio::test]
-async fn a_task_recorded_on_the_row_but_not_on_the_ledger_is_recorded_by_the_next_claimant() {
+async fn a_polling_claim_takes_a_turn_that_ends_waiting_for_a_form() {
     let w = World::new();
+    w.agent.set_resubscribe_supported(false);
     let app = app3(&w);
     let t = working_thread(&*app, &w.store).await;
     let row = put(
         &*app,
         &w.store,
         t.id,
-        ask_of("coder", "ask which branch", "k1"),
+        ask_of("coder", "ask-gate which branch", "k1"),
     )
     .await;
-    sent_and_forgotten(&w, t.id, &row, "coder", "ask which branch").await;
+    let first = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the message is sent", || async {
+        row_of(&w, &row).await.task_id.map(|_| ())
+    })
+    .await;
+    first.kill();
+    let second = spawn_dispatcher(&app, fast(), "d2");
+    eventually("the second worker polls", || async {
+        w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::GetTask { .. }))
+            .then_some(())
+    })
+    .await;
+    w.agent.release_gate();
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(done.form, "{done:?}");
+    second.shutdown().await;
+}
+
+/// The claimant that died after recording the task on the row and before telling the core: the
+/// next one tells it, so the next ask of the agent refers to the task. (A re-attached ask that ends
+/// waiting is taken for a form and its task is never continued, so this one completes.)
+#[tokio::test]
+async fn a_task_recorded_on_the_row_but_not_on_the_ledger_is_recorded_by_the_next_claimant() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    let row = put(&*app, &w.store, t.id, ask_of("coder", "echo find it", "k1")).await;
+    sent_and_forgotten(&w, t.id, &row, "coder", "echo find it").await;
     // the first claimant got as far as the row
     let lease = Lease {
         id: row.id,
@@ -1498,17 +1710,18 @@ async fn a_task_recorded_on_the_row_but_not_on_the_ledger_is_recorded_by_the_nex
 
     let run = spawn_dispatcher(&app, fast(), "d2");
     let (done, _) = finished(&app, t.id, 1).await;
-    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert_eq!(done.state, AskOutcome::Completed);
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!(thread.job.asks[0].task_id.as_deref(), Some("task-1"));
     assert_eq!(sends_to(&w, "coder").len(), 1);
     run.shutdown().await;
 
-    // and the ask that follows it continues it
-    let next = put(&*app, &w.store, t.id, ask_of("coder", "ask main", "k2")).await;
+    // and the ask that follows it refers to it
+    let next = put(&*app, &w.store, t.id, ask_of("coder", "echo main", "k2")).await;
     assert!(matches!(
         next.payload,
-        orch_ports::OutboxPayload::Ask { continue_task: Some(ref t), .. } if t == "task-1"
+        orch_ports::OutboxPayload::Ask { ref reference_task_ids, continue_task: None, .. }
+            if reference_task_ids == &["task-1".to_owned()]
     ));
 }
 
