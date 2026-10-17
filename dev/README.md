@@ -2154,7 +2154,7 @@ from the same files.
 | Turn | The model asks the coder to |
 |---|---|
 | 1 to 4 | `start_scratch`, `write_file` `chart.svg`, `write_file` `report.json`, `run` (makes `square.png`) |
-| 5 to 7 | `share_file` `chart.svg` ("Chart"), `square.png` ("Square") and `report.json` ("Report"), each answered `Shared <file> (<n> bytes, <type>).`, an image's with ` To show it in your answer, write ![description](<file>).` after it (adam-rs ADR 0033) |
+| 5 to 7 | `share_file` `chart.svg` ("Chart"), `square.png` ("Square") and `report.json` ("Report"), each answered `Shared <file> (<n> bytes, <type>).`, an image's with ` To show it in your answer, write ![description](<file>).` after it (adam-rs ADR 0033) and, since adam-rs `8847c28`, a sentence on using it as the picture of an `ask_user` option, with its sha256 (adam-rs #110) |
 | 8, 9 | `ui_catalog`, then `show` a Text and two `Image`s (the SVG and the PNG, by sha256, with an alt each): after the files, because a surface that names a file the thread does not hold yet is refused |
 | 10 | the answer, which names the three files; the run ends with no pull request and the thread is `done` |
 

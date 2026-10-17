@@ -668,9 +668,14 @@ moves with it (the same tag and digest).
   project stays for the conversation, `create_repository` needs `auto` and asks unless the tier is `bypass`, shorter wording), and
   `bin/adam-coder/agent/mcp.json` and `dev/coder-agent/mcp.json` (`get_me` dropped from the GitHub MCP tool list) are copied again. No mapping,
   seed, `git-server` or `podman` file changed. Of the four files that are ours on purpose, upstream's `dev/coder-e2e.sh` changed (a yes is sent
-  as the label of the yes option, a no as the form's answer, since #111 reads neither a bare `yes` nor a typed `no` as a consent): nothing to
-  port, `dev/workspace-e2e.sh` answers the coder's consent as the web does, with one A2UI action on the form, and reports a consent that came as
-  text as a failure.
+  as the label of the yes option, a no as the form's answer, since #111 reads neither a bare `yes` nor a typed `no` as a consent): nothing of
+  it to port, `dev/workspace-e2e.sh` answers the coder's consent as the web does, with one A2UI action on the form, and reports a consent that
+  came as text as a failure. **Two scripts of ours did need a port, which the pull request's first Coder E2E run found** (28 of 30 scenarios
+  passed): `dev/workspace-e2e.sh` read the reason of `request_repository` in the coder's words, and the coder now puts it in the form's
+  description (`ask_user`'s `description`, adam-rs #110: the `Choices` of catalog v5 and later carries a `title` and a `description`, and the
+  reason is in the words only when no screen draws the form), so the script reads the form's description and falls back to the words; and
+  `dev/artifact-e2e.sh` compared `share_file`'s whole line, which for an image now ends with how to use it as the picture of an `ask_user`
+  option (`pass image {sha256: ..., alt}`, adam-rs #110), so the script expects that sentence with the file's own hash.
 - **The crates move with it, and no code changed.** The seven `rev` lines of `orchestrator/Cargo.toml` name `8847c28`; `cargo update -p
   adam-host --precise` re-resolved the nine adam-rs packages and nothing else. The change is additive for the crates this repository uses
   (`adam_a2a::AccessTiers`, `adam_a2a_runtime::{CONTEXT_CALLER, asked_by_an_agent, CONTEXT_ACCESS_TIER}` and the like are new; no `pub` item of
