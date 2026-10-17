@@ -197,8 +197,10 @@ member if a client sends it, and never told to the agent. The ask is sent under 
 An asked agent's **form** is not a model's to answer: when the agent *shows an interface* and waits, the ask ends with `form: true`
 (`ask_finished`), its task is cancelled and the agent is not asked again in that job
 ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)).
-A person who wants to answer it talks to that agent in a thread of their own. This does not cover an agent that asks **in words**
-(an ask carries no UI catalog, so adam-coder's consent question is one): a known gap, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md).
+A person who wants to answer it talks to that agent in a thread of their own. An ask is sent the job's UI catalog (when the thread
+has one), so a question *with choices*, adam-coder's consent among them, is a form and ends the ask; the cost is that any such
+question does, even one a model could answer. This does not cover an agent that asks **in words** (no choices), one that ignores
+the catalog or a thread with no catalog: a narrowed known gap, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-persons-to-answer).
 
 Every agent that works on the message appears nested under the step that started it, because every ask is a child
 task of the thread recorded in the log ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent),

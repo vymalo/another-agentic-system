@@ -828,7 +828,7 @@ As `structuredContent` and as the same JSON in one text content:
 | `text` | The asked agent's last words, at most 64 KiB, **untrusted text** in the asker's model |
 | `artifacts` | At most 20 `{name, uri?, mimeType?}`; a file is a reference to the thread's artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)), never its bytes |
 | `question` | With `input_required` or `auth_required`: what the asked agent asks. Asking the same agent again **continues that task** with the answer, unless `form` is true |
-| `form` | `true` when the asked agent **showed an interface and then waited** (`input_required` or `auth_required`): it waits for the **person's** answer to a form, and the person cannot see an asked agent's screens. The ask is over, the task is cancelled, and **asking that agent again in this job is refused** ([Refusals](#refusals)): a model never answers a form. Absent otherwise |
+| `form` | `true` when the asked agent **showed an interface and then waited** (`input_required` or `auth_required`), or when a claim that re-attached to its task saw it wait (it cannot know what the task drew): it waits for the **person's** answer to a form, and the person cannot see an asked agent's screens. The ask is over, the task is cancelled, and **asking that agent again in this job is refused** ([Refusals](#refusals)): a model never answers a form. Absent otherwise |
 | `error` | With a failure: the public reason |
 
 `isError` is true unless the state is `completed`, `input_required` or `auth_required`.
@@ -911,17 +911,25 @@ about 200 bytes is refused ("the callId is too long").
   task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
   not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The other asks of that agent that still run when the form ends end `canceled` with it (and the asks they asked), with an
   `error` that says why; the dispatcher cancels their tasks and the task the form parked, once the ask is recorded. A question in words, with no interface, is the asking agent's to answer as
-  before. **Known gap, not fixed here:** the orchestrator sends an ask no UI catalog, so an asked agent that asks in words
-  (adam-coder today: its `ask_user` parks in words when it has no catalog) ends `input_required` with no interface and can have
-  its question, a consent included, answered by the asking model. Such an agent's consent is protected only once the agent
-  refuses to park on it in a run another agent started (an adam-rs follow-up); giving asked agents a catalog would turn every
-  clarifying question into a form that ends the ask. *Decided 2026-10-17 on the owner's choice "end the ask"; the alternative, showing the form to the person, is not built.*
+  before. **The ask is sent the job's UI catalog** (the one the thread's screen gave, inline, and only to an agent whose card
+  lists `ui-catalog/v1`; none when the thread has none), so an asked agent that asks the person something **with choices**
+  (adam-coder's consent is one) draws a form and the ask ends with `form`. *The cost, accepted by the owner:* every question
+  with choices ends the ask, even one the asking model could have answered; the model tells the person to talk to that agent
+  directly. A claim that **re-attaches** to the task after a crash cannot know what it drew before, so it takes any
+  `input_required` or `auth_required` end for a form (it reads no history), a question in words included. **Known gap, narrowed,
+  not fixed here:** a question in words (no `choices`), an asked agent that ignores the catalog and a thread with no catalog
+  still end `input_required` with no interface and can have their question, a consent included, answered by the asking model.
+  Such an agent's consent is protected only once the agent refuses to park on it in a run another agent started (an adam-rs
+  follow-up, defence in depth). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the
+  alternative, showing the form to the person, is not built
+  ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-persons-to-answer)).*
   The orchestrator does not read the words of a message for an agent's convention of what a form answer looks like: that an
   agent takes no such answer from a text part is that agent's duty. Otherwise it is a new task in the same context with `referenceTaskIds` naming the earlier ask tasks to that agent in
   this job ([ADR 0021](../decisions/0021-context-across-a2a-tasks.md)).
 - **The gate never sees an asked agent.** Its `branch`, `checks` and pushed commits do not reach the job's gate
   ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)): the addressed agent's work is what is verified. An
-  asked agent cannot show a surface: an A2UI part from it is refused with an `error` step.
+  asked agent's surface is read and dropped, never applied or drawn (the person does not see it): that it drew one is what ends
+  the ask as a form when its task then waits.
 - **Nesting.** The ask is a **subagent** step `ask-<n>` under the step of the agent that asked (`parentStepId` when given,
   prefixed with the task id as the agent's step ids are; the `ask-<m>` of the asker, for an asked agent), and its own steps
   nest under it ([ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)). In AG-UI it is a

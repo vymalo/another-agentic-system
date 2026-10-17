@@ -12,7 +12,8 @@
   [ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note on the coder's consent forms gets a dated amendment. The wire
   contract is [`api/access-tier-v1.md`](../api/access-tier-v1.md). **Amended 2026-10-17:** decision 6 (the person's cap is kept
   when no tier could be decided, and a mention pins the cap on the mentioned agent), question 1 (an ask is sent under that cap) and
-  question 2 (a form an asked agent shows is not answered by a model; a question in words is a known gap).
+  question 2 (a form an asked agent shows is not answered by a model, and an ask is sent the job's UI catalog so that a question with
+  choices is a form; a question in words is a narrower known gap).
 
 ## Context
 
@@ -220,9 +221,10 @@ role has a cap unless a deployment writes one, so the built-in `user` may pick `
    orchestrator does nothing for it, and it is recorded here so the adam-rs pull request has the answer.
    *Amended 2026-10-17:* those consent forms are the person's own grant, so a form an asked agent **shows** is not answered by a
    model: the ask ends and the agent is not asked again in the job ([ADR 0026](0026-agent-mentions-as-structured-references.md),
-   status note of 2026-10-17). A consent that an asked agent asks **in words** is not covered, and is a **known gap**: an ask
-   carries no UI catalog, so adam-coder's consent question is one, and it is protected only once adam-rs refuses to park on
-   consent in a run another agent started.
+   status note of 2026-10-17). An ask is sent the job's UI catalog, and the coder's consent is a question with choices, so an
+   asked coder draws it as a form and the ask ends (the cost, accepted by the owner: any asked agent's question with choices ends
+   the ask). A consent that is asked **in words** is a **narrower known gap**: a thread whose screen sent no catalog, or an
+   agent that ignores it. It is fully protected only once adam-rs refuses to park on consent in a run another agent started.
 3. **"Repository creation by default."** Read as: at `auto` the coder has `create_repository` and no form, and `CREATE_REPO_OWNERS`
    still decides for which owners (today an empty list offers no tool). Does the owner mean to change that default as well?
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** creation by default
