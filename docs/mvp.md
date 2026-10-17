@@ -146,7 +146,7 @@ reason. The check is those tables against [`dev/e2e-all.sh`](../dev/e2e-all.sh),
 **What it does not claim:**
 
 - **Live behaviour.** Everything is proven on mocks: WireMock agents, a scripted model, a mock search, mock GitHub and GitHub App, a mock registry, a mock OIDC
-  issuer. No scenario has run against a real model, GitHub.com, a search provider, an identity provider or the platform (which has no code).
+  issuer. No scenario has run against a real model, GitHub.com, a search provider, an identity provider or a deployed platform (the platform's own CI runs this orchestrator against its registry in kind, below).
 - **The web against the real stack.** Playwright runs Chromium against the web's mock server; the scenarios speak HTTP and AG-UI to the real
   orchestrator and no browser. No test drives the real web against the compose stack.
 - **A green CI run that nobody saw.** Several scenarios were written where no container could start (each says so in [`dev/README.md`](../dev/README.md)); CI
@@ -170,7 +170,7 @@ Each entry is not built on purpose; the reason follows it.
 | The **browser agent in the football example**; the real researcher and coder there | The browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)) and its screenshots are files (amended 2026-10-09), but a mention names an asked agent's file without keeping it, so the example's pictures still do not reach the person, and the example needs answers a script can tell apart | [`vision.md`](vision.md) capability 4 |
 | A planner agent and parallel agents; reviewers | The first plan's steps 4 and 5, reshaped by the coordination choice (the addressed agent asks) | [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md) option B |
 | An asked agent's own steps in the thread | A decision, not a gap: an asked agent must not write the thread's transcript | ADR 0026 status note of 2026-10-03 |
-| Reading a real platform | The platform has no code (*verified 2026-10-03*, its `CLAUDE.md`) | question 10 |
+| Reading a real platform | The registry half is proven in the platform's CI: the platform's operator now serves the registry, and its kind end-to-end `chain-e2e` (vymalo/another-agentic-platform#34, *verified 2026-10-17* in run 38994193619) has this system's orchestrator, pinned at `sha-8df44c6`, list an agent the platform made, by audience; not on a deployed platform. The release-channels extension is not implemented by the platform's v0 (its registry publishes no releases), so the release picker is still proven only on mocks | question 10 |
 | Devcontainers on Kubernetes | Needs a sandbox provider the platform does not have yet | question 41 |
 | The coder's checks as GitHub check runs; a job that pushes to several repositories under the gate | Needs a real case | question 42 |
 | Retention: a time limit and quotas for files, the local agents' journal and the inbox | A person's delete of a thread erases it and its files (built, [ADR 0043](decisions/0043-deleting-a-thread-erases-it.md), proposed: backend and web); nothing else deletes anything | questions 28, 29, 46 |
