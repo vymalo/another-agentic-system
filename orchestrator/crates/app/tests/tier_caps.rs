@@ -214,10 +214,15 @@ async fn an_agent_redeployed_between_the_decision_and_the_send_is_not_sent_the_p
         .redeploy_with_tiers_after_next_card_read("plain", all_tiers());
     let run = spawn_dispatcher(&app, fast(), "d1");
     wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    // the scripted agent records an attempt it refuses: the plain one was refused (so it started no
+    // task, as the adapter's test over HTTP shows), and the decision was made again
     assert_eq!(
         sent(&w),
-        [("echo go".to_owned(), false, Some(Edits))],
-        "never the plain message, never the agent's `auto`"
+        [
+            ("echo go".to_owned(), false, None),
+            ("echo go".to_owned(), false, Some(Edits))
+        ],
+        "the plain attempt was refused; the message then went out under the cap, never `auto`"
     );
     run.shutdown().await;
 }
