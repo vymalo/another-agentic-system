@@ -6,7 +6,8 @@ name: Deploy
 # (`--print-config`, no connection; also with the tool servers on, and with `model.baseUrlFromSecret` as soon as the pinned
 # image accepts it), the Keycloak exports checked for secrets, and a dry run of the tag bump that orchestrator.yml and
 # web.yml make on main (searxng-mcp.yml's is the same script), and the files host's Caddyfile run in the pinned Caddy image in front of a stub upstream
-# (deploy/chart/tests/files-host-ci.sh). Nothing here touches a cluster.
+# (deploy/chart/tests/files-host-ci.sh). The database backups' objects and the restore example are validated against the vendored CRD schemas too
+# (issue #151). Nothing here touches a cluster.
 #
 # The bump itself is the last job of orchestrator.yml and web.yml: it sets `<component>.image.tag` in
 # deploy/chart/values.yaml to `sha-<first 7 of the commit>` after that workflow pushed the image (the pattern of
@@ -172,6 +173,15 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/rustfs.values.yaml -f deploy/chart/tests/files-host.values.yaml \
             -f deploy/chart/tests/files-host-uploads.values.yaml > /dev/null
+      # The database backups to S3 by the barman-cloud plugin (deploy/chart/tests/backup.values.yaml, backup-aws.values.yaml, issue #151): off by default (nothing of
+      # it is rendered), so these are the renders a deployment gets when it names a bucket: an S3-compatible server with every knob set, and AWS with the defaults.
+      - name: helm lint and template with the database backups on
+        run: |
+          for shape in backup backup-aws; do
+            helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f "deploy/chart/tests/$shape.values.yaml"
+            helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+              -f deploy/chart/examples/netcup.values.yaml -f "deploy/chart/tests/$shape.values.yaml" > /dev/null
+          done
       - name: A render with no values is refused
         run: |
           if helm template another-agentic-system deploy/chart --namespace another-agentic-system > /dev/null 2>&1; then
@@ -179,8 +189,8 @@ jobs:
           fi
       - name: The rendered chart keeps its guarantees
         run: sh deploy/chart/tests/render-check.sh
-      # Core kinds against the Kubernetes schemas, the CNPG Cluster and the ExternalSecret against the CRD schemas vendored
-      # in deploy/chart/tests/schemas (a pinned copy of the datreeio catalog, see its README). A kind without a schema
+      # Core kinds against the Kubernetes schemas, the CNPG Cluster, Database, ScheduledBackup, the plugin's ObjectStore and the ExternalSecret against the CRD
+      # schemas vendored in deploy/chart/tests/schemas (a pinned copy of the datreeio catalog, see its README). A kind without a schema
       # fails (no -ignore-missing-schemas), so a new CRD in the chart needs its schema there. The core schemas are
       # downloaded; a download failure (not a validation failure) is retried.
       - name: kubeconform
@@ -257,6 +267,13 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/migrate-before.values.yaml \
             > "$RUNNER_TEMP/rendered-migrate-before.yaml"
+          # The database backups: an ObjectStore, a ScheduledBackup, an ExternalSecret and the plugin on the Cluster, to an S3-compatible server and to AWS.
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/backup.values.yaml \
+            > "$RUNNER_TEMP/rendered-backup.yaml"
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/backup-aws.values.yaml \
+            > "$RUNNER_TEMP/rendered-backup-aws.yaml"
           for attempt in 1 2 3; do
             status=0
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
@@ -269,6 +286,8 @@ jobs:
                 "$RUNNER_TEMP/rendered-files-host.yaml" "$RUNNER_TEMP/rendered-files-host-uploads.yaml" \
                 "$RUNNER_TEMP/rendered-migrate.yaml" "$RUNNER_TEMP/rendered-migrate-before.yaml" \
                 "$RUNNER_TEMP/rendered-user-secrets.yaml" \
+                "$RUNNER_TEMP/rendered-backup.yaml" "$RUNNER_TEMP/rendered-backup-aws.yaml" \
+                deploy/chart/examples/restore-cluster.yaml \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi

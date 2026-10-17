@@ -108,3 +108,44 @@ spec:
         key: {{ $key }}
         property: {{ required "externalSecrets.properties.artifactsS3SecretAccessKey is required with orchestrator.artifacts.migrate.enabled" $es.properties.artifactsS3SecretAccessKey }}
 {{- end -}}
+
+{{/*
+The Secret of the database backups' S3 credentials (`backup.enabled`, issue #151): the two keys the ObjectStore names, filled from two
+properties of the AWS secret that are the backup bucket's own (never the artifacts'). It is rendered by cnpg-backup.yaml and not by
+externalsecrets.yaml, whose checksum the orchestrator's, the chat's, oauth2-proxy's and the search pod's pods carry: turning backups on
+must not restart them. The label makes CloudNativePG reload a changed key (the plugin's pages say so of Secrets and ConfigMaps in general;
+unverified for the plugin's sidecar).
+*/}}
+{{- define "agentic.es.dbBackup" -}}
+{{- $es := .Values.externalSecrets -}}
+{{- $key := required "externalSecrets.key is required" $es.key -}}
+{{- $backup := dict "root" . "component" "db-backup" -}}
+apiVersion: {{ $es.apiVersion }}
+kind: ExternalSecret
+metadata:
+  name: {{ include "agentic.secret.dbBackup" . }}
+  labels:
+    {{- include "agentic.labels" $backup | nindent 4 }}
+spec:
+  refreshInterval: {{ $es.refreshInterval }}
+  secretStoreRef:
+    name: {{ $es.secretStoreRef.name }}
+    kind: {{ $es.secretStoreRef.kind }}
+  target:
+    name: {{ include "agentic.secret.dbBackup" . }}
+    creationPolicy: Owner
+    template:
+      metadata:
+        labels:
+          cnpg.io/reload: "true"
+  data:
+    # The keys the ObjectStore's `s3Credentials` name; the bucket's IAM user, which is not the artifacts' (README.md, "Backups").
+    - secretKey: ACCESS_KEY_ID
+      remoteRef:
+        key: {{ $key }}
+        property: {{ required "externalSecrets.properties.backupS3AccessKeyId is required with backup.enabled" $es.properties.backupS3AccessKeyId }}
+    - secretKey: ACCESS_SECRET_KEY
+      remoteRef:
+        key: {{ $key }}
+        property: {{ required "externalSecrets.properties.backupS3SecretAccessKey is required with backup.enabled" $es.properties.backupS3SecretAccessKey }}
+{{- end -}}

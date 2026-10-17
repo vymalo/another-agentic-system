@@ -609,6 +609,118 @@ missing identity must fail the render rather than silently serve a link another 
 {{- fail "sharedDatabase.coder.secretName must be a Kubernetes Secret name (lower-case letters, digits, - and .)" -}}
 {{- end -}}
 {{- end -}}
+{{- /* Backups of the database cluster to S3 (issue #151, README.md "Backups"). The flag is checked always; the rest is read when they are on. */ -}}
+{{- $bk := .Values.backup -}}
+{{- if not (kindIs "bool" $bk.enabled) -}}
+{{- fail (printf "backup.enabled must be true or false, got %q of type %s" (toString $bk.enabled) (kindOf $bk.enabled)) -}}
+{{- end -}}
+{{- if $bk.enabled -}}
+{{- if not (kindIs "bool" $bk.schedule.immediate) -}}
+{{- fail (printf "backup.schedule.immediate must be true or false, got %q of type %s" (toString $bk.schedule.immediate) (kindOf $bk.schedule.immediate)) -}}
+{{- end -}}
+{{- $bucket := toString $bk.s3.bucket -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" $bucket) -}}
+{{- fail (printf "backup.s3.bucket must be a bucket name of its own (3 to 63 of a-z, 0-9, - and ., a letter or a digit at both ends), got %q" $bucket) -}}
+{{- end -}}
+{{- /* The rule of orchestrator.artifacts.s3.bucket: on AWS, with no endpoint, a dot in the name breaks the certificate of the virtual-hosted style. Stricter than boto3 may need (unverified). */ -}}
+{{- if and (contains "." $bucket) (not $bk.s3.endpoint) -}}
+{{- fail (printf "backup.s3.bucket %q has a dot: without an endpoint the bucket is AWS S3's, whose virtual-hosted names do not take one; name the bucket without dots, or set backup.s3.endpoint" $bucket) -}}
+{{- end -}}
+{{- if and $bk.s3.endpoint (not (regexMatch "^https?://[^/@?#]+(/[^@?#]*)?$" (toString $bk.s3.endpoint))) -}}
+{{- fail "backup.s3.endpoint must be an http(s) URL with a host and no credentials, query or fragment, or empty (AWS S3)" -}}
+{{- end -}}
+{{- if and $bk.s3.prefix (or (not (regexMatch "^[A-Za-z0-9._/-]{1,128}$" (toString $bk.s3.prefix))) (contains ".." (toString $bk.s3.prefix))) -}}
+{{- fail "backup.s3.prefix is at most 128 of A-Z, a-z, 0-9, ., _, - and /, with no .." -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9-]+$" (toString $bk.s3.region)) -}}
+{{- fail "backup.s3.region is required, a region name (eu-central-1; us-east-1 for a server that has none): the sidecar needs one to sign" -}}
+{{- end -}}
+{{- /* A recovery window of at most 30 days, in days or weeks. The plugin accepts `m` (months) and more; a longer keep is a decision about the testers' data, not a value. */ -}}
+{{- $ret := toString $bk.retention -}}
+{{- if regexMatch "^[1-9][0-9]*m$" $ret -}}
+{{- fail (printf "backup.retention %q: the unit m (months) is refused, a month is 30 or 31 days; write the days (28d) or the weeks (4w), at most 30 days" $ret) -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,2}[dw]$" $ret) -}}
+{{- fail (printf "backup.retention must be a whole number of days or weeks, 1 or more, such as 28d or 4w (at most 30 days), got %q" $ret) -}}
+{{- end -}}
+{{- $n := int (trimSuffix "d" (trimSuffix "w" $ret)) -}}
+{{- if gt (ternary $n (mul $n 7) (hasSuffix "d" $ret)) 30 -}}
+{{- fail (printf "backup.retention %q is more than 30 days: the backups hold the people's threads, and the tester note promises they are gone within that (docs/tester-note.md)" $ret) -}}
+{{- end -}}
+{{- /* CloudNativePG's schedule has SIX fields, seconds first; a Unix crontab line of five is not one. */ -}}
+{{- $cron := toString $bk.schedule.cron -}}
+{{- $fields := regexSplit "\\s+" (trim $cron) -1 -}}
+{{- if ne (len $fields) 6 -}}
+{{- fail (printf "backup.schedule.cron must have six fields, seconds first (\"0 17 3 * * *\" is 03:17:00 every day), got %d in %q" (len $fields) $cron) -}}
+{{- end -}}
+{{- range $f := $fields -}}
+{{- if not (regexMatch "^[0-9A-Za-z*/,?-]+$" $f) -}}
+{{- fail (printf "backup.schedule.cron: %q is not a cron field (digits, letters, * / , - ? only)" $f) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has (toString $bk.wal.compression) (list "bzip2" "gzip" "lz4" "snappy" "xz" "zstd")) -}}
+{{- fail (printf "backup.wal.compression must be one of bzip2, gzip, lz4, snappy, xz, zstd, got %q" (toString $bk.wal.compression)) -}}
+{{- end -}}
+{{- if not (has (toString $bk.data.compression) (list "bzip2" "gzip" "snappy")) -}}
+{{- fail (printf "backup.data.compression must be one of bzip2, gzip, snappy (the base backup's: fewer than the WAL's), got %q" (toString $bk.data.compression)) -}}
+{{- end -}}
+{{- /* The sidecar's environment is for settings, not secrets: a credential has its Secret. */ -}}
+{{- if not (kindIs "slice" $bk.sidecar.env) -}}
+{{- fail "backup.sidecar.env must be a list of { name, value }" -}}
+{{- end -}}
+{{- $seenEnv := dict "AWS_DEFAULT_REGION" true -}}
+{{- range $i, $e := $bk.sidecar.env -}}
+{{- if not (kindIs "map" $e) -}}
+{{- fail (printf "backup.sidecar.env[%d] must be a map with name and value" $i) -}}
+{{- end -}}
+{{- range $k, $_v := $e -}}
+{{- if not (has $k (list "name" "value")) -}}
+{{- fail (printf "backup.sidecar.env[%d]: %q is not a key (name and value are; a value from a Secret is not allowed here)" $i $k) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Z][A-Z0-9_]*$" (toString $e.name)) -}}
+{{- fail (printf "backup.sidecar.env[%d].name must be upper-case letters, digits and _, got %q" $i (toString $e.name)) -}}
+{{- end -}}
+{{- if regexMatch "(SECRET|KEY|TOKEN|PASSWORD)" (toString $e.name) -}}
+{{- fail (printf "backup.sidecar.env[%d].name %q looks like a secret: the credentials are the Secret %s-db-backup, never a value" $i (toString $e.name) (include "agentic.fullname" $)) -}}
+{{- end -}}
+{{- if hasKey $seenEnv (toString $e.name) -}}
+{{- fail (printf "backup.sidecar.env[%d].name %q is set already (AWS_DEFAULT_REGION is backup.s3.region; a name may be listed once)" $i (toString $e.name)) -}}
+{{- end -}}
+{{- $_ := set $seenEnv (toString $e.name) true -}}
+{{- if not (kindIs "string" $e.value) -}}
+{{- fail (printf "backup.sidecar.env[%d].value must be a string, got %s" $i (kindOf $e.value)) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "map" $bk.sidecar.resources) -}}
+{{- fail "backup.sidecar.resources must be a map with requests and limits" -}}
+{{- end -}}
+{{- range $k, $_v := $bk.sidecar.resources -}}
+{{- if not (has $k (list "requests" "limits")) -}}
+{{- fail (printf "backup.sidecar.resources: %q is not a key (requests and limits are)" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- /* The credentials: two properties of the AWS secret that are the backup bucket's own. */ -}}
+{{- if .Values.externalSecrets.enabled -}}
+{{- $idProp := toString .Values.externalSecrets.properties.backupS3AccessKeyId -}}
+{{- $keyProp := toString .Values.externalSecrets.properties.backupS3SecretAccessKey -}}
+{{- if or (not $idProp) (not $keyProp) -}}
+{{- fail "backup.enabled needs externalSecrets.properties.backupS3AccessKeyId and backupS3SecretAccessKey: the properties of the AWS secret that hold the backup bucket's access key (backup_s3_access_key_id, backup_s3_secret_access_key); add them to the AWS secret before the sync" -}}
+{{- end -}}
+{{- if eq $idProp $keyProp -}}
+{{- fail (printf "externalSecrets.properties.backupS3AccessKeyId and backupS3SecretAccessKey are both %q: the key id and the secret key are two values" $idProp) -}}
+{{- end -}}
+{{- if or (has $idProp (list (toString .Values.externalSecrets.properties.artifactsS3AccessKeyId) (toString .Values.externalSecrets.properties.artifactsS3SecretAccessKey))) (has $keyProp (list (toString .Values.externalSecrets.properties.artifactsS3AccessKeyId) (toString .Values.externalSecrets.properties.artifactsS3SecretAccessKey))) -}}
+{{- fail "externalSecrets.properties.backupS3* must not be the artifacts' properties: the orchestrator's pod reads those, and the backups' credentials (which can delete them) are the database backups' own" -}}
+{{- end -}}
+{{- end -}}
+{{- /* A coder's Secret must not be the one of the backups' credentials (the same Kind, the same namespace). */ -}}
+{{- range $c := (include "agentic.db.coders" . | fromYamlArray) -}}
+{{- if eq $c.secretName (include "agentic.secret.dbBackup" $) -}}
+{{- fail (printf "sharedDatabase.coders: the Secret name %q is the backups' credentials Secret (backup.enabled)" $c.secretName) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* A whole number in a range, or the render fails: call with (dict "name" "a.b" "value" $v "min" 1 "max" 10). A values file gives a float64, `--set` an int64. */}}

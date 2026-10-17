@@ -80,6 +80,21 @@ ExternalSecret fills: `username`, `password` and `uri`.
 {{- define "agentic.secret.db.agent" -}}{{- include "agentic.component" (dict "root" . "component" "db-agent") -}}{{- end -}}
 
 {{/*
+Backups of the cluster to S3 by the barman-cloud plugin (`backup.enabled`, issue #151): "true" or nothing; the name of the ObjectStore and of
+the ScheduledBackup (the cluster's own: one object store per cluster); the Secret of the S3 credentials (an ExternalSecret fills it, or the
+deployment makes it with `externalSecrets.enabled: false`; keys ACCESS_KEY_ID and ACCESS_SECRET_KEY, the plugin's documented names); and the
+destination `s3://<bucket>/<prefix>`, the prefix's non-empty parts joined by "/" (the cluster's name is added below it by the plugin).
+*/}}
+{{- define "agentic.backup" -}}{{- if .Values.backup.enabled -}}true{{- end -}}{{- end -}}
+{{- define "agentic.backup.objectStore" -}}{{- include "agentic.db.orchestrator" . -}}{{- end -}}
+{{- define "agentic.secret.dbBackup" -}}{{- include "agentic.component" (dict "root" . "component" "db-backup") -}}{{- end -}}
+{{- define "agentic.backup.destinationPath" -}}
+{{- $parts := list -}}
+{{- range (splitList "/" (toString .Values.backup.s3.prefix)) -}}{{- if . -}}{{- $parts = append $parts . -}}{{- end -}}{{- end -}}
+{{- printf "s3://%s/%s" (toString .Values.backup.s3.bucket) (join "/" $parts) -}}
+{{- end -}}
+
+{{/*
 The coders' databases, as a YAML list of {name, secretName, passwordProperty}, in order; `[]` when there are none. It is the one
 place that reads `sharedDatabase`, and it refuses what cannot work, so every template that includes it is checked.
   * `sharedDatabase.coders`: one entry per coder (the database and role `name`, the Secret `secretName`, default `<name>-db-uri`,

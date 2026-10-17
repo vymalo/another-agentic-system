@@ -580,6 +580,7 @@ private again after a revocation exactly as before its first share.
   its files; until then a person who asks for erasure is served by the operator in the database, and the invitation to
   testers says so. This ADR does not build it.
 - **Backups**, if enabled, keep a revoked or deleted share until they expire; the retention is stated to testers.
+  *(Note, 2026-10-17: the chart's backups, [ADR 0041](0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md) amended that day, keep them for at most the retention, 28 days by default and never more than 30, plus one backup interval; the statement for testers is [`docs/tester-note.md`](../tester-note.md), a draft for the owner.)*
 - **The model provider** sees conversations ([question 45](../open-questions.md)); sharing does not change what it sees.
 
 ## Consequences

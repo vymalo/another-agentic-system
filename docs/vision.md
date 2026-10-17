@@ -421,6 +421,7 @@ The same list stands behind every "built" above:
 - **Live services.** No model, GitHub.com, GitHub App, search provider, identity provider or platform was used; every scenario runs on mocks. Where a
   claim depends on a live service, the section says *unverified*.
 - **The owner has not tried this state.** The verdict of 2026-10-01 stands until they do.
+- **The database backups.** The chart can back the database up to S3 ([ADR 0041](decisions/0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md), amended 2026-10-17; off by default): proven on renders and CRD schemas only. Not proven until the owner restores a backup on netcup: no plugin, bucket or restore has run.
 - **The web against the real stack.** Playwright runs Chromium against the web's mock server (`web.yml`); the scenario scripts run against the real
   orchestrator without a browser. No test drives the real web against the compose stack.
 - **CI.** The scenarios are run by the `Coder E2E` workflow. Several were written where no container could start, and say so in

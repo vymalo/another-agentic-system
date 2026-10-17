@@ -119,6 +119,7 @@ What exists (*verified* 2026-10-03 by reading the code at main plus the sharing 
      specification);
    - the model provider that saw the conversation (open question 45);
    - backups, which keep a deleted thread until they expire (ADR 0040, *GDPR notes*);
+     *(Note, 2026-10-17: the chart's backups, [ADR 0041](0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md) amended that day, expire after 28 days by default, at most 30, plus one backup interval, so a deleted thread leaves them after about a month; [`docs/tester-note.md`](../tester-note.md), a draft for the owner.)*
    - in `agent-local` builds, adam's journal rows for the context, until adam-rs offers a purge by context (*unverified* that
      its `Store` can: issue #157 names only `purge_finished(agent, before)`; follow-up, open question 28).
 

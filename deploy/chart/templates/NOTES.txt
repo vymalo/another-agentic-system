@@ -6,6 +6,12 @@ another-agentic-system is deployed at https://{{ .Values.host }}
 {{- if include "agentic.filesHost" . }}
   files      https://{{ include "agentic.filesHost.name" . }} (the bucket's artifact keys, signed requests only: the orchestrator signs for it; its DNS record is the owner's)
 {{- end }}
+{{- if include "agentic.backup" . }}
+  backups    s3://{{ .Values.backup.s3.bucket }} ({{ .Values.backup.retention }}, {{ .Values.backup.schedule.cron }}); check them with
+             kubectl -n {{ .Release.Namespace }} get scheduledbackup,backup
+             kubectl -n {{ .Release.Namespace }} get cluster {{ include "agentic.db.orchestrator" . }} -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'   (ContinuousArchiving, LastBackupSucceeded)
+             kubectl -n {{ .Release.Namespace }} get objectstore {{ include "agentic.backup.objectStore" . }} -o jsonpath='{.status.serverRecoveryWindow}'
+{{- end }}
 
 The orchestrator is one process (role all) with its files on a volume: one replica. Probes: /healthz, /readyz
 (503 until Keycloak's keys are fetched). After a secret rotates in AWS, restart the pods that read it
