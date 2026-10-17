@@ -136,8 +136,10 @@ test that makes the adapter log the metadata fails.
 **An ask is never sent without the grant** (*2026-10-17*,
 [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)).
 The rule above has one exception: a message whose grant names an asked agent (`caller = ask:<n>`), to a card that lists the
-extension, is sent with the grant or not at all. When no token can be minted (no key or URL configured, or a mint error) the
-adapter sends nothing and answers `NotSent`; the ask fails at once, with `ask_finished.error` "the ask was not sent: no
+extension, is sent with the grant or not at all. When no token can be minted (a mint error, which is a bug; or a worker replica
+started from a configuration that omits `threadTools` while the control plane still serves the endpoint: the configuration is
+both-or-neither for every role and `ask_agent` exists only on that endpoint, so a deployment with no issuer anywhere has no
+asks to send) the adapter sends nothing and answers `NotSent`; the ask fails at once, with `ask_finished.error` "the ask was not sent: no
 thread-tools token could be minted (no issuer is configured)" (or the mint error in the parentheses), no task starts and the
 job goes on. The reason is that the asked agent reads `caller` from the token to know that an agent asked it (adam-coder
 asks nobody for consent in such a run): without the token it would take the ask for a person's. The addressed agent's message

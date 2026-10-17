@@ -1701,8 +1701,11 @@ ledger, the thread's current catalog stays the screen's; the same catalog gives 
 travels like any delivery of [section 5](#5-to-the-agent-the-extension), inline (an asked agent has no `get_ui_catalog`),
 only to a card that lists the extension and inline only to one that accepts inline catalogs: the metadata, the first
 `supportedCatalogIds` entry and the entry of `inlineCatalogs` all name the derived catalog. A thread with no catalog, or
-whose catalog has no `Choices`, sends an asked agent none, and so does a derived id that would exceed 256 bytes. The addressed
-agent keeps getting the thread's whole catalog.
+whose catalog has no `Choices`, sends an asked agent none, and so does a derived id that would exceed 256 bytes; that last case
+is logged as a warning by the orchestrator (the thread and the length of the id, never the catalog), since nothing else would say
+why such a thread's asks carry no form. The suffix is appended to the thread's id as a string, after any `?` or `#` it carries
+(`https://h/c?v=1/forms`): legal for an opaque id that is never fetched. The addressed agent keeps getting the thread's whole
+catalog.
 
 ## 6. The refetch
 

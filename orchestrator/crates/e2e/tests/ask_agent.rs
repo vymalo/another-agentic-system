@@ -393,7 +393,7 @@ async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(ba
     assert_eq!(asked.len(), 1);
     let told = asked[0].ui_catalog.clone().expect("told of a catalog");
     assert_eq!(told["catalogId"], forms_id);
-    assert_eq!(told["version"].as_f64().map(|v| v as u64), Some(3));
+    assert_eq!(integral_numbers(&told)["version"], json!(3));
     assert_eq!(told["inline"], true);
     let inline: Vec<Value> = asked[0]
         .inline_catalogs

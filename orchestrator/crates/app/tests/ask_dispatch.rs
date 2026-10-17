@@ -1103,11 +1103,12 @@ async fn a_request_the_agent_refuses_fails_the_ask_at_once() {
     run.shutdown().await;
 }
 
-/// ADR 0026, amended 2026-10-17: an adapter that cannot mint an ask's token sends nothing and
-/// answers `NotSent`. The ask ends `failed` with that reason, at once (the deployment's
-/// configuration is not cured by a retry), and no task is recorded anywhere.
+/// ADR 0026, amended 2026-10-17: an adapter that cannot mint an ask's token answers `NotSent`
+/// (that nothing reaches the agent is the adapter's own wire test; the scripted agent records the
+/// call before it fails). The ask ends `failed` with that reason, at once (a mint error or a
+/// misconfigured replica is not cured by a retry), and no task is recorded anywhere.
 #[tokio::test]
-async fn an_ask_whose_token_cannot_be_minted_is_not_sent_and_fails_with_the_reason() {
+async fn an_ask_whose_token_cannot_be_minted_is_not_retried_and_fails_with_the_reason() {
     let w = World::new();
     let app = app3(&w);
     let t = working_thread(&*app, &w.store).await;

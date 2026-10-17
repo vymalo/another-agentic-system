@@ -61,13 +61,13 @@ pub(crate) fn mint(
     match issuer.grant(grant, message_id, now) {
         Ok(minted) => Ok(Some(minted)),
         Err(error) => {
-            without_token(grant, &error.to_string())?;
             tracing::error!(
                 thread = %grant.thread,
                 agent = %grant.agent,
                 %error,
-                "no thread-tools token could be minted; the agent is given none"
+                "no thread-tools token could be minted; an ask is not sent, the addressed agent is given none"
             );
+            without_token(grant, &error.to_string())?;
             Ok(None)
         }
     }
