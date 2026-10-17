@@ -67,6 +67,7 @@ mod tests {
             task_id: None,
             context_id: None,
             outcome,
+            form: false,
         }
     }
 

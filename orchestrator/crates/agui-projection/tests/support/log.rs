@@ -467,6 +467,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             Action::User { text, ids } => {
                 users += 1;
                 Input::UserMessage {
+                    tier_cap: None,
                     user: user.clone(),
                     text: text.clone(),
                     message_id: ids.then(|| format!("m-{users}")),
@@ -480,6 +481,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             Action::StopAndSend { text, ids } => {
                 users += 1;
                 Input::StopAndSend {
+                    tier_cap: None,
                     user: user.clone(),
                     text: text.clone(),
                     message_id: ids.then(|| format!("m-{users}")),
@@ -493,6 +495,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             Action::Catalog { which } => {
                 users += 1;
                 Input::UserMessage {
+                    tier_cap: None,
                     user: user.clone(),
                     text: "with a catalog".to_owned(),
                     message_id: Some(format!("m-{users}")),
@@ -784,8 +787,11 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             Action::UiAct { ids } => {
                 users += 1;
                 Input::UiAction {
+                    tier_cap: None,
                     user: user.clone(),
                     action: UiActionData {
+                        tier: None,
+                        tier_cap: None,
                         surface_id: "s0".to_owned(),
                         name: "go".to_owned(),
                         source_component_id: "btn".to_owned(),

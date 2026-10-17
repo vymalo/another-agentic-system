@@ -70,7 +70,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **Access tier** (2026-10-11, [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), contract
 > [`access-tier-v1.md`](access-tier-v1.md), orchestrator and web built, the agent side is adam-rs's): `forwardedProps["vymalo.tier"]` on
 > the run that carries a message, checked before anything is written, shown on `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the
-> message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default}`; see [Access tier](#access-tier).
+> message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default, maxTier?}`; see [Access tier](#access-tier).
 
 ## Endpoints
 
@@ -197,7 +197,7 @@ gets everything.
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
 | `agent_step{id, path, kind, label, state, phase, icon?, detail?, input?, output?, ioDropped?}` (ADR 0025, ADR 0030) | A step of the agent's work, a report that passed the core's door and its coalescing | See [Nested steps](#nested-steps): `ACTIVITY_SNAPSHOT{messageId:"step-<seq>", activityType:"vymalo.step", replace:true, content:{…, startedAt, at}, subagentRunId:<the subagent that encloses it>}`, and for a sub-agent step `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", parentSubagentRunId}` before its first snapshot and the end of that subagent after its last. A step opens the run and the agent's invocation as `agent_status` does, and moves a `queued` thread to `working` with a `STATE_SNAPSHOT` |
 | `ask_started{ask, agent, by, depth, text, stepId, parentStepId?}` (ADR 0026) | The agent asked a mentioned agent (the thread tool `ask_agent`); the run and the thread's agent's invocation are open (a log that says an ask first opens the invocation under the agent's name) | See [Asked agents as subagents](#asked-agents-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-ask-<ask>", name:<the asked agent's id>, parentSubagentRunId:<the asker's run>, metadata:{"vymalo.actor": the asked agent}}` → `ACTIVITY_SNAPSHOT{messageId:"ask-<ask>", activityType:"vymalo.ask", replace:true, content:{ask, agent, by, depth, text, stepId, parentStepId?, state:"running", startedAt, at}, subagentRunId:<the asker's run>}`. The thread's state does not move |
-| `ask_finished{ask, state, text?, question?, artifacts?, error?}` (ADR 0026) | The ask ended, once: the asked agent answered, asked back, failed, was refused or cancelled, or the deadline passed | Whatever still runs under the ask ends first (the asks it asked, deepest first: `SUBAGENT_FINISHED{result:{status:"canceled"}}`); then the `vymalo.ask` snapshot again (`replace:true`, `state`, `answer?`, `question?`, `artifacts?`, `error?`); then `SUBAGENT_FINISHED{result:{state}}` for `completed`, `input_required`, `auth_required` and `canceled`, or `SUBAGENT_ERROR{code:"ask_failed"}` for `failed` and `rejected` and `{code:"ask_timed_out"}` for `timed_out` |
+| `ask_finished{ask, state, text?, question?, artifacts?, error?, form?}` (ADR 0026; `form` is for the asking model and the ledger, the activity does not carry it) | The ask ended, once: the asked agent answered, asked back, failed, was refused or cancelled, or the deadline passed | Whatever still runs under the ask ends first (the asks it asked, deepest first: `SUBAGENT_FINISHED{result:{status:"canceled"}}`); then the `vymalo.ask` snapshot again (`replace:true`, `state`, `answer?`, `question?`, `artifacts?`, `error?`); then `SUBAGENT_FINISHED{result:{state}}` for `completed`, `input_required`, `auth_required` and `canceled`, or `SUBAGENT_ERROR{code:"ask_failed"}` for `failed` and `rejected` and `{code:"ask_timed_out"}` for `timed_out` |
 | `model_usage{job, agent, task, call, path, provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?}` ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)) | A model call an agent reported (`usage/v1`); a run is open | `CUSTOM{name:"vymalo.usage", value:{…the event's data, by:{kind, name}, at}, subagentRunId:<the subagent the path names while it is open, else the agent's invocation>, metadata:{"vymalo.actor"}}`. No other frame. On a thread that waits or is finished, **no frame**: usage opens no run of its own (an active thread's run is open, or opens as for any event). See [Token usage](#token-usage) |
 | `model_usage_total{job, agent, task, path?, totals}` (ADR 0056) | A task's totals when it ended or paused; a run is open | `CUSTOM{name:"vymalo.usage_total", value:{…the event's data, by, at}, subagentRunId, metadata:{"vymalo.actor"}}`, attributed as above (an asked agent's under its `sub-ask-<n>`), and folded into the run's `usage`. On a thread that waits or is finished, no frame |
 | `error{retryable:false}` + `thread_state{failed}` | Right after a failed `check_result`: the last attempt failed | Error activity → `STATE_SNAPSHOT{failed}` → `RUN_ERROR{code:"checks_failed", message}` with `metadata["vymalo.problem"].title` "Checks failed". The agent's invocation had ended at its `completed`, so there is no `SUBAGENT_ERROR` |
@@ -1255,12 +1255,12 @@ orchestrator and web). The contract, with the card, the activation, the agent's 
 
 - **In:** `forwardedProps["vymalo.tier"]` on the run that carries the message (the [inbound table](#inbound-ag-ui--core-input)).
   The person picks it for each message; the web remembers the pick in the browser and sends it with every message of the thread.
-- **Log:** `user_message.tier`, the tier the message was sent under (named, continued from the job or decided for a capped role), written only after the checks. The agent's echo is `agent_status.data.tier`.
+- **Log:** `user_message.tier`, the tier the message was sent under (named, continued from the job or decided for a capped role), written only after the checks; `user_message.tierCap` when a cap applied and the agent's card offered no tier then (the dispatcher decides the tier from the live card at every send); `mentions[].tierCap`, the person's cap on a mentioned agent; and `ui_action.tier` / `ui_action.tierCap`, what an action went out under. The agent's echo is `agent_status.data.tier`.
 - **Out:** `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the user message, so a reload and another tab show the badge. A run
   does not hear its own message back, so it is on the connect stream and on a later load of the thread.
-- **Capabilities:** `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default}` while the live card
-  lists the extension with well-formed `params` (see [Capabilities document](#capabilities-document)). The web draws its chip from
-  it and from `maxTier` of `GET /api/me`.
+- **Capabilities:** `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default, maxTier?}` while the live
+  card lists the extension with well-formed `params` (see [Capabilities document](#capabilities-document)); `maxTier` is the highest
+  tier the person asking may use **of this agent**. The web draws its chip from it.
 - **To the agent:** only when the live card read at the send still honours the tier; any other agent is sent the message it always
   was. What the orchestrator sends on the thread's behalf (the gate's rework, the delegation of an A2UI action, an answer to a
   blocked job) goes under the tier of the person's last message of the job, so the web sends nothing for them; an answer or an
@@ -1546,9 +1546,11 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
 - `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1`, `…/steer/v1` and `…/usage/v1` (ADR 0008, ADR 0036, ADR 0056; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
-- `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default}` only while the live card lists the
+- `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default, maxTier?}` only while the live card lists the
   extension with well-formed `params` (ADR 0061, [`access-tier-v1.md`](access-tier-v1.md)): `tiers` are the tiers the agent honours,
-  lowest first (`plan`, `edits`, `auto`, `bypass`), `default` the one it works under when a message names none. A card that lists
+  lowest first (`plan`, `edits`, `auto`, `bypass`), `default` the one it works under when a message names none, and `maxTier`, the
+  person's own, not the card's, the highest tier they may use of **this** agent over the roles that let them invoke it (absent when
+  no role of theirs caps it; the document is per person and `no-store`). A card that lists
   the URI badly (a `default` that is not among the `tiers`, a repeated or unknown tier) is a card that does not list it: no key.
   The web draws its tier chip from this key, and shows none without it;
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under

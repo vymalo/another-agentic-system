@@ -411,6 +411,7 @@ async fn a_thread_that_is_not_working_is_not_steered() {
 /// What the person's message `echo @coder later` mentions: `@coder` at 5..11.
 fn coder_mention() -> orch_core::Mention {
     orch_core::Mention {
+        tier_cap: None,
         agent_id: AgentId::new("coder"),
         label: "@coder".to_owned(),
         start: 5,
@@ -438,6 +439,7 @@ async fn mention_coder(app: &TestApp, id: ThreadId) {
             &alice(),
             id,
             Input::UserMessage {
+                tier_cap: None,
                 user: alice(),
                 text: "echo @coder later".to_owned(),
                 message_id: Some("m-2".to_owned()),

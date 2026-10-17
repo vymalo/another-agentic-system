@@ -22,18 +22,22 @@ export type Tier = (typeof TIERS)[number];
 export const parseTier = (value: unknown): Tier | undefined =>
   typeof value === "string" ? TIERS.find((t) => t === value) : undefined;
 
-/** What a card says under the extension: the tiers the agent honours (lowest first) and its default. */
-export type TierOffer = { tiers: readonly Tier[]; default: Tier };
+/**
+ * What the capabilities document says under the extension: the tiers the agent honours (lowest first),
+ * its default, and `max`, the highest tier the person asking may use **of this agent** (the member
+ * `maxTier`, over the roles that let them invoke it; undefined when no role of theirs caps it).
+ */
+export type TierOffer = { tiers: readonly Tier[]; default: Tier; max?: Tier };
 
 /**
  * `custom[ACCESS_TIER_URI]` of the capabilities document, read as strictly as the contract has it:
- * `tiers` a non-empty list of the four words, each at most once, and `default` one of them. Anything
- * else is no offer, so no chip: the orchestrator never puts a malformed one there, and a client that
- * got one fails closed.
+ * `tiers` a non-empty list of the four words, each at most once, `default` one of them, and `maxTier`,
+ * when there, one of the four. Anything else is no offer, so no chip: the orchestrator never puts a
+ * malformed one there, and a client that got one fails closed.
  */
 export function parseOffer(value: unknown): TierOffer | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const { tiers, default: preset } = value as Record<string, unknown>;
+  const { tiers, default: preset, maxTier } = value as Record<string, unknown>;
   if (!Array.isArray(tiers) || tiers.length === 0) return null;
   const parsed: Tier[] = [];
   for (const word of tiers) {
@@ -43,16 +47,25 @@ export function parseOffer(value: unknown): TierOffer | null {
   }
   const def = parseTier(preset);
   if (def === undefined || !parsed.includes(def)) return null;
-  return { tiers: TIERS.filter((t) => parsed.includes(t)), default: def };
+  const max = maxTier === undefined ? undefined : parseTier(maxTier);
+  if (maxTier !== undefined && max === undefined) return null;
+  return {
+    tiers: TIERS.filter((t) => parsed.includes(t)),
+    default: def,
+    ...(max === undefined ? {} : { max }),
+  };
 }
 
 /**
  * The tiers the person is offered: the ones the agent honours, up to the highest their roles allow
- * (`maxTier` of `GET /api/me`, absent when there is no cap). A hint: the orchestrator checks the cap
- * when the message is written.
+ * **for this agent** (`max` of the offer, absent when no role caps it; not `maxTier` of `GET /api/me`,
+ * which spans every agent and can be higher). A hint: the orchestrator checks the cap when the
+ * message is written.
  */
-export const offeredTiers = (offer: TierOffer, max: Tier | undefined): Tier[] =>
-  offer.tiers.filter((t) => max === undefined || TIERS.indexOf(t) <= TIERS.indexOf(max));
+export const offeredTiers = (offer: TierOffer): Tier[] =>
+  offer.tiers.filter(
+    (t) => offer.max === undefined || TIERS.indexOf(t) <= TIERS.indexOf(offer.max),
+  );
 
 /** What a tier is called, how it is drawn and what it means in one line. */
 export type TierInfo = {
@@ -90,7 +103,7 @@ export type Shown = {
  * The tier a message runs under when the person picks none, as the orchestrator decides it: the agent's
  * `default` when the person's roles do not hold it back, else the highest tier the agent offers that
  * the person may use and that is not above the default. Nothing when the agent offers no tier the
- * person may use (the orchestrator refuses the message: 422). `offered` is `offeredTiers(offer, max)`.
+ * person may use (the orchestrator refuses the message: 422). `offered` is `offeredTiers(offer)`.
  */
 export function defaultFor(offer: TierOffer, offered: readonly Tier[]): Tier | undefined {
   const limit = TIERS.indexOf(offer.default);

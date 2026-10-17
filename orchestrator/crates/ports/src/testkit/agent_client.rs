@@ -62,6 +62,13 @@ pub trait AgentFixture: Send + Sync + 'static {
     /// Lets one waiting [`Script::Gate`] task continue (a permit is kept if none waits yet).
     fn release_gate(&self);
 
+    /// An endpoint of an agent that runs the same scripts and whose live card lists `access-tier/v1`
+    /// with all four tiers (ADR 0061), or `None` when the adapter's agent cannot be given tiers:
+    /// the cases about an agent that lists them are then skipped.
+    fn tiered_endpoint(&self) -> Option<AgentEndpoint> {
+        None
+    }
+
     /// The message text that makes the agent run `script`: its first word, then something to
     /// echo. The default fits an agent that names its scripts `echo`, `ask`, `gate`, `slow`
     /// and `fail`; override it for one that does not.
@@ -104,6 +111,7 @@ fn request(
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     }
 }
 
@@ -645,9 +653,86 @@ pub async fn a_tier_is_refused_by_an_agent_that_does_not_list_the_extension<F: A
             "a tier to an agent without the extension",
         );
         assert!(!err.is_retryable());
-        // nothing was started: the same message without a tier is the first the agent hears
+        // nothing was started: the agent holds no task for the refused message (an adapter that
+        // cannot look a message up says so; it may never name a task)
+        match fx
+            .client()
+            .find_task_by_message(&fx.endpoint(), Some("ctx-tier"), "m-tier")
+            .await
+        {
+            Ok(None) | Err(AgentError::Unsupported(_)) => {}
+            Ok(Some(task)) => panic!("the refused message started the task {task}"),
+            Err(e) => panic!("looking the refused message up failed: {e}"),
+        }
+        // and the same message without a tier is the first the agent hears
         let envs = drain(send(&fx, Script::Echo, "m-plain", "ctx-tier").await).await;
         assert!(!envs.is_empty(), "a plain message is sent as it was");
+    })
+    .await;
+}
+
+/// A message sent plain under the cap of the person's role (`SendRequest::tier_cap`, set when the
+/// card the sender read listed no tier) is not sent to an agent whose live card lists
+/// `access-tier/v1` by the time of the call (ADR 0061: the agent was redeployed between the sender's
+/// read and the adapter's). The adapter sends **nothing** and answers retryably, so that the sender
+/// decides again from the card as it stands. A message with a tier is the adapter's own check, and
+/// is sent. Skipped for an adapter whose fixture has no [`AgentFixture::tiered_endpoint`].
+pub async fn a_plain_message_under_a_cap_is_not_sent_to_an_agent_that_lists_tiers<
+    F: AgentFixture,
+>(
+    fx: F,
+) {
+    let Some(tiered) = fx.tiered_endpoint() else {
+        eprintln!("skipped: the fixture has no agent that lists access-tier/v1");
+        return;
+    };
+    within(async {
+        let mut req = request(
+            &tiered,
+            fx.text(Script::Echo),
+            "m-cap",
+            Some("ctx-cap"),
+            None,
+        );
+        req.tier_cap = Some(orch_core::AccessTier::Plan);
+        let err = match fx.client().send_stream(req).await {
+            Ok(_) => {
+                panic!("a message held under a cap was sent plain to an agent that lists tiers")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            err.is_retryable(),
+            "the sender decides again from the card, so the refusal is retried: {err}"
+        );
+        // nothing was started: the agent holds no task for the refused message
+        match fx
+            .client()
+            .find_task_by_message(&tiered, Some("ctx-cap"), "m-cap")
+            .await
+        {
+            Ok(None) | Err(AgentError::Unsupported(_)) => {}
+            Ok(Some(task)) => panic!("the refused message started the task {task}"),
+            Err(e) => panic!("looking the refused message up failed: {e}"),
+        }
+        // the same message under a tier the card honours is the sender's decision, and is sent
+        let mut req = request(
+            &tiered,
+            fx.text(Script::Echo),
+            "m-cap-tier",
+            Some("ctx-cap"),
+            None,
+        );
+        req.tier = Some(orch_core::AccessTier::Plan);
+        req.tier_cap = Some(orch_core::AccessTier::Plan);
+        let envs = drain(
+            fx.client()
+                .send_stream(req)
+                .await
+                .unwrap_or_else(|e| panic!("a message under a tier the card honours: {e}")),
+        )
+        .await;
+        assert!(!envs.is_empty());
     })
     .await;
 }

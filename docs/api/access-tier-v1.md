@@ -227,6 +227,17 @@ the person chose. A rework of a job the person ran at `edits` is sent at `edits`
 send starts the next job under the tier of the newest of its messages that named one. A tier is never carried from one job to
 the next: the message that starts a job sets it.
 
+**When a cap applies and no tier could be decided, the cap is what travels.** A message of a capped person whose agent's card
+offered no tier when the message was written has no tier to pin ([section 7](#7-the-orchestrator)), but the cap is still a fact
+about it. It is logged on the `user_message` (`tierCap`, omitted otherwise), kept on the job (`Job.tier_cap`) and carried by every
+row the job writes for that message and on its behalf: the delegation, a steer and the delegation it may become, the held text of a
+Stop & send, a cancel the agent refused, a redelivered message, the delegation of an action, and every rework (a `tierCap` beside
+`tier` on the `delegate`, `steer` and action outbox rows). When it sends, the dispatcher reads the live card ([section 7](#7-the-orchestrator)):
+a card that still lists no tier gets the plain message; one that lists tiers by then gets the highest one within the lower of its
+`default` and the cap. So a coder redeployed with `access-tier/v1` while a job of a capped person is queued, retried or reworked is
+never run at its own `auto`. The action on a surface is logged with the tier and cap it went out under (`ui_action.tier`,
+`ui_action.tierCap`), so the log records the tier a lowered action went out under, and with it what its reworks were sent under.
+
 If the card no longer honours that tier when the orchestrator sends, it sends nothing and the job fails, as for any tier
 ([section 7](#7-the-orchestrator)): the person's limit is never replaced by the agent's default. A tier that an answer, an MCP
 message, an action or an edit inherits is **rounded down** to the highest tier the live card still honours (never raised); a card
@@ -235,12 +246,25 @@ kept) before anything is written.
 
 The role's cap is checked each time the orchestrator writes a message: for a tier the person names, for one that is inherited (a cap
 lowered since lowers it, and the job continues under the lower tier, which is also what a later rework is sent under) and for one it
-decides. The dispatcher that sends a rework has no principal, so the rework goes under the tier already pinned on the job.
+decides. The dispatcher that sends a rework has no principal, so the rework goes under the tier already pinned on the job, or under
+the cap pinned on it when there was no tier to pin. An agent the registry cannot place when an answer is written keeps what the answer
+continues the same way: the job's tier, lowered to the cap and never raised, or the cap when the job has no tier (the answer is
+not given the job's uncapped tier, and a tier is never dropped). The dispatcher checks it against the live card when it sends.
 
-**Nothing is passed to children.** The orchestrator sends no tier on:
+**The tier of a parent is not passed to children; the person's cap is.** The orchestrator sends no tier on:
 
-- an [`ask_agent`](thread-tools-v1.md#ask_agent) child task: an asked agent works under its own default;
-- a verifier's task, or any other task the orchestrator starts for **another** agent.
+- a verifier's task, or any other task the orchestrator starts for **another** agent;
+- an [`ask_agent`](thread-tools-v1.md#ask_agent) child task **when no role of the person caps the mentioned agent**: an asked agent
+  works under its own default.
+
+A **mention** is the one place where one agent's work reaches another that the person did not open a thread with, so it must not be a
+way round the person's role. When a message mentions an agent, the orchestrator pins on the mention the cap of the person's roles on
+**that** agent (`mentions[].tierCap`, written by the application, never read from a client; none when no role of theirs caps it). The
+`ask_agent` row carries it, and the dispatcher sends the ask under the highest tier the asked agent's live card offers within the
+lower of its `default` and the cap. This is not the parent's tier passed down: a thread at `bypass` whose person is capped at `plan`
+on the mentioned coder asks it at `plan`, and a thread at `plan` whose person has no cap on the coder asks it at none. An asked agent
+that offers no tier within the cap, or lists the extension badly, is **not asked**: the ask fails (no task is started) and
+`ask_finished` says why. A card that lists no tier is asked as it always was, and the cap waits for the day it does.
 
 Each agent decides what its own children may do: its sub-agents ([ADR 0050](../decisions/0050-the-chat-has-sub-agents.md)), a
 process it starts, an agent it asks. How it limits them is its business and its vendor's. A2A delegation stays plain.
@@ -276,8 +300,9 @@ follow-up, a fork's first message, an edit and an action:
 | The message names none, and | It is sent under |
 |---|---|
 | the person's roles hold no cap for this agent, and it continues nothing | **none**: no card is read, and the request is the plain A2A request it always was |
-| a cap holds for this agent, and the live card lists the extension | the highest tier `t` in the card's `tiers` with `t <= min(default, cap)`. It is sent, activates the extension and is logged on the message, so the job's tier is pinned and every later message that names none (and every rework) keeps to it. **422** "this agent has no tier your role allows" when no tier qualifies |
-| a cap holds, and the card does not list the extension (or lists it badly) | **none**: the cap cannot be said to an agent that does not list the extension, and the agent works as it always did. The cap is a limit on the choices the web offers, not on an agent that has no tiers |
+| a cap holds for this agent, and the live card lists the extension | the highest tier `t` in the card's `tiers` with `t <= min(default, cap)`. It is sent, activates the extension and is logged on the message, so the job's tier is pinned and every later message that names none (and every rework) keeps to it. **422** "this agent has no access tier at or below 'edits', the most your role allows" when no tier qualifies |
+| a cap holds, and the card does not list the extension | **no tier, and the cap is pinned**: the plain message is sent while the card lists no tier, because the cap cannot be said to an agent that has none. The cap is logged (`tierCap`) and kept on the job and the rows, and the dispatcher decides again from the live card each time it sends (see below) |
+| a cap holds, and the card lists the extension with parameters that cannot be read | **422** "the agent lists access-tier/v1 with parameters that cannot be read, so the tier your role allows ('edits' at most) cannot be given to it" (fail closed: an agent that says it has tiers and cannot say which is not run above the cap by guessing); nothing is written |
 | a cap holds, and the card cannot be read | **503**, retryable; nothing is written |
 | it continues a job (an answer, an MCP message to an unfinished job, an action) or replaces a message (an edit) | the tier it continues, lowered to the cap and rounded down to the highest tier the card still honours ([section 6](#6-the-orchestrators-own-messages-and-sub-agents)) |
 
@@ -290,11 +315,23 @@ under: the one named, the one decided for a message that named none, or the one 
 sent while the agent works carry their own. The body of `POST /api/threads/{id}/fork` has `tier` for the first message and for an
 edit, checked as a run's is (an edit that names none keeps the replaced message's).
 
-**At the send**, the dispatcher reads the card again. If it still honours the tier, the message is activated and sent as in
+**At the send**, the dispatcher reads the card again (`App::tier_for_send`), for a delegation, a steer, the delegation of an action,
+a rework and an ask. If the row has a tier and the card still honours it, the message is activated and sent as in
 [section 4](#4-the-message). If the card cannot be read, the row is retried by the dispatcher's backoff. If it is read and no longer
 honours the tier, the job **fails** with "the agent no longer takes the access tier 'plan'" and nothing is sent. The orchestrator
 never sends the message without its tier. It never falls back to the default, the rule of
 [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
+
+If the row has **no tier but a cap**, the card decides the tier: a card that lists none gets the plain message; one that lists tiers
+gets the highest within `min(default, cap)`; one that has none that low, or lists the extension badly, fails the job (classified
+`unsupported`, a message that says why, nothing sent). A steer that cannot be given a tier is not sent into the task: it becomes the
+delegation it stands for, which fails the same way. A row with neither tier nor cap is the plain message and reads no card for a tier.
+
+**Two reads, one decision.** The dispatcher decides from a card it reads, and the adapter reads the card again for the send. A message sent
+plain because the first read listed no tier, while the row holds a cap, carries the cap in the request (`SendRequest.tier_cap`): if
+the adapter's own read lists the extension by then (the agent was redeployed in between), it sends nothing and answers a retryable
+error, and the dispatcher decides again from the card as it now stands. Otherwise the agent would run the message at its own default,
+above the cap. The cap is not the tier: it is never sent to the agent.
 
 The orchestrator reads the echo (`tier` in the task's metadata under the URI) and records it on the job's `agent_status` event
 (`data.tier`, settled 2026-10-11), so the log holds what was asked and what the agent said. It compares nothing. An agent that lists the
@@ -317,14 +354,18 @@ neither lifts nor sets it. `maxTier` on a role that holds no `agent.invoke` is r
 would do nothing. A value outside the four is exit 78, naming the key. It is not a permission: it is a ceiling, so it is
 not in the `permissions` list. `GET /api/me` gains `maxTier`, a hint for the screen and never a check, over the roles that let the
 person invoke any agent and absent when there is no cap ([`chat-api.yaml`](chat-api.yaml)); for a person whose roles differ by agent it
-can be higher than their cap for one agent, and the orchestrator decides. It checks the cap each time it writes a message
+can be higher than their cap for one agent, so **the web does not draw its chip from it**: the capabilities document of the selected
+agent carries the cap **for that agent** beside its offer, `custom[<uri>] = {tiers, default, maxTier?}` (`maxTier` is the highest tier
+the person asking may use of this agent, absent when no role of theirs caps it), and the orchestrator decides. It checks the cap each time it writes a message
 ([section 6](#6-the-orchestrators-own-messages-and-sub-agents)); it keeps no default cap: a role without `maxTier` has none
 (settled 2026-10-11 on the owner's direction, awaiting their confirmation).
 
 **The web** draws a chip beside the tools picker in the composer's toolbar, and only when the selected agent's capabilities
 document has `custom[<uri>]`. Hidden otherwise: no disabled control, no placeholder, no fake setting. Its rules:
 
-- It offers the agent's `tiers` up to the person's `maxTier`, each with its one-line meaning ([section 3](#3-the-four-tiers)).
+- It offers the agent's `tiers` up to the person's `maxTier` **for the selected agent** (the member of the capabilities document), each
+  with its one-line meaning ([section 3](#3-the-four-tiers)). A person capped on one agent and not on another sees a chip that
+  follows the agent.
 - Until the person picks, it shows what the message runs under without a pick, marked as the default, and sends **no** tier. For a
   person with no cap that is the agent's `default`; for one whose cap is lower it is the tier the orchestrator will run the message
   under (the highest within the lower of the default and the cap), so the chip never shows a tier the message does not get.
@@ -383,7 +424,7 @@ real GitHub and no adam-rs build was involved.
 | The key | `forwardedProps["vymalo.tier"]`, read on every run (400 for anything but one of the four words or `null`), applied to the run's one new message: a first message, a follow-up, a Stop & send and a fork's first message. A run with no message to carry it (a cancel, an attach, an A2UI action) ignores it with a warning. The MCP surface cannot name a tier: its `start_job` has none to continue, and its `answer` and messages continue the job's last choice ([section 6](#6-the-orchestrators-own-messages-and-sub-agents)) |
 | Order of the checks | shape (400), then the person's cap (422), then the thread's agent: the live card is read **once** for the check, `422 "this agent does not take the tier 'plan'"` when it does not honour it, `503 "the card of the agent <id> could not be read"` (`Retry-After: 5`) when it cannot be read. A message that names no tier reads no card for it |
 | The log | `user_message.tier`, as sent (an inherited or decided tier is logged as the tier the message was sent under). The job's ledger holds the tier the person's newest message was sent under (`Job.tier`; a redelivery, a refused cancel and an action set it too), and the outbox row carries the tier, so a delegation, a steer, the delegation a refused steer becomes and the delegation of an A2UI action all send it |
-| Stop & send | each message is logged with its own tier; the next job starts with the tier of the **newest** message that named one, and with none when none did (a message that names none leaves the held one, as for a task: rule 2 of [section 4](#4-the-message)) |
+| Stop & send | each message is logged with its own tier; the next job starts with the tier, or the cap, of the **newest** message that was given one, and with none when none was (a message given neither leaves the held ones, as for a task: rule 2 of [section 4](#4-the-message)) |
 | The send | the dispatcher reads the card again; the adapter reads it a third time for the call itself and **sends nothing** when it does not honour the tier (`Unsupported`: "the agent no longer takes the access tier '<tier>'", which fails the job). A card that cannot be read is retried by the backoff. An in-process agent lists no tier, so it is never sent one |
 | The decision | `App::resolve_tier` (`crates/app/src/tier.rs`) is the one place: `create_thread_as` (AG-UI, MCP `start_job`), `submit`, a fork's first message and an edit call it with the tier named and the tier to continue, and it answers with the tier the message is written and sent under ([section 7](#7-the-orchestrator)) |
 | The orchestrator's own messages | the **rework** of the gate (a failed check, a CI report, a verifier's findings, a timer), the delegation of an **A2UI action**, and an **answer** to a blocked job or a message from the MCP surface to an unfinished job are sent under the job's last chosen tier (`Job.tier`): `App::submit` passes it to the resolver for an answer, an MCP message and an action (`crates/app/src/app.rs`), which caps it by the role of whoever gives it, rounds it down to what the live card honours and refuses (422) when it cannot be kept; the core puts it on the rework and the action (`crates/core/src/verify.rs`, `transition.rs`). A job whose person had no cap and chose no tier has none to carry, and the agent works on its rework under its own default. A job under a cap has its tier pinned, so its rework keeps to the cap. The dispatcher has no principal: a rework goes under the tier already pinned |

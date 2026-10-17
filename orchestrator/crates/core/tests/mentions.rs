@@ -20,6 +20,7 @@ fn agent(id: &str) -> AgentId {
 }
 fn mention(id: &str, label: &str, start: u32, end: u32) -> Mention {
     Mention {
+        tier_cap: None,
         agent_id: agent(id),
         label: label.into(),
         start,
@@ -32,6 +33,7 @@ fn set(ids: &[&str]) -> BTreeSet<AgentId> {
 }
 fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -44,6 +46,7 @@ fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
 }
 fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
     Input::StopAndSend {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -360,6 +363,7 @@ fn a_redelivery_carries_the_mentions_into_the_job_it_lands_in() {
         let (next, cmds) = step(
             &running(state),
             &Input::Redeliver {
+                tier_cap: None,
                 text: "@coder".into(),
                 sent: false,
                 mentions: carried.clone(),
@@ -416,6 +420,7 @@ fn a_redelivery_that_was_sent_delegates_nothing_and_still_opens_the_set() {
         let (next, cmds) = step(
             &running(state),
             &Input::Redeliver {
+                tier_cap: None,
                 text: "@coder".into(),
                 sent: true,
                 mentions: carried.clone(),

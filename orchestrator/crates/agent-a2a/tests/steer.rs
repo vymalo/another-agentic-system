@@ -45,6 +45,7 @@ fn request(ep: &AgentEndpoint, text: &str) -> SendRequest {
         steer: false,
         mentions: Vec::new(),
         tier: None,
+        tier_cap: None,
     }
 }
 

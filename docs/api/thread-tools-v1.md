@@ -780,6 +780,13 @@ The addressed agent asks an agent the person **mentioned** to do part of the wor
 runs the asked agent as a **child task of the same thread**, in a context of its own, with its steps nested under the step of
 the agent that asked, and returns its result to the tool call with progress notifications.
 
+**The access tier of an ask** ([`access-tier-v1.md`](access-tier-v1.md#6-the-orchestrators-own-messages-and-sub-agents), ADR 0061): the
+tier of the asking agent's thread is not passed down, and `ask_agent` takes no tier argument. What passes is the **cap of the
+person's roles on the asked agent**, pinned on its mention when the message was accepted: the orchestrator sends the ask under the
+highest tier the asked agent's live card offers within the lower of its `default` and that cap, and the ask fails (no task starts,
+`ask_finished` says why) when the card has no tier that low or lists the extension badly. A person with no cap on the asked agent
+asks it under none, and an agent whose card lists no tier is asked as it always was.
+
 The provider owns the name `ask_agent` for every caller. `tools/list` includes it only when the thread runs, the token's
 job is its current one, the job has mentioned agents and the caller may still ask (its depth is below the limit); a call that
 arrives when it is not offered (a list that went stale during a turn) is a **result with `isError`** that says why, not
@@ -792,7 +799,7 @@ ask: a, b."), and an asked agent is offered `ask_agent` and the relayed tools **
 ```json
 {"name": "ask_agent",
  "title": "Ask a mentioned agent",
- "description": "Ask one of the agents the person mentioned to do part of the work and wait for its answer. The agent does not see this conversation: put everything it needs in message. Asking the same agent again continues its conversation, and answers its question if it asked one.",
+ "description": "Ask one of the agents the person mentioned to do part of the work and wait for its answer. The agent does not see this conversation: put everything it needs in message. Asking the same agent again continues its conversation, and answers its question if it asked one in words. If the result has form: true, the agent showed the person a form: only the person can answer it, so tell them, and do not ask that agent again (the call is refused).",
  "inputSchema": {"type": "object", "additionalProperties": false, "required": ["agent", "message"], "properties": {
    "agent": {"type": "string", "description": "the agentId of a mention"},
    "message": {"type": "string", "minLength": 1, "maxLength": 16000},
@@ -820,7 +827,8 @@ As `structuredContent` and as the same JSON in one text content:
 | `state` | `completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled` or `timed_out` |
 | `text` | The asked agent's last words, at most 64 KiB, **untrusted text** in the asker's model |
 | `artifacts` | At most 20 `{name, uri?, mimeType?}`; a file is a reference to the thread's artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)), never its bytes |
-| `question` | With `input_required` or `auth_required`: what the asked agent asks. Asking the same agent again **continues that task** with the answer |
+| `question` | With `input_required` or `auth_required`: what the asked agent asks. Asking the same agent again **continues that task** with the answer, unless `form` is true |
+| `form` | `true` when the asked agent **showed an interface and then waited** (`input_required` or `auth_required`), or when a claim that re-attached to its task saw it wait (it cannot know what the task drew): it waits for the **person's** answer to a form, and the person cannot see an asked agent's screens. The ask is over, the task is cancelled, and **asking that agent again in this job is refused** ([Refusals](#refusals)): a model never answers a form. Absent otherwise |
 | `error` | With a failure: the public reason |
 
 `isError` is true unless the state is `completed`, `input_required` or `auth_required`.
@@ -844,6 +852,7 @@ not told.
 | The registry cannot answer | "the agent list is unavailable; try again" |
 | The caller's task is over | "this task is over" |
 | The call key was used for another ask | "this callId was used for another ask" |
+| An earlier ask of the agent in this job ended with `form` | "<agent> is waiting for the person to answer a form it showed, and only the person can answer it: you cannot ask it again in this job. Tell the person that <agent> needs them, and that they can answer by talking to <agent> directly." |
 
 ### Limits
 
@@ -899,11 +908,30 @@ about 200 bytes is refused ("the callId is too long").
   `ask_agent` only while its depth is below the limit; it gets **no** `get_ui_catalog`, no `turn_output` (only the addressed
   agent announces the turn's answer) and no mentions metadata.
 - **Continuation.** Asking again is a new ask (a new number). An ask to an agent whose last ask in this job ended `input_required` or `auth_required` continues that
-  task. Otherwise it is a new task in the same context with `referenceTaskIds` naming the earlier ask tasks to that agent in
+  task, **unless that ask ended with `form`**: a form is the person's to answer, so the task is not continued and the agent is
+  not asked again in this job (the ledger's `form` on the ask, `ask_finished.form`, the refusal above). The other asks of that agent that still run when the form ends end `canceled` with it (and the asks they asked), with an
+  `error` that says why; the dispatcher cancels their tasks and the task the form parked, once the ask is recorded. A question in words, with no interface, is the asking agent's to answer as
+  before. **The ask is sent the job's UI catalog** (the one the thread's screen gave; only to an agent whose card lists
+  `ui-catalog/v1`, and inline only to one that accepts inline catalogs, any other getting a reference it cannot resolve; none
+  when the thread has none), so an asked agent that asks the person something **with choices**
+  (adam-coder's consent is one) draws a form and the ask ends with `form`. *The cost, accepted by the owner:* every question
+  with choices ends the ask, even one the asking model could have answered; the model tells the person to talk to that agent
+  directly. A claim that **re-attaches** to the task after a crash or a broken stream cannot know what it drew before, so it takes
+  any `input_required` or `auth_required` end for a form (it reads no history), a question in words included, and the agent is
+  refused for the rest of the job. **Known gap, narrowed,
+  not fixed here:** a question in words (no `choices`), an asked agent that ignores the catalog or does not accept inline catalogs, and a thread with no catalog
+  still end `input_required` with no interface and can have their question, a consent included, answered by the asking model.
+  Such an agent's consent is protected only once the agent refuses to park on it in a run another agent started (an adam-rs
+  follow-up, defence in depth). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the
+  alternative, showing the form to the person, is not built
+  ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-persons-to-answer)).*
+  The orchestrator does not read the words of a message for an agent's convention of what a form answer looks like: that an
+  agent takes no such answer from a text part is that agent's duty. Otherwise it is a new task in the same context with `referenceTaskIds` naming the earlier ask tasks to that agent in
   this job ([ADR 0021](../decisions/0021-context-across-a2a-tasks.md)).
 - **The gate never sees an asked agent.** Its `branch`, `checks` and pushed commits do not reach the job's gate
   ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)): the addressed agent's work is what is verified. An
-  asked agent cannot show a surface: an A2UI part from it is refused with an `error` step.
+  asked agent's surface is read and dropped, never applied or drawn (the person does not see it): that it drew one is what ends
+  the ask as a form when its task then waits.
 - **Nesting.** The ask is a **subagent** step `ask-<n>` under the step of the agent that asked (`parentStepId` when given,
   prefixed with the task id as the agent's step ids are; the `ask-<m>` of the asker, for an asked agent), and its own steps
   nest under it ([ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)). In AG-UI it is a

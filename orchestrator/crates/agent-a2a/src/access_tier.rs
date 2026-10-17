@@ -2,8 +2,10 @@
 //! the card says, and what the message carries.
 //!
 //! The card lists the extension with `params: {tiers, default}` ([`access_tier_from_card`]); the
-//! orchestrator uses it only when the URI is listed exactly **and** the params are well formed (a
-//! card with bad params is a card that does not list it). A message that names a tier is sent with
+//! orchestrator uses it only when the URI is listed exactly **and** the params are well formed. A
+//! card with bad params offers no tier, so a message that names one is refused, and a person whose
+//! role caps their tier is not run on such an agent (the dispatcher fails the job: it cannot be
+//! given the cap). A message that names a tier is sent with
 //! `{"tier": "<tier>"}` under the URI in its metadata, and the URI is activated in `A2A-Extensions`
 //! and `message.extensions`, only when the card read for this very call honours that tier. Otherwise
 //! **nothing is sent** and the call answers [`AgentError::Unsupported`]: a tier is never dropped, and
@@ -11,24 +13,53 @@
 //! that names no tier does not activate the extension and is the plain message it always was.
 
 use a2a::AgentCard;
-use orch_core::{ACCESS_TIER_EXTENSION, TierOffer};
+use orch_core::{ACCESS_TIER_EXTENSION, TierListing, TierOffer};
 use orch_ports::{AgentError, SendRequest};
 use serde_json::{Value, json};
 
-/// What the card offers under `access-tier/v1`: the tiers the agent honours and the one it works
-/// under by default. `None` when the card does not list the URI exactly, or lists it with `params`
-/// that are not `{tiers, default}` as the contract has them.
-pub fn access_tier_from_card(card: &AgentCard) -> Option<TierOffer> {
-    let entry = card
+/// What the card says under `access-tier/v1`: [`TierListing::Absent`] when it does not list the URI
+/// exactly, [`TierListing::Malformed`] when it lists it with `params` that are not `{tiers,
+/// default}` as the contract has them, else the offer.
+pub fn access_tier_from_card(card: &AgentCard) -> TierListing {
+    let Some(entry) = card
         .capabilities
         .extensions
         .iter()
         .flatten()
-        .find(|e| e.uri == ACCESS_TIER_EXTENSION)?;
-    let params = entry.params.as_ref()?;
-    TierOffer::from_params(&Value::Object(
-        params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-    ))
+        .find(|e| e.uri == ACCESS_TIER_EXTENSION)
+    else {
+        return TierListing::Absent;
+    };
+    entry
+        .params
+        .as_ref()
+        .and_then(|params| {
+            TierOffer::from_params(&Value::Object(
+                params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            ))
+        })
+        .map_or(TierListing::Malformed, TierListing::Offered)
+}
+
+/// Refuses a message that was sent plain because the card the sender read listed no tier, while the
+/// sender holds the cap of the person's role ([`SendRequest::tier_cap`]), if the card read for this
+/// very call lists the extension by now. The agent was redeployed between the two reads; sending
+/// would run the message at the agent's own default, above the cap. The error is retryable, so the
+/// sender decides again from the card as it stands. A message that holds no cap, or that names a
+/// tier, is not this check's.
+///
+/// # Errors
+/// [`AgentError::Protocol`] (retryable) as above: the caller sends nothing.
+pub(crate) fn check_plain_under_cap(
+    req: &SendRequest,
+    listing: &TierListing,
+) -> Result<(), AgentError> {
+    if req.tier.is_none() && req.tier_cap.is_some() && *listing != TierListing::Absent {
+        return Err(AgentError::protocol(
+            "the agent's access tiers changed while the message was being sent; it is decided again",
+        ));
+    }
+    Ok(())
 }
 
 /// The value of the extension's key in the message metadata, or `None` when the message gets none
@@ -59,7 +90,7 @@ mod tests {
     use std::collections::HashMap;
 
     use a2a::{AgentCapabilities, AgentExtension};
-    use orch_core::{AccessTier, AgentId};
+    use orch_core::{AccessTier, AgentId, Classify};
     use orch_ports::{AgentEndpoint, SendContent};
 
     use super::*;
@@ -113,6 +144,7 @@ mod tests {
             steer: false,
             mentions: Vec::new(),
             tier,
+            tier_cap: None,
         }
     }
 
@@ -120,26 +152,17 @@ mod tests {
     fn the_offer_is_read_from_the_exact_uri_with_well_formed_params() {
         let params = json!({"tiers": ["plan", "edits", "auto", "bypass"], "default": "auto"});
         let card = card_with(vec![entry(ACCESS_TIER_EXTENSION, Some(params))]);
-        let offer = access_tier_from_card(&card).unwrap();
+        let listing = access_tier_from_card(&card);
+        let offer = listing.offer().unwrap();
         assert_eq!(offer.default_tier(), AccessTier::Auto);
         assert!(offer.honours(AccessTier::Bypass));
     }
 
     #[test]
-    fn a_card_that_lists_it_badly_or_not_at_all_offers_nothing() {
+    fn a_card_that_does_not_list_the_exact_uri_lists_nothing() {
         let good = json!({"tiers": ["plan"], "default": "plan"});
         for card in [
             card_with(vec![]),
-            card_with(vec![entry(ACCESS_TIER_EXTENSION, None)]),
-            card_with(vec![entry(ACCESS_TIER_EXTENSION, Some(json!({})))]),
-            card_with(vec![entry(
-                ACCESS_TIER_EXTENSION,
-                Some(json!({"tiers": ["plan"], "default": "bypass"})),
-            )]),
-            card_with(vec![entry(
-                ACCESS_TIER_EXTENSION,
-                Some(json!({"tiers": ["plan", "yolo"], "default": "plan"})),
-            )]),
             // a near miss of the URI is another extension
             card_with(vec![entry(
                 "https://agents.vymalo.com/a2a/extensions/access-tier/v2",
@@ -154,7 +177,68 @@ mod tests {
                 Some(good),
             )]),
         ] {
-            assert_eq!(access_tier_from_card(&card), None);
+            assert_eq!(access_tier_from_card(&card), TierListing::Absent);
+        }
+    }
+
+    fn plain(cap: Option<AccessTier>, tier: Option<AccessTier>) -> SendRequest {
+        SendRequest {
+            endpoint: AgentEndpoint::a2a(AgentId::new("a"), "http://a/card", None),
+            message_id: "m".into(),
+            context_id: None,
+            task_id: None,
+            reference_task_ids: Vec::new(),
+            content: SendContent::Text("hi".into()),
+            release: None,
+            ui_catalog: None,
+            thread_tools: None,
+            history: None,
+            steer: false,
+            mentions: Vec::new(),
+            tier,
+            tier_cap: cap,
+        }
+    }
+
+    #[test]
+    fn a_plain_message_under_a_cap_is_refused_once_the_card_lists_the_extension() {
+        let offered = TierListing::Offered(
+            TierOffer::from_params(&json!({"tiers": ["plan", "auto"], "default": "auto"})).unwrap(),
+        );
+        for listing in [offered, TierListing::Malformed] {
+            let refused =
+                check_plain_under_cap(&plain(Some(AccessTier::Edits), None), &listing).unwrap_err();
+            assert!(refused.is_retryable(), "{refused:?}");
+        }
+        // the card still lists nothing: the plain message is the right one
+        check_plain_under_cap(&plain(Some(AccessTier::Edits), None), &TierListing::Absent).unwrap();
+        // no cap held, or a tier named: not this check's
+        let offered = TierListing::Offered(
+            TierOffer::from_params(&json!({"tiers": ["plan"], "default": "plan"})).unwrap(),
+        );
+        check_plain_under_cap(&plain(None, None), &offered).unwrap();
+        check_plain_under_cap(
+            &plain(Some(AccessTier::Edits), Some(AccessTier::Plan)),
+            &offered,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_card_that_lists_it_badly_is_told_apart_from_one_that_does_not() {
+        for params in [
+            None,
+            Some(json!({})),
+            Some(json!({"tiers": ["plan"], "default": "bypass"})),
+            Some(json!({"tiers": ["plan", "yolo"], "default": "plan"})),
+            Some(json!({"tiers": [], "default": "plan"})),
+        ] {
+            let card = card_with(vec![entry(ACCESS_TIER_EXTENSION, params.clone())]);
+            assert_eq!(
+                access_tier_from_card(&card),
+                TierListing::Malformed,
+                "{params:?}"
+            );
         }
     }
 

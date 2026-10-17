@@ -28,6 +28,7 @@ const TEXT: &str = "ask @coder to help";
 
 fn coder_mention() -> Mention {
     Mention {
+        tier_cap: None,
         agent_id: AgentId::new("coder"),
         label: "@coder".to_owned(),
         start: 4,
@@ -154,6 +155,7 @@ async fn an_ask_is_one_commit_of_its_event_its_row_and_its_deadline() {
     assert_eq!(
         rows[0].payload,
         OutboxPayload::Ask {
+            tier_cap: None,
             job: 1,
             ask: 1,
             agent: AgentId::new("coder"),

@@ -290,149 +290,33 @@ struct ForkRun {
 
 /// Gives the mentions of the run to the first input that is a message (a stop included), once:
 /// they are the message's own, and offsets index its text. Every other input is left as it is.
-fn mentioning(input: Input, mentions: &mut Vec<Mention>) -> Input {
-    match input {
-        Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: _,
-            tier,
-        } => Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: std::mem::take(mentions),
-            tier,
-        },
-        Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: _,
-            tier,
-        } => Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions: std::mem::take(mentions),
-            tier,
-        },
-        other => other,
+fn mentioning(mut input: Input, mentions: &mut Vec<Mention>) -> Input {
+    if let Input::UserMessage { mentions: own, .. } | Input::StopAndSend { mentions: own, .. } =
+        &mut input
+    {
+        *own = std::mem::take(mentions);
     }
+    input
 }
 
 /// Gives the access tier of the run to the first input that is a message (a stop included), once:
 /// it is the message's own. Every other input is left as it is.
-fn tiering(input: Input, tier: &mut Option<AccessTier>) -> Input {
-    match input {
-        Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: _,
-        } => Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: tier.take(),
-        },
-        Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: _,
-        } => Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog,
-            mentions,
-            tier: tier.take(),
-        },
-        other => other,
+fn tiering(mut input: Input, tier: &mut Option<AccessTier>) -> Input {
+    if let Input::UserMessage { tier: own, .. } | Input::StopAndSend { tier: own, .. } = &mut input
+    {
+        *own = tier.take();
     }
+    input
 }
 
-/// Gives the first input that is a message or an action the catalog the run carried, once.
-fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
-    match input {
-        Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: _,
-            mentions,
-            tier,
-        } => Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: catalog.take(),
-            mentions,
-            tier,
-        },
-        Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: _,
-            mentions,
-            tier,
-        } => Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: catalog.take(),
-            mentions,
-            tier,
-        },
-        Input::UiAction {
-            user,
-            action,
-            catalog: _,
-            tier,
-        } => Input::UiAction {
-            user,
-            action,
-            catalog: catalog.take(),
-            tier,
-        },
-        other @ (Input::Redeliver { .. }
+/// Gives the first input that is a message or an action the catalog the run carried, once. Every
+/// variant is listed, so that a new input must be decided here.
+fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
+    match &mut input {
+        Input::UserMessage { catalog: own, .. }
+        | Input::StopAndSend { catalog: own, .. }
+        | Input::UiAction { catalog: own, .. } => *own = catalog.take(),
+        Input::Redeliver { .. }
         | Input::Cancel { .. }
         | Input::Agent { .. }
         | Input::DeliveryFailed { .. }
@@ -458,8 +342,9 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::AskSent { .. }
         | Input::AskFinished { .. }
         | Input::AskFailed { .. }
-        | Input::AskUsage { .. }) => other,
+        | Input::AskUsage { .. } => {}
     }
+    input
 }
 
 /// The ids we write into the log are bounded.
@@ -892,6 +777,7 @@ mod tests {
 
     fn message() -> Input {
         Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("a@b.c"),
             text: "hi".to_owned(),
             message_id: None,
@@ -905,8 +791,11 @@ mod tests {
 
     fn action() -> Input {
         Input::UiAction {
+            tier_cap: None,
             user: UserId::new("a@b.c"),
             action: UiActionData {
+                tier: None,
+                tier_cap: None,
                 surface_id: "s".to_owned(),
                 name: "go".to_owned(),
                 source_component_id: "b".to_owned(),

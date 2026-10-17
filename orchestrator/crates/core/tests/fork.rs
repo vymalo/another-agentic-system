@@ -104,6 +104,8 @@ fn action(seq: i64) -> Event {
         seq,
         Actor::user(&user()),
         EventBody::UiAction(UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s".into(),
             name: "choose".into(),
             source_component_id: "c".into(),
@@ -291,6 +293,7 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
     let (after, commands) = transition(
         &snapshot,
         &Input::UserMessage {
+            tier_cap: None,
             user: user(),
             text: "go on".into(),
             message_id: None,
@@ -450,6 +453,7 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
     let (_, commands) = transition(
         &snapshot,
         &Input::UserMessage {
+            tier_cap: None,
             user: user(),
             text: "next".into(),
             message_id: None,
@@ -591,6 +595,7 @@ fn catalog_data() -> UiCatalogData {
 
 fn mention() -> Mention {
     Mention {
+        tier_cap: None,
         agent_id: AgentId::new("researcher"),
         label: "@researcher".into(),
         start: 0,
@@ -602,6 +607,7 @@ fn mention() -> Mention {
 /// What a person's first message of a fork says, as the AG-UI surface hands it over.
 fn first_message() -> Replacement {
     Replacement {
+        tier_cap: None,
         text: "@researcher and the docs?".into(),
         message_id: Some("m-first".into()),
         catalog: Some(catalog_data()),
@@ -673,6 +679,7 @@ fn a_fork_made_with_its_first_message_commits_it_as_the_next_job() {
         catalog,
         mentions,
         tier: None,
+        tier_cap: None,
     } = commands.last().unwrap()
     else {
         panic!("{commands:?}")

@@ -306,6 +306,7 @@ fn an_asked_agents_usage_is_under_its_ask_and_not_in_its_askers_run() {
                 question: None,
                 artifacts: vec![],
                 error: None,
+                form: false,
             }),
         ),
         call(7, "t1", "c1", &[], 10, 1),

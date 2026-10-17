@@ -26,6 +26,29 @@
 //!   that ended waiting for an answer (`continue_task`), else a new task that refers to the
 //!   earlier ones (ADR 0021). The asked agent is given the thread's tools as `ask:<n>`, at its
 //!   depth.
+//! * **The person's cap goes with the ask, the parent's tier does not** (ADR 0061, question 1 and its
+//!   amendment): a mention pinned the cap of the person's role on the asked agent, the ask row
+//!   carries it, and the live card decides the tier when the ask is sent ([`App::tier_for_send`]):
+//!   the highest tier it offers within the lower of its default and the cap. An agent with none
+//!   that low, or whose card lists the extension badly, is not asked (the ask fails, `ask_finished`
+//!   says why, no task starts); one whose card lists no tier is asked as it always was. A person
+//!   with no cap on the agent has the ask sent under none.
+//! * **A form is not a model's to answer** (ADR 0026, amended 2026-10-17): an asked agent that
+//!   shows an interface and then waits (`input_required`, or `auth_required`) is waiting for the
+//!   person, who cannot see an asked agent's screens. The answer is read with `form` set
+//!   ([`AskResult::form`](orch_core::AskResult::form)); the core never continues that task and refuses
+//!   a further ask of the agent in the job ([`AskRefusal::FormPending`](orch_core::AskRefusal)), and
+//!   once the ask is recorded the dispatcher cancels the parked task, which is then refused for
+//!   the rest of the job. **The ask is sent the job's UI catalog**, inline when the agent's A2UI
+//!   entry accepts inline catalogs (an asked agent has no `get_ui_catalog` tool), so that an agent
+//!   which asks the person something with choices (adam's `ask_user`, the coder's consent) draws a
+//!   surface and the rule above fires; the cost is that every question with choices ends the ask.
+//!   A claim that re-attaches to a task that waits, after a crash or a broken stream, cannot know
+//!   what the task drew before, and **fails closed**: any turn that ends waiting is taken for a
+//!   form, with no read of the task's history ([`Answer::assume_form`]). A question in words stays
+//!   the asking agent's to answer, and that is the known gap: a question without choices, an agent
+//!   that ignores the catalog or does not accept inline catalogs, and a thread with no catalog
+//!   (none is sent).
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
 //!   while the ledger says it runs, and it stops being wanted when the core ends it (the deadline,
 //!   the person's stop, the end of the task that asked, the end of the ask above it). The row looks
@@ -62,9 +85,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, AskArtifact, AskOutcome, AskResult, Caller, Classify,
-    Input, MAX_ASK_ANSWER_BYTES, MessagePurpose, ThreadId, ThreadRecord, ToolsGrant,
-    TransitionError, UsageUpdate, ask_context, report,
+    AccessTier, AgentId, AgentTaskState, AgentUpdate, AskArtifact, AskOutcome, AskResult, Caller,
+    Classify, Input, MAX_ASK_ANSWER_BYTES, MessagePurpose, ThreadId, ThreadRecord, ToolsGrant,
+    TransitionError, UiDelivery, UsageUpdate, ask_context, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, OutboxFinal,
@@ -72,7 +95,7 @@ use orch_ports::{
 };
 use tokio::time::MissedTickBehavior;
 
-use super::{DispatchError, Dispatcher, Done, env_state};
+use super::{DispatchError, Dispatcher, Done, env_state, plain_cap};
 use crate::{AppError, ApplyOutcome, UsageDrop};
 
 /// The error text a row carries that an earlier build parked (it could not send asks yet): its
@@ -128,6 +151,9 @@ struct Asking {
     /// The A2A context the message names: the one the agent assigned to its earlier asks of the
     /// job, `None` for its first (ADR 0055).
     context: Option<String>,
+    /// The cap of the person's role on the asked agent (ADR 0061), from the mention that made it
+    /// askable: the ask is sent under the highest tier its live card offers within it.
+    tier_cap: Option<AccessTier>,
 }
 
 /// What the asked agent has said so far. Read, never applied to the thread.
@@ -144,6 +170,11 @@ struct Answer {
     artifacts: Vec<(AskArtifact, Option<String>)>,
     /// The revision that served the task.
     revision: Option<String>,
+    /// The task that showed an interface (an A2UI surface, even one that was refused) while this
+    /// answer was read, or that a claim which re-attached took for one that did
+    /// ([`Answer::assume_form`]). A task that then waits waits for the person's answer to a form,
+    /// which a model must not give (ADR 0026, amended): see [`Answer::form`].
+    interface: Option<String>,
 }
 
 impl Answer {
@@ -202,20 +233,27 @@ impl Answer {
                 },
                 None,
             ),
-            // not for an asked agent: it cannot show an interface or have steps of its own here
+            // An asked agent is given the job's UI catalog, so it can draw a surface, but not here:
+            // it is not applied and not drawn. That it drew one is remembered: a task that then
+            // waits is waiting for a form that only the person could answer, and a person who
+            // cannot see it never will.
+            Some(AgentUpdate::Ui { .. } | AgentUpdate::UiRejected { .. }) => {
+                self.interface = Some(env.task_id.clone());
+            }
+            // not for an asked agent: it cannot have steps of its own here
             Some(
                 AgentUpdate::Status { .. }
                 | AgentUpdate::Message { .. }
                 | AgentUpdate::Reasoning { .. }
                 | AgentUpdate::FileKept { .. }
                 | AgentUpdate::FileRefused { .. }
-                | AgentUpdate::Ui { .. }
-                | AgentUpdate::UiRejected { .. }
                 | AgentUpdate::Step(_)
                 // its tokens are applied to the thread on their own (`Dispatcher::ask_usage`)
                 | AgentUpdate::Usage(_)
                 | AgentUpdate::UsageRejected(_)
-                // no tier is sent to an asked agent (ADR 0061), so none is echoed
+                // an asked agent may be sent a tier (the person's cap on it, ADR 0061) and echo one;
+                // a refused echo is counted where the stream is read (`ask_stream`, `poll_ask`) and
+                // changes nothing here
                 | AgentUpdate::TierRejected,
             )
             | None => {}
@@ -260,6 +298,33 @@ impl Answer {
             .or_else(|| self.said.clone())
     }
 
+    /// Whether the turn that ended waiting waits for a form: the agent showed an interface and
+    /// then waited, for input or for authentication. Never for a task that ended any other way.
+    fn form(&self, state: AgentTaskState) -> bool {
+        self.interface.is_some()
+            && matches!(
+                state,
+                AgentTaskState::InputRequired | AgentTaskState::AuthRequired
+            )
+    }
+
+    /// A claim that re-attached to a task cannot know what the task showed before: it reads the rest
+    /// of a stream, or a snapshot that holds the current status and the artifacts, never the
+    /// interfaces drawn earlier. A turn that ends waiting is therefore taken for one that waits for
+    /// a form, with no read of the task's history (**fails closed**): a model must not answer a
+    /// form, and nothing here says the question is not one. A claim that saw an interface itself
+    /// keeps the task it saw it in.
+    fn assume_form(&mut self, state: AgentTaskState, task_id: &str) {
+        if self.interface.is_none()
+            && matches!(
+                state,
+                AgentTaskState::InputRequired | AgentTaskState::AuthRequired
+            )
+        {
+            self.interface = Some(task_id.to_owned());
+        }
+    }
+
     fn result(&self, state: AgentTaskState) -> AskResult {
         let artifacts = self.artifacts.iter().map(|(a, _)| a.clone()).collect();
         match state {
@@ -271,11 +336,13 @@ impl Answer {
             AgentTaskState::InputRequired => AskResult {
                 question: self.question(),
                 artifacts,
+                form: self.form(state),
                 ..AskResult::of(AskOutcome::InputRequired)
             },
             AgentTaskState::AuthRequired => AskResult {
                 question: self.question(),
                 artifacts,
+                form: self.form(state),
                 ..AskResult::of(AskOutcome::AuthRequired)
             },
             AgentTaskState::Failed => AskResult {
@@ -361,6 +428,7 @@ impl<P: Ports> Dispatcher<P> {
             continue_task,
             reference_task_ids,
             context,
+            tier_cap,
         } = row.payload.clone()
         else {
             return self
@@ -413,6 +481,7 @@ impl<P: Ports> Dispatcher<P> {
             ask,
             agent,
             endpoint,
+            tier_cap,
             row,
         };
         let grant = ToolsGrant {
@@ -547,6 +616,31 @@ impl<P: Ports> Dispatcher<P> {
             }
         }
         let continues = continue_task.is_some();
+        // The tier of a parent never passes down (ADR 0061, question 1), but the cap of the person's
+        // role on the asked agent does: a mention does not let them run the agent above it. The
+        // live card decides now, as for a delegation. An agent that has no tier within the cap, or
+        // lists the extension badly, is not asked: the ask fails with the reason and no task is
+        // started. An agent whose card lists no tier is asked as it always was.
+        let tier = match self.app.tier_for_send(&a.endpoint, None, a.tier_cap).await {
+            Ok(tier) => tier,
+            Err(e) => return self.ask_send_failed(a, e).await,
+        };
+        // The job's own UI catalog goes with the ask (ADR 0026, amended 2026-10-17): with it an
+        // agent that asks the person something with choices draws a form, which ends the ask
+        // (`AskResult::form`) instead of parking a question no model can answer. Inline, because an
+        // asked agent has no tool to fetch it. A thread with no catalog sends none, and the agent
+        // asks in words as before. A catalog that cannot be read is no reason to send without one:
+        // the row is claimed again.
+        let ui_catalog = self
+            .app
+            .thread_ui_catalog(a.thread)
+            .await?
+            .map(UiDelivery::Inline);
+        // The reads above take time: an ask that ended meanwhile (the person's stop, the deadline,
+        // the end of the task that asked) is not sent.
+        if !self.ask_wanted(a).await {
+            return self.ask_unwanted(a).await;
+        }
         let request = SendRequest {
             endpoint: a.endpoint.clone(),
             message_id: a.row.id.to_string(),
@@ -555,16 +649,15 @@ impl<P: Ports> Dispatcher<P> {
             reference_task_ids,
             content: SendContent::Text(text),
             release: None,
-            // the asked agent is told nothing of the person's screen: it cannot show one
-            ui_catalog: None,
+            ui_catalog,
             thread_tools: Some(grant),
             // nor of the conversation a fork of this thread continues
             history: None,
             steer: false,
             // it was not addressed by the person, so it is told of no mentions
             mentions: Vec::new(),
-            // and nothing is passed down: an asked agent works under its own default (ADR 0061)
-            tier: None,
+            tier,
+            tier_cap: plain_cap(tier, a.tier_cap),
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)
@@ -665,6 +758,11 @@ impl<P: Ports> Dispatcher<P> {
                     }
                     answer.note(&env);
                     self.ask_usage(a, &env).await?;
+                    // an echo that is not one of the four tiers is counted, as for the thread's own
+                    // agent, and never applied
+                    if matches!(env.update, Some(AgentUpdate::TierRejected)) {
+                        self.app.tier_echo_dropped(a.thread);
+                    }
                     if let Some(state) = state.filter(|s| s.ends_turn()) {
                         return Ok(Flow::Ended(state));
                     }
@@ -776,7 +874,12 @@ impl<P: Ports> Dispatcher<P> {
                 Flow::Ended(AgentTaskState::Completed) if answer.text().is_none() => {
                     tracing::debug!(id = %a.row.id, "completed with nothing on the rest of the stream; reading the task");
                 }
-                Flow::Ended(state) => return self.ask_answered(a, answer, state).await,
+                Flow::Ended(state) => {
+                    // What this claim read is the rest of the task: an interface drawn before the
+                    // crash, or before the stream broke, is not in it.
+                    answer.assume_form(state, &handle.task_id);
+                    return self.ask_answered(a, answer, state).await;
+                }
                 Flow::Lost => return Ok(()),
                 Flow::Unwanted => return self.ask_unwanted(a).await,
                 Flow::Disconnected | Flow::Failed(_) => {}
@@ -793,6 +896,7 @@ impl<P: Ports> Dispatcher<P> {
         let mut delay = self.cfg.poll_min;
         let mut failures = 0_u32;
         let mut learned = false;
+        let mut echo_counted = false;
         loop {
             if !self.ask_wanted(a).await {
                 return self.ask_unwanted(a).await;
@@ -808,11 +912,19 @@ impl<P: Ports> Dispatcher<P> {
                     for env in &snap.envelopes {
                         answer.note(env);
                         self.ask_usage(a, env).await?;
+                        // a snapshot comes again every poll: its refused echo counts once
+                        if !echo_counted && matches!(env.update, Some(AgentUpdate::TierRejected)) {
+                            self.app.tier_echo_dropped(a.thread);
+                            echo_counted = true;
+                        }
                     }
                     if snap.revision.is_some() {
                         answer.revision.clone_from(&snap.revision);
                     }
                     if snap.state.ends_turn() {
+                        // a snapshot holds the current status and the artifacts, never the
+                        // interfaces drawn before: see `Answer::assume_form`
+                        answer.assume_form(snap.state, &handle.task_id);
                         return self.ask_answered(a, answer, snap.state).await;
                     }
                 }
@@ -850,11 +962,13 @@ impl<P: Ports> Dispatcher<P> {
         if !self.ask_wanted(a).await {
             return self.ask_unwanted(a).await;
         }
+        let result = answer.result(state);
+        let form = result.form;
         let input = Input::AskFinished {
             job: a.job,
             ask: a.ask,
             revision: answer.revision.clone(),
-            result: answer.result(state),
+            result,
         };
         self.end_ask(
             &a.row,
@@ -862,7 +976,39 @@ impl<P: Ports> Dispatcher<P> {
             format!("askfin:{}", a.row.id),
             OutboxFinal::Delivered,
         )
-        .await
+        .await?;
+        // The ledger holds that the agent waits for a form (it is never continued and not asked
+        // again in this job); the task it parked is cancelled after that is durable.
+        if form {
+            self.cancel_form(a, answer).await;
+        }
+        Ok(())
+    }
+
+    /// The asked agent's task waits for a form that only the person could answer, and the person
+    /// cannot see it: cancel it, so that nothing can resolve it later. Once, and best effort: a task
+    /// left parked is a waste and not a risk, because nothing it says is applied and the ledger
+    /// refuses to ask the agent again in this job.
+    async fn cancel_form(&self, a: &Asking, answer: &Answer) {
+        // the task this ask sent into or started: on the row since its first envelope (the claim's
+        // copy of the row is older), else the one that showed the interface
+        let recorded = match self.store().get_outbox(a.row.id).await {
+            Ok(Some(row)) => row.task_id,
+            _ => None,
+        };
+        let Some(task_id) = recorded.or_else(|| answer.interface.clone()) else {
+            return;
+        };
+        let handle = TaskHandle {
+            endpoint: a.endpoint.clone(),
+            task_id,
+        };
+        match self.app.ports().agents().cancel(&handle).await {
+            Ok(_) | Err(AgentError::NotCancelable(_) | AgentError::TaskNotFound(_)) => {}
+            Err(e) => {
+                tracing::warn!(id = %a.row.id, ask = a.ask, error = %report(&e), "the asked agent's task, parked on a form, could not be cancelled");
+            }
+        }
     }
 
     /// The message could not be delivered: retry while it can help, then fail the ask.
@@ -1005,6 +1151,55 @@ mod tests {
             ended(AgentTaskState::Completed, None),
         ];
         assert_eq!(answer_of(&all).text(), None);
+    }
+
+    fn surface() -> AgentEnvelope {
+        let mut shown = env(AgentUpdate::Ui {
+            operations: vec![serde_json::json!({"version": "v0.9.1"})],
+        });
+        shown.task_id = "task-form".to_owned();
+        shown
+    }
+
+    #[test]
+    fn a_turn_that_showed_an_interface_and_waits_waits_for_a_form() {
+        for (state, outcome) in [
+            (AgentTaskState::InputRequired, AskOutcome::InputRequired),
+            (AgentTaskState::AuthRequired, AskOutcome::AuthRequired),
+        ] {
+            let answer = answer_of(&[surface(), ended(state, Some("Pick one"))]);
+            let result = answer.result(state);
+            assert_eq!(result.outcome, outcome);
+            assert!(result.form, "{state:?}");
+            assert_eq!(result.question.as_deref(), Some("Pick one"));
+            // the task to cancel is the one that showed it
+            assert_eq!(answer.interface.as_deref(), Some("task-form"));
+        }
+        // an interface the core refused is an interface that was shown: fail closed
+        let refused = answer_of(&[
+            env(AgentUpdate::UiRejected {
+                reason: "no".to_owned(),
+            }),
+            ended(AgentTaskState::InputRequired, Some("Pick one")),
+        ]);
+        assert!(refused.result(AgentTaskState::InputRequired).form);
+    }
+
+    #[test]
+    fn a_question_in_words_is_not_a_form_and_no_other_end_waits_for_one() {
+        let words = answer_of(&[ended(AgentTaskState::InputRequired, Some("Which branch?"))]);
+        assert!(!words.result(AgentTaskState::InputRequired).form);
+        assert!(words.interface.is_none());
+        // an interface in a turn that did not wait is just a screen the agent drew
+        let drew = answer_of(&[surface(), ended(AgentTaskState::Completed, None)]);
+        for state in [
+            AgentTaskState::Completed,
+            AgentTaskState::Failed,
+            AgentTaskState::Rejected,
+            AgentTaskState::Canceled,
+        ] {
+            assert!(!drew.result(state).form, "{state:?}");
+        }
     }
 
     #[test]

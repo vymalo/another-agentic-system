@@ -10,7 +10,7 @@ use orch_core::{
     AccessTier, AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint,
     Classify, Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource,
     GatePolicy, Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin,
-    Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, TierOffer,
+    Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord, ThreadState, TierListing,
     Timestamp, TitleSource, ToolsError, UiCatalogData, UserId, WatchKey, branch_points,
     check_answer, check_description, check_servers, check_title, copied, family_root, file_refs,
     fork_commit, fork_cut, fork_message, is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key,
@@ -48,7 +48,7 @@ pub use usage::{UsageDrop, UsageStats};
 
 use crate::dispatcher::FileLimits;
 use crate::sharing::{SharingCounters, SharingSettings};
-use crate::tier::TierCard;
+use crate::tier::TierPin;
 use crate::tool_servers::ToolServerInfo;
 use crate::user_tools::{AuthorizeLocks, is_own_server_id};
 use crate::{
@@ -718,25 +718,15 @@ impl<P: Ports> App<P> {
         }
     }
 
-    /// Reads the live card of `endpoint` **now** (never cached, ADR 0008) and says whether it honours
-    /// the access tier `tier` (ADR 0061): used when a message that names one is checked and again when
-    /// the dispatcher sends it.
-    pub(crate) async fn tier_card(&self, endpoint: &AgentEndpoint, tier: AccessTier) -> TierCard {
-        match self.card_offer(endpoint).await {
-            Ok(offer) => TierCard::of(offer.as_ref(), tier),
-            Err(error) => TierCard::Unreadable(error),
-        }
-    }
-
-    /// What the live card of `endpoint` offers under `access-tier/v1`, read **now** (never cached):
-    /// `None` when it lists the extension not at all or badly.
+    /// What the live card of `endpoint` says about `access-tier/v1`, read **now** (never cached,
+    /// ADR 0008).
     ///
     /// # Errors
-    /// The card could not be read in [`AppConfig::card_timeout`].
-    pub(crate) async fn card_offer(
+    /// The card could not be read in [`AppConfig::card_timeout`](crate::AppConfig::card_timeout).
+    pub(crate) async fn card_listing(
         &self,
         endpoint: &AgentEndpoint,
-    ) -> Result<Option<TierOffer>, AgentError> {
+    ) -> Result<TierListing, AgentError> {
         let card = tokio::time::timeout(
             self.cfg.card_timeout,
             self.ports.agents().read_card(endpoint),
@@ -1065,10 +1055,15 @@ impl<P: Ports> App<P> {
             )));
         }
         self.validate_target(&access, &req.target).await?;
-        self.check_mentions(&access, &req.target.agent_id, &req.text, &inbound.mentions)
-            .await?;
+        self.check_mentions(
+            &access,
+            &req.target.agent_id,
+            &req.text,
+            &mut inbound.mentions,
+        )
+        .await?;
         // the tier the first message is sent under, named or, for a person with a cap, resolved
-        inbound.tier = self
+        let tier = self
             .resolve_tier(&access, &req.target.agent_id, inbound.tier, None)
             .await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
@@ -1088,7 +1083,8 @@ impl<P: Ports> App<P> {
                 origin: inbound.origin,
                 catalog: inbound.ui_catalog,
                 mentions: inbound.mentions,
-                tier: inbound.tier,
+                tier: tier.tier,
+                tier_cap: tier.cap,
             },
         )?;
         // The servers are attached in the commit that holds the first message, after it, so that
@@ -1535,6 +1531,7 @@ impl<P: Ports> App<P> {
                         catalog: first.ui_catalog,
                         mentions: first.mentions,
                         tier: first.tier,
+                        tier_cap: None,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),
@@ -1573,15 +1570,17 @@ impl<P: Ports> App<P> {
                     &access,
                     &target.agent_id,
                     &replacement.text,
-                    &replacement.mentions,
+                    &mut replacement.mentions,
                 )
                 .await?;
                 let inherited = replaced_seq
                     .filter(|_| replacement.tier.is_none())
                     .and_then(|seq| replaced_tier(&events, seq));
-                replacement.tier = self
+                let pin = self
                     .resolve_tier(&access, &target.agent_id, replacement.tier, inherited)
                     .await?;
+                replacement.tier = pin.tier;
+                replacement.tier_cap = pin.cap;
                 Some(replacement)
             }
             None => None,
@@ -2110,10 +2109,6 @@ impl<P: Ports> App<P> {
         text: String,
         stop: bool,
     ) -> Result<Event, AppError> {
-        let access = self.access(who);
-        let thread = self.writable_thread(&access, id).await?;
-        self.may_invoke(&access, &thread).await?;
-        validate_text(&text)?;
         let user = who.user().clone();
         let input = if stop {
             Input::StopAndSend {
@@ -2125,6 +2120,7 @@ impl<P: Ports> App<P> {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+                tier_cap: None,
             }
         } else {
             Input::UserMessage {
@@ -2136,9 +2132,12 @@ impl<P: Ports> App<P> {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+                tier_cap: None,
             }
         };
-        let outcome = self.apply_for_owner(who, id, input, None).await?;
+        // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
+        // are `submit`'s, so that no way in skips them
+        let outcome = self.submit(who, id, input, None).await?;
         match outcome {
             ApplyOutcome::Applied { events, .. } => events
                 .into_iter()
@@ -2251,6 +2250,7 @@ impl<P: Ports> App<P> {
             text,
             mentions,
             tier,
+            tier_cap,
             origin,
             ..
         }
@@ -2258,6 +2258,7 @@ impl<P: Ports> App<P> {
             text,
             mentions,
             tier,
+            tier_cap,
             origin,
             ..
         } = &mut input
@@ -2275,18 +2276,23 @@ impl<P: Ports> App<P> {
             let inherited = (tier.is_none() && continues)
                 .then_some(thread.job.tier)
                 .flatten();
-            *tier = self
+            let pin = self
                 .resolve_tier(&access, &thread.target.agent_id, *tier, inherited)
                 .await?;
+            (*tier, *tier_cap) = (pin.tier, pin.cap);
         }
         // The action of a person on a surface continues the job's task: its tier is the job's,
-        // lowered to the person's cap and the agent's card as an answer's is.
-        if let Input::UiAction { tier, .. } = &mut input
-            && !thread.state.is_terminal()
-        {
-            *tier = self
-                .resolve_tier(&access, &thread.target.agent_id, None, thread.job.tier)
-                .await?;
+        // lowered to the person's cap and the agent's card as an answer's is. What a surface put
+        // in the input is never kept: on a thread read as finished the action is refused by the
+        // core, and should it have moved on meanwhile, the job's own tier stands.
+        if let Input::UiAction { tier, tier_cap, .. } = &mut input {
+            let pin = if thread.state.is_terminal() {
+                TierPin::default()
+            } else {
+                self.resolve_tier(&access, &thread.target.agent_id, None, thread.job.tier)
+                    .await?
+            };
+            (*tier, *tier_cap) = (pin.tier, pin.cap);
         }
         // What starts or continues the agent's work for the person is the owner's act: the servers
         // of their own they may no longer use are taken off the thread with it.
@@ -2676,6 +2682,7 @@ impl<P: Ports> App<P> {
                     catalog,
                     mentions,
                     tier,
+                    tier_cap,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -2685,6 +2692,7 @@ impl<P: Ports> App<P> {
                         ui_catalog: catalog,
                         mentions,
                         tier,
+                        tier_cap,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -2698,6 +2706,7 @@ impl<P: Ports> App<P> {
                     catalog,
                     mentions,
                     tier,
+                    tier_cap,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -2706,12 +2715,14 @@ impl<P: Ports> App<P> {
                         ui_catalog: catalog,
                         mentions,
                         tier,
+                        tier_cap,
                     },
                 }),
                 Command::DelegateAction {
                     action,
                     catalog,
                     tier,
+                    tier_cap,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Action {
@@ -2720,6 +2731,7 @@ impl<P: Ports> App<P> {
                         release: target.release.clone(),
                         ui_catalog: catalog,
                         tier,
+                        tier_cap,
                     },
                 }),
                 // Said by the commit itself: the store finishes the abandoned job's unsent rows in
@@ -2796,6 +2808,7 @@ impl<P: Ports> App<P> {
                     continue_task,
                     reference_task_ids,
                     context,
+                    tier_cap,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Ask {
@@ -2807,6 +2820,7 @@ impl<P: Ports> App<P> {
                         continue_task,
                         reference_task_ids,
                         context,
+                        tier_cap,
                     },
                 }),
                 // The request is an outbox row in this commit, so it cannot be lost or made

@@ -147,6 +147,9 @@ fn parse_one(n: usize, value: &Value) -> Result<Mention, MentionError> {
         start: offset("start")?,
         end: offset("end")?,
         card_url,
+        // the cap of the person's roles on the agent is the application's to pin
+        // ([`App::check_mentions`]), never a client's
+        tier_cap: None,
     })
 }
 
@@ -238,6 +241,12 @@ impl<P: Ports> App<P> {
     /// `agent` is the thread's own agent, the one that reads the message. A message with no
     /// mentions is `Ok` at once and the registry is not asked.
     ///
+    /// Each reference that holds is given the **cap of the person's roles on its agent**
+    /// ([`Mention::tier_cap`], ADR 0061: `None` when no role caps it). A mention lets the thread's
+    /// agent ask the mentioned one, and the ask is sent under the highest tier that agent offers
+    /// within the cap, so a mention is never a way to run an agent above what the person's role
+    /// allows. The cap is written with the mention and nothing is read from the card here.
+    ///
     /// # Errors
     /// [`AppError::Invalid`] (the count), [`AppError::Unprocessable`] for a reference that does not
     /// hold, and [`AppError::RegistryUnavailable`] when the registry cannot say.
@@ -246,7 +255,7 @@ impl<P: Ports> App<P> {
         access: &Access<'_>,
         agent: &AgentId,
         text: &str,
-        mentions: &[Mention],
+        mentions: &mut [Mention],
     ) -> Result<(), AppError> {
         if mentions.is_empty() {
             return Ok(());
@@ -291,6 +300,7 @@ impl<P: Ports> App<P> {
                     "an agent cannot be mentioned in its own thread".to_owned(),
                 ));
             }
+            mention.tier_cap = access.max_tier_for(id);
         }
         Ok(())
     }
@@ -366,6 +376,7 @@ mod tests {
 
     fn at(label: &str, start: u32, end: u32) -> Mention {
         Mention {
+            tier_cap: None,
             agent_id: AgentId::new("mock-researcher"),
             label: label.to_owned(),
             start,

@@ -26,7 +26,6 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
-use crate::tier::TierCard;
 use crate::{App, AppError, ApplyOutcome, LateSource, UsageDrop};
 
 mod ask;
@@ -176,8 +175,9 @@ struct Adopt {
     /// into.
     mentions: Vec<Mention>,
     /// The access tier it named, as its row holds it (ADR 0061): the job it is adopted into
-    /// carries it as its own message does.
+    /// carries it as its own message does, and the cap that went with it.
     tier: Option<AccessTier>,
+    tier_cap: Option<AccessTier>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -195,6 +195,14 @@ struct Ctx {
     revision: Option<String>,
     /// What the delegation has kept of the agent's files so far (ADR 0032).
     files: files::Budget,
+}
+
+/// What a request tells the adapter of the cap it holds: the cap only when the message goes out
+/// with **no tier** because the card listed none ([`App::tier_for_send`]), so that the adapter,
+/// reading the card again for this very call, refuses (retryably) a message that would reach an
+/// agent that lists tiers by now (see `SendRequest::tier_cap`).
+pub(super) fn plain_cap(sent: Option<AccessTier>, cap: Option<AccessTier>) -> Option<AccessTier> {
+    if sent.is_none() { cap } else { None }
 }
 
 fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
@@ -588,52 +596,57 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release, new_job, ui_catalog, mentions, tier) = match row.payload.clone() {
-            OutboxPayload::Delegate {
-                text,
-                release,
-                new_job,
-                ui_catalog,
-                mentions,
-                tier,
-            } => (
-                SendContent::Text(text),
-                release,
-                new_job,
-                ui_catalog,
-                mentions,
-                tier,
-            ),
-            OutboxPayload::Action {
-                action,
-                at,
-                release,
-                ui_catalog,
-                tier,
-            } => (
-                SendContent::UiAction { action, at },
-                release,
-                false,
-                ui_catalog,
-                Vec::new(),
-                tier,
-            ),
-            OutboxPayload::Steer { .. }
-            | OutboxPayload::Cancel { .. }
-            | OutboxPayload::Verify { .. }
-            | OutboxPayload::Title { .. }
-            | OutboxPayload::Description { .. }
-            | OutboxPayload::Ask { .. } => {
-                return self
-                    .finish(
-                        &row,
-                        OutboxFinal::Dead {
-                            error: "payload does not match kind".to_owned(),
-                        },
-                    )
-                    .await;
-            }
-        };
+        let (content, release, new_job, ui_catalog, mentions, tier, tier_cap) =
+            match row.payload.clone() {
+                OutboxPayload::Delegate {
+                    text,
+                    release,
+                    new_job,
+                    ui_catalog,
+                    mentions,
+                    tier,
+                    tier_cap,
+                } => (
+                    SendContent::Text(text),
+                    release,
+                    new_job,
+                    ui_catalog,
+                    mentions,
+                    tier,
+                    tier_cap,
+                ),
+                OutboxPayload::Action {
+                    action,
+                    at,
+                    release,
+                    ui_catalog,
+                    tier,
+                    tier_cap,
+                } => (
+                    SendContent::UiAction { action, at },
+                    release,
+                    false,
+                    ui_catalog,
+                    Vec::new(),
+                    tier,
+                    tier_cap,
+                ),
+                OutboxPayload::Steer { .. }
+                | OutboxPayload::Cancel { .. }
+                | OutboxPayload::Verify { .. }
+                | OutboxPayload::Title { .. }
+                | OutboxPayload::Description { .. }
+                | OutboxPayload::Ask { .. } => {
+                    return self
+                        .finish(
+                            &row,
+                            OutboxFinal::Dead {
+                                error: "payload does not match kind".to_owned(),
+                            },
+                        )
+                        .await;
+                }
+            };
         let Some(Loaded {
             ctx,
             state,
@@ -657,6 +670,7 @@ impl<P: Ports> Dispatcher<P> {
                 text,
                 mentions,
                 tier,
+                tier_cap,
                 ..
             } = &row.payload
                 && state != ThreadState::Cancelled
@@ -673,6 +687,7 @@ impl<P: Ports> Dispatcher<P> {
                             sent: false,
                             mentions: mentions.clone(),
                             tier: *tier,
+                            tier_cap: *tier_cap,
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -763,6 +778,17 @@ impl<P: Ports> Dispatcher<P> {
         // adapter tells the agent only when its live card lists `mentions/v1`. Read at every
         // send, so a retry names what the registry says at the retry.
         let mentions = self.app.mention_infos(&mentions).await;
+        // The card is read again, now, for a message that names an access tier or keeps a cap
+        // (ADR 0061): it goes out with the tier only if the agent still honours it, or with the
+        // highest tier its card offers within the cap. A card that stopped honouring the tier, has
+        // none within the cap, or lists the extension badly fails the job and nothing is sent; one
+        // that cannot be read is retried. A message is never sent without its tier, and never under
+        // the agent's default instead; an agent whose card still lists no tier gets the plain
+        // message (a cap cannot be said to it).
+        let sent_tier = match self.app.tier_for_send(&ctx.endpoint, tier, tier_cap).await {
+            Ok(sent_tier) => sent_tier,
+            Err(e) => return self.send_failed(&row, e).await,
+        };
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             message_id: row.id.to_string(),
@@ -787,7 +813,8 @@ impl<P: Ports> Dispatcher<P> {
             history,
             steer: false,
             mentions,
-            tier,
+            tier: sent_tier,
+            tier_cap: plain_cap(sent_tier, tier_cap),
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
@@ -797,6 +824,7 @@ impl<P: Ports> Dispatcher<P> {
                     text,
                     mentions,
                     tier,
+                    tier_cap,
                     ..
                 },
                 None,
@@ -804,19 +832,13 @@ impl<P: Ports> Dispatcher<P> {
                 text: text.clone(),
                 mentions: mentions.clone(),
                 tier: *tier,
+                tier_cap: *tier_cap,
                 previous: binding.task_id.clone(),
             }),
             _ => None,
         };
         // What the agent's card says it is, noted for the thread's export (ADR 0053); never a
         // reason not to send.
-        // The card is read again, now, for a message that names an access tier (ADR 0061): it goes
-        // out with the tier only if the agent still honours it. A card that stopped doing so fails
-        // the job and nothing is sent; one that cannot be read is retried. The message is never
-        // sent without its tier, and never under the agent's default instead.
-        if let Err(e) = self.tier_holds(&ctx.endpoint, tier).await {
-            return self.send_failed(&row, e).await;
-        }
         self.app
             .record_agent_build(row.thread_id, &ctx.endpoint)
             .await;
@@ -871,6 +893,7 @@ impl<P: Ports> Dispatcher<P> {
             sent: true,
             mentions: adopt.mentions.clone(),
             tier: adopt.tier,
+            tier_cap: adopt.tier_cap,
         };
         match self
             .app
@@ -905,6 +928,7 @@ impl<P: Ports> Dispatcher<P> {
             text,
             mentions,
             tier,
+            tier_cap,
             ..
         } = row.payload.clone()
         else {
@@ -940,6 +964,25 @@ impl<P: Ports> Dispatcher<P> {
         // The agents the message mentions, named as the registry gives them now (ADR 0026), as for
         // a delegation: the adapter tells the agent only when its live card lists `mentions/v1`.
         let mentions = self.app.mention_infos(&mentions).await;
+        // The tier it goes under is decided by the live card now, as for a delegation. A steer the
+        // card cannot give one to (the tier is no longer honoured, nothing within the cap, a
+        // listing that cannot be read) is not sent into the task: it becomes the delegation, which
+        // fails with the reason. A card that cannot be read is retried first.
+        let sent_tier = match self.app.tier_for_send(&ctx.endpoint, tier, tier_cap).await {
+            Ok(sent_tier) => sent_tier,
+            Err(e) if e.is_retryable() && row.attempts < self.cfg.max_attempts => {
+                tracing::warn!(id = %row.id, attempt = row.attempts, error = %report(&e), "steer failed; will retry");
+                return self
+                    .retry(&row, self.delay(row.attempts, &e), report(&e))
+                    .await;
+            }
+            Err(e) => {
+                tracing::info!(id = %row.id, error = %report(&e), "the tier of the steer cannot be decided");
+                return self
+                    .steer_falls_back(&row, "the agent cannot be given its access tier")
+                    .await;
+            }
+        };
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             // the row's id is the message's: a row retried after a lost lease is the same message,
@@ -961,7 +1004,8 @@ impl<P: Ports> Dispatcher<P> {
             history: None,
             steer: true,
             mentions,
-            tier,
+            tier: sent_tier,
+            tier_cap: plain_cap(sent_tier, tier_cap),
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;
@@ -1026,25 +1070,6 @@ impl<P: Ports> Dispatcher<P> {
     fn delay(&self, attempts: u32, err: &AgentError) -> Duration {
         self.backoff(attempts)
             .max(err.retry_after().unwrap_or_default())
-    }
-
-    /// Whether the agent still honours the access tier a message names (ADR 0061), by its card read
-    /// **now**: `Ok` for a message that names none. A card that was read and does not honour it is
-    /// [`AgentError::Unsupported`] (the job fails, nothing is sent); one that could not be read is
-    /// the error the read gave (retried when it is transient).
-    async fn tier_holds(
-        &self,
-        endpoint: &AgentEndpoint,
-        tier: Option<AccessTier>,
-    ) -> Result<(), AgentError> {
-        let Some(tier) = tier else { return Ok(()) };
-        match self.app.tier_card(endpoint, tier).await {
-            TierCard::Honoured => Ok(()),
-            TierCard::NotHonoured => Err(AgentError::Unsupported(format!(
-                "the agent no longer takes the access tier '{tier}'"
-            ))),
-            TierCard::Unreadable(error) => Err(error),
-        }
     }
 
     /// A delegation failed. The operator-facing texts (outbox `last_error`, the dead row) get

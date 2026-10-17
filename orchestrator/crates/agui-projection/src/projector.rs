@@ -2093,6 +2093,7 @@ impl Projector {
                         question: None,
                         artifacts: Vec::new(),
                         error: Some("the asking task ended".to_owned()),
+                        form: false,
                     };
                     let actor = view.actor.clone();
                     out.push(self.ask_activity(&view, &actor, Some(&ended), "canceled", &now));

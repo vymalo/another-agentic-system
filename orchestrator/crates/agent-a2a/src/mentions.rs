@@ -109,6 +109,7 @@ mod tests {
             steer: false,
             mentions,
             tier: None,
+            tier_cap: None,
         }
     }
 
@@ -168,6 +169,8 @@ mod tests {
         let mut action = req;
         action.content = SendContent::UiAction {
             action: orch_core::UiActionData {
+                tier: None,
+                tier_cap: None,
                 surface_id: "s".into(),
                 name: "go".into(),
                 source_component_id: "b".into(),

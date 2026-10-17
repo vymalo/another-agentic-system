@@ -140,6 +140,7 @@ async fn a_mention_of_an_alias_is_written_as_the_agent() {
             new_thread("plain", text),
             Inbound {
                 mentions: vec![Mention {
+                    tier_cap: None,
                     agent_id: AgentId::new("coder"),
                     label: "@coder".to_owned(),
                     start: 4,

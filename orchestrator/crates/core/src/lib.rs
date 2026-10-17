@@ -37,7 +37,7 @@ mod ui_catalog;
 mod usage;
 mod verify;
 
-pub use access_tier::{ACCESS_TIER_EXTENSION, AccessTier, TierOffer};
+pub use access_tier::{ACCESS_TIER_EXTENSION, AccessTier, CapRefusal, TierListing, TierOffer};
 pub use agent::{AgentTaskState, AgentUpdate, FileRefusal};
 pub use answer::{AnswerError, AnswerLedger, MAX_ANSWER_BYTES, check_answer};
 pub use ask::{

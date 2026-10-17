@@ -239,6 +239,7 @@ fn sent(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
         seq,
         Actor::user(&UserId::new("alice@example.com")),
         EventBody::UserMessage(UserMessageData {
+            tier_cap: None,
             text: text.to_owned(),
             message_id: Some(message_id.to_owned()),
             run_id: Some(run_id.to_owned()),

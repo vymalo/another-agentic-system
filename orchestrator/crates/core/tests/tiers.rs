@@ -15,6 +15,7 @@ fn user() -> UserId {
 }
 fn said(text: &str, tier: Option<AccessTier>) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -27,6 +28,7 @@ fn said(text: &str, tier: Option<AccessTier>) -> Input {
 }
 fn stop(text: &str, tier: Option<AccessTier>) -> Input {
     Input::StopAndSend {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -256,6 +258,7 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
         let (_, cmds) = step(
             &Snapshot::new(state),
             &Input::Redeliver {
+                tier_cap: None,
                 text: "again".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -268,6 +271,7 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
         let (_, cmds) = step(
             &Snapshot::new(state),
             &Input::Redeliver {
+                tier_cap: None,
                 text: "again".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -286,6 +290,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
         let (snap, cmds) = step(
             &Snapshot::new(state),
             &Input::Redeliver {
+                tier_cap: None,
                 text: "again".into(),
                 sent: true,
                 mentions: Vec::new(),
@@ -310,6 +315,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
             ..Snapshot::new(Working)
         },
         &Input::Redeliver {
+            tier_cap: None,
             text: "again".into(),
             sent: true,
             mentions: Vec::new(),
@@ -367,6 +373,7 @@ fn the_rework_after_a_redelivery_of_a_sent_message_is_under_its_tier() {
     let (mut snap, cmds) = step(
         &snap,
         &Input::Redeliver {
+            tier_cap: None,
             text: "go".into(),
             sent: true,
             mentions: Vec::new(),
@@ -476,8 +483,11 @@ fn an_action_on_a_surface_is_sent_under_the_tier_of_the_job() {
     let (_, cmds) = step(
         &blocked,
         &Input::UiAction {
+            tier_cap: None,
             user: user(),
             action: UiActionData {
+                tier: None,
+                tier_cap: None,
                 surface_id: "s1".into(),
                 name: "pick".into(),
                 source_component_id: "b1".into(),
@@ -509,8 +519,11 @@ fn an_action_the_application_lowered_is_sent_lowered_and_the_job_continues_under
     let (after, cmds) = step(
         &blocked,
         &Input::UiAction {
+            tier_cap: None,
             user: user(),
             action: UiActionData {
+                tier: None,
+                tier_cap: None,
                 surface_id: "s1".into(),
                 name: "pick".into(),
                 source_component_id: "b1".into(),

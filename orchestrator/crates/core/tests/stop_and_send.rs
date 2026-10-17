@@ -20,6 +20,7 @@ fn user() -> UserId {
 }
 fn said(text: &str) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -32,6 +33,7 @@ fn said(text: &str) -> Input {
 }
 fn stop(text: &str) -> Input {
     Input::StopAndSend {
+        tier_cap: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -173,6 +175,7 @@ fn next_job(text: &str, abandoned: u32) -> [Command; 2] {
     [
         Command::DropQueued { job: abandoned },
         Command::Delegate {
+            tier_cap: None,
             text: text.into(),
             catalog: None,
             mentions: Vec::new(),
@@ -200,6 +203,7 @@ fn row1_a_stop_and_send_logs_the_message_asks_for_the_cancel_and_holds_the_text(
         assert_eq!(
             message_data(&cmds),
             &UserMessageData {
+                tier_cap: None,
                 text: "do X instead".into(),
                 message_id: Some("m-1".into()),
                 run_id: Some("r-1".into()),
@@ -234,6 +238,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
         catalog: json,
     };
     let input = Input::StopAndSend {
+        tier_cap: None,
         user: user(),
         text: "go".into(),
         message_id: None,
@@ -247,6 +252,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
     assert_eq!(kinds(&cmds), ["ui_catalog", "user_message"]);
     let (_, cmds) = step(&held, &task(AgentTaskState::Canceled));
     assert!(cmds.contains(&Command::Delegate {
+        tier_cap: None,
         text: "go".into(),
         catalog: Some(UiDelivery::Ref(catalog.reference())),
         mentions: Vec::new(),
@@ -350,6 +356,7 @@ fn row3_a_message_to_a_running_job_is_a_steer_and_the_job_goes_on() {
         assert_eq!(
             orders(&cmds),
             [&Command::Steer {
+                tier_cap: None,
                 text: "you were wrong since line 1".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -384,6 +391,7 @@ fn the_first_message_of_a_thread_is_delegated_with_no_delivery() {
         assert_eq!(
             orders(&cmds),
             [&Command::Delegate {
+                tier_cap: None,
                 text: "hi".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -718,6 +726,7 @@ fn row6_the_cancel_that_follows_still_starts_the_next_job() {
     );
     assert_eq!((snap.state, snap.job.number), (Queued, 2));
     assert!(cmds.contains(&Command::Delegate {
+        tier_cap: None,
         text: "do X".into(),
         catalog: None,
         mentions: Vec::new(),
@@ -741,6 +750,7 @@ fn row7_a_cancel_refused_for_good_sends_the_text_to_the_agent_as_a_steer() {
         assert_eq!(
             orders(&cmds),
             [&Command::Steer {
+                tier_cap: None,
                 text: "do X instead".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -839,6 +849,7 @@ fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
     let (next, cmds) = step(
         &held,
         &Input::Redeliver {
+            tier_cap: None,
             text: "old".into(),
             sent: false,
             mentions: Vec::new(),
@@ -853,6 +864,8 @@ fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
 fn an_action_on_a_job_being_abandoned_is_refused() {
     let held = stopping(Working, "do X");
     let action = UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: "s".into(),
         name: "go".into(),
         source_component_id: "b".into(),
@@ -863,6 +876,7 @@ fn an_action_on_a_job_being_abandoned_is_refused() {
     let refused = transition(
         &held,
         &Input::UiAction {
+            tier_cap: None,
             user: user(),
             action,
             catalog: None,

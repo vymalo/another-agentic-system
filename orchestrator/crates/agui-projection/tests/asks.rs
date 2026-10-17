@@ -92,6 +92,7 @@ fn data(n: u32, state: AskOutcome) -> AskFinishedData {
         question: None,
         artifacts: Vec::new(),
         error: None,
+        form: false,
     }
 }
 

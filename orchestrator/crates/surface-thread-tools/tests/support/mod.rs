@@ -257,6 +257,7 @@ impl Harness {
             let start = u32::try_from(full.encode_utf16().count()).unwrap();
             full.push_str(&label);
             mentions.push(orch_core::Mention {
+                tier_cap: None,
                 agent_id: AgentId::new(*who),
                 end: start + u32::try_from(label.encode_utf16().count()).unwrap(),
                 label,
@@ -330,6 +331,7 @@ impl Harness {
                 &alice,
                 thread,
                 Input::UserMessage {
+                    tier_cap: None,
                     user: alice.clone(),
                     text: "echo again".to_owned(),
                     message_id: None,

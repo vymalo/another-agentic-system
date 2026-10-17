@@ -22,6 +22,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
     let detail = proptest::option::of("[a-z ]{0,8}");
     prop_oneof![
         "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -80,8 +81,11 @@ fn arb_input() -> impl Strategy<Value = Input> {
             update: AgentUpdate::UiRejected { reason }
         }),
         "[a-z]{1,8}".prop_map(|name| Input::UiAction {
+            tier_cap: None,
             user: UserId::new("u@x.io"),
             action: UiActionData {
+                tier: None,
+                tier_cap: None,
                 surface_id: "s".into(),
                 name,
                 source_component_id: "b".into(),
@@ -99,6 +103,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             retryable
         }),
         "[a-z]{1,8}".prop_map(|text| Input::Redeliver {
+            tier_cap: None,
             text,
             sent: false,
             mentions: Vec::new(),
@@ -317,6 +322,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
     let carried = proptest::option::of((0..pool.len()).prop_map(move |i| pool[i].clone()));
     prop_oneof![
         4 => ("[a-z]{1,8}", carried.clone()).prop_map(|(text, catalog)| Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -326,8 +332,9 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
             mentions: Vec::new(), tier: None,
         }),
         2 => carried.prop_map(|catalog| Input::UiAction {
+            tier_cap: None,
             user: UserId::new("u@x.io"),
-            action: UiActionData {
+            action: UiActionData { tier: None, tier_cap: None,
                 surface_id: "s".into(),
                 name: "go".into(),
                 source_component_id: "b".into(),
@@ -338,7 +345,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
             catalog,
             tier: None,
         }),
-        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new(), tier: None, }),
+        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver { tier_cap: None, text, sent: false, mentions: Vec::new(), tier: None, }),
         3 => arb_task_state().prop_map(|state| Input::Agent {
             agent: AgentId::new("a"),
             revision: None,
@@ -431,6 +438,7 @@ fn arb_step_input() -> impl Strategy<Value = Input> {
             update: AgentUpdate::Status { state, detail: None, tier: None, },
         }),
         1 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -564,6 +572,7 @@ fn arb_turn_input() -> impl Strategy<Value = Input> {
             }
         }),
         2 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -637,6 +646,7 @@ fn arb_mentioning_message() -> impl Strategy<Value = (String, Vec<Mention>)> {
             let len = utf16_len(&piece);
             if let Some(agent) = agent {
                 mentions.push(Mention {
+                    tier_cap: None,
                     agent_id: AgentId::new(agent),
                     label: piece.clone(),
                     start: u32::try_from(units).unwrap(),
@@ -659,15 +669,17 @@ fn arb_mentioning_message() -> impl Strategy<Value = (String, Vec<Mention>)> {
 fn arb_mentions_input() -> impl Strategy<Value = Input> {
     prop_oneof![
         4 => arb_mentioning_message().prop_map(|(text, mentions)| Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
             origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
         }),
         3 => arb_mentioning_message().prop_map(|(text, mentions)| Input::StopAndSend {
+            tier_cap: None,
             user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
             origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
         }),
         2 => (arb_mentioning_message(), any::<bool>())
-            .prop_map(|((text, mentions), sent)| Input::Redeliver { text, sent, mentions, tier: None, }),
+            .prop_map(|((text, mentions), sent)| Input::Redeliver { tier_cap: None, text, sent, mentions, tier: None, }),
         3 => arb_task_state().prop_map(|state| Input::Agent {
             agent: AgentId::new("a"), revision: None,
             update: AgentUpdate::Status { state, detail: None, tier: None, },

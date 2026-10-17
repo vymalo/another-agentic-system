@@ -73,8 +73,15 @@ pub enum Input {
         /// The access tier the person picked for this message (ADR 0061, `access-tier/v1`),
         /// already checked by the caller (`orch_app::tier`): its shape, the person's cap and the
         /// live card. Recorded on the `user_message` as sent, and sent with the message to an
-        /// agent whose card still honours it; `None` for a message that names none.
+        /// agent whose card still honours it; `None` for a message that names none and was given
+        /// none (see `tier_cap`).
         tier: Option<AccessTier>,
+        /// The cap of the person's role on the agent (`max_tier`, ADR 0061) when `tier` is `None`
+        /// **because the agent's card offered no tier when the message was accepted** and a cap
+        /// applies; `None` otherwise. Recorded on the `user_message` and carried by everything the
+        /// job sends on the message's behalf: the dispatcher reads the live card when it sends,
+        /// and sends the highest tier within the cap if the card offers tiers by then.
+        tier_cap: Option<AccessTier>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -101,6 +108,9 @@ pub enum Input {
         /// The access tier of the message, as for [`Input::UserMessage`]. When the message stops a
         /// running job it goes to **the next job** ([`Job::after_stop_tier`]).
         tier: Option<AccessTier>,
+        /// The cap that goes with `tier`, as for [`Input::UserMessage`]
+        /// ([`Job::after_stop_tier_cap`]).
+        tier_cap: Option<AccessTier>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -116,8 +126,11 @@ pub enum Input {
         catalog: Option<UiCatalogData>,
         /// The access tier the action is sent under (ADR 0061), which the application sets from
         /// the job's tier, lowered to what the person's role and the agent's live card allow now.
-        /// `None` leaves the job's own ([`Job::tier`]).
+        /// With `tier_cap`, `None` leaves the job's own ([`Job::tier`], [`Job::tier_cap`]).
         tier: Option<AccessTier>,
+        /// The cap of the person's role on the agent when no tier could be decided, as for
+        /// [`Input::UserMessage`].
+        tier_cap: Option<AccessTier>,
     },
     /// A user message that is in the log already but whose delegation never reached the agent
     /// (its outbox row was claimed after the job ended). The dispatcher builds it so that the
@@ -140,6 +153,8 @@ pub enum Input {
         /// The access tier the message was written with, as its `user_message` records it: the
         /// redelivery carries it.
         tier: Option<AccessTier>,
+        /// The cap that went with it, as its `user_message` records it.
+        tier_cap: Option<AccessTier>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -481,6 +496,13 @@ pub enum Command {
         /// fails. A rework carries the tier of the job ([`Job::tier`]): it continues the person's
         /// work, and the agent must not do it at its own default.
         tier: Option<AccessTier>,
+        /// The cap of the person's role (ADR 0061) when `tier` is `None` because the card offered
+        /// no tier when the message was accepted. The dispatcher reads the card again when it
+        /// sends: an agent that offers tiers by then is sent the highest tier within the cap (the
+        /// job fails when it has none, or when its card lists the extension badly); one that
+        /// still offers none gets the plain message. A rework carries the job's
+        /// ([`Job::tier_cap`]).
+        tier_cap: Option<AccessTier>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -497,6 +519,8 @@ pub enum Command {
         /// The access tier of the message, as for [`Command::Delegate`]; the delegation this
         /// steer may become keeps it.
         tier: Option<AccessTier>,
+        /// The cap that goes with `tier`, as for [`Command::Delegate`].
+        tier_cap: Option<AccessTier>,
     },
     /// Finish the thread's **unsent** `delegate` and `steer` rows of the jobs
     /// up to `job` as `skipped`, in the commit that starts the next job (ADR 0036): the message
@@ -517,6 +541,8 @@ pub enum Command {
         /// person's last message of the job was sent under. The dispatcher reads the card again
         /// when it sends and sends nothing the card no longer honours.
         tier: Option<AccessTier>,
+        /// The cap that goes with `tier` ([`Job::tier_cap`]), as for [`Command::Delegate`].
+        tier_cap: Option<AccessTier>,
     },
     /// Ask the agent to cancel the running task (outbox kind `cancel`). `job` is the number of
     /// the job the person asked to stop: a row claimed after that job ended and the next began
@@ -594,9 +620,11 @@ pub enum Command {
         depth: u8,
         /// What it is asked (untrusted).
         text: String,
-        /// The task to continue: the last ask of this agent in the job ended waiting for the
-        /// person's answer ([`AskOutcome::is_continuable`](crate::AskOutcome::is_continuable)), so
-        /// this ask answers it (ADR 0021). `None` for a new task.
+        /// The task to continue: the last ask of this agent in the job ended waiting for an
+        /// answer in words ([`AskOutcome::is_continuable`](crate::AskOutcome::is_continuable)), so
+        /// this ask answers it (ADR 0021). Never the task of a form, which is the person's to
+        /// answer ([`Ask::form`](crate::Ask::form)): the agent is not asked again. `None` for a
+        /// new task.
         continue_task: Option<String>,
         /// For a new task, the earlier tasks of this agent in this job it refers to, oldest
         /// first, at most [`MAX_ASK_REFERENCES`](crate::MAX_ASK_REFERENCES).
@@ -605,6 +633,12 @@ pub enum Command {
         /// this one goes on in; `None` for the agent's first ask in the job, which names no context
         /// and lets the agent start one.
         context: Option<String>,
+        /// The cap of the person's role on the asked agent (ADR 0061, `max_tier`), pinned on the
+        /// mention that made it askable ([`Job::mentioned_caps`]); `None` when no role of theirs
+        /// caps it. The dispatcher sends the ask under the highest tier the agent's live card
+        /// offers within the lower of its default and the cap, and fails the ask when it has none
+        /// (or lists the extension badly); a card that offers no tier gets the plain message.
+        tier_cap: Option<AccessTier>,
     },
     /// Ask `verifier` to review `pushed` (outbox kind `verify`, ADR 0018). The dispatcher
     /// answers with exactly one [`Input::VerifierReported`] for this `attempt` and
@@ -668,6 +702,7 @@ impl Classify for TransitionError {
             TransitionError::AskRefused(why) => match why {
                 AskRefusal::TaskOver
                 | AskRefusal::UnknownCaller { .. }
+                | AskRefusal::FormPending { .. }
                 | AskRefusal::DepthReached { .. }
                 | AskRefusal::TooManyInJob { .. }
                 | AskRefusal::TooManyRunning { .. } => ErrorClass::Rejected,
@@ -782,6 +817,7 @@ struct Said<'a> {
     catalog: &'a Option<UiCatalogData>,
     mentions: &'a [Mention],
     tier: Option<AccessTier>,
+    tier_cap: Option<AccessTier>,
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -796,6 +832,7 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
             delivery,
             mentions: said.mentions.to_vec(),
             tier: said.tier,
+            tier_cap: said.tier_cap,
         }),
     )
 }
@@ -805,9 +842,9 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
 fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
     job.tier = said.tier;
+    job.tier_cap = said.tier_cap;
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
-    job.mentioned
-        .extend(said.mentions.iter().map(|m| m.agent_id.clone()));
+    job.note_mentions(said.mentions);
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(user_message_event(said, None));
     cmds.push(Command::Delegate {
@@ -815,6 +852,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         catalog: delivery,
         mentions: said.mentions.to_vec(),
         tier: said.tier,
+        tier_cap: said.tier_cap,
     });
     cmds
 }
@@ -824,10 +862,10 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
 fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
     job.tier = said.tier;
+    job.tier_cap = said.tier_cap;
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
     // The agents of a message sent while the job runs may be asked for from then on (ADR 0026).
-    job.mentioned
-        .extend(said.mentions.iter().map(|m| m.agent_id.clone()));
+    job.note_mentions(said.mentions);
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(user_message_event(said, Some(Delivery::Steer)));
     cmds.push(Command::Steer {
@@ -835,6 +873,7 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         catalog: delivery,
         mentions: said.mentions.to_vec(),
         tier: said.tier,
+        tier_cap: said.tier_cap,
     });
     cmds
 }
@@ -863,9 +902,14 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
     let room = MAX_MENTIONS.saturating_sub(job.after_stop_mentions.len());
     job.after_stop_mentions
         .extend(said.mentions.iter().take(room).map(|m| m.shifted(in_front)));
-    // the newest message that names a tier sets the next job's; one that names none leaves it
-    job.after_stop_tier = said.tier.or(job.after_stop_tier);
+    // the newest message that was given a tier, or a cap to keep, sets the next job's; one that
+    // was given neither leaves it
+    if said.tier.is_some() || said.tier_cap.is_some() {
+        job.after_stop_tier = said.tier;
+        job.after_stop_tier_cap = said.tier_cap;
+    }
     job.tier = said.tier;
+    job.tier_cap = said.tier_cap;
     let (record, _) = deliver(job, said.user, said.catalog.as_ref());
     let mut cmds: Vec<Command> = record.into_iter().collect();
     cmds.push(user_message_event(said, Some(Delivery::Interrupt)));
@@ -883,13 +927,14 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let text = job.after_stop.take().unwrap_or_default();
     let mentions = std::mem::take(&mut job.after_stop_mentions);
     let tier = job.after_stop_tier.take();
+    let tier_cap = job.after_stop_tier_cap.take();
     let abandoned = job.number;
     *job = job.next();
     job.tier = tier;
+    job.tier_cap = tier_cap;
     note_task(job, &text);
     // The next job starts with the mentions of the messages that stopped this one (ADR 0026).
-    job.mentioned
-        .extend(mentions.iter().map(|m| m.agent_id.clone()));
+    job.note_mentions(&mentions);
     vec![
         job_started(job),
         Command::DropQueued { job: abandoned },
@@ -898,6 +943,7 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
             catalog: job.catalog.redelivery(),
             mentions,
             tier,
+            tier_cap,
         },
     ]
 }
@@ -916,16 +962,18 @@ fn redelegate(
     text: &str,
     mentions: &[Mention],
     tier: Option<AccessTier>,
+    tier_cap: Option<AccessTier>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
-    job.mentioned
-        .extend(mentions.iter().map(|m| m.agent_id.clone()));
+    job.tier_cap = tier_cap;
+    job.note_mentions(mentions);
     Command::Delegate {
         text: text.to_owned(),
         catalog: job.catalog.redelivery(),
         mentions: mentions.to_vec(),
         tier,
+        tier_cap,
     }
 }
 
@@ -937,17 +985,19 @@ fn redelegation(
     sent: bool,
     mentions: &[Mention],
     tier: Option<AccessTier>,
+    tier_cap: Option<AccessTier>,
 ) -> Vec<Command> {
     if sent {
         job.answer.reset();
         // the agents it mentioned are the job's all the same
-        job.mentioned
-            .extend(mentions.iter().map(|m| m.agent_id.clone()));
-        // so is its tier: the message went out under it, and what follows continues it
+        job.note_mentions(mentions);
+        // so is its tier and the cap that went with it: the message went out under them, and what
+        // follows continues it
         job.tier = tier;
+        job.tier_cap = tier_cap;
         Vec::new()
     } else {
-        vec![redelegate(job, text, mentions, tier)]
+        vec![redelegate(job, text, mentions, tier, tier_cap)]
     }
 }
 
@@ -957,22 +1007,32 @@ fn ui_action(
     action: &UiActionData,
     catalog: &Option<UiCatalogData>,
     tier: Option<AccessTier>,
+    tier_cap: Option<AccessTier>,
 ) -> Vec<Command> {
     job.answer.reset();
     let (record, delivery) = deliver(job, user, catalog.as_ref());
     let mut cmds: Vec<Command> = record.into_iter().collect();
-    cmds.push(append(
-        Actor::user(user),
-        EventBody::UiAction(action.clone()),
-    ));
     // the person's action continues the task under the tier of their last message (ADR 0061), as
     // the application lowered it to what the role and the card allow now; what follows (a rework)
-    // continues it too
-    job.tier = tier.or(job.tier);
+    // continues it too. An action the application had nothing to say about (no tier, no cap)
+    // leaves the job's own.
+    if tier.is_some() || tier_cap.is_some() {
+        job.tier = tier;
+        job.tier_cap = tier_cap;
+    }
+    cmds.push(append(
+        Actor::user(user),
+        EventBody::UiAction(UiActionData {
+            tier: job.tier,
+            tier_cap: job.tier_cap,
+            ..action.clone()
+        }),
+    ));
     cmds.push(Command::DelegateAction {
         action: action.clone(),
         catalog: delivery,
         tier: job.tier,
+        tier_cap: job.tier_cap,
     });
     cmds
 }
@@ -1108,6 +1168,7 @@ pub fn start_thread(
             catalog,
             mentions,
             tier,
+            tier_cap,
         }
         | Input::StopAndSend {
             user,
@@ -1118,6 +1179,7 @@ pub fn start_thread(
             catalog,
             mentions,
             tier,
+            tier_cap,
         } => {
             let said = Said {
                 user,
@@ -1128,6 +1190,7 @@ pub fn start_thread(
                 catalog,
                 mentions,
                 tier: *tier,
+                tier_cap: *tier_cap,
             };
             let mut job = Job::with_gate(gate);
             note_task(&mut job, text);
@@ -1201,6 +1264,7 @@ fn decide(
             catalog,
             mentions,
             tier,
+            tier_cap,
         } => {
             let said = Said {
                 user,
@@ -1211,6 +1275,7 @@ fn decide(
                 catalog,
                 mentions,
                 tier: *tier,
+                tier_cap: *tier_cap,
             };
             message(state, job, &said, false)
         }
@@ -1223,6 +1288,7 @@ fn decide(
             catalog,
             mentions,
             tier,
+            tier_cap,
         } => {
             let said = Said {
                 user,
@@ -1233,6 +1299,7 @@ fn decide(
                 catalog,
                 mentions,
                 tier: *tier,
+                tier_cap: *tier_cap,
             };
             message(state, job, &said, true)
         }
@@ -1241,6 +1308,7 @@ fn decide(
             sent,
             mentions,
             tier,
+            tier_cap,
         } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
@@ -1257,7 +1325,10 @@ fn decide(
                 if !*sent {
                     note_task(job, text);
                 }
-                Ok((state, redelegation(job, text, *sent, mentions, *tier)))
+                Ok((
+                    state,
+                    redelegation(job, text, *sent, mentions, *tier, *tier_cap),
+                ))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
                 if !*sent {
@@ -1266,14 +1337,14 @@ fn decide(
                 job.hold = None;
                 Ok((
                     ThreadState::Queued,
-                    redelegation(job, text, *sent, mentions, *tier),
+                    redelegation(job, text, *sent, mentions, *tier, *tier_cap),
                 ))
             }
             ThreadState::Done | ThreadState::Failed => {
                 *job = job.next();
                 note_task(job, text);
                 let mut cmds = vec![job_started(job)];
-                cmds.extend(redelegation(job, text, *sent, mentions, *tier));
+                cmds.extend(redelegation(job, text, *sent, mentions, *tier, *tier_cap));
                 Ok((ThreadState::Queued, cmds))
             }
             // The person asked to stop: a message they wrote before that stays undelivered.
@@ -1284,6 +1355,7 @@ fn decide(
             action,
             catalog,
             tier,
+            tier_cap,
         } => match state {
             // An answer to a job that is being stopped is not wanted (ADR 0036): its surface
             // belongs to a job the person has replaced.
@@ -1293,14 +1365,15 @@ fn decide(
                     input: input.name(),
                 })
             }
-            ThreadState::Queued | ThreadState::Working => {
-                Ok((state, ui_action(job, user, action, catalog, *tier)))
-            }
+            ThreadState::Queued | ThreadState::Working => Ok((
+                state,
+                ui_action(job, user, action, catalog, *tier, *tier_cap),
+            )),
             ThreadState::Blocked | ThreadState::Verifying => {
                 job.hold = None;
                 Ok((
                     ThreadState::Queued,
-                    ui_action(job, user, action, catalog, *tier),
+                    ui_action(job, user, action, catalog, *tier, *tier_cap),
                 ))
             }
             ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
@@ -1315,6 +1388,7 @@ fn decide(
                 job.after_stop = None;
                 job.after_stop_mentions.clear();
                 job.after_stop_tier = None;
+                job.after_stop_tier_cap = None;
                 Ok((state, vec![Command::RequestCancel { job: job.number }]))
             }
             // The agent's task is over, so there is nothing to ask it to cancel: the thread is
@@ -1434,12 +1508,13 @@ fn decide(
                 let text = job.after_stop.take().unwrap_or_default();
                 let mentions = std::mem::take(&mut job.after_stop_mentions);
                 let tier = job.after_stop_tier.take();
+                let tier_cap = job.after_stop_tier_cap.take();
                 // the held messages are the job's now, and so is the tier they named
                 job.tier = tier;
+                job.tier_cap = tier_cap;
                 note_task(job, &text);
                 // The stop did not happen: the held messages are those of the job that goes on.
-                job.mentioned
-                    .extend(mentions.iter().map(|m| m.agent_id.clone()));
+                job.note_mentions(&mentions);
                 Ok((
                     state,
                     vec![
@@ -1454,6 +1529,7 @@ fn decide(
                             catalog: job.catalog.redelivery(),
                             mentions,
                             tier,
+                            tier_cap,
                         },
                     ],
                 ))

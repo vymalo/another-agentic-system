@@ -45,6 +45,7 @@ fn user_ids(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
         seq,
         alice(),
         EventBody::UserMessage(UserMessageData {
+            tier_cap: None,
             text: text.to_owned(),
             message_id: Some(message_id.to_owned()),
             run_id: Some(run_id.to_owned()),
@@ -138,6 +139,7 @@ fn a_user_message_that_mentions_agents_shows_them_in_its_start_metadata() {
     use orch_core::Mention;
     let mentions = vec![
         Mention {
+            tier_cap: None,
             agent_id: AgentId::new("mock-researcher"),
             label: "@researcher".to_owned(),
             start: 3,
@@ -145,6 +147,7 @@ fn a_user_message_that_mentions_agents_shows_them_in_its_start_metadata() {
             card_url: Some("http://mock-researcher:8080/.well-known/agent-card.json".to_owned()),
         },
         Mention {
+            tier_cap: None,
             agent_id: AgentId::new("mock-coder"),
             label: "@coder".to_owned(),
             start: 20,
@@ -239,6 +242,7 @@ fn a_user_message_that_named_a_tier_shows_it_in_its_start_metadata() {
 fn a_steered_message_that_mentions_agents_has_both_delivery_and_mentions_in_its_start_metadata() {
     use orch_core::{Delivery, Mention};
     let mention = Mention {
+        tier_cap: None,
         agent_id: AgentId::new("mock-coder"),
         label: "@coder".to_owned(),
         start: 5,
@@ -1828,6 +1832,7 @@ fn an_error_before_an_ask_event_still_explains_the_thread_state_that_follows() {
             question: None,
             artifacts: Vec::new(),
             error: None,
+            form: false,
         }),
     );
     let failing = [

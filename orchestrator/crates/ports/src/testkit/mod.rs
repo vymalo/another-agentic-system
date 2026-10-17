@@ -177,6 +177,7 @@ macro_rules! agent_client_conformance {
             unreachable_send_has_a_clean_public_detail
             a_steer_is_refused_by_an_agent_that_does_not_list_the_extension
             a_tier_is_refused_by_an_agent_that_does_not_list_the_extension
+            a_plain_message_under_a_cap_is_not_sent_to_an_agent_that_lists_tiers
         );
     };
     (@cases $make:path; $($case:ident)*) => {

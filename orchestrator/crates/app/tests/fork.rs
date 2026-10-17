@@ -1039,6 +1039,7 @@ async fn the_mentions_and_the_catalog_of_the_message_are_checked_and_recorded() 
     let app = w.app();
     let parent = two_turns(&w, &app).await;
     let mention = |id: &str| Mention {
+        tier_cap: None,
         agent_id: AgentId::new(id),
         label: format!("@{id}"),
         start: 0,

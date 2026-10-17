@@ -75,6 +75,7 @@ async fn start(
 
 fn message(text: &str, tier: Option<AccessTier>) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -88,6 +89,7 @@ fn message(text: &str, tier: Option<AccessTier>) -> Input {
 
 fn stop(text: &str, tier: Option<AccessTier>) -> Input {
     Input::StopAndSend {
+        tier_cap: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -532,6 +534,7 @@ async fn a_stop_and_send_starts_the_next_job_with_the_tier_of_its_messages() {
 
 fn mcp_message(text: &str) -> Input {
     Input::UserMessage {
+        tier_cap: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -860,7 +863,7 @@ async fn an_agent_with_no_tier_a_capped_role_may_use_is_a_422_and_nothing_is_wri
     let careful = alice();
     let error = start(&app, &careful, "go", None).await.unwrap_err();
     assert!(
-        matches!(&error, AppError::Unprocessable(m) if m == "this agent has no tier your role allows"),
+        matches!(&error, AppError::Unprocessable(m) if m == "this agent has no access tier at or below 'edits', the most your role allows"),
         "{error:?}"
     );
     assert_eq!(error.class(), ErrorClass::Rejected);
@@ -870,7 +873,7 @@ async fn an_agent_with_no_tier_a_capped_role_may_use_is_a_422_and_nothing_is_wri
 #[tokio::test]
 async fn a_capped_role_and_an_agent_that_lists_no_tiers_send_plain_a2a() {
     // the cap cannot be said to an agent that does not list the extension: the message is the one
-    // it always was (the contract says so)
+    // it always was (the contract says so), and the cap stays on the job
     let w = World::new();
     let app = capped_at(&w, Some(Edits));
     let careful = alice();
@@ -880,6 +883,9 @@ async fn a_capped_role_and_an_agent_that_lists_no_tiers_send_plain_a2a() {
     assert_eq!(tiers_logged(&app, thread).await, [None]);
     assert_eq!(sent(&w), [("echo go".to_owned(), false, None)]);
     assert!(card_reads(&w) >= 1, "the card was read to know that");
+    // but the cap is kept (it applies to the day the agent lists tiers): see `tier_caps.rs`
+    let job = app.get_thread(&careful, thread).await.unwrap().job;
+    assert_eq!((job.tier, job.tier_cap), (None, Some(Edits)));
     run.shutdown().await;
 }
 
@@ -1273,8 +1279,11 @@ fn ui_action() -> Input {
     let mut context = serde_json::Map::new();
     context.insert("choice".into(), json!("a"));
     Input::UiAction {
+        tier_cap: None,
         user: alice(),
         action: UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".into(),
             name: "go".into(),
             source_component_id: "go".into(),

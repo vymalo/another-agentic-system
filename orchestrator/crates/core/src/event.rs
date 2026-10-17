@@ -286,6 +286,13 @@ pub struct UserMessageData {
     /// field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<AccessTier>,
+    /// The cap of the person's role on the agent (`max_tier`) when the message could be given no
+    /// `tier` because the agent's card offered none then: what the orchestrator's own messages
+    /// for this one (a rework, a steer that became a delegation, the action of a surface) are
+    /// sent under at most, by the card they are sent to. Omitted for a message that has a `tier`,
+    /// for a person with no cap, and in every log written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_cap: Option<AccessTier>,
 }
 
 impl UserMessageData {
@@ -299,6 +306,7 @@ impl UserMessageData {
             delivery: None,
             mentions: Vec::new(),
             tier: None,
+            tier_cap: None,
         }
     }
 }

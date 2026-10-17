@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::StreamExt;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, ForkHistory, KnownExtension, LiveChunk, LiveEnd,
-    Releases, StepKind, StepReport, StepState, TierOffer, ToolsGrant, UiActionData, UiDelivery,
-    UiVersion,
+    Releases, StepKind, StepReport, StepState, TierListing, TierOffer, ToolsGrant, UiActionData,
+    UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -156,6 +156,12 @@ struct State {
     unreachable: HashSet<AgentId>,
     fail_sends: VecDeque<AgentError>,
     no_resubscribe: bool,
+    /// Agents that are redeployed with tiers right after their card is next read
+    /// ([`ScriptedAgent::redeploy_with_tiers_after_next_card_read`]).
+    redeploys: HashMap<AgentId, TierOffer>,
+    /// Agents whose next card read waits for [`ScriptedAgent::release_card_read`], after it has
+    /// read the card ([`ScriptedAgent::hold_next_card_read`]).
+    held_card_reads: HashSet<AgentId>,
     /// How many lookups by message id still fail as `Unreachable` (`usize::MAX`: all of them).
     find_failures: usize,
     /// Agents that play the verifier: every message is answered by the script.
@@ -179,6 +185,8 @@ struct Shared {
     changed: Notify,
     /// Permit-style gate for "gate" and "drop" scripts.
     gate: Notify,
+    /// Permit-style gate for a held card read.
+    card_gate: Notify,
 }
 
 /// A fake [`AgentClient`] driven by the message text, for tests. It behaves like a real
@@ -198,6 +206,14 @@ struct Shared {
 /// - `ui`: `working`, an A2UI surface `s1` (a `createSurface` and an `updateComponents` with a
 ///   button), then `input-required("Pick one")`; the follow-up (an action, or a message)
 ///   continues the task with `working`, an artifact `answer`, `completed`;
+/// - `ui-gate`: like `ui`, but the surface is drawn, then the task waits for
+///   [`ScriptedAgent::release_gate`] before it says `input-required` (a stream that starts in
+///   between never sees the surface);
+/// - `ask-gate`: like `ask`, but the task waits for [`ScriptedAgent::release_gate`] before it says
+///   `input-required` (a question in words, no surface);
+/// - `choices`: a question with choices, as adam's `ask_user` asks one: it is `ui` when the request
+///   carries a UI catalog (a surface, then `input-required`) and `ask` when it carries none (the
+///   question in words);
 /// - `steps`: `working`, a sub-agent step `OpenCode` with two commands under it (the second fails),
 ///   the sub-agent's end, an artifact `echo`, `completed` (the steps are reported the way an agent
 ///   that speaks `steps/v1` does; ids are prefixed with the task id);
@@ -249,6 +265,7 @@ impl ScriptedAgent {
                 state: Mutex::new(State::default()),
                 changed: Notify::new(),
                 gate: Notify::new(),
+                card_gate: Notify::new(),
             }),
         }
     }
@@ -264,7 +281,7 @@ impl ScriptedAgent {
                 releases: Some(releases),
                 ui: None,
                 extensions: BTreeSet::new(),
-                access_tier: None,
+                access_tier: TierListing::Absent,
                 build: std::collections::BTreeMap::new(),
             },
         );
@@ -304,7 +321,18 @@ impl ScriptedAgent {
             .cards
             .entry(AgentId::new(agent))
             .or_insert_with(default_card);
-        card.access_tier = offer;
+        card.access_tier = offer.map_or(TierListing::Absent, TierListing::Offered);
+    }
+
+    /// Makes `agent`'s card list `access-tier/v1` with `params` that cannot be read. Takes effect
+    /// on the next read.
+    pub fn set_access_tier_malformed(&self, agent: &str) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.access_tier = TierListing::Malformed;
     }
 
     /// Makes reading `agent`'s card fail.
@@ -370,6 +398,25 @@ impl ScriptedAgent {
         self.state().no_resubscribe = !supported;
     }
 
+    /// Makes `agent` list `offer` under `access-tier/v1` from **right after** its card is next read:
+    /// the read that decides what a message is sent under sees the card as it was, and the adapter's
+    /// own read for the send sees it redeployed (the window `SendRequest::tier_cap` closes).
+    pub fn redeploy_with_tiers_after_next_card_read(&self, agent: &str, offer: TierOffer) {
+        self.state().redeploys.insert(AgentId::new(agent), offer);
+    }
+
+    /// Makes the next read of `agent`'s card return its answer only after
+    /// [`ScriptedAgent::release_card_read`]: the sender is held, with the card in hand, while the
+    /// test changes the world (the person stops the job, say).
+    pub fn hold_next_card_read(&self, agent: &str) {
+        self.state().held_card_reads.insert(AgentId::new(agent));
+    }
+
+    /// Lets the held card read answer (a permit is kept if none waits yet).
+    pub fn release_card_read(&self) {
+        self.shared.card_gate.notify_one();
+    }
+
     /// Lets one waiting `gate`/`drop` task continue (a permit is stored if none waits yet).
     pub fn release_gate(&self) {
         self.shared.gate.notify_one();
@@ -404,7 +451,7 @@ fn default_card() -> AgentCardInfo {
         releases: None,
         ui: None,
         extensions: BTreeSet::new(),
-        access_tier: None,
+        access_tier: TierListing::Absent,
         build: std::collections::BTreeMap::new(),
     }
 }
@@ -747,7 +794,11 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
     shared.push_status(&task, Working, None);
     match script.as_str() {
         "ask" if !resumed => shared.push_status(&task, InputRequired, Some("Which branch?")),
-        "ask" => {
+        "ask-gate" if !resumed => {
+            shared.gate.notified().await;
+            shared.push_status(&task, InputRequired, Some("Which branch?"));
+        }
+        "ask" | "ask-gate" => {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
             shared.push_status(&task, Completed, None);
         }
@@ -755,7 +806,12 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_ui(&task, "s1", vec![ui_create("s1"), ui_components("s1")]);
             shared.push_status(&task, InputRequired, Some("Pick one"));
         }
-        "ui" => {
+        "ui-gate" if !resumed => {
+            shared.push_ui(&task, "s1", vec![ui_create("s1"), ui_components("s1")]);
+            shared.gate.notified().await;
+            shared.push_status(&task, InputRequired, Some("Pick one"));
+        }
+        "ui" | "ui-gate" => {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
             shared.push_status(&task, Completed, None);
         }
@@ -1031,14 +1087,27 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
 
 impl AgentClient for ScriptedAgent {
     async fn read_card(&self, ep: &AgentEndpoint) -> Result<AgentCardInfo, AgentError> {
-        let mut st = self.state();
-        st.calls.push(Call::ReadCard {
-            agent: ep.id.clone(),
-        });
-        if st.cards_down.contains(&ep.id) || st.unreachable.contains(&ep.id) {
-            return Err(AgentError::unreachable("card unreachable"));
+        let (card, held) = {
+            let mut st = self.state();
+            st.calls.push(Call::ReadCard {
+                agent: ep.id.clone(),
+            });
+            if st.cards_down.contains(&ep.id) || st.unreachable.contains(&ep.id) {
+                return Err(AgentError::unreachable("card unreachable"));
+            }
+            let card = st.cards.get(&ep.id).cloned().unwrap_or_else(default_card);
+            if let Some(offer) = st.redeploys.remove(&ep.id) {
+                st.cards
+                    .entry(ep.id.clone())
+                    .or_insert_with(default_card)
+                    .access_tier = TierListing::Offered(offer);
+            }
+            (card, st.held_card_reads.remove(&ep.id))
+        };
+        if held {
+            self.shared.card_gate.notified().await;
         }
-        Ok(st.cards.get(&ep.id).cloned().unwrap_or_else(default_card))
+        Ok(card)
     }
 
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
@@ -1080,12 +1149,26 @@ impl AgentClient for ScriptedAgent {
                 && !st
                     .cards
                     .get(&req.endpoint.id)
-                    .and_then(|card| card.access_tier.as_ref())
+                    .and_then(|card| card.access_tier.offer())
                     .is_some_and(|offer| offer.honours(tier))
             {
                 return Err(AgentError::Unsupported(format!(
                     "the agent no longer takes the access tier '{tier}'"
                 )));
+            }
+            // a message the sender sent plain under a cap, because the card it read listed no tier,
+            // is not sent to an agent that lists the extension by the time of this read (the
+            // adapter's own: `SendRequest::tier_cap`); the sender decides again
+            if req.tier.is_none()
+                && req.tier_cap.is_some()
+                && st
+                    .cards
+                    .get(&req.endpoint.id)
+                    .is_some_and(|card| card.access_tier != TierListing::Absent)
+            {
+                return Err(AgentError::protocol(
+                    "the agent's access tiers changed while the message was being sent; it is decided again",
+                ));
             }
             if req.steer {
                 let (envelope, fresh) = steer_into(&mut st, &req)?;
@@ -1191,6 +1274,18 @@ impl AgentClient for ScriptedAgent {
                 tokio::spawn(verify(Arc::clone(&self.shared), task.clone(), script));
             }
             None => {
+                // a question with choices is a form for an agent that was told of a screen
+                let text = match text.trim_start().strip_prefix("choices") {
+                    Some(rest) if script == "choices" => {
+                        let script = if req.ui_catalog.is_some() {
+                            "ui"
+                        } else {
+                            "ask"
+                        };
+                        format!("{script}{rest}")
+                    }
+                    _ => text,
+                };
                 tokio::spawn(drive(Arc::clone(&self.shared), task.clone(), text, resumed));
             }
         }
@@ -1378,12 +1473,9 @@ fn snapshot(st: &State, task: &str) -> Result<TaskSnapshot, AgentError> {
     let mut envelopes: Vec<AgentEnvelope> = rec
         .log
         .iter()
-        .filter(|e| {
-            matches!(
-                e.update,
-                Some(AgentUpdate::Artifact { .. } | AgentUpdate::Ui { .. })
-            )
-        })
+        // what a real agent's task holds: its artifacts and its current status. Not the surfaces it
+        // drew, which only a stream carries.
+        .filter(|e| matches!(e.update, Some(AgentUpdate::Artifact { .. })))
         .cloned()
         .collect();
     envelopes.push(AgentEnvelope {

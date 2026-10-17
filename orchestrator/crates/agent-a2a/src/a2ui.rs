@@ -393,6 +393,8 @@ mod tests {
         let mut context = serde_json::Map::new();
         context.insert("choice".into(), json!("a"));
         let action = UiActionData {
+            tier: None,
+            tier_cap: None,
             surface_id: "s1".into(),
             name: "go".into(),
             source_component_id: "btn".into(),

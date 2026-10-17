@@ -9,8 +9,8 @@
 //! ([`App::resolve_tier`]). A tier is never silently dropped: ignoring it would run the agent under
 //! its default for a person who asked for something narrower.
 
-use orch_core::{AccessTier, AgentId, TierOffer};
-use orch_ports::{AgentError, Ports};
+use orch_core::{AccessTier, AgentId};
+use orch_ports::{AgentEndpoint, AgentError, Ports};
 use serde_json::Value;
 
 use crate::{Access, App, AppError};
@@ -50,33 +50,33 @@ fn not_a_tier() -> TierError {
     ))
 }
 
-/// What a live card says about a tier a message names.
-#[derive(Debug)]
-pub(crate) enum TierCard {
-    /// The card lists `access-tier/v1` with well-formed params and the tier is among its `tiers`.
-    Honoured,
-    /// The card was read, and it does not honour the tier: it does not list the extension, lists it
-    /// badly, or does not list this tier.
-    NotHonoured,
-    /// The card could not be read in time.
-    Unreadable(AgentError),
+/// What a message is written and sent under, as [`App::resolve_tier`] decided when it was accepted.
+///
+/// At most one of the two is set. `tier` is a tier: the message is sent with it, if the live card
+/// still honours it when it is sent. `cap` is the cap of the person's role, set **instead** when no
+/// tier could be decided because the agent's card offered none; it travels with the message and
+/// with everything the job sends on its behalf, and the dispatcher turns it into a tier when it
+/// reads the live card ([`App::tier_for_send`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct TierPin {
+    pub(crate) tier: Option<AccessTier>,
+    pub(crate) cap: Option<AccessTier>,
 }
 
-impl TierCard {
-    pub(crate) fn of(offer: Option<&TierOffer>, tier: AccessTier) -> TierCard {
-        if offer.is_some_and(|offer| offer.honours(tier)) {
-            TierCard::Honoured
-        } else {
-            TierCard::NotHonoured
+impl TierPin {
+    fn tier(tier: AccessTier) -> TierPin {
+        TierPin {
+            tier: Some(tier),
+            cap: None,
         }
     }
-}
 
-/// The highest tier the card honours that is not above `limit`: what a person who may go no
-/// higher than `limit` gets from an agent that offers `offer`. `None` when the agent has no tier
-/// that low.
-fn highest_within(offer: &TierOffer, limit: AccessTier) -> Option<AccessTier> {
-    offer.tiers().iter().copied().rfind(|tier| *tier <= limit)
+    fn cap(cap: AccessTier) -> TierPin {
+        TierPin {
+            tier: None,
+            cap: Some(cap),
+        }
+    }
 }
 
 impl<P: Ports> App<P> {
@@ -91,15 +91,17 @@ impl<P: Ports> App<P> {
     /// * An **inherited** tier is lowered to the person's cap and then to the highest tier the live
     ///   card still honours (never raised); a card that no longer lists the extension, or has no tier
     ///   that low, is a **422** that says what to do, and nothing is written.
-    /// * **Neither**: with no cap the answer is `None` and no card is read, so plain A2A is as it
+    /// * **Neither**: with no cap the answer is none and no card is read, so plain A2A is as it
     ///   was. With a cap the live card is read (**503** when it cannot be), and an agent that offers
     ///   tiers is given the highest one not above the lower of its `default` and the cap (**422**
-    ///   "this agent has no tier your role allows" when none is). An agent whose card lists no
-    ///   offer is given none: the cap cannot be said to it, and the agent works as it always did.
+    ///   when it has none, or lists the extension badly). An agent whose card lists no offer, or
+    ///   that the registry cannot place, is given **no tier but the cap**
+    ///   ([`TierPin::cap`]): the cap is written with the message and kept on the job, and the
+    ///   dispatcher decides again from the live card each time it sends, so an agent that is
+    ///   redeployed with tiers is never run at its own default for a person capped below it.
     ///
-    /// With a cap, the tier returned is `Some` whenever the agent offers tiers, so the message is
-    /// sent with it and logged with it, and the job's tier ([`orch_core::Job::tier`]) is pinned: a
-    /// person capped at `edits` is never run at an agent's `auto` by leaving the chip alone.
+    /// With a cap, the pin always holds a tier or the cap, so the job ([`orch_core::Job::tier`],
+    /// [`orch_core::Job::tier_cap`]) and every row it writes keep it.
     ///
     /// # Errors
     /// [`AppError::Unprocessable`] as above, [`AppError::CardUnavailable`] when a card that is
@@ -111,7 +113,7 @@ impl<P: Ports> App<P> {
         agent: &AgentId,
         named: Option<AccessTier>,
         inherited: Option<AccessTier>,
-    ) -> Result<Option<AccessTier>, AppError> {
+    ) -> Result<TierPin, AppError> {
         let id = self.canonical_agent(agent);
         let cap = access.max_tier_for(&id);
         if let Some(tier) = named {
@@ -121,50 +123,102 @@ impl<P: Ports> App<P> {
                 )));
             }
         } else if inherited.is_none() && cap.is_none() {
-            return Ok(None);
+            return Ok(TierPin::default());
         }
         let Some(entry) = self.resolve_agent(&id).await? else {
             // an agent that is not there is refused when the message is sent: a named tier is
-            // refused now, the others are left to that
-            return match named {
-                Some(tier) => Err(not_taken(tier)),
-                None => Ok(None),
+            // refused now; the others are left to that. A tier the person's last choice carries is
+            // kept, lowered to the cap (the send checks it against the live card, and fails when
+            // the agent no longer honours it), never dropped; with none, the cap is kept so that
+            // nothing is sent above it should the agent come back
+            return match (named, inherited) {
+                (Some(tier), _) => Err(not_taken(tier)),
+                (None, Some(chosen)) => {
+                    Ok(TierPin::tier(cap.map_or(chosen, |cap| chosen.min(cap))))
+                }
+                (None, None) => Ok(TierPin { tier: None, cap }),
             };
         };
-        let offer = match self.card_offer(&entry.endpoint).await {
-            Ok(offer) => offer,
+        let listing = match self.card_listing(&entry.endpoint).await {
+            Ok(listing) => listing,
             Err(error) => {
                 tracing::warn!(agent = %id, error = %orch_core::report(&error), "the agent card could not be read to decide the access tier");
                 return Err(AppError::CardUnavailable { agent: id });
             }
         };
-        match (named, inherited, offer) {
-            (Some(tier), _, offer) if offer.as_ref().is_some_and(|o| o.honours(tier)) => {
-                Ok(Some(tier))
+        match (named, inherited) {
+            (Some(tier), _) if listing.offer().is_some_and(|offer| offer.honours(tier)) => {
+                Ok(TierPin::tier(tier))
             }
-            (Some(tier), _, _) => Err(not_taken(tier)),
-            (None, Some(chosen), Some(offer)) => {
+            (Some(tier), _) => Err(not_taken(tier)),
+            (None, Some(chosen)) => {
+                let Some(offer) = listing.offer() else {
+                    return Err(AppError::Unprocessable(format!(
+                        "this agent no longer lists access tiers, so the tier '{chosen}' of this \
+                         chat cannot be kept: start a new chat"
+                    )));
+                };
                 let limit = cap.map_or(chosen, |cap| chosen.min(cap));
-                highest_within(&offer, limit).map(Some).ok_or_else(|| {
-                    AppError::Unprocessable(format!(
-                        "this agent has no tier at or below '{limit}' any more, so the tier \
-                         '{chosen}' of this chat cannot be kept: start a new chat"
-                    ))
-                })
+                offer
+                    .highest_within(limit)
+                    .map(TierPin::tier)
+                    .ok_or_else(|| {
+                        AppError::Unprocessable(format!(
+                            "this agent has no tier at or below '{limit}' any more, so the tier \
+                             '{chosen}' of this chat cannot be kept: start a new chat"
+                        ))
+                    })
             }
-            (None, Some(chosen), None) => Err(AppError::Unprocessable(format!(
-                "this agent no longer lists access tiers, so the tier '{chosen}' of this chat \
-                 cannot be kept: start a new chat"
-            ))),
-            (None, None, Some(offer)) => {
-                // `cap` is some: with none and nothing inherited the answer was `None` above
-                let limit = cap.map_or(offer.default_tier(), |cap| offer.default_tier().min(cap));
-                highest_within(&offer, limit).map(Some).ok_or_else(|| {
-                    AppError::Unprocessable("this agent has no tier your role allows".to_owned())
-                })
+            (None, None) => match cap {
+                // `cap` is some: with none and nothing inherited the answer was given above
+                Some(cap) => match listing.under_cap(cap) {
+                    Ok(Some(tier)) => Ok(TierPin::tier(tier)),
+                    // the agent has no tier to give: keep the cap for when it has
+                    Ok(None) => Ok(TierPin::cap(cap)),
+                    Err(refusal) => Err(AppError::Unprocessable(refusal.to_string())),
+                },
+                None => Ok(TierPin::default()),
+            },
+        }
+    }
+
+    /// The tier a message is **sent** under, decided by the live card of `endpoint`, read now:
+    /// the dispatcher's half of [`App::resolve_tier`], called at every send of a delegation, a
+    /// steer or an ask. `tier` and `cap` are what the message was written with ([`TierPin`]).
+    ///
+    /// * Neither: `Ok(None)`, and no card is read.
+    /// * A `tier`: it is sent if the card still honours it; otherwise
+    ///   [`AgentError::Unsupported`] (nothing is sent, the work fails).
+    /// * A `cap`: the highest tier the card offers within the lower of its default and the cap
+    ///   ([`orch_core::TierListing::under_cap`]); a card that lists no tier gets the plain message; one that
+    ///   has none that low, or lists the extension badly, is [`AgentError::Unsupported`].
+    ///
+    /// # Errors
+    /// [`AgentError::Unsupported`] as above (a refusal, never retried); the error the read gave when
+    /// the card could not be read (retried when it is transient).
+    pub(crate) async fn tier_for_send(
+        &self,
+        endpoint: &AgentEndpoint,
+        tier: Option<AccessTier>,
+        cap: Option<AccessTier>,
+    ) -> Result<Option<AccessTier>, AgentError> {
+        match (tier, cap) {
+            (None, None) => Ok(None),
+            (Some(tier), _) => {
+                let listing = self.card_listing(endpoint).await?;
+                if listing.offer().is_some_and(|offer| offer.honours(tier)) {
+                    Ok(Some(tier))
+                } else {
+                    Err(AgentError::Unsupported(format!(
+                        "the agent no longer takes the access tier '{tier}'"
+                    )))
+                }
             }
-            // the cap cannot be said to an agent that offers no tier
-            (None, None, None) => Ok(None),
+            (None, Some(cap)) => self
+                .card_listing(endpoint)
+                .await?
+                .under_cap(cap)
+                .map_err(|refusal| AgentError::Unsupported(refusal.to_string())),
         }
     }
 }

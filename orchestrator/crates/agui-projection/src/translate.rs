@@ -451,6 +451,7 @@ pub fn translate_with_warnings(
         action.run_id = run_id;
         return finish(
             vec![Input::UiAction {
+                tier_cap: None,
                 user,
                 action,
                 catalog: None,
@@ -465,6 +466,7 @@ pub fn translate_with_warnings(
     let inputs = match (answer, new_user, cancelled) {
         (Some(_), Some(_), _) => return Err(InputError::AmbiguousAnswer),
         (Some(text), None, _) => vec![Input::UserMessage {
+            tier_cap: None,
             user,
             text,
             message_id: None,
@@ -478,6 +480,7 @@ pub fn translate_with_warnings(
         // (and treats it as a plain message when nothing runs). A new thread has nothing to stop.
         (None, Some((id, text)), _) if send == Some(Delivery::Interrupt) && known.is_some() => {
             vec![Input::StopAndSend {
+                tier_cap: None,
                 user,
                 text,
                 message_id: Some(id),
@@ -489,6 +492,7 @@ pub fn translate_with_warnings(
             }]
         }
         (None, Some((id, text)), _) => vec![Input::UserMessage {
+            tier_cap: None,
             user,
             text,
             message_id: Some(id),
@@ -607,6 +611,8 @@ fn user_action(input: &RunAgentInput) -> Result<Option<UiActionData>, InputError
         Some(_) => return Err(invalid("context must be an object")),
     };
     let action = UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: text("surfaceId")?,
         name: text("name")?,
         source_component_id: text("sourceComponentId")?,

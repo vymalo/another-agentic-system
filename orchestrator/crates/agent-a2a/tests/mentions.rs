@@ -78,6 +78,7 @@ fn request(fake: &FakeAgent, mentions: Vec<MentionInfo>) -> SendRequest {
         steer: false,
         mentions,
         tier: None,
+        tier_cap: None,
     }
 }
 

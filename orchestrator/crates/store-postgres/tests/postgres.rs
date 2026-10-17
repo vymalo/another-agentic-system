@@ -78,6 +78,7 @@ fn delegate() -> NewOutbox {
     NewOutbox {
         id: OutboxId(Uuid::now_v7()),
         payload: OutboxPayload::Delegate {
+            tier_cap: None,
             text: "go".into(),
             release: None,
             new_job: false,
@@ -2349,6 +2350,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             // a row an older build wrote names no context (ADR 0055)
             context_id: None,
             outcome: Some(orch_core::AskOutcome::TimedOut),
+            form: false,
         }]
     );
     // and a row that names the context the agent assigned reads back with it
@@ -2397,6 +2399,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
     assert_eq!(
         new.payload,
         OutboxPayload::Ask {
+            tier_cap: None,
             job: 1,
             ask: 1,
             agent: AgentId::new("researcher"),
@@ -2793,6 +2796,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
     assert_eq!(
         new.payload,
         OutboxPayload::Steer {
+            tier_cap: None,
             text: "you were wrong".to_owned(),
             release: None,
             ui_catalog: None,
@@ -2811,6 +2815,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
     assert_eq!(
         back.payload,
         OutboxPayload::Delegate {
+            tier_cap: None,
             text: "you were wrong".to_owned(),
             release: None,
             new_job: false,

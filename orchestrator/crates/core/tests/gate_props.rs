@@ -62,6 +62,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
     let small = 0_u32..6;
     prop_oneof![
         2 => "[a-z]{1,6}".prop_map(|text| Input::UserMessage {
+            tier_cap: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -94,7 +95,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             retryable
         }),
         1 => Just(Input::CancelledBeforeStart),
-        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { text, sent: false, mentions: Vec::new(), tier: None, }),
+        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { tier_cap: None, text, sent: false, mentions: Vec::new(), tier: None, }),
         1 => (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected {
                 agent: AgentId::new("a"),

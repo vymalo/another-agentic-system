@@ -15,6 +15,8 @@ fn action(name: &str) -> UiActionData {
     let mut context = serde_json::Map::new();
     context.insert("choice".into(), json!("a"));
     UiActionData {
+        tier: None,
+        tier_cap: None,
         surface_id: "s1".into(),
         name: name.into(),
         source_component_id: "go".into(),
@@ -26,6 +28,7 @@ fn action(name: &str) -> UiActionData {
 
 fn input(a: UiActionData) -> Input {
     Input::UiAction {
+        tier_cap: None,
         user: alice(),
         action: a,
         catalog: None,
@@ -186,6 +189,7 @@ async fn an_action_on_a_finished_thread_is_refused_and_someone_elses_thread_is_n
             &bob(),
             t.id,
             Input::UiAction {
+                tier_cap: None,
                 user: bob(),
                 action: action("go"),
                 catalog: None,

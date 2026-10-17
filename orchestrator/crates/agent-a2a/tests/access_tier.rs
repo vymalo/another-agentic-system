@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
-use orch_core::{ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate, STEER_EXTENSION};
+use orch_core::{
+    ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate, Classify, STEER_EXTENSION,
+    TierListing,
+};
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, SendContent, SendRequest,
 };
@@ -52,6 +55,7 @@ fn request(fake: &FakeAgent, text: &str, tier: Option<AccessTier>) -> SendReques
         steer: false,
         mentions: Vec::new(),
         tier,
+        tier_cap: None,
     }
 }
 
@@ -87,12 +91,23 @@ async fn the_card_is_read_with_its_tiers_and_default() {
         .read_card(&fake.endpoint("coder", None))
         .await
         .unwrap();
-    let offer = card.access_tier.expect("the card lists the extension");
+    let offer = card
+        .access_tier
+        .offer()
+        .cloned()
+        .expect("the card lists the extension");
     assert_eq!(offer.tiers(), AccessTier::ALL);
     assert_eq!(offer.default_tier(), AccessTier::Auto);
-    // a card that lists nothing, or lists it badly, offers nothing
+    // a card that lists nothing lists nothing; one that lists it badly is told apart from it, so
+    // that a person capped below the agent's default is not run on an agent that cannot say its
+    // tiers
+    let fake = agent(None).await;
+    let card = client()
+        .read_card(&fake.endpoint("coder", None))
+        .await
+        .unwrap();
+    assert_eq!(card.access_tier, TierListing::Absent);
     for params in [
-        None,
         Some(json!({})),
         Some(json!({"tiers": ["plan"], "default": "bypass"})),
         Some(json!({"tiers": ["plan", "plan"], "default": "plan"})),
@@ -103,7 +118,7 @@ async fn the_card_is_read_with_its_tiers_and_default() {
             .read_card(&fake.endpoint("coder", None))
             .await
             .unwrap();
-        assert_eq!(card.access_tier, None, "{params:?}");
+        assert_eq!(card.access_tier, TierListing::Malformed, "{params:?}");
     }
 }
 
@@ -187,6 +202,44 @@ async fn a_tier_is_never_sent_to_a_card_that_does_not_honour_it() {
             fake.calls()
         );
     }
+}
+
+/// The sender decided "no tier" from a card that listed none, and holds the person's cap. The adapter
+/// reads the card again for this very call: an agent that lists the extension by then was
+/// redeployed in between, and the message would run at its own default. Nothing is sent, and the
+/// error is retryable, so the sender decides again.
+#[tokio::test]
+async fn a_plain_message_under_a_cap_is_not_sent_to_an_agent_that_lists_tiers_by_now() {
+    for params in [
+        Some(all()),
+        Some(json!({"tiers": ["plan"], "default": "plan"})),
+        // listed badly is still listed: nothing can be said about its tiers
+        Some(json!({"tiers": []})),
+    ] {
+        let fake = agent(params.clone()).await;
+        let mut req = request(&fake, "go", None);
+        req.tier_cap = Some(AccessTier::Edits);
+        let error = match client().send_stream(req).await {
+            Err(error) => error,
+            Ok(_) => panic!("{params:?}: the message was sent"),
+        };
+        assert!(error.is_retryable(), "{error:?}");
+        assert!(
+            fake.calls().is_empty(),
+            "nothing reached the agent: {:?}",
+            fake.calls()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_plain_message_under_a_cap_is_sent_as_it_was_to_an_agent_that_lists_no_tier() {
+    let fake = agent(None).await;
+    let mut req = request(&fake, "go", None);
+    req.tier_cap = Some(AccessTier::Edits);
+    let (call, _) = send(&fake, req).await;
+    assert_eq!(call.access_tier, None);
+    assert!(!call.activates(ACCESS_TIER_EXTENSION));
 }
 
 #[tokio::test]
