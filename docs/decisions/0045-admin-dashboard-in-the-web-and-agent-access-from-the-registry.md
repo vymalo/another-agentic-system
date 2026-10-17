@@ -230,7 +230,7 @@ The rest of the decision (permissions as composite roles, the audience, the take
 
 Decision 1, points 1 to 9, is built in `orchestrator/` (slice D8a, the Rust half of D8). The dev stack (slice D8b, the same day) gives the
 mock registry's agents their audiences and proves the rule in `dev/registry-e2e.sh` (`dev`, `holder@example.com` and `admin`;
-*unverified* until CI's `coder-e2e` job has run it against the real orchestrator: no container daemon was available where it was written). The decision
+*verified 2026-10-16*: its 79 checks passed in CI's `coder-e2e` job against the real orchestrator, edge and oauth2-proxy, run 38979721632 at `63a67ee`). The decision
 text above is as it was accepted. What was built, and where it needed a choice:
 
 - **The audience is a type that cannot be confused** (`orch_ports::AgentAudience`, in `crates/ports/src/registry.rs`; `RegistryEntry`
