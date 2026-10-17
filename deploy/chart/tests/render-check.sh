@@ -51,6 +51,9 @@ out_all() { all_in "$out" "$@"; }
 cfg_all() { all_in "$cfg" "$@"; }
 sec_all() { all_in "$sec" "$@"; }
 sec2_all() { all_in "$sec2" "$@"; }
+# line_after <file> <anchor> <n> <pattern>: the line <n> lines after EVERY line that matches <anchor> matches <pattern>, and there is such an anchor.
+# all_in (above) says only that each pattern is somewhere, so it passes when two values are swapped between their keys; this says which key holds which.
+line_after() { awk -v a="$2" -v n="$3" -v p="$4" '{ l[NR] = $0 } $0 ~ a { seen = 1; want[NR + n] = 1 } END { for (i in want) if (l[i] !~ p) bad = 1; exit !(seen && !bad) }' "$1"; }
 # render [helm args]: the base render into $out; render_fails: it must not render.
 render() { helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" > "$out"; }
 renders() { helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" >/dev/null 2>&1; }
@@ -1967,6 +1970,240 @@ refused "mobile links without Android's release certificate" --set auth.browser.
 refused "mobile links with a malformed Android certificate fingerprint" --set auth.browser.enabled=true --set mobileAppLinks.enabled=true --set 'mobileAppLinks.android.sha256CertFingerprints={aa:bb}' --set mobileAppLinks.ios.appId=ABCDE12345.com.vymalo.agentic --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
 refused "mobile links without iOS's Apple Team ID" --set auth.browser.enabled=true --set mobileAppLinks.enabled=true --set 'mobileAppLinks.android.sha256CertFingerprints={AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99}' --set 'orchestrator.cors.allowedOrigins={tauri://localhost,http://tauri.localhost}'
 refused "mobile links without Android's CORS origin" --set auth.browser.enabled=true --set mobileAppLinks.enabled=true --set 'mobileAppLinks.android.sha256CertFingerprints={AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99}' --set mobileAppLinks.ios.appId=ABCDE12345.com.vymalo.agentic --set 'orchestrator.cors.allowedOrigins={tauri://localhost}'
+
+# ---- Backups of the database cluster (issue #151; README.md, "Backups"): `backup.enabled`, off by default ---------------------------------
+# Off, nothing of it is rendered (the Cluster's documents are tests/golden/db-default.yaml, byte for byte, in the checks above). On, the barman-cloud
+# plugin archives the WAL and takes a base backup to S3: an ObjectStore and a ScheduledBackup of the cluster's name, the plugin in the Cluster's
+# `spec.plugins`, and the credentials in an ExternalSecret that reads two properties of the AWS secret, which are not the artifacts'.
+bk_values="$chart/tests/backup.values.yaml"
+bk_aws="$chart/tests/backup-aws.values.yaml"
+render
+check "backup: off by default in values.yaml (enabled false, no bucket, no region)" sh -c "
+  awk '/^backup:/ { b = 1; next } b && /^[^ #]/ { b = 0 } b' '$chart/values.yaml' | grep -Eq '^  enabled: false\$' &&
+  awk '/^backup:/ { b = 1; next } b && /^[^ #]/ { b = 0 } b' '$chart/values.yaml' | grep -Eq '^    bucket: \"\"\$' &&
+  awk '/^backup:/ { b = 1; next } b && /^[^ #]/ { b = 0 } b' '$chart/values.yaml' | grep -Eq '^    region: \"\"\$'"
+check "backup: the default render has no ObjectStore, no ScheduledBackup, no plugin on the Cluster and no backup Secret" lacks '^kind: (ObjectStore|ScheduledBackup)$|barman|^  plugins:$|db-backup'
+bk_no_plugin() { ! doc Cluster another-agentic-db | grep -Eq '^  plugins:|isWALArchiver'; }
+check "backup: the default render's Cluster has no plugins and no archiver (the golden holds the rest)" bk_no_plugin
+cp "$out" "$out.def"
+
+# On, with every knob away from its default (an S3-compatible server).
+render -f "$bk_values"
+doc Cluster another-agentic-db > "$sec"
+bk_plugin() {
+  sec_all '^  plugins:$' &&
+    line_after "$sec" '^  plugins:$' 1 '^    - name: barman-cloud\.cloudnative-pg\.io$' &&
+    line_after "$sec" '^    - name: barman-cloud\.cloudnative-pg\.io$' 1 '^      isWALArchiver: true$' &&
+    line_after "$sec" '^      isWALArchiver: true$' 1 '^      parameters:$' &&
+    line_after "$sec" '^      parameters:$' 1 '^        barmanObjectName: another-agentic-db$'
+}
+check "backup: the Cluster loads the barman-cloud plugin as the WAL archiver, naming the ObjectStore of its own name" bk_plugin
+bk_server_name_set() { line_after "$sec" '^        barmanObjectName: another-agentic-db$' 1 '^        serverName: "another-agentic-db-2"$' && [ "$(grep -Ec '^ +serverName:' "$sec")" -eq 1 ]; }
+check "backup: the fixture's backup.serverName is the plugin entry's serverName parameter, below barmanObjectName, and the Cluster has no other" bk_server_name_set
+# The two restore examples are the README's: what they name is what the chart renders (a rename in the chart breaks a restore nobody has rehearsed).
+bk_block() { # bk_block <top-level key of spec> <file>: its lines under `spec:`, quotes dropped (the render quotes, the examples do not)
+  awk -v k="  $1:" '$0 == k { on = 1; print; next } on && /^    / { print; next } { on = 0 }' "$2" | tr -d '"'
+}
+bk_cutover_example() {
+  ex="$chart/examples/restore-cutover.yaml"
+  bk_block plugins "$sec" > "$sec2" && bk_block plugins "$ex" | cmp -s - "$sec2" &&
+    bk_block storage "$sec" > "$sec2" && bk_block storage "$ex" | cmp -s - "$sec2" &&
+    line_after "$ex" '^metadata:$' 1 '^  name: another-agentic-db$' &&
+    line_after "$ex" '^          barmanObjectName: another-agentic-db$' 1 '^          serverName: another-agentic-db$' &&
+    line_after "$ex" '^    recovery:$' 1 '^      source: source$'
+}
+check "backup: examples/restore-cutover.yaml has the chart's cluster name, storage and plugin entry (the fixture's backup.serverName), and reads the old server name from the ObjectStore" bk_cutover_example
+bk_test_example() {
+  ex="$chart/examples/restore-cluster.yaml"
+  ! grep -Eq '^  plugins:' "$ex" && bk_block storage "$sec" > "$sec2" && bk_block storage "$ex" | cmp -s - "$sec2" &&
+    line_after "$ex" '^metadata:$' 1 '^  name: another-agentic-db-restore$' &&
+    line_after "$ex" '^          barmanObjectName: another-agentic-db$' 1 '^          serverName: another-agentic-db$'
+}
+check "backup: examples/restore-cluster.yaml has no plugins entry (it must not archive), the chart's storage, and reads the cluster's own server name from the ObjectStore" bk_test_example
+check "backup: still one Cluster (three databases, one cluster, one object store)" nkind Cluster 1
+bk_one_each() {
+  nkind ObjectStore 1 && nkind ScheduledBackup 1 && grep -Eq '^apiVersion: barmancloud\.cnpg\.io/v1$' "$out" &&
+    dhas ObjectStore another-agentic-db '^  name: another-agentic-db$' && dhas ScheduledBackup another-agentic-db '^  name: another-agentic-db$'
+}
+check "backup: one ObjectStore (barmancloud.cnpg.io/v1) and one ScheduledBackup, both named like the cluster" bk_one_each
+doc ScheduledBackup another-agentic-db > "$sec"
+check "backup: the ScheduledBackup uses the plugin method, the plugin's name, a backup owned by it, on the cluster, and the fixture's immediate false" sec_all \
+  '^  method: plugin$' '^    name: barman-cloud\.cloudnative-pg\.io$' '^  backupOwnerReference: self$' '^    name: another-agentic-db$' '^  immediate: false$'
+bk_sb_pairs() {
+  line_after "$sec" '^  pluginConfiguration:$' 1 '^    name: barman-cloud\.cloudnative-pg\.io$' &&
+    line_after "$sec" '^  cluster:$' 1 '^    name: another-agentic-db$'
+}
+check "backup: the plugin's name is under pluginConfiguration and the cluster's under cluster (not swapped)" bk_sb_pairs
+bk_schedule_fields() { awk -F'"' '/^  schedule: / { n = split($2, a, " "); print n }' "$sec" | grep -qx 6; }
+check "backup: the schedule has six fields, seconds first (the fixture's is 0 30 2 * * *)" bk_schedule_fields
+check "backup: the schedule is the fixture's" sec_all '^  schedule: "0 30 2 \* \* \*"$'
+doc ObjectStore another-agentic-db > "$sec"
+check "backup: the ObjectStore keeps a recovery window of the fixture's 4w" sec_all '^  retentionPolicy: "4w"$'
+check "backup: the destination is s3://<bucket>/<prefix>, and the endpoint is the server's" sec_all \
+  '^    destinationPath: "s3://agentic-db-backups/netcup/prod"$' '^    endpointURL: "http://object-store\.storage\.svc:9000"$'
+bk_cred_pairs() { # the key id is read from ACCESS_KEY_ID and the secret key from ACCESS_SECRET_KEY, each from the Secret of its own name (not swapped)
+  line_after "$sec" '^      accessKeyId:$' 1 '^        name: another-agentic-db-backup$' && line_after "$sec" '^      accessKeyId:$' 2 '^        key: ACCESS_KEY_ID$' &&
+    line_after "$sec" '^      secretAccessKey:$' 1 '^        name: another-agentic-db-backup$' && line_after "$sec" '^      secretAccessKey:$' 2 '^        key: ACCESS_SECRET_KEY$'
+}
+check "backup: accessKeyId is the key ACCESS_KEY_ID and secretAccessKey the key ACCESS_SECRET_KEY, each of the Secret another-agentic-db-backup (not swapped)" bk_cred_pairs
+check "backup: the credentials are two references, no value (both name the Secret, one the key id and one the secret key)" sh -c "
+  [ \"\$(grep -Ec '^        name: another-agentic-db-backup\$' '$sec')\" -eq 2 ] && [ \"\$(grep -Ec '^        key: ' '$sec')\" -eq 2 ] &&
+  ! grep -Eiq '(accessKeyId|secretAccessKey|sessionToken): [^ ]' '$sec'"
+bk_compression_pairs() { line_after "$sec" '^    wal:$' 1 '^      compression: lz4$' && line_after "$sec" '^    data:$' 1 '^      compression: snappy$'; }
+check "backup: the WAL's compression is the fixture's lz4 and the base backup's its snappy (not swapped)" bk_compression_pairs
+bk_env_pairs() { # each variable has its own value: the region, then the fixture's two checksum settings, which differ so that a swap shows
+  line_after "$sec" '^      - name: AWS_DEFAULT_REGION$' 1 '^        value: "us-east-1"$' &&
+    line_after "$sec" '^      - name: AWS_REQUEST_CHECKSUM_CALCULATION$' 1 '^        value: "when_required"$' &&
+    line_after "$sec" '^      - name: AWS_RESPONSE_CHECKSUM_VALIDATION$' 1 '^        value: "when_supported"$'
+}
+check "backup: the sidecar gets the region as AWS_DEFAULT_REGION and the fixture's two checksum settings, each with its own value" bk_env_pairs
+bk_resources_pairs() {
+  grep -Eq '^    resources:$' "$sec" && line_after "$sec" '^      requests:$' 1 '^        cpu: 50m$' && line_after "$sec" '^      requests:$' 2 '^        memory: 128Mi$' &&
+    line_after "$sec" '^      limits:$' 1 '^        memory: 512Mi$'
+}
+check "backup: the sidecar's resources are the fixture's: requests 50m and 128Mi, a limit of 512Mi (not swapped)" bk_resources_pairs
+check "backup: the ObjectStore has no serverName of its own (the plugin forbids one there; it is the Cluster's parameter)" sh -c "! grep -Eq '^ +serverName:' '$sec'"
+doc ExternalSecret another-agentic-db-backup > "$sec"
+check "backup: the credentials' ExternalSecret reads the two backup properties of the AWS secret, on the ClusterSecretStore ssegning-aws, and only those" sec_all \
+  '^    name: ssegning-aws$' '^    kind: ClusterSecretStore$' '^        key: prod/another-agentic/env$' '^        property: backup_s3_access_key_id$' '^        property: backup_s3_secret_access_key$' \
+  '^    - secretKey: ACCESS_KEY_ID$' '^    - secretKey: ACCESS_SECRET_KEY$'
+bk_es_pairs() { # ACCESS_KEY_ID is filled from the key id's property and ACCESS_SECRET_KEY from the secret key's (not swapped)
+  line_after "$sec" '^    - secretKey: ACCESS_KEY_ID$' 3 '^        property: backup_s3_access_key_id$' &&
+    line_after "$sec" '^    - secretKey: ACCESS_SECRET_KEY$' 3 '^        property: backup_s3_secret_access_key$'
+}
+check "backup: the secretKey ACCESS_KEY_ID reads backup_s3_access_key_id and ACCESS_SECRET_KEY reads backup_s3_secret_access_key (not swapped)" bk_es_pairs
+check "backup: exactly two properties are read" sh -c "[ \"\$(grep -Ec '^        property: ' '$sec')\" -eq 2 ]"
+check "backup: the Secret it makes is the one the ObjectStore names, and carries the cnpg.io/reload label (harmless: the sidecar re-reads the Secret at each call)" sec_all '^    name: another-agentic-db-backup$' '^          cnpg\.io/reload: "true"$'
+check "backup: the artifacts' properties are not read by it" sh -c "! grep -Eq 'artifacts_s3' '$sec'"
+check "backup: still no Secret object (the credentials are an ExternalSecret)" lacks '^kind: Secret$'
+check "backup: no token-looking value in the render" lacks '(ghp_|github_pat_|gho_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|xox[bp]-|eyJ[A-Za-z0-9_-]{20})'
+check "backup: no secret-named environment variable has a literal value" fails literal_secret_env
+check "backup: every image is still pinned" images_ok
+check "backup: five ExternalSecrets, one more than the default's four (the backup credentials')" count '^kind: ExternalSecret$' 5
+
+# Whatever else is rendered is what the default render holds, so turning backups on restarts no pod (the pods' checksums are of externalsecrets.yaml
+# and of the ConfigMaps, and the backup Secret is in a file of its own) and changes the Cluster by its `plugins` lines only.
+bk_strip() { # bk_strip <render>: the render without what backups add
+  awk '
+    function flush() {
+      if (buf != "" && buf !~ /(^|\n)kind: (ObjectStore|ScheduledBackup)\n/ && !(buf ~ /(^|\n)kind: ExternalSecret\n/ && buf ~ /\n  name: another-agentic-db-backup\n/)) printf "---\n%s", buf
+      buf = ""
+    }
+    /^---$/ { flush(); skip = 0; next }
+    /^  plugins:$/ { skip = 1; next }
+    skip && /^    / { next }
+    { skip = 0; buf = buf $0 "\n" }
+    END { flush() }' "$1"
+}
+bk_additive() { bk_strip "$out.def" > "$sec"; bk_strip "$out" > "$sec2"; cmp -s "$sec" "$sec2"; }
+check "backup: on, every other document is the default render's, byte for byte (no pod restarts), and the Cluster differs by its plugins block only" bk_additive
+
+# On, with every default left alone, to AWS S3 (an empty endpoint).
+render -f "$bk_aws"
+doc ObjectStore another-agentic-db > "$sec"
+check "backup, AWS: the destination is the bucket's root, there is no endpoint, retention is 28d and both compressions are gzip" sh -c "
+  grep -Eq '^    destinationPath: \"s3://agentic-db-backups/\"\$' '$sec' && ! grep -q 'endpointURL' '$sec' && grep -Eq '^  retentionPolicy: \"28d\"\$' '$sec' &&
+  [ \"\$(grep -Ec '^      compression: gzip\$' '$sec')\" -eq 2 ]"
+check "backup, AWS: the region is the sidecar's AWS_DEFAULT_REGION" line_after "$sec" '^      - name: AWS_DEFAULT_REGION$' 1 '^        value: "eu-central-1"$'
+check "backup, AWS: no resources key and no other variable" sh -c "! grep -Eq '^    resources:' '$sec' && [ \"\$(grep -Ec '^      - name: ' '$sec')\" -eq 1 ]"
+doc ScheduledBackup another-agentic-db > "$sec"
+check "backup, AWS: a daily 03:17:00 schedule and a first backup at once" sec_all '^  schedule: "0 17 3 \* \* \*"$' '^  immediate: true$'
+doc Cluster another-agentic-db > "$sec"
+check "backup, AWS: backup.serverName unset renders no serverName on the plugin entry (the cluster's own name is the server)" sh -c "grep -Eq '^        barmanObjectName: another-agentic-db\$' '$sec' && ! grep -q 'serverName' '$sec'"
+render -f "$bk_aws" --set backup.s3.prefix=/a//b/
+check "backup: a prefix is joined by its non-empty parts (/a//b/ is a/b)" dhas ObjectStore another-agentic-db '^    destinationPath: "s3://agentic-db-backups/a/b"$'
+render -f "$bk_aws" --set externalSecrets.enabled=false
+check "backup, ExternalSecrets off: the ObjectStore still names the Secret, which is the deployment's own, and no ExternalSecret is rendered" sh -c "
+  ! grep -Eq '^kind: ExternalSecret\$' '$out' && grep -Eq '^        name: another-agentic-db-backup\$' '$out' && grep -Eq '^kind: ObjectStore\$' '$out'"
+check "backup, ExternalSecrets off: the properties' names are not asked for" renders -f "$bk_aws" --set externalSecrets.enabled=false \
+  --set externalSecrets.properties.backupS3AccessKeyId= --set externalSecrets.properties.backupS3SecretAccessKey=
+check "backup: the properties' names are values" sh -c "
+  helm template x '$chart' -n a -f '$base' -f '$bk_aws' --set externalSecrets.properties.backupS3AccessKeyId=other_id --set externalSecrets.properties.backupS3SecretAccessKey=other_key |
+  grep -Ec 'property: other_(id|key)\$' | grep -qx 2"
+check "backup: a retention of 28d, 27d, 1d, 1w and 4w is accepted (28 days is the ceiling)" sh -c "
+  for r in 28d 27d 1d 1w 4w; do helm template x '$chart' -n a -f '$base' -f '$bk_aws' --set backup.retention=\$r >/dev/null || exit 1; done"
+check "backup: a server name of 63 characters, one with digits and dashes, and a digits-only one given as a string are accepted" sh -c "
+  for n in \$(printf 'a%.0s' \$(seq 63)) another-agentic-db-2 0 9-9; do helm template x '$chart' -n a -f '$base' -f '$bk_aws' --set-string backup.serverName=\$n >/dev/null || exit 1; done"
+check "backup: a prefix with a dotted segment that is not only dots (a/.b, a.b/c) is accepted" sh -c "
+  for p in a/.b a.b/c; do helm template x '$chart' -n a -f '$base' -f '$bk_aws' --set backup.s3.prefix=\$p >/dev/null || exit 1; done"
+check "backup: a cron with a step, a list and a name (0 */15 1-5 * * MON,FRI) is accepted" renders -f "$bk_aws" --set 'backup.schedule.cron=0 */15 1-5 * * MON\,FRI'
+check "backup: a hostname-style bucket with dots is accepted with an endpoint" renders -f "$bk_aws" --set backup.s3.bucket=my.bucket.example --set backup.s3.endpoint=https://s3.example.org
+check "backup, off: its settings are not checked (nothing of it is written)" renders --set backup.retention=99m --set backup.schedule.cron=x --set backup.s3.bucket=A
+check "backup, off: a coder Secret may have any name" renders --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=p' --set 'sharedDatabase.coders[0].secretName=another-agentic-db-backup'
+rm -f "$out.def"
+
+refused "backups on without a bucket" -f "$bk_aws" --set backup.s3.bucket=
+refused "a bucket that is not a bucket name" -f "$bk_aws" --set backup.s3.bucket=Agentic_DB
+refused "a dotted bucket with no endpoint (AWS)" -f "$bk_aws" --set backup.s3.bucket=my.bucket.example
+refused "backups on without a region" -f "$bk_aws" --set backup.s3.region=
+refused "a region that is not a region name" -f "$bk_aws" --set backup.s3.region=EU_Central
+refused "a backup endpoint that is not http(s)" -f "$bk_aws" --set backup.s3.endpoint=ftp://object-store:9000
+refused "a backup endpoint with credentials in it" -f "$bk_aws" --set backup.s3.endpoint=http://user:pass@object-store:9000
+refused "a prefix with .." -f "$bk_aws" --set backup.s3.prefix=a/../b
+refused "a prefix with a space" -f "$bk_aws" --set 'backup.s3.prefix=a b'
+refused "a prefix with a . segment in the middle" -f "$bk_aws" --set backup.s3.prefix=a/./b
+refused "a prefix that starts with a . segment" -f "$bk_aws" --set backup.s3.prefix=./a
+refused "a prefix that is only a dot" -f "$bk_aws" --set backup.s3.prefix=.
+refused "a backup endpoint with a space" -f "$bk_aws" --set 'backup.s3.endpoint=http://object-store:9000/a b'
+refused "a backup endpoint with a double quote" -f "$bk_aws" --set 'backup.s3.endpoint=http://object-store:9000/a"b'
+refused "a backup endpoint with a single quote" -f "$bk_aws" --set "backup.s3.endpoint=http://object-store:9000/a'b"
+refused "a server name in upper case" -f "$bk_aws" --set backup.serverName=Another-DB
+refused "a server name that starts with a dash" -f "$bk_aws" --set backup.serverName=-db
+refused "a server name that ends with a dash" -f "$bk_aws" --set backup.serverName=db-
+refused "a server name with an underscore" -f "$bk_aws" --set backup.serverName=db_2
+refused "a server name with a dot" -f "$bk_aws" --set backup.serverName=db.2
+refused "a server name with a slash (a path into the bucket)" -f "$bk_aws" --set backup.serverName=a/b
+refused "a server name of 64 characters" -f "$bk_aws" --set backup.serverName=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+refused "a server name that is a number (not a string)" -f "$bk_aws" --set backup.serverName=123
+refused "a server name that is a list" -f "$bk_aws" --set-json 'backup.serverName=["a"]'
+refused "backups on without the access key's AWS property" -f "$bk_aws" --set externalSecrets.properties.backupS3AccessKeyId=
+refused "backups on without the secret key's AWS property" -f "$bk_aws" --set externalSecrets.properties.backupS3SecretAccessKey=
+refused "the two backup credentials on one AWS property" -f "$bk_aws" --set externalSecrets.properties.backupS3SecretAccessKey=backup_s3_access_key_id
+refused "the backup credentials on the artifacts' access key property (the orchestrator's pod reads that one)" -f "$bk_aws" --set externalSecrets.properties.backupS3AccessKeyId=artifacts_s3_access_key_id
+refused "the backup credentials on the artifacts' secret key property" -f "$bk_aws" --set externalSecrets.properties.backupS3SecretAccessKey=artifacts_s3_secret_access_key
+refused "a retention of 29 days (a window of W days keeps data W+1 days: 29 would break the 30-day sentence)" -f "$bk_aws" --set backup.retention=29d
+refused "a retention of 30 days" -f "$bk_aws" --set backup.retention=30d
+refused "a retention of 31 days" -f "$bk_aws" --set backup.retention=31d
+refused "a retention of 5 weeks (35 days)" -f "$bk_aws" --set backup.retention=5w
+refused "a retention in months" -f "$bk_aws" --set backup.retention=2m
+refused "a retention of one month" -f "$bk_aws" --set backup.retention=1m
+refused "a retention of 0 days" -f "$bk_aws" --set backup.retention=0d
+refused "a retention of 365 days" -f "$bk_aws" --set backup.retention=365d
+refused "a retention too long to be a number of days" -f "$bk_aws" --set backup.retention=99999999999999999999d
+refused "a retention with no unit" -f "$bk_aws" --set-string backup.retention=28
+refused "a retention with a unit that is not d or w" -f "$bk_aws" --set backup.retention=28h
+refused "an empty retention" -f "$bk_aws" --set backup.retention=
+refused "a Unix cron of five fields" -f "$bk_aws" --set 'backup.schedule.cron=17 3 * * *'
+refused "a cron of seven fields" -f "$bk_aws" --set 'backup.schedule.cron=0 0 17 3 * * *'
+refused "an empty cron" -f "$bk_aws" --set backup.schedule.cron=
+refused "a cron descriptor (one field)" -f "$bk_aws" --set 'backup.schedule.cron=@daily'
+refused "a cron field with a character that is not cron's" -f "$bk_aws" --set 'backup.schedule.cron=0 17 3 * * *;x'
+refused "backup.enabled as a string" -f "$bk_aws" --set-string backup.enabled=true
+refused "backup.enabled as a number" -f "$bk_aws" --set backup.enabled=1
+refused "backup.enabled as the string false (a flag that is not a boolean is refused whatever it says)" -f "$bk_aws" --set-string backup.enabled=false
+refused "backup.schedule.immediate as a string" -f "$bk_aws" --set-string backup.schedule.immediate=true
+refused "a compression the WAL does not take" -f "$bk_aws" --set backup.wal.compression=lz5
+refused "a compression the base backup does not take (zstd is the WAL's)" -f "$bk_aws" --set backup.data.compression=zstd
+refused "an empty compression" -f "$bk_aws" --set backup.wal.compression=
+refused "a sidecar variable whose name says secret" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"BACKUP_SECRET","value":"x"}]'
+refused "a sidecar variable whose name says key" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"AWS_ACCESS_KEY_ID","value":"x"}]'
+refused "a sidecar variable whose name says token" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"AWS_SESSION_TOKEN","value":"x"}]'
+refused "a sidecar variable whose name says password" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"DB_PASSWORD","value":"x"}]'
+refused "a sidecar variable set twice" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"FOO","value":"1"},{"name":"FOO","value":"2"}]'
+refused "a sidecar variable that is the region (backup.s3.region sets it)" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"AWS_DEFAULT_REGION","value":"eu-west-1"}]'
+refused "a sidecar variable from a Secret (valueFrom)" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"FOO","valueFrom":{"secretKeyRef":{"name":"s","key":"k"}}}]'
+refused "a sidecar variable whose value is not a string" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"FOO","value":1}]'
+refused "a sidecar variable with a lower-case name" -f "$bk_aws" --set-json 'backup.sidecar.env=[{"name":"foo","value":"1"}]'
+refused "sidecar.env as a map" -f "$bk_aws" --set backup.sidecar.env.FOO=1
+refused "sidecar resources with a key that is not requests or limits" -f "$bk_aws" --set backup.sidecar.resources.claims=x
+refused "sidecar resources that are not a map" -f "$bk_aws" --set-string backup.sidecar.resources=big
+refused "a coder Secret named like the backups' credentials" -f "$bk_aws" --set 'sharedDatabase.coders[0].name=coderone' --set 'sharedDatabase.coders[0].passwordProperty=p' --set 'sharedDatabase.coders[0].secretName=another-agentic-db-backup'
+check "the refusal of a long retention says the key and the limit" sh -c "helm template x '$chart' -n x -f '$base' -f '$bk_aws' --set backup.retention=29d 2>&1 | grep -q 'backup.retention \"29d\" is more than 28 days'"
+check "the refusal of a bad server name says the key and the rule" sh -c "helm template x '$chart' -n x -f '$base' -f '$bk_aws' --set backup.serverName=Bad_Name 2>&1 | grep -q 'backup.serverName must be a name of at most 63 lower-case letters'"
+check "the refusal of months says to write the days" sh -c "helm template x '$chart' -n x -f '$base' -f '$bk_aws' --set backup.retention=2m 2>&1 | grep -q 'the unit m (months) is refused'"
+check "the refusal of a five-field cron says seconds come first" sh -c "helm template x '$chart' -n x -f '$base' -f '$bk_aws' --set 'backup.schedule.cron=17 3 * * *' 2>&1 | grep -q 'backup.schedule.cron must have six fields, seconds first'"
+check "the refusal of a missing property says which and what to do" sh -c "helm template x '$chart' -n x -f '$base' -f '$bk_aws' --set externalSecrets.properties.backupS3AccessKeyId= 2>&1 | grep -q 'backup.enabled needs externalSecrets.properties.backupS3AccessKeyId and backupS3SecretAccessKey'"
+render
 
 # ---- The chat agent's folder is the dev stack's ------------------------------------------------------------------------
 # With every option off, the chat's folder and the checksum its pods carry are those of tests/golden/chat-default.yaml (made from the

@@ -1,0 +1,73 @@
+{{- if .Values.backup.enabled }}
+{{- /* Continuous backups of the one database cluster (issue #151): the barman-cloud plugin of CloudNativePG archives the WAL to S3 and takes a
+       base backup on a schedule; the Cluster names the ObjectStore in `spec.plugins` (cnpg-clusters.yaml). All of it is rendered only with
+       `backup.enabled`, and needs the plugin and cert-manager in the cluster (`kubectl get crd objectstores.barmancloud.cnpg.io`): without them
+       the sync fails on these kinds. The values are checked in _validate.tpl. */ -}}
+{{- $bk := .Values.backup }}
+{{- $name := include "agentic.backup.objectStore" . }}
+{{- $cluster := include "agentic.db.orchestrator" . }}
+{{- $root := dict "root" . "component" "db-backup" }}
+{{- $server := or $bk.serverName $cluster }}
+# Where the cluster `{{ $cluster }}` keeps its WAL archive and its base backups. The plugin adds the server name below the destination path: `{{ $server }}`
+# ({{ if $bk.serverName }}set by backup.serverName{{ else }}the cluster's own name, as backup.serverName is empty{{ end }}). A restore names this store and the server name it
+# reads from (examples/restore-cluster.yaml). `retentionPolicy` is a recovery window, enforced by the plugin's sidecar in the primary's pod every 30 minutes.
+# The credentials are the Secret `{{ include "agentic.secret.dbBackup" . }}`.
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  retentionPolicy: {{ $bk.retention | quote }}
+  configuration:
+    destinationPath: {{ include "agentic.backup.destinationPath" . | quote }}
+    {{- with $bk.s3.endpoint }}
+    endpointURL: {{ . | quote }}
+    {{- end }}
+    s3Credentials:
+      accessKeyId:
+        name: {{ include "agentic.secret.dbBackup" . }}
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: {{ include "agentic.secret.dbBackup" . }}
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: {{ $bk.wal.compression }}
+    data:
+      compression: {{ $bk.data.compression }}
+  instanceSidecarConfiguration:
+    env:
+      - name: AWS_DEFAULT_REGION
+        value: {{ $bk.s3.region | quote }}
+      {{- range $e := $bk.sidecar.env }}
+      - name: {{ $e.name }}
+        value: {{ $e.value | quote }}
+      {{- end }}
+    {{- with $bk.sidecar.resources }}
+    resources:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+---
+# The base backup, on the plugin's method. The schedule has SIX fields, seconds first (CloudNativePG's cron, not the Unix one).
+# `backupOwnerReference: self` makes the Backup objects belong to this one, so removing it removes them (the bucket's files stay).
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  schedule: {{ $bk.schedule.cron | quote }}
+  immediate: {{ $bk.schedule.immediate }}
+  backupOwnerReference: self
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  cluster:
+    name: {{ $cluster }}
+{{- if .Values.externalSecrets.enabled }}
+---
+{{ include "agentic.es.dbBackup" . }}
+{{- end }}
+{{- end }}

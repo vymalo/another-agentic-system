@@ -658,7 +658,53 @@ database:
     storageClass: longhorn
   # Empty: the operator's default PostgreSQL image.
   imageName: ""
-  # No backups in v0 (decision D7 of the plan; deploy/chart/README.md, "Not in v0").
+  # Backups of this cluster are `backup` below (OFF by default; deploy/chart/README.md, "Backups").
+
+# Continuous backups of the database cluster above to an S3 bucket, by the barman-cloud plugin of CloudNativePG (issue #151; ADR 0041,
+# amended 2026-10-17): WAL archiving and a daily base backup, a restore into a NEW cluster (README.md, "Backups"). OFF: nothing of it is
+# rendered and the cluster is exactly what it was. On, it needs, and the render is refused without: the plugin and cert-manager in the
+# cluster (the owner's step: `kubectl get crd objectstores.barmancloud.cnpg.io`), a bucket of its own, the region, and the two AWS
+# properties `externalSecrets.properties.backupS3AccessKeyId` and `backupS3SecretAccessKey` (credentials that are NOT the artifacts'),
+# added to the AWS secret before the sync. The credentials are an ExternalSecret into the Secret `<fullname>-db-backup`, never a value.
+backup:
+  enabled: false
+  s3:
+    # The bucket, a name of its own (no default). With AWS (empty endpoint) no dot in it; S3-compatible servers need `endpoint`.
+    bucket: ""
+    # Empty: AWS S3. Another server (RustFS, ...): its http(s) URL, no credentials, query or fragment.
+    endpoint: ""
+    # Required: the bucket's region (`eu-central-1`); the sidecar gets it as AWS_DEFAULT_REGION. With a server that has none, `us-east-1`.
+    region: ""
+    # A folder in the bucket (A-Z a-z 0-9 . _ - /, at most 128, no .. and no segment that is only a dot); empty: the bucket's root. The server's name is below it.
+    prefix: ""
+  # The server name the cluster archives under, below the prefix: empty, the cluster's own name (`<fullname>-db`), which is right until a restore. After a
+  # restore under the original name, set a NEW one (a lower-case name, at most 63 characters): CloudNativePG refuses to archive into a path that already holds
+  # another server's files, and the old name's path does (README.md, "Restore"). Rendered as `parameters.serverName` of the Cluster's plugin entry, only when set.
+  serverName: ""
+  # How long the backups are kept, a recovery window: `<n>d` or `<n>w`, at most 28 days (28d, 4w). Refused: more, the unit `m`, 0.
+  # The newest backup older than the window is kept too and an obsolete one is deleted after the next backup, so with a daily backup
+  # a window of W days keeps data about W+1 days and up to W+2: the default 28d leaves a deleted thread in the bucket for about 29 days,
+  # within 30 (unverified in a cluster). That is the ceiling's reason, and docs/tester-note.md says "about 30 days" to testers.
+  retention: 28d
+  schedule:
+    # SIX fields, seconds first (not the Unix five): every day at 03:17:00 UTC. The chart checks the count and the characters; CloudNativePG checks the ranges.
+    cron: "0 17 3 * * *"
+    # One base backup as soon as the cluster has the plugin, not at the first cron time.
+    immediate: true
+  # barman-cloud's compression of the WAL (bzip2, gzip, lz4, snappy, xz, zstd) and of the base backup (bzip2, gzip, snappy).
+  wal:
+    compression: gzip
+  data:
+    compression: gzip
+  # The backup sidecar of the database pod: NON-secret environment (`- { name: ..., value: ... }`; a name that says SECRET, KEY, TOKEN or
+  # PASSWORD is refused, and so is AWS_DEFAULT_REGION, which `s3.region` sets), and its resources (`requests` and `limits`; none by default,
+  # so a namespace with a ResourceQuota or LimitRange that wants them on every container needs them set: unverified). The plugin puts the env
+  # and the resources into the pod spec when the pod is created, so a change to them (and to `s3.region`) reaches the pod at its next restart.
+  # Example: an S3-compatible server that fails with an `x-amz-content-sha256` error wants
+  #   env: [{ name: AWS_REQUEST_CHECKSUM_CALCULATION, value: when_required }, { name: AWS_RESPONSE_CHECKSUM_VALIDATION, value: when_required }]
+  sidecar:
+    env: []
+    resources: {}
 
 # The coders' run stores are databases of the cluster above, not clusters of adam-rs's chart. One coder per GitHub owner is the
 # intended shape (README.md, "Several coders, one per GitHub owner"): each is its own release of adam-rs's chart with its own
@@ -734,6 +780,10 @@ externalSecrets:
     # The password of the database role `coder`, read with sharedDatabase.coder.enabled (and the default of the entry named `coder` of
     # sharedDatabase.coders). The same kind of value. Any other coder names its own property in its entry.
     coderDbPassword: coder_db_password
+    # backup.enabled: the S3 credentials of the database backups (the bucket's own IAM user: put, get, list and delete under its prefix,
+    # and nothing else). Never the artifacts' properties above: the orchestrator's pod reads those, and it must not be able to delete the backups.
+    backupS3AccessKeyId: backup_s3_access_key_id
+    backupS3SecretAccessKey: backup_s3_secret_access_key
   # The bearer of each agent: the environment variable the agents file names (`tokenEnv`) and the property
   # that holds its value. The same property fills the agent's own `A2A_BEARER_TOKENS` (chat here; the
   # coder's chart reads `coder_a2a_token` by its own `externalSecrets.properties.a2aBearerTokens`), so the

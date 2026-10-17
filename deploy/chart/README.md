@@ -42,6 +42,7 @@ flowchart LR
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities |
 | `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer` |
 | `Cluster` (CNPG) | **one**, `another-agentic-db`: the orchestrator's database (its connection string is the `uri` key of `another-agentic-db-app`) and, beside it, [a role and a database per agent](#one-database-cluster) |
+| `ObjectStore` + `ScheduledBackup` (CNPG), `ExternalSecret`, a plugin on the `Cluster` | **off by default** (`backup.enabled`): [continuous backups of that cluster to S3](#backups) by the barman-cloud plugin; a restore is a new cluster: [`examples/restore-cluster.yaml`](examples/restore-cluster.yaml) to try it, [`examples/restore-cutover.yaml`](examples/restore-cutover.yaml) to replace a lost one |
 | `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); one more per coder in `sharedDatabase.coders` (or `coder`, with the older `sharedDatabase.coder.enabled`) |
 | `ExternalSecret` ×4 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret); the fourth makes the chat agent's database Secret, and one more each coder's (`sharedDatabase.coders`) |
 | `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/`](files/chat/) (`instructions.md` and the `subagents/`), copies of `dev/agents/chat/agent/` that CI keeps equal; see [the chat agent's helpers](#the-chat-agents-helpers) |
@@ -84,6 +85,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
 | `agent_db_password` | the password of the database role `agent`, random and URL-safe (`openssl rand -hex 32`: it is written into a URI) | the chat agent's role and its ExternalSecret (the browser agent's runs are in the same database: [the browser agent](#the-browser-agent-adr-0057)) | Secret `another-agentic-db-agent` (`kubernetes.io/basic-auth`: `username`, `password`, `uri`): CNPG reads the role's password from it, the chat agent's `DATABASE_URL` is its key `uri` ([below](#one-database-cluster)) |
 | `coder_db_password` | the same for the role `coder`, **only with `sharedDatabase.coder.enabled`** (or an entry named `coder` of `sharedDatabase.coders`) | the coder's role and its ExternalSecret | Secret `sharedDatabase.coder.secretName` (default `coder-db-uri`), the same three keys; **the coder's chart** reads its key `uri` |
+| `backup_s3_access_key_id`, `backup_s3_secret_access_key` | the access key of the backup bucket's own IAM user (or of the S3-compatible server), **only with `backup.enabled`**; never the artifacts' (the chart refuses the same property names). **Add them before turning that on** ([backups](#what-the-owner-does-in-this-order)) | the plugin's sidecar in the database pod, from the Secret below (nothing of ours reads them) | Secret `another-agentic-db-backup` (its own ExternalSecret, not the orchestrator's): keys `ACCESS_KEY_ID` and `ACCESS_SECRET_KEY`, which the `ObjectStore`'s `s3Credentials` name; label `cnpg.io/reload`. **A rotated key needs no restart**: the sidecar reads the Secret at each archive, backup and retention call (*verified 2026-10-17*, [Facts](#facts-and-where-they-come-from)) |
 | `<coder>_db_password`, `<coder>_a2a_token` (names are values) | **one pair per extra coder** ([several coders](#several-coders-one-per-github-owner)): the password of its database role (`sharedDatabase.coders[].passwordProperty`) and its A2A token (`externalSecrets.agentTokens`), each one random value of at least 32 bytes (`openssl rand -hex 32`) | the coder's role and ExternalSecret; the orchestrator and **that coder's chart** (`externalSecrets.properties.a2aBearerTokens`) | Secret `sharedDatabase.coders[].secretName` (default `<name>-db-uri`), the same three keys; orchestrator: Secret `another-agentic-orchestrator`, key and env the agent's `tokenEnv` |
 | `sharing_secret` | at least 32 random bytes (`openssl rand -hex 32`), **never the same value as `thread_tools_secret`**, **only with `sharing.mode` other than `disabled`**: the HMAC key of the share links | orchestrator | key `sharing-secret`, **file** `/run/secrets/orchestrator/sharing-secret` → `sharing.secret: { file }` |
 | `user_secrets_key` (and one more per extra key; names are values) | 32 random bytes as 64 hexadecimal characters (`openssl rand -hex 32`), **only with `orchestrator.userSecrets.enabled`**: the key that seals a person's own credentials in the orchestrator's database ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 3). **Add it before turning that on**: an ExternalSecret that asks for a property the AWS secret lacks stops the whole Secret syncing ([the key of the stored secrets](#the-key-of-the-stored-secrets-adr-0046-slice-3)). Losing every key loses every stored credential | orchestrator | key `user-secrets-key-<id>`, **file** `/run/secrets/orchestrator/user-secrets-key-<id>` → `secrets.pg.keys[].key: { file }` |
@@ -144,6 +146,8 @@ commented; the ones that matter:
 | `sharedDatabase.coders` | `[]` | one entry `{ name, secretName, passwordProperty }` per coder: a role, a `Database` and the Secret that coder's chart reads (key `uri`), on the one cluster ([several coders](#several-coders-one-per-github-owner)). Refused: a name that is not lower-case letters and digits, `agent`, `postgres`, `template0`, `template1`, the orchestrator's database or owner, or a name, Secret or property used twice; a missing `passwordProperty` (except for the name `coder`) |
 | `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | **the older form, one coder**: the same as one entry named `coder` (the render is unchanged: [tests/golden](tests/golden)); off: no coder role, database or Secret, and no `coder_db_password` is read. Both this and `coders`: refused |
 | `externalSecrets.properties.agentDbPassword`, `coderDbPassword`, `sharingSecret` | `agent_db_password`, `coder_db_password`, `sharing_secret` | [the new properties](#the-aws-secret); each is read only by what is turned on |
+| `backup.enabled`, `.s3.bucket`, `.s3.region`, `.s3.endpoint`, `.s3.prefix`, `.serverName`, `.retention`, `.schedule.cron`, `.schedule.immediate`, `.wal.compression`, `.data.compression`, `.sidecar.*` | `false`, `""`, `""`, `""`, `""`, `""`, `28d` (at most 28 days), `0 17 3 * * *` (six fields), `true`, `gzip`, `gzip` | [continuous backups of the database cluster](#backups) to S3: **off**, and then nothing of it is rendered; on, a bucket and a region are required and the two AWS properties must exist |
+| `externalSecrets.properties.backupS3AccessKeyId`, `backupS3SecretAccessKey` | `backup_s3_access_key_id`, `backup_s3_secret_access_key` | [the two new properties](#the-aws-secret); read only with `backup.enabled` |
 | `sharing.mode`, `sharing.roles`, `sharing.public.stepIo`, `.files` | `disabled`, `[user, admin]`, `false`, `false` | [sharing a thread by a link](#sharing-a-thread): `disabled` (the render has no trace of it), `internal` (signed-in readers) or `public` (the edge lets the page and the public API through without sign-in). `roles` are the roles that are given `thread.share` |
 | `orchestrator.userSecrets.enabled`, `.keys`, `.current` | `false`, `[{ id: k1, property: user_secrets_key }]`, `k1` | [the key of the stored secrets](#the-key-of-the-stored-secrets-adr-0046-slice-3): off, the render has no `secrets` section and asks the AWS secret for nothing; on, each key is a property of the AWS secret mounted as a file and named in `secrets.pg.keys`, and `current` seals. Refused: no key, more than 16, an id outside `A-Z a-z 0-9 . _ -` or over 64 characters or used twice, a property used twice (two ids for one key rotate nothing) or missing (with ExternalSecrets on), a `current` that is not a key's id, and an `enabled` that is not a boolean. **Read only by an orchestrator image since slice 3** ([the pinned image](#the-pinned-orchestrator-image)) |
 | `auth.browser.enabled`, `.clientId`, `.scope` | `false`, `another-agentic-web`, `openid email profile offline_access` | [tokens in the browser](#tokens-in-the-browser-adr-0054): the web signs in itself at the issuer as a public, DPoP-bound client, and the edge stops gating it. `false` (the render has no trace of it) until the Keycloak client is imported and the realm is set. Refused: as a string, with no client id, or a scope without `openid` |
@@ -232,6 +236,207 @@ Cluster); until then `sharedDatabase.coder.enabled: true` only prepares the role
 
 Creating a role and a database from objects is idempotent: a `Database` that already exists in Postgres with the same name is adopted by
 CNPG's reconcile (*unverified*; here the databases are new). Removing a `Database` object leaves the database (`retain`).
+
+## Backups
+
+Continuous backups of the one database cluster, **off by default** (`backup.enabled: false`; the render is then exactly what it was without them, asserted by
+`tests/render-check.sh`). They are the barman-cloud plugin of CloudNativePG (the in-tree `barmanObjectStore` is deprecated from CloudNativePG 1.26): the
+Cluster archives its WAL to an S3 bucket as it is written and takes a base backup every day, and a restore makes a **new** cluster from them. Issue #151; the
+decision is [ADR 0041](../../docs/decisions/0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md) (amended 2026-10-17). What it keeps, for how
+long, and what it does not erase: [`docs/tester-note.md`](../../docs/tester-note.md), a draft for the owner.
+
+| Object | What |
+|---|---|
+| `ObjectStore` `<fullname>-db` | `barmancloud.cnpg.io/v1`, the cluster's own name: `s3://<bucket>[/<prefix>]`, the endpoint when there is one, the credentials as references to the Secret below, `retentionPolicy: <backup.retention>`, the sidecar's `AWS_DEFAULT_REGION` and its other non-secret environment and resources |
+| `ScheduledBackup` `<fullname>-db` | `method: plugin`, `backupOwnerReference: self`, `schedule: <backup.schedule.cron>` (**six fields, seconds first**), `immediate: <backup.schedule.immediate>` |
+| `Cluster` `<fullname>-db` | gains `spec.plugins: [{ name: barman-cloud.cloudnative-pg.io, isWALArchiver: true, parameters: { barmanObjectName: <fullname>-db } }]` and nothing else; with `backup.serverName` set, `serverName: <that>` is in `parameters` too |
+| `ExternalSecret` `<fullname>-db-backup` | two properties of `prod/another-agentic/env`, [`backup_s3_access_key_id` and `backup_s3_secret_access_key`](#the-aws-secret), into the Secret of the same name (keys `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY`, label `cnpg.io/reload`, which a rotated key does not need: the sidecar re-reads the Secret at each call, [verified](#facts-and-where-they-come-from)). **In a file of its own, not `externalsecrets.yaml`**: the orchestrator's, the chat's, oauth2-proxy's and the search pod's pods carry a checksum of that file, so turning backups on restarts none of them (asserted: every other document of the render is the default's, byte for byte) |
+
+```mermaid
+sequenceDiagram
+  participant AWS as AWS secret (backup_s3_*)
+  participant ES as External Secrets
+  participant K as Secret another-agentic-db-backup
+  participant OP as CNPG operator and plugin
+  participant PG as database pod (Postgres + plugin sidecar)
+  participant S3 as S3 bucket
+  ES->>AWS: read the two properties
+  ES->>K: ACCESS_KEY_ID, ACCESS_SECRET_KEY
+  OP->>PG: Cluster spec.plugins names the ObjectStore: the sidecar is added (the pod rolls)
+  PG->>K: the sidecar reads the keys the ObjectStore names
+  PG->>S3: every WAL segment, as it is written
+  OP->>PG: ScheduledBackup: a base backup at once, then on the cron
+  PG->>S3: base backup
+  PG->>S3: every 30 minutes, delete what is older than the recovery window
+  Note over OP,S3: restore: a NEW Cluster, bootstrap.recovery, reads the same store (examples/restore-cluster.yaml)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Off: backup.enabled false (the default)
+  Off --> Rolling: enabled and synced, the Cluster gets the plugin
+  Rolling --> Archiving: ContinuousArchiving is True
+  Archiving --> Protected: the first base backup completes (LastBackupSucceeded True)
+  Protected --> Protected: a base backup each day, the retention sweep
+  Protected --> Failing: archiving or a backup fails
+  Failing --> Protected: fixed, the next backup completes
+  Protected --> Off: enabled false, archiving stops and the bucket is left as it is
+```
+
+### What the owner does, in this order
+
+1. **The plugin and cert-manager are in the cluster.** The plugin needs CloudNativePG 1.26 or later (1.27 or later recommended), cert-manager, and must be installed in the
+   **operator's namespace**; its Helm chart is `plugin-barman-cloud` (0.8.1, plugin v0.15.1 on 2026-10-17). `kubectl get crd objectstores.barmancloud.cnpg.io` says. Without it the
+   sync fails on the `ObjectStore` (and the render of a deployment that does not turn backups on is untouched). Which CloudNativePG version netcup runs is *unverified*.
+2. **A bucket of its own and an IAM user for it** (AWS S3, `eu-central-1`; a preview RustFS in the cluster is the other tested shape). The user may list, read, write and delete under the prefix and do
+   nothing else; **it must not be the artifacts' user**: the orchestrator's pod reads those keys, and these can delete the backups (the chart refuses the same property names). The exact action list is
+   *unverified* (barman-cloud's documentation has it; AWS was not used). Bucket lifecycle: if the bucket is versioned, a version that barman deletes survives as a non-current version until a rule expires it,
+   so **set that rule so no version outlives the retention you tell testers** (the plugin's page suggests expiring current versions a few days after the window and non-current ones later: choose the numbers
+   against [the tester note](../../docs/tester-note.md)).
+3. **Add the two properties to the AWS secret** `prod/another-agentic/env` *before the sync*: `backup_s3_access_key_id` and `backup_s3_secret_access_key`. The ExternalSecret is the backups' own, so a missing
+   property fails only that Secret, but the archiver then cannot sign, and **a Postgres whose archiver keeps failing keeps its WAL on the 10Gi volume** (PostgreSQL's behaviour; *unverified* here): watch `ContinuousArchiving`.
+4. **Set the values** (the Application's `helm.valuesObject`), e.g. [`tests/backup-aws.values.yaml`](tests/backup-aws.values.yaml):
+   ```yaml
+   backup:
+     enabled: true
+     s3: { bucket: <the bucket>, region: eu-central-1 }   # + endpoint: <url> for an S3-compatible server
+   ```
+5. **Sync, and expect the database pod to roll once**: the Cluster gains a sidecar, so its pod is replaced; with `database.instances: 1` that is a short outage of everything that reads the database (*unverified*: it
+   is how a changed pod spec is rolled, not something this chart has seen on netcup). The plugin puts `s3.region`, `sidecar.env` and `sidecar.resources` into the pod spec **when the pod is created** (*verified 2026-10-17*,
+   [Facts](#facts-and-where-they-come-from)): a later change to one of them reaches the sidecar only at the pod's next restart, which the change itself may not cause (*unverified*), so restart the pod after it.
+   `sidecar.resources` is empty by default, so the sidecar has **no requests or limits**: a namespace with a ResourceQuota or a LimitRange that asks for them on every container refuses the pod until they are set
+   (the Kubernetes rule, *unverified* here; the netcup namespace was not checked).
+6. **Look.** The first base backup is taken at once (`immediate`):
+   ```sh
+   kubectl -n another-agentic-system get scheduledbackup,backup
+   kubectl -n another-agentic-system get cluster another-agentic-db -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'   # ContinuousArchiving, LastBackupSucceeded
+   kubectl -n another-agentic-system get objectstore another-agentic-db -o jsonpath='{.status.serverRecoveryWindow}'   # the first recoverability point and the last good backup
+   kubectl cnpg status another-agentic-db -n another-agentic-system   # the kubectl plugin, if installed
+   ```
+   If the first backup ran while the pod was still rolling and failed (*unverified* that it can), take one by hand, the plugin's documented command:
+   `kubectl cnpg backup another-agentic-db -n another-agentic-system --method=plugin --plugin-name=barman-cloud.cloudnative-pg.io`; WAL without a base backup restores nothing.
+7. **Restore once, before relying on it** ([below](#restore)). A backup nobody has restored is a guess.
+
+### The values
+
+| Key | Default | What |
+|---|---|---|
+| `backup.enabled` | `false` | everything above; off, none of it is rendered and the settings below are not read. Refused: a string or a number |
+| `backup.s3.bucket`, `.region` | `""`, `""` (both **required** when on) | the bucket (3 to 63 of `a-z`, `0-9`, `-`, `.`; without an endpoint no dot, the rule of the artifacts' bucket, stricter than boto3 may need: *unverified*) and its region (the sidecar's `AWS_DEFAULT_REGION`; `us-east-1` for a server that has none) |
+| `backup.s3.endpoint`, `.prefix` | `""`, `""` | empty endpoint is AWS S3; another server is its http(s) URL (no credentials, query, fragment, white space or quote). The prefix is a folder (`A-Z a-z 0-9 . _ - /`, at most 128, no `..`, no segment that is only a dot): the plugin adds the server name below it |
+| `backup.serverName` | `""` | the server name the cluster archives under, below the prefix; **empty: the cluster's own name**, which is right until a restore. After [replacing a lost cluster](#replace-a-lost-cluster) set a **new** one (lower-case letters, digits and `-`, a letter or a digit at both ends, at most 63; a string, so `--set-string` for digits): rendered as `parameters.serverName` of the Cluster's plugin entry only when set (*verified 2026-10-17*: the plugin reads it there, [Facts](#facts-and-where-they-come-from)). The `ObjectStore` never gets one |
+| `backup.retention` | `28d` | a recovery window, `<n>d` or `<n>w`, **at most 28 days** (`28d`, `4w`). Refused: `29d`, `30d`, `5w`, the unit `m`, 0, no unit. Why 28 and not 30: [below](#how-long-a-deleted-thread-stays-in-the-backups) |
+| `backup.schedule.cron`, `.immediate` | `0 17 3 * * *`, `true` | **six fields, seconds first** (CloudNativePG's cron); every day at 03:17:00 UTC. A Unix line of five fields is refused. The chart checks the count and the characters only: CloudNativePG parses the schedule when the `ScheduledBackup` is applied and refuses one that does not parse (*verified 2026-10-17*, `internal/webhook/v1/scheduledbackup_webhook.go`), so a wrong range fails the sync of that object |
+| `backup.wal.compression`, `backup.data.compression` | `gzip`, `gzip` | bzip2, gzip, lz4, snappy, xz, zstd for the WAL; bzip2, gzip, snappy for the base backup (the catalog schema's lists) |
+| `backup.sidecar.env`, `.resources` | `[]`, `{}` | non-secret `{ name, value }` for the backup sidecar (a name with SECRET, KEY, TOKEN or PASSWORD is refused, and `AWS_DEFAULT_REGION`, which `s3.region` sets), and `requests`/`limits` (none by default: see step 5 of the list above). They are injected when the pod is created, so a change needs a restart of the pod. An S3-compatible server that fails with an `x-amz-content-sha256` error wants `AWS_REQUEST_CHECKSUM_CALCULATION` and `AWS_RESPONSE_CHECKSUM_VALIDATION` set to `when_required` ([plugin issue #393](https://github.com/cloudnative-pg/plugin-barman-cloud/issues/393)) |
+| `externalSecrets.properties.backupS3AccessKeyId`, `backupS3SecretAccessKey` | `backup_s3_access_key_id`, `backup_s3_secret_access_key` | [the two new properties](#the-aws-secret); read only with `backup.enabled`. Refused: empty (with ExternalSecrets on), equal to each other, or the artifacts' properties |
+
+With `externalSecrets.enabled: false` no ExternalSecret is rendered and the Secret `<fullname>-db-backup` (keys `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY`) is the deployment's own.
+
+### How long a deleted thread stays in the backups
+
+The retention is a **recovery window**: the plugin keeps every backup and WAL needed to restore to any moment in the last `backup.retention`, which includes the newest base backup older than the window, and it
+deletes an obsolete backup only "after the next backup completes", as its page says. So with a daily backup a window of W days keeps data for about **W+1 days**, and up to W+2 if a deletion waits for the next
+backup (*unverified* in a cluster; the sidecar's sweep runs every 30 minutes). With the default `28d` a thread that was deleted today is gone from the bucket after about **29 days**, and within 30. That is why the
+chart accepts **a window of at most 28 days** (`28d` or `4w`; `29d`, `30d` and `5w` are refused) and testers are told "within about 30 days": a ceiling of 30 days would keep data for 31 or 32. A longer keep is a decision
+about people's threads, not a value. Switching backups off does **not** erase the bucket and the sweep stops with the sidecar: the data stays until someone deletes it.
+
+The sweep is **per server name** (the plugin deletes by policy under the server name of the Cluster's plugin entry only: *verified 2026-10-17*, [Facts](#facts-and-where-they-come-from)), so after [a cutover to a new server
+name](#replace-a-lost-cluster) the old server's files **no longer expire by themselves**: delete them, or give their prefix a lifecycle rule of the bucket, once the new cluster is proven, inside the time you told testers.
+`docs/tester-note.md` says all of this to testers. The stored secrets' key is in the AWS secret and not in the database ([the key](#the-key-of-the-stored-secrets-adr-0046-slice-3)): a restored database
+holds only sealed envelopes, so **keep the AWS secret's history as you keep the backups**, or every stored credential is lost.
+
+### Restore
+
+CloudNativePG restores into a **new** cluster, never in place. There are two examples, for two situations:
+
+| | [`examples/restore-cluster.yaml`](examples/restore-cluster.yaml) | [`examples/restore-cutover.yaml`](examples/restore-cutover.yaml) |
+|---|---|---|
+| For | trying the backups, beside the running cluster | replacing a cluster that is **lost** |
+| Cluster | `another-agentic-db-restore` | `another-agentic-db`, the name the applications use |
+| Archives afterwards | no: it has no `plugins` entry on purpose (a restored cluster that archived would write into the bucket beside the source) | yes, under a **new server name** (`backup.serverName`) |
+| Reads from | the ObjectStore `another-agentic-db` and the server name `another-agentic-db` (the cluster's own, or its `backup.serverName`; a different name finds nothing) | the same |
+
+Both must have `storage.size`, `storage.storageClass` and the image equal to the deployment's `database.storage.size`, `database.storage.storageClass` and `database.imageName` (empty: the operator's default image): a smaller
+volume cannot hold the data and another Postgres major cannot read it. Neither names a `secret`, so **CloudNativePG generates the restored cluster's app Secret** (`another-agentic-db-restore-app`, or `another-agentic-db-app`) **with a new random
+password for the owner `orchestrator`** (`recovery.md`, "Configure the application database"; *verified 2026-10-17*): it matters at a cutover, below. A point in time is `recoveryTarget.targetTime` (the examples show where).
+
+#### Try a restore
+
+```sh
+kubectl -n another-agentic-system get objectstore another-agentic-db -o jsonpath='{.status.serverRecoveryWindow}'   # what can be restored
+kubectl -n another-agentic-system apply -f deploy/chart/examples/restore-cluster.yaml
+kubectl -n another-agentic-system get cluster another-agentic-db-restore -w                                          # wait for "Cluster in healthy state"
+kubectl -n another-agentic-system exec another-agentic-db-restore-1 -c postgres -- psql -d orchestrator -c 'select count(*) from threads'
+kubectl -n another-agentic-system delete cluster another-agentic-db-restore                                          # the test is over (its volume goes with it)
+```
+
+The database and its owner (`orchestrator`) are named in the examples because they are not CloudNativePG's default `app`; the roles of the other agents come back with the data, and their passwords are the Secrets
+that already exist (the operator does not back up Secrets).
+
+#### Replace a lost cluster
+
+Only when `another-agentic-db` is gone for good: if it is merely unhealthy, repair it. A restore returns the data up to the last archived WAL segment, so the minutes before the loss are not in it. The restored cluster keeps the
+name the applications use, so the Service `another-agentic-db-rw` and the Secret `another-agentic-db-app` are its. It archives under a **new server name**, because CloudNativePG refuses to archive into a path that already holds
+another server's files (the check fails with `WAL archive check failed for server …: Expected empty archive`, and the pod stays in `Setting up primary`: *verified 2026-10-17*, cloudnative-pg `docs/src/recovery.md`), and the old
+name's path does. Nothing below has run on a cluster: rehearse it in a scratch namespace first if you can, and keep the old server's files until it has worked.
+
+1. **Stop Argo CD's sync of the Application** (its automated sync is set in home-os). With it on, Argo creates an empty `another-agentic-db` (`initdb`) as soon as the lost one is gone; that cluster cannot archive into the
+   old path, and it holds the name.
+2. **Remove the lost Cluster**, or the empty one Argo made, from the namespace: `kubectl -n another-agentic-system delete cluster another-agentic-db`. Never a cluster whose volume still holds the data.
+3. **Choose a new server name** with no folder in the bucket (`aws s3 ls s3://<bucket>/<prefix>/` lists the servers'), for example `another-agentic-db-2`, and write it in a copy of `examples/restore-cutover.yaml` under
+   `plugins[].parameters.serverName`. In the same file `externalClusters[].plugin.parameters.serverName` is the **old** one: the lost cluster's name, or the `backup.serverName` it had. Set `storage` and the image as above.
+4. **Have the ObjectStore and the credentials in the namespace.** They are there if the namespace survived and Argo had not pruned them
+   (`kubectl -n another-agentic-system get objectstore another-agentic-db` and `get secret another-agentic-db-backup`). If not, render the chart's file that makes them with the deployment's values (the Application's
+   `helm.valuesObject`, saved as `values.yaml`) and apply it by hand while the sync is stopped:
+   ```sh
+   helm template another-agentic-system deploy/chart -n another-agentic-system -f values.yaml -s templates/cnpg-backup.yaml | kubectl -n another-agentic-system apply -f -
+   ```
+   The file holds the ObjectStore, the ScheduledBackup (it has no Cluster to back up until step 5; what `immediate` does meanwhile is *unverified*, and step 9 takes a backup by hand) and, with `externalSecrets.enabled`, the
+   ExternalSecret that makes the Secret from the AWS secret (External Secrets Operator and the two AWS properties must be there). With `externalSecrets.enabled: false` the Secret `another-agentic-db-backup` (keys
+   `ACCESS_KEY_ID` and `ACCESS_SECRET_KEY`) is yours to create.
+5. **Restore**: `kubectl -n another-agentic-system apply -f restore-cutover.yaml` (your copy), then `kubectl -n another-agentic-system get cluster another-agentic-db -w` until `Cluster in healthy state`. If the pod's log
+   says `Expected empty archive`, the new server name was not new.
+6. **Make the live Cluster one the chart can take over.** Argo renders this Cluster with `bootstrap.initdb`, the restored one has `bootstrap.recovery`, and CloudNativePG's webhook refuses two bootstrap methods
+   (`Only one bootstrap method can be specified at a time`: *verified 2026-10-17*, cloudnative-pg `internal/webhook/v1/cluster_webhook.go`), which is what a sync would ask for. Remove the recovery and its source from the live object:
+   ```sh
+   kubectl -n another-agentic-system patch cluster another-agentic-db --type=json -p '[{"op":"remove","path":"/spec/bootstrap"},{"op":"remove","path":"/spec/externalClusters"}]'
+   ```
+   Nothing refuses a change of the bootstrap on a running Cluster, and `initdb` is the method when none is given (*verified 2026-10-17*, the same file and `api/v1/cluster_types.go`); that the operator then ignores the `initdb` that the sync adds to a running cluster is *unverified*.
+7. **Put `backup.serverName: another-agentic-db-2` in the Application's values, commit it, and only then turn the sync back on.** In that order: a sync without the value would put the plugin entry back on the
+   cluster's own name, which is the old path. The sync then adds the managed roles and the `Database` objects, which adopt the databases the restore brought back (*unverified*, like the adoption described under *One database cluster*).
+8. **Restart the orchestrator**: `kubectl -n another-agentic-system rollout restart deployment/another-agentic-orchestrator`. CloudNativePG made `another-agentic-db-app` anew, with a new random password for `orchestrator`, and the
+   orchestrator reads its connection string from that Secret as a file at start. The chat agent and the coders keep their roles' passwords (they are in the restored data and in their own Secrets: *unverified*); look at their logs.
+9. **Take a base backup and look** (step 6 of [the list above](#what-the-owner-does-in-this-order)): the new server has none until one completes, and WAL without a base backup restores nothing.
+   `kubectl cnpg backup another-agentic-db -n another-agentic-system --method=plugin --plugin-name=barman-cloud.cloudnative-pg.io`, then `ContinuousArchiving`, `LastBackupSucceeded` and `serverRecoveryWindow`.
+10. **Deal with the old server's folder.** It stays in the bucket and no longer expires ([above](#how-long-a-deleted-thread-stays-in-the-backups)). Keep it until the new cluster has run well, then delete it or give its prefix a
+    lifecycle rule: it holds people's threads.
+
+The restore on netcup is the proof the chart does not have (see *Unverified*).
+
+### Facts and where they come from
+
+*Verified 2026-10-17*, by reading, against these (a path below is under the base named first in its bullet; the module proxy serves the tagged sources, so what was read is the code that ships):
+[plugin docs and API](https://raw.githubusercontent.com/cloudnative-pg/plugin-barman-cloud/main/) (`main`), [CloudNativePG docs and API](https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/main/) (`main`),
+[the charts](https://raw.githubusercontent.com/cloudnative-pg/charts/main/charts/) (`main`), [the plugin v0.15.1](https://proxy.golang.org/github.com/cloudnative-pg/plugin-barman-cloud/@v/v0.15.1.zip) and
+[barman-cloud v0.6.0](https://proxy.golang.org/github.com/cloudnative-pg/barman-cloud/@v/v0.6.0.zip) (module zips), and [external-secrets](https://raw.githubusercontent.com/external-secrets/external-secrets/main/pkg/controllers/externalsecret/externalsecret_controller_template.go) (`main`).
+
+- The plugin needs CloudNativePG 1.26 or later (1.27 recommended) and cert-manager; it is installed in the operator's namespace (cloudnative-pg/plugin-barman-cloud, `web/docs/intro.md`, `web/docs/installation.mdx`). Charts `main`: `cloudnative-pg` 0.29.1 (operator 1.30.1), `plugin-barman-cloud` 0.8.1 (plugin v0.15.1) (cloudnative-pg/charts, both `Chart.yaml`).
+- `ObjectStore` (`barmancloud.cnpg.io/v1`): `spec.configuration.destinationPath`, `endpointURL`, `s3Credentials` as `{ name, key }` Secret references, `wal`/`data.compression`; `spec.retentionPolicy` matches `^[1-9][0-9]*[dwm]$` (months allowed by the plugin, refused by this chart); `spec.instanceSidecarConfiguration.env`, `.resources`, `.retentionPolicyIntervalSeconds` (default 1800); `serverName` must stay empty (`api/v1/objectstore_types.go`, `web/docs/usage.md`).
+- `Cluster.spec.plugins`, the `ScheduledBackup` with `method: plugin` and `pluginConfiguration.name`, and the restore through `bootstrap.recovery.source` and `externalClusters[].plugin` with `barmanObjectName` and `serverName` (`web/docs/usage.md`, `web/docs/concepts.md`); the schedule has six fields, seconds first (cloudnative-pg `docs/src/backup.md`, "Cron Schedule"); `bootstrap.recovery.database` and `.owner` for a non-default database (`docs/src/recovery.md`); the operator does not back up the Secrets (`docs/src/backup.md`, `docs/src/recovery.md`).
+- Retention is a recovery window enforced with `barman-cloud-backup-delete --retention-policy "RECOVERY WINDOW OF n …"`; the first valid backup is the newest completed before the window; older ones go "after the next backup completes" (`web/docs/retention.md`). The sidecar sweeps on the primary only, every `retentionPolicyIntervalSeconds` (plugin v0.15.1, `internal/cnpgi/instance/retention.go`), and **per server name**: it calls `DeleteBackupsByPolicy` with the server name of the Cluster's plugin entry, so the files of another server name are never swept (same file).
+- `serverName` is a parameter of the Cluster's plugin entry (`web/docs/parameters.md`, `web/docs/usage.md`: "use the `serverName` plugin parameter in the Cluster configuration"). Plugin v0.15.1 reads `plugin.Parameters["serverName"]` of the enabled entry named `barman-cloud.cloudnative-pg.io` and defaults to the cluster's name (`internal/cnpgi/operator/config/config.go`, `NewFromCluster`); that name is used to archive WAL, to take backups and to sweep (`internal/cnpgi/common/wal.go`, `instance/backup.go`, `instance/retention.go`). A recovery source's `serverName` defaults to the cluster's name too (same function).
+- The sidecar reads the S3 keys from the Secret **at each call**: archiving (`internal/cnpgi/common/wal.go`), the base backup (`instance/backup.go`) and the sweep (`instance/retention.go`) each call barman-cloud's `EnvSetCloudCredentialsAndCertificates`, which does a `client.Get` of the Secret (barman-cloud v0.6.0 `pkg/credentials/env.go`, `extractValueFromSecret`; plugin v0.15.1 `go.mod` requires v0.6.0). A rotated key is used by the next call, with no restart and no `cnpg.io/reload`; that label's text in the plugin's `object_stores.md` is about the endpoint CA Secret and carries a TODO about whether it applies to the plugin.
+- `instanceSidecarConfiguration.env` and `.resources` are copied into the pod spec by the lifecycle hook when the operator creates the pod (plugin v0.15.1 `internal/cnpgi/operator/lifecycle.go`, `reconcilePod` and `reconcilePodSpec`; `lifecycle_envs.go`; `lifecycle_resources.go`): the sidecar's environment is the pod's, and `resources` is empty when the ObjectStore sets none. That the operator rolls a pod by itself when the ObjectStore's env or resources change is *unverified*.
+- CloudNativePG (`main`): a Cluster with two bootstrap methods is refused with "Only one bootstrap method can be specified at a time", and the bootstrap is not among the checks on a changed Cluster, nor does its type carry an immutability rule on it, and `initdb` is the method when none is given (`internal/webhook/v1/cluster_webhook.go`, `validateBootstrapMethod`, `validateClusterChanges`; `api/v1/cluster_types.go`); a `ScheduledBackup`'s schedule is parsed with a cron parser and refused if it does not parse (`internal/webhook/v1/scheduledbackup_webhook.go`); a recovery without a named `secret` gets an app Secret with a random password, and a cluster whose archive path already holds files stays in `Setting up primary` with `Expected empty archive` (`docs/src/recovery.md`, "Configure the application database", "Restoring into a Cluster with a Backup Section").
+- `s3Credentials.region` is a Secret reference that becomes `AWS_DEFAULT_REGION` for barman-cloud (cloudnative-pg/barman-cloud v0.6.0, `pkg/credentials/env.go`); the commands run with the sidecar's own environment as their base (plugin v0.15.1, `internal/cnpgi/instance/retention.go`, `…/restore/restore.go`, `os.Environ()`), so `instanceSidecarConfiguration.env` reaches them, and the sidecar of a recovery source gets its store's `env` (`internal/cnpgi/operator/lifecycle_envs.go`). That the restore job does see it is *unverified* (the code path was read, not run).
+- The plugin makes a `Role` that reads exactly the Secrets the ObjectStore names (`internal/cnpgi/operator/specs/role.go`); the Cluster's conditions are `ContinuousArchiving` and `LastBackupSucceeded` (cloudnative-pg `api/v1/cluster_types.go`); `status.serverRecoveryWindow` holds `firstRecoverabilityPoint` and `lastSuccessfulBackupTime` (`objectstore_types.go`).
+- A target Secret of an ExternalSecret whose template has only metadata keeps the keys of `data` (external-secrets `externalsecret_controller_template.go`: no data template means the fetched keys are included).
+- The CRD schemas CI validates against are the datree catalog's at the commit the other CNPG schemas come from ([tests/schemas](tests/schemas/README.md)).
+
+*Unverified* (the owner's first sync and the restore show it): the plugin and cert-manager on netcup, and the CloudNativePG version there; that the pod rolls once and how long it is away; the first base backup and the WAL in the bucket; a restore; the cutover of *Replace a lost cluster* as a whole (the patch that removes the bootstrap, the sync that follows, the roles' passwords, `immediate` before the Cluster exists); that
+the restore job gets the region; that a change to `s3.region`, `sidecar.env` or `sidecar.resources` rolls the pod by itself; the sidecar's resources in a namespace with a ResourceQuota or a LimitRange; the bucket policy's exact actions and S3 versioning's effect on the stated retention;
+that the sidecar runs under the namespace's Pod Security `restricted` level; the database pods have **no NetworkPolicy** (see *Not in v0*), so their egress to S3 is open, and one added later must allow it.
 
 ## Sharing a thread
 
@@ -1282,7 +1487,8 @@ with no change to its database. The two keys at once are refused.
 
 ## Not in v0
 
-Backups of the databases (barman-cloud; recommended before inviting more than a handful of people); a NetworkPolicy for
+A restore that is automated, and a cutover of the deployment to a restored cluster that is more than [steps by hand](#replace-a-lost-cluster), which have not run on a cluster (the backups themselves are an option now, [`backup.enabled`](#backups),
+**off by default**, and recommended before inviting more than a handful of people); a NetworkPolicy for
 the databases (CloudNativePG's operator and instances talk to each other, and the operator's namespace was not verified);
 a split into a control plane and workers (S3 for the artifacts is [an option now](#artifacts-in-s3-and-rustfs)); the MCP surface and the CI webhooks (they need keys, a
 route that skips sign-in and a decision on the edge); the researcher and its search; metrics (netcup has no Prometheus; the logs are JSON on stdout); a deletion of
@@ -1304,4 +1510,5 @@ routes behave as the table says, but no real web, orchestrator or Traefik was be
 across preview releases with data on the volume. With `rustfs.ingress.enabled`: the files host on netcup (Traefik's TLS, its entrypoint timeouts and access log, the proxy's NetworkPolicy under Cilium, an agent reaching the public name from a pod, a real browser's CORS and `DPoP` preflight). With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
-With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).
+With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `backup.enabled`: everything on netcup ([the list](#facts-and-where-they-come-from)): the plugin, a backup, the WAL, a restore.
+With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

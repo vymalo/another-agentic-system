@@ -1,0 +1,7 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh, deploy.yml): the backups to AWS S3 as the owner would set them,
+# with every default left alone (an empty endpoint is AWS, retention 28d, a daily cron, gzip). The bucket is made up.
+backup:
+  enabled: true
+  s3:
+    bucket: agentic-db-backups
+    region: eu-central-1

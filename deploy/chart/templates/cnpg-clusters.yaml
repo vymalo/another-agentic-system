@@ -31,6 +31,17 @@ spec:
     initdb:
       database: {{ .Values.database.name }}
       owner: {{ .Values.database.owner }}
+  {{- if .Values.backup.enabled }}
+  {{- /* WAL archiving and the base backups go through the barman-cloud plugin to the ObjectStore of cnpg-backup.yaml, under the cluster's name or, with backup.serverName, under that one. */}}
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: {{ include "agentic.backup.objectStore" . }}
+        {{- with .Values.backup.serverName }}
+        serverName: {{ . | quote }}
+        {{- end }}
+  {{- end }}
   {{- if or $agent $coders }}
   managed:
     roles:

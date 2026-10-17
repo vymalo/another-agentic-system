@@ -108,3 +108,45 @@ spec:
         key: {{ $key }}
         property: {{ required "externalSecrets.properties.artifactsS3SecretAccessKey is required with orchestrator.artifacts.migrate.enabled" $es.properties.artifactsS3SecretAccessKey }}
 {{- end -}}
+
+{{/*
+The Secret of the database backups' S3 credentials (`backup.enabled`, issue #151): the two keys the ObjectStore names, filled from two
+properties of the AWS secret that are the backup bucket's own (never the artifacts'). It is rendered by cnpg-backup.yaml and not by
+externalsecrets.yaml, whose checksum the orchestrator's, the chat's, oauth2-proxy's and the search pod's pods carry: turning backups on
+must not restart them. The plugin's sidecar reads the keys from the Secret at each archive, backup and retention call, so a rotated key
+needs no restart (verified 2026-10-17, plugin v0.15.1); the label `cnpg.io/reload` is the plugin's page's advice for the Secrets an ObjectStore
+names (it has a TODO about whether it applies to the plugin), kept as harmless.
+*/}}
+{{- define "agentic.es.dbBackup" -}}
+{{- $es := .Values.externalSecrets -}}
+{{- $key := required "externalSecrets.key is required" $es.key -}}
+{{- $backup := dict "root" . "component" "db-backup" -}}
+apiVersion: {{ $es.apiVersion }}
+kind: ExternalSecret
+metadata:
+  name: {{ include "agentic.secret.dbBackup" . }}
+  labels:
+    {{- include "agentic.labels" $backup | nindent 4 }}
+spec:
+  refreshInterval: {{ $es.refreshInterval }}
+  secretStoreRef:
+    name: {{ $es.secretStoreRef.name }}
+    kind: {{ $es.secretStoreRef.kind }}
+  target:
+    name: {{ include "agentic.secret.dbBackup" . }}
+    creationPolicy: Owner
+    template:
+      metadata:
+        labels:
+          cnpg.io/reload: "true"
+  data:
+    # The keys the ObjectStore's `s3Credentials` name; the bucket's IAM user, which is not the artifacts' (README.md, "Backups").
+    - secretKey: ACCESS_KEY_ID
+      remoteRef:
+        key: {{ $key }}
+        property: {{ required "externalSecrets.properties.backupS3AccessKeyId is required with backup.enabled" $es.properties.backupS3AccessKeyId }}
+    - secretKey: ACCESS_SECRET_KEY
+      remoteRef:
+        key: {{ $key }}
+        property: {{ required "externalSecrets.properties.backupS3SecretAccessKey is required with backup.enabled" $es.properties.backupS3SecretAccessKey }}
+{{- end -}}
