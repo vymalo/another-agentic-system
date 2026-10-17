@@ -390,7 +390,9 @@ pub struct Job {
     /// The cap of the person's role on each agent of [`Job::mentioned`] that has one (ADR 0061,
     /// `max_tier`): what an ask of that agent is sent under at most. The lowest cap any message
     /// that mentioned the agent pinned on the mention ([`Mention::tier_cap`](crate::Mention)); an
-    /// agent with no entry has no cap. A ledger stored before the field existed has none.
+    /// agent with no entry has no cap. A ledger stored before the field existed has none: a job
+    /// begun before the upgrade that still runs sends its asks uncapped (a known limit of the
+    /// upgrade, for the length of that job).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mentioned_caps: BTreeMap<AgentId, AccessTier>,
     /// The mentions of the text [`Job::after_stop`] holds, as they stand **in that text** (each

@@ -606,7 +606,8 @@ pub(crate) fn request(
             continue_task,
             reference_task_ids,
             context,
-            // a mention pinned the cap of the person's role on the agent (ADR 0061)
+            // a mention pinned the cap of the person's role on the agent (ADR 0061); a job begun
+            // before the upgrade has none pinned, and its asks go uncapped
             tier_cap: job.mentioned_caps.get(ask.agent).copied(),
         },
         Command::Schedule {

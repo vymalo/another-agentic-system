@@ -243,7 +243,9 @@ impl Answer {
                 // its tokens are applied to the thread on their own (`Dispatcher::ask_usage`)
                 | AgentUpdate::Usage(_)
                 | AgentUpdate::UsageRejected(_)
-                // no tier is sent to an asked agent (ADR 0061), so none is echoed
+                // an asked agent may be sent a tier (the person's cap on it, ADR 0061) and echo one;
+                // a refused echo is counted where the stream is read (`ask_stream`) and changes
+                // nothing here
                 | AgentUpdate::TierRejected,
             )
             | None => {}
@@ -716,6 +718,11 @@ impl<P: Ports> Dispatcher<P> {
                     }
                     answer.note(&env);
                     self.ask_usage(a, &env).await?;
+                    // an echo that is not one of the four tiers is counted, as for the thread's own
+                    // agent, and never applied
+                    if matches!(env.update, Some(AgentUpdate::TierRejected)) {
+                        self.app.tier_echo_dropped(a.thread);
+                    }
                     if let Some(state) = state.filter(|s| s.ends_turn()) {
                         return Ok(Flow::Ended(state));
                     }
@@ -966,7 +973,13 @@ impl<P: Ports> Dispatcher<P> {
     /// left parked is a waste and not a risk, because nothing it says is applied and the ledger
     /// refuses to ask the agent again in this job.
     async fn cancel_form(&self, a: &Asking, answer: &Answer) {
-        let Some(task_id) = answer.interface.clone() else {
+        // the task this ask sent into or started: on the row since its first envelope (the claim's
+        // copy of the row is older), else the one that showed the interface
+        let recorded = match self.store().get_outbox(a.row.id).await {
+            Ok(Some(row)) => row.task_id,
+            _ => None,
+        };
+        let Some(task_id) = recorded.or_else(|| answer.interface.clone()) else {
             return;
         };
         let handle = TaskHandle {

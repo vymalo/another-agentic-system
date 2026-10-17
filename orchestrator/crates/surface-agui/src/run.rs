@@ -309,65 +309,14 @@ fn tiering(mut input: Input, tier: &mut Option<AccessTier>) -> Input {
     input
 }
 
-/// Gives the first input that is a message or an action the catalog the run carried, once.
-fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
-    match input {
-        Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: _,
-            mentions,
-            tier,
-            tier_cap,
-        } => Input::UserMessage {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: catalog.take(),
-            mentions,
-            tier,
-            tier_cap,
-        },
-        Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: _,
-            mentions,
-            tier,
-            tier_cap,
-        } => Input::StopAndSend {
-            user,
-            text,
-            message_id,
-            run_id,
-            origin,
-            catalog: catalog.take(),
-            mentions,
-            tier,
-            tier_cap,
-        },
-        Input::UiAction {
-            user,
-            action,
-            catalog: _,
-            tier,
-            tier_cap,
-        } => Input::UiAction {
-            user,
-            action,
-            catalog: catalog.take(),
-            tier,
-            tier_cap,
-        },
-        other @ (Input::Redeliver { .. }
+/// Gives the first input that is a message or an action the catalog the run carried, once. Every
+/// variant is listed, so that a new input must be decided here.
+fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
+    match &mut input {
+        Input::UserMessage { catalog: own, .. }
+        | Input::StopAndSend { catalog: own, .. }
+        | Input::UiAction { catalog: own, .. } => *own = catalog.take(),
+        Input::Redeliver { .. }
         | Input::Cancel { .. }
         | Input::Agent { .. }
         | Input::DeliveryFailed { .. }
@@ -393,8 +342,9 @@ fn carrying(input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::AskSent { .. }
         | Input::AskFinished { .. }
         | Input::AskFailed { .. }
-        | Input::AskUsage { .. }) => other,
+        | Input::AskUsage { .. } => {}
     }
+    input
 }
 
 /// The ids we write into the log are bounded.
