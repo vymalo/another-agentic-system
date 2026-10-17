@@ -408,3 +408,45 @@ async fn the_parents_tier_does_not_pass_down_even_when_the_person_is_capped_on_t
     assert_eq!(coder_tiers(&w), [Some(Plan)]);
     run.shutdown().await;
 }
+
+#[tokio::test]
+async fn an_ask_that_ends_while_the_card_is_read_is_not_sent() {
+    let w = World::new();
+    w.agent.set_access_tier("coder", Some(all_tiers()));
+    let app = app_with_roles(&w);
+    let who = person(&["planner", "chatter"]);
+    let t = working_thread(&w, &app, &who, None).await;
+    let row = put(&app, &w, t.id).await;
+    // the sender is held with the card in hand: the ask was wanted when it was claimed
+    w.agent.hold_next_card_read("coder");
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the card is being read", || async {
+        w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::ReadCard { agent } if agent.as_str() == "coder"))
+            .then_some(())
+    })
+    .await;
+    // the person stops the job meanwhile: the ask is over
+    app.cancel(&who, t.id).await.unwrap();
+    w.agent.release_card_read();
+    let row = eventually("the row ends", || async {
+        let now = w.store.get_outbox(row.id).await.unwrap().unwrap();
+        (!now.status.is_open()).then_some(now)
+    })
+    .await;
+    assert_eq!(row.status, OutboxStatus::Skipped);
+    assert!(
+        coder_tiers(&w).is_empty(),
+        "nothing was sent for an ask nobody waits for"
+    );
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Send { .. } | Call::Cancel { .. })),
+        "no task was started, so none is cancelled"
+    );
+    run.shutdown().await;
+}

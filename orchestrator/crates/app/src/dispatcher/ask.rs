@@ -249,8 +249,8 @@ impl Answer {
                 | AgentUpdate::Usage(_)
                 | AgentUpdate::UsageRejected(_)
                 // an asked agent may be sent a tier (the person's cap on it, ADR 0061) and echo one;
-                // a refused echo is counted where the stream is read (`ask_stream`) and changes
-                // nothing here
+                // a refused echo is counted where the stream is read (`ask_stream`, `poll_ask`) and
+                // changes nothing here
                 | AgentUpdate::TierRejected,
             )
             | None => {}
@@ -633,6 +633,11 @@ impl<P: Ports> Dispatcher<P> {
             .thread_ui_catalog(a.thread)
             .await?
             .map(UiDelivery::Inline);
+        // The reads above take time: an ask that ended meanwhile (the person's stop, the deadline,
+        // the end of the task that asked) is not sent.
+        if !self.ask_wanted(a).await {
+            return self.ask_unwanted(a).await;
+        }
         let request = SendRequest {
             endpoint: a.endpoint.clone(),
             message_id: a.row.id.to_string(),
@@ -888,6 +893,7 @@ impl<P: Ports> Dispatcher<P> {
         let mut delay = self.cfg.poll_min;
         let mut failures = 0_u32;
         let mut learned = false;
+        let mut echo_counted = false;
         loop {
             if !self.ask_wanted(a).await {
                 return self.ask_unwanted(a).await;
@@ -903,6 +909,11 @@ impl<P: Ports> Dispatcher<P> {
                     for env in &snap.envelopes {
                         answer.note(env);
                         self.ask_usage(a, env).await?;
+                        // a snapshot comes again every poll: its refused echo counts once
+                        if !echo_counted && matches!(env.update, Some(AgentUpdate::TierRejected)) {
+                            self.app.tier_echo_dropped(a.thread);
+                            echo_counted = true;
+                        }
                     }
                     if snap.revision.is_some() {
                         answer.revision.clone_from(&snap.revision);

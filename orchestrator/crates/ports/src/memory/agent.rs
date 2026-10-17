@@ -159,6 +159,9 @@ struct State {
     /// Agents that are redeployed with tiers right after their card is next read
     /// ([`ScriptedAgent::redeploy_with_tiers_after_next_card_read`]).
     redeploys: HashMap<AgentId, TierOffer>,
+    /// Agents whose next card read waits for [`ScriptedAgent::release_card_read`], after it has
+    /// read the card ([`ScriptedAgent::hold_next_card_read`]).
+    held_card_reads: HashSet<AgentId>,
     /// How many lookups by message id still fail as `Unreachable` (`usize::MAX`: all of them).
     find_failures: usize,
     /// Agents that play the verifier: every message is answered by the script.
@@ -182,6 +185,8 @@ struct Shared {
     changed: Notify,
     /// Permit-style gate for "gate" and "drop" scripts.
     gate: Notify,
+    /// Permit-style gate for a held card read.
+    card_gate: Notify,
 }
 
 /// A fake [`AgentClient`] driven by the message text, for tests. It behaves like a real
@@ -260,6 +265,7 @@ impl ScriptedAgent {
                 state: Mutex::new(State::default()),
                 changed: Notify::new(),
                 gate: Notify::new(),
+                card_gate: Notify::new(),
             }),
         }
     }
@@ -397,6 +403,18 @@ impl ScriptedAgent {
     /// own read for the send sees it redeployed (the window `SendRequest::tier_cap` closes).
     pub fn redeploy_with_tiers_after_next_card_read(&self, agent: &str, offer: TierOffer) {
         self.state().redeploys.insert(AgentId::new(agent), offer);
+    }
+
+    /// Makes the next read of `agent`'s card return its answer only after
+    /// [`ScriptedAgent::release_card_read`]: the sender is held, with the card in hand, while the
+    /// test changes the world (the person stops the job, say).
+    pub fn hold_next_card_read(&self, agent: &str) {
+        self.state().held_card_reads.insert(AgentId::new(agent));
+    }
+
+    /// Lets the held card read answer (a permit is kept if none waits yet).
+    pub fn release_card_read(&self) {
+        self.shared.card_gate.notify_one();
     }
 
     /// Lets one waiting `gate`/`drop` task continue (a permit is stored if none waits yet).
@@ -1069,19 +1087,25 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
 
 impl AgentClient for ScriptedAgent {
     async fn read_card(&self, ep: &AgentEndpoint) -> Result<AgentCardInfo, AgentError> {
-        let mut st = self.state();
-        st.calls.push(Call::ReadCard {
-            agent: ep.id.clone(),
-        });
-        if st.cards_down.contains(&ep.id) || st.unreachable.contains(&ep.id) {
-            return Err(AgentError::unreachable("card unreachable"));
-        }
-        let card = st.cards.get(&ep.id).cloned().unwrap_or_else(default_card);
-        if let Some(offer) = st.redeploys.remove(&ep.id) {
-            st.cards
-                .entry(ep.id.clone())
-                .or_insert_with(default_card)
-                .access_tier = TierListing::Offered(offer);
+        let (card, held) = {
+            let mut st = self.state();
+            st.calls.push(Call::ReadCard {
+                agent: ep.id.clone(),
+            });
+            if st.cards_down.contains(&ep.id) || st.unreachable.contains(&ep.id) {
+                return Err(AgentError::unreachable("card unreachable"));
+            }
+            let card = st.cards.get(&ep.id).cloned().unwrap_or_else(default_card);
+            if let Some(offer) = st.redeploys.remove(&ep.id) {
+                st.cards
+                    .entry(ep.id.clone())
+                    .or_insert_with(default_card)
+                    .access_tier = TierListing::Offered(offer);
+            }
+            (card, st.held_card_reads.remove(&ep.id))
+        };
+        if held {
+            self.shared.card_gate.notified().await;
         }
         Ok(card)
     }
