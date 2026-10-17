@@ -24,8 +24,8 @@ use orch_core::{
 };
 use orch_ports::memory::Call;
 use orch_ports::{
-    AgentEndpoint, Clock as _, OutboxItem, OutboxKind, OutboxPayload, OutboxStatus, PortSet,
-    Principal, Role, SystemClock, ThreadStore,
+    Clock as _, OutboxItem, OutboxKind, OutboxPayload, OutboxStatus, PortSet, Principal, Role,
+    SystemClock, ThreadStore,
 };
 use serde_json::json;
 use support::*;
@@ -123,7 +123,7 @@ async fn working_thread(
     tier: Option<AccessTier>,
 ) -> ThreadRecord {
     let id = ThreadId(uuid::Uuid::now_v7());
-    let Creation::Created { thread, .. } = app
+    let Creation::Created { .. } = app
         .create_thread_as(
             who,
             id,

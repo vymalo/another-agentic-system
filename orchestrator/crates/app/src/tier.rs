@@ -9,7 +9,7 @@
 //! ([`App::resolve_tier`]). A tier is never silently dropped: ignoring it would run the agent under
 //! its default for a person who asked for something narrower.
 
-use orch_core::{AccessTier, AgentId, TierListing};
+use orch_core::{AccessTier, AgentId};
 use orch_ports::{AgentEndpoint, AgentError, Ports};
 use serde_json::Value;
 
@@ -185,7 +185,7 @@ impl<P: Ports> App<P> {
     /// * A `tier`: it is sent if the card still honours it; otherwise
     ///   [`AgentError::Unsupported`] (nothing is sent, the work fails).
     /// * A `cap`: the highest tier the card offers within the lower of its default and the cap
-    ///   ([`TierListing::under_cap`]); a card that lists no tier gets the plain message; one that
+    ///   ([`orch_core::TierListing::under_cap`]); a card that lists no tier gets the plain message; one that
     ///   has none that low, or lists the extension badly, is [`AgentError::Unsupported`].
     ///
     /// # Errors
