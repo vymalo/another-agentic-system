@@ -1368,6 +1368,101 @@ async fn a_reclaimed_row_follows_the_asked_agents_task_instead_of_asking_again()
     second.shutdown().await;
 }
 
+/// The claimant that died after the agent drew its form and before it waited: the next one
+/// re-attaches to the rest of the task, never sees the surface, and sees the turn end waiting. It
+/// reads the task, finds the interface there, and ends the ask with the form.
+#[tokio::test]
+async fn a_reclaimed_ask_that_missed_the_form_reads_the_task_and_ends_with_it() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    let row = put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "ui-gate pick one", "k1"),
+    )
+    .await;
+    let first = spawn_dispatcher(&app, fast(), "d1");
+    // the surface is drawn in the same breath as the task starts
+    eventually("the message is sent", || async {
+        row_of(&w, &row).await.task_id.map(|_| ())
+    })
+    .await;
+    first.kill();
+    let second = spawn_dispatcher(&app, fast(), "d2");
+    eventually("the second worker re-attaches", || async {
+        w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Resubscribe { .. }))
+            .then_some(())
+    })
+    .await;
+    w.agent.release_gate();
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(done.form, "{done:?}");
+    assert!(
+        w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::GetTask { .. })),
+        "the task was read for the interface the stream did not carry"
+    );
+    assert_eq!(sends_to(&w, "coder").len(), 1, "asked once");
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert!(thread.job.asks[0].form);
+    let task = row_of(&w, &row)
+        .await
+        .task_id
+        .expect("the task is on the row");
+    eventually("the parked task is cancelled", || async {
+        cancels(&w).contains(&task).then_some(())
+    })
+    .await;
+    second.shutdown().await;
+}
+
+/// The same claim, and the task cannot be read: nothing says the question is not a form, and a
+/// model must not answer one, so it is taken for one.
+#[tokio::test]
+async fn a_reclaimed_ask_whose_waiting_task_cannot_be_read_is_taken_for_a_form() {
+    let w = World::new();
+    let app = app3(&w);
+    let t = working_thread(&*app, &w.store).await;
+    let row = put(
+        &*app,
+        &w.store,
+        t.id,
+        ask_of("coder", "ui-gate pick one", "k1"),
+    )
+    .await;
+    let first = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the message is sent", || async {
+        row_of(&w, &row).await.task_id.map(|_| ())
+    })
+    .await;
+    first.kill();
+    let second = spawn_dispatcher(&app, fast(), "d2");
+    eventually("the second worker re-attaches", || async {
+        w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Resubscribe { .. }))
+            .then_some(())
+    })
+    .await;
+    w.agent.set_get_task_failing(true);
+    w.agent.release_gate();
+    let (done, _) = finished(&app, t.id, 1).await;
+    assert_eq!(done.state, AskOutcome::InputRequired);
+    assert!(done.form, "taken for a form: {done:?}");
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert!(thread.job.asks[0].form);
+    second.shutdown().await;
+}
+
 /// The claimant that died after recording the task on the row and before telling the core: the
 /// next one tells it, so the next ask of the agent can continue the task.
 #[tokio::test]

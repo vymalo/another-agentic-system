@@ -156,6 +156,8 @@ struct State {
     unreachable: HashSet<AgentId>,
     fail_sends: VecDeque<AgentError>,
     no_resubscribe: bool,
+    /// Whether `get_task` fails as `Unreachable` ([`ScriptedAgent::set_get_task_failing`]).
+    get_task_fails: bool,
     /// How many lookups by message id still fail as `Unreachable` (`usize::MAX`: all of them).
     find_failures: usize,
     /// Agents that play the verifier: every message is answered by the script.
@@ -198,6 +200,9 @@ struct Shared {
 /// - `ui`: `working`, an A2UI surface `s1` (a `createSurface` and an `updateComponents` with a
 ///   button), then `input-required("Pick one")`; the follow-up (an action, or a message)
 ///   continues the task with `working`, an artifact `answer`, `completed`;
+/// - `ui-gate`: like `ui`, but the surface is drawn, then the task waits for
+///   [`ScriptedAgent::release_gate`] before it says `input-required` (a stream that starts in
+///   between never sees the surface);
 /// - `steps`: `working`, a sub-agent step `OpenCode` with two commands under it (the second fails),
 ///   the sub-agent's end, an artifact `echo`, `completed` (the steps are reported the way an agent
 ///   that speaks `steps/v1` does; ids are prefixed with the task id);
@@ -379,6 +384,11 @@ impl ScriptedAgent {
     /// `false` makes `resubscribe` answer `Unsupported`, forcing the `get_task` polling path.
     pub fn set_resubscribe_supported(&self, supported: bool) {
         self.state().no_resubscribe = !supported;
+    }
+
+    /// `true` makes `get_task` fail as `Unreachable`, whatever the task.
+    pub fn set_get_task_failing(&self, failing: bool) {
+        self.state().get_task_fails = failing;
     }
 
     /// Lets one waiting `gate`/`drop` task continue (a permit is stored if none waits yet).
@@ -766,7 +776,12 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_ui(&task, "s1", vec![ui_create("s1"), ui_components("s1")]);
             shared.push_status(&task, InputRequired, Some("Pick one"));
         }
-        "ui" => {
+        "ui-gate" if !resumed => {
+            shared.push_ui(&task, "s1", vec![ui_create("s1"), ui_components("s1")]);
+            shared.gate.notified().await;
+            shared.push_status(&task, InputRequired, Some("Pick one"));
+        }
+        "ui" | "ui-gate" => {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
             shared.push_status(&task, Completed, None);
         }
@@ -1268,7 +1283,7 @@ impl AgentClient for ScriptedAgent {
         st.calls.push(Call::GetTask {
             task_id: task.task_id.clone(),
         });
-        if st.unreachable.contains(&task.endpoint.id) {
+        if st.unreachable.contains(&task.endpoint.id) || st.get_task_fails {
             return Err(AgentError::unreachable("agent unreachable"));
         }
         snapshot(&st, &task.task_id)

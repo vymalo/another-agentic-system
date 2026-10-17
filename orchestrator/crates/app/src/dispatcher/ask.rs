@@ -38,7 +38,9 @@
 //!   who cannot see an asked agent's screens. The answer is read with `form` set
 //!   ([`AskResult::form`](orch_core::AskResult::form)); the core never continues that task and refuses
 //!   a further ask of the agent in the job ([`AskRefusal::FormPending`](orch_core::AskRefusal)), and
-//!   once the ask is recorded the dispatcher cancels the parked task. A question in words, with no
+//!   once the ask is recorded the dispatcher cancels the parked task. A claim that re-attaches to a waiting
+//!   task reads the task for an interface (the rest of a stream lacks what was drawn before the crash),
+//!   and takes a task it cannot read for a form. A question in words, with no
 //!   interface, stays the asking agent's to answer: an ask carries no UI catalog, so an agent such as
 //!   adam-coder asks in words, and that is a known gap (ADR 0026, status note of 2026-10-17).
 //! * **There is no cancel row.** The row is its own cancel, as a `verify` row is: the ask is wanted
@@ -824,7 +826,17 @@ impl<P: Ports> Dispatcher<P> {
                 Flow::Ended(AgentTaskState::Completed) if answer.text().is_none() => {
                     tracing::debug!(id = %a.row.id, "completed with nothing on the rest of the stream; reading the task");
                 }
-                Flow::Ended(state) => return self.ask_answered(a, answer, state).await,
+                Flow::Ended(state) => {
+                    // What this claim read is the rest of the task: an interface drawn before the
+                    // crash, or before the stream broke, is not in it.
+                    if matches!(
+                        state,
+                        AgentTaskState::InputRequired | AgentTaskState::AuthRequired
+                    ) {
+                        self.read_for_form(a, &handle, answer).await;
+                    }
+                    return self.ask_answered(a, answer, state).await;
+                }
                 Flow::Lost => return Ok(()),
                 Flow::Unwanted => return self.ask_unwanted(a).await,
                 Flow::Disconnected | Flow::Failed(_) => {}
@@ -834,6 +846,33 @@ impl<P: Ports> Dispatcher<P> {
             }
         }
         self.poll_ask(a, &handle, answer).await
+    }
+
+    /// A claim that re-attached to a task that waits asks whether it waits for a form it did not see:
+    /// the task is read, and an interface in it (drawn, or refused) is remembered. **Fails closed**:
+    /// a task that cannot be read is taken to wait for a form, because a model must not answer one
+    /// and nothing says it is not one. Nothing is read when the claim saw an interface itself.
+    async fn read_for_form(&self, a: &Asking, handle: &TaskHandle, answer: &mut Answer) {
+        if answer.interface.is_some() {
+            return;
+        }
+        match self.app.ports().agents().get_task(handle).await {
+            Ok(snap) => {
+                let shown = snap.envelopes.iter().any(|env| {
+                    matches!(
+                        env.update,
+                        Some(AgentUpdate::Ui { .. } | AgentUpdate::UiRejected { .. })
+                    )
+                });
+                if shown {
+                    answer.interface = Some(handle.task_id.clone());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(id = %a.row.id, ask = a.ask, error = %report(&e), "the waiting task of an asked agent could not be read for a form; taking it for one");
+                answer.interface = Some(handle.task_id.clone());
+            }
+        }
     }
 
     /// Polls `get_task` with backoff until the asked agent's task ends its turn.

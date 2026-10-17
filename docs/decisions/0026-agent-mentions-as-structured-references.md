@@ -193,7 +193,9 @@ not fixed here**:
   form answer looks like (that would tie it to one vendor's wording, ADR 0007 and ADR 0008).
 
 - **What the dispatcher sees.** An asked agent's turn that showed an interface (`AgentUpdate::Ui`, even one the core
-  refused) and then ended `input_required` or `auth_required` is read with `form` set.
+  refused) and then ended `input_required` or `auth_required` is read with `form` set. A claim that **re-attaches** to a waiting
+  task after a crash reads only the rest of it, which lacks what was drawn before, so it reads the task once more for an
+  interface, and a task it cannot read is taken for a form (fail closed).
 - **What the core does.** The ask ends as ever, with `ask_finished.form` (omitted when false) and the ledger's `Ask.form`. Such a
   task is **never continued** (`continuation`), and **no further ask of that agent in the job is accepted**
   (`AskRefusal::FormPending`, by whoever asks), because a new task in the same A2A context could resolve the parked one. The
