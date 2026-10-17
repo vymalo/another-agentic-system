@@ -1,0 +1,53 @@
+# Replace a LOST database cluster by a restore of its backups, under the name the applications use (README.md, "Backups", "Replace a lost cluster").
+# Not part of the chart (Helm renders nothing from this directory). Use it only when `another-agentic-db` is gone for good, with Argo CD's sync stopped
+# and the README's steps 1 to 4 done; to prove the backups work beside a running cluster, use restore-cluster.yaml.
+#
+# The cluster is named `another-agentic-db` (`<release>-db`), so the Service `another-agentic-db-rw` and the Secret `another-agentic-db-app` that the
+# applications read are the restored cluster's. Two server names are in it, and they must differ:
+#   - `externalClusters[].plugin.parameters.serverName` is the server it READS from: the lost cluster's name (or its `backup.serverName`);
+#   - `plugins[].parameters.serverName` is the server it WRITES to from now on: a NEW name, the `backup.serverName` of the deployment's values
+#     (`another-agentic-db-2` here). CloudNativePG refuses to archive into a path that already holds a server's files ("WAL archive check failed
+#     for server ...: Expected empty archive", recovery.md), and the old name's path does; the pod then never leaves "Setting up primary".
+# Never reuse a name that has files in the bucket.
+#
+# Keep `storage` (size, class) and the image equal to the deployment's `database.storage.size`, `database.storage.storageClass` and `database.imageName`
+# (empty there: the operator's default image, as here). The names assume a release called `another-agentic-system` in the chart's own namespace.
+#
+# CloudNativePG makes the app Secret `another-agentic-db-app` anew, with a NEW random password for the owner `orchestrator` (no `secret` is named
+# below; recovery.md, "Configure the application database"), and the orchestrator reads its connection string from that Secret at start: it is restarted
+# after the cutover. The other roles (agent, coders) keep their passwords: they are in the restored data, and their Secrets are the chart's.
+#
+#   kubectl -n another-agentic-system apply -f deploy/chart/examples/restore-cutover.yaml
+#   kubectl -n another-agentic-system get cluster another-agentic-db -w
+#
+# For a point in time, add under `bootstrap.recovery` (a time between the oldest base backup and the last archived WAL):
+#   recoveryTarget:
+#     targetTime: "2026-10-17 03:00:00+00"
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: another-agentic-db
+spec:
+  instances: 1
+  # imageName: "<database.imageName, if the deployment sets one>"
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+  bootstrap:
+    recovery:
+      source: source
+      database: orchestrator
+      owner: orchestrator
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: another-agentic-db
+        serverName: another-agentic-db-2
+  externalClusters:
+    - name: source
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          barmanObjectName: another-agentic-db
+          serverName: another-agentic-db

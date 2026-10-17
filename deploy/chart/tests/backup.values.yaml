@@ -1,6 +1,8 @@
 # Layered over examples/netcup.values.yaml by the checks (render-check.sh, deploy.yml): continuous backups of the database cluster to an
 # S3-compatible server (an endpoint), with every knob away from its default, so the render shows each one. Not a deployment's values: see
-# README.md, "Backups", for what a deployment sets (and the two AWS properties to add first). The bucket and the endpoint are made up.
+# README.md, "Backups", for what a deployment sets (and the two AWS properties to add first). The bucket and the endpoint are made up. Values that
+# could be swapped for one another differ on purpose (the WAL's and the base backup's compression, the two checksum settings, the requests and the limit),
+# so that render-check.sh can tell which key holds which; the server name is the one a restore under the original name would set (README.md, "Restore").
 backup:
   enabled: true
   s3:
@@ -8,6 +10,7 @@ backup:
     endpoint: http://object-store.storage.svc:9000
     region: us-east-1
     prefix: netcup/prod
+  serverName: another-agentic-db-2
   retention: 4w
   schedule:
     cron: "0 30 2 * * *"
@@ -21,7 +24,7 @@ backup:
       - name: AWS_REQUEST_CHECKSUM_CALCULATION
         value: when_required
       - name: AWS_RESPONSE_CHECKSUM_VALIDATION
-        value: when_required
+        value: when_supported
     resources:
       requests:
         cpu: 50m

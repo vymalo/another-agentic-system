@@ -113,8 +113,9 @@ spec:
 The Secret of the database backups' S3 credentials (`backup.enabled`, issue #151): the two keys the ObjectStore names, filled from two
 properties of the AWS secret that are the backup bucket's own (never the artifacts'). It is rendered by cnpg-backup.yaml and not by
 externalsecrets.yaml, whose checksum the orchestrator's, the chat's, oauth2-proxy's and the search pod's pods carry: turning backups on
-must not restart them. The label makes CloudNativePG reload a changed key (the plugin's pages say so of Secrets and ConfigMaps in general;
-unverified for the plugin's sidecar).
+must not restart them. The plugin's sidecar reads the keys from the Secret at each archive, backup and retention call, so a rotated key
+needs no restart (verified 2026-10-17, plugin v0.15.1); the label `cnpg.io/reload` is the plugin's page's advice for the Secrets an ObjectStore
+names (it has a TODO about whether it applies to the plugin), kept as harmless.
 */}}
 {{- define "agentic.es.dbBackup" -}}
 {{- $es := .Values.externalSecrets -}}

@@ -7,9 +7,11 @@
 {{- $name := include "agentic.backup.objectStore" . }}
 {{- $cluster := include "agentic.db.orchestrator" . }}
 {{- $root := dict "root" . "component" "db-backup" }}
-# Where the cluster `{{ $cluster }}` keeps its WAL archive and its base backups. The plugin adds the cluster's name below the destination path
-# (the server name), so a restore names the same store and that server name (examples/restore-cluster.yaml). `retentionPolicy` is a recovery
-# window, enforced by the plugin's sidecar in the primary's pod every 30 minutes. The credentials are the Secret `{{ include "agentic.secret.dbBackup" . }}`.
+{{- $server := or $bk.serverName $cluster }}
+# Where the cluster `{{ $cluster }}` keeps its WAL archive and its base backups. The plugin adds the server name below the destination path: `{{ $server }}`
+# ({{ if $bk.serverName }}set by backup.serverName{{ else }}the cluster's own name, as backup.serverName is empty{{ end }}). A restore names this store and the server name it
+# reads from (examples/restore-cluster.yaml). `retentionPolicy` is a recovery window, enforced by the plugin's sidecar in the primary's pod every 30 minutes.
+# The credentials are the Secret `{{ include "agentic.secret.dbBackup" . }}`.
 apiVersion: barmancloud.cnpg.io/v1
 kind: ObjectStore
 metadata:

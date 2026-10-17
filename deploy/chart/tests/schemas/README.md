@@ -1,7 +1,7 @@
 # CRD schemas for kubeconform
 
 The chart renders five custom resources: a CloudNativePG `Cluster`, its `Database` objects, an `ExternalSecret` and, with `backup.enabled`, a
-`ScheduledBackup` and the barman-cloud plugin's `ObjectStore`. The `Deploy` workflow validates them (and `examples/restore-cluster.yaml`) with
+`ScheduledBackup` and the barman-cloud plugin's `ObjectStore`. The `Deploy` workflow validates them (and `examples/restore-cluster.yaml` and `examples/restore-cutover.yaml`) with
 kubeconform against the JSON schemas in this directory.
 
 The `Cluster` and the `ExternalSecret` files are byte-for-byte copies of the ones in [vymalo/another-adam-rs](https://github.com/vymalo/another-adam-rs)

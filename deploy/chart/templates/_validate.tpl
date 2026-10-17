@@ -626,26 +626,43 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if and (contains "." $bucket) (not $bk.s3.endpoint) -}}
 {{- fail (printf "backup.s3.bucket %q has a dot: without an endpoint the bucket is AWS S3's, whose virtual-hosted names do not take one; name the bucket without dots, or set backup.s3.endpoint" $bucket) -}}
 {{- end -}}
-{{- if and $bk.s3.endpoint (not (regexMatch "^https?://[^/@?#]+(/[^@?#]*)?$" (toString $bk.s3.endpoint))) -}}
-{{- fail "backup.s3.endpoint must be an http(s) URL with a host and no credentials, query or fragment, or empty (AWS S3)" -}}
+{{- if and $bk.s3.endpoint (or (not (regexMatch "^https?://[^/@?#]+(/[^@?#]*)?$" (toString $bk.s3.endpoint))) (regexMatch "[\\s\"']" (toString $bk.s3.endpoint))) -}}
+{{- fail "backup.s3.endpoint must be an http(s) URL with a host and no credentials, query, fragment, white space or quote, or empty (AWS S3)" -}}
 {{- end -}}
-{{- if and $bk.s3.prefix (or (not (regexMatch "^[A-Za-z0-9._/-]{1,128}$" (toString $bk.s3.prefix))) (contains ".." (toString $bk.s3.prefix))) -}}
-{{- fail "backup.s3.prefix is at most 128 of A-Z, a-z, 0-9, ., _, - and /, with no .." -}}
+{{- /* The prefix is a folder of the bucket's key space: a `.` or `..` segment is a path component that an S3-compatible server or a client may resolve (unverified), so it is refused. */ -}}
+{{- if $bk.s3.prefix -}}
+{{- if or (not (regexMatch "^[A-Za-z0-9._/-]{1,128}$" (toString $bk.s3.prefix))) (contains ".." (toString $bk.s3.prefix)) -}}
+{{- fail "backup.s3.prefix is at most 128 of A-Z, a-z, 0-9, ., _, - and /, with no .. and no segment that is only a dot" -}}
+{{- end -}}
+{{- range $seg := splitList "/" (toString $bk.s3.prefix) -}}
+{{- if eq $seg "." -}}
+{{- fail "backup.s3.prefix is at most 128 of A-Z, a-z, 0-9, ., _, - and /, with no .. and no segment that is only a dot" -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if not (regexMatch "^[a-z0-9-]+$" (toString $bk.s3.region)) -}}
 {{- fail "backup.s3.region is required, a region name (eu-central-1; us-east-1 for a server that has none): the sidecar needs one to sign" -}}
 {{- end -}}
-{{- /* A recovery window of at most 30 days, in days or weeks. The plugin accepts `m` (months) and more; a longer keep is a decision about the testers' data, not a value. */ -}}
+{{- /* The server name the cluster archives under (`spec.plugins[].parameters.serverName` of the plugin): unset, the cluster's own name. A DNS label, as the cluster's own name is one. */ -}}
+{{- if and (not (kindIs "invalid" $bk.serverName)) (not (kindIs "string" $bk.serverName)) -}}
+{{- fail (printf "backup.serverName must be a string (empty: the cluster's own name), got %s" (kindOf $bk.serverName)) -}}
+{{- end -}}
+{{- if and $bk.serverName (not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" (toString $bk.serverName))) -}}
+{{- fail (printf "backup.serverName must be a name of at most 63 lower-case letters, digits and -, a letter or a digit at both ends (empty: the cluster's own name), got %q" (toString $bk.serverName)) -}}
+{{- end -}}
+{{- /* A recovery window of at most 28 days, in days or weeks. The plugin accepts `m` (months) and more; a longer keep is a decision about the testers' data, not a value.
+       Why 28: the plugin keeps the newest backup older than the window too and deletes an obsolete one after the next backup, so with a daily backup a window W keeps data
+       for about W+1 days and up to W+2; 28 days is "within about 30 days", the sentence testers are given (docs/tester-note.md). */ -}}
 {{- $ret := toString $bk.retention -}}
 {{- if regexMatch "^[1-9][0-9]*m$" $ret -}}
-{{- fail (printf "backup.retention %q: the unit m (months) is refused, a month is 30 or 31 days; write the days (28d) or the weeks (4w), at most 30 days" $ret) -}}
+{{- fail (printf "backup.retention %q: the unit m (months) is refused, a month is 30 or 31 days; write the days (28d) or the weeks (4w), at most 28 days" $ret) -}}
 {{- end -}}
 {{- if not (regexMatch "^[1-9][0-9]{0,2}[dw]$" $ret) -}}
-{{- fail (printf "backup.retention must be a whole number of days or weeks, 1 or more, such as 28d or 4w (at most 30 days), got %q" $ret) -}}
+{{- fail (printf "backup.retention must be a whole number of days or weeks, 1 or more, such as 28d or 4w (at most 28 days), got %q" $ret) -}}
 {{- end -}}
 {{- $n := int (trimSuffix "d" (trimSuffix "w" $ret)) -}}
-{{- if gt (ternary $n (mul $n 7) (hasSuffix "d" $ret)) 30 -}}
-{{- fail (printf "backup.retention %q is more than 30 days: the backups hold the people's threads, and the tester note promises they are gone within that (docs/tester-note.md)" $ret) -}}
+{{- if gt (ternary $n (mul $n 7) (hasSuffix "d" $ret)) 28 -}}
+{{- fail (printf "backup.retention %q is more than 28 days: the backups hold the people's threads, and with the daily backup the data leaves them within about 30 days, which the tester note promises (docs/tester-note.md); the window is at most 28 days" $ret) -}}
 {{- end -}}
 {{- /* CloudNativePG's schedule has SIX fields, seconds first; a Unix crontab line of five is not one. */ -}}
 {{- $cron := toString $bk.schedule.cron -}}

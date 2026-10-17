@@ -1,11 +1,18 @@
-# A restore of the database cluster from its backups (README.md, "Backups"). Not part of the chart (Helm renders nothing from this directory):
-# apply it to the namespace the release runs in, after `backup.enabled` has been on long enough for a base backup to exist.
+# A TEST restore of the database cluster from its backups (README.md, "Backups", "Restore"). Not part of the chart (Helm renders nothing from this
+# directory): apply it to the namespace the release runs in, after `backup.enabled` has been on long enough for a base backup to exist.
 #
 # It makes a NEW cluster, `another-agentic-db-restore`, from the newest base backup and the WAL archive of the ObjectStore `another-agentic-db`
-# (the server name below is the source cluster's: the plugin keeps each cluster's files under its own name), and does not touch the running
-# one. CloudNativePG restores into a new cluster and never in place. There is deliberately NO `plugins` entry: a restored cluster that archived
-# would write into the bucket beside the source. The names assume a release called `another-agentic-system` in the chart's own namespace
-# (`<release>-db` is the cluster, `<release>-db-restore` this one); the database and its owner are the chart's `database.name` and `owner`.
+# (the server name below is the source cluster's, or its `backup.serverName` if one is set: the plugin keeps each server's files under its own name),
+# and does not touch the running one. CloudNativePG restores into a new cluster and never in place. There is deliberately NO `plugins` entry: a restored
+# cluster that archived would write into the bucket beside the source. To replace a LOST cluster instead, use restore-cutover.yaml.
+# The names assume a release called `another-agentic-system` in the chart's own namespace (`<release>-db` is the cluster, `<release>-db-restore` this
+# one); the database and its owner are the chart's `database.name` and `owner`.
+#
+# Keep `storage` (size, class) and the image equal to the deployment's `database.storage.size`, `database.storage.storageClass` and `database.imageName`
+# (empty there: the operator's default image, as here): a smaller volume cannot hold the data, and another Postgres major cannot read it.
+#
+# CloudNativePG makes the app Secret of this cluster, `another-agentic-db-restore-app`, with a NEW random password for the owner `orchestrator`
+# (no `secret` is named below; recovery.md, "Configure the application database"): the running cluster's Secret is untouched, and nothing reads this one.
 #
 #   kubectl -n another-agentic-system apply -f deploy/chart/examples/restore-cluster.yaml
 #   kubectl -n another-agentic-system get cluster another-agentic-db-restore -w
@@ -19,6 +26,7 @@ metadata:
   name: another-agentic-db-restore
 spec:
   instances: 1
+  # imageName: "<database.imageName, if the deployment sets one>"
   storage:
     size: 10Gi
     storageClass: longhorn

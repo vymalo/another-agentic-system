@@ -6,7 +6,7 @@ name: Deploy
 # (`--print-config`, no connection; also with the tool servers on, and with `model.baseUrlFromSecret` as soon as the pinned
 # image accepts it), the Keycloak exports checked for secrets, and a dry run of the tag bump that orchestrator.yml and
 # web.yml make on main (searxng-mcp.yml's is the same script), and the files host's Caddyfile run in the pinned Caddy image in front of a stub upstream
-# (deploy/chart/tests/files-host-ci.sh). The database backups' objects and the restore example are validated against the vendored CRD schemas too
+# (deploy/chart/tests/files-host-ci.sh). The database backups' objects and the two restore examples are validated against the vendored CRD schemas too
 # (issue #151). Nothing here touches a cluster.
 #
 # The bump itself is the last job of orchestrator.yml and web.yml: it sets `<component>.image.tag` in
@@ -287,7 +287,7 @@ jobs:
                 "$RUNNER_TEMP/rendered-migrate.yaml" "$RUNNER_TEMP/rendered-migrate-before.yaml" \
                 "$RUNNER_TEMP/rendered-user-secrets.yaml" \
                 "$RUNNER_TEMP/rendered-backup.yaml" "$RUNNER_TEMP/rendered-backup-aws.yaml" \
-                deploy/chart/examples/restore-cluster.yaml \
+                deploy/chart/examples/restore-cluster.yaml deploy/chart/examples/restore-cutover.yaml \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
             if [ "$status" -eq 0 ]; then exit 0; fi
