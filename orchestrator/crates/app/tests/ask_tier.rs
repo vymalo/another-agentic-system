@@ -73,6 +73,7 @@ fn app_with_roles(w: &World) -> Arc<TestApp> {
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: directory().fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             directory(),
             AppConfig {

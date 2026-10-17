@@ -489,6 +489,7 @@ async fn an_answer_to_an_agent_the_registry_lost_keeps_the_cap_instead_of_the_jo
                 model: w.model.clone(),
                 auth: orch_ports::RefuseAll,
                 registry: lost.fixed_registry(),
+                user_tools: orch_ports::NoUserTools::off(),
             },
             lost,
             config(Some(Edits)),
