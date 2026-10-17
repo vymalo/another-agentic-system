@@ -216,6 +216,10 @@ role has a cap unless a deployment writes one, so the built-in `user` may pick `
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** a bare repository
    name counts as named at `auto` and `bypass`. At `plan` and `edits` the consent form stays. This is adam's side (adam-rs); the
    orchestrator does nothing for it, and it is recorded here so the adam-rs pull request has the answer.
+   *Amended 2026-10-17:* those consent forms are the person's own grant, so an asked agent's form is never answered by a model: the
+   ask ends and the agent is not asked again in the job ([ADR 0026](0026-agent-mentions-as-structured-references.md), status
+   note of 2026-10-17). Without it, `ask_agent` would be a way round the person's consent, as it was a way round their cap
+   (decision 6, amended).
 3. **"Repository creation by default."** Read as: at `auto` the coder has `create_repository` and no form, and `CREATE_REPO_OWNERS`
    still decides for which owners (today an empty list offers no tool). Does the owner mean to change that default as well?
    **Settled (2026-10-11), on the owner's direction that the agent be fully autonomous and permissions easy:** creation by default
