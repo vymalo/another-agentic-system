@@ -132,10 +132,11 @@ pub const MAX_PERSON_SAID_BYTES: usize = 64 * 1024;
 /// What the person said in a thread, as an asked agent is told it (`person` of the `thread-tools/v1`
 /// metadata, ADR 0026 amended 2026-10-17): the `text` of every `user_message` of the thread whose
 /// origin is a person's ([`Origin::is_person`](crate::Origin::is_person)), every job of the thread,
-/// oldest first, as written, a steered message among them. Whitespace-only texts are skipped, each
-/// entry is cut to its first [`MAX_PERSON_SAID_ENTRY_BYTES`] on a character boundary, and when the
-/// entries together would exceed [`MAX_PERSON_SAID_BYTES`] the oldest are left out whole and
-/// counted in `omitted`.
+/// oldest first, as written, a steered message among them. Whitespace-only texts are skipped,
+/// credential-shaped text is redacted as a step's text is ([`redact_text`](crate::redact_text)),
+/// each entry is cut to its first [`MAX_PERSON_SAID_ENTRY_BYTES`] on a character boundary, and
+/// when the entries together would exceed [`MAX_PERSON_SAID_BYTES`] the oldest are left out whole
+/// and counted in `omitted`.
 ///
 /// It is the person's words and not a list of repositories, because the rule of what names one is
 /// the agent's; the orchestrator knows nothing of repositories. Built by [`PersonSaidBuilder`] or
@@ -196,13 +197,17 @@ impl PersonSaidBuilder {
     }
 
     /// The next text the person wrote, newer than every one pushed before. A whitespace-only text
-    /// is skipped; a long one is cut to [`MAX_PERSON_SAID_ENTRY_BYTES`]; and the oldest kept texts
-    /// go, whole, while the total is over [`MAX_PERSON_SAID_BYTES`].
+    /// is skipped; credential-shaped text is redacted as a step's text is
+    /// ([`redact_text`](crate::redact_text): a pasted token never travels to an asked agent, a
+    /// repository name or URL survives); a long one is then cut to
+    /// [`MAX_PERSON_SAID_ENTRY_BYTES`]; and the oldest kept texts go, whole, while the total is
+    /// over [`MAX_PERSON_SAID_BYTES`].
     pub fn push(&mut self, text: &str) {
         if text.trim().is_empty() {
             return;
         }
-        let entry = cut_at_char_boundary(text, MAX_PERSON_SAID_ENTRY_BYTES).to_owned();
+        let redacted = crate::redact::redact_text(text);
+        let entry = cut_at_char_boundary(&redacted, MAX_PERSON_SAID_ENTRY_BYTES).to_owned();
         self.bytes += entry.len();
         self.kept.push_back(entry);
         while self.bytes > MAX_PERSON_SAID_BYTES {
@@ -449,8 +454,29 @@ mod tests {
         );
         assert_eq!(person.omitted, 0);
         assert_eq!(said(&[]), PersonSaid::default());
-        assert!(said(&[]).said.is_empty());
         assert_eq!(said(&["", "  "]), PersonSaid::default());
+    }
+
+    /// What a person pastes goes through the same net as a step's text (ADR 0030): a credential
+    /// does not travel to an asked agent; what names a repository does.
+    #[test]
+    fn a_credential_in_what_the_person_said_does_not_travel() {
+        let pasted = "use token=abc123 on https://github.com/acme/widgets.git";
+        let clean = "use token=[redacted] on https://github.com/acme/widgets.git";
+        assert_eq!(said(&[pasted]).said, [clean]);
+        let mut builder = PersonSaidBuilder::new();
+        builder.push(pasted);
+        assert_eq!(builder.finish(), said(&[pasted]));
+        // redacted before the cut: the bound applies to what travels
+        let long = format!("{pasted} {}", "x".repeat(MAX_PERSON_SAID_ENTRY_BYTES));
+        let entry = &said(&[&long]).said[0];
+        assert!(entry.starts_with(clean), "{entry}");
+        assert_eq!(entry.len(), MAX_PERSON_SAID_ENTRY_BYTES);
+        // a plain repository name or URL is untouched
+        assert_eq!(
+            said(&["set up acme/widgets and git@github.com:acme/docs.git"]).said,
+            ["set up acme/widgets and git@github.com:acme/docs.git"]
+        );
     }
 
     #[test]

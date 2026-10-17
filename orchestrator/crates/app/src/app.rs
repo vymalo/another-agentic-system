@@ -67,8 +67,8 @@ pub const DEFAULT_MAX_EXPORT_EVENTS: usize = 50_000;
 /// [`AppConfig::max_export_bytes`] says otherwise. The event count alone does not bound memory:
 /// an event may carry up to 100 000 characters of text.
 pub const DEFAULT_MAX_EXPORT_BYTES: usize = 32 * 1024 * 1024;
-/// Events read from the store per page when exporting.
-const EXPORT_PAGE: u32 = 500;
+/// Events read from the store per page when a whole log is read: an export, what the person said.
+const LOG_PAGE: u32 = 500;
 /// How long a stream that has heard nothing waits before it looks for its thread's row again, to
 /// end when the thread was deleted (ADR 0043) even if the notification of the delete was missed.
 const RECHECK_ROW: Duration = Duration::from_secs(5);
@@ -1846,11 +1846,7 @@ impl<P: Ports> App<P> {
         let mut events: Vec<Event> = Vec::new();
         let mut after = 0;
         while after < last_seq {
-            let page = self
-                .ports
-                .store()
-                .list_events(id, after, EXPORT_PAGE)
-                .await?;
+            let page = self.ports.store().list_events(id, after, LOG_PAGE).await?;
             let Some(last) = page.last() else { break };
             after = last.seq;
             events.extend(page.into_iter().filter(|e| e.seq <= last_seq));
@@ -2061,7 +2057,7 @@ impl<P: Ports> App<P> {
         let mut said = PersonSaidBuilder::new();
         let mut after = 0;
         'pages: while after < thread.last_seq {
-            let page = store.list_events(id, after, EXPORT_PAGE).await?;
+            let page = store.list_events(id, after, LOG_PAGE).await?;
             let Some(last) = page.last() else { break };
             after = last.seq;
             for event in page {
@@ -2096,7 +2092,7 @@ impl<P: Ports> App<P> {
         let mut bytes = 0_usize;
         let mut after = 0;
         'pages: while after < thread.last_seq {
-            let page = store.list_events(id, after, EXPORT_PAGE).await?;
+            let page = store.list_events(id, after, LOG_PAGE).await?;
             let Some(last) = page.last() else { break };
             after = last.seq;
             for event in page {

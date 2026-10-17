@@ -193,7 +193,8 @@ attached. The relay is built, 2026-10-02: see below.)*
 ### The `person` member
 
 *Built 2026-10-17* ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said),
-the owner's decision with adam-rs ADR 0036 "Decided, a follow-up"). The message of an **asked** agent
+the owner's decision with adam-rs ADR 0036, the bullet "Decided, a follow-up" under its "Amended 2026-10-17 (an asked agent)":
+*verified 2026-10-17*, adam-rs `main` at `a3c3f01`). The message of an **asked** agent
 ([`ask_agent`](#ask_agent), `caller = ask:<n>`) also says what the person said in the thread:
 
 ```json
@@ -207,7 +208,7 @@ the owner's decision with adam-rs ADR 0036 "Decided, a follow-up"). The message 
 
 | Member | Meaning |
 |---|---|
-| `said` | The `text` of every `user_message` of the thread that is a person's, **oldest first, as written**: no fork preamble, no rewriting. Whitespace-only texts are skipped. Each entry is cut to its first 4096 bytes (`MAX_PERSON_SAID_ENTRY_BYTES`, the same number as a fork's history entry), on a character boundary. |
+| `said` | The `text` of every `user_message` of the thread that is a person's, **oldest first, as written**: no fork preamble, no rewriting. Whitespace-only texts are skipped. Credential-shaped text is redacted as a step's text is (`redact_text`, [ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)): a pasted token never travels to an asked agent, a repository name or URL survives. Each entry is then cut to its first 4096 bytes (`MAX_PERSON_SAID_ENTRY_BYTES`, the same number as a fork's history entry), on a character boundary. |
 | `omitted` | How many of the **oldest** texts were left out whole so that the entries together stay within 64 KiB (`MAX_PERSON_SAID_BYTES`). Present only when above 0. |
 
 - **Why.** An asked agent sees only the asking model's words. adam-coder decides which repositories it may touch without
@@ -216,7 +217,8 @@ the owner's decision with adam-rs ADR 0036 "Decided, a follow-up"). The message 
   only the repositories the person named count, and that **the orchestrator** passes the material, as a structured field it
   writes itself, never a model.
 - **Words, not a list of repositories.** The rule of what names a repository (hosts, the default host, a bare name, a URL, a
-  `git@` form) is the agent's (`bin/adam-coder/src/tools/named.rs` of adam-rs); this orchestrator is protocol-agnostic and
+  `git@` form) is the agent's (`bin/adam-coder/src/tools/named.rs` of adam-rs, *verified 2026-10-17* at `a3c3f01`); this
+  orchestrator is protocol-agnostic and
   knows nothing of repositories (invariants 1 and 7). The field carries what the person wrote, and the asked agent applies its
   own rule to it.
 - **The whole thread, not the job.** The person's messages of every job, oldest first: adam-coder's own rule counts a
@@ -225,8 +227,11 @@ the owner's decision with adam-rs ADR 0036 "Decided, a follow-up"). The message 
   would carry only the answer). A message sent while the agent works (`delivery: steer` or `interrupt`) is the person's and
   counts.
 - **Which origins.** `Origin` has two values and both are a person's: `agui` (the chat) and `mcp` (a program holding the
-  person's token). A webhook writes no `user_message` (it writes a `ci_result`), so nothing is left out today; an origin
-  added later that is not a person's is left out by `Origin::is_person` in the core, which the match forces a decision on.
+  person's token). An `mcp` message is written by a program holding the person's token, often a model-driven client (Claude
+  Code, opencode): it is the **token, not the hand, that makes a message the person's**, and that is the rule the addressed
+  agent already lives under (adam-coder counts a repository named to it over MCP as the person's), so the same rule holds
+  here. A webhook writes no `user_message` (it writes a `ci_result`), so nothing is left out today; an origin added later
+  that is not a person's is left out by `Origin::is_person` in the core, which the match forces a decision on.
 - **Forks.** A fork's log begins with a copy of its parent's events up to the cut
   ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md); *verified 2026-10-17*: the Postgres store copies
   `… FROM events WHERE thread_id = $2 AND seq <= $3`, every kind, and the memory store filters `seq <= cut`), so the copied
@@ -237,7 +242,9 @@ the owner's decision with adam-rs ADR 0036 "Decided, a follow-up"). The message 
   messages are all blank).
 - **Known gap.** A person's **form answers** (`ui_action`: typed fields and notes) are not carried: without the form the
   orchestrator cannot tell a typed field from a chosen option. The person can write the name in a message. The effect is
-  fail-closed: fewer repositories count, never more.
+  fail-closed: fewer repositories count, never more. A cut entry carries no mark either, so a repository name split at byte
+  4096 is a shorter, different name; the asked agent's rule then refuses it, and the effect stays fail-closed (never a
+  repository the person did not name).
 - **Cost.** The dispatcher reads the thread's log forward in pages for every ask it sends (`App::person_said`; no store reads
   by kind, and a new trait method would break every store), keeping at most 64 KiB while it pages. A log that cannot be read
   leaves the row to be claimed again, as a catalog that cannot be read does.
