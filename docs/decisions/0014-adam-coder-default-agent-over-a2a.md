@@ -693,3 +693,49 @@ moves with it (the same tag and digest).
   run of which is the Coder E2E workflow of the pull request that pins it, in particular `dev/workspace-e2e.sh` against a coder that marks typed
   lines and takes a consent from its form alone, `dev/choices-e2e.sh` on the coder's Questions v5 forms, and `dev/mentions-e2e.sh`; the Postgres
   cases of the orchestrator's tests; the chart's render check (`deploy.yml` runs it); the chat on netcup on the new image.
+
+### Status note, 2026-10-18: an asked coder hears the person only through the words the orchestrator carries (adam-rs ddef35e)
+
+The pin moves to adam-rs `ddef35e`, which is `8847c28` plus [#116](https://github.com/vymalo/another-adam-rs/pull/116) (merged
+2026-10-17 23:52 UTC: in a run another agent started, the coder reads the repositories the person named from `person.said` of the
+thread-tools metadata, the person's own thread messages that the orchestrator carries beside the grant of the ask's message since
+[#271](https://github.com/vymalo/another-agentic-system/pull/271), and never from the ask's text or the asking model's answers to
+`ask_user`; without the member nothing is named, and `request_repository` refuses as it has since #115. `adam-a2a-runtime` reads the
+member into the context key `vymalo.person` of every message that carries the grant, `null` for one with the grant and no well-formed
+member, so an earlier message's words go, and the key is not a protected one on purpose, a protected value being capped at 1 KiB; a child
+run does not inherit it, so a child of an asked run names nothing: adam-rs ADR 0036's *Built 2026-10-17* bullet and ADR 0006 amended),
+with adam-rs's two bump commits (`425a265`, `a3c3f01`: the operator and the coder at `sha-8847c28`, deploy only). It is the agent side of
+[ADR 0026](0026-agent-mentions-as-structured-references.md)'s fourth note of 2026-10-17, so #271 and #116 are now both in the pin and an
+asked coder hears the person through the orchestrator's `person.said` and nothing else. **What stays a gap** is this repository's: a
+person's form answers (`ui_action`: typed fields and notes) are not carried, because without the form the orchestrator cannot tell a
+typed field from a chosen option, so a repository named only there is not named in an asked run; the person can write it in a message,
+and the effect is fail-closed (fewer repositories count, never more). The chart's `chat.image` moves with it (the same tag and digest).
+
+- **Nothing re-copied.** `git diff --stat 8847c28 ddef35e -- dev bin/adam-coder/agent` is empty: no agent file, mapping, seed,
+  `git-server` or `podman` file changed upstream, so no vendored file changes here, and `dev/coder/check-vendored.sh` at the new commit
+  finds every copy equal. None of the four files that are ours on purpose changed upstream either (`git diff 8847c28 ddef35e --
+  dev/compose.github-app.yaml dev/coder-e2e.sh compose.yaml dev/compose.devcontainer.yaml` is empty), so nothing is to port. The
+  change is additive, read as `adam-upgrade` says: no commit between the two is marked breaking, none of the trait files changed
+  (`crates/adam-core/src/store/mod.rs`, `crates/adam-runtime/src/notify.rs`, `crates/adam-a2a/src/backend.rs`,
+  `crates/adam-host/src/lib.rs`), no environment variable, default or exit code moved (the tables of `bin/adam-coder/README.md`,
+  `bin/adam-agent/README.md` and `crates/adam-service/README.md` are unchanged), and the only `pub` items that moved in any adam crate
+  are additions, `adam_a2a_runtime::{CONTEXT_PERSON, person_said}` (`git diff 8847c28 ddef35e -- 'crates/*/src/*'` touches
+  `adam-a2a-runtime` alone: the new `person.rs`, `vymalo.rs` and `lib.rs`; the rest of #116 is `bin/adam-coder`).
+- **The crates move with it, and no code changed.** The seven `rev` lines of `orchestrator/Cargo.toml` name `ddef35e`; `cargo update -p
+  adam-host --precise` re-resolved the nine adam-rs packages (the seven and `adam-error`, `adam-model`) and, as a side effect of
+  re-resolving and not of adam, `tempfile`'s edge to `getrandom` (0.4.3 to 0.3.4, both already in the lock, which `cargo metadata
+  --locked` accepts); nothing else moved. Nothing here calls the new items: `orch-agent-adam` runs the coder's A2A backend as it is.
+- *Verified 2026-10-18* (anonymous ghcr API, HTTP 200): `coder:sha-ddef35e` is one `linux/amd64` manifest (3.01 GB of compressed layers,
+  fourteen layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision`
+  `ddef35eba1b18d42d6db8c6e2df372b40a1067fa`, `/opt/obscura/bin` on its `PATH`, digest `sha256:14a0e0df...` (the registry's
+  `Docker-Content-Digest` and the sha-256 of the manifest it returned), published by adam-rs's `coder` run 39080695518 (started
+  2026-10-17 23:52 UTC, the tag served at 00:13 UTC on 2026-10-18, the first of six three-minute polls to answer 200 after a 404 at 23:57). `dev/coder/check-vendored.sh` passes at that commit, and `docker compose --profile '*'
+  config -q` is clean. In `orchestrator/`, on a fresh target, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked
+  -- -D warnings` and `cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings` pass, `cargo test -p
+  orchestrator --features agent-local --locked` passes (312 tests in four suites) and `cargo test -p orch-agent-adam --locked` passes (41 tests in five);
+  `node tools/docs-check/check-docs.mjs` says `docs OK`.
+- *Unverified where this was written* (no Docker daemon on the machine, so the image was not pulled): every scenario in containers, the
+  first run of which is the Coder E2E workflow of the pull request that pins it; no scenario here drives an asked coder on the person's
+  words yet (`dev/mentions-e2e.sh`'s asked agents are WireMock mocks), so the coder's reading of `person.said` is proven by adam-rs's own
+  tests at `ddef35e` (`bin/adam-coder/tests/hearing.rs`, `tests/e2e.rs`, `crates/adam-a2a-runtime/src/person.rs`) and not by this stack;
+  the Postgres cases of the orchestrator's tests; the chart's render check (`deploy.yml` runs it); the chat on netcup on the new image.

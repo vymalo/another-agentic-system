@@ -373,3 +373,15 @@ a model. This note is the orchestrator's side; the adam-rs side (the coder readi
   ([`core`](../../orchestrator/crates/core/README.md), [`app`](../../orchestrator/crates/app/README.md),
   [`agent-a2a`](../../orchestrator/crates/agent-a2a/README.md), [`e2e`](../../orchestrator/crates/e2e/README.md)) and in the
   contract's *Tested* line.
+
+*The adam-rs side landed, 2026-10-18:* adam-rs [#116](https://github.com/vymalo/another-adam-rs/pull/116) (`ddef35e`, merged
+2026-10-17 23:52 UTC) is the coder reading the member. `adam-a2a-runtime` reads `person` into the context key `vymalo.person` of
+every message that carries the grant (`null` when it is missing or malformed: fail closed, an earlier message's words go; not a
+protected key on purpose, a protected value being capped at 1 KiB, far under the words), and in a run another agent started the
+coder hears **only** those words, from the newest message that carries the key, never the ask's text or the asking model's answers
+to `ask_user`; without the member nothing is named and `request_repository` refuses. What the person named before the run was
+asked stays named, and a child run does not inherit the key, so a child of an asked run names nothing. The pin has it since this
+day ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note of 2026-10-18); adam-rs ADR 0036's *Built 2026-10-17* bullet
+is its record (*verified 2026-10-18* at `ddef35e`: `crates/adam-a2a-runtime/src/person.rs`, `bin/adam-coder/src/agent.rs`
+`carried_sayings`, `bin/adam-coder/README.md` "When another agent asks"). So #271 and #116 are both in the pin, and the two
+halves of this note meet. What stays a gap is this repository's: a person's **form answers** are not carried (above).
