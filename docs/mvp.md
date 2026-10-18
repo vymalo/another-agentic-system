@@ -179,6 +179,7 @@ Each entry is not built on purpose; the reason follows it.
 | Slack webhooks; an explicit default agent | Not designed; a reorder has not hurt | question 23 |
 | A long thread opening at its end with no visible scroll: the transcript held while the log replays, then the orchestrator's paged `history` read (the full off-screen seed missed its target), the web opening from the newest turns and reading older ones on scroll-up | Proposed 2026-10-09, the owner's words; built the same day, measured on the mock, not tried by the owner | [ADR 0059](decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), [`api/history.md`](api/history.md), questions 71 and 72 |
 | A bounded copy of recent threads on the device (256 MiB desktop first, then 15 MiB web, 128 MiB mobile), read offline | Proposed 2026-10-09, the owner's words, revised after review; only its slice 0 (measure the backend) is near-term; the rest waits for the seed that ADR 0059 built (the history pages) | [ADR 0060](decisions/0060-the-client-keeps-a-bounded-copy-of-recent-threads-behind-a-chatstore-port.md), questions 58, 73 to 75 |
+| Who the person is, to the agent: the `person/v1` assertion, a linked GitHub account, the coder's check of the person's access to a repository | Proposed 2026-10-18 for a coder offered to many customers; the MVP's deployments have one owner and need none of it | [ADR 0064](decisions/0064-the-person-reaches-the-agent-and-links-their-github.md), questions 85 to 89 |
 | **Live verification:** the stack on a real model, GitHub.com (token and App), a search provider, an identity provider, and the web in a browser against it | Needs credentials and a person to watch; the offline stack is what CI can run | [`dev/README.md`](../dev/README.md#going-live) |
 
 ## Out of scope for the MVP
@@ -186,7 +187,7 @@ Each entry is not built on purpose; the reason follows it.
 - Hosting agents, sandboxes or runtimes (another-agentic-platform's job).
 - Managing agents (system prompts, revisions, promotion, tags): the platform does it; the system
   reads the result ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)).
-- Multi-tenant auth beyond "you, via Keycloak". *(Narrowed 2026-10-02: roles and an OAuth2 resource server are built, [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md); tenancy is not.)*
+- Multi-tenant auth beyond "you, via Keycloak". *(Narrowed 2026-10-02: roles and an OAuth2 resource server are built, [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md); tenancy is not.)* *(Proposed 2026-10-18: [ADR 0064](decisions/0064-the-person-reaches-the-agent-and-links-their-github.md) lets the agent know who the person is and checks their GitHub access before the coder touches a repository; nothing is built.)*
 
 ## The first plan, a record
 
