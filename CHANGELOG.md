@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.7.0](https://github.com/vymalo/another-agentic-system/compare/v0.6.0...v0.7.0) (2026-10-18)
+
+
+### Features
+
+* **asks:** an asked agent is told what the person said in the thread ([#271](https://github.com/vymalo/another-agentic-system/issues/271)) ([db42511](https://github.com/vymalo/another-agentic-system/commit/db42511b670ac671c474cc3cd4afe4b75aa2f051))
+
+
+### Bug Fixes
+
+* **asks:** an ask is never sent without its grant, and an asked agent gets a forms-only catalog ([#270](https://github.com/vymalo/another-agentic-system/issues/270)) ([591fc28](https://github.com/vymalo/another-agentic-system/commit/591fc280fb9b98d28bd743449c9fe2713ddf7533))
+* **tiers:** the role cap holds at every send and ask, and an asked agent's shown form ends the ask ([#267](https://github.com/vymalo/another-agentic-system/issues/267)) ([d774cd9](https://github.com/vymalo/another-agentic-system/commit/d774cd9b1ee3a2ab2b35fcf24e6267146df76548))
+
+
+### Build System
+
+* **adam:** bump adam-rs to 8847c28 (access tiers, Questions v5 forms, asked-coder consent) ([#269](https://github.com/vymalo/another-agentic-system/issues/269)) ([64d230d](https://github.com/vymalo/another-agentic-system/commit/64d230d1bfd42db13a8f737d9adc1522730fec9d))
+
+
+### Chores
+
+* **adam:** bump adam-rs to ddef35e (an asked coder hears the person only through person.said) ([#272](https://github.com/vymalo/another-agentic-system/issues/272)) ([3f7bda0](https://github.com/vymalo/another-agentic-system/commit/3f7bda098029cecbe5f31e1246210b8bb3065ced))
+* **deploy:** bump orchestrator to sha-591fc28 ([cbaf6e1](https://github.com/vymalo/another-agentic-system/commit/cbaf6e14d31c4a6732af9c6b5f5d80db56a15acf))
+* **deploy:** bump orchestrator to sha-64d230d ([522b535](https://github.com/vymalo/another-agentic-system/commit/522b5358ae233142f307f7ba11c4d93704eb2c96))
+* **deploy:** bump orchestrator to sha-d774cd9 ([cb8483c](https://github.com/vymalo/another-agentic-system/commit/cb8483c32535e906e77d1e0e3d9232e246947a38))
+* **deploy:** bump orchestrator to sha-db42511 ([4dbc5d2](https://github.com/vymalo/another-agentic-system/commit/4dbc5d2f71c095e48134936bc612aabcf9dfcfd9))
+* **deploy:** bump web to sha-d774cd9 ([a8457e8](https://github.com/vymalo/another-agentic-system/commit/a8457e8a642f4e7953176dd9ac949ff267338b62))
+
 ## [0.6.0](https://github.com/vymalo/another-agentic-system/compare/v0.5.0...v0.6.0) (2026-10-17)
 
 
