@@ -109,10 +109,13 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-10-17 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-8847c28` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 8847c28ac6c435dacb9d1c412c0390a29f545997, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `5581d40` plus adam-rs #108 (a child's notice no longer keeps
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-10-18 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-ddef35e` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision ddef35eba1b18d42d6db8c6e2df372b40a1067fa, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `8847c28` plus adam-rs #116 (an asked coder hears the
+# repositories the person named only in the words the orchestrator carries beside the grant of the ask's message, `person.said` of the
+# thread-tools metadata, read into the context key `vymalo.person`: never the ask's text, and nothing without the member; the agent side of
+# ADR 0026's fourth note here, #271), with adam-rs's own bump commits; no vendored file changed. `8847c28` is `5581d40` plus adam-rs #108 (a child's notice no longer keeps
 # a finishing parent going), #109 (a turn that asks nothing completes, a scratch project lives for the conversation, an icon on every tool step),
 # #110 (`ask_user` forms with a title, a description and typed questions: Questions v5, adam-rs ADR 0035), #111 (access tiers per message,
 # `access-tier/v1`, adam-rs ADR 0036 and ADR 0061 here: the coder keeps to the tier a message names, `create_repository` asks unless the tier is
@@ -149,7 +152,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-8847c28@sha256:ecbd173142b9473b8583dc9acc4713b28588be3caf19f11124ab5238d082e499
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-ddef35e@sha256:14a0e0dfed8f8244b73b46c46043852355a7f5d97ce4ead45f67233eeef86a44
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.

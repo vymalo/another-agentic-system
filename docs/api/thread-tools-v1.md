@@ -248,8 +248,17 @@ the owner's decision with adam-rs ADR 0036, the bullet "Decided, a follow-up" un
 - **Cost.** The dispatcher reads the thread's log forward in pages for every ask it sends (`App::person_said`; no store reads
   by kind, and a new trait method would break every store), keeping at most 64 KiB while it pages. A log that cannot be read
   leaves the row to be claimed again, as a catalog that cannot be read does.
-- **The adam-rs side** (the coder reading `person` in a run another agent started, and applying `named.rs` to it) is a
-  separate PR of that repository; this is the orchestrator's.
+- **The adam-rs side** (the coder reading `person` in a run another agent started, and applying `named.rs` to it) landed as
+  adam-rs [#116](https://github.com/vymalo/another-adam-rs/pull/116) (`ddef35e`, merged 2026-10-17 23:52 UTC; in the pin since
+  2026-10-18, [ADR 0014](../decisions/0014-adam-coder-default-agent-over-a2a.md)'s note of that day; *verified 2026-10-18* at
+  `ddef35e`: `crates/adam-a2a-runtime/src/person.rs`, `bin/adam-coder/src/agent.rs` `carried_sayings`, adam-rs ADR 0036's *Built
+  2026-10-17* bullet). `vymalo_inbound` reads the member into the context key `vymalo.person` of every message that carries the
+  grant, `null` when it is missing or malformed (an entry over 16 KiB, over 128 KiB together or more than 4096 entries counts as
+  malformed: fail closed, an earlier message's words go), and the key is not a protected one on purpose (a protected value is capped
+  at 1 KiB). In such a run the coder hears **only** those words, from the newest message that carries the key, never the ask's text
+  or the asking model's answers to `ask_user`; without the member nothing is named and `request_repository` refuses. A child run does
+  not inherit the key (only the protected keys pass to a child), so a child of an asked run names nothing. This section is the
+  orchestrator's side.
 
 *Tested (2026-10-17):* the bounds in the core (order, blank texts, the cut on a character boundary, the oldest dropped whole and
 counted, `Debug` without the text, a `main` grant that carries it inconsistent); the dispatcher sends the person's three
