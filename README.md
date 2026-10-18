@@ -237,6 +237,13 @@ The coder, the chat and the researcher are not reachable from an orchestrator ru
   release channels, runtimes, harnesses. This system consumes it over A2A like
   any other host, with an optional release picker.
 
+## Roadmap and contributing
+
+- [`ROADMAP.md`](ROADMAP.md): where the project is going (milestones M1 to M5), what is left, and what you can pick up.
+  Every piece of work is a GitHub issue.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): how to build, test and open a pull request.
+- [`SECURITY.md`](SECURITY.md): how to report a vulnerability privately.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
