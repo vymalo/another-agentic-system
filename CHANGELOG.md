@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/vymalo/another-agentic-system/compare/v0.7.0...v0.7.1) (2026-10-19)
+
+
+### Documentation
+
+* a public roadmap, and how to contribute and report security issues ([#298](https://github.com/vymalo/another-agentic-system/issues/298)) ([ce39839](https://github.com/vymalo/another-agentic-system/commit/ce39839cecea81c22202f34b8b93706251a380f2))
+
 ## [0.7.0](https://github.com/vymalo/another-agentic-system/compare/v0.6.0...v0.7.0) (2026-10-18)
 
 
