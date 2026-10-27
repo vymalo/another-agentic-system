@@ -1673,8 +1673,12 @@ impl ThreadStore for MemoryStore {
 impl MemoryStore {
     /// Makes the store behave as if the usage events already in its log had been written before the
     /// ledger existed, or by a build without it: the ledger is emptied and no thread has been gone
-    /// through. What the conformance case of [`UsageLedger::backfill`] needs, as the Postgres
-    /// adapter's test deletes its rows and zeroes the column.
+    /// through. What the conformance cases that play a log older than the ledger need, as the
+    /// Postgres adapter's test deletes its rows and zeroes the column.
+    ///
+    /// **Test only**, like every method of this double that breaks it on purpose: `memory` exists
+    /// only with the `testkit` feature of this crate, which is a dev-dependency feature (the
+    /// orchestrator binary's normal dependencies never enable it, `--all-features` included).
     pub fn forget_usage_ledger(&self) {
         let mut inner = self.lock();
         inner.ledger = Ledger::default();
