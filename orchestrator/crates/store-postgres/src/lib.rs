@@ -15,6 +15,10 @@
 //! - [`PgPendingAuthorizations`]: the OAuth authorizations of those servers that have begun and whose
 //!   callback has not come, by the SHA-256 of the `state`, taken once. Same migrations.
 //!
+//! - The usage ledger of the people ([`UsageLedger`](orch_ports::UsageLedger), ADR 0065) is implemented
+//!   by [`PgStore`] too: it is written in the transaction that appends a `model_usage` or
+//!   `model_usage_total` event, kept when a thread is erased, and read per person and month.
+//!
 //! Only runtime-checked `sqlx::query` is used, so building needs no database.
 //!
 //! ```no_run
@@ -32,6 +36,7 @@ mod codec;
 mod error;
 mod pending_authorizations;
 mod store;
+mod usage;
 mod user_tool_servers;
 mod wakeup;
 
