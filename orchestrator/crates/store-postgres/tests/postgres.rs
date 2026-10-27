@@ -3553,8 +3553,29 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
         .await
         .unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
+    // a thread with its first message as a build of 0019 wrote them: the store of this build writes
+    // columns that 0023 added (`usage_through`), so it cannot create one on this schema
+    let thread = ThreadId(Uuid::now_v7());
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at, rail_rank) \
+         VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 1, now(), now(), 'i')",
+    )
+    .bind(thread.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+         VALUES ($1, 1, now(), 'user_message', '{\"type\":\"user\",\"name\":\"alice@example.com\"}', \
+         $2::jsonb)",
+    )
+    .bind(thread.0)
+    .bind(EventBody::UserMessage(UserMessageData::new("hi")).data_value().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
     let store = PgStore::from_pool(pool);
-    let thread = create(&store, vec![]).await;
 
     let call = EventBody::ModelUsage(Box::new(orch_core::ModelUsageData {
         job: 1,
