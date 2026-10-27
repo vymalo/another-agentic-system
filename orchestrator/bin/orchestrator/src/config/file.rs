@@ -3660,9 +3660,9 @@ artifacts:
         }
     }
 
-    /// The secret store (ADR 0046, slice 3): the service reads and checks the section in every role
-    /// and does not use it yet; a build without the store's Cargo feature refuses it.
-    /// `orchestrator usage backfill` reads the database and nothing else of the file.
+    /// `orchestrator usage backfill` (ADR 0065) reads the database and nothing else of the file: the
+    /// file's shape whole, then `database.url` alone, so a Job that has no agents file, thread-tools
+    /// key or model key can run it.
     mod database_only {
         use super::*;
 
@@ -3719,6 +3719,8 @@ log: { format: text }
         }
     }
 
+    /// The secret store (ADR 0046, slice 3): the service reads and checks the section in every role
+    /// and does not use it yet; a build without the store's Cargo feature refuses it.
     mod user_secrets {
         use super::*;
 
