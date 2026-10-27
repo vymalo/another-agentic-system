@@ -16,8 +16,8 @@
 //! events (one load, fold and store per event made a thread of 10 000 events a transaction of
 //! tens of seconds under the thread's lock).
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use orch_core::{
@@ -346,6 +346,16 @@ fn to_row(task: &PgRow, lines: &[PgRow], entries: &[PgRow]) -> Result<UsageRow, 
     })
 }
 
+/// `rows`, which carry a `task_id`, grouped by it in the order they came.
+fn by_task(rows: Vec<PgRow>) -> Result<HashMap<i64, Vec<PgRow>>, StoreError> {
+    let mut grouped: HashMap<i64, Vec<PgRow>> = HashMap::new();
+    for row in rows {
+        let id: i64 = row.try_get("task_id").map_err(store_err)?;
+        grouped.entry(id).or_default().push(row);
+    }
+    Ok(grouped)
+}
+
 /// Writes `row`: a new task, or the task `stored` replaced. Only what differs from `stored` is
 /// written: the lines whose counts changed (an upsert), the lines that disappeared (a total can name
 /// other models than the calls it replaces), and the sandbox entries when they changed.
@@ -598,7 +608,13 @@ impl UsageLedger for PgStore {
         owner: &UserId,
         thread: ThreadId,
     ) -> Result<Vec<UsageRow>, StoreError> {
-        let mut conn = self.pool().acquire().await.map_err(store_err)?;
+        // one snapshot for the three reads, so a commit between them cannot hand a task the lines of
+        // another version of it
+        let mut conn = self.pool().begin().await.map_err(store_err)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *conn)
+            .await
+            .map_err(store_err)?;
         let tasks = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {TASK_COLUMNS} FROM usage_tasks WHERE owner = $1 AND thread_id = $2 \
              ORDER BY agent COLLATE \"C\", task COLLATE \"C\""
@@ -608,11 +624,55 @@ impl UsageLedger for PgStore {
         .fetch_all(&mut *conn)
         .await
         .map_err(store_err)?;
-        let mut rows = Vec::with_capacity(tasks.len());
+        // the lines and the sandbox entries of all the tasks at once: three statements however many
+        // tasks the thread has
+        let mut ids = Vec::with_capacity(tasks.len());
+        let mut measured = Vec::new();
         for task in &tasks {
-            rows.push(with_children(&mut conn, task).await?.1);
+            let id: i64 = task.try_get("id").map_err(store_err)?;
+            if task.try_get("sandbox_measured").map_err(store_err)? {
+                measured.push(id);
+            }
+            ids.push(id);
         }
-        Ok(rows)
+        let mut lines = by_task(if ids.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query(
+                "SELECT task_id, provider, model, input_tokens, output_tokens, total_tokens, \
+                     reasoning_tokens, cached_input_tokens, cache_write_input_tokens \
+                     FROM usage_lines WHERE task_id = ANY($1) \
+                     ORDER BY task_id, provider COLLATE \"C\", model COLLATE \"C\"",
+            )
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(store_err)?
+        })?;
+        let mut entries = by_task(if measured.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query(
+                "SELECT task_id, cpu_millis, memory_bytes, commands, milliseconds \
+                 FROM usage_sandbox WHERE task_id = ANY($1) ORDER BY task_id, ord",
+            )
+            .bind(&measured)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(store_err)?
+        })?;
+        conn.commit().await.map_err(store_err)?;
+        tasks
+            .iter()
+            .zip(&ids)
+            .map(|(task, id)| {
+                to_row(
+                    task,
+                    &lines.remove(id).unwrap_or_default(),
+                    &entries.remove(id).unwrap_or_default(),
+                )
+            })
+            .collect()
     }
 
     async fn backfill(

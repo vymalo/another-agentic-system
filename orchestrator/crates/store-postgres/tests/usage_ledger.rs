@@ -768,3 +768,39 @@ async fn a_catch_up_costs_statements_by_task_and_page_not_by_event() {
     assert_eq!(totals.tasks, 6);
     assert_eq!(totals.models.len(), 2);
 }
+
+/// The rows of a thread are read in a number of statements that does not grow with its tasks.
+#[tokio::test]
+async fn a_threads_rows_are_read_in_a_constant_number_of_statements() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let mut cost = Vec::new();
+    for tasks in [1_usize, 8] {
+        let events = (0..tasks)
+            .map(|i| call(&format!("t{i}"), "c1", counts(1, 1)))
+            .chain((0..tasks).map(|i| {
+                total(
+                    &format!("s{i}"),
+                    vec![glm(2, 2)],
+                    Some(SandboxUsage {
+                        environment: SandboxEnvironment::Kubernetes,
+                        usage: Some(vec![SandboxEntry {
+                            cpu_millis: Some(250),
+                            memory_bytes: Some(1024),
+                            commands: 1,
+                            milliseconds: 5,
+                        }]),
+                    }),
+                )
+            }))
+            .collect();
+        let (id, _) = open(&store, &alice(), events).await;
+        let (statements, rows) = statements_of(store.thread_rows(&alice(), id)).await;
+        assert_eq!(rows.unwrap().len(), tasks * 2);
+        cost.push(statements);
+    }
+    // the snapshot's begin and its isolation level, the tasks, their lines and their sandbox
+    // entries, and the commit; the same for one task as for eight
+    assert!(cost[0] <= 6, "{cost:?}");
+    assert_eq!(cost[0], cost[1], "{cost:?}");
+}
