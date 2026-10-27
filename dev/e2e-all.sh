@@ -56,8 +56,9 @@
 #   usage             token usage (ADR 0056): mock-usage (a WireMock agent that lists  usage-e2e.sh
 #                     usage/v1) reports three calls, one under a sub-agent step, one
 #                     said twice: three `model_usage` attributed to the agent or the
-#                     step, the totals read from the task (`model_usage_total`), the
-#                     AG-UI `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage;
+#                     step, the totals read from the task (`model_usage_total`, with
+#                     the task's `sandbox`: the time a pod's commands used), the AG-UI
+#                     `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage;
 #                     mock-coder, whose card does not list it, is asked for none and
 #                     its thread has none
 #   tier              the access tier (ADR 0061): mock-tiered (a WireMock agent that   tier-e2e.sh

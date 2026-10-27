@@ -20,7 +20,7 @@
 # `mock-browser`, WireMock agents with one answer of their own each), and the marker `[mock:football]`, which makes the first mock
 # (`mock-coder` in dev/agents.yaml) answer with a plot. Then the agent that reports its token usage (`mock-usage`, usage/v1, ADR 0056,
 # dev/usage-e2e.sh): its card, the call reports in the event metadata of `working` updates with no message (one under the sub-agent
-# step, one in doubles, the first said again), an end with no totals on it, and the totals in the metadata of the task GetTask answers.
+# step, one in doubles, the first said again), an end with no totals on it, and the totals, with the `sandbox` beside them, in the metadata of the task GetTask answers.
 # Last the agent that works under an access tier (`mock-tiered`, access-tier/v1, ADR 0061, dev/tier-e2e.sh): its card with the four tiers and
 # the default, the tier echoed on the task and the `working` update of a request that activates the extension and names one, and the answer of
 # the agent's default for a request that names none or does not activate it.
@@ -342,6 +342,9 @@ check "mock-usage: the context of the request is the context of the answer" \
 check "mock-usage: GetTask -> completed, the totals in the task's own metadata (two models)" \
   "$(rpc "$USAGE" GetTask | jq -r --arg u "$USAGE_EXT" '[.result.id, .result.status.state, (.result.metadata[$u].totals | map("\(.model):\(.totalTokens)") | join(" "))] | join(" | ")')" \
   "task-check | TASK_STATE_COMPLETED | glm-5.3:3800 glm-5.3-mini:640"
+check "mock-usage: GetTask -> the sandbox beside the totals: a pod, one shape, 12 commands, 81234 ms (usage/v1, adam-rs ADR 0043)" \
+  "$(rpc "$USAGE" GetTask | jq -r --arg u "$USAGE_EXT" '.result.metadata[$u].sandbox | [.environment, (.usage | map("\(.cpuMillis)m \(.memoryBytes)B \(.commands) \(.milliseconds)ms") | join(" "))] | join(" | ")')" \
+  "kubernetes | 250m 536870912B 12 81234ms"
 check "mock-usage: CancelTask -> canceled" "$(rpc "$USAGE" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
 check "mock-usage: SubscribeToTask -> task not found (-32001)" "$(rpc "$USAGE" SubscribeToTask | jq -r .error.code)" "-32001"
 check "mock-usage: unknown method -> -32601" "$(rpc "$USAGE" 'message/send' | jq -r .error.code)" "-32601"
