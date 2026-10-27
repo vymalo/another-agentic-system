@@ -1360,6 +1360,22 @@ A key is named by its `id`, which the orchestrator writes beside every secret it
 
 *Unverified:* that `kubectl exec` of the image's entrypoint (`/orchestrator`, a distroless image with no shell) works as written on netcup; the command was run as a process against a Postgres in CI (`orchestrator/bin/orchestrator/tests/secrets.rs`), not in a pod.
 
+## The usage ledger: run the backfill once (ADR 0065)
+
+The release that brings [ADR 0065](../../docs/decisions/0065-a-usage-ledger-per-person.md)'s usage ledger (migration `0023`, which every replica applies at start) starts with an
+empty ledger for the threads that already exist. A thread that someone writes to is caught up by its next commit; the rest are folded in by one command, run once after the
+rollout is complete:
+
+```sh
+kubectl -n another-agentic-system exec deploy/another-agentic-orchestrator -- /orchestrator usage backfill
+```
+
+It reads only `database.url` of the pod's own configuration, goes through the threads in pages (one transaction each, under the thread's lock), prints one line of JSON
+(`{"complete":true,"pages":…,"threads":…,"events":…}`) and exits `0` ([the exit codes](../../orchestrator/bin/orchestrator/README.md#the-command-usage-backfill)). It can run while people
+use the service, and a second run reports zero threads. Run it soon: the usage of a thread that is erased before it runs is not in the log any more and is not recovered. (No Job
+for it is rendered in this slice, and the chart changes nothing else for the ledger: the price table, the route and the retention are the next pull request.)
+*Unverified:* the command on netcup, and its duration on a database with many threads.
+
 ## The browser agent (ADR 0057)
 
 [ADR 0057](../../docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md) has the diagrams. One pod: the
