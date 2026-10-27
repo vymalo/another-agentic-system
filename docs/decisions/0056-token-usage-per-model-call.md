@@ -8,6 +8,9 @@
   same contract and merged as adam-rs `09291a6` (PR #99), pinned here since 2026-10-09. It adds two kinds to the log, the reason for migration 0020.
   **Built 2026-10-09** on the orchestrator's and the web's side, proven on mocks (the fake A2A agent, the goldens, the web's mock
   server, a WireMock agent: `dev/usage-e2e.sh`).
+  **Amended 2026-10-27:** the totals object gains an optional `sandbox` member, the time a run's commands used in a pod
+  ([`usage-v1.md`](../api/usage-v1.md) section 5; adam-rs `55bbe9f`, its ADR 0043, issue 126). Decisions 2 to 4 and 6 are unchanged; the
+  amendment is the section "Amendment 2026-10-27: the sandbox member" at the end.
 
 ## Context
 
@@ -144,3 +147,64 @@ Facts the design rests on:
   read from the run's state and said on a task that is terminal, `input-required` or `auth-required` (`crates/adam-a2a-runtime/src/convert.rs`,
   `task_from_view`, `settled`); the module comment of `crates/adam-a2a-runtime/src/usage.rs` leaves `auth-required` out of its list, which is that
   comment's slip, not the code's.
+
+## Amendment 2026-10-27: the sandbox member
+
+*Added after the fact, at the request of adam-rs [issue 126](https://github.com/vymalo/another-adam-rs/issues/126) (M2, usage and limits
+per person); the agent's side is adam-rs `55bbe9f`, its ADR 0043 (seven decisions, agreed on the issue before building). Nothing above is
+rewritten.*
+
+### What changed on the wire
+
+The adam coder writes a member `sandbox` in the totals object of `usage/v1`, beside `totals` (the same URI; the card is unchanged):
+`{"environment": "kubernetes", "usage": [{"cpuMillis", "memoryBytes", "commands", "milliseconds"}]}` for a run whose commands were
+measured in a pod; `"usage": []` for a pod asked for and no command run (a measured zero); `{"environment": "local"}` or `"devcontainer"`
+with no `usage` for commands that were not measured (**not measured, never zero**); no `sandbox` for a run that asked for no environment.
+`totals` is always there (`[]` for a run with no model call). The contract is [section 5 of `usage-v1.md`](../api/usage-v1.md#5-the-sandbox),
+with the rule that a client **ignores unknown members** of the totals object and of its entries.
+
+### Decisions
+
+1. **`sandbox` is read apart from `totals`; an invalid one is dropped alone.** `UsageTotals::parse` reads the tokens as before and then
+   `SandboxUsage::parse` reads the member. If the member breaks the contract (not an object, no `environment`, an `environment` that is not
+   one of the three words, `usage` not an array or with more than 8 entries, an entry without `commands` or `milliseconds`, a count that is
+   not a whole number from 0 to 2^53 - 1), the totals are still taken: the logged `model_usage_total` has no `sandbox`, the reason is kept
+   in `UsageTotals::sandbox_rejected`, and the application counts it. *Why:* the tokens have been reported since 2026-10-09 and are what a
+   limit or a price counts; a fault in a member added later must not make them vanish. Rejecting the whole object, as the token counts'
+   own rule does for a bad token count, would have tied the old data to the newer member's correctness. The cost is that a broken
+   sandbox is visible only through the counter and a debug line, not in the log; that is the same trade as for a rejected call report.
+2. **The counter is a new reason of the existing one**, `usage_reports_dropped_total{reason="sandbox_invalid"}`, not a counter of its own and
+   not `invalid`. It is the same family (usage data that was not logged), so one alert on the family catches it; it is not `invalid`, so an
+   alert on broken *token* reports does not move for a newer member's fault, and `reason` says which. It is counted once the totals are
+   logged, so a replay of the same totals counts nothing. The HELP text now says "or sandbox members left out of logged totals".
+3. **An unknown `environment` word is an invalid sandbox**, not a kept word. `SandboxEnvironment` is a closed enum (ADR 0004): a consumer that
+   branches on it needs the three, and a word the orchestrator cannot interpret is better counted than logged and shown. A new environment
+   is a change to the contract page; until the orchestrator is built for it, the tokens are kept and the counter says the orchestrator is behind.
+4. **Unknown members inside `sandbox` and its entries are ignored**, like the totals' own, so adam-rs can add one without a new version.
+   `null` is absent. Two entries of one shape are not rejected (the sum of entries is what a reader wants either way), and `usage` is not
+   tied to the environment word: what says "measured" is the presence of `usage`.
+5. **The log.** `model_usage_total`'s `data` gains an optional `sandbox` (not written when absent, read as absent when missing), so every
+   event written before still reads and **no migration is needed**: events are JSON rows. `UsageUpdate::Total`'s `UsageTotals` carries the
+   parsed member, and the core checks it again where it records it (`SandboxUsage::check`: at most 8 entries, counts in range); one that fails
+   there is left out and the totals are logged, whatever adapter built it. A rolling deploy is safe both ways: an older replica reads an event
+   with `sandbox` (serde ignores the unknown member) and shows nothing of it.
+6. **The projection carries it; AG-UI's run accounting does not.** `CUSTOM vymalo.usage_total` is built from the event's data, so its `value`
+   carries `sandbox` with no projector change. **No golden shows it, on purpose**: the digest table (`tests/projection-digests.txt`, history rule 7)
+   pins the frames of every golden, and a change to a line it already had raises `PROJECTION_VERSION`, which tells every client that stores frames
+   (ADR 0060) to drop them; making the `usage` golden's totals carry a sandbox would have been that change, for a projection that moves no event
+   already in a log. The test `a_totals_sandbox_rides_the_custom_and_is_no_part_of_the_runs_tokens` and the WireMock agent pin it instead.
+   `RUN_FINISHED.usage` and `RUN_ERROR.usage` stay AG-UI's `TokenUsage` and say the tokens alone:
+   the type has no member for a sandbox, and a run's delta is a rule about tokens. The web reads `totals` of the CUSTOM and ignores the rest
+   (`parseTotal`), so no screen changes. A fork copies the log and so the event, as it copies the tokens.
+7. **What is not done here.** No screen draws it; no limit or price reads it (the price per CPU-second belongs to the usage record, issue 281);
+   a pod's idle time is not reported by the agent (adam-rs ADR 0043, decision 1), so nothing here can bill it.
+
+### Facts, and how they are known
+
+| Fact | State |
+|---|---|
+| The agent writes `sandbox` beside `totals` in the four shapes, entries at most 8 with integer counts, `totals` always there | *verified 2026-10-27* by reading adam-rs at `55bbe9f` (its ADR 0043 and `crates/adam-a2a-runtime/src/usage.rs`, `totals_metadata`), not by running it |
+| The orchestrator before this change ignored a member beside `totals` and inside an entry | *verified 2026-10-27* by a test that passes on the code before it (`unknown_members_beside_the_totals_and_inside_their_entries_are_ignored`) |
+| An invalid sandbox keeps the totals; the log, the AG-UI `vymalo.usage_total` and the counter carry or count it | tested on the fake A2A agent (`usage-sandbox`, `usage-sandbox-bad`), the memory agent and the projector; the goldens are unchanged (decision 6); `dev/usage-e2e.sh`, `dev/check-mocks.sh` and `crates/e2e/tests/wiremock_agent.rs` against the WireMock agent `mock-usage` are for CI (Compose, Coder E2E) |
+| Postgres round-trips the event and reads an event written without the member | the case `model_usage_total` of `crates/store-postgres/tests/postgres.rs`, which skips without `ORCH_TEST_POSTGRES_URL` (CI runs it) |
+| A real coder in a real run pod writes figures this reads | *unverified*: adam-rs ADR 0043 itself says its fakes run the commands as local processes |
