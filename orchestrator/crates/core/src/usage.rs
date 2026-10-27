@@ -717,6 +717,36 @@ mod tests {
     }
 
     #[test]
+    fn unknown_members_beside_the_totals_and_inside_their_entries_are_ignored() {
+        // the contract's rule (`usage-v1.md`): a client reads the members it knows and ignores the
+        // rest, so an agent can add a member without a new version of the extension
+        let totals = UsageTotals::parse(
+            "t1",
+            &json!({"totals": [
+                {"provider": "openai", "model": "glm-5.3", "inputTokens": 5, "outputTokens": 2,
+                 "totalTokens": 7, "somethingNew": {"a": 1}}
+            ], "somethingNew": [1, 2], "price": "3"}),
+        )
+        .unwrap();
+        assert_eq!(totals.totals.len(), 1);
+        assert_eq!(totals.totals[0].tokens.total_tokens, 7);
+    }
+
+    #[test]
+    fn a_total_written_before_the_sandbox_member_reads_back() {
+        // the stored `data` of a `model_usage_total` as the log holds it for every event written
+        // before the member existed
+        let data: ModelUsageTotalData = serde_json::from_value(json!({
+            "job": 1, "agent": "coder", "task": "t1",
+            "totals": [{"provider": "openai", "model": "m", "inputTokens": 5, "outputTokens": 2,
+                        "totalTokens": 7}]
+        }))
+        .unwrap();
+        assert_eq!(data.totals.len(), 1);
+        assert_eq!(data.task, "t1");
+    }
+
+    #[test]
     fn an_event_reads_back_the_shape_it_was_written_in() {
         let data = ModelUsageData {
             job: 1,
