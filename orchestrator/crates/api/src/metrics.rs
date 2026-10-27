@@ -97,10 +97,12 @@ pub(crate) fn render_deleting(stats: &DeleteStats, pending: Option<u64>) -> Stri
 
 /// What the token usage reports count (ADR 0056): `usage_reports_dropped_total{reason}`, the reports
 /// this process did not log, `invalid` (they broke the `usage/v1` contract) or `job_limit` (a valid
-/// call report past the job's bound). It names no thread and no agent.
+/// call report past the job's bound), and the `sandbox` members it left out of totals it did log,
+/// `sandbox_invalid` (the member broke the contract; the tokens beside it were kept). It names no
+/// thread and no agent.
 pub(crate) fn render_usage(stats: &UsageStats) -> String {
     let mut out = String::from(
-        "# HELP usage_reports_dropped_total Token usage reports (usage/v1) that were not logged, by why.\n\
+        "# HELP usage_reports_dropped_total Token usage reports (usage/v1) that were not logged, or sandbox members left out of logged totals, by why.\n\
          # TYPE usage_reports_dropped_total counter\n",
     );
     for (reason, n) in stats.reports_dropped {
@@ -373,14 +375,16 @@ shared_reads_total{visibility=\"public\"} 9
             reports_dropped: [
                 (orch_app::UsageDrop::Invalid, 4),
                 (orch_app::UsageDrop::JobLimit, 0),
+                (orch_app::UsageDrop::SandboxInvalid, 2),
             ],
         });
         assert_eq!(
             text,
-            "# HELP usage_reports_dropped_total Token usage reports (usage/v1) that were not logged, by why.\n\
+            "# HELP usage_reports_dropped_total Token usage reports (usage/v1) that were not logged, or sandbox members left out of logged totals, by why.\n\
              # TYPE usage_reports_dropped_total counter\n\
              usage_reports_dropped_total{reason=\"invalid\"} 4\n\
-             usage_reports_dropped_total{reason=\"job_limit\"} 0\n"
+             usage_reports_dropped_total{reason=\"job_limit\"} 0\n\
+             usage_reports_dropped_total{reason=\"sandbox_invalid\"} 2\n"
         );
     }
 }

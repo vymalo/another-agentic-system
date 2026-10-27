@@ -26,6 +26,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
+use crate::app::sandbox_rejection;
 use crate::{App, AppError, ApplyOutcome, LateSource, UsageDrop};
 
 mod ask;
@@ -1336,6 +1337,11 @@ impl<P: Ports> Dispatcher<P> {
                     None => update.clone(),
                 };
                 let call = matches!(update, AgentUpdate::Usage(UsageUpdate::Call(_)));
+                // the totals of a task whose sandbox the adapter refused are applied without it
+                let sandbox_rejected = match &update {
+                    AgentUpdate::Usage(usage) => sandbox_rejection(usage),
+                    _ => None,
+                };
                 let input = Input::Agent {
                     agent: ctx.agent.clone(),
                     revision: env.revision.clone().or_else(|| ctx.revision.clone()),
@@ -1360,6 +1366,16 @@ impl<P: Ports> Dispatcher<P> {
                                 UsageDrop::JobLimit,
                                 ctx.thread,
                                 "past the job's bound",
+                            );
+                        }
+                        // counted once the totals are logged, so a replay (a duplicate) counts nothing
+                        if let Some(why) = sandbox_rejected
+                            && !events.is_empty()
+                        {
+                            self.app.usage_dropped(
+                                UsageDrop::SandboxInvalid,
+                                ctx.thread,
+                                why.as_str(),
                             );
                         }
                         Ok(())

@@ -2271,7 +2271,7 @@ components:
         - thread_unshared     # data: {}  the owner took the link down ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)); the thread is private again and the nonce is gone. Attributed to the owner. Additive. No AG-UI frame.
         - ask_finished        # data: { ask: integer, state: completed|input_required|auth_required|failed|rejected|canceled|timed_out, text?, question?, artifacts?: [{ name, uri?, mimeType? }], error?, form?: true }  the ask ended, exactly once ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)); attributed to the asked agent for what it said, to the orchestrator for a deadline, a cancel (the person stopped the job, or the task that asked ended) or an agent it could not reach. `text` is the answer (untrusted, at most 64 KiB), `question` the question the agent asked back and `error` why it did not complete (at most 4 KiB each), `artifacts` at most 20. `form` is true when the asked agent showed an interface and then waited (`input_required` or `auth_required`): it waits for the **person's** answer to a form that nobody can see, so the ask is over, the task is cancelled, and the agent is not asked again in this job (a model does not answer a form that was shown). It is set when an interface was shown, or when a claim that re-attached saw the task wait (it cannot know what the task drew); an ask is sent the job's UI catalog, so a question with choices is a form, while a question in words that was seen from the start has no `form` and is still the asking agent's to answer. Absent when false and in older logs. Additive.
         - model_usage         # data: { job, agent, task, call, path: [string], provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow? }  the tokens of one model call an agent made ([ADR 0056](../decisions/0056-token-usage-per-model-call.md), [`usage-v1.md`](usage-v1.md)), once per call (the idempotency key `a2a:<task>:usage:<call>`): `job` is the thread's job, `agent` the agent that made it, `task` its A2A task, `call` the agent's id for it. `path` is the step path it ran under, as `agent_step`'s: empty for the agent's own call, the sub-agent step's path and the step for a call under one, `["ask-<n>"]` for an asked agent's. The counts are AG-UI 1.0's `TokenUsage` accounting (`totalTokens` is the sum of the two totals, the others are parts of them); `contextWindow` is the model's window as the deployment configured it. Labels and numbers only. At most 10 000 per job. Attributed to the agent. Additive.
-        - model_usage_total   # data: { job, agent, task, path?: [string], totals: [{ provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens? }] }  a task's token totals when it ended or paused ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)): one entry per provider and model, every call of the task included, its sub-agents' too; the latest of a task is the record (a resumed task reports the totals of all its calls so far). `path` is `["ask-<n>"]` for an asked agent's task and absent for the thread's agent's. Attributed to the agent. Additive.
+        - model_usage_total   # data: { job, agent, task, path?: [string], totals: [{ provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens? }], sandbox?: { environment, usage?: [{ cpuMillis?, memoryBytes?, commands, milliseconds }] } }  a task's token totals when it ended or paused ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)): one entry per provider and model, every call of the task included, its sub-agents' too; the latest of a task is the record (a resumed task reports the totals of all its calls so far). `path` is `["ask-<n>"]` for an asked agent's task and absent for the thread's agent's. `sandbox` is the time the run's commands used in the environment they ran in ([`usage-v1.md`](usage-v1.md) section 5, ADR 0056 amended 2026-10-27), present only when the agent reported a valid one; events written before it existed have none. Attributed to the agent. Additive.
     Mention:
       type: object
       description: "An agent a person mentioned in a message, as a structured reference ([`mentions-v1.md`](mentions-v1.md), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)): the identity is `agentId`, never the label."
@@ -2561,6 +2561,27 @@ components:
               reasoningTokens: { $ref: "#/components/schemas/TokenCount" }
               cachedInputTokens: { $ref: "#/components/schemas/TokenCount" }
               cacheWriteInputTokens: { $ref: "#/components/schemas/TokenCount" }
+        sandbox:
+          type: object
+          required: [environment]
+          description: "model_usage_total (`usage-v1.md` section 5): the time the run's commands used in the environment they ran in. Absent: the run asked for no environment, or the agent's member did not pass the door (the totals beside it were kept). **`usage` absent is not measured, never zero**; `usage: []` is an environment that was asked for and ran no command."
+          properties:
+            environment:
+              type: string
+              enum: [kubernetes, local, devcontainer]
+              description: "Where the commands ran. Only `kubernetes` measures them today."
+            usage:
+              type: array
+              maxItems: 8
+              description: "One entry per shape of the sandbox. Absent: not measured."
+              items:
+                type: object
+                required: [commands, milliseconds]
+                properties:
+                  cpuMillis: { type: integer, minimum: 0, maximum: 9007199254740991, description: "The CPU the sandbox reserved, in millicores; absent when it reserved none." }
+                  memoryBytes: { type: integer, minimum: 0, maximum: 9007199254740991, description: "The memory the sandbox reserved, in bytes; absent when it reserved none." }
+                  commands: { type: integer, minimum: 0, maximum: 9007199254740991, description: "How many commands ran." }
+                  milliseconds: { type: integer, minimum: 0, maximum: 9007199254740991, description: "The sum of the commands' wall times; concurrent commands are summed, so it can exceed the time the run took." }
         ioDropped:
           type: boolean
           enum: [true]

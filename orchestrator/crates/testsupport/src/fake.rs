@@ -26,6 +26,8 @@
 //! | `steps-chatty` | `working`, one step that reports `running` twenty times, then ends, `completed`: what the log's bound is tested with |
 //! | `usage` | `working`, then the tokens of its model calls (`usage/v1`, ADR 0056) as call reports in the **event's** metadata of `working` updates with no message: `c1` (the agent's own, [`USAGE_CALL_C1`]), a sub-agent step `Researcher` (`tool:c2`), `c2` under it (`stepId` `tool:c2`, [`USAGE_CALL_C2`]), the step's end, `c3` (the agent's own, written with doubles as an A2A server may hand back numbers: [`USAGE_CALL_C3`]); a `Task` frame (still `working`) whose metadata holds the totals ([`usage_totals_entry`]) as adam keeps them on the task, then the agent `Message` "Done." and `completed("Done.")` with **no** totals in the event: a client that streams reads them from the task (`GetTask`). The fake reports whether or not the request activated the extension |
 //! | `usage-inline` | as `usage`, but the `completed` update also carries a totals entry of its own (one model, not the task's two): the contract keeps the totals on the task, so this one is not read and the task is |
+//! | `usage-sandbox` | as `usage`, but the totals on the task also carry a `sandbox` ([`usage_totals_entry_with_sandbox`]: a pod, one entry, adam-rs ADR 0043); no golden uses it, because a change to a golden's frames raises the projection version |
+//! | `usage-sandbox-bad` | `working`, the call `c1`, a `Task` frame whose totals are one model and a `sandbox` whose `commands` has a fraction ([`usage_totals_entry_bad_sandbox`]), the agent `Message` "Done.", `completed("Done.")`: the totals are logged without the sandbox and the drop is counted, never a failure |
 //! | `usage-bad` | `working`, a call report whose `totalTokens` is not the sum, then `completed("Done.")`: dropped and counted, never a failure |
 //! | `stream` | `working`, then a reply streamed as it is written (`text-stream/v1`, ADR 0027): [`STREAM_PIECES`] as seven chunks about 150 ms apart (the stream id is `<task>-reply`, [`stream_id`]), the last one `lastChunk`, then `completed` whose message states the whole text ([`stream_text`]) under that id. The fake sends the chunks whether or not the request activated the extension: the orchestrator reads the response as data ([`Call::activates_text_stream`] says whether it was asked) |
 //! | `reasoning` | `working`, then what the model thought, streamed before the reply (`text-stream/v1` with `kind: "reasoning"`, ADR 0044): [`REASONING_PIECES`] as three chunks about 150 ms apart, the last one `lastChunk`, in the stream `<task>-thinking` ([`reasoning_id`]); then the reply as the `stream` script sends it (`<task>-reply`), and `completed` whose message states the reply's whole text. **Nothing states the reasoning whole**: the orchestrator collects the chunks |
@@ -195,6 +197,27 @@ pub fn usage_totals_entry() -> Value {
         {"provider": "openai", "model": "glm-5.3-mini", "inputTokens": 600, "outputTokens": 40,
          "totalTokens": 640}
     ]})
+}
+
+/// The totals the `usage-sandbox` script keeps on the task: [`usage_totals_entry`] and, beside the
+/// totals, the time the run's commands used in a pod (`sandbox`, adam-rs ADR 0043).
+pub fn usage_totals_entry_with_sandbox() -> Value {
+    let mut entry = usage_totals_entry();
+    entry["sandbox"] = json!({"environment": "kubernetes", "usage": [
+        {"cpuMillis": 250, "memoryBytes": 536_870_912_u64, "commands": 12, "milliseconds": 81_234}
+    ]});
+    entry
+}
+
+/// The totals the `usage-sandbox-bad` script keeps on the task: one model, and a `sandbox` whose
+/// `commands` has a fraction, which the contract refuses without taking the tokens with it.
+pub fn usage_totals_entry_bad_sandbox() -> Value {
+    json!({"totals": [
+        {"provider": "openai", "model": "glm-5.3", "inputTokens": 3600, "outputTokens": 200,
+         "totalTokens": 3800}
+    ], "sandbox": {"environment": "kubernetes", "usage": [
+        {"cpuMillis": 250, "commands": 1.5, "milliseconds": 81_234}
+    ]}})
 }
 
 /// The whole text of the reply the `stream` scripts send.
@@ -1297,9 +1320,9 @@ impl TaskCtx {
     /// The task as it stands while it works, its metadata holding the usage totals beside the release
     /// echo: what a server that keeps the totals on the task (adam does) has stored, and a `GetTask`
     /// reads back.
-    fn task_with_totals(&self) -> StreamResponse {
+    fn task_with_totals(&self, entry: Value) -> StreamResponse {
         let mut metadata = self.metadata.clone().unwrap_or_default();
-        metadata.insert(orch_core::USAGE_EXTENSION.to_owned(), usage_totals_entry());
+        metadata.insert(orch_core::USAGE_EXTENSION.to_owned(), entry);
         StreamResponse::Task(Task {
             id: self.task_id.clone(),
             context_id: self.context_id.clone(),
@@ -2298,7 +2321,7 @@ async fn script(
             emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
         }
         // usage/v1 (ADR 0056): the tokens of each call, one under a sub-agent step, and the totals
-        "usage" | "usage-inline" => {
+        "usage" | "usage-inline" | "usage-sandbox" => {
             emit(&tx, ctx.usage_call(USAGE_CALL_C1)).await?;
             let researcher = |state| StepSay {
                 id: "tool:c2",
@@ -2315,7 +2338,12 @@ async fn script(
             emit(&tx, ctx.usage_call(USAGE_CALL_C2)).await?;
             emit(&tx, ctx.step(&researcher("completed"))).await?;
             emit(&tx, ctx.usage_call(USAGE_CALL_C3)).await?;
-            emit(&tx, ctx.task_with_totals()).await?;
+            let kept = if word == "usage-sandbox" {
+                usage_totals_entry_with_sandbox()
+            } else {
+                usage_totals_entry()
+            };
+            emit(&tx, ctx.task_with_totals(kept)).await?;
             emit(&tx, ctx.message_named("usage-said", "Done.")).await?;
             let StreamResponse::StatusUpdate(mut done) =
                 ctx.status(TaskState::Completed, Some("Done."))
@@ -2332,6 +2360,12 @@ async fn script(
                     .insert(orch_core::USAGE_EXTENSION.to_owned(), one);
             }
             emit(&tx, StreamResponse::StatusUpdate(done)).await?;
+        }
+        "usage-sandbox-bad" => {
+            emit(&tx, ctx.usage_call(USAGE_CALL_C1)).await?;
+            emit(&tx, ctx.task_with_totals(usage_totals_entry_bad_sandbox())).await?;
+            emit(&tx, ctx.message_named("usage-said", "Done.")).await?;
+            emit(&tx, ctx.status(TaskState::Completed, Some("Done."))).await?;
         }
         "usage-bad" => {
             emit(

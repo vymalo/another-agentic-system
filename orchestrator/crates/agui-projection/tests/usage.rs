@@ -12,8 +12,9 @@ use orch_agui_projection::{Audience, Connect, Follow, Frame, Projector};
 use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentStepData, AskFinishedData, AskOutcome,
     AskStartedData, Caller, DescribedBy, ErrorData, Event, EventBody, ModelTokens, ModelUsageData,
-    ModelUsageTotalData, StepKind, StepPhase, StepState, ThreadDescribedData, ThreadState,
-    ThreadStateData, ThreadTitledData, Timestamp, TitledBy, TokenCounts, UserId, UserMessageData,
+    ModelUsageTotalData, SandboxEntry, SandboxEnvironment, SandboxUsage, StepKind, StepPhase,
+    StepState, ThreadDescribedData, ThreadState, ThreadStateData, ThreadTitledData, Timestamp,
+    TitledBy, TokenCounts, UserId, UserMessageData,
 };
 use serde_json::{Value, json};
 use support::log::{meta, thread_id};
@@ -103,6 +104,7 @@ fn total(seq: i64, task: &str, path: &[&str], input: u64, output: u64) -> Event 
                 model: "m".into(),
                 tokens: counts(input, output),
             }],
+            sandbox: None,
         }),
     )
 }
@@ -183,6 +185,62 @@ fn a_call_is_a_custom_of_the_agents_invocation_and_the_run_says_its_tasks_totals
     let total = &customs(&frames, "vymalo.usage_total")[0];
     assert_eq!(total["totals"][0]["inputTokens"], 300);
     assert_eq!(total["by"], json!({"kind": "agent", "name": "plain"}));
+}
+
+#[test]
+fn a_totals_sandbox_rides_the_custom_and_is_no_part_of_the_runs_tokens() {
+    // usage/v1 `sandbox` (adam-rs ADR 0043): the value of `vymalo.usage_total` is the event's data,
+    // so the member is there; AG-UI's `TokenUsage` has no place for it, so `RUN_FINISHED.usage` is
+    // the tokens alone, the same with or without it
+    let sandbox = SandboxUsage {
+        environment: SandboxEnvironment::Kubernetes,
+        usage: Some(vec![SandboxEntry {
+            cpu_millis: Some(250),
+            memory_bytes: Some(536_870_912),
+            commands: 12,
+            milliseconds: 81_234,
+        }]),
+    };
+    let with = |sandbox: Option<SandboxUsage>| {
+        let mut e = total(4, "t1", &[], 300, 30);
+        if let EventBody::ModelUsageTotal(d) = &mut e.body {
+            d.sandbox = sandbox;
+        }
+        project(&[
+            user(1, "go"),
+            status(2, AgentStatus::Working, None),
+            call(3, "t1", "c1", &[], 300, 30),
+            e,
+            status(5, AgentStatus::Completed, None),
+            thread(6, ThreadState::Done),
+        ])
+    };
+    let frames = with(Some(sandbox));
+    assert_eq!(
+        customs(&frames, "vymalo.usage_total")[0]["sandbox"],
+        json!({"environment": "kubernetes", "usage": [
+            {"cpuMillis": 250, "memoryBytes": 536_870_912_u64, "commands": 12, "milliseconds": 81234}]})
+    );
+    assert_eq!(
+        lines(&frames).last().unwrap(),
+        "RUN_FINISHED run-1 success usage=[m:300/30]  id:6"
+    );
+    // not measured is written as the environment alone, and no sandbox is no member
+    let unmeasured = with(Some(SandboxUsage {
+        environment: SandboxEnvironment::Local,
+        usage: None,
+    }));
+    assert_eq!(
+        customs(&unmeasured, "vymalo.usage_total")[0]["sandbox"],
+        json!({"environment": "local"})
+    );
+    let none = with(None);
+    assert!(
+        customs(&none, "vymalo.usage_total")[0]
+            .get("sandbox")
+            .is_none()
+    );
+    assert_eq!(lines(&none).last(), lines(&frames).last());
 }
 
 #[test]

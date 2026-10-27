@@ -128,6 +128,9 @@
 //! `AgentUpdate::Usage(UsageUpdate::Total)`, before the status. An entry on a status update other
 //! than `working` is not read: the contract keeps the totals on the task. An entry that does not
 //! pass the door is `AgentUpdate::UsageRejected(why)`: never logged, counted by the application.
+//! The totals' optional `sandbox` member (adam-rs ADR 0043) is read apart: one that does not pass
+//! leaves the totals standing, without it, and says why in `UsageTotals::sandbox_rejected`, which
+//! the application counts; unknown members beside `totals` and inside its entries are ignored.
 //! Like steps, the response is read as data whether or not the request activated the extension.
 //! A streaming client never sees the task's metadata on a status update, so [`wants_usage_totals`]
 //! names a status update that ends or pauses the turn, and [`usage_totals`] reads the totals from
@@ -4128,6 +4131,62 @@ mod tests {
                 .envelopes
                 .iter()
                 .all(|e| !matches!(e.update, Some(AgentUpdate::Usage(_))))
+        );
+    }
+
+    #[test]
+    fn a_tasks_totals_carry_the_sandbox_beside_them_and_ignore_what_else_is_there() {
+        // the shapes of usage/v1's `sandbox` (adam-rs ADR 0043), as a task's metadata holds them
+        let read = |entry: Value| {
+            let mut finished = task(TaskState::Completed, vec![], None);
+            finished.metadata = Some(HashMap::from([(USAGE_EXTENSION.to_owned(), entry)]));
+            let env = usage_totals(&finished).unwrap();
+            let Some(AgentUpdate::Usage(UsageUpdate::Total(totals))) = env.update else {
+                panic!("{env:?}")
+            };
+            totals
+        };
+        let measured = read(json!({
+            "totals": [{"provider": "openai", "model": "glm-5.3", "inputTokens": 5,
+                        "outputTokens": 2, "totalTokens": 7, "somethingNew": true}],
+            "sandbox": {"environment": "kubernetes", "usage": [
+                {"cpuMillis": 250, "memoryBytes": 536870912, "commands": 12, "milliseconds": 81234.0}]},
+            "somethingNew": {"a": 1}
+        }));
+        assert_eq!(measured.totals[0].tokens.total_tokens, 7);
+        let sandbox = measured.sandbox.unwrap();
+        assert_eq!(
+            sandbox.environment,
+            orch_core::SandboxEnvironment::Kubernetes
+        );
+        assert_eq!(sandbox.usage.unwrap()[0].milliseconds, 81234);
+        // a run that made no model call: `totals` is there and empty, the sandbox is the news
+        let only = read(json!({"totals": [], "sandbox": {"environment": "local"}}));
+        assert!(only.totals.is_empty());
+        assert_eq!(only.sandbox.unwrap().usage, None, "not measured, not zero");
+        // a sandbox that breaks the contract does not take the tokens with it
+        let broken = read(json!({
+            "totals": [{"model": "m", "inputTokens": 5, "outputTokens": 2, "totalTokens": 7}],
+            "sandbox": {"environment": "kubernetes", "usage": [{"commands": 1.5, "milliseconds": 2}]}
+        }));
+        assert_eq!(broken.totals[0].tokens.total_tokens, 7);
+        assert_eq!(broken.sandbox, None);
+        assert_eq!(
+            broken.sandbox_rejected,
+            Some(orch_core::UsageInvalid::BadCount)
+        );
+        // while totals that are themselves broken are still refused as a whole
+        let mut finished = task(TaskState::Completed, vec![], None);
+        finished.metadata = Some(HashMap::from([(
+            USAGE_EXTENSION.to_owned(),
+            json!({"totals": [{"model": "m", "inputTokens": 5, "outputTokens": 2, "totalTokens": 9}],
+                   "sandbox": {"environment": "local"}}),
+        )]));
+        assert_eq!(
+            usage_totals(&finished).unwrap().update,
+            Some(AgentUpdate::UsageRejected(
+                orch_core::UsageInvalid::TotalNotSum
+            ))
         );
     }
 

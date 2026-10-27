@@ -39,7 +39,38 @@ fn totals() -> UsageTotals {
             model: "glm-5.3".into(),
             tokens: tokens(512_000, 9_100),
         }],
+        sandbox: None,
+        sandbox_rejected: None,
     }
+}
+
+fn sandbox() -> SandboxUsage {
+    SandboxUsage {
+        environment: SandboxEnvironment::Kubernetes,
+        usage: Some(vec![SandboxEntry {
+            cpu_millis: Some(250),
+            memory_bytes: Some(536_870_912),
+            commands: 12,
+            milliseconds: 81_234,
+        }]),
+    }
+}
+
+fn totals_with(sandbox: SandboxUsage) -> UsageTotals {
+    UsageTotals {
+        sandbox: Some(sandbox),
+        ..totals()
+    }
+}
+
+/// The `data` of the one `model_usage_total` a total gave, as the log stores it.
+fn logged_total(update: UsageTotals) -> serde_json::Value {
+    let (_, cmds) =
+        transition(&Snapshot::new(Working), &usage(UsageUpdate::Total(update))).unwrap();
+    let [EventBody::ModelUsageTotal(_)] = bodies(&cmds).as_slice() else {
+        panic!("exactly one model_usage_total: {cmds:?}")
+    };
+    bodies(&cmds)[0].data_value()
 }
 
 fn usage(update: UsageUpdate) -> Input {
@@ -232,6 +263,7 @@ fn totals_are_a_model_usage_total_and_are_never_capped() {
             task: "t1".into(),
             path: vec![],
             totals: totals().totals,
+            sandbox: None,
         })]
     );
     assert_eq!(snap.state, Working);
@@ -372,6 +404,7 @@ fn the_events_read_back_from_the_log() {
         &[
             usage(UsageUpdate::Call(call("c1", None))),
             usage(UsageUpdate::Total(totals())),
+            usage(UsageUpdate::Total(totals_with(sandbox()))),
         ],
     );
     for body in bodies(&cmds) {
@@ -380,6 +413,122 @@ fn the_events_read_back_from_the_log() {
     }
     assert_eq!(EventKind::ModelUsage.as_str(), "model_usage");
     assert_eq!(EventKind::ModelUsageTotal.as_str(), "model_usage_total");
+}
+
+#[test]
+fn a_total_logs_its_sandbox_beside_its_totals() {
+    // the exact `data` the log stores, which the export, the AG-UI `vymalo.usage_total` and a
+    // reader of Postgres see
+    assert_eq!(
+        logged_total(totals_with(sandbox())),
+        serde_json::json!({
+            "job": 1, "agent": "coder", "task": "t1",
+            "totals": [{"provider": "openai", "model": "glm-5.3", "inputTokens": 512000,
+                        "outputTokens": 9100, "totalTokens": 521100}],
+            "sandbox": {"environment": "kubernetes", "usage": [
+                {"cpuMillis": 250, "memoryBytes": 536870912, "commands": 12, "milliseconds": 81234}]}
+        })
+    );
+}
+
+#[test]
+fn the_three_other_shapes_are_logged_as_they_were_told() {
+    let measured_zero = SandboxUsage {
+        environment: SandboxEnvironment::Kubernetes,
+        usage: Some(vec![]),
+    };
+    assert_eq!(
+        logged_total(totals_with(measured_zero))["sandbox"],
+        serde_json::json!({"environment": "kubernetes", "usage": []}),
+        "a pod asked for and no command run: a measured zero, written"
+    );
+    for (environment, word) in [
+        (SandboxEnvironment::Local, "local"),
+        (SandboxEnvironment::Devcontainer, "devcontainer"),
+    ] {
+        let unmeasured = SandboxUsage {
+            environment,
+            usage: None,
+        };
+        assert_eq!(
+            logged_total(totals_with(unmeasured))["sandbox"],
+            serde_json::json!({"environment": word}),
+            "not measured: no `usage`, which is not a zero"
+        );
+    }
+    assert!(
+        logged_total(totals()).get("sandbox").is_none(),
+        "no sandbox asked for, none written"
+    );
+}
+
+#[test]
+fn a_sandbox_that_fails_the_door_again_is_left_out_and_the_totals_are_logged() {
+    let mut nine = sandbox();
+    nine.usage = Some(vec![
+        nine.usage.clone().unwrap()[0];
+        MAX_SANDBOX_ENTRIES + 1
+    ]);
+    let logged = logged_total(totals_with(nine));
+    assert!(logged.get("sandbox").is_none(), "{logged}");
+    assert_eq!(logged["totals"][0]["model"], "glm-5.3", "{logged}");
+    // what the adapter said about a sandbox it refused is for the application to count: the core
+    // logs the totals alone
+    let mut refused = totals();
+    refused.sandbox_rejected = Some(UsageInvalid::BadCount);
+    let logged = logged_total(refused);
+    assert!(logged.get("sandbox").is_none(), "{logged}");
+}
+
+#[test]
+fn an_asked_agents_sandbox_is_logged_under_its_ask() {
+    let mut ask_totals = totals_with(sandbox());
+    ask_totals.task = "ask-task".into();
+    let (_, cmds) = feed(
+        with_ask(Working),
+        &[ask_usage(1, 1, UsageUpdate::Total(ask_totals))],
+    );
+    let [EventBody::ModelUsageTotal(t)] = bodies(&cmds).as_slice() else {
+        panic!("{cmds:?}")
+    };
+    assert_eq!(t.path, vec!["ask-1".to_owned()]);
+    assert_eq!(t.sandbox, Some(sandbox()));
+}
+
+#[test]
+fn a_total_logged_before_the_sandbox_existed_reads_from_the_log() {
+    // the `data` of a `model_usage_total` as every row written before the member holds it
+    let old = serde_json::json!({
+        "job": 1, "agent": "coder", "task": "t1",
+        "totals": [{"provider": "openai", "model": "glm-5.3", "inputTokens": 5,
+                    "outputTokens": 2, "totalTokens": 7}]
+    });
+    let EventBody::ModelUsageTotal(d) =
+        EventBody::from_parts(EventKind::ModelUsageTotal, old.clone()).unwrap()
+    else {
+        panic!("a model_usage_total")
+    };
+    assert_eq!(d.sandbox, None);
+    assert_eq!(d.totals[0].tokens.total_tokens, 7);
+    // and it is written back as it was, with no member added
+    assert_eq!(EventBody::ModelUsageTotal(d).data_value(), old);
+}
+
+#[test]
+fn a_total_with_a_member_this_build_lacks_still_reads() {
+    // a replica rolled out before the one that writes a newer member must read its events
+    let newer = serde_json::json!({
+        "job": 1, "agent": "coder", "task": "t1",
+        "totals": [{"model": "m", "inputTokens": 5, "outputTokens": 2, "totalTokens": 7}],
+        "sandbox": {"environment": "kubernetes", "usage": [], "node": "n1"},
+        "somethingNewer": {"a": 1}
+    });
+    let EventBody::ModelUsageTotal(d) =
+        EventBody::from_parts(EventKind::ModelUsageTotal, newer).unwrap()
+    else {
+        panic!("a model_usage_total")
+    };
+    assert_eq!(d.sandbox.unwrap().usage, Some(vec![]));
 }
 
 #[test]

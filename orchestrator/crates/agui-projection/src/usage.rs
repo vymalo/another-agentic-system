@@ -257,6 +257,7 @@ mod tests {
                     tokens: counts(*input, *output),
                 })
                 .collect(),
+            sandbox: None,
         }
     }
 

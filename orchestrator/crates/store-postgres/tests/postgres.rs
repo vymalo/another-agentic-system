@@ -3589,6 +3589,16 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
                 ..orch_core::TokenCounts::default()
             },
         }],
+        // the sandbox member (usage/v1, adam-rs ADR 0043) is part of `data`: no column, no migration
+        sandbox: Some(orch_core::SandboxUsage {
+            environment: orch_core::SandboxEnvironment::Kubernetes,
+            usage: Some(vec![orch_core::SandboxEntry {
+                cpu_millis: Some(250),
+                memory_bytes: Some(536_870_912),
+                commands: 12,
+                milliseconds: 81_234,
+            }]),
+        }),
     });
     let insert = |seq: i64, kind: &'static str, data: String| {
         sqlx::query(
@@ -3617,16 +3627,26 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
         .execute(store.pool())
         .await
         .unwrap();
+    // a total written before the sandbox member existed has none, and reads
+    let old_total = r#"{"job":1,"agent":"coder","task":"t0","totals":[{"provider":"openai","model":"glm-5.3","inputTokens":5,"outputTokens":2,"totalTokens":7}]}"#;
+    insert(4, "model_usage_total", old_total.into())
+        .execute(store.pool())
+        .await
+        .unwrap();
     assert!(
-        insert(4, "nonsense", "{}".into())
+        insert(5, "nonsense", "{}".into())
             .execute(store.pool())
             .await
             .is_err(),
         "the constraint still names the kinds"
     );
     let events = store.list_events(thread, 0, 10).await.unwrap();
-    assert_eq!(events.len(), 3, "the old event is untouched");
+    assert_eq!(events.len(), 4, "the old event is untouched");
     assert!(matches!(events[0].body, EventBody::UserMessage(_)));
     assert_eq!(events[1].body, call);
-    assert_eq!(events[2].body, totals);
+    assert_eq!(events[2].body, totals, "the sandbox survives the JSONB");
+    let EventBody::ModelUsageTotal(old) = &events[3].body else {
+        panic!("{:?}", events[3].body)
+    };
+    assert_eq!((old.task.as_str(), old.sandbox.as_ref()), ("t0", None));
 }

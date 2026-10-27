@@ -625,6 +625,12 @@ async fn the_usage_mock_reports_each_call_once_and_the_totals_are_read_from_the_
     assert_eq!(total["totals"][0]["model"], "glm-5.3");
     assert_eq!(total["totals"][0]["totalTokens"], 3800);
     assert_eq!(total["totals"][1]["model"], "glm-5.3-mini");
+    // the time the run's commands used in a pod (usage/v1 `sandbox`, adam-rs ADR 0043), logged beside the totals
+    assert_eq!(
+        total["sandbox"],
+        serde_json::json!({"environment": "kubernetes", "usage": [
+            {"cpuMillis": 250, "memoryBytes": 536_870_912_u64, "commands": 12, "milliseconds": 81_234}]})
+    );
 
     // the viewer: a CUSTOM per call, the sub-agent's under its subagent, the totals, the run's usage
     let mut viewer = rig.chat.agui_connect(&id, None, false).await;
@@ -655,6 +661,12 @@ async fn the_usage_mock_reports_each_call_once_and_the_totals_are_read_from_the_
             .count(),
         1
     );
+    // the sandbox rides the `CUSTOM`; the run's `usage` is the tokens alone
+    let said = frames
+        .iter()
+        .find(|f| f.event["type"] == "CUSTOM" && f.event["name"] == "vymalo.usage_total")
+        .unwrap();
+    assert_eq!(said.event["value"]["sandbox"], total["sandbox"]);
     let finished = frames.last().unwrap();
     assert_eq!(finished.event["usage"], total["totals"]);
 

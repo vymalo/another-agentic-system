@@ -44,6 +44,7 @@ pub use uploads::{
     UploadSlot,
 };
 mod usage;
+pub(crate) use usage::sandbox_rejection;
 pub use usage::{UsageDrop, UsageStats};
 
 use crate::dispatcher::FileLimits;

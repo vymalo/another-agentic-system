@@ -13,16 +13,19 @@
 # The agent is `mock-usage` (dev/agents.yaml), a WireMock A2A agent (dev/wiremock/usage, ours): its card lists usage/v1 and steps/v1;
 # every request streams three call reports in the event metadata of `working` updates with no message (`c1`, the agent's own; `c2`
 # under the sub-agent step `tool:c2`, its numbers written as doubles; `c1` again, a replay; `c3`), then `completed` with no totals on the
-# update; `GetTask` answers the task with its totals in its own metadata (glm-5.3: 3600 in, 200 out; glm-5.3-mini: 600 in, 40 out). The
-# plain agent is `mock-coder` (`mock-agent`), whose card does not list the extension.
+# update; `GetTask` answers the task with its totals in its own metadata (glm-5.3: 3600 in, 200 out; glm-5.3-mini: 600 in, 40 out) and,
+# beside them, a `sandbox` (the time the run's commands used in a pod, adam-rs ADR 0043: one kubernetes entry of 250 millicores, 512 MiB,
+# 12 commands, 81 234 ms). The plain agent is `mock-coder` (`mock-agent`), whose card does not list the extension.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * the thread of `mock-usage` ends `done`; its log holds three `model_usage` (`c1`, `c2`, `c3`: the replayed `c1` once), the agent
 #     `mock-usage` on each, `c2`'s path the sub-agent step (`<task>/tool:c2`) and the others' empty, `c2`'s whole doubles as integers, and one
-#     `model_usage_total` with the task's two models, after the calls and before `completed`; each holds labels and numbers only;
+#     `model_usage_total` with the task's two models and the task's `sandbox` exactly as the mock keeps it, after the calls and before
+#     `completed`; each holds labels and numbers only;
 #   * its AG-UI stream has three `CUSTOM` `vymalo.usage` (`by` the agent, the sub-agent `Researcher` under its subagent `sub-step-<seq>`,
-#     the agent), one `vymalo.usage_total`, and the `RUN_FINISHED.usage` of the run that said them equal to the task's totals; no other
-#     run says usage (the runs of its own that the orchestrator's title and description open after the job spent nothing);
+#     the agent), one `vymalo.usage_total` that carries the same `sandbox`, and the `RUN_FINISHED.usage` of the run that said them equal to
+#     the task's totals, the tokens alone; no other run says usage (the runs of its own that the orchestrator's title and description open
+#     after the job spent nothing);
 #   * `mock-usage` was asked for the extension (the `A2A-Extensions` header and `message.extensions`) and its task was read (`GetTask`);
 #   * the thread of `mock-coder` ends `done` with no `model_usage` or `model_usage_total`, no `vymalo.usage` and no `RUN_FINISHED.usage`,
 #     and `mock-agent` was asked for no usage (neither the header nor the message names it).
@@ -171,9 +174,13 @@ expect "numbers sent as whole doubles are integers: c2 600 in, 40 out, 640, wind
 expect "the totals: the task's two models, read from the task" \
   "$(jq -r '[.events[] | select(.kind == "model_usage_total") | .data | "\(.agent)/\(.task)/" + (.totals | map("\(.model):\(.inputTokens):\(.outputTokens)") | join(" "))] | join(",")' "$tmp/usage.export.json")" \
   "mock-usage/$task/glm-5.3:3600:200 glm-5.3-mini:600:40"
+sandbox='{"environment":"kubernetes","usage":[{"commands":12,"cpuMillis":250,"memoryBytes":536870912,"milliseconds":81234}]}'
+expect "the totals carry the sandbox the task kept beside them: a pod, one shape, 12 commands, 81234 ms (usage/v1, adam-rs ADR 0043)" \
+  "$(jq -cS '[.events[] | select(.kind == "model_usage_total") | .data.sandbox] | first // null' "$tmp/usage.export.json")" \
+  "$sandbox"
 expect "a usage event holds labels and numbers only (no text of the conversation)" \
   "$(jq -r '[.events[] | select(.kind == "model_usage" or .kind == "model_usage_total") | .data | paths(scalars) | map(tostring) | join(".")
-     | select(test("^(job|agent|task|call|path\\.[0-9]+|provider|model|inputTokens|outputTokens|totalTokens|reasoningTokens|cachedInputTokens|cacheWriteInputTokens|contextWindow|totals\\.[0-9]+\\.(provider|model|inputTokens|outputTokens|totalTokens|reasoningTokens|cachedInputTokens|cacheWriteInputTokens))$") | not)] | join(",")' "$tmp/usage.export.json")" \
+     | select(test("^(job|agent|task|call|path\\.[0-9]+|provider|model|inputTokens|outputTokens|totalTokens|reasoningTokens|cachedInputTokens|cacheWriteInputTokens|contextWindow|totals\\.[0-9]+\\.(provider|model|inputTokens|outputTokens|totalTokens|reasoningTokens|cachedInputTokens|cacheWriteInputTokens)|sandbox\\.environment|sandbox\\.usage\\.[0-9]+\\.(cpuMillis|memoryBytes|commands|milliseconds))$") | not)] | join(",")' "$tmp/usage.export.json")" \
   ""
 
 frames "$thread" "$tmp/usage.frames.json"
@@ -185,6 +192,9 @@ expect "AG-UI: the sub-agent's call is said under its subagent" \
   "true"
 expect "AG-UI: one vymalo.usage_total" \
   "$(jq -r '[.[] | select(.type == "CUSTOM" and .name == "vymalo.usage_total")] | length' "$tmp/usage.frames.json")" "1"
+expect "AG-UI: the vymalo.usage_total carries the same sandbox" \
+  "$(jq -cS '[.[] | select(.type == "CUSTOM" and .name == "vymalo.usage_total") | .value.sandbox] | first // null' "$tmp/usage.frames.json")" \
+  "$sandbox"
 # The run that said the usage is the job's. It is not always the last: when the job is done the orchestrator's own title and
 # description land as runs of their own (`thread_titled`, `thread_described`), which spent nothing and say no usage.
 expect "AG-UI: the RUN_FINISHED of the run that said the usage has the task's totals" \
@@ -195,6 +205,8 @@ expect "AG-UI: the RUN_FINISHED of the run that said the usage has the task's to
        else . end)
      | .ends[.said // ""] // [] | map("\(.model):\(.inputTokens):\(.outputTokens):\(.totalTokens)") | join(" ")' "$tmp/usage.frames.json")" \
   "glm-5.3:3600:200:3800 glm-5.3-mini:600:40:640"
+expect "AG-UI: RUN_FINISHED.usage is AG-UI's TokenUsage alone: no entry has a sandbox" \
+  "$(jq -r '[.[] | select(.type == "RUN_FINISHED") | (.usage // [])[] | has("sandbox")] | any' "$tmp/usage.frames.json")" "false"
 expect "AG-UI: no other run says usage (a title's or a description's run of its own spent nothing)" \
   "$(jq -r '[.[] | select(.type == "RUN_FINISHED" and has("usage"))] | length' "$tmp/usage.frames.json")" "1"
 asked=$(activations "$usage" "$nonce")

@@ -195,6 +195,75 @@ async fn a_report_that_breaks_the_contract_is_rejected_and_the_turn_goes_on() {
     );
 }
 
+/// The totals envelope of a stream: the task's totals as the adapter read them from the task.
+fn totals_of(envs: &[AgentEnvelope]) -> orch_core::UsageTotals {
+    envs.iter()
+        .find_map(|e| match &e.update {
+            Some(AgentUpdate::Usage(UsageUpdate::Total(t))) => Some(t.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no totals in {envs:?}"))
+}
+
+#[tokio::test]
+async fn the_sandbox_the_task_keeps_beside_its_totals_is_read_with_them() {
+    use orch_core::{SandboxEntry, SandboxEnvironment, SandboxUsage};
+    let agent = agent(&[USAGE_EXTENSION]).await;
+    let ep = agent.endpoint("coder", None);
+    let envs = drain(
+        client()
+            .send_stream(request(&ep, "usage-sandbox"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let totals = totals_of(&envs);
+    assert_eq!(totals.totals.len(), 2);
+    assert_eq!(
+        totals.sandbox,
+        Some(SandboxUsage {
+            environment: SandboxEnvironment::Kubernetes,
+            usage: Some(vec![SandboxEntry {
+                cpu_millis: Some(250),
+                memory_bytes: Some(536_870_912),
+                commands: 12,
+                milliseconds: 81_234,
+            }]),
+        })
+    );
+    assert_eq!(totals.sandbox_rejected, None);
+}
+
+#[tokio::test]
+async fn a_sandbox_that_breaks_the_contract_leaves_the_totals_standing() {
+    let agent = agent(&[USAGE_EXTENSION]).await;
+    let ep = agent.endpoint("coder", None);
+    let envs = drain(
+        client()
+            .send_stream(request(&ep, "usage-sandbox-bad"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    // no report is rejected as a whole: the turn has its totals and then its end
+    assert_eq!(
+        story(&envs),
+        [
+            "status Working",
+            "call c1 -",
+            "status Working",
+            "message",
+            "total 1",
+            "status Completed"
+        ],
+        "{envs:?}"
+    );
+    let totals = totals_of(&envs);
+    assert_eq!(totals.totals[0].tokens.total_tokens, 3800);
+    assert_eq!(totals.sandbox, None);
+    assert_eq!(totals.sandbox_rejected, Some(UsageInvalid::BadCount));
+}
+
 #[tokio::test]
 async fn a_resubscribe_activates_it_when_the_card_lists_it() {
     let fake = agent(&[USAGE_EXTENSION]).await;

@@ -220,7 +220,10 @@ struct Shared {
 /// - `usage`: `working`, then the tokens of its model calls (`usage/v1`, ADR 0056) as an adapter
 ///   reports them: `c1` (the agent's own), a sub-agent step `Researcher` (`tool:call_1`), `c2` under it,
 ///   `c2` again (a replay, under the same key), the step's end, a report that broke the contract
-///   (`AgentUpdate::UsageRejected`), the task's totals, an artifact `echo`, `completed`;
+///   (`AgentUpdate::UsageRejected`), the task's totals with a `sandbox` (a pod of one shape, 12 commands,
+///   81 234 ms), an artifact `echo`, `completed`;
+/// - `usage-sandbox-bad`: `working`, then the task's totals whose `sandbox` the adapter refused
+///   (`UsageTotals::sandbox_rejected`; the tokens are kept), `completed`;
 /// - `stream`: `working`, then a reply as pieces of live text ([`STREAM_PIECES`], a short pause
 ///   between them, the last one `Last`; `text-stream/v1`, ADR 0027), then the whole text stated
 ///   under the stream's id ([`stream_id`]) as an agent message, then `completed` with it as its
@@ -962,9 +965,47 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
                             ..orch_core::TokenCounts::default()
                         },
                     }],
+                    sandbox: Some(orch_core::SandboxUsage {
+                        environment: orch_core::SandboxEnvironment::Kubernetes,
+                        usage: Some(vec![orch_core::SandboxEntry {
+                            cpu_millis: Some(250),
+                            memory_bytes: Some(536_870_912),
+                            commands: 12,
+                            milliseconds: 81_234,
+                        }]),
+                    }),
+                    sandbox_rejected: None,
                 }),
             );
             shared.push_artifact(&task, "echo", format!("echo: {text}"));
+            shared.push_status(&task, Completed, None);
+        }
+        "usage-sandbox-bad" => {
+            // the totals of a task whose `sandbox` member broke the contract: the adapter read the
+            // tokens, left the sandbox out and said why (`UsageTotals::sandbox_rejected`)
+            shared.push(
+                &task,
+                None,
+                None,
+                IdemKey::Task(format!("a2a:{task}:usage-total")),
+                Some(AgentUpdate::Usage(orch_core::UsageUpdate::Total(
+                    orch_core::UsageTotals {
+                        task: task.clone(),
+                        totals: vec![orch_core::ModelTokens {
+                            provider: Some("openai".to_owned()),
+                            model: "glm-5.3".to_owned(),
+                            tokens: orch_core::TokenCounts {
+                                input_tokens: 1300,
+                                output_tokens: 20,
+                                total_tokens: 1320,
+                                ..orch_core::TokenCounts::default()
+                            },
+                        }],
+                        sandbox: None,
+                        sandbox_rejected: Some(orch_core::UsageInvalid::BadCount),
+                    },
+                ))),
+            );
             shared.push_status(&task, Completed, None);
         }
         "stream" => {
