@@ -11,6 +11,14 @@ pub struct UsageBackfill {
     pub threads: u32,
     /// Usage events folded in.
     pub events: u64,
+    /// Threads left alone because somebody held their lock for longer than the page waited for it.
+    /// They are not gone through: run the backfill again (the commit that held the lock, or the next
+    /// one, catches the thread up as well).
+    pub skipped: u32,
+    /// Rows of the ledger made to name no thread because the thread they named no longer exists: an
+    /// older build erased it without clearing the rows. Only the first page (`after` of `None`)
+    /// looks for them.
+    pub detached: u64,
     /// Where the next page starts (pass it as `after`); `None` when the page was the last one.
     pub next: Option<ThreadId>,
 }
@@ -56,6 +64,11 @@ pub trait UsageLedger: Send + Sync + 'static {
     /// not folded, so **running it again changes nothing** and a thread the service has written to
     /// since is caught up as the next commit would catch it up. Events a fork copied from its parent
     /// are not folded.
+    ///
+    /// The first page (`after` of `None`) also detaches the rows of threads that no longer exist, which
+    /// an older build left naming them ([`UsageBackfill::detached`]). A store that can wait for a
+    /// thread's lock does not wait for long: a thread it cannot lock is skipped and counted
+    /// ([`UsageBackfill::skipped`]), and a later call folds it in.
     ///
     /// Call it with the `next` of the page before until `next` is `None`.
     fn backfill(

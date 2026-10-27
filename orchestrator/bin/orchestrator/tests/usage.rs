@@ -281,6 +281,11 @@ async fn it_folds_in_the_logs_the_ledger_has_not_been_through_and_a_second_run_f
     assert_eq!(json["threads"], 3);
     assert_eq!(json["events"], 3);
     assert_eq!(json["pages"], 2, "three threads in pages of two");
+    assert_eq!(
+        (json["skipped"].as_u64(), json["detached"].as_u64()),
+        (Some(0), Some(0)),
+        "no thread was locked and no row named an erased thread"
+    );
     assert_eq!(store.month(&alice, month).await.unwrap(), wanted);
 
     // and a second run finds nothing to do

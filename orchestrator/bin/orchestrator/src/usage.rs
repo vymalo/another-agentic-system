@@ -22,6 +22,7 @@
 //! | `2` | a usage error (clap) |
 //! | `69` | the database could not be reached or failed; run it again, it resumes where the ledger is |
 //! | `70` | the history of the store's migrations does not match this build, or another internal error |
+//! | `75` | nothing failed, but some threads were left alone because their lock was held (`skipped` in the report, `complete: false`): run it again |
 //! | `78` | the configuration (no file, no `database.url`) |
 
 use std::process::ExitCode;
@@ -58,10 +59,14 @@ pub enum UsageCommand {
     /// was counted in the parent); the usage of a thread that was erased before this ran is not in
     /// the log any more and cannot be recovered.
     ///
+    /// Waits at most 5 seconds for a thread's lock: a thread whose lock is held longer is skipped and
+    /// counted (`skipped`), and a later run folds it in. The first page also makes the rows of threads
+    /// that an older build erased name no thread (`detached`).
+    ///
     /// Reads the configuration file (ORCH_CONFIG_FILE or --config), but only database.url. Applies
     /// the store's migrations, then folds. Logs go to stderr; stdout is one line of JSON. Exit 0:
     /// the ledger has been through every thread's log. 69: the database failed, run it again;
-    /// 70: an internal error; 78: the configuration.
+    /// 70: an internal error; 75: threads were skipped, run it again; 78: the configuration.
     Backfill(BackfillArgs),
 }
 
@@ -76,12 +81,19 @@ pub struct BackfillArgs {
 /// The connections the run holds: it works one thread at a time.
 const CONNECTIONS: u32 = 2;
 
+/// sysexits `EX_TEMPFAIL`: a temporary failure, run it again.
+const EX_TEMPFAIL: u8 = 75;
+
 /// What a run did, in total.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Totals {
     pub pages: u64,
     pub threads: u64,
     pub events: u64,
+    /// Threads left alone because their lock was held: not gone through.
+    pub skipped: u64,
+    /// Rows made to name no thread because an older build erased theirs.
+    pub detached: u64,
 }
 
 /// Runs the command and returns the exit code. Usage errors exit 2 through clap.
@@ -107,15 +119,27 @@ pub async fn run_command(command: UsageArgs, args: Args, matches: &ArgMatches) -
 
     match run(loaded.database_url.expose_secret(), backfill.page).await {
         Ok(totals) => {
-            tracing::info!(
-                pages = totals.pages,
-                threads = totals.threads,
-                events = totals.events,
-                "the usage ledger has been through every thread's log"
-            );
+            if totals.skipped == 0 {
+                tracing::info!(
+                    pages = totals.pages,
+                    threads = totals.threads,
+                    events = totals.events,
+                    detached = totals.detached,
+                    "the usage ledger has been through every thread's log"
+                );
+            } else {
+                tracing::warn!(
+                    pages = totals.pages,
+                    threads = totals.threads,
+                    events = totals.events,
+                    skipped = totals.skipped,
+                    detached = totals.detached,
+                    "threads were skipped because their lock was held: run the command again"
+                );
+            }
             // after the last log line, so that the report is the last line of a log that merges both streams
             println!("{}", summary(&totals));
-            ExitCode::SUCCESS
+            ExitCode::from(exit_code(&totals))
         }
         Err(e) => {
             // the error's text only: the lower error is the driver's, and a connection error can
@@ -138,10 +162,14 @@ async fn run(database_url: &str, page: u32) -> Result<Totals, StoreError> {
             totals.pages += 1;
             totals.threads += u64::from(done.threads);
             totals.events += done.events;
+            totals.skipped += u64::from(done.skipped);
+            totals.detached += done.detached;
             tracing::info!(
                 page = totals.pages,
                 threads = done.threads,
                 events = done.events,
+                skipped = done.skipped,
+                detached = done.detached,
                 "usage ledger: a page of threads gone through"
             );
             match done.next {
@@ -153,6 +181,13 @@ async fn run(database_url: &str, page: u32) -> Result<Totals, StoreError> {
     .await;
     store.pool().close().await;
     outcome
+}
+
+/// The exit code of a run that got to a report: `0` when it went through every thread, `75` when it
+/// left some alone because somebody held their lock (sysexits `EX_TEMPFAIL`, as `secrets rewrap`
+/// uses it): nothing failed, run it again.
+pub fn exit_code(totals: &Totals) -> u8 {
+    if totals.skipped == 0 { 0 } else { EX_TEMPFAIL }
 }
 
 /// The exit code of a run that did not get to a report: `69` for a database that is down or
@@ -173,12 +208,16 @@ pub fn summary(totals: &Totals) -> String {
         pages: u64,
         threads: u64,
         events: u64,
+        skipped: u64,
+        detached: u64,
     }
     serde_json::to_string(&Summary {
-        complete: true,
+        complete: totals.skipped == 0,
         pages: totals.pages,
         threads: totals.threads,
         events: totals.events,
+        skipped: totals.skipped,
+        detached: totals.detached,
     })
     .unwrap_or_else(|_| "{}".to_owned())
 }
@@ -294,6 +333,7 @@ mod tests {
             "one line of JSON",
             "Idempotent",
             "69",
+            "75",
             "70",
             "78",
         ] {
@@ -321,11 +361,29 @@ mod tests {
             pages: 3,
             threads: 250,
             events: 4_100,
+            skipped: 0,
+            detached: 2,
         });
         assert_eq!(
             line,
-            r#"{"complete":true,"pages":3,"threads":250,"events":4100}"#
+            r#"{"complete":true,"pages":3,"threads":250,"events":4100,"skipped":0,"detached":2}"#
         );
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn a_run_that_skipped_a_locked_thread_is_not_complete_and_exits_75_run_it_again() {
+        let done = Totals {
+            pages: 1,
+            threads: 4,
+            events: 9,
+            ..Totals::default()
+        };
+        assert_eq!(exit_code(&done), 0);
+        let skipped = Totals { skipped: 2, ..done };
+        assert_eq!(exit_code(&skipped), 75);
+        let line = summary(&skipped);
+        assert!(line.contains(r#""complete":false"#), "{line}");
+        assert!(line.contains(r#""skipped":2"#), "{line}");
     }
 }

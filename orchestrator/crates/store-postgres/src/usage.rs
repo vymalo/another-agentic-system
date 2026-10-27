@@ -681,6 +681,19 @@ impl UsageLedger for PgStore {
         limit: u32,
     ) -> Result<UsageBackfill, StoreError> {
         let limit = limit.max(1);
+        let mut page = UsageBackfill::default();
+        if after.is_none() {
+            // rows that name a thread an older build erased: that build deleted the thread and knew
+            // nothing of the ledger's `thread_id`
+            page.detached = sqlx::query(
+                "UPDATE usage_tasks SET thread_id = NULL WHERE thread_id IS NOT NULL \
+                 AND NOT EXISTS (SELECT 1 FROM threads t WHERE t.id = usage_tasks.thread_id)",
+            )
+            .execute(self.pool())
+            .await
+            .map_err(store_err)?
+            .rows_affected();
+        }
         // `GREATEST(usage_through, COALESCE(forked_at, 0))` is `orch_core::usage_counted_through` in
         // SQL: the page is chosen with it and each thread is judged again with the Rust function
         // under the thread's lock, so the two must say the same.
@@ -693,23 +706,37 @@ impl UsageLedger for PgStore {
         .fetch_all(self.pool())
         .await
         .map_err(store_err)?;
-        let mut page = UsageBackfill {
-            next: (due.len() == limit as usize)
-                .then(|| due.last().copied().map(ThreadId))
-                .flatten(),
-            ..UsageBackfill::default()
-        };
+        page.next = (due.len() == limit as usize)
+            .then(|| due.last().copied().map(ThreadId))
+            .flatten();
         for id in due {
             let mut tx = self.pool().begin().await.map_err(store_err)?;
+            // Never wait long for a thread: a commit that holds the lock for seconds is a thread that
+            // is being written to, and its own commits catch it up. The statement below is the only
+            // one of the transaction that waits on a lock another transaction can hold: the rows of
+            // the ledger are written under this lock.
+            sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+                .bind(BACKFILL_LOCK_TIMEOUT)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_err)?;
             // the lock every commit of the thread takes: the page and the service can run together
-            let locked = sqlx::query(
+            let locked = match sqlx::query(
                 "SELECT owner, last_seq, usage_through, forked_at FROM threads \
                  WHERE id = $1 FOR UPDATE",
             )
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(store_err)?;
+            {
+                Ok(locked) => locked,
+                Err(e) if is_lock_timeout(&e) => {
+                    tracing::warn!(thread = %ThreadId(id), "usage backfill: the thread is locked and is left for a later run");
+                    page.skipped += 1;
+                    continue; // the transaction is aborted and rolled back when `tx` drops
+                }
+                Err(e) => return Err(store_err(e)),
+            };
             let Some(locked) = locked else {
                 continue; // erased since
             };
@@ -734,4 +761,14 @@ impl UsageLedger for PgStore {
         }
         Ok(page)
     }
+}
+
+/// How long the backfill waits for a thread's lock before it leaves the thread for a later run.
+const BACKFILL_LOCK_TIMEOUT: &str = "5s";
+
+/// Whether the error is Postgres' `lock_not_available` (`55P03`), what `lock_timeout` raises.
+fn is_lock_timeout(err: &sqlx::Error) -> bool {
+    err.as_database_error()
+        .and_then(|db| db.code())
+        .is_some_and(|code| code == "55P03")
 }

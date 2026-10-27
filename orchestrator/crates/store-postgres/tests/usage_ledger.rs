@@ -878,3 +878,87 @@ async fn insert_environment(store: &PgStore, word: &str, n: usize) -> Result<(),
     .await
     .map(|_| ())
 }
+
+/// A thread whose row lock somebody holds for longer than the backfill waits (5 s) is skipped and
+/// counted, not waited for: the page goes on, and a later run folds the thread in.
+#[tokio::test]
+async fn a_thread_whose_lock_is_held_is_skipped_and_counted_and_a_later_run_folds_it_in() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (held, _) = open(&store, &alice(), vec![call("t1", "c1", counts(10, 2))]).await;
+    let (free, _) = open(&store, &alice(), vec![call("t2", "c1", counts(20, 3))]).await;
+    let both = store.month(&alice(), jan()).await.unwrap();
+    forget(&store).await;
+
+    let holder = db.pool("holder", 1).await;
+    let mut tx = holder.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM threads WHERE id = $1 FOR UPDATE")
+        .bind(held.0)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let page = store.backfill(None, 10).await.unwrap();
+    assert_eq!(
+        (page.threads, page.events, page.skipped, page.next),
+        (1, 1, 1, None),
+        "the free thread was gone through, the held one skipped"
+    );
+    assert_eq!(
+        through(&store, held).await.0,
+        0,
+        "the held thread is as it was"
+    );
+    assert_eq!(through(&store, free).await.0, 2);
+    assert_eq!(store.month(&alice(), jan()).await.unwrap().tasks, 1);
+
+    tx.rollback().await.unwrap();
+    let later = store.backfill(None, 10).await.unwrap();
+    assert_eq!(
+        (later.threads, later.events, later.skipped),
+        (1, 1, 0),
+        "a later run picks the skipped thread up"
+    );
+    assert_eq!(store.month(&alice(), jan()).await.unwrap(), both);
+}
+
+/// A build that does not know the ledger erases a thread without clearing the `thread_id` of its
+/// rows. The first page of the backfill makes them name no thread, as the erase of this build does.
+#[tokio::test]
+async fn rows_of_a_thread_an_older_build_erased_are_detached_by_the_backfill() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (gone, _) = open(&store, &alice(), vec![total("t1", vec![glm(10, 2)], None)]).await;
+    let (kept, _) = open(&store, &alice(), vec![total("t1", vec![glm(1, 1)], None)]).await;
+    let before = store.month(&alice(), jan()).await.unwrap();
+    sqlx::query("DELETE FROM threads WHERE id = $1")
+        .bind(gone.0)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.thread_rows(&alice(), gone).await.unwrap().len(),
+        1,
+        "the older build left the row naming the erased thread"
+    );
+
+    let page = store.backfill(None, 10).await.unwrap();
+    assert_eq!((page.threads, page.events, page.detached), (0, 0, 1));
+    assert!(store.thread_rows(&alice(), gone).await.unwrap().is_empty());
+    assert_eq!(store.thread_rows(&alice(), kept).await.unwrap().len(), 1);
+    assert_eq!(
+        scalar(
+            &store,
+            "SELECT count(*) FROM usage_tasks WHERE thread_id IS NULL"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        store.month(&alice(), jan()).await.unwrap(),
+        before,
+        "the usage stays"
+    );
+
+    let again = store.backfill(None, 10).await.unwrap();
+    assert_eq!((again.threads, again.detached), (0, 0));
+}
