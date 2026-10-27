@@ -35,7 +35,8 @@ pub use catalog::{UI_CATALOG_ID, integral_numbers, ui_catalog, with_ui_catalog};
 pub use fake::{
     Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases, REASONING_PIECES, STREAM_PIECES,
     USAGE_CALL_C1, USAGE_CALL_C2, USAGE_CALL_C3, VerifierScript, reasoning_id, reasoning_text,
-    stream_id, stream_text, usage_totals_entry,
+    stream_id, stream_text, usage_totals_entry, usage_totals_entry_bad_sandbox,
+    usage_totals_entry_with_sandbox,
 };
 pub use hostile::{HostileOptions, HostileToolServer};
 pub use instance::{Chat, TestInstance, fast_dispatcher, shape};

@@ -228,6 +228,8 @@ pub fn usage_update(task: &str, n: usize, step: Option<String>, total: bool) -> 
                 model: "m".to_owned(),
                 tokens,
             }],
+            sandbox: None,
+            sandbox_rejected: None,
         })
     } else {
         UsageUpdate::Call(UsageCall {

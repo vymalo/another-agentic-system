@@ -135,9 +135,10 @@ pub use ui_catalog::{
     UiCatalogData, UiCatalogLedger, UiCatalogRef, UiDelivery, canonical_json, catalog_digest,
 };
 pub use usage::{
-    MAX_TOKEN_COUNT, MAX_USAGE_CALLS_PER_JOB, MAX_USAGE_LABEL_BYTES, MAX_USAGE_TASK_BYTES,
-    MAX_USAGE_TOTALS, ModelTokens, ModelUsageData, ModelUsageTotalData, TokenCounts, UsageCall,
-    UsageInvalid, UsageLedger, UsageTotals, UsageUpdate,
+    MAX_SANDBOX_ENTRIES, MAX_TOKEN_COUNT, MAX_USAGE_CALLS_PER_JOB, MAX_USAGE_LABEL_BYTES,
+    MAX_USAGE_TASK_BYTES, MAX_USAGE_TOTALS, ModelTokens, ModelUsageData, ModelUsageTotalData,
+    SandboxEntry, SandboxEnvironment, SandboxUsage, TokenCounts, UsageCall, UsageInvalid,
+    UsageLedger, UsageTotals, UsageUpdate,
 };
 
 /// Timestamps are `jiff` instants everywhere (no `f64` time).
