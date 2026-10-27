@@ -676,7 +676,16 @@ impl<S: tracing::Subscriber> Layer<S> for Statements {
 }
 
 /// How many statements `work` sends to the database.
+///
+/// A scoped subscriber alone is not enough in a binary whose tests run on several threads: while
+/// only one subscriber exists, `tracing` decides whether a call site is of interest by the default of
+/// the thread that first reaches it, and a thread with none caches "never" for everybody. A global
+/// subscriber that records nothing makes it ask each thread's own default every time.
 async fn statements_of<F: std::future::Future>(work: F) -> (usize, F::Output) {
+    static GLOBAL: std::sync::Once = std::sync::Once::new();
+    GLOBAL.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+    });
     let counted = Arc::new(AtomicUsize::new(0));
     let subscriber = tracing_subscriber::registry().with(Statements(counted.clone()));
     let out = work.with_subscriber(subscriber).await;
