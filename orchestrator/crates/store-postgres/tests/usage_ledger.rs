@@ -813,3 +813,68 @@ async fn a_threads_rows_are_read_in_a_constant_number_of_statements() {
     assert!(cost[0] <= 6, "{cost:?}");
     assert_eq!(cost[0], cost[1], "{cost:?}");
 }
+
+/// Migration 0023 adds a column to `threads` with a default and no check, so Postgres does not scan
+/// the table under an exclusive lock, and a word for the sandbox environment is checked for its
+/// shape and not against the words of today's enum, so a variant added to it needs no migration.
+#[tokio::test]
+async fn the_migration_scans_no_table_and_a_new_sandbox_environment_needs_no_migration() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let checks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_constraint WHERE conrelid = 'threads'::regclass \
+         AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%usage_through%'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        checks, 0,
+        "a check on the new column of threads scans threads"
+    );
+
+    let long = "a".repeat(33);
+    for (n, word) in [
+        "kubernetes",
+        "local",
+        "devcontainer",
+        "docker_desktop",
+        "microvm-2",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        insert_environment(&store, word, n)
+            .await
+            .unwrap_or_else(|e| panic!("{word}: {e}"));
+    }
+    for (n, word) in [
+        "",
+        "Kubernetes",
+        "has space",
+        "9lives",
+        "semi;colon",
+        long.as_str(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            insert_environment(&store, word, 100 + n).await.is_err(),
+            "{word:?} is not the shape of a word"
+        );
+    }
+}
+
+/// A row of a task whose commands ran in `word`.
+async fn insert_environment(store: &PgStore, word: &str, n: usize) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO usage_tasks (owner, thread_id, agent, task, month, source, seq, \
+         sandbox_environment) VALUES ('a@b.c', NULL, 'coder', $2, '2026-01', 'total', 1, $1)",
+    )
+    .bind(word)
+    .bind(format!("t{n}"))
+    .execute(store.pool())
+    .await
+    .map(|_| ())
+}

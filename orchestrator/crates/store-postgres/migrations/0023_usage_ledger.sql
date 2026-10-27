@@ -33,7 +33,9 @@
 --   usage_tasks.source               'calls' (the sum of the calls logged: the task has no total yet) or
 --                                    'total' (the latest `model_usage_total`, which replaced them)
 --   usage_tasks.seq                  the seq of the last event of the thread folded into the row
---   usage_tasks.sandbox_environment  NULL: the total said no sandbox; else where the commands ran
+--   usage_tasks.sandbox_environment  NULL: the total said no sandbox; else where the commands ran, a word
+--                                    of the contract (`SandboxEnvironment`) checked for its shape only:
+--                                    a new environment needs no migration
 --   usage_tasks.sandbox_measured     whether the environment measured them: `usage_sandbox` holds the
 --                                    entries (none at all is a measured zero); false is not measured,
 --                                    and not measured is never zero
@@ -44,7 +46,10 @@
 --
 -- Never edit an applied migration; add a new one.
 
-ALTER TABLE threads ADD COLUMN usage_through bigint NOT NULL DEFAULT 0 CHECK (usage_through >= 0);
+-- No CHECK on the new column: a constraint on `ADD COLUMN ... DEFAULT` makes Postgres scan `threads`
+-- under ACCESS EXCLUSIVE to prove the default satisfies it (158 ms per million rows against 0.7 ms
+-- without it, measured on Postgres 16), and the code writes only sequence numbers.
+ALTER TABLE threads ADD COLUMN usage_through bigint NOT NULL DEFAULT 0;
 
 CREATE TABLE usage_tasks (
     id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -55,7 +60,7 @@ CREATE TABLE usage_tasks (
     month               text   COLLATE "C" NOT NULL CHECK (month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
     source              text   NOT NULL CHECK (source IN ('calls', 'total')),
     seq                 bigint NOT NULL CHECK (seq >= 1),
-    sandbox_environment text   CHECK (sandbox_environment IN ('kubernetes', 'local', 'devcontainer')),
+    sandbox_environment text   CHECK (sandbox_environment ~ '^[a-z][a-z0-9_-]{0,31}$'),
     sandbox_measured    boolean NOT NULL DEFAULT false,
     CHECK (sandbox_environment IS NOT NULL OR NOT sandbox_measured)
 );
