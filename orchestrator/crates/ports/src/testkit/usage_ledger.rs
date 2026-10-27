@@ -3,12 +3,14 @@
 //! The cases that play a log older than the ledger take a second argument, an `async fn(&S)` that
 //! makes the store forget its ledger (it empties it and marks no thread as gone through).
 
+use std::collections::BTreeMap;
+
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     Actor, AgentId, AgentTarget, Classify, ErrorClass, EventBody, ForkKind, ModelTokens,
     ModelUsageData, ModelUsageTotalData, SandboxEntry, SandboxEnvironment, SandboxShape,
     SandboxUsage, ThreadId, ThreadState, TokenCounts, UnmeasuredSandbox, UsageMonth,
-    UsageMonthTotals, UsageSource, UserId, UserMessageData,
+    UsageMonthTotals, UsageRow, UsageSource, UsageTaskKey, UserId, UserMessageData, usage_change,
 };
 use uuid::Uuid;
 
@@ -768,6 +770,219 @@ pub async fn a_commit_catches_up_with_the_log_the_ledger_has_not_been_through<S:
         (t1.source, t1.tokens.clone()),
         (UsageSource::Calls, vec![glm(60, 9)])
     );
+}
+
+/// A fork that a build without the ledger made and wrote to has a watermark of 0, and its log starts
+/// with the events it copied from its parent, which were counted there. The next commit to it must
+/// catch up from its cut: its own events are counted, the parent's are not counted again.
+pub async fn a_commit_to_a_fork_an_older_build_wrote_to_catches_up_from_its_cut<S: LogAndLedger>(
+    store: S,
+    forget: impl AsyncFnOnce(&S),
+) {
+    let v = open(&store, &alice(), 1).await;
+    append(
+        &store,
+        1,
+        v,
+        vec![
+            call("coder", "t1", "c1", 10, 2),
+            total("coder", "t1", vec![glm(12, 3)]),
+        ],
+    )
+    .await;
+    // the fork copies the whole log (cut 3: message, call, total) and goes on with a task of its own
+    let (fork, _) = store
+        .fork_thread(
+            new_thread(&alice(), 2),
+            ForkOrigin {
+                parent: thread_id(1),
+                cut: 3,
+                kind: ForkKind::Fork,
+            },
+            commit(Vec::new()),
+        )
+        .await
+        .unwrap();
+    let v2 = append(
+        &store,
+        2,
+        fork.version,
+        vec![call("coder", "t5", "c1", 5, 5)],
+    )
+    .await;
+    forget(&store).await;
+    assert_eq!(
+        month_of(&store, &alice(), jan()).await,
+        UsageMonthTotals::empty(jan()),
+        "the ledger forgot"
+    );
+
+    append(&store, 2, v2, vec![call("coder", "t5", "c2", 1, 1)]).await;
+    let totals = month_of(&store, &alice(), jan()).await;
+    assert_eq!(
+        (totals.tasks, totals.models),
+        (1, vec![glm(6, 6)]),
+        "the fork's own two calls, and not the parent's two events it copied"
+    );
+    let rows = store.thread_rows(&alice(), thread_id(2)).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key.task, "t5");
+    // the parent is as the ledger left it, until the backfill goes through it
+    assert!(
+        store
+            .thread_rows(&alice(), thread_id(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// One `model_usage` of `agent`'s task on `model` of `openai`.
+fn call_model(
+    when: Timestamp,
+    agent: &str,
+    task: &str,
+    id: &str,
+    model: &str,
+    tokens: TokenCounts,
+) -> NewEvent {
+    let mut event = call_at(when, agent, task, id, tokens);
+    if let EventBody::ModelUsage(data) = &mut event.body {
+        data.model = model.into();
+    }
+    event
+}
+
+/// A log of many usage events on a few tasks, with totals that change the set of models, replace
+/// the sandbox and clear it, and a month end in the middle, is folded in by one commit exactly as the
+/// events are folded one by one by the pure rule: the rows of the ledger are the rows
+/// [`UsageRow::fold`] gives, and so are the sums of both months. More events than a store reads in a
+/// page, so a catch-up that reads in pages is exercised too.
+pub async fn a_catch_up_of_many_events_gives_what_folding_them_one_by_one_gives<S: LogAndLedger>(
+    store: S,
+    forget: impl AsyncFnOnce(&S),
+) {
+    let kube = |entries| SandboxUsage {
+        environment: SandboxEnvironment::Kubernetes,
+        usage: Some(entries),
+    };
+    let entry = |cpu, commands, milliseconds| SandboxEntry {
+        cpu_millis: Some(cpu),
+        memory_bytes: Some(1 << 30),
+        commands,
+        milliseconds,
+    };
+    let jan_time = |i: u64| at(i64::try_from(i).unwrap());
+    // 21 days after 2026-01-15: February, after the month end
+    let feb_time = |i: u64| at(18 * 86_400 + 3 * 86_400 + i64::try_from(i).unwrap());
+    let mut events = Vec::new();
+    for i in 0..1100_u64 {
+        let when = if i < 800 { jan_time(i) } else { feb_time(i) };
+        let (agent, task) = match i % 4 {
+            0 => ("coder", "t1"),
+            1 => ("coder", "t2"),
+            2 => ("coder", "t3"),
+            _ => ("researcher", "t1"),
+        };
+        let model = if i % 2 == 0 { "glm" } else { "small" };
+        events.push(call_model(
+            when,
+            agent,
+            task,
+            &format!("c{i}"),
+            model,
+            counts(i % 7 + 1, i % 3),
+        ));
+        match i {
+            // the totals of coder/t1: a lone model, then two others with a measured sandbox, then one
+            // that was not measured, in February
+            299 => events.push(total_at(
+                jan_time(i),
+                "coder",
+                "t1",
+                vec![line(Some("openai"), "small", counts(100, 10))],
+                None,
+            )),
+            649 => events.push(total_at(
+                jan_time(i),
+                "coder",
+                "t1",
+                vec![glm(1000, 100), line(None, "tiny", counts(7, 7))],
+                Some(kube(vec![entry(250, 4, 400), entry(500, 1, 10)])),
+            )),
+            899 => events.push(total_at(
+                feb_time(i),
+                "coder",
+                "t1",
+                vec![glm(2000, 200)],
+                Some(SandboxUsage {
+                    environment: SandboxEnvironment::Local,
+                    usage: None,
+                }),
+            )),
+            // one total of coder/t3 in the middle: the calls after it change nothing
+            500 => events.push(total_at(
+                jan_time(i),
+                "coder",
+                "t3",
+                vec![glm(50, 5)],
+                Some(kube(vec![entry(250, 2, 80)])),
+            )),
+            _ => {}
+        }
+    }
+    open_with(&store, &alice(), 1, events).await;
+
+    // what the pure rule gives, applied one event at a time to the log as the store holds it
+    let log = store.list_events(thread_id(1), 0, 5000).await.unwrap();
+    assert!(log.len() > 1100, "the whole log is read");
+    let mut by_task: BTreeMap<UsageTaskKey, UsageRow> = BTreeMap::new();
+    for event in &log {
+        if let Some(change) = usage_change(&alice(), event)
+            && let Some(row) = UsageRow::fold(by_task.get(&change.key), &change)
+        {
+            by_task.insert(change.key.clone(), row);
+        }
+    }
+    let expected: Vec<UsageRow> = by_task.into_values().collect();
+    assert_eq!(expected.len(), 4);
+    let months = |rows: &[UsageRow]| {
+        let feb = UsageMonth::new(2026, 2).unwrap();
+        [jan(), feb].map(|m| UsageMonthTotals::of(m, rows.iter().filter(|r| r.month == m)))
+    };
+    let wanted = months(&expected);
+    assert!(
+        wanted.iter().all(|m| m.tasks > 0),
+        "both months hold tasks: {wanted:?}"
+    );
+
+    // the live path wrote them
+    assert_eq!(
+        store.thread_rows(&alice(), thread_id(1)).await.unwrap(),
+        expected
+    );
+
+    // and so does a commit that finds the log behind the ledger
+    forget(&store).await;
+    assert!(
+        store
+            .thread_rows(&alice(), thread_id(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let v = {
+        let thread = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+        thread.version
+    };
+    append(&store, 1, v, vec![message(&alice())]).await;
+    assert_eq!(
+        store.thread_rows(&alice(), thread_id(1)).await.unwrap(),
+        expected
+    );
+    let feb = UsageMonth::new(2026, 2).unwrap();
+    assert_eq!(month_of(&store, &alice(), jan()).await, wanted[0]);
+    assert_eq!(month_of(&store, &alice(), feb).await, wanted[1]);
 }
 
 /// The backfill folds in the usage the ledger has not been through, thread by thread in pages, and
