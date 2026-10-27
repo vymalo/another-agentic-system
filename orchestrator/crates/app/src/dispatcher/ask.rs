@@ -108,6 +108,7 @@ use orch_ports::{
 use tokio::time::MissedTickBehavior;
 
 use super::{DispatchError, Dispatcher, Done, env_state, plain_cap};
+use crate::app::sandbox_rejection;
 use crate::{AppError, ApplyOutcome, UsageDrop};
 
 /// The error text a row carries that an earlier build parked (it could not send asks yet): its
@@ -823,6 +824,7 @@ impl<P: Ports> Dispatcher<P> {
             _ => return Ok(()),
         };
         let call = matches!(usage, UsageUpdate::Call(_));
+        let sandbox_rejected = sandbox_rejection(&usage);
         let key = match &env.key {
             IdemKey::Task(k) => k.clone(),
             IdemKey::Turn(k) => format!("turn:{}:{k}", a.row.id),
@@ -844,6 +846,13 @@ impl<P: Ports> Dispatcher<P> {
                 if call && events.is_empty() {
                     self.app
                         .usage_dropped(UsageDrop::JobLimit, a.thread, "past the job's bound");
+                }
+                // the totals were logged without the sandbox the adapter refused
+                if let Some(why) = sandbox_rejected
+                    && !events.is_empty()
+                {
+                    self.app
+                        .usage_dropped(UsageDrop::SandboxInvalid, a.thread, why.as_str());
                 }
                 Ok(())
             }
