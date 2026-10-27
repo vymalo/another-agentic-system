@@ -15,7 +15,7 @@
 use orch_core::{
     ModelTokens, SandboxEntry, SandboxEnvironment, SandboxShape, SandboxUsage, ThreadId,
     TokenCounts, UnmeasuredSandbox, UsageChange, UsageMonth, UsageMonthTotals, UsageRow,
-    UsageSource, UsageTaskKey, UserId, usage_change,
+    UsageSource, UsageTaskKey, UserId, usage_change, usage_counted_through,
 };
 use orch_ports::{StoreError, UsageBackfill, UsageLedger};
 use sqlx::postgres::PgRow;
@@ -503,6 +503,9 @@ impl UsageLedger for PgStore {
         limit: u32,
     ) -> Result<UsageBackfill, StoreError> {
         let limit = limit.max(1);
+        // `GREATEST(usage_through, COALESCE(forked_at, 0))` is `orch_core::usage_counted_through` in
+        // SQL: the page is chosen with it and each thread is judged again with the Rust function
+        // under the thread's lock, so the two must say the same.
         let due: Vec<uuid::Uuid> = sqlx::query_scalar(
             "SELECT id FROM threads WHERE ($1::uuid IS NULL OR id > $1) \
              AND GREATEST(usage_through, COALESCE(forked_at, 0)) < last_seq ORDER BY id LIMIT $2",
@@ -536,7 +539,7 @@ impl UsageLedger for PgStore {
             let last_seq: i64 = locked.try_get("last_seq").map_err(store_err)?;
             let through: i64 = locked.try_get("usage_through").map_err(store_err)?;
             let cut: Option<i64> = locked.try_get("forked_at").map_err(store_err)?;
-            let from = through.max(cut.unwrap_or(0));
+            let from = usage_counted_through(through, cut);
             if from >= last_seq {
                 continue; // a commit caught it up since the page was read
             }

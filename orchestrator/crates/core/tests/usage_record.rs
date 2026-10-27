@@ -558,3 +558,17 @@ fn the_totals_of_a_month_sum_the_rows_per_model_and_per_sandbox_shape() {
         UsageMonthTotals::empty(UsageMonth::new(2026, 1).unwrap())
     );
 }
+
+/// The `seq` the ledger counts a thread through: the watermark, or a fork's cut when that is later
+/// (the events a fork copied were counted in its parent). One function for the commit, the backfill
+/// and the in-memory store; the Postgres due-selection computes the same in SQL.
+#[test]
+fn the_ledger_is_through_the_watermark_or_the_cut_of_a_fork_whichever_is_later() {
+    assert_eq!(usage_counted_through(0, None), 0);
+    assert_eq!(usage_counted_through(7, None), 7);
+    // a fork a build without the ledger made: its watermark is 0, its cut is what the parent counted
+    assert_eq!(usage_counted_through(0, Some(5)), 5);
+    assert_eq!(usage_counted_through(3, Some(5)), 5);
+    // a fork the ledger has been through: the watermark is past the cut
+    assert_eq!(usage_counted_through(9, Some(5)), 9);
+}

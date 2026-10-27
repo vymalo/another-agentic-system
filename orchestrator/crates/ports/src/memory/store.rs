@@ -6,7 +6,7 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, NONCE_LEN,
     RankError, ThreadId, ThreadRecord, ThreadShare, UsageChange, UsageMonth, UsageMonthTotals,
-    UsageRow, UsageTaskKey, UserId, between, spread, usage_change,
+    UsageRow, UsageTaskKey, UserId, between, spread, usage_change, usage_counted_through,
 };
 
 use crate::{
@@ -30,6 +30,13 @@ struct ThreadEntry {
     /// `usage_through` column of the Postgres store. A fork starts at its cut, because the events it
     /// copied were counted in its parent.
     usage_through: i64,
+}
+
+impl ThreadEntry {
+    /// The `seq` the ledger is through: the watermark, or the cut of a fork when that is later.
+    fn counted_through(&self) -> i64 {
+        usage_counted_through(self.usage_through, self.record.forked_from.map(|f| f.seq))
+    }
 }
 
 #[derive(Default)]
@@ -314,9 +321,7 @@ fn write_commit(
     // The usage ledger is written in the step that appends the events (ADR 0065). First what it has
     // not been through: events a build without the ledger appended, or none at all in steady state.
     let owner = entry.record.owner.clone();
-    let behind = entry
-        .usage_through
-        .max(entry.record.forked_from.map_or(0, |f| f.seq));
+    let behind = entry.counted_through();
     // the log is contiguous from seq 1, so the events above `behind` are those after that many
     inner.ledger.fold(
         &owner,
@@ -1716,14 +1721,12 @@ impl UsageLedger for MemoryStore {
     ) -> Result<UsageBackfill, StoreError> {
         let limit = limit.max(1) as usize;
         let mut inner = self.lock();
-        let behind = |e: &ThreadEntry| {
-            e.usage_through
-                .max(e.record.forked_from.map_or(0, |f| f.seq))
-        };
         let mut due: Vec<ThreadId> = inner
             .threads
             .iter()
-            .filter(|(id, e)| after.is_none_or(|a| **id > a) && behind(e) < e.record.last_seq)
+            .filter(|(id, e)| {
+                after.is_none_or(|a| **id > a) && e.counted_through() < e.record.last_seq
+            })
             .map(|(id, _)| *id)
             .collect();
         due.sort_unstable();
@@ -1739,7 +1742,7 @@ impl UsageLedger for MemoryStore {
             let Some(entry) = threads.get_mut(&id) else {
                 continue;
             };
-            let from = behind(entry);
+            let from = entry.counted_through();
             let usage = entry
                 .events
                 .iter()

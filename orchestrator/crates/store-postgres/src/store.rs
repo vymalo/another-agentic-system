@@ -5,7 +5,7 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, RankError, ThreadId,
-    ThreadRecord, UserId, WatchKey, between, spread,
+    ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
@@ -1569,7 +1569,7 @@ impl ThreadStore for PgStore {
         let owner = UserId::new(&locked.try_get::<String, _>("owner").map_err(store_err)?);
         let through: i64 = locked.try_get("usage_through").map_err(store_err)?;
         let cut: Option<i64> = locked.try_get("forked_at").map_err(store_err)?;
-        let behind = through.max(cut.unwrap_or(0));
+        let behind = usage_counted_through(through, cut);
         if behind < last_seq {
             usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
         }

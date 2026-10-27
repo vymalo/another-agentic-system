@@ -250,6 +250,19 @@ pub fn usage_change(owner: &UserId, event: &Event) -> Option<UsageChange> {
     })
 }
 
+/// The `seq` of a thread's log that the ledger is **through**: every usage event up to it is in the
+/// ledger or was counted in another thread. It is the thread's watermark (`usage_through`), or the
+/// cut of a fork (`forked_at`) when that is later: the events a fork copied from its parent were
+/// counted in the parent, so a fork that a build without the ledger made (watermark 0) must be
+/// caught up from its cut and never from the start.
+///
+/// The one place this is computed in Rust: the commit and the backfill of the Postgres store and the
+/// in-memory store call it. The Postgres due-selection computes the same in SQL
+/// (`GREATEST(usage_through, COALESCE(forked_at, 0))`, `UsageLedger::backfill`): change both together.
+pub fn usage_counted_through(usage_through: i64, forked_at: Option<i64>) -> i64 {
+    usage_through.max(forked_at.unwrap_or(0))
+}
+
 impl UsageRow {
     /// The row after `change` is applied to `current` (the row of `change.key`, none if the task has
     /// none yet): `None` when the change leaves the row as it is.

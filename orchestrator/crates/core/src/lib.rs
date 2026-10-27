@@ -144,6 +144,7 @@ pub use usage::{
 pub use usage_record::{
     MAX_LEDGER_COUNT, SandboxShape, UnmeasuredSandbox, UsageChange, UsageMonth, UsageMonthError,
     UsageMonthTotals, UsageRow, UsageSource, UsageTaskKey, UsageWhat, usage_change,
+    usage_counted_through,
 };
 
 /// Timestamps are `jiff` instants everywhere (no `f64` time).
