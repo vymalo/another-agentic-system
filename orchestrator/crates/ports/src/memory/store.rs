@@ -5,7 +5,8 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, NONCE_LEN,
-    RankError, ThreadId, ThreadRecord, ThreadShare, UserId, between, spread,
+    RankError, ThreadId, ThreadRecord, ThreadShare, UsageChange, UsageMonth, UsageMonthTotals,
+    UsageRow, UsageTaskKey, UserId, between, spread, usage_change,
 };
 
 use crate::{
@@ -13,6 +14,7 @@ use crate::{
     InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease, ListOrder, NewInbox,
     NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxStats, OutboxStatus,
     Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
+    UsageBackfill, UsageLedger,
 };
 
 struct StoredEvent {
@@ -24,6 +26,10 @@ struct ThreadEntry {
     record: ThreadRecord,
     events: Vec<StoredEvent>,
     binding: AgentBinding,
+    /// The usage ledger has folded every usage event of the log up to this `seq` (ADR 0065): the
+    /// `usage_through` column of the Postgres store. A fork starts at its cut, because the events it
+    /// copied were counted in its parent.
+    usage_through: i64,
 }
 
 #[derive(Default)]
@@ -45,6 +51,51 @@ struct Inner {
     fenced_commits: usize,
     /// The `thread_purges` table: threads deleted whose files are still to be erased.
     purges: Vec<Purge>,
+    /// The usage ledger (ADR 0065), written with the events and kept when a thread is erased.
+    ledger: Ledger,
+}
+
+/// The `usage_tasks` table of the Postgres store: the rows of the threads that exist, by task, and
+/// the rows of threads that were erased, which name no thread any more.
+#[derive(Default)]
+struct Ledger {
+    rows: HashMap<UsageTaskKey, UsageRow>,
+    erased: Vec<UsageRow>,
+}
+
+impl Ledger {
+    /// Applies one change to the row of its task.
+    fn apply(&mut self, change: &UsageChange) {
+        if let Some(row) = UsageRow::fold(self.rows.get(&change.key), change) {
+            self.rows.insert(change.key.clone(), row);
+        }
+    }
+
+    /// Folds the usage events among `events` that are above `after`, in the order given.
+    fn fold<'a>(
+        &mut self,
+        owner: &UserId,
+        events: impl IntoIterator<Item = &'a Event>,
+        after: i64,
+    ) {
+        for event in events.into_iter().filter(|e| e.seq > after) {
+            if let Some(change) = usage_change(owner, event) {
+                self.apply(&change);
+            }
+        }
+    }
+
+    /// The rows of `owner` in `month`, whether their thread exists or not.
+    fn month_of<'a>(
+        &'a self,
+        owner: &'a UserId,
+        month: UsageMonth,
+    ) -> impl Iterator<Item = &'a UsageRow> {
+        self.rows
+            .values()
+            .chain(&self.erased)
+            .filter(move |r| &r.owner == owner && r.month == month)
+    }
 }
 
 /// A row of `thread_purges` (ADR 0043).
@@ -260,6 +311,22 @@ fn write_commit(
     commit: Commit,
 ) -> Option<(ThreadRecord, Vec<Event>)> {
     let entry = inner.threads.get_mut(&thread)?;
+    // The usage ledger is written in the step that appends the events (ADR 0065). First what it has
+    // not been through: events a build without the ledger appended, or none at all in steady state.
+    let owner = entry.record.owner.clone();
+    let behind = entry
+        .usage_through
+        .max(entry.record.forked_from.map_or(0, |f| f.seq));
+    // the log is contiguous from seq 1, so the events above `behind` are those after that many
+    inner.ledger.fold(
+        &owner,
+        entry
+            .events
+            .iter()
+            .skip(usize::try_from(behind).unwrap_or(0))
+            .map(|s| &s.event),
+        behind,
+    );
     let mut stored = Vec::with_capacity(commit.events.len());
     for new in commit.events {
         entry.record.last_seq += 1;
@@ -274,8 +341,12 @@ fn write_commit(
             event: event.clone(),
             key: new.idempotency_key,
         });
+        if let Some(change) = usage_change(&owner, &event) {
+            inner.ledger.apply(&change);
+        }
         stored.push(event);
     }
+    entry.usage_through = entry.record.last_seq;
     entry.record.state = commit.new_state;
     if let Some(job) = commit.job {
         entry.record.job = job;
@@ -538,6 +609,8 @@ fn insert_thread(
             record,
             events: copied,
             binding,
+            // the events a fork copied were counted in its parent
+            usage_through: fork.map_or(0, |o| o.cut),
         },
     );
     let (mut record, events) =
@@ -830,6 +903,19 @@ fn delete(
         .retain(|r| !(r.source == TIMER_SOURCE && named_in(&r.payload)));
     inner.outbox.retain(|r| !doomed.contains(&r.thread_id));
     inner.watches.retain(|_, t| !doomed.contains(t));
+    // The usage of the threads that go stays, naming no thread (ADR 0065).
+    let named: Vec<UsageTaskKey> = inner
+        .ledger
+        .rows
+        .keys()
+        .filter(|k| doomed.contains(&k.thread))
+        .cloned()
+        .collect();
+    for key in named {
+        if let Some(row) = inner.ledger.rows.remove(&key) {
+            inner.ledger.erased.push(row);
+        }
+    }
     for id in threads.iter().map(|(id, _)| id).collect::<HashSet<_>>() {
         inner.threads.remove(id);
         if !inner.purges.iter().any(|p| p.thread == *id) {
@@ -1576,5 +1662,100 @@ impl ThreadStore for MemoryStore {
             .iter()
             .find(|r| r.source == source && r.idempotency_key == idempotency_key)
             .cloned())
+    }
+}
+
+impl MemoryStore {
+    /// Makes the store behave as if the usage events already in its log had been written before the
+    /// ledger existed, or by a build without it: the ledger is emptied and no thread has been gone
+    /// through. What the conformance case of [`UsageLedger::backfill`] needs, as the Postgres
+    /// adapter's test deletes its rows and zeroes the column.
+    pub fn forget_usage_ledger(&self) {
+        let mut inner = self.lock();
+        inner.ledger = Ledger::default();
+        for entry in inner.threads.values_mut() {
+            entry.usage_through = 0;
+        }
+    }
+}
+
+impl UsageLedger for MemoryStore {
+    async fn month(
+        &self,
+        owner: &UserId,
+        month: UsageMonth,
+    ) -> Result<UsageMonthTotals, StoreError> {
+        let inner = self.lock();
+        Ok(UsageMonthTotals::of(
+            month,
+            inner.ledger.month_of(owner, month),
+        ))
+    }
+
+    async fn thread_rows(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+    ) -> Result<Vec<UsageRow>, StoreError> {
+        let inner = self.lock();
+        let mut rows: Vec<UsageRow> = inner
+            .ledger
+            .rows
+            .values()
+            .filter(|r| &r.owner == owner && r.key.thread == thread)
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(rows)
+    }
+
+    async fn backfill(
+        &self,
+        after: Option<ThreadId>,
+        limit: u32,
+    ) -> Result<UsageBackfill, StoreError> {
+        let limit = limit.max(1) as usize;
+        let mut inner = self.lock();
+        let behind = |e: &ThreadEntry| {
+            e.usage_through
+                .max(e.record.forked_from.map_or(0, |f| f.seq))
+        };
+        let mut due: Vec<ThreadId> = inner
+            .threads
+            .iter()
+            .filter(|(id, e)| after.is_none_or(|a| **id > a) && behind(e) < e.record.last_seq)
+            .map(|(id, _)| *id)
+            .collect();
+        due.sort_unstable();
+        due.truncate(limit);
+        let mut page = UsageBackfill {
+            next: (due.len() == limit).then(|| due[limit - 1]),
+            ..UsageBackfill::default()
+        };
+        for id in due {
+            let Inner {
+                threads, ledger, ..
+            } = &mut *inner;
+            let Some(entry) = threads.get_mut(&id) else {
+                continue;
+            };
+            let from = behind(entry);
+            let usage = entry
+                .events
+                .iter()
+                .filter(|s| {
+                    s.event.seq > from && usage_change(&entry.record.owner, &s.event).is_some()
+                })
+                .count();
+            ledger.fold(
+                &entry.record.owner,
+                entry.events.iter().map(|s| &s.event),
+                from,
+            );
+            entry.usage_through = entry.record.last_seq;
+            page.threads += 1;
+            page.events += usage as u64;
+        }
+        Ok(page)
     }
 }

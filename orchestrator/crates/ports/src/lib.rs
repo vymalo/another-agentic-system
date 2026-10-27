@@ -3,6 +3,8 @@
 //! - [`ThreadStore`]: threads, per-thread events with a strictly increasing `seq`, an outbox;
 //! - the inbox (unsolicited webhook reports and timers) is part of [`ThreadStore`]: a thread commit
 //!   must be atomic with the inbox row it applies;
+//! - [`UsageLedger`]: what each person used, per task and UTC month, outliving the threads it came from
+//!   (ADR 0065); written by the `ThreadStore` in the transaction that appends the usage event, read here;
 //! - [`Wakeup`]: notify/listen hints, and the live text of a reply being written (never stored,
 //!   ADR 0027);
 //! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
@@ -60,6 +62,7 @@ mod route;
 mod secrets;
 mod store;
 mod tools;
+mod usage_ledger;
 mod user_tools;
 mod wakeup;
 
@@ -125,6 +128,7 @@ pub use tools::{
     ToolCallOutput, ToolDef, ToolSecret, ToolServerClient, ToolServerEndpoint, ToolServerError,
     is_reserved_header,
 };
+pub use usage_ledger::{UsageBackfill, UsageLedger};
 pub use user_tools::{
     DefinitionError, MAX_CLIENT_ID_BYTES, MAX_HEADER_NAME_BYTES, MAX_NAME_CHARS, MAX_SCOPE_BYTES,
     MAX_SCOPES, MAX_USER_TOOL_SERVERS, NoUserToolServers, ServerRevision, StoredServer,
