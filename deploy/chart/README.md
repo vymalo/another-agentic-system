@@ -1370,10 +1370,13 @@ rollout is complete:
 kubectl -n another-agentic-system exec deploy/another-agentic-orchestrator -- /orchestrator usage backfill
 ```
 
-It reads only `database.url` of the pod's own configuration, goes through the threads in pages (one transaction each, under the thread's lock), prints one line of JSON
-(`{"complete":true,"pages":…,"threads":…,"events":…}`) and exits `0` ([the exit codes](../../orchestrator/bin/orchestrator/README.md#the-command-usage-backfill)). It can run while people
-use the service, and a second run reports zero threads. Run it soon: the usage of a thread that is erased before it runs is not in the log any more and is not recovered. (No Job
-for it is rendered in this slice, and the chart changes nothing else for the ledger: the price table, the route and the retention are the next pull request.)
+It reads only `database.url` of the pod's own configuration, goes through the threads in pages (one transaction each, under the thread's lock, which it waits for at most
+5 seconds), prints one line of JSON (`{"complete":true,"pages":…,"threads":…,"events":…,"skipped":0,"detached":0}`) and exits `0` ([the exit codes](../../orchestrator/bin/orchestrator/README.md#the-command-usage-backfill)).
+It can run while people use the service, and a second run reports zero threads. **If it exits `75`** (`"complete":false`), `skipped` threads were locked by a commit or a stuck
+transaction for more than 5 seconds and were left alone: run it again, the same command takes them (the commit that holds a thread's lock catches it up when it ends, so a skipped thread is
+not lost, only not yet counted). `detached` is how many rows of the ledger it made to name no thread, because a build from before the ledger had erased the thread; the usage stays.
+Run it soon: the usage of a thread that is erased before it runs is not in the log any more and is not recovered. (No Job for it is rendered in this slice, and the chart changes
+nothing else for the ledger: the price table, the route and the retention are the next pull request.)
 *Unverified:* the command on netcup, and its duration on a database with many threads.
 
 ## The browser agent (ADR 0057)

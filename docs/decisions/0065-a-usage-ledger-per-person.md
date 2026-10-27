@@ -80,6 +80,9 @@ The nine decisions of the design comment, in its order, each with what PR 1 buil
      **watermark**: `threads.usage_through` is the `seq` up to which the ledger has been through the thread's log, and every commit that finds it behind
      `last_seq` folds the events in between before its own. `orchestrator usage backfill` does the same for every thread that is behind, page by page, so it
      reaches the threads that no one writes to any more. Both are idempotent and safe beside the service: one transaction per thread, under the thread's lock.
+     **A catch-up costs by the tasks it touches, not by its events:** it reads the log in pages of 500, folds each event into its task's row in memory with
+     `UsageRow::fold`, and loads and writes each row once (build item 11). The backfill waits at most 5 s for a thread's lock, skips and counts a thread it cannot
+     lock (the command then exits 75 and the next run takes it), and its first page makes the rows of threads an older build erased name no thread (build item 12).
 5. **Prices are configuration, in integers.** *(PR 2, not built.)* `usage.prices` holds one currency per deployment and, per `provider`/`model`, a price per
    million tokens for `input`, `cachedInput` and `output`; for the sandbox, a price per CPU-core hour and per GiB-hour of the requests. No `f64`: prices
    are decimal strings, parsed exactly into millionths of the currency unit and computed in `i128`, rounded half up once per line. Cached tokens are a
@@ -149,7 +152,10 @@ The design comment left these open or did not see them. Each is the smallest thi
    alone (two agents that number their tasks `1` would share a row). *Unverified:* a real agent that reuses a task id for two tasks in one thread; its
    second task would replace the first. A2A task ids are the agent's to make unique, and nothing in the log suggests otherwise.
 2. **A row is in the month of the latest event that changed it, whole.** A task that crosses midnight at a month's end is counted entirely in the later
-   month. *Rejected:* the month of the first event (the task's tokens would sit in a month that may be mostly over, and the retention sweep would remove
+   month. **A month that has ended is therefore not stable:** a task open across the month end moves the usage it made in the earlier month into the later one when
+   its next event arrives, so the earlier month's figure falls after the month closed, and the later one holds usage made before it began. That matters for what is
+   built on the figure (a limit that resets monthly, a receipt for a closed month, M2 and M3) and is **an owner decision**: the alternatives are a row per task and
+   month (which needs the usage *made* in each month, not the totals, and a total can be lower than the one before it), or a task that is closed at the month end. *Rejected:* the month of the first event (the task's tokens would sit in a month that may be mostly over, and the retention sweep would remove
    them before the task's last month), and a row per task and month with the *difference* of the totals (a total can be **lower** than the earlier one, so
    a difference can be negative). Time zones are UTC, as the design says; a person's local month is not used.
 3. **A watermark, not a per-row guard alone.** Each row keeps the `seq` of the last event it folded in, which makes applying an event twice harmless. That is
@@ -174,6 +180,24 @@ The design comment left these open or did not see them. Each is the smallest thi
 8. **The calls reported after a total are not in the ledger until the next total.** A resumed task (after `input-required`) logs calls, then a second total
    that covers them. If the agent dies before it, those calls are not counted: the contract writes totals whenever a task ends or pauses, so only a crash
    loses them. The projection's gauge counts them on top, which is right for a gauge and wrong for money (decision 1).
+9. **Task ids are assumed unique for each turn that is not a continuation.** The key of a row is the thread, the agent and the A2A task (item 1). An agent that
+   gives two different tasks of one thread the same id would have the second's total replace the first's, and the first's usage would be lost. A2A task ids are the
+   agent's to make unique, and nothing in the log suggests otherwise; there is no way to tell a continuation from a reuse. *Unverified* for any agent but the coder.
+10. **A later total with no `sandbox` clears an earlier measured one.** A total replaces the row whole, the sandbox included (decision 1), as the contract says the
+    totals are the record. A task whose first total carried a measured sandbox and whose next total says none ends with none, and so does one whose later `sandbox`
+    the door rejected (ADR 0056: the member is left out, the token totals beside it are taken): the ledger cannot tell the two from a task that ran no commands. The
+    sandbox time of a task is lost in that case, not zero; an owner who prefers the latest *measured* sandbox to the latest total's says so.
+11. **A catch-up is not bounded per commit.** A catch-up could stop after some events and move `usage_through` only that far. It cannot do so and keep decision 4:
+    the commit's own events sit above the gap, and `usage_through` is contiguous, so they would stay out of the ledger until a later commit (or the backfill) closed
+    the gap. A catch-up is instead cheap enough not to need it (a function of the tasks it touches, see Consequences), and it logs one line when it folds anything
+    (thread, events, tasks, elapsed milliseconds; no content).
+12. **The backfill does not wait long, and cleans up after older builds.** Each thread's transaction sets `lock_timeout` to 5 s; a thread that times out is skipped
+    and counted (`skipped`, `complete: false`, exit `75` as `secrets rewrap` uses it), and a later run takes it, as would the commit that holds the lock. The first page
+    also sets `thread_id` to `NULL` on the rows whose thread no longer exists (`detached`): a build without the ledger erases a thread and knows nothing of the column.
+13. **Migration `0023` was edited before it was released.** No `CHECK` on `threads.usage_through` (a check on `ADD COLUMN ... DEFAULT` makes Postgres scan `threads`
+    under `ACCESS EXCLUSIVE`: 52 ms per million rows against 0.6 ms, measured 2026-10-27), and `usage_tasks.sandbox_environment` is checked for its shape only
+    (`^[a-z][a-z0-9_-]{0,31}$`), because the three words of today's `SandboxEnvironment` would have failed every commit that carries a new variant, and a commit that
+    fails is retried. `0023` is not on `main`; a database that applied the earlier text is recreated.
 
 ## Consequences
 
@@ -181,8 +205,12 @@ The design comment left these open or did not see them. Each is the smallest thi
   reasoning) PR 2 prices. It survives the deletion of a thread, and it cannot disagree with the log.
 - Required elsewhere: **every `ThreadStore` implementation writes the ledger in its append transaction** and passes `usage_ledger_conformance!`; a new
   `ThreadStore` method that appends events must do the same. A new variant of a usage event is a change of `usage_change`.
-- The cost: a usage event costs the commit a read of the task's row and a rewrite of it and its lines (about six statements); a commit without usage costs
-  nothing more (the watermark rides on the `UPDATE` the commit makes). *Unverified* under load; a job logs at most 10 000 calls.
+- The cost: the commit loads each task its usage events name **once** (the task's row, its lines, and its sandbox entries when they were measured: two or three
+  statements) and writes what changed **once** (the row, the lines whose counts changed, the sandbox entries when they changed), however many events the commit
+  carries, so a call is about four statements and a total a few more; a commit without usage costs nothing more (the watermark rides on the `UPDATE` the commit
+  makes). A catch-up costs the same by task, plus one read for each 500 events of the log. *Measured 2026-10-27*, Postgres 16 on the same machine, a debug build
+  (`crates/store-postgres/tests/usage_ledger.rs` counts the statements): a catch-up of 3000 events on 20 tasks took 4.8 s with a load, a fold and a store for each
+  event and 0.10 s folded per task; 10 000 events on 3 tasks took 44.6 s and 0.25 s. *Unverified* under load from many threads at once.
 - A rollout is safe in either order: migration `0023` is additive, an older build ignores the new tables and column, and the next commit of a build with
   the ledger folds in what the older one wrote. Run `orchestrator usage backfill` once after the rollout for the threads no one writes to.
 - Harder: the ledger is a second place that holds usage, so a future change to what a total means must change `UsageRow::fold` and re-fold; the backfill
@@ -206,8 +234,11 @@ The design comment left these open or did not see them. Each is the smallest thi
 
 - *Verified 2026-10-27*, by reading the code at `cd8576b` and by the tests of this change: the events and their fields, the commit paths
   (`commit`, `create`, `write_commit`, `delete`), the copy a fork makes, the idempotency key, the continuation of an asked agent's task, the projection's rule.
-- *Verified 2026-10-27*, by running them against a Postgres 16: `usage_ledger_conformance!` on the in-memory and the Postgres store (the same 15 cases),
-  and `crates/store-postgres/tests/usage_ledger.rs` (the tables, the one transaction, the catch-up of events written by hand as an older build would write
-  them, an event that does not decode, the SQL sums against the pure sums, a counter that fills, the backfill beside commits).
+- *Verified 2026-10-27*, by running them against a Postgres 16: `usage_ledger_conformance!` on the in-memory and the Postgres store (the same 17 cases, among them
+  a commit to a fork an older build wrote to, which counts the fork's own events and not the parent's it copied, and a catch-up of 1100 usage events on four tasks
+  across a month end whose rows are the rows the pure `UsageRow::fold` gives event by event), and `crates/store-postgres/tests/usage_ledger.rs` (the tables, the
+  one transaction, the catch-up of events written by hand as an older build would write them, an event that does not decode, the SQL sums against the pure sums, a
+  counter that fills, the backfill beside commits, the statements a catch-up and `thread_rows` send, a thread whose lock is held skipped and taken by a later run,
+  the rows of an erased thread detached, and the migration's shape checks).
 - *Unverified:* the cost of the added statements under load; the backfill on a database with millions of threads (it is paged and resumable, and its pages
   are one transaction per thread); the law's view of what a ledger of usage per e-mail may keep, which M5 decides.
