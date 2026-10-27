@@ -9,8 +9,16 @@
 //! in the same transaction as the delete. The reads and the backfill are the [`UsageLedger`] port.
 //!
 //! The semantics of a row (a total replaces, a call adds while there is no total, an event already
-//! folded in changes nothing) are `orch_core::UsageRow::fold`, shared with the in-memory store; this
-//! module loads the task's row, folds, and writes the result.
+//! folded in changes nothing) are `orch_core::UsageRow::fold`, shared with the in-memory store. Many
+//! events fold into a few rows, so a [`Folder`] loads each task's row **once**, folds every event
+//! for that task into it in memory, and writes each row that changed **once**: the statements of a
+//! catch-up are a function of the tasks it touches and the pages of the log it reads, not of its
+//! events (one load, fold and store per event made a thread of 10 000 events a transaction of
+//! tens of seconds under the thread's lock).
+
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+use std::time::Instant;
 
 use orch_core::{
     ModelTokens, SandboxEntry, SandboxEnvironment, SandboxShape, SandboxUsage, ThreadId,
@@ -57,6 +65,61 @@ fn opt_sum(text: Option<String>) -> Option<u64> {
     text.as_deref().map(sum)
 }
 
+/// The rows of the tasks a transaction folds usage events into. A task's row is loaded the first
+/// time an event names it, every event for it is folded in memory by [`UsageRow::fold`] (the rule the
+/// in-memory store applies too), and [`Folder::flush`] writes each row that changed once, so the
+/// statements are by task and not by event. Tasks are independent, so the order of events across
+/// tasks does not matter; the order within a task is the order they were applied in.
+#[derive(Default)]
+pub(crate) struct Folder {
+    tasks: BTreeMap<UsageTaskKey, Task>,
+}
+
+/// A task's row as the database holds it and as the events folded so far leave it.
+struct Task {
+    /// The id and row in the database; none for a task that has no row yet.
+    stored: Option<(i64, UsageRow)>,
+    /// The row after the events folded so far; none while no event has changed it.
+    folded: Option<UsageRow>,
+}
+
+impl Folder {
+    /// Folds `change` into its task's row, loading the row if this is the first change for it.
+    async fn apply(
+        &mut self,
+        conn: &mut PgConnection,
+        change: &UsageChange,
+    ) -> Result<(), StoreError> {
+        let task = match self.tasks.entry(change.key.clone()) {
+            Entry::Occupied(task) => task.into_mut(),
+            Entry::Vacant(slot) => slot.insert(Task {
+                stored: load(conn, &change.key).await?,
+                folded: None,
+            }),
+        };
+        let current = task
+            .folded
+            .as_ref()
+            .or_else(|| task.stored.as_ref().map(|(_, row)| row));
+        if let Some(row) = UsageRow::fold(current, change) {
+            task.folded = Some(row);
+        }
+        Ok(())
+    }
+
+    /// Writes the rows that changed, one write for each; returns how many.
+    async fn flush(self, conn: &mut PgConnection) -> Result<usize, StoreError> {
+        let mut written = 0;
+        for task in self.tasks.into_values() {
+            if let Some(row) = task.folded {
+                store(conn, task.stored, &row).await?;
+                written += 1;
+            }
+        }
+        Ok(written)
+    }
+}
+
 /// Applies what the usage events among `events` change, in order. The events are those of a thread
 /// of `owner`, already inserted in this transaction.
 pub(crate) async fn fold_events(
@@ -64,18 +127,23 @@ pub(crate) async fn fold_events(
     owner: &UserId,
     events: &[orch_core::Event],
 ) -> Result<(), StoreError> {
+    let mut folder = Folder::default();
     for event in events {
         if let Some(change) = usage_change(owner, event) {
-            apply(conn, &change).await?;
+            folder.apply(conn, &change).await?;
         }
     }
+    folder.flush(conn).await?;
     Ok(())
 }
 
 /// Folds the usage events of `thread` with `after < seq <= to` that the ledger has not been through,
-/// oldest first; returns how many it folded. An event that does not decode is left out and logged
-/// (its seq and thread, never its content): the ledger is not a reason for a conversation to stop,
-/// and a log that cannot be read is a fault of its own.
+/// oldest first; returns how many it folded. The log is read in pages and folded into the tasks'
+/// rows in memory, and each row that changed is written once at the end (see [`Folder`]); one line
+/// of the log says the thread, how many events, how many tasks and how long it took (no content).
+/// An event that does not decode is left out and logged (its seq and thread, never its content):
+/// the ledger is not a reason for a conversation to stop, and a log that cannot be read is a fault
+/// of its own.
 pub(crate) async fn catch_up(
     conn: &mut PgConnection,
     thread: ThreadId,
@@ -83,6 +151,8 @@ pub(crate) async fn catch_up(
     after: i64,
     to: i64,
 ) -> Result<u64, StoreError> {
+    let started = Instant::now();
+    let mut folder = Folder::default();
     let mut cursor = after;
     let mut folded = 0_u64;
     while cursor < to {
@@ -106,7 +176,7 @@ pub(crate) async fn catch_up(
             match event_from_row(thread, row) {
                 Ok(event) => {
                     if let Some(change) = usage_change(owner, &event) {
-                        apply(conn, &change).await?;
+                        folder.apply(conn, &change).await?;
                         folded += 1;
                     }
                 }
@@ -117,6 +187,16 @@ pub(crate) async fn catch_up(
                 ),
             }
         }
+    }
+    let tasks = folder.flush(conn).await?;
+    if folded > 0 {
+        tracing::info!(
+            %thread,
+            events = folded,
+            tasks,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "the usage ledger caught up with the log"
+        );
     }
     Ok(folded)
 }
@@ -132,15 +212,6 @@ pub(crate) async fn forget_threads(
         .await
         .map_err(store_err)?;
     Ok(())
-}
-
-/// Loads the task's row, folds the change into it and writes the result.
-async fn apply(conn: &mut PgConnection, change: &UsageChange) -> Result<(), StoreError> {
-    let current = load(conn, &change.key).await?;
-    let Some(row) = UsageRow::fold(current.as_ref().map(|(_, row)| row), change) else {
-        return Ok(());
-    };
-    store(conn, current.map(|(id, _)| id), &row).await
 }
 
 const TASK_COLUMNS: &str =
@@ -181,14 +252,20 @@ async fn with_children(
     .fetch_all(&mut *conn)
     .await
     .map_err(store_err)?;
-    let entries = sqlx::query(
-        "SELECT cpu_millis, memory_bytes, commands, milliseconds FROM usage_sandbox \
-         WHERE task_id = $1 ORDER BY ord",
-    )
-    .bind(id)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(store_err)?;
+    // only a sandbox that was measured has entries
+    let measured: bool = row.try_get("sandbox_measured").map_err(store_err)?;
+    let entries = if measured {
+        sqlx::query(
+            "SELECT cpu_millis, memory_bytes, commands, milliseconds FROM usage_sandbox \
+             WHERE task_id = $1 ORDER BY ord",
+        )
+        .bind(id)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(store_err)?
+    } else {
+        Vec::new()
+    };
     Ok((id, to_row(row, &lines, &entries)?))
 }
 
@@ -269,8 +346,14 @@ fn to_row(task: &PgRow, lines: &[PgRow], entries: &[PgRow]) -> Result<UsageRow, 
     })
 }
 
-/// Writes `row`: a new task, or the task `id` with its lines and entries replaced.
-async fn store(conn: &mut PgConnection, id: Option<i64>, row: &UsageRow) -> Result<(), StoreError> {
+/// Writes `row`: a new task, or the task `stored` replaced. Only what differs from `stored` is
+/// written: the lines whose counts changed (an upsert), the lines that disappeared (a total can name
+/// other models than the calls it replaces), and the sandbox entries when they changed.
+async fn store(
+    conn: &mut PgConnection,
+    stored: Option<(i64, UsageRow)>,
+    row: &UsageRow,
+) -> Result<(), StoreError> {
     let (environment, measured) = match &row.sandbox {
         None => (None, false),
         Some(sandbox) => (
@@ -278,8 +361,8 @@ async fn store(conn: &mut PgConnection, id: Option<i64>, row: &UsageRow) -> Resu
             sandbox.usage.is_some(),
         ),
     };
-    let id = match id {
-        Some(id) => {
+    let (id, before) = match stored {
+        Some((id, before)) => {
             sqlx::query(
                 "UPDATE usage_tasks SET month = $2, source = $3, seq = $4, \
                  sandbox_environment = $5, sandbox_measured = $6 WHERE id = $1",
@@ -293,42 +376,41 @@ async fn store(conn: &mut PgConnection, id: Option<i64>, row: &UsageRow) -> Resu
             .execute(&mut *conn)
             .await
             .map_err(store_err)?;
-            sqlx::query("DELETE FROM usage_lines WHERE task_id = $1")
-                .bind(id)
-                .execute(&mut *conn)
-                .await
-                .map_err(store_err)?;
-            sqlx::query("DELETE FROM usage_sandbox WHERE task_id = $1")
-                .bind(id)
-                .execute(&mut *conn)
-                .await
-                .map_err(store_err)?;
-            id
+            (id, Some(before))
         }
-        None => sqlx::query_scalar(
-            "INSERT INTO usage_tasks (owner, thread_id, agent, task, month, source, seq, \
-             sandbox_environment, sandbox_measured) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
-        )
-        .bind(row.owner.as_str())
-        .bind(row.key.thread.0)
-        .bind(&row.key.agent)
-        .bind(&row.key.task)
-        .bind(row.month.to_string())
-        .bind(row.source.as_str())
-        .bind(row.seq)
-        .bind(environment.as_deref())
-        .bind(measured)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(store_err)?,
+        None => {
+            let id = sqlx::query_scalar(
+                "INSERT INTO usage_tasks (owner, thread_id, agent, task, month, source, seq, \
+                 sandbox_environment, sandbox_measured) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+            )
+            .bind(row.owner.as_str())
+            .bind(row.key.thread.0)
+            .bind(&row.key.agent)
+            .bind(&row.key.task)
+            .bind(row.month.to_string())
+            .bind(row.source.as_str())
+            .bind(row.seq)
+            .bind(environment.as_deref())
+            .bind(measured)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(store_err)?;
+            (id, None)
+        }
     };
-    for line in &row.tokens {
+    let before_lines = before.as_ref().map_or(&[][..], |b| b.tokens.as_slice());
+    for line in row.tokens.iter().filter(|l| !before_lines.contains(l)) {
         let t = &line.tokens;
         sqlx::query(
             "INSERT INTO usage_lines (task_id, provider, model, input_tokens, output_tokens, \
              total_tokens, reasoning_tokens, cached_input_tokens, cache_write_input_tokens) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             ON CONFLICT (task_id, provider, model) DO UPDATE SET \
+             input_tokens = EXCLUDED.input_tokens, output_tokens = EXCLUDED.output_tokens, \
+             total_tokens = EXCLUDED.total_tokens, reasoning_tokens = EXCLUDED.reasoning_tokens, \
+             cached_input_tokens = EXCLUDED.cached_input_tokens, \
+             cache_write_input_tokens = EXCLUDED.cache_write_input_tokens",
         )
         .bind(id)
         .bind(line.provider.as_deref().unwrap_or(""))
@@ -343,7 +425,35 @@ async fn store(conn: &mut PgConnection, id: Option<i64>, row: &UsageRow) -> Resu
         .await
         .map_err(store_err)?;
     }
-    if let Some(entries) = row.sandbox.as_ref().and_then(|s| s.usage.as_ref()) {
+    // a total replaces the whole row's lines: the models it does not name are gone
+    let (gone_providers, gone_models): (Vec<&str>, Vec<&str>) = before_lines
+        .iter()
+        .filter(|old| {
+            !row.tokens
+                .iter()
+                .any(|l| l.provider == old.provider && l.model == old.model)
+        })
+        .map(|old| (old.provider.as_deref().unwrap_or(""), old.model.as_str()))
+        .unzip();
+    if !gone_models.is_empty() {
+        sqlx::query(
+            "DELETE FROM usage_lines WHERE task_id = $1 AND (provider, model) IN \
+             (SELECT * FROM unnest($2::text[], $3::text[]))",
+        )
+        .bind(id)
+        .bind(&gone_providers)
+        .bind(&gone_models)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_err)?;
+    }
+    let entries = sandbox_entries(row);
+    if before.as_ref().map(sandbox_entries).unwrap_or_default() != entries {
+        sqlx::query("DELETE FROM usage_sandbox WHERE task_id = $1")
+            .bind(id)
+            .execute(&mut *conn)
+            .await
+            .map_err(store_err)?;
         for (ord, entry) in (0_i16..).zip(entries) {
             sqlx::query(
                 "INSERT INTO usage_sandbox (task_id, ord, cpu_millis, memory_bytes, commands, \
@@ -361,6 +471,14 @@ async fn store(conn: &mut PgConnection, id: Option<i64>, row: &UsageRow) -> Resu
         }
     }
     Ok(())
+}
+
+/// The sandbox entries a row keeps in `usage_sandbox`: those of a measured sandbox, none otherwise.
+fn sandbox_entries(row: &UsageRow) -> Vec<SandboxEntry> {
+    row.sandbox
+        .as_ref()
+        .and_then(|s| s.usage.clone())
+        .unwrap_or_default()
 }
 
 impl UsageLedger for PgStore {

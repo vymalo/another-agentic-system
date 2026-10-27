@@ -5,6 +5,9 @@
 
 mod support;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use jiff::Timestamp;
 use orch_core::{
     Actor, AgentId, AgentTarget, Classify, ErrorClass, EventBody, MAX_LEDGER_COUNT,
@@ -17,6 +20,8 @@ use orch_ports::{
 };
 use orch_store_postgres::PgStore;
 use support::TestDb;
+use tracing::instrument::WithSubscriber as _;
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
 use uuid::Uuid;
 
 macro_rules! db_or_skip {
@@ -657,4 +662,109 @@ async fn migration_0023_upgrades_a_database_that_holds_logs_and_the_backfill_fil
     let again = store.backfill(None, 10).await.unwrap();
     assert_eq!((again.threads, again.events), (0, 0));
     assert_eq!(store.month(&alice(), jan()).await.unwrap(), totals);
+}
+
+/// Counts the statements the driver logs (`sqlx::query`) while a future runs.
+struct Statements(Arc<AtomicUsize>);
+
+impl<S: tracing::Subscriber> Layer<S> for Statements {
+    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+        if event.metadata().target() == "sqlx::query" {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// How many statements `work` sends to the database.
+async fn statements_of<F: std::future::Future>(work: F) -> (usize, F::Output) {
+    let counted = Arc::new(AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::registry().with(Statements(counted.clone()));
+    let out = work.with_subscriber(subscriber).await;
+    (counted.load(Ordering::Relaxed), out)
+}
+
+/// `n` usage events (calls of `tasks` tasks on two models) written to the log as a build without the
+/// ledger would write them, after the thread's seq `first - 1`.
+async fn write_calls_by_hand(
+    store: &PgStore,
+    thread: ThreadId,
+    first: i64,
+    n: usize,
+    tasks: usize,
+) -> i64 {
+    let (mut seqs, mut ats, mut kinds, mut actors, mut datas) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for i in 0..n {
+        let mut event = call(
+            &format!("t{}", i % tasks),
+            &format!("c{first}-{i}"),
+            counts(10, 2),
+        );
+        if let EventBody::ModelUsage(data) = &mut event.body {
+            data.model = if i % 2 == 0 { "glm" } else { "small" }.into();
+        }
+        seqs.push(first + i64::try_from(i).unwrap());
+        ats.push(event.at.to_string());
+        kinds.push(event.body.kind().as_str().to_owned());
+        actors.push(serde_json::to_value(&event.actor).unwrap());
+        datas.push(event.body.data_value());
+    }
+    for start in (0..n).step_by(1000) {
+        let end = (start + 1000).min(n);
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             SELECT $1, s, a::timestamptz, k, ac, d \
+             FROM unnest($2::bigint[], $3::text[], $4::text[], $5::jsonb[], $6::jsonb[]) \
+             AS u(s, a, k, ac, d)",
+        )
+        .bind(thread.0)
+        .bind(&seqs[start..end])
+        .bind(&ats[start..end])
+        .bind(&kinds[start..end])
+        .bind(&actors[start..end])
+        .bind(&datas[start..end])
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+    let last = first + i64::try_from(n).unwrap() - 1;
+    sqlx::query("UPDATE threads SET last_seq = $2, version = version + 1 WHERE id = $1")
+        .bind(thread.0)
+        .bind(last)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    last
+}
+
+/// A catch-up costs statements by the tasks it touches and the pages of the log it reads, not by the
+/// events it folds: the same number of tasks costs about the same for twice the events. (One
+/// statement per event made a thread of 10 000 events a commit of many seconds under the thread's
+/// lock.)
+#[tokio::test]
+async fn a_catch_up_costs_statements_by_task_and_page_not_by_event() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let mut cost = Vec::new();
+    for n in [1200_usize, 2400] {
+        let (id, v) = open(&store, &alice(), Vec::new()).await;
+        let last = write_calls_by_hand(&store, id, 2, n, 3).await;
+        assert_eq!(through(&store, id).await, (1, last));
+        let (statements, _) = statements_of(append(&store, id, v + 1, vec![message()])).await;
+        assert_eq!(through(&store, id).await, (last + 1, last + 1));
+        cost.push(statements);
+    }
+    // three tasks and a few pages: tens of statements; one per event would be thousands
+    assert!(
+        cost[0] < 100,
+        "1200 events on 3 tasks: {} statements",
+        cost[0]
+    );
+    assert!(
+        cost[1] <= cost[0] + 6,
+        "twice the events cost only the pages more: {cost:?}"
+    );
+    let totals = store.month(&alice(), jan()).await.unwrap();
+    assert_eq!(totals.tasks, 6);
+    assert_eq!(totals.models.len(), 2);
 }
