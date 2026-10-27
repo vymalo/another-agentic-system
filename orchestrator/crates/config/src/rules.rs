@@ -211,6 +211,17 @@ pub struct ValidatedUserSecrets {
     pub log_format: LogFormat,
 }
 
+/// The database of a configuration, and nothing else of it: what a process that only reads the
+/// database through a command needs ([`Config::validate_database`], `orchestrator usage backfill`,
+/// ADR 0065). `Debug` shows references, never values.
+#[derive(Debug, Clone)]
+pub struct ValidatedDatabase {
+    /// `database.url`.
+    pub database_url: Secret,
+    /// `log.format`.
+    pub log_format: LogFormat,
+}
+
 fn join(base: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
@@ -379,6 +390,41 @@ impl Config {
                 database_url,
                 secrets: section,
                 keys,
+                log_format: self.log.format,
+            }),
+            _ => {
+                errors.sort();
+                errors.dedup();
+                Err(errors)
+            }
+        }
+    }
+}
+
+impl Config {
+    /// Pass 3 for a process that needs the database and nothing else: only `database.url` is
+    /// resolved. The agents, the thread-tools key, the model keys, the secret store and every
+    /// other section are neither checked nor read: a process that does not use them is not given
+    /// them. The file's shape (pass 2) has been checked whole by [`check`](crate::check).
+    ///
+    /// # Errors
+    ///
+    /// Every error of `database.url`, sorted by key path. None carries a value.
+    pub fn validate_database(
+        self,
+        base_dir: &Path,
+        resolver: &dyn Resolve,
+    ) -> Result<ValidatedDatabase, Vec<ConfigError>> {
+        let mut checker = Checker {
+            errors: Vec::new(),
+            base_dir,
+            resolver,
+        };
+        let database_url = checker.resolve(&self.database.url, "database.url", true);
+        let mut errors = checker.errors;
+        match database_url {
+            Some(database_url) if errors.is_empty() => Ok(ValidatedDatabase {
+                database_url,
                 log_format: self.log.format,
             }),
             _ => {

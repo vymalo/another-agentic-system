@@ -12,6 +12,7 @@ mod logging;
 mod migrate;
 mod model;
 mod secrets;
+mod usage;
 mod user_tools;
 
 use std::process::ExitCode;
@@ -128,6 +129,7 @@ async fn main() -> ExitCode {
             migrate::Command::Secrets(secrets) => {
                 secrets::run_command(secrets, args, &matches).await
             }
+            migrate::Command::Usage(usage) => usage::run_command(usage, args, &matches).await,
         };
     }
     let print = args.print_config;
