@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.8.0](https://github.com/vymalo/another-agentic-system/compare/v0.7.1...v0.8.0) (2026-10-28)
+
+
+### Features
+
+* **chart:** a rate limit per client address at the Ingress, off by default ([#307](https://github.com/vymalo/another-agentic-system/issues/307)) ([a34c14c](https://github.com/vymalo/another-agentic-system/commit/a34c14c4756da103c3bebddc626bf34a2881dadf))
+* **chart:** three database instances, resources and a transaction pooler (sys[#290](https://github.com/vymalo/another-agentic-system/issues/290), PR 2) ([#310](https://github.com/vymalo/another-agentic-system/issues/310)) ([26d9c17](https://github.com/vymalo/another-agentic-system/commit/26d9c17494696024bfeb2dd4482e314a4e36046c))
+* **dispatcher:** a fair share of the dispatcher for each person (ADR 0066) ([#306](https://github.com/vymalo/another-agentic-system/issues/306)) ([f3ea64f](https://github.com/vymalo/another-agentic-system/commit/f3ea64ff2daf13fefa19990b9313da4380351c7b))
+* **orchestrator:** database.directUrl, so a transaction pooler can carry the rest (sys[#290](https://github.com/vymalo/another-agentic-system/issues/290), PR 1) ([#309](https://github.com/vymalo/another-agentic-system/issues/309)) ([c777d29](https://github.com/vymalo/another-agentic-system/commit/c777d29bfb23f92a208e44180bd530efd0e178fa))
+* **usage:** a usage ledger per person, written in the commit of the event (ADR 0065, PR 1) ([#303](https://github.com/vymalo/another-agentic-system/issues/303)) ([0d50c42](https://github.com/vymalo/another-agentic-system/commit/0d50c4275edc86ee28b1f4c9bb4cf9d2cd730cfa))
+* **usage:** price a person's month and answer GET /api/me/usage, with a retention sweep (ADR 0065, PR 2) ([#305](https://github.com/vymalo/another-agentic-system/issues/305)) ([b97de39](https://github.com/vymalo/another-agentic-system/commit/b97de39811ef9a93dffb8ebd467cb0405ec88308))
+* **usage:** read and log the sandbox time a task reports in usage/v1 ([#302](https://github.com/vymalo/another-agentic-system/issues/302)) ([6fc8060](https://github.com/vymalo/another-agentic-system/commit/6fc80609f246b5c68f20950d54b4bfc8c492c219))
+
+
+### Bug Fixes
+
+* **deps:** take the advisories of tokio, rustls-webpki, webpki-roots, ctutils and zip ([#300](https://github.com/vymalo/another-agentic-system/issues/300)) ([6224b9c](https://github.com/vymalo/another-agentic-system/commit/6224b9c82f56c28ef1cdd21f2220f454973c6d70))
+* **orchestrator:** arm SIGTERM before the address is bound, and make three test suites deterministic ([#304](https://github.com/vymalo/another-agentic-system/issues/304)) ([6739a06](https://github.com/vymalo/another-agentic-system/commit/6739a06ef286474024e38d049ca016e50ede8e62))
+
+
+### Documentation
+
+* **roadmap:** say what M2 has built (usage ledger, sandbox time, fair share, edge limit) ([#308](https://github.com/vymalo/another-agentic-system/issues/308)) ([6b1d0f0](https://github.com/vymalo/another-agentic-system/commit/6b1d0f0fb1a7282a5f23e96d3cf8805a1564ad6a))
+
+
+### Chores
+
+* **deploy:** bump orchestrator to sha-0d50c42 ([795ebe8](https://github.com/vymalo/another-agentic-system/commit/795ebe8d6ca1bfa6f42f74ec185b8c9e83068d9a))
+* **deploy:** bump orchestrator to sha-6224b9c ([15cb544](https://github.com/vymalo/another-agentic-system/commit/15cb5447dc2bd42b3087be0c1bf2a6cb48762e99))
+* **deploy:** bump orchestrator to sha-6739a06 ([bbdbb4b](https://github.com/vymalo/another-agentic-system/commit/bbdbb4bfe6ad862fa54f26cd5f7ac2e5d4f19f03))
+* **deploy:** bump orchestrator to sha-6fc8060 ([61a9cd6](https://github.com/vymalo/another-agentic-system/commit/61a9cd665b316e3453304a2f3d874c453a70ea2a))
+* **deploy:** bump orchestrator to sha-b97de39 ([ad2326f](https://github.com/vymalo/another-agentic-system/commit/ad2326f5508b61839f2f8994d1277d6437efd69d))
+* **deploy:** bump orchestrator to sha-c777d29 ([ab49f87](https://github.com/vymalo/another-agentic-system/commit/ab49f877494a853af2efd4b217fbe23e0b0ef665))
+* **deploy:** bump orchestrator to sha-f3ea64f ([c03035c](https://github.com/vymalo/another-agentic-system/commit/c03035cedf5ccafd3160526636035302ea34ad2b))
+* **deploy:** bump web to sha-6fc8060 ([6b1ab65](https://github.com/vymalo/another-agentic-system/commit/6b1ab65c79f4367180ea5ad0aabf16212ee3eb3e))
+* **deploy:** bump web to sha-b97de39 ([e978437](https://github.com/vymalo/another-agentic-system/commit/e97843743226fe404c60262ec09c8624feb55e3b))
+
 ## [0.7.1](https://github.com/vymalo/another-agentic-system/compare/v0.7.0...v0.7.1) (2026-10-19)
 
 
