@@ -47,6 +47,18 @@
       "roles": [
         "tool-maker"
       ]
+    },
+    "usage-ledger@example.com": {
+      "name": "Usage Ledger",
+      "roles": [
+        "user"
+      ]
+    },
+    "usage-bystander@example.com": {
+      "name": "Usage Bystander",
+      "roles": [
+        "user"
+      ]
     }
   }
 }

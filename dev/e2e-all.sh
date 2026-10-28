@@ -61,6 +61,16 @@
 #                     `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage;
 #                     mock-coder, whose card does not list it, is asked for none and
 #                     its thread has none
+#   usage-ledger      the usage ledger of the people (ADR 0065): two threads of       usage-ledger-e2e.sh
+#                     mock-usage, each run to its end, by a user no other scenario
+#                     uses; GET /api/me/usage answers tasks 2, per model the sum of the
+#                     two tasks' totals priced by the table of orchestrator.yaml
+#                     (glm-5.3 priced by hand, glm-5.3-mini unpriced: price null,
+#                     complete false, named), the sandbox priced and a total that is the
+#                     sum of the priced lines; another user reads an empty complete
+#                     month and ?owner= is 400; a bad month is 400, no token 401; one
+#                     thread is deleted and the answer is the same; none of the threads'
+#                     words in it
 #   tier              the access tier (ADR 0061): mock-tiered (a WireMock agent that   tier-e2e.sh
 #                     lists access-tier/v1) has its tiers in the capabilities; a message
 #                     that names one is logged with it, sent under the extension's URI
@@ -173,6 +183,8 @@
 #
 # `ci` passes once per database (a commit belongs to the first job that pushed it): on a second run it is
 # SKIPPED, not failed, and the summary says how to reset (`docker compose --profile app down -v`).
+# `usage-ledger` counts exactly its own two tasks of a user no other scenario uses, and the ledger is durable: on a second run on the same database it is
+# SKIPPED too, with the same reset.
 # `folder` restarts the coder (it runs last, and puts the coder back on its folder when it ends) and needs
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
 # `share` restarts the orchestrator, and only it, twice: once on a copy of dev/orchestrator.yaml whose `sharing.mode` says `public`, once on the stack's
@@ -202,7 +214,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage tier title description fork rail delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier title description fork rail delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -289,6 +301,11 @@ for s in "$@"; do
           *) echo "scenario browser needs the agents chat and browser; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    usage-ledger)
+      case " $agents " in
+        *" mock-usage "*) ;;
+        *) echo "scenario usage-ledger needs the agent 'mock-usage', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
     usage)
       for a in mock-usage mock-coder; do
         case " $agents " in
@@ -380,6 +397,7 @@ for s in "$@"; do
     mentions) run mentions sh "$here/mentions-e2e.sh" ;;
     browser) run browser sh "$here/browser-e2e.sh" ;;
     usage) run usage sh "$here/usage-e2e.sh" ;;
+    usage-ledger) run usage-ledger sh "$here/usage-ledger-e2e.sh" ;;
     tier) run tier sh "$here/tier-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
@@ -407,8 +425,8 @@ echo
 echo "== summary ($base)"
 cat "$summary"
 echo "$passed passed, $failed failed, $skipped skipped; logs in $log_dir"
-if grep -q '^SKIP  ci ' "$summary"; then
-  echo "ci passed in an earlier run of this database; to run it again from scratch:"
+if grep -Eq '^SKIP  (ci|usage-ledger) ' "$summary"; then
+  echo "ci or usage-ledger passed in an earlier run of this database; to run it again from scratch:"
   echo "  docker compose --profile app down -v && docker compose --profile app up -d --build --wait"
 fi
 if [ "$failed" -gt 0 ]; then

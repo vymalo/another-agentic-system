@@ -90,6 +90,19 @@ artifacts:
   store: fs
   fs: { root: /var/lib/orchestrator/artifacts }
 
+# The usage ledger of the people (ADR 0065, docs/api/config.md "usage"): `GET /api/me/usage` puts a price on a person's UTC month with this
+# table when it is read. The prices are made up for the stack and are the ones dev/usage-ledger-e2e.sh computes its amounts from; change one
+# and that script's constants change with it. `glm-5.3` (what `mock-usage` reports, dev/wiremock/usage) is priced, with a cache discount;
+# `glm-5.3-mini`, the model of its sub-agent, is left UNPRICED on purpose: the answer then says "price": null and `total.complete: false`
+# and names it, which the scenario asserts. The sandbox prices apply to what the pod requested (`mock-usage` reports 250 millicores, 512 MiB).
+usage:
+  retentionMonths: 24
+  prices:
+    currency: EUR
+    models:
+      - { provider: openai, model: glm-5.3, input: "0.40", cachedInput: "0.10", output: "1.60" }
+    sandbox: { cpuCoreHour: "0.04", gibHour: "0.005" }
+
 # The thread tools (thread-tools/v1, docs/api/thread-tools-v1.md): the key the HMAC tokens are minted and verified with,
 # and the address agents reach the orchestrator at (the compose network name: the edge does not route the endpoint).
 # EVERY role gets them: a worker mints the grant it sends with a message, the control plane serves the endpoint. The

@@ -44,6 +44,8 @@ name: Coder E2E
 #              reads dev/browser-site and its answer holds words only that page has; asked directly, its screenshot is a file of the thread),
 #              token usage (dev/usage-e2e.sh: `mock-usage`, a WireMock agent that lists usage/v1, reports its calls and keeps its totals on the
 #              task; the log, the AG-UI usage and the activation are asserted, and an agent that does not list it is asked for none),
+#              the usage ledger of the people (dev/usage-ledger-e2e.sh: GET /api/me/usage for a user who ran two threads of `mock-usage`, priced by the table of
+#              dev/orchestrator.yaml, an unpriced model named, the same answer after one thread is deleted, another user's month empty),
 #              the access tier (dev/tier-e2e.sh: `mock-tiered`, a WireMock agent that lists access-tier/v1; a message that names a tier is logged with it and sent
 #              under the extension's URI, the tier the agent echoes is logged, a tier the plain agent does not list is refused before anything is written),
 #              sharing a thread by a revocable link (dev/share-e2e.sh, ADR 0040: through the real edge, another signed-in user reads the link and every write by them is refused, a revoked link is a 404 and ends an open stream, an anonymous curl reads a public link with no e-mail and no step input or output, a fork is private, the cap `internal` makes a public link a 404, and the edge lets through the public link and nothing wider),
@@ -213,6 +215,9 @@ jobs:
         # Token usage (dev/usage-e2e.sh, ADR 0056): `mock-usage` lists usage/v1 and reports three calls (one under a sub-agent step, one said twice),
         # keeping its totals on the task: three `model_usage` attributed to the agent or the step, a `model_usage_total` read with GetTask, the
         # AG-UI `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage; `mock-coder` is asked for no usage and its thread has none.
+        # The usage ledger of the people (dev/usage-ledger-e2e.sh, ADR 0065): two threads of `mock-usage` by a user no other scenario uses; GET /api/me/usage answers
+        # tasks 2 with, per model, the sum of the two tasks' totals priced by the `usage` table of dev/orchestrator.yaml (glm-5.3 priced, glm-5.3-mini unpriced:
+        # `price: null`, `complete: false`), the sandbox priced, another user reading an empty month, a bad month 400 and no token 401; one thread is deleted and the answer is the same.
         # The access tier (dev/tier-e2e.sh, ADR 0061): `mock-tiered` lists access-tier/v1 and echoes the tier it is told; a message that names one is logged
         # with it and sent under the extension's URI (the header and `message.extensions`), each message names its own, one that names none activates nothing,
         # a word that is not a tier is 400 and a tier for `mock-coder`, whose card does not list it, is 422 with no thread written.

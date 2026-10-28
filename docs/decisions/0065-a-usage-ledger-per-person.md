@@ -8,8 +8,8 @@
   **PR 1 is built** (decisions 1 to 4 and 8's buckets: the pure change in `orch-core`, the port `UsageLedger` with its testkit, the in-memory
   and Postgres adapters, migration `0023`, the write in the event's transaction, the erase that clears the thread id, the catch-up and the
   backfill command); **PR 2 is built in this change** (decisions 5 to 7 and 9, and the retention of 8: the price table in the configuration,
-  the pure pricing in `orch-core`, `GET /api/me/usage`, the sweep and its worker). What PR 2 does not carry, and a later change of the same
-  PR does, is the scenario on mocks (`dev/`) and the chart. Builds on [ADR 0056](0056-token-usage-per-model-call.md) (the events it
+  the pure pricing in `orch-core`, `GET /api/me/usage`, the sweep and its worker). The scenario on mocks is built (`dev/usage-ledger-e2e.sh`, run on the host against the stack's mocks on 2026-10-28; in compose by CI only). What PR 2 does not carry, and a later change of the same
+  PR does, is the chart. Builds on [ADR 0056](0056-token-usage-per-model-call.md) (the events it
   counts), [ADR 0043](0043-deleting-a-thread-erases-it.md) (what an erase leaves) and [ADR 0009](0009-swappable-implementations-at-build-time.md)
   (a port has a testkit). **It amends invariant 3** of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 1) with a
   dated note, as [ADR 0042](0042-the-thread-list-is-the-owners.md) and [ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)
@@ -278,7 +278,7 @@ The design comment left these open or did not see them. Each is the smallest thi
   the ledger folds in what the older one wrote. Run `orchestrator usage backfill` once after the rollout for the threads no one writes to.
 - Harder: the ledger is a second place that holds usage, so a future change to what a total means must change `UsageRow::fold` and re-fold; the backfill
   can do it for threads whose log still exists, and cannot for erased ones.
-- **Not done here:** the scenario on mocks and the chart's `usage` values (the next change of PR 2); a screen; limits and credits (M2's next tickets);
+- **Not done here:** the chart's `usage` values (the next change of PR 2); a screen; limits and credits (M2's next tickets);
   receipts (M3); the person's deletion ([issue 294](https://github.com/vymalo/another-agentic-system/issues/294)).
 
 ## Alternatives rejected
@@ -311,7 +311,7 @@ The design comment left these open or did not see them. Each is the smallest thi
   `crates/app/tests/usage_ledger.rs`; and the route in `crates/api/tests/usage.rs` (11 cases, answers validated against `MyUsage`) and in `contract.rs`. The web's
   generator (`openapi-typescript` 7.13.0) accepts the contract with `getMyUsage`.
 - *Unverified:* the sweep's cost and its plan on a ledger of millions of rows (the statement is one `DELETE` over `usage_tasks_month`, ordered by month and
-  limited), the sweep beside many commits at once, and the edge of item 20; the scenario on mocks (the next change); a price table written by a person and read
+  limited), the sweep beside many commits at once, and the edge of item 20; the scenario on mocks in compose (it ran on the host against the stack's mocks; CI runs it in compose); a price table written by a person and read
   by a real finance review.
 - *Unverified:* the cost of the added statements under load; the backfill on a database with millions of threads (it is paged and resumable, and its pages
   are one transaction per thread); the law's view of what a ledger of usage per e-mail may keep, which M5 decides.
