@@ -99,7 +99,8 @@ pub(crate) fn render_deleting(stats: &DeleteStats, pending: Option<u64>) -> Stri
 /// this process did not log, `invalid` (they broke the `usage/v1` contract) or `job_limit` (a valid
 /// call report past the job's bound), and the `sandbox` members it left out of totals it did log,
 /// `sandbox_invalid` (the member broke the contract; the tokens beside it were kept). It names no
-/// thread and no agent.
+/// thread and no agent. And `usage_tasks_swept_total`, the tasks of the usage ledger this process's
+/// retention sweep removed (ADR 0065).
 pub(crate) fn render_usage(stats: &UsageStats) -> String {
     let mut out = String::from(
         "# HELP usage_reports_dropped_total Token usage reports (usage/v1) that were not logged, or sandbox members left out of logged totals, by why.\n\
@@ -111,6 +112,12 @@ pub(crate) fn render_usage(stats: &UsageStats) -> String {
             reason.as_str()
         ));
     }
+    out.push_str(&format!(
+        "# HELP usage_tasks_swept_total Tasks of the usage ledger removed by this process's retention sweep (ADR 0065).\n\
+         # TYPE usage_tasks_swept_total counter\n\
+         usage_tasks_swept_total {}\n",
+        stats.tasks_swept
+    ));
     out
 }
 
@@ -377,6 +384,7 @@ shared_reads_total{visibility=\"public\"} 9
                 (orch_app::UsageDrop::JobLimit, 0),
                 (orch_app::UsageDrop::SandboxInvalid, 2),
             ],
+            tasks_swept: 17,
         });
         assert_eq!(
             text,
@@ -384,7 +392,10 @@ shared_reads_total{visibility=\"public\"} 9
              # TYPE usage_reports_dropped_total counter\n\
              usage_reports_dropped_total{reason=\"invalid\"} 4\n\
              usage_reports_dropped_total{reason=\"job_limit\"} 0\n\
-             usage_reports_dropped_total{reason=\"sandbox_invalid\"} 2\n"
+             usage_reports_dropped_total{reason=\"sandbox_invalid\"} 2\n\
+             # HELP usage_tasks_swept_total Tasks of the usage ledger removed by this process's retention sweep (ADR 0065).\n\
+             # TYPE usage_tasks_swept_total counter\n\
+             usage_tasks_swept_total 17\n"
         );
     }
 }

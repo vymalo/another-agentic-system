@@ -572,3 +572,36 @@ fn the_ledger_is_through_the_watermark_or_the_cut_of_a_fork_whichever_is_later()
     // a fork the ledger has been through: the watermark is past the cut
     assert_eq!(usage_counted_through(9, Some(5)), 9);
 }
+
+/// The retention counts the current month as one of the months it keeps: 24 keeps this month and the
+/// 23 before it, so the first month kept is the 23rd before this one.
+#[test]
+fn the_first_month_kept_counts_the_current_month() {
+    let month = |text: &str| text.parse::<UsageMonth>().unwrap();
+    for (now, months, first) in [
+        ("2026-10", 1, "2026-10"),
+        ("2026-10", 0, "2026-10"),
+        ("2026-10", 2, "2026-09"),
+        ("2026-10", 10, "2026-01"),
+        ("2026-10", 11, "2025-12"),
+        ("2026-10", 12, "2025-11"),
+        ("2026-10", 24, "2024-11"),
+        ("2026-01", 24, "2024-02"),
+        ("2026-01", 2, "2025-12"),
+        ("2026-01", 13, "2025-01"),
+        ("2026-12", 12, "2026-01"),
+        ("2026-12", 13, "2025-12"),
+        ("2026-10", 1200, "1926-11"),
+        ("0001-03", 3, "0001-01"),
+        ("0001-03", 4, "0001-01"),
+        ("0001-03", 1200, "0001-01"),
+        ("9999-12", 1, "9999-12"),
+        ("9999-12", u32::MAX, "0001-01"),
+    ] {
+        assert_eq!(
+            month(now).first_kept(months),
+            month(first),
+            "{months} months from {now}"
+        );
+    }
+}

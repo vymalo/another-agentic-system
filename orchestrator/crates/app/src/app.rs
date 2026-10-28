@@ -45,7 +45,7 @@ pub use uploads::{
 };
 mod usage;
 pub(crate) use usage::sandbox_rejection;
-pub use usage::{UsageDrop, UsageStats};
+pub use usage::{DEFAULT_USAGE_RETENTION_MONTHS, UsageDrop, UsageSettings, UsageStats};
 
 use crate::dispatcher::FileLimits;
 use crate::sharing::{SharingCounters, SharingSettings};
@@ -184,6 +184,9 @@ pub struct AppConfig {
     /// `server.publicUrl` and the path of the callback). `None` (the default): no authorization can
     /// be started, and `POST /api/user-tool-servers/{id}/authorize` is a 422 `oauth_not_configured`.
     pub user_tool_redirect: Option<RedirectUri>,
+    /// How long the usage ledger keeps a month and the prices `GET /api/me/usage` puts on it
+    /// (ADR 0065: `usage` of the configuration). The default keeps 24 months and prices nothing.
+    pub usage: UsageSettings,
 }
 
 impl Default for AppConfig {
@@ -209,6 +212,7 @@ impl Default for AppConfig {
             uploads: None,
             downloads: DownloadMode::Stream,
             user_tool_redirect: None,
+            usage: UsageSettings::default(),
         }
     }
 }

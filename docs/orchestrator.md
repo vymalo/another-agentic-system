@@ -2162,7 +2162,7 @@ dependency pinned to a commit sha); this repository adds no role and no supervis
 | Role | Runs | Serves on `LISTEN_ADDR` |
 |---|---|---|
 | `control-plane` | migrations, the HTTP server: the resource API, the surfaces in `ORCH_SURFACES`, health. No dispatcher | the full API |
-| `worker` | migrations, the dispatcher (including the transitions for agent updates), the inbox worker (timers and stored reports), the purge sweep (the files of deleted threads, ADR 0043) and, in a build with `agent-local`, the local agents' worker (see [Local agents](#local-agents)) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
+| `worker` | migrations, the dispatcher (including the transitions for agent updates), the inbox worker (timers and stored reports), the purge sweep (the files of deleted threads, ADR 0043), the usage retention sweep (the months of the usage ledger older than `usage.retentionMonths`, ADR 0065) and, in a build with `agent-local`, the local agents' worker (see [Local agents](#local-agents)) | health and metrics only (`/healthz`, `/readyz`, `/metrics`), so probes and scrapes work; everything else is 404 |
 | `all` (default) | both, as before the role existed (with the local agents' worker in a build with `agent-local`) | the full API |
 
 The halves are already decoupled: the only things they share are the outbox, the thread version

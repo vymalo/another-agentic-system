@@ -1310,6 +1310,67 @@ fn sharing_of(
     ))
 }
 
+/// `usage` of a valid file (ADR 0065) as the application takes it: the retention of the ledger and the
+/// price table, every price read exactly into millionths of the currency unit by
+/// [`orch_config::parse_price`] (no floating point on the way).
+///
+/// The file's rules have checked every price, the currency and the entries, so a refusal here is not a
+/// path a valid file takes: it is a refusal, never a quiet default.
+fn usage_of(valid: &Validated) -> Result<orch_app::UsageSettings, ConfigError> {
+    use orch_core::{Currency, Micros, ModelPrice, PriceTable, SandboxPrice};
+
+    let usage = &valid.config.usage;
+    let price = |text: &str, key: String| -> Result<Micros, ConfigError> {
+        orch_config::parse_price(text)
+            .map(|n| Micros::new(u128::from(n)))
+            .map_err(|e| document(format!("{key}: {e}")))
+    };
+    let prices = usage
+        .prices
+        .as_ref()
+        .map(|p| -> Result<PriceTable, ConfigError> {
+            let currency = Currency::new(&p.currency)
+                .map_err(|e| document(format!("usage.prices.currency: {e}")))?;
+            let models = p
+                .models
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let at = |key: &str| format!("usage.prices.models[{i}].{key}");
+                    Ok(ModelPrice {
+                        provider: m.provider.clone(),
+                        model: m.model.clone(),
+                        input: price(&m.input, at("input"))?,
+                        cached_input: price(&m.cached_input, at("cachedInput"))?,
+                        output: price(&m.output, at("output"))?,
+                    })
+                })
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            let sandbox = p
+                .sandbox
+                .as_ref()
+                .map(|s| -> Result<SandboxPrice, ConfigError> {
+                    Ok(SandboxPrice {
+                        cpu_core_hour: price(
+                            &s.cpu_core_hour,
+                            "usage.prices.sandbox.cpuCoreHour".to_owned(),
+                        )?,
+                        gib_hour: price(&s.gib_hour, "usage.prices.sandbox.gibHour".to_owned())?,
+                    })
+                })
+                .transpose()?;
+            PriceTable::new(currency, models, sandbox)
+                .map_err(|e| document(format!("usage.prices: {e}")))
+        })
+        .transpose()?;
+    Ok(orch_app::UsageSettings {
+        // 1 to 1200, checked by the shape pass
+        retention_months: u32::try_from(usage.retention_months)
+            .unwrap_or(orch_app::DEFAULT_USAGE_RETENTION_MONTHS),
+        prices,
+    })
+}
+
 fn file_errors(errors: Vec<orch_config::ConfigError>) -> ConfigError {
     ConfigError::Document(errors.iter().map(ToString::to_string).collect())
 }
@@ -1434,6 +1495,8 @@ fn project(
                 }),
             },
         }),
+        // The retention of the usage ledger and its price table (ADR 0065), read exactly.
+        usage: usage_of(valid)?,
         // Built by `sharing_of`, which can refuse; the defaults stand for a disabled deployment.
         sharing: orch_app::SharingSettings::default(),
         public_limits: orch_api::PublicLimits::default(),
@@ -2818,6 +2881,93 @@ tasks:
             lines(load_file_only(&base(), &bad)),
             ["sharing.secret: required unless sharing.mode is disabled (a link is made with it)"]
         );
+    }
+
+    /// ADR 0065: a file with no `usage` section keeps 24 months and prices nothing, and one that has it
+    /// reaches the application with every price read exactly into millionths of the currency unit.
+    #[test]
+    fn usage_reaches_the_application_with_exact_prices() {
+        use orch_core::{Currency, LinePrice, Micros, Unpriced, UsageMonth, price_month};
+
+        let loaded = load_file_only(&base(), FILE).unwrap();
+        let usage = loaded.config.app_config().usage;
+        assert_eq!(usage, orch_app::UsageSettings::default());
+        assert_eq!(usage.retention_months, 24);
+        assert!(usage.prices.is_none());
+
+        let file = format!(
+            "{FILE}usage:\n  retentionMonths: 12\n  prices:\n    currency: EUR\n    models:\n      - {{ provider: openai, model: glm-5.3, input: \"0.40\", cachedInput: \"0.10\", output: \"1.60\" }}\n      - {{ model: bare, input: \"0.000001\", cachedInput: \"0\", output: \"1000000\" }}\n    sandbox: {{ cpuCoreHour: \"0.04\", gibHour: \"0.005\" }}\n"
+        );
+        let loaded = load_file_only(&base(), &file).unwrap();
+        let usage = loaded.config.app_config().usage;
+        assert_eq!(usage.retention_months, 12);
+        let table = usage.prices.expect("a table");
+        assert_eq!(table.currency(), Currency::new("EUR").unwrap());
+        assert_eq!(table.models().len(), 2);
+        let glm = table
+            .models()
+            .iter()
+            .find(|m| m.model == "glm-5.3")
+            .unwrap();
+        assert_eq!(glm.provider.as_deref(), Some("openai"));
+        assert_eq!(
+            (glm.input, glm.cached_input, glm.output),
+            (
+                Micros::new(400_000),
+                Micros::new(100_000),
+                Micros::new(1_600_000)
+            )
+        );
+        let bare = table.models().iter().find(|m| m.model == "bare").unwrap();
+        assert_eq!(bare.provider, None);
+        assert_eq!(
+            (bare.input, bare.cached_input, bare.output),
+            (Micros::new(1), Micros::ZERO, Micros::new(1_000_000_000_000))
+        );
+        let sandbox = table.sandbox().expect("sandbox prices");
+        assert_eq!(
+            (sandbox.cpu_core_hour, sandbox.gib_hour),
+            (Micros::new(40_000), Micros::new(5_000))
+        );
+
+        // and the table prices a month as the file says
+        let month = "2026-10".parse::<UsageMonth>().unwrap();
+        let mut totals = orch_core::UsageMonthTotals::empty(month);
+        totals.models = vec![orch_core::ModelTokens {
+            provider: Some("openai".into()),
+            model: "glm-5.3".into(),
+            tokens: orch_core::TokenCounts {
+                input_tokens: 1_000_000,
+                output_tokens: 500_000,
+                total_tokens: 1_500_000,
+                ..orch_core::TokenCounts::default()
+            },
+        }];
+        let priced = price_month(Some(&table), &totals);
+        assert_eq!(
+            priced.models[0].price,
+            LinePrice::Priced(Micros::new(1_200_000))
+        );
+        assert_ne!(
+            priced.models[0].price,
+            LinePrice::Unpriced(Unpriced::NoModelPrice)
+        );
+
+        // the merged file, which `--print-config` prints, keeps the prices as the strings they were
+        let merged = loaded.merged.unwrap();
+        assert!(merged.contains("0.40"), "{merged}");
+
+        // a refusal is a refusal of the file, naming the key and quoting nothing
+        let bad = format!(
+            "{FILE}usage:\n  prices:\n    currency: EUR\n    models:\n      - {{ model: m, input: \"0.1234567\", cachedInput: \"1\", output: \"1\" }}\n"
+        );
+        let errors = lines(load_file_only(&base(), &bad));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].starts_with("usage.prices.models[0].input: more than six decimals"),
+            "{errors:?}"
+        );
+        assert!(!errors[0].contains("1234567"), "{errors:?}");
     }
 
     const TOOL_SERVERS: &str = "\
