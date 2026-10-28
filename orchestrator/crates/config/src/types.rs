@@ -403,6 +403,13 @@ pub struct Log {
 pub struct Database {
     /// The connection string, a secret. Replaces `DATABASE_URL`.
     pub url: SecretRef,
+    /// The connection string of the database itself, a secret, for what cannot go through a
+    /// transaction-mode pooler (PgBouncer): the migrations at boot, the `LISTEN` connection of the
+    /// wakeup, and the commands that open the database. Optional: without it everything uses `url`,
+    /// as before. When it is set, `url` is the pooled endpoint of every other connection. It must not
+    /// be the same text as `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_url: Option<SecretRef>,
     /// The pool size, at least 2: the wakeup listener holds one (default 10). Replaces
     /// `DATABASE_MAX_CONNECTIONS`.
     #[serde(default = "default_max_connections")]
