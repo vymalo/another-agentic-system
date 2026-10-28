@@ -692,6 +692,17 @@ pub struct Args {
     #[arg(long, env = "DATABASE_URL", value_name = "URL", hide_env_values = true)]
     pub database_url: Option<String>,
 
+    /// The database itself, when `DATABASE_URL` is a transaction-mode pooler (PgBouncer): the
+    /// migrations and the `LISTEN` connection use it, everything else `DATABASE_URL`. Never the same
+    /// text as `DATABASE_URL`. Never logged.
+    #[arg(
+        long,
+        env = "DATABASE_DIRECT_URL",
+        value_name = "URL",
+        hide_env_values = true
+    )]
+    pub database_direct_url: Option<String>,
+
     /// YAML list of `{id, name, transport?, cardUrl?, tokenEnv?, agent?, gate?}`: the agents of
     /// this deployment, listed first. Required unless AGENT_REGISTRY_URL is set, and then it may
     /// be unset or list no agent.
@@ -1185,6 +1196,11 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
 pub struct Config {
     /// `DATABASE_URL`. May contain a password: never logged.
     pub database_url: String,
+    /// `database.directUrl`: the database itself, for what cannot go through a transaction-mode
+    /// pooler (the migrations, the `LISTEN` connection). `None` when the file does not set it
+    /// (there is no variable): everything then uses `database_url`. May contain a password: never
+    /// logged.
+    pub database_direct_url: Option<String>,
     /// `LISTEN_ADDR`.
     pub listen_addr: SocketAddr,
     /// `AGENTS_FILE`, resolved: bearer tokens already read from their environment variables.
@@ -1314,6 +1330,10 @@ impl fmt::Debug for Config {
         let mut debug = f.debug_struct("Config");
         debug
             .field("database_url", &"<redacted>")
+            .field(
+                "database_direct_url",
+                &self.database_direct_url.as_ref().map(|_| "<redacted>"),
+            )
             .field("listen_addr", &self.listen_addr)
             .field("agents", &self.agents)
             .field("gate", &self.gate)
@@ -1402,6 +1422,16 @@ impl Config {
         let log_format = LogFormat::parse(args.log_format.as_deref());
 
         let database_url = clean(args.database_url).ok_or(ConfigError::Missing("DATABASE_URL"))?;
+        let database_direct_url = clean(args.database_direct_url);
+        // two names for one text would say two endpoints and mean one (and every migration would go
+        // through the pooler it was meant to avoid); the error carries no value
+        if database_direct_url.as_deref() == Some(database_url.as_str()) {
+            return Err(ConfigError::Invalid {
+                var: "DATABASE_DIRECT_URL",
+                reason: "is the same as DATABASE_URL: leave it out when there is no pooler in front of the database"
+                    .to_owned(),
+            });
+        }
         let listen_addr = clean(args.listen_addr).unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
         let listen_addr = listen_addr
             .parse::<SocketAddr>()
@@ -1710,6 +1740,7 @@ impl Config {
 
         Ok(Config {
             database_url,
+            database_direct_url,
             listen_addr,
             agents,
             #[cfg(feature = "registry-platform")]
@@ -3076,6 +3107,7 @@ mod tests {
             let slot = match *name {
                 "ORCH_CONFIG_FILE" => &mut args.config,
                 "DATABASE_URL" => &mut args.database_url,
+                "DATABASE_DIRECT_URL" => &mut args.database_direct_url,
                 "AGENTS_FILE" => &mut args.agents_file,
                 "AGENT_REGISTRY_URL" => &mut args.registry_url,
                 "AGENT_REGISTRY_TOKEN" => &mut args.registry_token,
@@ -3913,6 +3945,41 @@ mod tests {
                 ConfigError::NoAgents { .. }
             ));
         }
+    }
+
+    #[test]
+    fn the_direct_database_url_is_optional_never_the_url_and_never_printed() {
+        let config = load(&base(), AGENTS).unwrap();
+        assert_eq!(config.database_direct_url, None);
+
+        let mut env = base();
+        env.push((
+            "DATABASE_DIRECT_URL",
+            "postgres://u:direct-pw@db-direct/orch",
+        ));
+        let config = load(&env, AGENTS).unwrap();
+        assert_eq!(
+            config.database_direct_url.as_deref(),
+            Some("postgres://u:direct-pw@db-direct/orch")
+        );
+        let shown = format!("{config:?}");
+        assert!(
+            !shown.contains("direct-pw") && !shown.contains("secret"),
+            "{shown}"
+        );
+
+        // the same text twice says two endpoints and means one; the error names the variable and
+        // holds no value
+        let mut env = base();
+        env.push(("DATABASE_DIRECT_URL", "  postgres://u:secret@db/orch "));
+        let error = load(&env, AGENTS).unwrap_err().to_string();
+        assert!(error.contains("DATABASE_DIRECT_URL"), "{error}");
+        assert!(!error.contains("secret"), "{error}");
+
+        // blank is unset
+        let mut env = base();
+        env.push(("DATABASE_DIRECT_URL", "  "));
+        assert_eq!(load(&env, AGENTS).unwrap().database_direct_url, None);
     }
 
     #[test]

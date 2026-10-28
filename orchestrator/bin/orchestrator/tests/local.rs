@@ -116,8 +116,7 @@ struct Replica {
 }
 
 fn database_url_of(db: &pgdb::TestDb) -> String {
-    let sep = if db.url.contains('?') { '&' } else { '?' };
-    format!("{}{sep}options=-c%20search_path%3D{}", db.url, db.schema)
+    db.pinned_url()
 }
 
 impl Replica {
@@ -130,6 +129,11 @@ impl Replica {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("DATABASE_URL", database_url_of(db))
+            // behind a pooler the process is also given the database itself, as a deployment is
+            .envs(
+                pgdb::direct_counterpart(&database_url_of(db))
+                    .map(|url| ("DATABASE_DIRECT_URL", url)),
+            )
             .env("AGENTS_FILE", &agents)
             .env("LISTEN_ADDR", ANY_PORT)
             .env("ORCH_ROLE", role)

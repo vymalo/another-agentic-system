@@ -25,7 +25,8 @@ envelope are the HTTP adapter's. Design, with its two diagrams: [`docs/orchestra
 | Item | What |
 |---|---|
 | `LocalAgents::postgres(pool, LocalOptions, &[LocalKind])` | the agents over a Postgres pool: the store `adam-store-postgres` with the prefix `TABLE_PREFIX`, the notifier `adam-notify-postgres` on the channels of the same prefix (none when `steps` is false). Fails on an invalid prefix only |
-| `LocalAgents::connect(database_url, LocalOptions, &[LocalKind])` | builds the pool itself (`concurrency + 4` connections, separate from the orchestrator's) and then `postgres`; a database that cannot be reached is a transient `LocalAgentsError` |
+| `LocalAgents::postgres_direct(pool, direct, LocalOptions, &[LocalKind])`, `DIRECT_CONNECTIONS` (3) | `postgres` for a `pool` that goes through a transaction-mode pooler (PgBouncer): the journal's queries use `pool`; the notifier (its `LISTEN`, and the `NOTIFY`s it sends on the pool it listens with) and the creation of the tables (`migrate`) take `direct`, a pool of connections to the database itself. adam-rs's own migration takes `pg_advisory_xact_lock`, which a pooler keeps, so the tables are on the direct pool by the design of issue 290 rather than by need; the `LISTEN` is the need |
+| `LocalAgents::connect(database_url, direct_url, LocalOptions, &[LocalKind])` | builds the pool itself (`concurrency + 4` connections, separate from the orchestrator's) and then `postgres`; a database that cannot be reached is a transient `LocalAgentsError`. With `Some(direct_url)` the pool has `concurrency + 2` connections (the listener is not taken from it), and `postgres_direct` gets a second pool of `DIRECT_CONNECTIONS` to `direct_url`. A connection string that does not parse is refused without its text, and `extra_float_digits` is not sent (PgBouncer refuses sqlx's default) |
 | `LocalAgents::memory(LocalOptions, &[LocalKind])` | the same over an in-memory journal: nothing survives the process, no other process sees it |
 | `migrate()` | creates the tables if missing; idempotent, safe from every replica at once (an advisory lock of the prefix) |
 | `client() -> LocalAgentClient` | the `AgentClient`; `LocalAgentClient::default()` hosts nothing |
@@ -39,7 +40,7 @@ envelope are the HTTP adapter's. Design, with its two diagrams: [`docs/orchestra
 use orch_agent_adam::{LocalAgents, LocalKind, LocalOptions};
 use tokio_util::sync::CancellationToken;
 
-let agents = LocalAgents::connect(&database_url, LocalOptions::new("replica-1"), &[LocalKind::Echo]).await?;
+let agents = LocalAgents::connect(&database_url, None, LocalOptions::new("replica-1"), &[LocalKind::Echo]).await?;
 agents.migrate().await?;
 let client = agents.client();                    // then PortSet { agents: ByTransport { a2a, local: client }, .. }
 let stop = CancellationToken::new();
@@ -75,7 +76,7 @@ tokio::spawn(async move { agents.run(stop).await });
 | `testkit` | no | `testkit::{LocalFixture, LocalWorld, LocalInstance, scripted_endpoint, SCRIPTED}`: a scripted adam agent (words `echo`, `ask`, `gate`, `slow`, `fail`), the `AgentFixture` of the conformance suite, processes that share one journal (in memory, or a private schema of the test database) and can be killed. Enable as a **dev-dependency** feature |
 
 The crate reads no environment variable; the binary maps `AGENT_LOCAL_CONCURRENCY` and `OUTBOX_LEASE_SECS` onto
-`LocalOptions`. The Postgres tests use `ORCH_TEST_DATABASE_URL` and skip without it.
+`LocalOptions`. The Postgres tests use `ORCH_TEST_DATABASE_URL` and skip without it. `tests/direct.rs` (issue 290) proves the routing of `postgres_direct` from the database's side (an event trigger records the session of every DDL statement: the tables are made by the direct pool; `pg_stat_activity`: one session listens and it is the direct pool's; an echo run completes), with or without a pooler (`ORCH_TEST_DIRECT_DATABASE_URL`). The other suites of this crate isolate by a schema (`search_path`), which a pooler cannot carry, so they run only against Postgres itself; behind a pooler the journal is exercised by the binary's `tests/local.rs`.
 
 ## Tests
 

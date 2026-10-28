@@ -72,9 +72,14 @@ mod enabled {
                 steps,
             };
             let hosted: Vec<LocalKind> = kinds.iter().copied().map(hosted).collect();
-            let agents = LocalAgents::connect(&cfg.database_url, opts, &hosted)
-                .await
-                .context("cannot connect the local agents to Postgres (DATABASE_URL)")?;
+            let agents = LocalAgents::connect(
+                &cfg.database_url,
+                cfg.database_direct_url.as_deref(),
+                opts,
+                &hosted,
+            )
+            .await
+            .context("cannot connect the local agents to Postgres (DATABASE_URL)")?;
             agents
                 .migrate()
                 .await

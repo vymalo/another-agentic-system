@@ -33,6 +33,25 @@ pub fn direct_database_url() -> Option<String> {
     std::env::var(DIRECT_ENV).ok().filter(|v| !v.is_empty())
 }
 
+/// `url` up to the end of its authority (`postgres://user:pw@host:port`) and the rest.
+fn split_authority(url: &str) -> (&str, &str) {
+    let start = url.find("://").map_or(0, |i| i + 3);
+    let end = url[start..].find('/').map_or(url.len(), |i| start + i);
+    url.split_at(end)
+}
+
+/// The same database as `url`, a URL of the pooler `ORCH_TEST_DATABASE_URL` names, over the direct
+/// connection: `None` when no pooler is in front or `url` is not the pooler's. For a process that
+/// takes its connection strings as it is given (the binary's tests): it gets both.
+pub fn direct_counterpart(url: &str) -> Option<String> {
+    let direct = direct_database_url()?;
+    let pooled = database_url()?;
+    let (pooler, _) = split_authority(&pooled);
+    let (server, _) = split_authority(&direct);
+    let (authority, rest) = split_authority(url);
+    (authority == pooler).then(|| format!("{server}{rest}"))
+}
+
 /// `url` with its database replaced: the path between the authority and the query.
 pub fn with_database(url: &str, database: &str) -> String {
     let authority_start = url.find("://").map_or(0, |i| i + 3);
@@ -219,23 +238,20 @@ impl TestDb {
 
     /// A wakeup whose `NOTIFY`s go by a pool of `max` connections to `url` and whose listener is
     /// the direct connection when a pooler is in front (a listener cannot be pooled).
-    pub fn wakeup(&self, app: &str, max: u32) -> impl std::future::Future<Output = PgWakeup> + '_ {
-        let app = app.to_owned();
-        async move {
-            let pool = self.pool(&app, max).await;
-            if self.url == self.direct_url {
-                PgWakeup::start(pool)
-            } else {
-                // the listener's session carries the pool's name, as it does when it is taken from it
-                let sep = if self.pinned_direct_url().contains('?') {
-                    '&'
-                } else {
-                    '?'
-                };
-                let url = format!("{}{sep}application_name={app}", self.pinned_direct_url());
-                PgWakeup::start_direct(pool, &url).expect("a valid URL")
-            }
+    pub async fn wakeup(&self, app: &str, max: u32) -> PgWakeup {
+        self.wakeup_over(self.pool(app, max).await, app)
+    }
+
+    /// A wakeup over `pool`: its listener is taken from it, or, when a pooler is in front, is the
+    /// direct connection (named `app`, as the pool's sessions are).
+    pub fn wakeup_over(&self, pool: PgPool, app: &str) -> PgWakeup {
+        if self.url == self.direct_url {
+            return PgWakeup::start(pool);
         }
+        let direct = self.pinned_direct_url();
+        let sep = if direct.contains('?') { '&' } else { '?' };
+        PgWakeup::start_direct(pool, &format!("{direct}{sep}application_name={app}"))
+            .expect("a valid URL")
     }
 
     /// A migrated store in this schema: the migrations on the direct connection, the queries on `url`.

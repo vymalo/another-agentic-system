@@ -49,8 +49,7 @@ impl Drop for Scratch {
 
 /// The database of a test schema, as a URL the binary connects to.
 fn database_url_of(db: &pgdb::TestDb) -> String {
-    let sep = if db.url.contains('?') { '&' } else { '?' };
-    format!("{}{sep}options=-c%20search_path%3D{}", db.url, db.schema)
+    db.pinned_url()
 }
 
 fn key(hex: &str) -> KeyBytes {
@@ -144,7 +143,9 @@ async fn store(db: &pgdb::TestDb, keys: Keyring) -> PgSecretStore {
     let store = PgSecretStore::connect_with(&database_url_of(db), keys, 2)
         .await
         .unwrap();
-    store.migrate().await.unwrap();
+    PgSecretStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .unwrap();
     store
 }
 
@@ -409,4 +410,45 @@ fn the_service_reads_the_section_and_prints_references_and_no_key() {
     for needle in [K1, K2, "hunter2"] {
         assert!(!printed.contains(needle), "{needle} is in:\n{printed}");
     }
+}
+
+/// With `database.directUrl` the command opens the database itself and never the pooler: here the
+/// pooled `database.url` is an address nobody listens on, and the command still re-seals. Without the
+/// key the same file cannot connect (69, the database is down).
+#[tokio::test]
+async fn it_connects_to_the_direct_url_when_the_file_has_one() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    store(&db, ring("k1", &[("k1", K1)])).await;
+    let config = config(&scratch, "k1", false);
+    let with_key = scratch.write(
+        "with-key.yaml",
+        &std::fs::read_to_string(&config).unwrap().replace(
+            "database: { url: { env: DATABASE_URL } }",
+            "database: { url: { env: DATABASE_URL }, directUrl: { env: DATABASE_DIRECT_URL } }",
+        ),
+    );
+    let nobody = "postgres://nobody:pw@127.0.0.1:1/none";
+    let direct = db.pinned_direct_url();
+    let out = run(
+        &["--config", path_str(&with_key), "secrets", "rewrap"],
+        &[("DATABASE_URL", nobody), ("DATABASE_DIRECT_URL", &direct)],
+    );
+    assert_eq!(code(&out), 0, "stderr: {}", text(&out.stderr));
+    assert_eq!(report(&out)["complete"], true);
+    for stream in [text(&out.stdout), text(&out.stderr)] {
+        assert!(
+            !stream.contains(&direct) && !stream.contains(nobody),
+            "{stream}"
+        );
+    }
+
+    let out = run(
+        &["--config", path_str(&config), "secrets", "rewrap"],
+        &[("DATABASE_URL", nobody)],
+    );
+    assert_eq!(code(&out), 69, "stderr: {}", text(&out.stderr));
 }

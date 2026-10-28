@@ -27,7 +27,7 @@ mod error;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
-pub use agents::{LocalAgents, LocalKind, LocalOptions};
+pub use agents::{DIRECT_CONNECTIONS, LocalAgents, LocalKind, LocalOptions};
 pub use client::LocalAgentClient;
 pub use error::LocalAgentsError;
 

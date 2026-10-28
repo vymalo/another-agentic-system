@@ -29,6 +29,7 @@ No Cargo features.
 | Variable | Meaning |
 |---|---|
 | `ORCH_TEST_DATABASE_URL` | enables the `::postgres` variants and `replicas`; without it they print a notice and pass without running. Each test gets its own schema |
+| `ORCH_TEST_DIRECT_DATABASE_URL` | optional; **only** when `ORCH_TEST_DATABASE_URL` is a transaction-mode pooler's address of the database, and then the database itself. Each test gets a database of its own and the wakeup's listener takes the direct URL; `local_agent`'s Postgres variant is skipped (its journal is shared by a schema). CI's job `pooler` runs the suite so |
 | `ORCH_TEST_MOCK_AGENT_URL`, `ORCH_TEST_MOCK_AGENT_RELEASES_URL`, `ORCH_TEST_MOCK_VERIFIER_URL`, `ORCH_TEST_MOCK_USAGE_URL`, `ORCH_TEST_MOCK_TIERED_URL` | base URLs of the WireMock stand-ins (`docker compose up -d --wait mock-agent mock-agent-releases mock-verifier mock-usage mock-tiered`, ports 8081, 8082, 8083, 8088 and 8089); enable `wiremock_agent` (the verifier tests need the first and the third, the usage test the fourth, the access-tier test the last and the first) |
 | `RUST_LOG` | what a `World` sends to the output of the test that made it, printed when the test fails (default `warn`: a worker that lost its lease, a delegation that was retried, a row that failed) |
 | `UPDATE_GOLDEN` | `1` makes `golden` rewrite `docs/api/examples/*.events.json`, `agui_run` `docs/api/examples/agui/run-*.agui.json`, and `agui_connect` `connect-*.agui.json` and `capabilities-*.json`, instead of failing on a difference |

@@ -758,7 +758,7 @@ impl World {
             Db::Memory { store, wakeup } => Node::Memory(self.app(store.clone(), wakeup.clone())),
             Db::Postgres(db) => {
                 let pool = db.pool(owner, 8).await;
-                let wakeup = PgWakeup::start(pool.clone());
+                let wakeup = db.wakeup_over(pool.clone(), owner);
                 assert!(
                     wakeup.wait_listening(Duration::from_secs(10)).await,
                     "the wakeup listener did not attach"
@@ -826,7 +826,7 @@ impl World {
             }
             Db::Postgres(db) => {
                 let pool = db.pool(owner, 8).await;
-                let wakeup = PgWakeup::start(pool.clone());
+                let wakeup = db.wakeup_over(pool.clone(), owner);
                 assert!(
                     wakeup.wait_listening(Duration::from_secs(10)).await,
                     "the wakeup listener did not attach"

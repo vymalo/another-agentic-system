@@ -117,7 +117,7 @@ pub async fn run_command(command: UsageArgs, args: Args, matches: &ArgMatches) -
         .map_or(loaded.log_format, |v| LogFormat::parse(Some(v)));
     logging::init_stderr(format);
 
-    match run(loaded.database_url.expose_secret(), backfill.page).await {
+    match run(loaded.connection_url().expose_secret(), backfill.page).await {
         Ok(totals) => {
             if totals.skipped == 0 {
                 tracing::info!(

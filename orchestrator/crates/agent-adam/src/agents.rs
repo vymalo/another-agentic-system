@@ -10,12 +10,32 @@ use adam_notify_postgres::PgNotify;
 use adam_runtime::{BroadcastSink, Runtime, RuntimeBuilder};
 use adam_store_postgres::PgStore;
 use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{Entry, LocalAgentClient};
 use crate::error::LocalAgentsError;
 use crate::{TABLE_PREFIX, echo};
+
+/// The connections of the direct pool of [`LocalAgents::postgres_direct`]: the notifier's listener,
+/// its `NOTIFY` (sent one at a time) and the creation of the tables.
+pub const DIRECT_CONNECTIONS: u32 = 3;
+
+/// A pool of `size` connections to `url`, connected now. The connection string is parsed here so
+/// that the error never holds it (it may carry a password), and `extra_float_digits` is not sent:
+/// sqlx sends it by default and PgBouncer refuses it as a startup parameter.
+async fn connect_pool(url: &str, size: u32) -> Result<PgPool, LocalAgentsError> {
+    let options = url.parse::<PgConnectOptions>().map_err(|_| {
+        LocalAgentsError::unavailable(sqlx::Error::Configuration(
+            "the connection string cannot be parsed".into(),
+        ))
+    })?;
+    PgPoolOptions::new()
+        .max_connections(size)
+        .connect_with(options.extra_float_digits(None))
+        .await
+        .map_err(LocalAgentsError::unavailable)
+}
 
 /// A kind of agent this crate can host in the orchestrator's process.
 ///
@@ -129,7 +149,9 @@ impl Hosted {
 /// nothing, and another worker resumes a run from its last commit once the lease has expired.
 pub struct LocalAgents {
     runtime: Runtime,
-    store: DynStore,
+    /// The store [`migrate`](Self::migrate) runs on: the journal's own, unless a direct connection
+    /// was given for it.
+    migrations: DynStore,
     notify: Option<PgNotify>,
     steps: bool,
     entries: Arc<HashMap<String, Entry>>,
@@ -151,18 +173,28 @@ impl LocalAgents {
     /// builds [`postgres`](Self::postgres) over it. The pool is separate from the
     /// orchestrator's, so a burst of steps cannot starve its store. A database that cannot be
     /// reached is a transient [`LocalAgentsError::Store`].
+    ///
+    /// With `direct_url`, the database itself behind a transaction-mode pooler that
+    /// `database_url` points at: the journal's queries use the pool (two connections fewer: the
+    /// listener is not taken from it), and what needs a session takes a pool of
+    /// [`DIRECT_CONNECTIONS`] connections to `direct_url` instead, as
+    /// [`postgres_direct`](Self::postgres_direct) does.
     pub async fn connect(
         database_url: &str,
+        direct_url: Option<&str>,
         opts: LocalOptions,
         kinds: &[LocalKind],
     ) -> Result<Self, LocalAgentsError> {
-        let size = u32::try_from(opts.concurrency.saturating_add(4)).unwrap_or(u32::MAX);
-        let pool = PgPoolOptions::new()
-            .max_connections(size)
-            .connect(database_url)
-            .await
-            .map_err(LocalAgentsError::unavailable)?;
-        Self::postgres(pool, opts, kinds)
+        let headroom = if direct_url.is_some() { 2 } else { 4 };
+        let size = u32::try_from(opts.concurrency.saturating_add(headroom)).unwrap_or(u32::MAX);
+        let pool = connect_pool(database_url, size).await?;
+        match direct_url {
+            None => Self::postgres(pool, opts, kinds),
+            Some(direct) => {
+                let direct = connect_pool(direct, DIRECT_CONNECTIONS).await?;
+                Self::postgres_direct(pool, direct, opts, kinds)
+            }
+        }
     }
 
     /// Local agents whose journal is the Postgres behind `pool`, in tables prefixed
@@ -179,13 +211,49 @@ impl LocalAgents {
         Self::postgres_hosting(pool, opts, kinds.iter().map(|k| k.hosted()).collect())
     }
 
+    /// [`postgres`](Self::postgres) for a `pool` that goes through a transaction-mode pooler
+    /// (PgBouncer): the journal's queries use `pool`, and the notifier's `LISTEN` connection and
+    /// the creation of the tables take `direct`, a pool of connections to the database itself
+    /// ([`DIRECT_CONNECTIONS`] are enough: the listener, a `NOTIFY` and the migration). A `LISTEN`
+    /// cannot be kept by a pooler, and the notifier sends its `NOTIFY`s on the pool it listens
+    /// with, so it takes `direct` whole.
+    pub fn postgres_direct(
+        pool: PgPool,
+        direct: PgPool,
+        opts: LocalOptions,
+        kinds: &[LocalKind],
+    ) -> Result<Self, LocalAgentsError> {
+        let schema = PgStore::from_pool(direct.clone())
+            .with_table_prefix(TABLE_PREFIX)
+            .map_err(LocalAgentsError::Store)?;
+        let mut agents = Self::postgres_hosting_with(
+            pool,
+            direct,
+            opts,
+            kinds.iter().map(|k| k.hosted()).collect(),
+        )?;
+        agents.migrations = Arc::new(schema);
+        Ok(agents)
+    }
+
     /// [`postgres`](Self::postgres) over any hosted set: the testkit adds its scripted agent.
     pub(crate) fn postgres_hosting(
         pool: PgPool,
         opts: LocalOptions,
         hosted: Vec<Hosted>,
     ) -> Result<Self, LocalAgentsError> {
-        let store = PgStore::from_pool(pool.clone())
+        Self::postgres_hosting_with(pool.clone(), pool, opts, hosted)
+    }
+
+    /// The journal over `pool`, the notifier over `notify_pool` (the same pool unless a pooler is
+    /// in front of the journal's).
+    fn postgres_hosting_with(
+        pool: PgPool,
+        notify_pool: PgPool,
+        opts: LocalOptions,
+        hosted: Vec<Hosted>,
+    ) -> Result<Self, LocalAgentsError> {
+        let store = PgStore::from_pool(pool)
             .with_table_prefix(TABLE_PREFIX)
             .map_err(LocalAgentsError::Store)?;
         let events = BroadcastSink::default();
@@ -193,7 +261,7 @@ impl LocalAgents {
         // queue signals nobody sends.
         let notify = if opts.steps {
             Some(
-                PgNotify::new(pool, events.clone())
+                PgNotify::new(notify_pool, events.clone())
                     .with_channel_prefix(TABLE_PREFIX)
                     .map_err(LocalAgentsError::Notify)?,
             )
@@ -259,7 +327,7 @@ impl LocalAgents {
             .collect();
         LocalAgents {
             runtime,
-            store,
+            migrations: store,
             notify,
             steps: opts.steps,
             entries: Arc::new(entries),
@@ -269,7 +337,10 @@ impl LocalAgents {
     /// Creates the journal's tables if they are missing. Idempotent, and safe to run from
     /// every replica at once: the store serialises it with an advisory lock of its own prefix.
     pub async fn migrate(&self) -> Result<(), LocalAgentsError> {
-        self.store.migrate().await.map_err(LocalAgentsError::Store)
+        self.migrations
+            .migrate()
+            .await
+            .map_err(LocalAgentsError::Store)
     }
 
     /// The [`AgentClient`](orch_ports::AgentClient) for the endpoints of these agents.

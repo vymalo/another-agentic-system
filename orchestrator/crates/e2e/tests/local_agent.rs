@@ -54,6 +54,14 @@ fn postgres_available() -> bool {
     if !available {
         eprintln!("skipping the Postgres variant: ORCH_TEST_DATABASE_URL is not set");
     }
+    // The in-process agents' testkit shares a journal by a schema (`search_path`), which a pooler
+    // cannot carry; their journal behind a pooler is the binary's (`tests/local.rs`).
+    if pgdb::direct_database_url().is_some() {
+        eprintln!(
+            "skipping the Postgres variant: ORCH_TEST_DIRECT_DATABASE_URL says a pooler is in front"
+        );
+        return false;
+    }
     available
 }
 
@@ -153,7 +161,7 @@ impl World {
             Db::Memory(store, wakeup) => AnyApp::Memory(app(store.clone(), wakeup.clone(), agents)),
             Db::Postgres(db) => {
                 let pool = db.pool(owner, 8).await;
-                let wakeup = PgWakeup::start(pool.clone());
+                let wakeup = db.wakeup_over(pool.clone(), owner);
                 assert!(
                     wakeup.wait_listening(Duration::from_secs(10)).await,
                     "the wakeup listener did not attach"
