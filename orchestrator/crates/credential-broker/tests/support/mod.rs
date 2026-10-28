@@ -907,6 +907,26 @@ impl Drop for Tripwire {
     }
 }
 
+// ------------------------------------------------------------------------------- waiting
+
+/// Polls `check` every 10 ms until it holds, and fails after 5 seconds, naming `what` it waited for.
+/// How long a spawned task takes to get somewhere depends on the machine, so a test waits for the
+/// thing itself and never for a fixed time.
+pub async fn eventually<F, Fut>(what: &str, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !check().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gave up waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 // ------------------------------------------------------------------------------- the fixture
 
 static OWNERS: AtomicUsize = AtomicUsize::new(0);
