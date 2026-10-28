@@ -1112,6 +1112,20 @@ impl ThreadStore for RacyStore {
     }
 }
 
+/// The ledger of a [`ThreadStore`] is the store's own (ADR 0065): this one reads and sweeps its inner
+/// store's.
+impl orch_ports::UsageLedger for RacyStore {
+    delegate! {
+        month(owner: &orch_core::UserId, month: orch_core::UsageMonth)
+            -> Result<orch_core::UsageMonthTotals, StoreError>;
+        thread_rows(owner: &orch_core::UserId, thread: ThreadId)
+            -> Result<Vec<orch_core::UsageRow>, StoreError>;
+        backfill(after: Option<ThreadId>, limit: u32)
+            -> Result<orch_ports::UsageBackfill, StoreError>;
+        sweep(before: orch_core::UsageMonth, limit: u32) -> Result<u64, StoreError>;
+    }
+}
+
 /// The worker looks for the watch and finds none; before it parks the row, the agent pushes and
 /// the commit that carries the watch lands. The row had not been parked yet, so that commit had
 /// nothing to re-arm: the park itself must see the watch and put the row back.

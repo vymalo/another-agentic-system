@@ -1110,3 +1110,246 @@ pub async fn events_that_are_not_usage_change_nothing<S: LogAndLedger>(store: S)
             .is_empty()
     );
 }
+
+// ---- the retention sweep ----------------------------------------------------------------------
+
+fn month(year: i16, month: i8) -> UsageMonth {
+    UsageMonth::new(year, month).unwrap()
+}
+
+/// An instant in the middle of `month`.
+fn in_month(month: UsageMonth) -> Timestamp {
+    format!("{month}-15T12:00:00Z").parse().unwrap()
+}
+
+/// A call of `agent`'s task made in `month`.
+fn call_in(month: UsageMonth, task: &str, input: u64) -> NewEvent {
+    call_at(
+        in_month(month),
+        "coder",
+        task,
+        &format!("c-{task}"),
+        counts(input, 1),
+    )
+}
+
+/// The sweep removes the tasks of the months strictly before the one it is given, of every person
+/// and whether their thread exists or not, and leaves the month it is given and the newer ones, with
+/// the lines and the sandbox of the tasks it removes.
+pub async fn a_sweep_removes_only_the_months_before_the_limit<S: LogAndLedger>(store: S) {
+    let (oct, nov, dec) = (month(2025, 10), month(2025, 11), month(2025, 12));
+    let kube = SandboxUsage {
+        environment: SandboxEnvironment::Kubernetes,
+        usage: Some(vec![SandboxEntry {
+            cpu_millis: Some(250),
+            memory_bytes: Some(1 << 29),
+            commands: 3,
+            milliseconds: 4000,
+        }]),
+    };
+    let v = open(&store, &alice(), 1).await;
+    let v = append(
+        &store,
+        1,
+        v,
+        vec![
+            call_in(oct, "t-oct", 10),
+            // a task with a sandbox, and one whose sandbox was not measured
+            total_at(
+                in_month(nov),
+                "coder",
+                "t-nov",
+                vec![glm(20, 2)],
+                Some(kube),
+            ),
+            total_at(
+                in_month(nov),
+                "coder",
+                "t-nov-local",
+                vec![glm(1, 1)],
+                Some(SandboxUsage {
+                    environment: SandboxEnvironment::Local,
+                    usage: None,
+                }),
+            ),
+            call_in(dec, "t-dec", 30),
+            call_in(jan(), "t-jan", 40),
+        ],
+    )
+    .await;
+    let b = open(&store, &bob(), 2).await;
+    append(
+        &store,
+        2,
+        b,
+        vec![call_in(oct, "bob-oct", 5), call_in(jan(), "bob-jan", 6)],
+    )
+    .await;
+
+    // nothing is before the first month there is
+    assert_eq!(store.sweep(oct, 100).await.unwrap(), 0);
+    assert_eq!(month_of(&store, &alice(), oct).await.tasks, 1);
+
+    // everything before December goes: October and November, of both people
+    assert_eq!(store.sweep(dec, 100).await.unwrap(), 4);
+    for gone in [oct, nov] {
+        assert_eq!(
+            month_of(&store, &alice(), gone).await,
+            UsageMonthTotals::empty(gone),
+            "{gone}"
+        );
+        assert_eq!(
+            month_of(&store, &bob(), gone).await,
+            UsageMonthTotals::empty(gone),
+            "{gone}"
+        );
+    }
+    // the month it is given stays, and so do the newer ones, with their counts
+    let kept = month_of(&store, &alice(), dec).await;
+    assert_eq!((kept.tasks, kept.models), (1, vec![glm(30, 1)]));
+    let kept = month_of(&store, &alice(), jan()).await;
+    assert_eq!((kept.tasks, kept.models), (1, vec![glm(40, 1)]));
+    assert_eq!(
+        month_of(&store, &bob(), jan()).await.models,
+        vec![glm(6, 1)]
+    );
+    let rows = store.thread_rows(&alice(), thread_id(1)).await.unwrap();
+    let tasks: Vec<&str> = rows.iter().map(|r| r.key.task.as_str()).collect();
+    assert_eq!(tasks, ["t-dec", "t-jan"]);
+
+    // the lines and the sandbox of the removed tasks went with them: a month that held them reads empty
+    let nov_totals = month_of(&store, &alice(), nov).await;
+    assert!(nov_totals.models.is_empty() && nov_totals.sandbox.is_empty());
+    assert!(nov_totals.unmeasured.is_empty());
+
+    // usage logged afterwards does not bring them back: the ledger is through those events
+    append(
+        &store,
+        1,
+        v,
+        vec![message(&alice()), call_in(jan(), "t-jan-2", 1)],
+    )
+    .await;
+    assert_eq!(month_of(&store, &alice(), oct).await.tasks, 0);
+    assert_eq!(month_of(&store, &alice(), nov).await.tasks, 0);
+}
+
+/// A sweep removes at most `limit` tasks, the oldest months first, so a worker can loop in batches;
+/// `limit` of 0 is 1.
+pub async fn a_sweep_takes_at_most_its_limit_oldest_first<S: LogAndLedger>(store: S) {
+    let months = [
+        month(2024, 3),
+        month(2024, 4),
+        month(2024, 5),
+        month(2024, 6),
+        month(2024, 7),
+    ];
+    let v = open(&store, &alice(), 1).await;
+    append(
+        &store,
+        1,
+        v,
+        months
+            .iter()
+            .enumerate()
+            .map(|(i, m)| call_in(*m, &format!("t{i}"), 1))
+            .collect(),
+    )
+    .await;
+    let b = open(&store, &bob(), 2).await;
+    append(&store, 2, b, vec![call_in(months[0], "bob", 1)]).await;
+    let before = month(2025, 1);
+
+    // six tasks are old; the two oldest months (March of both people, then April) go first
+    assert_eq!(store.sweep(before, 2).await.unwrap(), 2);
+    assert_eq!(month_of(&store, &alice(), months[0]).await.tasks, 0);
+    assert_eq!(month_of(&store, &bob(), months[0]).await.tasks, 0);
+    assert_eq!(month_of(&store, &alice(), months[1]).await.tasks, 1);
+
+    assert_eq!(store.sweep(before, 3).await.unwrap(), 3);
+    for m in &months[1..4] {
+        assert_eq!(month_of(&store, &alice(), *m).await.tasks, 0, "{m}");
+    }
+    assert_eq!(month_of(&store, &alice(), months[4]).await.tasks, 1);
+
+    // a limit of 0 takes one
+    assert_eq!(store.sweep(before, 0).await.unwrap(), 1);
+    assert_eq!(month_of(&store, &alice(), months[4]).await.tasks, 0);
+}
+
+/// Sweeping again removes nothing, whatever the limit, and a limit below the tasks that are old
+/// leaves the rest for the next call.
+pub async fn sweeping_again_changes_nothing<S: LogAndLedger>(store: S) {
+    let old = month(2024, 1);
+    let v = open(&store, &alice(), 1).await;
+    append(
+        &store,
+        1,
+        v,
+        vec![call_in(old, "t-old", 1), call_in(jan(), "t-new", 2)],
+    )
+    .await;
+    assert_eq!(store.sweep(jan(), 1000).await.unwrap(), 1);
+    let after = month_of(&store, &alice(), jan()).await;
+    for _ in 0..3 {
+        assert_eq!(store.sweep(jan(), 1000).await.unwrap(), 0);
+        assert_eq!(month_of(&store, &alice(), jan()).await, after);
+    }
+    assert_eq!(after.models, vec![glm(2, 1)]);
+}
+
+/// The rows of an erased thread (they name no thread) are removed with the others when their month is
+/// old, and the rows of a thread that still exists keep naming it until then.
+pub async fn a_sweep_removes_the_old_rows_of_erased_threads_too<S: LogAndLedger>(store: S) {
+    let old = month(2024, 1);
+    let v1 = open(&store, &alice(), 1).await;
+    let v1 = append(&store, 1, v1, vec![call_in(old, "t1", 10)]).await;
+    let v2 = open(&store, &alice(), 2).await;
+    append(
+        &store,
+        2,
+        v2,
+        vec![call_in(old, "t2", 20), call_in(jan(), "t3", 30)],
+    )
+    .await;
+    store
+        .delete_threads(&alice(), &[(thread_id(1), v1)], at(60))
+        .await
+        .unwrap();
+    assert_eq!(
+        month_of(&store, &alice(), old).await.tasks,
+        2,
+        "kept by the erase"
+    );
+
+    assert_eq!(store.sweep(jan(), 100).await.unwrap(), 2);
+    assert_eq!(month_of(&store, &alice(), old).await.tasks, 0);
+    let rows = store.thread_rows(&alice(), thread_id(2)).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key.task, "t3");
+}
+
+/// A task logged again after its row was swept starts a row of its own: what the sweep removed is
+/// gone, and a total (which covers every call of its task) is a whole row in the month it came.
+pub async fn a_task_that_continues_after_its_row_was_swept_starts_again<S: LogAndLedger>(store: S) {
+    let old = month(2024, 1);
+    let v = open(&store, &alice(), 1).await;
+    let v = append(&store, 1, v, vec![call_in(old, "t1", 10)]).await;
+    assert_eq!(store.sweep(jan(), 100).await.unwrap(), 1);
+    append(
+        &store,
+        1,
+        v,
+        vec![total_at(
+            in_month(jan()),
+            "coder",
+            "t1",
+            vec![glm(50, 5)],
+            None,
+        )],
+    )
+    .await;
+    assert_eq!(month_of(&store, &alice(), old).await.tasks, 0);
+    let totals = month_of(&store, &alice(), jan()).await;
+    assert_eq!((totals.tasks, totals.models), (1, vec![glm(50, 5)]));
+}

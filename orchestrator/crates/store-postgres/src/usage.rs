@@ -761,9 +761,26 @@ impl UsageLedger for PgStore {
         }
         Ok(page)
     }
+
+    async fn sweep(&self, before: UsageMonth, limit: u32) -> Result<u64, StoreError> {
+        // One statement: the lines and the sandbox entries go with their task (`ON DELETE CASCADE`).
+        // The oldest months first, and `SKIP LOCKED`: a task a commit is updating at this moment is left
+        // for the next sweep instead of making the sweep wait behind it.
+        let removed = sqlx::query(
+            "DELETE FROM usage_tasks WHERE id IN (SELECT id FROM usage_tasks WHERE month < $1 \
+             ORDER BY month, id LIMIT $2 FOR UPDATE SKIP LOCKED)",
+        )
+        .bind(before.to_string())
+        .bind(i64::from(limit.max(1)))
+        .execute(self.pool())
+        .await
+        .map_err(store_err)?
+        .rows_affected();
+        Ok(removed)
+    }
 }
 
-/// How long the backfill waits for a thread's lock before it leaves the thread for a later run.
+/// How long the backfill waits for a thread's lock before it leaves the thread for a later run. for a thread's lock before it leaves the thread for a later run.
 const BACKFILL_LOCK_TIMEOUT: &str = "5s";
 
 /// Whether the error is Postgres' `lock_not_available` (`55P03`), what `lock_timeout` raises.

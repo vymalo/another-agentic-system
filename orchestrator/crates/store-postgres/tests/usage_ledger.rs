@@ -962,3 +962,128 @@ async fn rows_of_a_thread_an_older_build_erased_are_detached_by_the_backfill() {
     let again = store.backfill(None, 10).await.unwrap();
     assert_eq!((again.threads, again.detached), (0, 0));
 }
+
+/// A call of `task` at `when`, so a task can be counted in an old month.
+fn call_when(when: &str, task: &str, tokens: TokenCounts) -> NewEvent {
+    let mut event = call(task, &format!("c-{task}"), tokens);
+    event.at = when.parse().unwrap();
+    event
+}
+
+fn kube_sandbox() -> SandboxUsage {
+    SandboxUsage {
+        environment: SandboxEnvironment::Kubernetes,
+        usage: Some(vec![
+            SandboxEntry {
+                cpu_millis: Some(250),
+                memory_bytes: Some(1 << 29),
+                commands: 3,
+                milliseconds: 4000,
+            },
+            SandboxEntry {
+                cpu_millis: None,
+                memory_bytes: None,
+                commands: 1,
+                milliseconds: 5,
+            },
+        ]),
+    }
+}
+
+/// The retention sweep is one `DELETE` of `usage_tasks`; the lines and the sandbox entries of a task
+/// go with it by the foreign keys, and nothing is left naming a task that is gone.
+#[tokio::test]
+async fn a_sweep_removes_the_lines_and_the_sandbox_of_its_tasks_and_nothing_else() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let mut old_total = total("t-old", vec![glm(10, 1)], Some(kube_sandbox()));
+    old_total.at = "2024-03-10T10:00:00Z".parse().unwrap();
+    open(
+        &store,
+        &alice(),
+        vec![
+            old_total,
+            call_when("2024-04-10T10:00:00Z", "t-old-2", counts(5, 1)),
+            total("t-new", vec![glm(20, 2)], Some(kube_sandbox())),
+        ],
+    )
+    .await;
+    assert_eq!(scalar(&store, "SELECT count(*) FROM usage_tasks").await, 3);
+    assert_eq!(scalar(&store, "SELECT count(*) FROM usage_lines").await, 3);
+    assert_eq!(
+        scalar(&store, "SELECT count(*) FROM usage_sandbox").await,
+        4
+    );
+
+    assert_eq!(store.sweep(jan(), 100).await.unwrap(), 2);
+
+    assert_eq!(scalar(&store, "SELECT count(*) FROM usage_tasks").await, 1);
+    assert_eq!(scalar(&store, "SELECT count(*) FROM usage_lines").await, 1);
+    assert_eq!(
+        scalar(&store, "SELECT count(*) FROM usage_sandbox").await,
+        2
+    );
+    assert_eq!(
+        scalar(
+            &store,
+            "SELECT count(*) FROM usage_lines WHERE task_id NOT IN (SELECT id FROM usage_tasks)"
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar(
+            &store,
+            "SELECT count(*) FROM usage_sandbox WHERE task_id NOT IN (SELECT id FROM usage_tasks)"
+        )
+        .await,
+        0
+    );
+    let kept = store.month(&alice(), jan()).await.unwrap();
+    assert_eq!((kept.tasks, kept.models), (1, vec![glm(20, 2)]));
+    assert_eq!(kept.sandbox.len(), 2, "the kept task's sandbox is whole");
+}
+
+/// A task row another transaction holds (a commit that is moving it) is left for the next sweep: the
+/// sweep neither waits for it nor fails, and the other rows go.
+#[tokio::test]
+async fn a_sweep_leaves_a_row_that_is_held_and_does_not_wait_for_it() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    open(
+        &store,
+        &alice(),
+        vec![
+            call_when("2024-03-10T10:00:00Z", "held", counts(1, 1)),
+            call_when("2024-03-11T10:00:00Z", "free", counts(2, 1)),
+        ],
+    )
+    .await;
+    let held_id: i64 = sqlx::query_scalar("SELECT id FROM usage_tasks WHERE task = 'held'")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+    let holder = db.pool("holder", 1).await;
+    let mut tx = holder.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM usage_tasks WHERE id = $1 FOR UPDATE")
+        .bind(held_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+
+    let removed = tokio::time::timeout(std::time::Duration::from_secs(5), store.sweep(jan(), 100))
+        .await
+        .expect("the sweep waited for a row somebody holds")
+        .unwrap();
+    assert_eq!(removed, 1, "only the row nobody holds");
+    assert_eq!(scalar(&store, "SELECT count(*) FROM usage_tasks").await, 1);
+
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        store.sweep(jan(), 100).await.unwrap(),
+        1,
+        "the next sweep takes it"
+    );
+    assert_eq!(scalar(&store, "SELECT count(*) FROM usage_tasks").await, 0);
+}

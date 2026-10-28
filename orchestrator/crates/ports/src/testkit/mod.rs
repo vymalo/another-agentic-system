@@ -534,6 +534,11 @@ macro_rules! usage_ledger_conformance {
             a_fork_does_not_count_the_events_it_copied
             backfill_leaves_alone_what_the_ledger_is_through
             events_that_are_not_usage_change_nothing
+            a_sweep_removes_only_the_months_before_the_limit
+            a_sweep_takes_at_most_its_limit_oldest_first
+            sweeping_again_changes_nothing
+            a_sweep_removes_the_old_rows_of_erased_threads_too
+            a_task_that_continues_after_its_row_was_swept_starts_again
         );
     };
     (@cases $make:path; $($case:ident)*) => {

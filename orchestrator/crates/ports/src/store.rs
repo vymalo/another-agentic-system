@@ -839,7 +839,7 @@ impl Classify for StoreError {
 /// same way, and so does `commit` for its `inbox` field. The inbox is part of this trait and
 /// not a port of its own because a commit must be atomic across the thread and the inbox row
 /// it applies (ADR 0016).
-pub trait ThreadStore: Send + Sync + 'static {
+pub trait ThreadStore: crate::UsageLedger + Send + Sync + 'static {
     /// Cheap reachability check (readiness).
     fn ping(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
 
