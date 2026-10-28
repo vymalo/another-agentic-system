@@ -1,14 +1,15 @@
 # ADR 0065 — A usage ledger per person: counted per task by month, written in the commit of the event, outliving the thread
 
-- **Status:** **proposed (2026-10-27).** The design is the owner-side comment on
+- **Status:** **proposed (2026-10-27); PR 2 built in this change (2026-10-28), still proposed.** The design is the owner-side comment on
   [issue 281](https://github.com/vymalo/another-agentic-system/issues/281) ("A usage record per person, priced by model", the epic
   [274](https://github.com/vymalo/another-agentic-system/issues/274), M2: usage and limits per person), written the same day as "open to
   objection; the build starts from this and records it as an ADR". **Proposed**, for the owner to confirm: every name, default and shape
   below, and the [decisions the build settled](#what-the-build-settled-for-the-owner-to-confirm). The build is two pull requests:
-  **PR 1 is built with this ADR** (decisions 1 to 4 and 8's buckets: the pure change in `orch-core`, the port `UsageLedger` with its
-  testkit, the in-memory and Postgres adapters, migration `0023`, the write in the event's transaction, the erase that clears the thread id,
-  the catch-up and the backfill command); **PR 2 is not built** (decisions 5 to 7 and 9, and the retention of 8: the price table, the
-  answer of `GET /api/me/usage`, the sweep, the scenario on mocks). Builds on [ADR 0056](0056-token-usage-per-model-call.md) (the events it
+  **PR 1 is built** (decisions 1 to 4 and 8's buckets: the pure change in `orch-core`, the port `UsageLedger` with its testkit, the in-memory
+  and Postgres adapters, migration `0023`, the write in the event's transaction, the erase that clears the thread id, the catch-up and the
+  backfill command); **PR 2 is built in this change** (decisions 5 to 7 and 9, and the retention of 8: the price table in the configuration,
+  the pure pricing in `orch-core`, `GET /api/me/usage`, the sweep and its worker). What PR 2 does not carry, and a later change of the same
+  PR does, is the scenario on mocks (`dev/`) and the chart. Builds on [ADR 0056](0056-token-usage-per-model-call.md) (the events it
   counts), [ADR 0043](0043-deleting-a-thread-erases-it.md) (what an erase leaves) and [ADR 0009](0009-swappable-implementations-at-build-time.md)
   (a port has a testkit). **It amends invariant 3** of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 1) with a
   dated note, as [ADR 0042](0042-the-thread-list-is-the-owners.md) and [ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)
@@ -83,23 +84,31 @@ The nine decisions of the design comment, in its order, each with what PR 1 buil
      **A catch-up costs by the tasks it touches, not by its events:** it reads the log in pages of 500, folds each event into its task's row in memory with
      `UsageRow::fold`, and loads and writes each row once (build item 11). The backfill waits at most 5 s for a thread's lock, skips and counts a thread it cannot
      lock (the command then exits 75 and the next run takes it), and its first page makes the rows of threads an older build erased name no thread (build item 12).
-5. **Prices are configuration, in integers.** *(PR 2, not built.)* `usage.prices` holds one currency per deployment and, per `provider`/`model`, a price per
-   million tokens for `input`, `cachedInput` and `output`; for the sandbox, a price per CPU-core hour and per GiB-hour of the requests. No `f64`: prices
-   are decimal strings, parsed exactly into millionths of the currency unit and computed in `i128`, rounded half up once per line. Cached tokens are a
-   part of the input (the cached part at `cachedInput`, the rest at `input`); reasoning tokens a part of the output, priced as output. The ledger already
-   keeps the counts this needs: the parts of the totals, and the sandbox entries per shape.
-6. **A model with no price is said so, never counted as free.** *(PR 2.)* Its line carries the counts and `"price": null`; the total says
-   `"complete": false` and lists what is unpriced. The same for a sandbox entry that lacks a CPU or memory request, and for a sandbox that was not measured
-   (`local`, `devcontainer`). PR 1 keeps what this needs: the month's read returns the sandbox time per shape (with `None` for a request the pod did not
-   have) and, apart, the tasks whose sandbox was not measured per environment (`UsageMonthTotals.unmeasured`), so "not measured" is never a zero.
-7. **The ledger keeps counts, not money.** *(PR 2.)* The answer is priced with the **current** table and says which table it used. Prices frozen at the time
-   of use are for receipts (M3, [issue 288](https://github.com/vymalo/another-agentic-system/issues/288)), not this ticket.
-8. **Periods and how far back.** Rows go in the **UTC calendar month** of the event (`UsageMonth`, `YYYY-MM`); `usage.retentionMonths`, default **24**, and a
-   sweep that removes older months are PR 2. The real number is the owner's and the law's (M5). A task's row is in the month of **the latest event that
-   changed it** (settled in the build, list item 2).
-9. **The API: `GET /api/me/usage?month=YYYY-MM`**, the current month by default. *(PR 2.)* The route has no owner parameter, as threads have none (ADR 0039),
-   so another person's usage is never in an answer. It answers per provider and model with the counts and the price, the sandbox per shape, and the priced
-   total with `complete` and its currency. PR 1 stops at the port: `UsageLedger::month` is what the route will call.
+5. **Prices are configuration, in integers.** `usage.prices` holds one currency per deployment and, per `provider`/`model`, a price per
+   million tokens for `input`, `cachedInput` and `output`; for the sandbox, a price per CPU-core hour and per GiB-hour of the requests. No `f64`:
+   prices are decimal strings, parsed exactly into millionths of the currency unit and computed in checked integers, rounded half up once per
+   line. Cached tokens are a part of the input (the cached part at `cachedInput`, the rest at `input`); reasoning tokens a part of the output,
+   priced as output. The ledger already keeps the counts this needs: the parts of the totals, and the sandbox entries per shape. *Built in PR 2:*
+   `orch_core::price_month` (pure, [`pricing.rs`](../../orchestrator/crates/core/src/pricing.rs)), `usage.prices` in
+   [`config.md`](../api/config.md#usage) and `orch-config` (every price a decimal string, refused as a YAML number), and the mapping in the
+   binary. The shape of the file is
+   `usage: { retentionMonths: 24, prices: { currency: EUR, models: [{ provider?, model, input, cachedInput, output }], sandbox: { cpuCoreHour, gibHour } } }`.
+6. **A model with no price is said so, never counted as free.** Its line carries the counts and `"price": null`; the total says
+   `"complete": false` and lists what is unpriced. The same for a sandbox entry that lacks a CPU or memory request, and for a sandbox that was not
+   measured (`local`, `devcontainer`). PR 1 keeps what this needs: the month's read returns the sandbox time per shape (with `None` for a request
+   the pod did not have) and, apart, the tasks whose sandbox was not measured per environment (`UsageMonthTotals.unmeasured`), so "not measured" is
+   never a zero. PR 2 puts the words on it: `LinePrice::Unpriced(Unpriced)` with a closed reason (`NoTable`, `NoModelPrice`, `NoSandboxPrice`,
+   `NoRequests`, `Overflow`), and the total is the sum of the lines that are priced.
+7. **The ledger keeps counts, not money.** The answer is priced with the **current** table and says which table it used (`prices`, the id of the
+   table: [build item 16](#what-the-build-settled-for-the-owner-to-confirm)). Prices frozen at the time of use are for receipts (M3,
+   [issue 288](https://github.com/vymalo/another-agentic-system/issues/288)), not this ticket.
+8. **Periods and how far back.** Rows go in the **UTC calendar month** of the event (`UsageMonth`, `YYYY-MM`); `usage.retentionMonths`, default
+   **24** (1 to 1200), and a sweep removes older months: the current month is one of the months kept, so 24 keeps this month and the 23 before it
+   (`UsageMonth::first_kept`; [build item 19](#what-the-build-settled-for-the-owner-to-confirm)). The real number is the owner's and the law's
+   (M5). A task's row is in the month of **the latest event that changed it** (settled in the build, list item 2).
+9. **The API: `GET /api/me/usage?month=YYYY-MM`**, the current month by default. The route has no owner parameter, as threads have none
+   (ADR 0039), so another person's usage is never in an answer. It answers per provider and model with the counts and the price, the sandbox per
+   shape, and the priced total with `complete` and its currency (the contract is `getMyUsage` in [`chat-api.yaml`](../api/chat-api.yaml)).
 
 ```mermaid
 sequenceDiagram
@@ -136,7 +145,7 @@ stateDiagram-v2
   Total --> Total: model_usage changes nothing
   Calls --> Erased: the thread is erased, thread_id cleared
   Total --> Erased: the thread is erased, thread_id cleared
-  Erased --> [*]: the retention sweep removes the month (PR 2)
+  Erased --> [*]: the retention sweep removes the month
 ```
 
 The month of a row moves with every change that is not ignored; the diagram shows the counts, not the month.
@@ -198,6 +207,60 @@ The design comment left these open or did not see them. Each is the smallest thi
     under `ACCESS EXCLUSIVE`: 52 ms per million rows against 0.6 ms, measured 2026-10-27), and `usage_tasks.sandbox_environment` is checked for its shape only
     (`^[a-z][a-z0-9_-]{0,31}$`), because the three words of today's `SandboxEnvironment` would have failed every commit that carries a new variant, and a commit that
     fails is retried. `0023` is not on `main`; a database that applied the earlier text is recreated.
+14. **Cache-write tokens are priced at `input`; cached tokens are capped at the input.** `cacheWriteInputTokens` is a part of `inputTokens` (usage-v1.md) and is
+    **not** subtracted from it, so it is charged at `input` with the rest of the uncached input; only `cachedInputTokens` (read from a cache) moves to
+    `cachedInput`. Reasoning tokens are a part of `outputTokens` and are priced as output. A line is `(input - cached) * input_price + cached *
+    cached_price + output * output_price`, per million tokens; `cached` is taken as at most `input` (an agent that says more cached than input cannot make
+    a count negative or charge a token twice), and an unknown cached part (`None`) is zero. *Rejected:* a fourth price for cache writes (the design has
+    three, and the providers that charge more for a write are a case for a later key, not a guess now).
+15. **A line matches the entry of the same provider and model, exactly.** An absent `provider` matches an absent one and nothing else; the model is
+    compared byte for byte (no case folding, no prefix). A table cannot hold two entries for one provider and model (refused at load, naming the first), and
+    a `provider` that is empty is refused (the ledger stores an absent provider as `''` and reads it back as absent, so an entry with `Some("")` could never
+    match: leave the key out). `cachedInput` is **required** even for a model with no cache discount (it says its `input` again): defaulting it would be a
+    price nobody wrote.
+16. **The id of a table is the first 16 hex digits of the SHA-256 of its canonical form.** The canonical form is text written from the parsed table: the
+    currency, the model entries ordered by provider (none first) and model, each as JSON strings and integer millionths, and the sandbox prices or `none`. The
+    same table has one id whatever the order of its entries or how a price was written (`0.40` and `0.4`); any price, the currency, a provider and the sandbox
+    change it. It is `null` with no table. It is 64 bits of a hash used as a name for a person to compare two answers, not a defence against anything.
+17. **Rounding is once per line, half up; the total is the sum of the rounded lines.** A token line divides by 1 000 000 once, a sandbox line is one exact
+    fraction `ms * (cpu * pc * 2^30 + memory * pg * 1000) / (3 600 000 * 1000 * 2^30)`, and `remainder >= denominator - remainder` rounds up. The total adds
+    the priced lines **as rounded**, so it equals what a reader gets by adding the column, and may differ from the rounding of the exact sum by up to half a
+    millionth a line. *Rejected:* rounding the total once (a column that does not add up).
+18. **Money is `u128` millionths and every step is checked.** A price is bounded to 1 000 000 currency units (10^12 millionths), which keeps products of a
+    price, a count and the sandbox factors far inside `u128`; a line whose arithmetic still overflows (absurd counts, a shape of 2^53 millicores for 2^53 ms) is
+    **unpriced with `Overflow`**, never a panic and never a wrong number, and a total that would overflow saturates and is not `complete`. The design said
+    `i128` "or a newtype": the amount is never negative, so the newtype holds a `u128` (`Micros`).
+19. **The retention counts the current month, and the sweep is hourly, in batches.** `usage.retentionMonths` months are kept **including** the current UTC
+    month: 24 from 2026-10 keeps 2024-11 on, and `first_kept` is the month the sweep is given as `before` (strictly before goes). A pass runs once when a
+    process starts and then every hour, in every process that runs workers (`all` and `worker`, with the purge sweep), removing 1000 tasks per statement, the
+    oldest months first, with a pause of 100 ms between full batches, at most 1000 batches a pass, and stopping on shutdown. Several replicas may sweep at
+    once: a batch takes `FOR UPDATE SKIP LOCKED`, so it never waits behind a commit or another sweep. One info line per pass that removed anything says the
+    first month kept, the retention and the number of tasks (no person, no content), and `usage_tasks_swept_total` counts them. The numbers are not keys.
+20. **What the sweep does not undo or guard.** It touches neither the log nor a thread's watermark (`usage_through`), so usage that was swept is not folded in
+    again by a catch-up or the backfill. A task that continues after its row was swept starts a row of its own from the events that come after: a total is
+    whole and a later call adds to nothing. *Known edge, unverified under load:* a commit that has read the row of a task whose month is older than the
+    retention and writes it after a sweep removed it fails on the foreign key of its lines and is retried (a commit that fails is retried, item 13); that is a
+    task more than the retention old that has just received an event, and the retry starts it afresh. The sweep is not per person: the retention is the
+    deployment's.
+21. **`UsageLedger` is a supertrait of `ThreadStore`.** The application reaches the ledger through the store of its ports, and a `ThreadStore` that writes no
+    ledger would not compile, which makes the rule of "Consequences" a fact of the type system. It is a breaking change for an implementation of
+    `ThreadStore` outside this workspace (it must implement `month`, `thread_rows`, `backfill` and the new `sweep`); the only one here besides the two
+    adapters is a test double that delegates. `sweep(before, limit)` is a required method; nothing but the worker calls it.
+22. **The route asks for an identity and nothing more, as `GET /api/me` does.** `GET /api/me/usage` sits beside `/api/me`, outside the guard that refuses a
+    person whose roles grant nothing, because it is the person's own data and changes nothing. There is **no permission to read it**: a deployment that wants
+    "only people who may use an agent see a bill" needs a permission (`usage.read`), which is a change of `auth.roles` and of the built-in roles and an owner
+    decision. The query accepts the key `month` and nothing else, so an `owner` or `user` parameter is a 400 and can never be added by forgetting; a month given
+    twice, empty or not `YYYY-MM` is a 400; **nothing else is a 4xx**.
+23. **The answer's shape.** Amounts (`price`, `amount`) are strings with exactly six fraction digits, never JSON numbers; a line that cannot be priced has
+    `"price": null` (present, null); `currency` and `prices` are `null` with no table (the total repeats the currency). A model line is the counts as
+    `ModelTokens` writes them (the provider and the parts `reasoningTokens`, `cachedInputTokens`, `cacheWriteInputTokens` omitted when unknown), a sandbox line
+    omits `cpuMillis` or `memoryBytes` it does not have, and `total.unpriced` counts **tasks** for `unmeasured` and **shapes** for `sandbox`. Counts are JSON
+    integers: a count past 2^53 would lose precision in a browser, which the ledger's own cap (`i64::MAX`) allows only to an agent that lies on purpose.
+24. **A month with nothing is an empty, complete answer.** The default month is the current UTC month by the clock of the ports (`FixedClock` in the tests).
+    A month in the future, one older than the retention and `0001-01` or `9999-12` answer 200 with no lines, `0.000000` and `complete: true`: the route does
+    not say what the ledger keeps. An answer is priced with the table as it is **now**, even for a past month (decision 7).
+25. **Prices are configuration of the process and are read at start.** Changing a price is a restart, as every key of the file is; the table cannot be
+    changed per person. Zero is a price (`"0"`: a model that is free says so); an entry that is absent is unpriced, which is not the same.
 
 ## Consequences
 
@@ -215,8 +278,8 @@ The design comment left these open or did not see them. Each is the smallest thi
   the ledger folds in what the older one wrote. Run `orchestrator usage backfill` once after the rollout for the threads no one writes to.
 - Harder: the ledger is a second place that holds usage, so a future change to what a total means must change `UsageRow::fold` and re-fold; the backfill
   can do it for threads whose log still exists, and cannot for erased ones.
-- **Not done here:** prices, the route, the sweep and the scenario (PR 2); a screen; limits and credits (M2's next tickets); receipts (M3); the person's
-  deletion ([issue 294](https://github.com/vymalo/another-agentic-system/issues/294)).
+- **Not done here:** the scenario on mocks and the chart's `usage` values (the next change of PR 2); a screen; limits and credits (M2's next tickets);
+  receipts (M3); the person's deletion ([issue 294](https://github.com/vymalo/another-agentic-system/issues/294)).
 
 ## Alternatives rejected
 
@@ -240,5 +303,15 @@ The design comment left these open or did not see them. Each is the smallest thi
   one transaction, the catch-up of events written by hand as an older build would write them, an event that does not decode, the SQL sums against the pure sums, a
   counter that fills, the backfill beside commits, the statements a catch-up and `thread_rows` send, a thread whose lock is held skipped and taken by a later run,
   the rows of an erased thread detached, and the migration's shape checks).
+- *Verified 2026-10-28*, by running them (Postgres 16 for the Postgres cases): `price_month` and its table in `crates/core/tests/pricing.rs` (26 cases: rounding half
+  up once, the cached split and its cap, no price, provider matching, overflow, the sandbox fraction, unmeasured, no table, five properties; two mutations of the
+  code, truncating and not capping the cached part, each fail them); the configuration in `crates/config/tests/usage.rs` (17 cases: exact decimal parsing, every
+  refusal naming its key, no value quoted); the five `sweep` cases of `usage_ledger_conformance!` on the in-memory and the Postgres store, and two Postgres-only
+  cases (the cascade of the lines and the sandbox, and that a held row is skipped without waiting); the worker and the priced month in
+  `crates/app/tests/usage_ledger.rs`; and the route in `crates/api/tests/usage.rs` (11 cases, answers validated against `MyUsage`) and in `contract.rs`. The web's
+  generator (`openapi-typescript` 7.13.0) accepts the contract with `getMyUsage`.
+- *Unverified:* the sweep's cost and its plan on a ledger of millions of rows (the statement is one `DELETE` over `usage_tasks_month`, ordered by month and
+  limited), the sweep beside many commits at once, and the edge of item 20; the scenario on mocks (the next change); a price table written by a person and read
+  by a real finance review.
 - *Unverified:* the cost of the added statements under load; the backfill on a database with millions of threads (it is paged and resumable, and its pages
   are one transaction per thread); the law's view of what a ledger of usage per e-mail may keep, which M5 decides.
