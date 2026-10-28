@@ -130,7 +130,8 @@ Related: [sys#170](https://github.com/vymalo/another-agentic-system/issues/170) 
 
 **Done already.** Tokens are recorded as `model_usage` events of the thread ([ADR 0056](docs/decisions/0056-token-usage-per-model-call.md)),
 with no price and no total per person. Sandbox time is not recorded. The dispatcher has 32 global slots and the edge
-sets no rate limit ([open question 51](docs/open-questions.md)).
+sets no rate limit by default: the chart can render one per client address (`ingress.rateLimit`, off, on renders and a kind job that CI has not run yet), and whether the netcup ingress
+shows the right address is still [open question 51](docs/open-questions.md).
 
 | Ticket | Repo | Size | Labels | Who and when |
 |---|---|---|---|---|

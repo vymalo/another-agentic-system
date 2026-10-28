@@ -41,6 +41,7 @@ flowchart LR
 | `Deployment` oauth2-proxy | `v7.15.5`, provider `keycloak-oidc`, auth_request mode, secrets from the environment |
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities |
 | `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer` |
+| `Middleware` (Traefik) | **off by default** (`ingress.rateLimit.enabled`): [a limit per client address](#a-limit-per-client-at-the-edge) on that Ingress, a `RateLimit` the Ingress names in `traefik.ingress.kubernetes.io/router.middlewares` |
 | `Cluster` (CNPG) | **one**, `another-agentic-db`: the orchestrator's database (its connection string is the `uri` key of `another-agentic-db-app`) and, beside it, [a role and a database per agent](#one-database-cluster) |
 | `ObjectStore` + `ScheduledBackup` (CNPG), `ExternalSecret`, a plugin on the `Cluster` | **off by default** (`backup.enabled`): [continuous backups of that cluster to S3](#backups) by the barman-cloud plugin; a restore is a new cluster: [`examples/restore-cluster.yaml`](examples/restore-cluster.yaml) to try it, [`examples/restore-cutover.yaml`](examples/restore-cutover.yaml) to replace a lost one |
 | `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); one more per coder in `sharedDatabase.coders` (or `coder`, with the older `sharedDatabase.coder.enabled`) |
@@ -142,6 +143,7 @@ commented; the ones that matter:
 | `oauth2Proxy.redis.image`, `.maxMemory`, `.persistence.enabled`, `.persistence.size`, `.persistence.storageClass`, `.resources` | `redis:8.8.3-alpine` by tag **and** digest, `64mb`, `false`, `1Gi`, `longhorn`, 25m/64Mi and a 128Mi limit | the Redis, read only with `sessionStore: redis`; `persistence.enabled: true` keeps the sessions across a restart of its pod |
 | `externalSecrets.properties.oauth2RedisPassword` | `oauth2_redis_password` | [the new property](#the-aws-secret); read only with `sessionStore: redis` |
 | `ingress.clusterIssuer`, `className` | `cert-cloudflare`, `traefik` | the certificate's issuer |
+| `ingress.rateLimit.enabled`, `.average`, `.period`, `.burst`, `.sourceDepth` | `false`, `20`, `1s`, `50`, `0` | [a limit per client address at the Ingress](#a-limit-per-client-at-the-edge): a Traefik `RateLimit`, **off** because the limit is only as good as the address it counts. `average` per `period` (whole numbers from 1; `ms`, `s`, `m`, `h`), a bucket of `burst`, the client being the peer (`sourceDepth: 0`) or the N-th entry from the right of `X-Forwarded-For` (1 to 5). A wrong number is refused, on or off; on without `ingress.enabled` is refused. The deployer's own `router.middlewares` annotation is kept after ours |
 | `database.*` | 1 instance, `longhorn`, 10Gi | the one CNPG Cluster ([one cluster, three databases](#one-database-cluster)); the chat agent has no `chat.database` any more |
 | `sharedDatabase.coders` | `[]` | one entry `{ name, secretName, passwordProperty }` per coder: a role, a `Database` and the Secret that coder's chart reads (key `uri`), on the one cluster ([several coders](#several-coders-one-per-github-owner)). Refused: a name that is not lower-case letters and digits, `agent`, `postgres`, `template0`, `template1`, the orchestrator's database or owner, or a name, Secret or property used twice; a missing `passwordProperty` (except for the name `coder`) |
 | `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | **the older form, one coder**: the same as one entry named `coder` (the render is unchanged: [tests/golden](tests/golden)); off: no coder role, database or Secret, and no `coder_db_password` is read. Both this and `coders`: refused |
@@ -534,7 +536,7 @@ are Next's `/_next/static` and the icons of `web/src/app` and `web/public/brand`
 [`files/Caddyfile`](files/Caddyfile). Everything else is unchanged, fail closed: `/api/shared/*` and `/agui/shared/*` (the signed-in readers) answer
 401 without a session, `/`, `/threads/*` and anything unlisted redirect to sign in (but `/config.json`, the web's runtime configuration, which the page reads with no credentials before anything else and which holds no secret: it is public with or without sharing), `/thread-tools/*` is 404, and a POST, PUT or DELETE to a
 public path is routed as before (401). The orchestrator's own rate limit (per link and in all, ADR 0040 section 10) is what limits the public
-routes: it is per process and the numbers are the ADR's, *unverified* under load.
+routes: it is per process and the numbers are the ADR's, *unverified* under load. A limit per client address at the Ingress is [an option of the chart, off by default](#a-limit-per-client-at-the-edge) (issue #284); it does not replace that one.
 
 ```mermaid
 sequenceDiagram
@@ -576,6 +578,106 @@ start) and an orchestrator image that has the `sharing` section: the pinned tag 
 the backend of ADR 0040, and the chart's CI reads the public render through the pinned image with `--print-config`). Start with `internal`; the
 ADR's order is `public` only after the limiter, which the orchestrator always builds with `public`. **Before `public`, check whether the
 Traefik ingress logs request paths** (a link is a capability in the path): *unverified*, ADR 0040 section 11 says to check it first.
+
+## A limit per client at the edge
+
+The chart can limit how fast one client address may call the host: a Traefik [`RateLimit`](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/ratelimit/)
+middleware (`traefik.io/v1alpha1`, a custom resource of the cluster's Traefik) that the chart renders and names on its own `Ingress` with the annotation
+`traefik.ingress.kubernetes.io/router.middlewares: <namespace>-<name>@kubernetescrd` (issue #284; [ADR 0040](../../docs/decisions/0040-thread-sharing-by-revocable-link.md) section 10,
+amended 2026-10-28). It is **off by default**, and this section says why and how to turn it on.
+
+| Value | Default | What |
+|---|---|---|
+| `ingress.rateLimit.enabled` | `false` | renders the `Middleware` and names it on the Ingress; refused without `ingress.enabled` |
+| `ingress.rateLimit.average` | `20` | requests allowed per `period` for one client address (a whole number, 1 to 1000000: Traefik reads 0 as "no limit", so the chart refuses it) |
+| `ingress.rateLimit.period` | `1s` | the period of `average`: a whole number above zero and `ms`, `s`, `m` or `h` |
+| `ingress.rateLimit.burst` | `50` | requests one address may make at once (the bucket's size; a whole number, 1 to 1000000) |
+| `ingress.rateLimit.sourceDepth` | `0` | which address is the client's: `0` is the peer that connected to Traefik; `1` to `5` is that entry counted from the **right** of `X-Forwarded-For` (`sourceCriterion.ipStrategy.depth`) |
+
+The numbers are checked whether or not the limit is on, so a wrong one is found when it is written and not the day it is turned on.
+
+**What it does.** Traefik keeps a token bucket for each client address: it holds `burst` requests at once and gains `average` per `period`. A request that finds the
+bucket empty is answered by Traefik's own `429` (with `Retry-After`), and nothing else: the chart adds no access log and no body of its own. (A request that would have to wait less than half the interval between two tokens, 25 ms at 20 a second, is held that long instead of refused: Traefik's own smoothing.) The middleware runs first in the
+router's chain, so a `router.middlewares` the deployment already sets in `ingress.annotations` is kept, after ours, in the same comma-separated value. It covers every path
+of the host (the web, the API, the streams, the public share routes), not [the files host](#the-files-host-adr-0058), which has its own Ingress. A request is counted when it
+arrives, so **an SSE stream counts once, at connect**, and costs no more for the time it stays open (read in Traefik's source, *not run*). The buckets are in each Traefik
+pod's memory: two Traefik replicas give a client twice the rate, and a restart empties them.
+
+**The starting point** is `average: 20`, `period: 1s`, `burst: 50` for each address (*unverified* under real traffic). A page load of the web asks for the shell, a few dozen
+static files, the thread list and a stream; the burst is meant to hold one, and the rate is meant to be far above what a person does and far below what a script does. Measure
+before you tighten it. The orchestrator's own limit (per process, per link, [ADR 0040 section 10](../../docs/decisions/0040-thread-sharing-by-revocable-link.md)) is the other layer
+and stays: it does not depend on the address.
+
+```mermaid
+sequenceDiagram
+  participant C as client
+  participant T as Traefik
+  participant E as edge (Caddy)
+  C->>T: request (X-Forwarded-For: maybe)
+  Note over T: entrypoint: a peer not in forwardedHeaders.trustedIPs loses its X-Forwarded-*
+  Note over T: the rate limit: source = peer address (depth 0) or the N-th entry from the right of X-Forwarded-For
+  alt the source's bucket has a token
+    T->>E: the deployer's middlewares, then the Ingress's backend
+    E-->>C: the answer
+  else empty
+    T-->>C: 429 with Retry-After
+  end
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Full: a new address, burst tokens
+  Full --> Draining: requests (one token each)
+  Draining --> Draining: requests, and average per period back
+  Draining --> Refused: no token left (429)
+  Refused --> Draining: a token has come back
+  Draining --> Full: quiet long enough
+```
+
+### Why it is off
+
+The limit is only as good as the address it counts. **With the wrong address it throttles everybody together**, which is worse than no limit: the site goes down for every
+person at the rate one client could use. The two ways to get it wrong, both reproduced by `tests/ratelimit-e2e`:
+
+- **Depth 0 behind a proxy.** The peer that connects to Traefik is then the load balancer's or the node's address (a Service with `externalTrafficPolicy: Cluster`
+  hides the client's address behind the node's), the same for every client: one bucket for all of them.
+- **Depth 1 or more with a proxy Traefik does not trust.** A peer that is not in the entrypoint's `forwardedHeaders.trustedIPs` has its `X-Forwarded-*` headers deleted before
+  any middleware runs, so no request has a source (`""`), and every request without one shares one bucket. The same happens when the header has fewer entries than `sourceDepth`.
+
+Nothing in this repository can say which case the netcup ingress is ([open question 51](../../docs/open-questions.md), still open), so the chart leaves the limit off and the
+decision is the deployment's.
+
+### Turn it on, after looking at the address
+
+1. **Find out what Traefik sees.** In Traefik's own configuration (the cluster's, not this chart's), turn the access log on for a few minutes and keep the forwarded header
+   and drop the query (a link's token and an OAuth `code` travel in paths and queries; see [the files host](#the-files-host-adr-0058) and the callback's note above):
+   `--accesslog=true --accesslog.format=json --accesslog.fields.headers.names.X-Forwarded-For=keep --accesslog.fields.queryparameters.defaultmode=drop`
+   (Traefik v3's reference, *read 2026-10-28*, not run on the netcup version; headers are dropped by default). Make one request from a machine whose public address you know
+   and read the line: `ClientAddr` is the **peer** Traefik saw (what depth 0 counts), `request_X-Forwarded-For` the list a proxy in front appended to (what depth N counts). (`ClientHost` is the whole forwarded header when there is one and the peer's host when there is none, *read 2026-10-28* in Traefik's `accesslog/logger.go`: it does not tell the two apart.)
+   Turn the access log off again unless the cluster keeps it.
+2. **Choose `sourceDepth`.** `0` when `ClientAddr` is the client. `N` when N proxies you trust stand in front and the N-th entry from the right of the header is the client
+   (a load balancer that appends the client's address: `1`; a CDN that appends the client and a load balancer that appends the CDN's edge: `2`). Never more than the proxies you trust:
+   an entry further left is written by the client.
+3. **Tell Traefik to trust that proxy**, for any `sourceDepth` above 0: the entrypoints' `forwardedHeaders.trustedIPs` (the chart of Traefik: `ports.websecure.forwardedHeaders.trustedIPs`)
+   holds the proxy's addresses. This is the cluster's configuration; without it the case above happens.
+4. **Check which Traefik it is**: its version, and whether `providers.kubernetesCRD.safeNaming` is on (`kubectl -n <traefik namespace> get deployment traefik -o yaml | grep -i safenaming`).
+   With `safeNaming` the name Traefik gives the middleware is `<namespace>_<name>@kubernetescrd` and the form this chart writes (`<namespace>-<name>@kubernetescrd`, the form before
+   `safeNaming`) **is not resolved: Traefik does not create the router, and the host is not served** (*verified 2026-10-28*, Traefik's v3 migration notes). If it is on, leave the limit off
+   and say so in the issue; the chart has no value for the other form yet.
+5. **Set the values** in the deployment (`enabled: true`, the numbers, `sourceDepth`), sync, and look: `kubectl -n <namespace> get middleware.traefik.io`, then call the host from two places
+   and watch one of them refused (`curl -s -o /dev/null -w '%{http_code} ' https://<host>/` in a loop gets `429` after the burst). If the host answers `404` instead, the annotation does
+   not name a middleware Traefik has: turn the value off and read Traefik's log.
+
+To take it off again, set `enabled: false`: the `Middleware` goes and the annotation with it.
+
+### What is proven
+
+`tests/render-check.sh` holds the render: off, nothing (no `Middleware`, no annotation, the Ingress as it was); on, the `Middleware` with the numbers and the annotation naming it in
+the release's namespace, ours before the deployer's, the deployer's other annotations kept, and every refusal above (each check was broken on purpose once). The `Middleware` is
+validated against the vendored CRD schema by `deploy.yml`. [`tests/ratelimit-e2e`](tests/ratelimit-e2e/README.md) runs a real Traefik on kind (`ratelimit-e2e.yml`): one client refused at depth 0 while
+another is served, depth 1 on `X-Forwarded-For` (two forwarded addresses from one pod are two clients), and the two failures above; the control with the limit off is all 200.
+**That job is unverified until CI has run it**: its scenario was run against the pinned Traefik image under Docker with the same `Middleware` fields, not on a cluster.
+Not proven: the netcup Traefik, its address, its `safeNaming`, the starting numbers under real traffic.
 
 ## Tokens in the browser (ADR 0054)
 
@@ -1308,7 +1410,7 @@ none of it can work in a cluster until the rollout slice does these, in this ord
 6. **Keep the query of the callback out of the access logs.** The callback's URL carries the `code` and the `state` of a flow in its query, and the `state` is a bearer value until it is used once (a `code` is single use as well). The orchestrator never logs the query of this path, but Traefik's and Caddy's access logs may record it (*unverified* for the versions this chart
    pins: Caddy logs no request unless the Caddyfile has a `log` directive, and the chart's has none; Traefik's access log, if the cluster turns it on, has a `RequestPath` that may include the query): the operator should keep the query of `/api/user-tool-servers/oauth/callback` out of those logs (a field filter or a redaction at the logger), and out of any log shipper, trace or analytics that sees the URL.
 7. **A per-IP limit at the edge.** The orchestrator limits the callback and the document per route and per process (`oauth-callback` and `oauth-client-metadata`, beside the share links, one bucket of 100 requests a second for all public routes), not per client: one anonymous client can still push the callback into 429 (a page that says "try again") for everybody for as long as it keeps at it.
-   A per-IP limit in front, at the Ingress (a Traefik `RateLimit` middleware named in `ingress.annotations`, which the chart does not render and which is *unverified* here) keeps one client from doing it; the client address is trustworthy only behind the trusted proxy the edge already configures.
+   A per-IP limit in front, at the Ingress, keeps one client from doing it: the chart renders a Traefik `RateLimit` middleware for it, [`ingress.rateLimit`](#a-limit-per-client-at-the-edge), **off by default** and *unverified* on netcup; the client address is trustworthy only behind the trusted proxy the edge already configures.
 
 **Why a step of yours, in this order.** An ExternalSecret that asks for a property the AWS secret lacks stops the **whole** Secret syncing, the thread tools' key and the agents' bearers with it. So:
 
@@ -1591,7 +1693,7 @@ client role from the access token Keycloak's `roles` scope fills (the realm's sc
 bump's push from `github-actions`; that the pinned CNPG operator is 1.25 or later on netcup (the `Database` CRD); that ESO's template engine
 renders `{{ .password | urlquery }}` (a Go builtin, but not run against ESO here; the template is the documented `{{ .key }}` form); that the public
 sharing routes, with a real browser, load the page with no sign-in (the Caddyfile was run against stub backends with Caddy 2.11.4 and the
-routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `rustfs.enabled`: RustFS on netcup (the claim, the hook Job under Argo CD's PostSync, the NetworkPolicy under Cilium) and an upgrade
+routes behave as the table says, but no real web, orchestrator or Traefik was behind it); whether Traefik logs paths. With `ingress.rateLimit.enabled`: [the five things about the netcup ingress](#turn-it-on-after-looking-at-the-address) (the address it sees, the order of `X-Forwarded-For`, whether it trusts the proxy in front, what its access log holds, its version and `safeNaming`) and the job `ratelimit-e2e`, which had not run when this was written. With `rustfs.enabled`: RustFS on netcup (the claim, the hook Job under Argo CD's PostSync, the NetworkPolicy under Cilium) and an upgrade
 across preview releases with data on the volume. With `rustfs.ingress.enabled`: the files host on netcup (Traefik's TLS, its entrypoint timeouts and access log, the proxy's NetworkPolicy under Cilium, an agent reaching the public name from a pod, a real browser's CORS and `DPoP` preflight). With `browser.enabled`: that the native sidecar starts before the agent on netcup's Kubernetes, that obscura runs there with a read-only root
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
