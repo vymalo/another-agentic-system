@@ -29,7 +29,7 @@ use orch_ports::{
 use orch_store_postgres::{PgStore, PgWakeup};
 use orch_testsupport::{
     Chat, FakeAgent, FakeAgentOptions, FakeReleases, Frame, TestInstance, VerifierScript,
-    fast_dispatcher,
+    crashing_dispatcher, fast_dispatcher,
 };
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -37,6 +37,19 @@ use tokio_util::sync::CancellationToken;
 
 #[allow(unused_imports)]
 pub use orch_testsupport::{eventually, shape};
+
+/// Sends what the orchestrator logs at `warn` and above (or what `RUST_LOG` asks for) to the test's
+/// own output, which the harness prints when the test fails: a worker that lost its lease, a
+/// delegation that was retried or a row that failed says so there, instead of leaving only a log
+/// whose shape differs.
+fn trace_warnings() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_test_writer()
+        .try_init();
+}
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
 #[path = "../../../store-postgres/tests/support/mod.rs"]
@@ -296,6 +309,12 @@ pub struct Setup {
     /// bucket: the S3 stub of [`World::s3`], or the S3-compatible server `ORCH_TEST_S3_URL` names
     /// (where [`World::s3`] has nothing to show). None by default.
     pub downloads: Option<Duration>,
+    /// Whether the instances' leases lapse within a second ([`crashing_dispatcher`]): for a test that
+    /// kills an instance and has another take its work over, or that races a lease. Off by default,
+    /// when a lease is too long for a healthy worker to lose: the log a scenario leaves is then the
+    /// one of an undisturbed run, whatever the machine does (a worker that loses its row has the task
+    /// read back from a snapshot, which has no `working` before its artifact).
+    pub lapsing_leases: bool,
 }
 
 /// A world whose `plain` agent lists `steps/v1` in its card (ADR 0025), so the orchestrator asks it
@@ -369,6 +388,7 @@ impl Default for Setup {
             extra: Vec::new(),
             uploads: None,
             downloads: None,
+            lapsing_leases: false,
         }
     }
 }
@@ -445,6 +465,7 @@ pub struct World {
     s3: Option<s3stub::Stub>,
     uploads: Option<(u64, Duration)>,
     downloads: Option<Duration>,
+    lapsing_leases: bool,
     /// The address the grants name, bound before any instance exists (see [`Setup::thread_tools`]);
     /// the first instance with the thread-tools surface serves on it.
     thread_tools_listener: std::sync::Mutex<Option<std::net::TcpListener>>,
@@ -456,6 +477,7 @@ impl World {
     }
 
     pub async fn with(backend: Backend, setup: Setup) -> Self {
+        trace_warnings();
         let db = match backend {
             Backend::Memory => Db::Memory {
                 store: MemoryStore::new(),
@@ -607,6 +629,7 @@ impl World {
             s3,
             uploads: setup.uploads,
             downloads: setup.downloads,
+            lapsing_leases: setup.lapsing_leases,
             thread_tools_listener: std::sync::Mutex::new(thread_tools_listener),
         }
     }
@@ -783,7 +806,13 @@ impl World {
     }
 
     async fn instance_full(&self, owner: &str, dispatch: bool, surfaces: Surfaces) -> TestInstance {
-        let dispatcher = dispatch.then(fast_dispatcher);
+        let dispatcher = dispatch.then(|| {
+            if self.lapsing_leases {
+                crashing_dispatcher()
+            } else {
+                fast_dispatcher()
+            }
+        });
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
             ..ApiConfig::default()

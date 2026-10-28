@@ -157,21 +157,23 @@ async fn concurrent_threads_of_two_users_do_not_interfere(backend: Backend) {
     let bob = alice.as_user(BOB);
     let mut ids = Vec::new();
     for i in 0..4 {
-        ids.push((
-            &alice,
-            alice
-                .create_thread("plain", &format!("echo a{i}"), None)
-                .await,
-        ));
-        ids.push((
-            &bob,
-            bob.create_thread("plain", &format!("echo b{i}"), None)
-                .await,
-        ));
+        for (chat, who) in [(&alice, "a"), (&bob, "b")] {
+            let text = format!("echo {who}{i}");
+            let id = chat.create_thread("plain", &text, None).await;
+            ids.push((chat, id, text));
+        }
     }
-    for (chat, id) in &ids {
+    for (chat, id, text) in &ids {
         chat.wait_state(id, "done").await;
-        assert_eq!(shape(&chat.events(id).await), FIVE);
+        let events = chat.events(id).await;
+        assert_eq!(shape(&events), FIVE, "the log of thread {id}");
+        // each thread got the words of its own message, and no other thread's
+        assert_eq!(events[0]["data"]["text"], *text, "thread {id}");
+        assert_eq!(
+            events[2]["data"]["text"],
+            format!("echo: {text}"),
+            "thread {id}"
+        );
     }
     assert_eq!(world.plain.executions().len(), 8);
     // Each user lists their own four, and only theirs.
@@ -185,7 +187,7 @@ async fn concurrent_threads_of_two_users_do_not_interfere(backend: Backend) {
             .map(|t| t["id"].as_str().unwrap())
             .collect();
         assert_eq!(listed.len(), 4, "{listed:?}");
-        for (owner, id) in &ids {
+        for (owner, id, _) in &ids {
             assert_eq!(
                 listed.contains(&id.as_str()),
                 std::ptr::eq(*owner, chat),

@@ -601,7 +601,11 @@ async fn a_message_during_a_verification_abandons_it(backend: Backend) {
 async fn a_crash_in_the_middle_of_a_verification_gives_one_verdict(backend: Backend) {
     let world = World::with(
         backend,
-        reviewed(VerifierScript::GatedPass, Duration::from_secs(3600)),
+        Setup {
+            // the second instance takes the row over when the first one's lease lapses
+            lapsing_leases: true,
+            ..reviewed(VerifierScript::GatedPass, Duration::from_secs(3600))
+        },
     )
     .await;
     let first = world.instance("orch-1").await;

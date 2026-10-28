@@ -21,6 +21,8 @@ async fn crash_scenario(backend: Backend, release_before_restart: bool, resubscr
                 resubscribe,
                 ..FakeAgentOptions::default()
             },
+            // the process dies and the new one takes the row over when the lease lapses
+            lapsing_leases: true,
             ..Setup::default()
         },
     )
@@ -119,7 +121,14 @@ async fn a_graceful_shutdown_hands_the_thread_over_immediately(backend: Backend)
 /// The agent sends messages, the process dies while the task waits at its gate, and the new process
 /// finishes it: what the agent already said is not said again.
 async fn agent_messages_are_not_duplicated_across_a_crash(backend: Backend) {
-    let world = World::start(backend).await;
+    let world = World::with(
+        backend,
+        Setup {
+            lapsing_leases: true,
+            ..Setup::default()
+        },
+    )
+    .await;
     let first = world.instance("orch-1").await;
     let chat = world.chat(&first);
     let id = chat

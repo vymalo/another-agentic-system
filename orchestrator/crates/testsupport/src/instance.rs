@@ -19,11 +19,18 @@ use crate::fake::EXTENSION_URI;
 use crate::sse::SseClient;
 use crate::wait::eventually;
 
-/// Dispatcher timings that make lease expiry, retries and polling happen in milliseconds.
+/// Dispatcher timings that make retries, polling and wakeups happen in milliseconds.
+///
+/// The **lease is long** on purpose. A worker that is alive keeps its row however slow the machine
+/// or the database is for a moment; a lease that lapses under a healthy worker hands the row to a new
+/// claim, which re-attaches to the task and reads only what the agent's snapshot says, so a status
+/// that only the first stream carried (the `working` before an artifact) is never logged and a test
+/// that pins the shape of a log fails once in many runs. A test that needs a lease to lapse (it kills
+/// an instance and another takes the work over) says so: [`crashing_dispatcher`].
 pub fn fast_dispatcher() -> DispatcherConfig {
     DispatcherConfig {
         concurrency: 8,
-        lease: Duration::from_millis(800),
+        lease: Duration::from_secs(60),
         heartbeat: Duration::from_millis(150),
         poll_interval: Duration::from_millis(50),
         max_attempts: 4,
@@ -38,6 +45,18 @@ pub fn fast_dispatcher() -> DispatcherConfig {
         live_flush: Duration::from_millis(20),
         live_refresh: Duration::from_millis(150),
         live_max_bytes: 64 * 1024,
+    }
+}
+
+/// [`fast_dispatcher`] with a lease that lapses in under a second, for a test that kills an instance
+/// (`TestInstance::kill` releases nothing) and expects another to take its rows over, or that races
+/// a lease on purpose. Under a slow machine a worker that is alive can lose such a lease too, and the
+/// log it leaves is then the one a takeover leaves; a test that uses it asserts what a takeover
+/// guarantees, not the shape of an undisturbed run.
+pub fn crashing_dispatcher() -> DispatcherConfig {
+    DispatcherConfig {
+        lease: Duration::from_millis(800),
+        ..fast_dispatcher()
     }
 }
 

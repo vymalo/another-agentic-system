@@ -70,7 +70,15 @@ fn ids(frames: &[Frame]) -> Vec<i64> {
 /// the client reconnects to another replica with the last id it saw and is sent exactly what
 /// it missed: the run opened again, then the rest, without a gap or a repeat.
 async fn a_client_reconnects_to_another_replica_after_its_replica_dies(backend: Backend) {
-    let world = World::start(backend).await;
+    // a replica dies and the other one takes its row over when the lease lapses
+    let world = World::with(
+        backend,
+        Setup {
+            lapsing_leases: true,
+            ..Setup::default()
+        },
+    )
+    .await;
     let a = world.instance("orch-a").await;
     let chat_a = world.chat(&a);
     let thread = thread_id(1);
