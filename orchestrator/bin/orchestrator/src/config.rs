@@ -1290,6 +1290,11 @@ pub struct Config {
     /// always from the environment alone: the section has no variable). Its `Debug` never shows a
     /// secret.
     pub sharing: SharingSettings,
+    /// `usage` of the configuration file (ADR 0065): how many months the usage ledger keeps (the
+    /// current one included) and the prices `GET /api/me/usage` puts on a month. The defaults without
+    /// the section (and always from the environment alone: the section has no variable): 24 months
+    /// and nothing priced.
+    pub usage: orch_app::UsageSettings,
     /// `sharing.rateLimit`: the limits of the public routes, built whenever the process serves
     /// routes (a deployment that is not `public` never reaches them, but they stand guard).
     pub public_limits: orch_api::PublicLimits,
@@ -1324,6 +1329,7 @@ impl fmt::Debug for Config {
             .field("steps_record_io", &self.steps_record_io)
             .field("models", &self.models)
             .field("public", &self.public)
+            .field("usage", &self.usage)
             .field("sharing", &self.sharing)
             .field("public_limits", &self.public_limits)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
@@ -1737,6 +1743,7 @@ impl Config {
             log_format,
             artifacts: resolved.artifacts,
             user_tools: resolved.user_tools,
+            usage: resolved.usage,
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
@@ -1804,6 +1811,7 @@ impl Config {
             policy: self.auth.policy.clone(),
             tool_servers: self.tool_servers.clone(),
             sharing: self.sharing.clone(),
+            usage: self.usage.clone(),
             // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
             // they are never reached.
             files: self
@@ -2613,6 +2621,8 @@ struct Resolved {
     models: Option<ModelsSettings>,
     /// `ui`, for `GET /api/config`.
     public: Option<PublicConfig>,
+    /// `usage` (ADR 0065): the retention of the usage ledger and its price table.
+    usage: orch_app::UsageSettings,
     /// `sharing` (ADR 0040), built from the file; disabled without the section.
     sharing: SharingSettings,
     /// `sharing.rateLimit`.

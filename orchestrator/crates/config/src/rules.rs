@@ -516,6 +516,9 @@ impl Checker<'_> {
             self.invalid("gate.maxAttempts", "is above gate.maxAttemptsCap");
         }
 
+        // usage
+        self.usage(&cfg.usage);
+
         // models and tasks
         for (name, endpoint) in &cfg.models.endpoints {
             let at = format!("models.endpoints.{}", crate::tree::display_key(name));
@@ -900,6 +903,63 @@ impl Checker<'_> {
     }
 
     /// `server.cors` (ADR 0047): an allow-list of exact origins, at least one, never a wildcard.
+    /// `usage.prices` (ADR 0065): the currency has the shape of an ISO 4217 code, every price is
+    /// a decimal string read exactly, a model is named once, and a label is one the ledger can
+    /// hold. The messages are written here and quote nothing of the file.
+    fn usage(&mut self, usage: &crate::types::Usage) {
+        let Some(prices) = &usage.prices else {
+            return;
+        };
+        if !is_currency(&prices.currency) {
+            self.invalid(
+                "usage.prices.currency",
+                "expected exactly three upper-case ASCII letters, like EUR",
+            );
+        }
+        for (i, entry) in prices.models.iter().enumerate() {
+            let at = format!("usage.prices.models[{i}]");
+            if let Some(provider) = &entry.provider
+                && !is_usage_label(provider)
+            {
+                self.invalid(format!("{at}.provider"), USAGE_LABEL_EXPECTED);
+            }
+            if !is_usage_label(&entry.model) {
+                self.invalid(format!("{at}.model"), USAGE_LABEL_EXPECTED);
+            }
+            for (key, text) in [
+                ("input", &entry.input),
+                ("cachedInput", &entry.cached_input),
+                ("output", &entry.output),
+            ] {
+                self.price(format!("{at}.{key}"), text);
+            }
+            if let Some(earlier) = prices.models[..i]
+                .iter()
+                .position(|e| e.provider == entry.provider && e.model == entry.model)
+            {
+                self.invalid(
+                    &at,
+                    format!(
+                        "prices the same provider and model as usage.prices.models[{earlier}]: a model has one price"
+                    ),
+                );
+            }
+        }
+        if let Some(sandbox) = &prices.sandbox {
+            self.price(
+                "usage.prices.sandbox.cpuCoreHour".to_owned(),
+                &sandbox.cpu_core_hour,
+            );
+            self.price("usage.prices.sandbox.gibHour".to_owned(), &sandbox.gib_hour);
+        }
+    }
+
+    fn price(&mut self, path: String, text: &str) {
+        if let Err(e) = crate::price::parse_price(text) {
+            self.invalid(path, e.to_string());
+        }
+    }
+
     fn cors(&mut self, cfg: &Config) {
         let Some(cors) = &cfg.server.cors else {
             return;
@@ -1991,6 +2051,19 @@ fn is_icon(icon: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
         && data.trim_end_matches('=').len() + 2 >= data.len()
         && !data.trim_end_matches('=').contains('=')
+}
+
+/// What `usage.prices.models[].provider` and `model` look like: a label the ledger holds (the
+/// rule of a usage report's labels, `orch_core::MAX_USAGE_LABEL_BYTES`).
+const USAGE_LABEL_EXPECTED: &str = "expected a name of 1 to 128 bytes with no control character (leave a provider out rather than empty)";
+
+fn is_usage_label(label: &str) -> bool {
+    !label.trim().is_empty() && label.len() <= 128 && !label.chars().any(char::is_control)
+}
+
+/// An ISO 4217 shaped code: exactly three upper-case ASCII letters.
+fn is_currency(code: &str) -> bool {
+    code.len() == 3 && code.bytes().all(|b| b.is_ascii_uppercase())
 }
 
 fn is_slug(name: &str) -> bool {

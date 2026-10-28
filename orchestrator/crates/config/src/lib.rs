@@ -29,6 +29,7 @@
 //! [`docs/api/config.md`]: ../../../docs/api/config.md
 
 mod error;
+mod price;
 mod reserved;
 mod rules;
 mod secret;
@@ -37,6 +38,7 @@ mod tree;
 mod types;
 
 pub use error::{ConfigError, ErrorKind, render};
+pub use price::{MAX_PRICE_MICROS, PriceError, parse_price};
 pub use reserved::{RESERVED, Reserved, reserved};
 pub use rules::{
     CLIENT_METADATA_RESERVED_PATHS, DEFAULT_MAX_ATTEMPTS, MAX_ICON_BYTES, MAX_PROMPT_BYTES,
@@ -53,15 +55,16 @@ pub use types::{
     DEFAULT_DPOP_FUTURE_SKEW_SECONDS, DEFAULT_DPOP_MAX_AGE_SECONDS, DEFAULT_LISTEN,
     DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PER_JOB_BYTES, DEFAULT_OAUTH_CLIENT_NAME,
     DEFAULT_PRESIGN_TTL_SECS, DEFAULT_S3_REGION, DEFAULT_TOOL_SERVER_TIMEOUT_SECS,
-    DEFAULT_UPLOAD_TTL_SECS, Database, DescriptionTask, Dispatcher, Endpoint, Environment, Gate,
-    GateCi, GateSource, Inbox, Jwt, Language, Log, LogFormat, MAX_EGRESS_PATTERNS,
-    MAX_FILE_BYTES_LIMIT, MAX_PER_JOB_BYTES_LIMIT, MAX_PRESIGN_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT,
-    MAX_UPLOAD_TTL_SECS, MAX_USER_SECRET_KEYS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, Mcp,
-    Models, OAUTH_CALLBACK_PATH, Prompt, Recompute, Registry, Role, SecretRef, SecretStoreKind,
-    Server, Sharing, SharingMode, SharingPublic, SharingRateLimit, SplitScope, Steps, Surface,
-    Tasks, ThreadTools, TitleTask, ToolServer, Ui, UrlRef, UserSecretKey, UserSecrets,
-    UserSecretsPg, UserToolServers, UserToolServersEgress, UserToolServersOauth, WebhookGeneric,
-    WebhookGithub, Webhooks,
+    DEFAULT_UPLOAD_TTL_SECS, DEFAULT_USAGE_RETENTION_MONTHS, Database, DescriptionTask, Dispatcher,
+    Endpoint, Environment, Gate, GateCi, GateSource, Inbox, Jwt, Language, Log, LogFormat,
+    MAX_EGRESS_PATTERNS, MAX_FILE_BYTES_LIMIT, MAX_PER_JOB_BYTES_LIMIT, MAX_PRESIGN_TTL_SECS,
+    MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MAX_USAGE_PRICED_MODELS,
+    MAX_USAGE_RETENTION_MONTHS, MAX_USER_SECRET_KEYS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
+    Mcp, Models, OAUTH_CALLBACK_PATH, Prompt, Recompute, Registry, Role, SecretRef,
+    SecretStoreKind, Server, Sharing, SharingMode, SharingPublic, SharingRateLimit, SplitScope,
+    Steps, Surface, Tasks, ThreadTools, TitleTask, ToolServer, Ui, UrlRef, Usage, UsageModelPrice,
+    UsagePrices, UsageSandboxPrice, UserSecretKey, UserSecrets, UserSecretsPg, UserToolServers,
+    UserToolServersEgress, UserToolServersOauth, WebhookGeneric, WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

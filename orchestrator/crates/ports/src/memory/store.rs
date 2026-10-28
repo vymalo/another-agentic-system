@@ -1765,4 +1765,51 @@ impl UsageLedger for MemoryStore {
         }
         Ok(page)
     }
+
+    async fn sweep(&self, before: UsageMonth, limit: u32) -> Result<u64, StoreError> {
+        let mut inner = self.lock();
+        let ledger = &mut inner.ledger;
+        // the oldest months first; within a month, the rows of threads that exist and then the erased
+        let mut old: Vec<(UsageMonth, Swept)> = ledger
+            .rows
+            .values()
+            .filter(|r| r.month < before)
+            .map(|r| (r.month, Swept::Live(r.key.clone())))
+            .collect();
+        old.extend(
+            ledger
+                .erased
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.month < before)
+                .map(|(i, r)| (r.month, Swept::Erased(i))),
+        );
+        old.sort();
+        old.truncate(limit.max(1) as usize);
+        let mut erased_gone = HashSet::new();
+        for (_, row) in &old {
+            match row {
+                Swept::Live(key) => {
+                    ledger.rows.remove(key);
+                }
+                Swept::Erased(i) => {
+                    erased_gone.insert(*i);
+                }
+            }
+        }
+        let mut index = 0;
+        ledger.erased.retain(|_| {
+            let keep = !erased_gone.contains(&index);
+            index += 1;
+            keep
+        });
+        Ok(old.len() as u64)
+    }
+}
+
+/// A row the sweep removes: one of a thread that exists, by key, or one of an erased thread, by place.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Swept {
+    Live(UsageTaskKey),
+    Erased(usize),
 }

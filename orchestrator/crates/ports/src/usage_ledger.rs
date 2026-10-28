@@ -26,6 +26,10 @@ pub struct UsageBackfill {
 /// The usage ledger of the people (ADR 0065): what each person used, counted per task, kept per UTC
 /// month, and outliving the threads it came from.
 ///
+/// **Every [`ThreadStore`](crate::ThreadStore) is one** (a supertrait: a store that did not
+/// implement it would not compile), so the application reaches the ledger through the store of its
+/// ports.
+///
 /// The ledger is **written by the [`ThreadStore`](crate::ThreadStore) that holds the log, in the
 /// transaction that appends the event**: [`usage_change`](orch_core::usage_change) says what an
 /// event changes and [`UsageRow::fold`] what the row becomes, and the store applies both before it
@@ -76,4 +80,19 @@ pub trait UsageLedger: Send + Sync + 'static {
         after: Option<ThreadId>,
         limit: u32,
     ) -> impl Future<Output = Result<UsageBackfill, StoreError>> + Send;
+
+    /// The retention sweep (ADR 0065, decision 8): removes the tasks of **every person** whose month is
+    /// strictly **before** `before`, with their lines and sandbox entries, whether their thread still
+    /// exists or was erased. At most `limit` tasks (a `limit` of 0 is 1), the oldest months first, so a
+    /// worker can loop in batches without holding a long lock. Returns how many tasks it removed: fewer
+    /// than `limit` means nothing old is left, and calling it again **changes nothing**.
+    ///
+    /// `before` is the first month to keep. It does not touch the log or any thread's watermark
+    /// (`usage_through`), so usage that was swept is not folded in again; a task that continues after its
+    /// row was swept starts a row of its own from the events that come after.
+    fn sweep(
+        &self,
+        before: UsageMonth,
+        limit: u32,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 }

@@ -21,6 +21,7 @@ mod ids;
 mod language;
 mod live;
 mod mention;
+mod pricing;
 mod rank;
 mod reasoning;
 mod redact;
@@ -91,6 +92,11 @@ pub use language::{
 };
 pub use live::{LiveChunk, LiveEnd, LiveKind, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
+pub use pricing::{
+    Currency, CurrencyError, LinePrice, MAX_PRICE_MICROS, MAX_PRICED_MODELS, MICROS_PER_UNIT,
+    Micros, ModelKey, ModelPrice, PriceTable, PriceTableError, PriceTableId, PricedModel,
+    PricedMonth, PricedSandbox, PricedTotal, SandboxPrice, Unpriced, UnpricedSummary, price_month,
+};
 pub use rank::{MAX_RANK_LEN, RankError, between, is_valid_rank, spread};
 pub use reasoning::{AgentReasoningData, MAX_REASONING_BYTES, bound_reasoning};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};

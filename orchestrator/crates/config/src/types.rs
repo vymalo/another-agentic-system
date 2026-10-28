@@ -117,6 +117,10 @@ pub struct Config {
     /// mentioned (ADR 0026, the thread tool `ask_agent`).
     #[serde(default)]
     pub asks: Asks,
+    /// The usage ledger of the people (ADR 0065): how many months it keeps and, optionally, the
+    /// prices `GET /api/me/usage` puts on a month. Absent: 24 months kept and nothing priced.
+    #[serde(default)]
+    pub usage: Usage,
     /// The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035).
     #[serde(default)]
     pub models: Models,
@@ -745,6 +749,98 @@ impl Default for Asks {
             timeout_secs: default_ask_timeout_secs(),
         }
     }
+}
+
+/// The default of `usage.retentionMonths`.
+pub const DEFAULT_USAGE_RETENTION_MONTHS: u64 = 24;
+/// The most `usage.retentionMonths` may be: a hundred years.
+pub const MAX_USAGE_RETENTION_MONTHS: u64 = 1200;
+/// The most entries `usage.prices.models` may have.
+pub const MAX_USAGE_PRICED_MODELS: usize = 256;
+
+/// The usage ledger of the people (ADR 0065): a record, per person and UTC month, of the tokens
+/// their threads used and the time their commands used in a sandbox, kept in counts. The prices
+/// are applied when the month is read, so changing them re-prices every month.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Usage {
+    /// How many UTC calendar months of the ledger are kept, 1 to 1200 (default 24). The current
+    /// month is one of them: 24 keeps this month and the 23 before it. A sweep removes the older
+    /// months, 1000 tasks at a time, every hour, in every process that runs workers.
+    #[serde(default = "default_usage_retention_months")]
+    #[schemars(range(min = 1, max = 1200))]
+    pub retention_months: u64,
+    /// The prices `GET /api/me/usage` puts on a month. Absent: nothing is priced, every line of
+    /// the answer says so, and its total is incomplete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prices: Option<UsagePrices>,
+}
+
+fn default_usage_retention_months() -> u64 {
+    DEFAULT_USAGE_RETENTION_MONTHS
+}
+
+impl Default for Usage {
+    fn default() -> Self {
+        Usage {
+            retention_months: DEFAULT_USAGE_RETENTION_MONTHS,
+            prices: None,
+        }
+    }
+}
+
+/// The prices of a deployment: one currency, a price per million tokens for each model, and
+/// optionally a price for the sandbox. **Every price is a decimal string**, never a YAML number
+/// (a float cannot hold `0.1`): digits, then optionally a point and one to six more digits, at
+/// most `1000000`, such as `"0.40"`. It is read exactly, into millionths of the currency unit.
+/// A model or a sandbox with no price is said so in the answer and is never counted as free.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UsagePrices {
+    /// The currency of every price and of the totals: exactly three upper-case ASCII letters, such
+    /// as `EUR` (the shape of an ISO 4217 code; whether it names a currency is not checked).
+    pub currency: String,
+    /// The models that have a price, at most 256. A usage line matches the entry with the same
+    /// `provider` (an absent provider matches a line that reports none) and the same `model`,
+    /// exactly (no case folding, no prefix). Two entries for one provider and model are refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub models: Vec<UsageModelPrice>,
+    /// The price of the time commands used in a sandbox. Absent: sandbox lines are unpriced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<UsageSandboxPrice>,
+}
+
+/// The price of one model, per million tokens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UsageModelPrice {
+    /// The provider as the agent reports it (such as `openai`). Absent: the entry matches the
+    /// lines that report no provider, and only those. At most 128 bytes, no control character.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The model as the agent reports it. At most 128 bytes, no control character.
+    pub model: String,
+    /// The price of a million input tokens that were not read from a cache. Tokens written to a
+    /// cache are input tokens and are priced here. A decimal string such as `"0.40"`.
+    pub input: String,
+    /// The price of a million input tokens read from a provider's cache. A model with no
+    /// discount says its `input` again. A decimal string such as `"0.10"`.
+    pub cached_input: String,
+    /// The price of a million output tokens. Reasoning tokens are output tokens and are priced
+    /// here. A decimal string such as `"1.60"`.
+    pub output: String,
+}
+
+/// The price of the time commands used in a sandbox, from the CPU and the memory its pods asked
+/// for (the requests, not what was used). A sandbox whose pod asked for neither is unpriced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UsageSandboxPrice {
+    /// The price of one CPU core for one hour. A decimal string such as `"0.04"`.
+    pub cpu_core_hour: String,
+    /// The price of one GiB of memory for one hour. A decimal string such as `"0.005"`.
+    pub gib_hour: String,
 }
 
 /// The model endpoints.

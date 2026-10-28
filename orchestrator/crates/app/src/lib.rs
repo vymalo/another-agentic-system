@@ -19,6 +19,7 @@ mod sharing;
 mod tasks;
 pub mod tier;
 mod tool_servers;
+mod usage_sweep;
 mod user_tools;
 
 pub use app::{
@@ -28,9 +29,10 @@ pub use app::{
     SiblingView, ThreadExport,
 };
 pub use app::{
-    DeleteStats, DownloadMode, DownloadModeError, HistorySettings, HistoryStats, JobFiles,
-    LateSource, ReadableFile, TierStats, UploadCaller, UploadRefusal, UploadRequest,
-    UploadSettings, UploadSettingsError, UploadSlot, UsageDrop, UsageStats,
+    DEFAULT_USAGE_RETENTION_MONTHS, DeleteStats, DownloadMode, DownloadModeError, HistorySettings,
+    HistoryStats, JobFiles, LateSource, ReadableFile, TierStats, UploadCaller, UploadRefusal,
+    UploadRequest, UploadSettings, UploadSettingsError, UploadSlot, UsageDrop, UsageSettings,
+    UsageStats,
 };
 pub use asks::{AskCall, AskHandle};
 pub use authz::{
@@ -64,6 +66,10 @@ pub use sharing::{
 pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
 pub use tier::THREAD_TIER_KEY;
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};
+pub use usage_sweep::{
+    DEFAULT_USAGE_SWEEP_BATCH, DEFAULT_USAGE_SWEEP_INTERVAL_SECS, DEFAULT_USAGE_SWEEP_PAUSE_MS,
+    UsageSweepConfig, UsageSweepWorker,
+};
 pub use user_tools::{
     AddUserToolServer, AuthorizationOutcome, EditUserToolServer, MAX_CALLBACK_CODE_BYTES,
     MAX_USER_SECRET_BYTES, OAuthCallback, OwnReason, OwnServers, OwnToolServer,

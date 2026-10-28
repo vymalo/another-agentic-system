@@ -1396,6 +1396,103 @@
       ],
       "description": "A URL that is written in the file, or read from a secret reference when a deployment keeps it out of git (the gateway's address, next to its key). A plain string is the URL itself, as it always was. `{ env: NAME }` and `{ file: PATH }` read it at startup the way a [`SecretRef`] does (same trimming, same 64 KiB limit); the value read is then held to the same rule a written URL is. A URL is not a secret: `--print-config` shows the reference and the value is never logged as if it were public, but it is not redacted as a credential either."
     },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "The usage ledger of the people (ADR 0065): a record, per person and UTC month, of the tokens their threads used and the time their commands used in a sandbox, kept in counts. The prices are applied when the month is read, so changing them re-prices every month.",
+      "properties": {
+        "prices": {
+          "$ref": "#/$defs/UsagePrices",
+          "description": "The prices `GET /api/me/usage` puts on a month. Absent: nothing is priced, every line of the answer says so, and its total is incomplete."
+        },
+        "retentionMonths": {
+          "default": 24,
+          "description": "How many UTC calendar months of the ledger are kept, 1 to 1200 (default 24). The current month is one of them: 24 keeps this month and the 23 before it. A sweep removes the older months, 1000 tasks at a time, every hour, in every process that runs workers.",
+          "format": "uint64",
+          "maximum": 1200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "UsageModelPrice": {
+      "additionalProperties": false,
+      "description": "The price of one model, per million tokens.",
+      "properties": {
+        "cachedInput": {
+          "description": "The price of a million input tokens read from a provider's cache. A model with no discount says its `input` again. A decimal string such as `\"0.10\"`.",
+          "type": "string"
+        },
+        "input": {
+          "description": "The price of a million input tokens that were not read from a cache. Tokens written to a cache are input tokens and are priced here. A decimal string such as `\"0.40\"`.",
+          "type": "string"
+        },
+        "model": {
+          "description": "The model as the agent reports it. At most 128 bytes, no control character.",
+          "type": "string"
+        },
+        "output": {
+          "description": "The price of a million output tokens. Reasoning tokens are output tokens and are priced here. A decimal string such as `\"1.60\"`.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "The provider as the agent reports it (such as `openai`). Absent: the entry matches the lines that report no provider, and only those. At most 128 bytes, no control character.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "input",
+        "cachedInput",
+        "output"
+      ],
+      "type": "object"
+    },
+    "UsagePrices": {
+      "additionalProperties": false,
+      "description": "The prices of a deployment: one currency, a price per million tokens for each model, and optionally a price for the sandbox. **Every price is a decimal string**, never a YAML number (a float cannot hold `0.1`): digits, then optionally a point and one to six more digits, at most `1000000`, such as `\"0.40\"`. It is read exactly, into millionths of the currency unit. A model or a sandbox with no price is said so in the answer and is never counted as free.",
+      "properties": {
+        "currency": {
+          "description": "The currency of every price and of the totals: exactly three upper-case ASCII letters, such as `EUR` (the shape of an ISO 4217 code; whether it names a currency is not checked).",
+          "type": "string"
+        },
+        "models": {
+          "description": "The models that have a price, at most 256. A usage line matches the entry with the same `provider` (an absent provider matches a line that reports none) and the same `model`, exactly (no case folding, no prefix). Two entries for one provider and model are refused.",
+          "items": {
+            "$ref": "#/$defs/UsageModelPrice"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/UsageSandboxPrice",
+          "description": "The price of the time commands used in a sandbox. Absent: sandbox lines are unpriced."
+        }
+      },
+      "required": [
+        "currency"
+      ],
+      "type": "object"
+    },
+    "UsageSandboxPrice": {
+      "additionalProperties": false,
+      "description": "The price of the time commands used in a sandbox, from the CPU and the memory its pods asked for (the requests, not what was used). A sandbox whose pod asked for neither is unpriced.",
+      "properties": {
+        "cpuCoreHour": {
+          "description": "The price of one CPU core for one hour. A decimal string such as `\"0.04\"`.",
+          "type": "string"
+        },
+        "gibHour": {
+          "description": "The price of one GiB of memory for one hour. A decimal string such as `\"0.005\"`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cpuCoreHour",
+        "gibHour"
+      ],
+      "type": "object"
+    },
     "UserSecretKey": {
       "additionalProperties": false,
       "description": "One key of the sealed store.",
@@ -1756,6 +1853,13 @@
         "showDescriptions": true
       },
       "description": "What the web is told (`GET /api/config`)."
+    },
+    "usage": {
+      "$ref": "#/$defs/Usage",
+      "default": {
+        "retentionMonths": 24
+      },
+      "description": "The usage ledger of the people (ADR 0065): how many months it keeps and, optionally, the prices `GET /api/me/usage` puts on a month. Absent: 24 months kept and nothing priced."
     },
     "userToolServers": {
       "$ref": "#/$defs/UserToolServers",

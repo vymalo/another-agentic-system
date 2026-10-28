@@ -70,6 +70,23 @@ impl UsageMonth {
         }
     }
 
+    /// The first month a ledger holds when it keeps `months` UTC months, this one included: `months`
+    /// of 1 is this month, 24 is this month and the 23 before it (`0` is read as 1). Never before
+    /// January of year 1.
+    #[must_use]
+    pub fn first_kept(self, months: u32) -> UsageMonth {
+        let back = i64::from(months.saturating_sub(1));
+        let index = i64::from(self.year) * 12 + i64::from(self.month) - 1 - back;
+        if index < 12 {
+            return UsageMonth { year: 1, month: 1 };
+        }
+        // `index` is at most the index of `self`, so the year is at most 9999
+        UsageMonth {
+            year: i16::try_from(index / 12).unwrap_or(9999),
+            month: i8::try_from(index % 12 + 1).unwrap_or(1),
+        }
+    }
+
     /// The year, 1 to 9999.
     pub const fn year(self) -> i16 {
         self.year

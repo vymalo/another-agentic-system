@@ -11,10 +11,12 @@
 //!   directory and the [`App`], everything every role needs;
 //! * **the control plane** ([`control_plane_router`], [`serve`]): the HTTP server (health, the
 //!   resource API and the configured surfaces), which serves user inputs and event streams;
-//! * **the worker** ([`dispatcher`], [`inbox_worker`], [`purge_worker`], and for a worker-only process [`serve`]
-//!   over the health-only router): the dispatcher, which delivers the outbox to agents, and the
-//!   inbox worker, which applies timers and reports to their threads, and the purge sweep, which
-//!   finishes the erasure of the files of deleted threads (ADR 0043).
+//! * **the worker** ([`dispatcher`], [`inbox_worker`], [`purge_worker`], [`usage_sweep_worker`], and for a
+//!   worker-only process [`serve`] over the health-only router): the dispatcher, which delivers the
+//!   outbox to agents, and the inbox worker, which applies timers and reports to their threads, the
+//!   purge sweep, which finishes the erasure of the files of deleted threads (ADR 0043), and the
+//!   usage retention sweep, which removes the months of the usage ledger older than the retention
+//!   (ADR 0065).
 //!
 //! Every component is a future that ends when its `CancellationToken` is cancelled. [`run`]
 //! registers them with [`adam_host::Host`], the supervisor every adam-rs host shares: it starts
@@ -34,6 +36,7 @@ use orch_agent_a2a::{A2aAgentClient, A2aConfig, FileFetch, install_crypto_provid
 use orch_api::{ApiConfig, SurfaceRoutes};
 use orch_app::{
     AgentDirectory, App, Dispatcher, DispatcherConfig, InboxWorker, PurgeConfig, PurgeWorker,
+    UsageSweepConfig, UsageSweepWorker,
 };
 use orch_core::BoxError;
 use orch_ports::{
@@ -678,6 +681,13 @@ fn purge_worker(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<PurgeWorker<Stack>> 
     )
 }
 
+/// The worker's usage retention sweep over `app`: it removes the months of the usage ledger older than
+/// `usage.retentionMonths`, once at start and then every hour (ADR 0065). It runs until its token is
+/// cancelled.
+fn usage_sweep_worker(app: &Arc<App<Stack>>) -> Arc<UsageSweepWorker<Stack>> {
+    UsageSweepWorker::new(Arc::clone(app), UsageSweepConfig::default())
+}
+
 /// Marks the process as stopping: `/healthz` and `/readyz` turn 503 and open event streams end
 /// once caught up, so clients reconnect elsewhere. Idempotent.
 fn mark_stopping(app: &App<Stack>) {
@@ -708,9 +718,9 @@ impl Drop for MarkStopping {
 ///
 /// | role | components |
 /// |---|---|
-/// | `all` | the HTTP server (control plane), the dispatcher, the inbox worker, the purge sweep and the local agents' worker (workers) |
-/// | `control-plane` | the HTTP server; no dispatcher, no inbox worker, no purge sweep, no local agents' worker |
-/// | `worker` | the dispatcher, the inbox worker, the purge sweep, the local agents' worker, and the health-only router on `LISTEN_ADDR` |
+/// | `all` | the HTTP server (control plane), the dispatcher, the inbox worker, the purge sweep, the usage retention sweep and the local agents' worker (workers) |
+/// | `control-plane` | the HTTP server; no dispatcher, no inbox worker, no purge sweep, no usage retention sweep, no local agents' worker |
+/// | `worker` | the dispatcher, the inbox worker, the purge sweep, the usage retention sweep, the local agents' worker, and the health-only router on `LISTEN_ADDR` |
 ///
 /// The local agents' worker exists only in a build with the feature `agent-local`, and only
 /// when `AGENTS_FILE` lists a `transport: local` agent (see [`crate::local`]).
@@ -798,6 +808,14 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     let host = host.worker("the purge sweep", move |stop| async move {
         let _mark = mark;
         purge.run(stop).await;
+        Ok(())
+    });
+
+    let usage_sweep = usage_sweep_worker(&app);
+    let mark = MarkStopping(Arc::clone(&app));
+    let host = host.worker("the usage retention sweep", move |stop| async move {
+        let _mark = mark;
+        usage_sweep.run(stop).await;
         Ok(())
     });
 
