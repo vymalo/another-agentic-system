@@ -518,6 +518,13 @@ What the diagrams cannot say:
 - **Per-thread order.** A `delegate` row is claimable only if no older `pending` or `inflight`
   `delegate` row exists for the same thread, and a `steer` row only if no older open `steer` row does (it never waits
   for a delegation); `cancel`, `verify`, `ask`, `title` and `description` rows are not held back (an `ask` waits for neither the delegation, which is the agent that asks, nor another ask).
+- **A fair share of the slots ([ADR 0066](decisions/0066-a-fair-share-of-the-dispatcher.md)).** Which rows may be claimed is the per-thread
+  order above; which of them are taken when there are more than free slots is `dispatcher.order`. `fair` (the default) gives each candidate the
+  `load = running + rank` of its person, the owner of its thread: `running` is the person's rows `inflight` under a live lease, counted across
+  every replica and every kind, `rank` the row's place (1, 2, ...) among that person's candidates of this claim; the claim takes the lowest loads,
+  the older row among equals. A person with nothing running gets the next free slot ahead of another person's queue, one person alone gets every
+  slot, a `cancel` row goes first whatever the load, and a job that runs is never taken back. `fifo` is the oldest-first claim, kept as a switch.
+  The rows come from an index of each person's open rows (`outbox.owner`, migration `0024`), so a claim reads the first rows of each person, not the queue.
 - **Resume, not resend.** `sent_at` is set when the agent's first frame arrives (with the A2A task
   id). A worker that re-claims a row with `sent_at` set resumes the task (`SubscribeToTask`, then
   polling `GetTask`) instead of sending the message again. On a later attempt of a row whose `sent_at` was
