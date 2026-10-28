@@ -140,7 +140,7 @@ for each row of the first `4 x limit` of each person, plus an index-only scan of
    reads by person and which migration `0024` does not rewrite (the migration fills the open rows only, so it does not rewrite a large table).
    A `BEFORE INSERT` trigger fills it from the thread when the insert gives none, so **a replica of the build before this one, still rolling out,
    writes rows that the new claim finds**, and no statement of the store has to remember it; `outbox_open_has_owner` refuses an open row without
-   one. The trigger is the part to confirm: the alternative is to set the column in `insert_outbox` and to leave a rolling update unsafe.
+   one (added `NOT VALID`, so the migration does not read the whole outbox, which keeps every row it ever had, under its lock). The trigger is the part to confirm: the alternative is to set the column in `insert_outbox` and to leave a rolling update unsafe.
 6. **A shortfall under simultaneous claims is possible and bounded.** With `4 x limit` rows to choose among, one other claimer's claim of up
    to `3 x limit` rows (the dispatcher's `limit` is at most 16) is skipped without the claim coming short; more claimers at the same instant
    may take fewer rows than the free slots, and the next wakeup or poll takes the rest. The oldest-first claim does not have this edge. *Unverified*

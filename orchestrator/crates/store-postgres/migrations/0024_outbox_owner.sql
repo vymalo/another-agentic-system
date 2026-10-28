@@ -37,8 +37,12 @@ $$;
 CREATE TRIGGER outbox_set_owner BEFORE INSERT ON outbox
     FOR EACH ROW EXECUTE FUNCTION outbox_set_owner();
 
+-- NOT VALID: the UPDATE above gave every open row its owner, and the rows that are over may have
+-- none, so there is nothing to check in what is there; the check holds for every row written from
+-- now on. Validating would read the whole outbox, which keeps every row it ever had, under the lock
+-- ADD COLUMN took.
 ALTER TABLE outbox ADD CONSTRAINT outbox_open_has_owner
-    CHECK (owner IS NOT NULL OR status NOT IN ('pending', 'inflight'));
+    CHECK (owner IS NOT NULL OR status NOT IN ('pending', 'inflight')) NOT VALID;
 
 CREATE INDEX outbox_open_owner ON outbox (owner, ord) WHERE status IN ('pending', 'inflight');
 CREATE INDEX outbox_inflight_owner ON outbox (owner, lease_until) WHERE status = 'inflight';
