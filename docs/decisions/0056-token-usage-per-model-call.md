@@ -11,6 +11,8 @@
   **Amended 2026-10-27:** the totals object gains an optional `sandbox` member, the time a run's commands used in a pod
   ([`usage-v1.md`](../api/usage-v1.md) section 5; adam-rs `55bbe9f`, its ADR 0043, issue 126). Decisions 2 to 4 and 6 are unchanged; the
   amendment is the section "Amendment 2026-10-27: the sandbox member" at the end.
+  Status note (2026-10-27): [ADR 0065](0065-a-usage-ledger-per-person.md) (proposed) folds these two events into a **ledger per person** that outlives the
+  thread: a total replaces the task's counts, a call adds to them only while the task has no total. The events, their fields and the contract are unchanged.
 
 ## Context
 

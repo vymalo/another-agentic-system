@@ -35,6 +35,7 @@ mod transition;
 mod ui;
 mod ui_catalog;
 mod usage;
+mod usage_record;
 mod verify;
 
 pub use access_tier::{ACCESS_TIER_EXTENSION, AccessTier, CapRefusal, TierListing, TierOffer};
@@ -139,6 +140,11 @@ pub use usage::{
     MAX_USAGE_TASK_BYTES, MAX_USAGE_TOTALS, ModelTokens, ModelUsageData, ModelUsageTotalData,
     SandboxEntry, SandboxEnvironment, SandboxUsage, TokenCounts, UsageCall, UsageInvalid,
     UsageLedger, UsageTotals, UsageUpdate,
+};
+pub use usage_record::{
+    MAX_LEDGER_COUNT, SandboxShape, UnmeasuredSandbox, UsageChange, UsageMonth, UsageMonthError,
+    UsageMonthTotals, UsageRow, UsageSource, UsageTaskKey, UsageWhat, usage_change,
+    usage_counted_through,
 };
 
 /// Timestamps are `jiff` instants everywhere (no `f64` time).

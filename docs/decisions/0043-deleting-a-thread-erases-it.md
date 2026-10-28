@@ -10,6 +10,10 @@
   says otherwise (*Open for the owner*, below). It closes the deletion half of open question 46, keeps the rest open, and amends
   the "no deletion" paragraph of [ADR 0040](0040-thread-sharing-by-revocable-link.md) (*GDPR notes*) by a status note.
 
+  Status note (2026-10-27): [ADR 0065](0065-a-usage-ledger-per-person.md) (proposed) makes one exception to "the thread and everything that hangs on it":
+  the rows of the usage ledger (what the person used, counts per task and month, no content) are **kept**, and in the same transaction that deletes the
+  thread their `thread_id` is cleared, so the person's usage no longer names the erased thread. The erase of the log, the files and the link is unchanged.
+
   Status note (2026-10-04): **decisions 1 to 7 are built on the backend** (decision 8, the fork's files, was built before them; the
   web is not: no menu, no dialog, no "Stop and delete"). Migration `0017_thread_purges.sql`; `orch_core::deletable`;
   `ThreadStore::delete_threads`, `claim_purges`, `finish_purge` and, an addition, `purges_pending` (the gauge) on the memory and

@@ -179,7 +179,10 @@ pub struct ModelTokens {
 }
 
 /// Where a run's commands ran, as the `sandbox` member names it. Closed (ADR 0004): another word is
-/// an invalid sandbox, and a new environment is a change of the contract.
+/// an invalid sandbox, and a new environment is a change of the contract. The usage ledger stores
+/// the word (`usage_tasks.sandbox_environment`, migration `0023`) and checks its shape only
+/// (lower-case letters, digits, `_` and `-`, from a letter, at most 32 bytes), so **a new variant
+/// needs no migration**: keep its wire spelling to that shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxEnvironment {

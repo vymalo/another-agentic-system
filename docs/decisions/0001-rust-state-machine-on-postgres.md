@@ -21,6 +21,10 @@
   definitions of their own MCP servers and, **sealed** (AES-256-GCM, by the default adapter of the `SecretStore` port), their credentials. A sealed secret is not the
   log, is read only to lease a credential and is never reasoned on; a deployment may keep them in another store by choosing another adapter at build time.
   A database backup holds envelopes only. The decision stands.
+  Status note (2026-10-27): [ADR 0065](0065-a-usage-ledger-per-person.md) (proposed) adds that Postgres also keeps the **usage ledger** of the people: counts per task
+  and UTC month (the tokens by provider and model and the sandbox time of `usage/v1`), written in the transaction that appends the `model_usage` or
+  `model_usage_total` event that carries them, and kept, with the thread id cleared, when the thread is erased. It is a function of the log
+  (the same events, folded by a pure function of `orch-core`) that outlives the thread; no content is in it. The decision stands.
 
 ## Context
 

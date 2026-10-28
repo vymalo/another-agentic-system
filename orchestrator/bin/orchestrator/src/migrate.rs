@@ -25,6 +25,8 @@ pub enum Command {
     Artifacts(ArtifactsArgs),
     /// Operations on the secrets people keep for their own MCP servers (ADR 0046).
     Secrets(crate::secrets::SecretsArgs),
+    /// Operations on the usage ledger of the people (ADR 0065).
+    Usage(crate::usage::UsageArgs),
 }
 
 /// `orchestrator artifacts ...`

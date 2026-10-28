@@ -1,7 +1,8 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`UserToolServerStore`](crate::UserToolServerStore),
+//! [`SecretStore`](crate::SecretStore), [`UsageLedger`](crate::UsageLedger),
+//! [`UserToolServerStore`](crate::UserToolServerStore),
 //! [`PendingAuthorizations`](crate::PendingAuthorizations) and
 //! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
 //!
@@ -22,6 +23,7 @@ pub mod registry;
 pub mod secret_store;
 pub mod thread_store;
 pub mod tool_server;
+pub mod usage_ledger;
 pub mod user_tool_server_store;
 pub mod wakeup;
 
@@ -428,6 +430,119 @@ macro_rules! secret_store_conformance {
                 match $make().await {
                     Some(store) => $crate::testkit::secret_store::$case(store).await,
                     None => eprintln!("skipped: no secret store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `UsageLedger` conformance case (ADR 0065). `$make` is an
+/// `async fn() -> Option<S>` returning a fresh, isolated store that is both a
+/// [`ThreadStore`](crate::ThreadStore) and a [`UsageLedger`](crate::UsageLedger) (`None` skips the
+/// suite): the ledger is written by the commits of the store it is read from. The calling crate
+/// needs `tokio` (with `macros` and `rt`) as a dev-dependency.
+///
+/// Four cases play a log older than the ledger (the usage events of a build without it, or from
+/// before the migration), so they need a store that can **forget its ledger**:
+/// `usage_ledger_conformance!(make, forget = path)` where `path` is an `async fn(&S)` that empties
+/// the ledger and marks no thread as gone through (a Postgres adapter deletes the rows of the ledger
+/// and zeroes `threads.usage_through`; `MemoryStore` has `forget_usage_ledger`). Without a `forget`
+/// those cases are skipped, and say so.
+#[macro_export]
+macro_rules! usage_ledger_conformance {
+    ($make:path) => {
+        $crate::usage_ledger_conformance!(@common $make);
+        #[tokio::test]
+        async fn a_commit_catches_up_with_the_log_the_ledger_has_not_been_through() {
+            eprintln!("skipped: this adapter supplies no `forget` hook");
+        }
+        #[tokio::test]
+        async fn backfill_folds_in_what_the_ledger_has_not_been_through_and_again_changes_nothing() {
+            eprintln!("skipped: this adapter supplies no `forget` hook");
+        }
+        #[tokio::test]
+        async fn a_commit_to_a_fork_an_older_build_wrote_to_catches_up_from_its_cut() {
+            eprintln!("skipped: this adapter supplies no `forget` hook");
+        }
+        #[tokio::test]
+        async fn a_catch_up_of_many_events_gives_what_folding_them_one_by_one_gives() {
+            eprintln!("skipped: this adapter supplies no `forget` hook");
+        }
+    };
+    ($make:path, forget = $forget:path) => {
+        $crate::usage_ledger_conformance!(@common $make);
+        #[tokio::test]
+        async fn a_commit_catches_up_with_the_log_the_ledger_has_not_been_through() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::usage_ledger::a_commit_catches_up_with_the_log_the_ledger_has_not_been_through(
+                        store, $forget,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn backfill_folds_in_what_the_ledger_has_not_been_through_and_again_changes_nothing() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::usage_ledger::backfill_folds_in_what_the_ledger_has_not_been_through_and_again_changes_nothing(
+                        store, $forget,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn a_commit_to_a_fork_an_older_build_wrote_to_catches_up_from_its_cut() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::usage_ledger::a_commit_to_a_fork_an_older_build_wrote_to_catches_up_from_its_cut(
+                        store, $forget,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn a_catch_up_of_many_events_gives_what_folding_them_one_by_one_gives() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::usage_ledger::a_catch_up_of_many_events_gives_what_folding_them_one_by_one_gives(
+                        store, $forget,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+    };
+    (@common $make:path) => {
+        $crate::usage_ledger_conformance!(@cases $make;
+            calls_add_up_and_a_total_replaces_them
+            a_thread_created_with_usage_events_is_counted
+            agents_and_tasks_are_counted_apart
+            a_month_sums_the_threads_and_models_of_a_person
+            the_month_is_the_utc_month_of_the_latest_event_that_changed_the_row
+            people_are_kept_apart a_refused_commit_counts_nothing
+            a_total_carries_its_parts_and_its_sandbox
+            erasing_a_thread_keeps_its_usage_and_forgets_the_thread
+            usage_after_an_erase_is_counted_on_top_of_what_was_kept
+            a_fork_does_not_count_the_events_it_copied
+            backfill_leaves_alone_what_the_ledger_is_through
+            events_that_are_not_usage_change_nothing
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::usage_ledger::$case(store).await,
+                    None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
                 }
             }
         )*

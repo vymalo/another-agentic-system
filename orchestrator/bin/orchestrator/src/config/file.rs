@@ -230,10 +230,6 @@ pub struct StoreOnly {
 ///
 /// # Errors
 /// A configuration error (exit 78): no file, or a file that cannot be read.
-#[cfg(any(
-    feature = "secrets-pg",
-    all(feature = "artifacts-fs", feature = "artifacts-s3")
-))]
 fn config_file(args: &Args, wants: &str) -> Result<(String, PathBuf), ConfigError> {
     let Some(path) = clean(args.config.as_deref()) else {
         return Err(document(format!(
@@ -407,6 +403,75 @@ fn load_user_secrets_from(
     Ok(UserSecretsOnly {
         database_url: SecretString::from(valid.database_url.expose()),
         keyring,
+        log_format: match valid.log_format {
+            orch_config::LogFormat::Json => LogFormat::Json,
+            orch_config::LogFormat::Text => LogFormat::Text,
+        },
+    })
+}
+
+/// The database of a configuration file, and nothing else of it: what `orchestrator usage
+/// backfill` runs with (ADR 0065).
+pub struct DatabaseOnly {
+    /// `database.url`.
+    pub database_url: SecretString,
+    /// `log.format`.
+    pub log_format: LogFormat,
+}
+
+impl std::fmt::Debug for DatabaseOnly {
+    /// The format and no URL: it carries the database's password.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseOnly")
+            .field("database_url", &"<redacted>")
+            .field("log_format", &self.log_format)
+            .finish()
+    }
+}
+
+/// Loads the database of the file `ORCH_CONFIG_FILE` or `--config` names, for a command that only
+/// reads the database: the file's syntax and shape are checked whole, then **only** `database.url`
+/// is checked and read. The agents, the thread-tools key, the model keys and the secret store's keys
+/// are not (the Job that runs the command is not given them). Variables and flags are not laid over
+/// the file.
+///
+/// # Errors
+/// A configuration error (exit 78): no file, a file that cannot be read or is wrong, a database URL
+/// that does not resolve.
+pub fn load_database(args: &Args) -> Result<DatabaseOnly, ConfigError> {
+    let (text, base) = config_file(
+        args,
+        "usage backfill reads the database from the configuration file",
+    )?;
+    load_database_from(
+        &text,
+        &base,
+        |name| std::env::var(name).ok(),
+        |path| read_limited(path, MAX_FILE_BYTES),
+    )
+}
+
+/// [`load_database`] with the text of the file, the environment and the file system as parameters,
+/// so a test reads none of them.
+fn load_database_from(
+    text: &str,
+    base_dir: &Path,
+    env: impl Fn(&str) -> Option<String>,
+    read: impl Fn(&Path) -> io::Result<String>,
+) -> Result<DatabaseOnly, ConfigError> {
+    let tree = orch_config::parse_yaml(text).map_err(file_errors)?;
+    let config = orch_config::check(&tree).map_err(file_errors)?;
+    let no_flags = FlagSecrets::new();
+    let resolver = ProcessResolver {
+        env: &env,
+        read: &read,
+        flags: &no_flags,
+    };
+    let valid = config
+        .validate_database(base_dir, &resolver)
+        .map_err(file_errors)?;
+    Ok(DatabaseOnly {
+        database_url: SecretString::from(valid.database_url.expose()),
         log_format: match valid.log_format {
             orch_config::LogFormat::Json => LogFormat::Json,
             orch_config::LogFormat::Text => LogFormat::Text,
@@ -3592,6 +3657,65 @@ artifacts:
                 errors,
                 ["artifacts.s3: required when artifacts.store is s3"]
             );
+        }
+    }
+
+    /// `orchestrator usage backfill` (ADR 0065) reads the database and nothing else of the file: the
+    /// file's shape whole, then `database.url` alone, so a Job that has no agents file, thread-tools
+    /// key or model key can run it.
+    mod database_only {
+        use super::*;
+
+        const FILE: &str = "\
+version: 1
+database: { url: { env: DATABASE_URL } }
+agents: { file: /nowhere/agents.yaml }
+threadTools:
+  url: http://orch:8080
+  secret: { file: /run/secrets/orchestrator/thread-tools-secret }
+models: { endpoints: { default: { baseUrl: https://m.example.com/v1, apiKey: { env: MODEL_KEY } } } }
+log: { format: text }
+";
+
+        fn env(name: &str) -> Option<String> {
+            (name == "DATABASE_URL").then(|| "postgres://u:hunter2@db/orch".to_owned())
+        }
+
+        fn nothing(_: &Path) -> io::Result<String> {
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        }
+
+        #[test]
+        fn the_database_is_read_from_a_file_whose_other_secrets_cannot_be_read() {
+            assert!(
+                load_file_only(&[("ORCH_CONFIG_FILE", "/etc/orch/config.yaml")], FILE).is_err(),
+                "the whole file cannot be loaded without them"
+            );
+            let loaded = load_database_from(FILE, Path::new("/etc/orch"), env, nothing).unwrap();
+            use secrecy::ExposeSecret as _;
+            assert_eq!(
+                loaded.database_url.expose_secret(),
+                "postgres://u:hunter2@db/orch"
+            );
+            assert_eq!(loaded.log_format, LogFormat::Text);
+            assert!(!format!("{loaded:?}").contains("hunter2"));
+        }
+
+        #[test]
+        fn the_database_is_named_when_it_is_not_given() {
+            let err =
+                load_database_from(FILE, Path::new("/etc/orch"), |_| None, nothing).unwrap_err();
+            let ConfigError::Document(lines) = err else {
+                panic!("not a document error");
+            };
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].starts_with("database.url: "), "{lines:?}");
+        }
+
+        #[test]
+        fn a_file_with_a_wrong_shape_is_refused_whole() {
+            let text = FILE.replace("version: 1", "version: 1\nnonsense: true");
+            assert!(load_database_from(&text, Path::new("/etc/orch"), env, nothing).is_err());
         }
     }
 

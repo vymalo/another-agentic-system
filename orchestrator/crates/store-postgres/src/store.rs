@@ -5,7 +5,7 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, RankError, ThreadId,
-    ThreadRecord, UserId, WatchKey, between, spread,
+    ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
@@ -21,6 +21,7 @@ use crate::codec::{
     outbox_cols, outbox_from_row, parse_enum, thread_cols, thread_from_row, to_db, ts,
 };
 use crate::error::{is_unique_violation, migrate_err, store_err};
+use crate::usage;
 use crate::wakeup::{CHANNEL_INBOX, CHANNEL_OUTBOX, CHANNEL_THREAD};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -213,13 +214,17 @@ impl PgStore {
             }
         }
         let events = insert_events(&mut tx, new.id, cut + 1, first.events).await?;
+        // the usage ledger, in the transaction of the events (ADR 0065); what a fork copied was
+        // counted in its parent, so only the events of its own are folded in
+        usage::fold_events(&mut tx, &new.owner, &events).await?;
         insert_outbox(&mut tx, new.id, first.outbox, first.now).await?;
         let rearmed =
             insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
                 .await?;
         let last_seq = cut + i64::try_from(events.len()).unwrap_or(i64::MAX - cut);
         let row = sqlx::query(concat!(
-            "UPDATE threads SET last_seq = $2, updated_at = $3 WHERE id = $1 RETURNING ",
+            "UPDATE threads SET last_seq = $2, usage_through = $2, updated_at = $3 \
+             WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(new.id.0)
@@ -826,6 +831,9 @@ async fn delete(
     .execute(&mut **tx)
     .await
     .map_err(store_err)?;
+    // The usage of the threads stays, naming no thread any more (ADR 0065): in the transaction that
+    // deletes the log, so the ledger never points at a thread that is gone.
+    usage::forget_threads(tx, &ids).await?;
     // Cascades the events, outbox, binding and watches; nulls `forked_from` of the forks.
     sqlx::query("DELETE FROM threads WHERE id = ANY($1)")
         .bind(&ids)
@@ -1446,12 +1454,14 @@ impl ThreadStore for PgStore {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         // The row lock serialises every writer of this thread: the seq counter below cannot
         // be raced, so seq has no gaps and no duplicates (READ COMMITTED is enough).
-        let locked =
-            sqlx::query("SELECT version, last_seq, state FROM threads WHERE id = $1 FOR UPDATE")
-                .bind(thread.0)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_err)?;
+        let locked = sqlx::query(
+            "SELECT version, last_seq, state, owner, usage_through, forked_at FROM threads \
+                 WHERE id = $1 FOR UPDATE",
+        )
+        .bind(thread.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
         let Some(locked) = locked else {
             rollback(tx).await;
             return Err(StoreError::NotFound);
@@ -1553,7 +1563,18 @@ impl ThreadStore for PgStore {
             }
         }
         let has_outbox = !commit.outbox.is_empty() || commit.finishes_outbox.is_some();
+        // The usage ledger is written in this transaction (ADR 0065). First what it has not been
+        // through: events a build without the ledger appended, or the log the thread had before
+        // migration 0023; none at all in steady state, when `usage_through` is `last_seq`.
+        let owner = UserId::new(&locked.try_get::<String, _>("owner").map_err(store_err)?);
+        let through: i64 = locked.try_get("usage_through").map_err(store_err)?;
+        let cut: Option<i64> = locked.try_get("forked_at").map_err(store_err)?;
+        let behind = usage_counted_through(through, cut);
+        if behind < last_seq {
+            usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
+        }
         let events = insert_events(&mut tx, thread, last_seq + 1, commit.events).await?;
+        usage::fold_events(&mut tx, &owner, &events).await?;
         let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
         // The job is written with the state, under the same lock and version check; a commit
         // without one leaves the stored job alone.
@@ -1567,7 +1588,8 @@ impl ThreadStore for PgStore {
                  ELSE share_nonce END, \
              shared_at = CASE $8::text WHEN 'set' THEN $4 WHEN 'clear' THEN NULL \
                  ELSE shared_at END, \
-             version = version + 1, last_seq = $3, updated_at = $4 WHERE id = $1 RETURNING ",
+             version = version + 1, last_seq = $3, usage_through = $3, updated_at = $4 \
+             WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(thread.0)

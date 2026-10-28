@@ -126,9 +126,9 @@ pub fn init(format: LogFormat, fields: Option<ProcessFields>) {
         tracing::dispatcher::set_global_default(dispatch(format, fields, filter, std::io::stdout));
 }
 
-/// [`init`] for a command that prints its result on stdout (`artifacts migrate`): the log goes to
-/// **stderr**, with no process fields (there is no role or instance).
-#[cfg(all(feature = "artifacts-fs", feature = "artifacts-s3"))]
+/// [`init`] for a command that prints its result on stdout (`artifacts migrate`, `secrets rewrap`,
+/// `usage backfill`): the log goes to **stderr**, with no process fields (there is no role or
+/// instance).
 pub fn init_stderr(format: LogFormat) {
     let filter = orch_log_filter::env_filter_from_env();
     let _ =
