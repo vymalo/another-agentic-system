@@ -655,14 +655,24 @@ async fn serve(
 /// The worker's dispatcher over `app`. It runs until its token is cancelled, then stops its
 /// workers and releases their leases.
 fn dispatcher(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<Dispatcher<Stack>> {
-    let dispatcher_cfg = DispatcherConfig {
+    Dispatcher::new(
+        Arc::clone(app),
+        dispatcher_config(cfg),
+        cfg.instance_id.clone(),
+    )
+}
+
+/// The dispatcher's settings from the configuration: the slots, the order a claim takes the due rows
+/// in (`dispatcher.order`, ADR 0066), the lease and the heartbeat that renews it.
+pub(crate) fn dispatcher_config(cfg: &Config) -> DispatcherConfig {
+    DispatcherConfig {
         concurrency: cfg.dispatcher_concurrency,
+        order: cfg.dispatcher_order,
         lease: cfg.outbox_lease,
         heartbeat: cfg.outbox_lease / 3,
         verify_watch: cfg.verifier_watch,
         ..DispatcherConfig::default()
-    };
-    Dispatcher::new(Arc::clone(app), dispatcher_cfg, cfg.instance_id.clone())
+    }
 }
 
 /// The worker's inbox worker over `app`: it applies the timers that came due and the reports

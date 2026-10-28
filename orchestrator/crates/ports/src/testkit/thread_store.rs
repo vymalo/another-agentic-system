@@ -207,7 +207,10 @@ async fn seed<S: ThreadStore>(store: &S, owner: &UserId, n: u128) {
 }
 
 async fn claim<S: ThreadStore>(store: &S, owner: &str, now: Timestamp) -> Vec<crate::OutboxItem> {
-    store.claim_outbox(owner, now, LEASE, 100).await.unwrap()
+    store
+        .claim_outbox(owner, now, LEASE, 100, crate::ClaimOrder::Fair)
+        .await
+        .unwrap()
 }
 
 fn applied(outcome: CommitOutcome) -> (orch_core::ThreadRecord, Vec<orch_core::Event>) {
@@ -964,7 +967,10 @@ pub async fn claim_once_and_concurrent_claimers<S: ThreadStore>(store: S) {
     for n in 11..=13 {
         seed(&store, &alice(), n).await;
     }
-    let some = store.claim_outbox("a", t0(), LEASE, 2).await.unwrap();
+    let some = store
+        .claim_outbox("a", t0(), LEASE, 2, crate::ClaimOrder::Fair)
+        .await
+        .unwrap();
     assert_eq!(
         some.iter().map(|r| r.id).collect::<Vec<_>>(),
         vec![outbox_id(11), outbox_id(12)]
@@ -981,7 +987,10 @@ pub async fn claim_once_and_concurrent_claimers<S: ThreadStore>(store: S) {
         tasks.push(tokio::spawn(async move {
             let mut mine = Vec::new();
             loop {
-                let got = store.claim_outbox(who, t0(), LEASE, 3).await.unwrap();
+                let got = store
+                    .claim_outbox(who, t0(), LEASE, 3, crate::ClaimOrder::Fair)
+                    .await
+                    .unwrap();
                 if got.is_empty() {
                     return mine;
                 }
@@ -998,6 +1007,412 @@ pub async fn claim_once_and_concurrent_claimers<S: ThreadStore>(store: S) {
     all.sort();
     all.dedup();
     assert_eq!(all.len(), 21, "a row was claimed twice");
+}
+
+/// Claims `limit` rows in `order` at `now` and returns their ids, oldest first.
+async fn claim_ids<S: ThreadStore>(
+    store: &S,
+    who: &str,
+    now: Timestamp,
+    limit: u32,
+    order: crate::ClaimOrder,
+) -> Vec<OutboxId> {
+    store
+        .claim_outbox(who, now, LEASE, limit, order)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect()
+}
+
+fn outbox_ids(ns: &[u128]) -> Vec<OutboxId> {
+    ns.iter().map(|n| outbox_id(*n)).collect()
+}
+
+/// Fair order (ADR 0066): the person with the fewest jobs running gets the next free slot, ahead
+/// of a longer queue of a person whose jobs hold the slots. Threads 1 to 3 are alice's and run,
+/// 4 and 5 are hers and wait, 6 is bob's.
+pub async fn a_fair_claim_serves_the_person_with_fewer_jobs_running_first<S: ThreadStore>(
+    store: S,
+) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 3, Fair).await,
+        outbox_ids(&[1, 2, 3])
+    );
+    seed(&store, &alice(), 4).await;
+    seed(&store, &alice(), 5).await;
+    seed(&store, &bob(), 6).await;
+    // alice runs three jobs and bob none: the free slot is bob's although his row is the youngest
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[6])
+    );
+    // bob runs one job, alice three: alice's loads are 4 and 5, bob has nothing waiting
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[4])
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[5])
+    );
+    assert!(claim_ids(&store, "a", t0(), 1, Fair).await.is_empty());
+}
+
+/// When one person alone has work, the order is the age of the rows and every slot is theirs.
+pub async fn a_fair_claim_gives_one_person_every_slot<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=6 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[1, 2])
+    );
+    // alice has two running and nobody else has work: all four slots are still hers
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 4, Fair).await,
+        outbox_ids(&[3, 4, 5, 6])
+    );
+}
+
+/// Within one claim the people take turns, and among equal loads the oldest row goes first.
+pub async fn a_fair_claim_interleaves_the_people<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=4 {
+        seed(&store, &alice(), n).await;
+    }
+    seed(&store, &bob(), 5).await;
+    seed(&store, &bob(), 6).await;
+    // loads: alice 1 2 3 4, bob 1 2; ties go to the older row
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 4, Fair).await,
+        outbox_ids(&[1, 2, 5, 6])
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 4, Fair).await,
+        outbox_ids(&[3, 4])
+    );
+}
+
+/// A person's `running` is the rows under a lease that has not expired, of whichever kind and
+/// whichever replica holds them. A lease that expired counts for nothing, and the row is a
+/// candidate again.
+pub async fn a_fair_claim_counts_only_live_leases<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    // alice's rows 1 and 2 are leased until 30 s
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[1, 2])
+    );
+    // bob's row 3 is held by another replica until 50 s
+    seed(&store, &bob(), 3).await;
+    assert_eq!(
+        claim_ids(&store, "b", at(20), 1, Fair).await,
+        outbox_ids(&[3])
+    );
+    seed(&store, &alice(), 4).await;
+    seed(&store, &bob(), 5).await;
+    // at 35 s alice's leases are over: she runs nothing and has rows 1, 2 and 4 to claim, loads 1,
+    // 2 and 3; bob runs one (row 3) and has row 5, load 2. Were alice's lapsed leases counted her
+    // loads would be 3, 4 and 5, and were bob's live one not, his row would be second.
+    assert_eq!(
+        claim_ids(&store, "c", at(35), 2, Fair).await,
+        outbox_ids(&[1, 2])
+    );
+}
+
+/// A row of any kind that runs counts against its person.
+pub async fn a_fair_claim_counts_running_rows_of_every_kind<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 2).await;
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[1, 2])
+    );
+    // alice's delegation is in flight and a verification is asked for it; bob's delegation too
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Verifying, vec![], vec![verify_row(101)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[101])
+    );
+    // alice now runs two rows (a delegation and a verification), bob one
+    seed(&store, &alice(), 3).await;
+    seed(&store, &bob(), 4).await;
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[4])
+    );
+}
+
+/// A cancel row goes before every other, whatever its person is running, and it takes no place in
+/// the ranks of the person's other rows.
+pub async fn a_fair_claim_serves_cancel_rows_first<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 3, Fair).await,
+        outbox_ids(&[1, 2, 3])
+    );
+    seed(&store, &alice(), 4).await;
+    seed(&store, &bob(), 5).await;
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Queued, vec![], vec![cancel_row(106)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[106])
+    );
+    // the cancel row is leased and runs: alice runs four rows, bob none
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[5])
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[4])
+    );
+    // a cancel row younger than everything else, with a claim that takes them all: it comes first
+    // in the choice, which a limit tells
+    seed(&store, &bob(), 7).await;
+    seed(&store, &bob(), 8).await;
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Queued, vec![], vec![cancel_row(109)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[7, 109])
+    );
+}
+
+/// A cancel row takes no place in the ranks of its person's other rows: alice's delegation after
+/// her (older) cancel row is her second candidate, not her third, and still goes ahead of bob's second.
+pub async fn a_cancel_row_takes_no_place_in_the_ranks_of_its_persons_rows<S: ThreadStore>(
+    store: S,
+) {
+    use crate::ClaimOrder::Fair;
+    seed(&store, &alice(), 1).await;
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Queued, vec![], vec![cancel_row(101)]),
+            )
+            .await
+            .unwrap(),
+    );
+    seed(&store, &alice(), 3).await;
+    seed(&store, &bob(), 4).await;
+    seed(&store, &bob(), 5).await;
+    // order of the rows: alice 1, alice's cancel 101, alice 3, bob 4, bob 5. Loads: the cancel row 0,
+    // alice 1 and 2, bob 1 and 2; the tie between alice's second and bob's second goes to the older.
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 4, Fair).await,
+        outbox_ids(&[1, 101, 3, 4])
+    );
+}
+
+/// Among equal loads the older row goes first, whoever it is for and however many tie: twelve people
+/// with one row each, two slots at a time.
+pub async fn a_fair_claim_takes_the_older_rows_among_equal_loads<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=12 {
+        seed(&store, &UserId::new(&format!("u{n}@example.com")), n).await;
+    }
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[1, 2])
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[3, 4])
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 1, Fair).await,
+        outbox_ids(&[5])
+    );
+}
+
+/// A person's rows are ranked by their age, not by their ids: alice's rows have the ids 90, 80 and 70
+/// in the order they were written, and bob's row, written after them, has the id 60.
+pub async fn a_fair_claim_ranks_a_persons_rows_by_age_and_not_by_id<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    for (thread, owner, row) in [
+        (1, alice(), 90),
+        (2, alice(), 80),
+        (3, alice(), 70),
+        (4, bob(), 60),
+    ] {
+        store
+            .create_thread(
+                new_thread(&owner, thread),
+                commit(
+                    ThreadState::Queued,
+                    vec![user_event("hi", None)],
+                    vec![delegate(row)],
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    // loads: alice's first 1, second 2, third 3; bob's 1; the tie goes to alice's, the older
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[90, 60])
+    );
+}
+
+/// Which rows may be claimed at all is the per-thread rule under the fair order too: a delegate
+/// waits for the older open delegate of its thread, whoever else has work.
+pub async fn a_fair_claim_keeps_the_per_thread_order<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 2).await;
+    for (version, id) in [(1, 101), (2, 102)] {
+        applied(
+            store
+                .commit(
+                    thread_id(1),
+                    version,
+                    commit(ThreadState::Queued, vec![], vec![delegate(id)]),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    // alice's second and third delegations wait for the first, bob has one row: two are due
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 10, Fair).await,
+        outbox_ids(&[1, 2])
+    );
+    assert!(claim_ids(&store, "a", t0(), 10, Fair).await.is_empty());
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
+            .await
+            .unwrap()
+    );
+    // the next one is released alone, not both
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 10, Fair).await,
+        outbox_ids(&[101])
+    );
+}
+
+/// Two claimers at once never take the same row, and between them they take the rows the order
+/// puts first: as many of one person as of the other.
+pub async fn fair_claimers_at_once_take_disjoint_rows_of_both_people<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=8 {
+        seed(&store, &alice(), n).await;
+    }
+    for n in 9..=16 {
+        seed(&store, &bob(), n).await;
+    }
+    let store = Arc::new(store);
+    let mut tasks = Vec::new();
+    for who in ["c1", "c2"] {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            claim_ids(&*store, who, t0(), 4, Fair).await
+        }));
+    }
+    let mut all = Vec::new();
+    for t in tasks {
+        all.extend(t.await.unwrap());
+    }
+    all.sort();
+    let mut once = all.clone();
+    once.dedup();
+    assert_eq!(all, once, "a row was claimed twice");
+    // the eight rows with the lowest loads: alice's 1 to 4 and bob's 9 to 12
+    assert_eq!(all, outbox_ids(&[1, 2, 3, 4, 9, 10, 11, 12]));
+}
+
+/// A long queue of one person does not hide or delay the row of another: the oldest row of each
+/// goes first, whatever the length of the first queue and the limit of the claim.
+pub async fn a_fair_claim_is_not_blinded_by_a_long_queue<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=70 {
+        seed(&store, &alice(), n).await;
+    }
+    seed(&store, &bob(), 71).await;
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[1, 71])
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[2, 3])
+    );
+}
+
+/// `Fifo` is the order of the claim before ADR 0066: the oldest rows, whoever they are for, and a
+/// cancel row where its age puts it.
+pub async fn a_fifo_claim_takes_the_oldest_rows_whoever_they_are_for<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fifo;
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 3, Fifo).await,
+        outbox_ids(&[1, 2, 3])
+    );
+    seed(&store, &alice(), 4).await;
+    seed(&store, &alice(), 5).await;
+    seed(&store, &bob(), 6).await;
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Queued, vec![], vec![cancel_row(107)]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fifo).await,
+        outbox_ids(&[4, 5])
+    );
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fifo).await,
+        outbox_ids(&[6, 107])
+    );
 }
 
 pub async fn lease_expiry_reclaim<S: ThreadStore>(store: S) {
@@ -2010,10 +2425,18 @@ pub async fn skip_unsent_delegates<S: ThreadStore>(store: S) {
 
     // Thread 2: inflight, unsent, lease valid -> a live worker owns it; not skipped.
     seed(&store, &alice(), 2).await;
-    let got = store.claim_outbox("a", t0(), LEASE, 1).await.unwrap();
+    let got = store
+        .claim_outbox("a", t0(), LEASE, 1, crate::ClaimOrder::Fair)
+        .await
+        .unwrap();
     // The oldest claimable row is thread 1's cancel row, so claim again for thread 2's delegate.
     let mut rows = got;
-    rows.extend(store.claim_outbox("a", t0(), LEASE, 1).await.unwrap());
+    rows.extend(
+        store
+            .claim_outbox("a", t0(), LEASE, 1, crate::ClaimOrder::Fair)
+            .await
+            .unwrap(),
+    );
     assert!(rows.iter().any(|r| r.id == outbox_id(2)));
     assert_eq!(
         store
@@ -2499,9 +2922,15 @@ pub async fn outbox_stats<S: ThreadStore>(store: S) {
     );
 
     // Row 1 is claimed (lease until at(35)); row 2 is claimed and put back in backoff.
-    let first = store.claim_outbox("a", at(5), LEASE, 1).await.unwrap();
+    let first = store
+        .claim_outbox("a", at(5), LEASE, 1, crate::ClaimOrder::Fair)
+        .await
+        .unwrap();
     assert_eq!(first[0].id, outbox_id(1));
-    let second = store.claim_outbox("a", at(5), LEASE, 1).await.unwrap();
+    let second = store
+        .claim_outbox("a", at(5), LEASE, 1, crate::ClaimOrder::Fair)
+        .await
+        .unwrap();
     assert_eq!(second[0].id, outbox_id(2));
     assert!(
         store
@@ -2517,7 +2946,10 @@ pub async fn outbox_stats<S: ThreadStore>(store: S) {
 
     // Row 3 is claimed too (lease until at(36)). The lease of row 1 lapses at at(35): from
     // then on the row is due again, since when its lease lapsed.
-    let third = store.claim_outbox("c", at(6), LEASE, 1).await.unwrap();
+    let third = store
+        .claim_outbox("c", at(6), LEASE, 1, crate::ClaimOrder::Fair)
+        .await
+        .unwrap();
     assert_eq!(third[0].id, outbox_id(3));
     assert_eq!(
         store.outbox_stats(at(34)).await.unwrap(),

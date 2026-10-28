@@ -8,10 +8,11 @@ use orch_core::{
     ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
 use orch_ports::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
-    InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder, NewEvent, NewInbox, NewOutbox,
-    NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem, OutboxPayload, OutboxStats,
-    Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ClaimOrder, Commit, CommitOutcome,
+    ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder, NewEvent, NewInbox,
+    NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem, OutboxPayload,
+    OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
+    ThreadStore,
 };
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -921,6 +922,107 @@ fn plus(t: Timestamp, d: Duration) -> Timestamp {
 
 /// The statement that ends a claimed outbox row: `$1` id, `$2` owner, `$3` attempt, `$4` status,
 /// `$5` the error to keep, `$6` the time.
+/// A row of the outbox is due at `$1`: `pending` and past its next attempt, or `inflight` under a
+/// lease that has expired.
+macro_rules! outbox_due {
+    () => {
+        "((o.status = 'pending' AND o.next_attempt_at <= $1) \
+          OR (o.status = 'inflight' AND o.lease_until <= $1))"
+    };
+}
+
+/// The per-thread rule: a delegate row is held back while an older delegate of the same thread is
+/// `pending` or `inflight` (whatever its lease or due time says), which also covers an older row
+/// the very statement claims; a steer row likewise waits for an older steer, and for no delegate
+/// (ADR 0036); an ask row waits for nothing, as a verify row does (ADR 0026).
+macro_rules! outbox_thread_rule {
+    () => {
+        "(o.kind IN ('cancel', 'verify', 'ask', 'title', 'description') OR NOT EXISTS ( \
+            SELECT 1 FROM outbox p \
+            WHERE p.thread_id = o.thread_id AND p.kind = o.kind \
+              AND p.ord < o.ord AND p.status IN ('pending', 'inflight')))"
+    };
+}
+
+/// What claiming does to the rows picked by a statement that names them in `c`.
+macro_rules! outbox_claimed {
+    () => {
+        concat!(
+            "UPDATE outbox SET status = 'inflight', lease_owner = $2, lease_until = $3, \
+               attempts = attempts + 1, updated_at = $1 \
+             WHERE id IN (SELECT id FROM c) RETURNING ord, ",
+            outbox_cols!()
+        )
+    };
+}
+
+/// [`ClaimOrder::Fifo`]: the oldest due rows first, under the per-thread rule.
+const CLAIM_FIFO: &str = concat!(
+    "WITH c AS ( \
+       SELECT o.id FROM outbox o \
+       WHERE ",
+    outbox_due!(),
+    " AND ",
+    outbox_thread_rule!(),
+    " \
+       ORDER BY o.ord LIMIT $4 FOR UPDATE OF o SKIP LOCKED) ",
+    outbox_claimed!()
+);
+
+/// [`ClaimOrder::Fair`] (ADR 0066). Postgres refuses `FOR UPDATE` with a window function at the
+/// same level, so the ranking is in CTEs that lock nothing and the locking select joins them by
+/// id:
+///  * `owners`: the people who have an open row (an index-only scan of `outbox_open_owner`);
+///  * `running`: the rows each person has `inflight` under a lease that has not expired, of every
+///    replica and every kind (`outbox_inflight_owner`);
+///  * `ranked`: per person, their first `4 * limit` candidates (due, under the per-thread rule),
+///    oldest first, with `load = running + rank`, `rank` the position among the person's
+///    candidates; and the first `limit` cancel rows, with load 0, which take no place in anybody's
+///    rank. A row whose rank passes `limit` cannot be among the `limit` first, so the rest of a
+///    queue is never ranked;
+///  * `picked`: the `4 * limit` rows with the lowest `(load, ord)`. The factor leaves room for the
+///    rows other claimers hold at the same moment, which the locking select skips.
+///
+/// The locking select takes `limit` of them in that order, and repeats `due`: a row another
+/// claimer took meanwhile no longer qualifies when Postgres rechecks it after the wait, and is
+/// skipped.
+const CLAIM_FAIR: &str = concat!(
+    "WITH owners AS ( \
+       SELECT DISTINCT owner FROM outbox WHERE status IN ('pending', 'inflight')), \
+     running AS ( \
+       SELECT owner, count(*) AS n FROM outbox \
+       WHERE status = 'inflight' AND lease_until > $1 GROUP BY owner), \
+     ranked AS ( \
+       SELECT x.id, x.ord, coalesce(r.n, 0) + x.rank AS load \
+       FROM owners w \
+       CROSS JOIN LATERAL ( \
+         SELECT s.id, s.ord, row_number() OVER (ORDER BY s.ord) AS rank FROM ( \
+           SELECT o.id, o.ord FROM outbox o \
+           WHERE o.owner = w.owner AND o.status IN ('pending', 'inflight') \
+             AND o.kind <> 'cancel' AND ",
+    outbox_due!(),
+    " AND ",
+    outbox_thread_rule!(),
+    " \
+           ORDER BY o.ord LIMIT $4 * 4) s) x \
+       LEFT JOIN running r ON r.owner = w.owner \
+       UNION ALL \
+       (SELECT o.id, o.ord, 0 FROM outbox o \
+        WHERE o.kind = 'cancel' AND o.status IN ('pending', 'inflight') AND ",
+    outbox_due!(),
+    " \
+        ORDER BY o.ord LIMIT $4)), \
+     picked AS ( \
+       SELECT id, ord, load FROM ranked ORDER BY load, ord LIMIT $4 * 4), \
+     c AS ( \
+       SELECT o.id FROM outbox o JOIN picked k ON k.id = o.id \
+       WHERE ",
+    outbox_due!(),
+    " \
+       ORDER BY k.load, k.ord LIMIT $4 FOR UPDATE OF o SKIP LOCKED) ",
+    outbox_claimed!()
+);
+
 const OUTBOX_FINISH: &str = "UPDATE outbox SET status = $4, last_error = COALESCE($5, last_error), \
      lease_owner = NULL, lease_until = NULL, updated_at = $6 \
      WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'";
@@ -1727,39 +1829,26 @@ impl ThreadStore for PgStore {
         now: Timestamp,
         lease: Duration,
         limit: u32,
+        order: ClaimOrder,
     ) -> Result<Vec<OutboxItem>, StoreError> {
-        // One statement. Candidates are picked oldest first under `FOR UPDATE SKIP LOCKED`,
-        // so concurrent claimers get disjoint rows. A delegate row is held back while an
-        // older delegate of the same thread is `pending` or `inflight` (whatever its lease
-        // or due time says), which also covers an older row this very statement claims; a steer
-        // row likewise waits for an older steer, and for no delegate (ADR 0036); an ask row waits
-        // for nothing, as a verify row does (ADR 0026).
-        let mut rows: Vec<(i64, PgRow)> = sqlx::query(concat!(
-            "WITH c AS ( \
-               SELECT o.id FROM outbox o \
-               WHERE ((o.status = 'pending' AND o.next_attempt_at <= $1) \
-                   OR (o.status = 'inflight' AND o.lease_until <= $1)) \
-                 AND (o.kind IN ('cancel', 'verify', 'ask', 'title', 'description') OR NOT EXISTS ( \
-                       SELECT 1 FROM outbox p \
-                       WHERE p.thread_id = o.thread_id AND p.kind = o.kind \
-                         AND p.ord < o.ord AND p.status IN ('pending', 'inflight'))) \
-               ORDER BY o.ord LIMIT $4 FOR UPDATE OF o SKIP LOCKED) \
-             UPDATE outbox SET status = 'inflight', lease_owner = $2, lease_until = $3, \
-               attempts = attempts + 1, updated_at = $1 \
-             WHERE id IN (SELECT id FROM c) RETURNING ord, ",
-            outbox_cols!()
-        ))
-        .bind(to_db(now))
-        .bind(owner)
-        .bind(to_db(plus(ts(now), lease)))
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_err)?
-        .into_iter()
-        .map(|row| row.try_get::<i64, _>("ord").map(|ord| (ord, row)))
-        .collect::<Result<_, _>>()
-        .map_err(store_err)?;
+        // One statement either way; the rows are locked `FOR UPDATE SKIP LOCKED`, so concurrent
+        // claimers get disjoint rows.
+        let sql = match order {
+            ClaimOrder::Fair => CLAIM_FAIR,
+            ClaimOrder::Fifo => CLAIM_FIFO,
+        };
+        let mut rows: Vec<(i64, PgRow)> = sqlx::query(sql)
+            .bind(to_db(now))
+            .bind(owner)
+            .bind(to_db(plus(ts(now), lease)))
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_err)?
+            .into_iter()
+            .map(|row| row.try_get::<i64, _>("ord").map(|ord| (ord, row)))
+            .collect::<Result<_, _>>()
+            .map_err(store_err)?;
         rows.sort_by_key(|(ord, _)| *ord);
         rows.iter().map(|(_, row)| outbox_from_row(row)).collect()
     }

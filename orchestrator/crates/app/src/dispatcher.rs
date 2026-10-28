@@ -18,8 +18,8 @@ use orch_core::{
     ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history, report,
 };
 use orch_ports::{
-    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, Clock,
-    IdemKey, Lease, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendContent,
+    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, ClaimOrder,
+    Clock, IdemKey, Lease, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendContent,
     SendRequest, StoreError, TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
 };
 use tokio::task::JoinSet;
@@ -55,6 +55,9 @@ pub(crate) use files::{canonical_media_type, clean_filename};
 pub struct DispatcherConfig {
     /// Rows processed at the same time.
     pub concurrency: usize,
+    /// Which due rows a claim takes first when there are more than free slots (ADR 0066): by the
+    /// load of their person, or oldest first.
+    pub order: ClaimOrder,
     /// How long a claim lasts without renewal.
     pub lease: Duration,
     /// How often a worker renews its lease.
@@ -96,6 +99,7 @@ impl Default for DispatcherConfig {
     fn default() -> Self {
         DispatcherConfig {
             concurrency: 32,
+            order: ClaimOrder::Fair,
             lease: Duration::from_secs(30),
             heartbeat: Duration::from_secs(10),
             poll_interval: Duration::from_secs(2),
@@ -303,7 +307,13 @@ impl<P: Ports> Dispatcher<P> {
                 let limit = u32::try_from(free.min(16)).unwrap_or(16);
                 match self
                     .store()
-                    .claim_outbox(&self.owner, self.now(), self.cfg.lease, limit)
+                    .claim_outbox(
+                        &self.owner,
+                        self.now(),
+                        self.cfg.lease,
+                        limit,
+                        self.cfg.order,
+                    )
                     .await
                 {
                     Ok(rows) => {

@@ -1301,7 +1301,13 @@ async fn the_claims_of_a_parked_row_are_not_failed_sends() {
     for _ in 0..4 {
         let claimed = w
             .store
-            .claim_outbox("old", SystemClock.now(), Duration::from_secs(60), 10)
+            .claim_outbox(
+                "old",
+                SystemClock.now(),
+                Duration::from_secs(60),
+                10,
+                orch_ports::ClaimOrder::Fair,
+            )
             .await
             .unwrap();
         assert_eq!(claimed.len(), 1);
@@ -1635,7 +1641,13 @@ async fn sent_and_forgotten(
 ) {
     let claimed = w
         .store
-        .claim_outbox("d1", SystemClock.now(), Duration::from_millis(50), 10)
+        .claim_outbox(
+            "d1",
+            SystemClock.now(),
+            Duration::from_millis(50),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
@@ -2026,6 +2038,7 @@ async fn a_worker_that_lost_its_claim_writes_nothing() {
             SystemClock.now() + SignedDuration::from_secs(1),
             Duration::from_secs(3600),
             10,
+            orch_ports::ClaimOrder::Fair,
         )
         .await
         .unwrap();

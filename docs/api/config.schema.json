@@ -504,6 +504,11 @@
           "minimum": 1,
           "type": "integer"
         },
+        "order": {
+          "$ref": "#/$defs/DispatcherOrder",
+          "default": "fair",
+          "description": "Which due rows a claim takes first when more are waiting than there are free slots, `fair` or `fifo` (default `fair`, ADR 0066). `fifo` is the oldest-first order the dispatcher had before, kept as a switch to roll back to."
+        },
         "outboxLeaseSecs": {
           "default": 30,
           "description": "Seconds a crashed replica's claim blocks others, at least 3 (default 30). Also how long a local agent's run stays leased. Replaces `OUTBOX_LEASE_SECS`.",
@@ -513,6 +518,14 @@
         }
       },
       "type": "object"
+    },
+    "DispatcherOrder": {
+      "description": "The order the dispatcher claims due rows in (ADR 0066).",
+      "enum": [
+        "fair",
+        "fifo"
+      ],
+      "type": "string"
     },
     "Endpoint": {
       "additionalProperties": false,
@@ -1738,6 +1751,7 @@
       "$ref": "#/$defs/Dispatcher",
       "default": {
         "concurrency": 32,
+        "order": "fair",
         "outboxLeaseSecs": 30
       },
       "description": "The dispatcher: the outbox rows worked at once, and the lease on them."

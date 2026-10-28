@@ -619,6 +619,18 @@ pub struct AgentBinding {
     pub revision: Option<String>,
 }
 
+/// The order [`ThreadStore::claim_outbox`] takes the rows that are due in (ADR 0066). The rows that
+/// may be claimed at all are the same under both; only the choice among them differs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ClaimOrder {
+    /// By load, then by age: the person with the fewest jobs running gets the next free slot
+    /// (see [`ThreadStore::claim_outbox`]).
+    #[default]
+    Fair,
+    /// Oldest first, whoever the row is for: the order of the claim before ADR 0066.
+    Fifo,
+}
+
 /// Lifecycle of an outbox row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1039,7 +1051,7 @@ pub trait ThreadStore: crate::UsageLedger + Send + Sync + 'static {
         thread: ThreadId,
     ) -> impl Future<Output = Result<Option<AgentBinding>, StoreError>> + Send;
 
-    /// Claims up to `limit` rows (oldest first): `pending` and due, or `inflight` with an
+    /// Claims up to `limit` rows: `pending` and due, or `inflight` with an
     /// expired lease (`lease_until <= now`). A delegate row is claimable only if no older
     /// `pending`/`inflight` delegate row exists for the same thread (per-thread ordering,
     /// including rows claimed earlier in the same call); a steer row likewise waits for an older
@@ -1048,7 +1060,19 @@ pub trait ThreadStore: crate::UsageLedger + Send + Sync + 'static {
     /// ask, title and description rows are unrestricted (a verification runs while the delegation
     /// that caused it is still being finished, and never waits for a later delegation; an ask is
     /// made by the agent that the delegation in flight is running, so it never waits behind it,
-    /// and two asks of a job run side by side).
+    /// and two asks of a job run side by side). Those are the **candidates**.
+    ///
+    /// Which candidates are taken when there are more than `limit` is `order` (ADR 0066).
+    /// [`ClaimOrder::Fifo`] takes the oldest. [`ClaimOrder::Fair`] gives every candidate a
+    /// `load = running + rank` and takes the lowest loads, the older row first among equal ones:
+    /// `running` is the number of rows of the row's person (the owner of its thread) that are
+    /// `inflight` under a lease that has not expired at `now`, whichever replica holds them and
+    /// whatever their kind; `rank` is the row's position (1, 2, ...) among that person's candidates
+    /// of this call, oldest first. A `cancel` row is not ordered by load: it goes before every
+    /// other and does not count in its person's ranks. Nothing is taken back from a job that runs:
+    /// fairness only chooses the next rows, and when one person has work, every slot is theirs.
+    /// The rows come back oldest first, whatever the order they were chosen in.
+    ///
     /// Sets `inflight`, owner, `lease_until = now + lease`, `attempts += 1`. Concurrent
     /// claimers never get the same row.
     fn claim_outbox(
@@ -1057,6 +1081,7 @@ pub trait ThreadStore: crate::UsageLedger + Send + Sync + 'static {
         now: Timestamp,
         lease: Duration,
         limit: u32,
+        order: ClaimOrder,
     ) -> impl Future<Output = Result<Vec<OutboxItem>, StoreError>> + Send;
 
     /// Extends the lease. `false` if `lease` is no longer the row's current claim.

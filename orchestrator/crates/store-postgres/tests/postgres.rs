@@ -659,7 +659,7 @@ async fn commits_racing_a_reclaim_neither_deadlock_nor_half_write() {
     for _ in 0..25 {
         let id = create(&store, vec![delegate()]).await;
         let held = store
-            .claim_outbox("a", t0(), lease_for, 10)
+            .claim_outbox("a", t0(), lease_for, 10, orch_ports::ClaimOrder::Fair)
             .await
             .unwrap()
             .into_iter()
@@ -688,7 +688,11 @@ async fn commits_racing_a_reclaim_neither_deadlock_nor_half_write() {
         };
         let claimer = {
             let store = Arc::clone(&store);
-            tokio::spawn(async move { store.claim_outbox("b", later, lease_for, 100).await })
+            tokio::spawn(async move {
+                store
+                    .claim_outbox("b", later, lease_for, 100, orch_ports::ClaimOrder::Fair)
+                    .await
+            })
         };
         let outcome = tokio::time::timeout(Duration::from_secs(10), async {
             (
@@ -708,7 +712,7 @@ async fn commits_racing_a_reclaim_neither_deadlock_nor_half_write() {
         assert_eq!(thread.version, 1 + i64::from(applied));
         // Whatever the interleaving, the row ends up claimable by its next owner.
         store
-            .claim_outbox("b", later, lease_for, 100)
+            .claim_outbox("b", later, lease_for, 100, orch_ports::ClaimOrder::Fair)
             .await
             .unwrap();
         let row = store.get_outbox(held.id).await.unwrap().unwrap();
@@ -1491,7 +1495,13 @@ async fn migration_0009_upgrades_a_database_that_holds_a_log() {
     // the old row is untouched, and the title row reads back as a title request and is claimed at
     // once whatever delegation of its thread is in flight
     let claimed = store
-        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 10)
+        .claim_outbox(
+            "w",
+            jiff::Timestamp::now(),
+            Duration::from_secs(30),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     let kinds: Vec<_> = claimed.iter().map(|r| r.kind).collect();
@@ -2385,12 +2395,24 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
     // the delegation is claimed and in flight; the ask is claimed beside it, reads as the core
     // writes it, and keeps its task on the row
     let first = store
-        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 1)
+        .claim_outbox(
+            "w",
+            jiff::Timestamp::now(),
+            Duration::from_secs(30),
+            1,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(first[0].kind, OutboxKind::Delegate);
     let claimed = store
-        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 10)
+        .claim_outbox(
+            "w",
+            jiff::Timestamp::now(),
+            Duration::from_secs(30),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1, "the ask, and not the delegation again");
@@ -2786,7 +2808,13 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
     // the old row is as it was, and the new one reads as the core writes it; both are claimed (a
     // steer does not wait for the delegation) and the steer becomes the delegation it stands for
     let claimed = store
-        .claim_outbox("w", jiff::Timestamp::now(), Duration::from_secs(30), 10)
+        .claim_outbox(
+            "w",
+            jiff::Timestamp::now(),
+            Duration::from_secs(30),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     let old = claimed.iter().find(|r| r.id == OutboxId(delegate)).unwrap();
