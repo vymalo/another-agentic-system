@@ -80,6 +80,12 @@ jobs:
         run: helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml
       - name: helm template (the values of the netcup Application)
         run: helm template another-agentic-system deploy/chart --namespace another-agentic-system -f deploy/chart/examples/netcup.values.yaml > /dev/null
+      # The limit per client address on (deploy/chart/tests/ratelimit.values.yaml): off by default, so this is the render a deployment gets when it turns it on.
+      - name: helm lint and template with the rate limit on
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/ratelimit.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/ratelimit.values.yaml > /dev/null
       # The search pod and both tool servers on (deploy/chart/tests/web-search.values.yaml): off by default, so these are the
       # renders a deployment gets when it turns them on.
       - name: helm lint and template with the search pod and the tool servers on
@@ -274,6 +280,10 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/backup-aws.values.yaml \
             > "$RUNNER_TEMP/rendered-backup-aws.yaml"
+          # The limit per client address: a Traefik Middleware more than the default render, and the Ingress naming it.
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/ratelimit.values.yaml \
+            > "$RUNNER_TEMP/rendered-ratelimit.yaml"
           for attempt in 1 2 3; do
             status=0
             "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" \
@@ -287,6 +297,7 @@ jobs:
                 "$RUNNER_TEMP/rendered-migrate.yaml" "$RUNNER_TEMP/rendered-migrate-before.yaml" \
                 "$RUNNER_TEMP/rendered-user-secrets.yaml" \
                 "$RUNNER_TEMP/rendered-backup.yaml" "$RUNNER_TEMP/rendered-backup-aws.yaml" \
+                "$RUNNER_TEMP/rendered-ratelimit.yaml" \
                 deploy/chart/examples/restore-cluster.yaml deploy/chart/examples/restore-cutover.yaml \
                 > "$RUNNER_TEMP/kubeconform.out" 2>&1 || status=$?
             cat "$RUNNER_TEMP/kubeconform.out"
@@ -454,7 +465,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
-        run: shellcheck deploy/chart/bump-tag.sh deploy/chart/tests/*.sh deploy/chart/tests/backup-e2e/*.sh deploy/keycloak/tests/*.sh
+        run: shellcheck deploy/chart/bump-tag.sh deploy/chart/tests/*.sh deploy/chart/tests/backup-e2e/*.sh deploy/chart/tests/ratelimit-e2e/*.sh deploy/keycloak/tests/*.sh
       - name: bump-tag.sh is idempotent and edits only the image tags
         run: sh deploy/chart/tests/bump-tag-test.sh
       - name: The Keycloak exports are JSON and hold no secret
