@@ -4,6 +4,10 @@ name: Orchestrator
 #        the store, end-to-end and binary tests all run against a real database, and a RustFS service
 #        so the S3 artifact store's testkit runs against a real S3-compatible server; on pull
 #        requests also the guard that applied migrations are never edited.
+# pooler: the suites that talk to Postgres, through a real PgBouncer in transaction mode (issue 290): the pooled URL
+#        for queries and the direct URL for what must be direct (the migrations, the LISTEN connection). A pinned
+#        edoburu/pgbouncer image (tag and digest) with the configuration of crates/store-postgres/tests/pgbouncer;
+#        its version and its pool mode are asserted before the tests run.
 # image: builds the container image (pull requests: build only, to validate the Dockerfile;
 #        main: build and push to ghcr.io) and, before anything is pushed, runs it against a
 #        Postgres service: non-root, /healthz and /readyz answer, SIGTERM exits cleanly.
@@ -156,6 +160,69 @@ jobs:
       # binary hosting an echo agent, and the roles splitting the work) against the database.
       - run: cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings
       - run: cargo test -p orchestrator --features agent-local --locked
+
+  pooler:
+    runs-on: ubuntu-latest
+    env:
+      # What the tests are told: queries go through PgBouncer, and the database itself is for what a transaction-mode
+      # pooler cannot carry. Each test gets a database of its own (a pooler cannot carry a search_path).
+      ORCH_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:6432/orch_test
+      ORCH_TEST_DIRECT_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/orch_test
+      # Maintained image of PgBouncer 1.26.1 (docker.io/edoburu/pgbouncer, *verified 2026-10-28* on Docker Hub: pushed
+      # 2026-10-19, the tag's manifest list is this digest). The setting that matters is max_prepared_statements, PgBouncer 1.21.
+      PGBOUNCER_IMAGE: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v7
+      - name: Postgres 16 and PgBouncer
+        # Postgres is run by hand and not as a service: its max_connections is raised (one pool per test database, and
+        # the listeners and migrations connect directly). Both containers are on the host network, as the tests expect.
+        working-directory: .
+        run: |
+          docker run -d --name postgres --network host -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orch_test \
+            postgres:16 -c max_connections=300 -c fsync=off
+          for _ in $(seq 60); do docker exec postgres pg_isready -h 127.0.0.1 -U postgres -d orch_test && break; sleep 1; done
+          docker run -d --name pgbouncer --network host \
+            -v "$PWD/orchestrator/crates/store-postgres/tests/pgbouncer:/etc/pgbouncer:ro" "$PGBOUNCER_IMAGE"
+          for _ in $(seq 30); do
+            docker exec -e PGPASSWORD=postgres postgres psql -h 127.0.0.1 -p 6432 -U postgres -d orch_test -Atc 'select 1' && break
+            sleep 1
+          done
+      - name: The pooler is what the tests assume
+        # A pooler in session mode, or one without protocol-level prepared statements, would make the suites pass for the wrong
+        # reason (or fail for it): say what runs, and refuse what is not transaction mode with max_prepared_statements.
+        working-directory: .
+        run: |
+          admin() { docker exec -e PGPASSWORD=postgres postgres psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer -Atc "$1"; }
+          version=$(admin 'show version')
+          mode=$(admin 'show config' | awk -F'|' '$1 == "pool_mode" {print $2}')
+          prepared=$(admin 'show config' | awk -F'|' '$1 == "max_prepared_statements" {print $2}')
+          echo "$version, pool_mode=$mode, max_prepared_statements=$prepared"
+          echo "### $version, pool_mode=$mode, max_prepared_statements=$prepared" >> "$GITHUB_STEP_SUMMARY"
+          test "$mode" = transaction
+          test "$prepared" -gt 0
+          # 1.21 is the first release with protocol-level prepared statements in transaction mode
+          echo "$version" | awk '{split($2, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 21))}'
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator -> target"
+          key: pooler
+      # The thread store, the sealed secret store, the in-process agents' routing, and the binary (with its in-process
+      # agents): their Postgres suites, through the pooler. The other crates' suites need no pooler (they use the in-memory
+      # ports or are covered by `check`), and the in-process agents' own suites share a journal by a schema, which a
+      # pooler cannot carry (`orch-agent-adam`'s tests/direct.rs is the one that runs here).
+      - run: cargo test -p orch-store-postgres -p orch-secrets-pg --locked
+      - run: cargo test -p orch-agent-adam --test direct --locked
+      - run: cargo test -p orch-e2e --locked
+      - run: cargo test -p orchestrator --features agent-local --locked
+      - name: PgBouncer's log
+        if: failure()
+        run: docker logs --tail 200 pgbouncer
 
   image:
     needs: check

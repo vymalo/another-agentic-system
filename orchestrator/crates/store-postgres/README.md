@@ -106,6 +106,20 @@ database; stale test schemas older than an hour are dropped.
   expiry passes by a row another transaction holds instead of waiting; and that a row whose payload this build cannot read is
   claimed with its neighbours and fails alone when decoded.
 
+**Through a pooler.** `tests/pgbouncer/` holds the PgBouncer configuration CI uses (`pool_mode = transaction`,
+`max_prepared_statements = 200`; the credentials are the throwaway ones of the CI Postgres). By hand, with Docker:
+
+```sh
+docker run -d --name postgres --network host -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orch_test \
+  postgres:16 -c max_connections=300 -c fsync=off
+docker run -d --name pgbouncer --network host \
+  -v "$PWD/crates/store-postgres/tests/pgbouncer:/etc/pgbouncer:ro" \
+  edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+ORCH_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:6432/orch_test \
+ORCH_TEST_DIRECT_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/orch_test \
+  cargo test -p orch-store-postgres -p orch-secrets-pg
+```
+
 ```sh
 ORCH_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/orch_test \
   cargo test -p orch-store-postgres
