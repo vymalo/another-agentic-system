@@ -1,0 +1,14 @@
+# Layered over examples/netcup.values.yaml by ratelimit-e2e.sh (in this directory). Only the chart's Ingress and its rate-limit Middleware are rendered and
+# applied (`--show-only templates/ingress.yaml --show-only templates/ingress-ratelimit.yaml`), so everything else here is what the chart needs to render at all.
+# The script sets the rest on the command line: the numbers of the bucket (small, so that a few requests fill it), whether the limit is on, the depth, and the
+# deployer's own `traefik.ingress.kubernetes.io/router.middlewares` (it names the test's namespace).
+#
+#   * the host is one that exists nowhere: the script resolves it to Traefik's Service for each request (curl --resolve), and the Ingress's TLS Secret
+#     (`<fullname>-tls`) is a self-signed certificate for it that the script makes;
+#   * the mobile app links are off (production refuses to render them without the real identities, and they are not what this tests).
+host: ratelimit.e2e.test
+mobileAppLinks:
+  enabled: false
+ingress:
+  rateLimit:
+    enabled: true

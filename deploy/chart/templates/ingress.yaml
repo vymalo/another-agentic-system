@@ -2,6 +2,14 @@
 # Traefik terminates TLS (a certificate from cert-manager) and passes the whole host to the edge. An Ingress, not an
 # HTTPRoute: the Gateway API provider of the cluster's Traefik is off. The http entrypoint redirects to https on its own.
 {{- $root := dict "root" . "component" "edge" }}
+{{- /* The deployer's annotations, and with ingress.rateLimit our middleware first in the same router.middlewares value (templates/ingress-ratelimit.yaml): a limit that
+       runs before whatever the deployer chained, whose own entries stay. */ -}}
+{{- $annotations := deepCopy (default dict .Values.ingress.annotations) }}
+{{- if .Values.ingress.rateLimit.enabled }}
+{{- $mwKey := "traefik.ingress.kubernetes.io/router.middlewares" }}
+{{- $theirs := trim (toString (get $annotations $mwKey)) }}
+{{- $_ := set $annotations $mwKey (ternary (include "agentic.rateLimit.ref" .) (printf "%s,%s" (include "agentic.rateLimit.ref" .) $theirs) (eq $theirs "")) }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -10,7 +18,7 @@ metadata:
     {{- include "agentic.labels" $root | nindent 4 }}
   annotations:
     cert-manager.io/cluster-issuer: {{ required "ingress.clusterIssuer is required" .Values.ingress.clusterIssuer | quote }}
-    {{- with .Values.ingress.annotations }}
+    {{- with $annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:

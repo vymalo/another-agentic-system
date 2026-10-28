@@ -422,3 +422,8 @@ URLs for https://<name> (`artifacts.s3.publicEndpoint`), unless the deployment n
 {{- end -}}
 {{/* "true" or nothing: whether large files go up by a presigned URL (`orchestrator.artifacts.upload.enabled`). */}}
 {{- define "agentic.uploads" -}}{{- if .Values.orchestrator.artifacts.upload.enabled -}}true{{- end -}}{{- end -}}
+
+{{/* The limit per client address at the Ingress (ingress.rateLimit, issue #284): the Middleware's name, and the entry the Ingress's router.middlewares annotation
+     holds for it. Traefik names a Middleware of the CRD provider <namespace>-<name>@kubernetescrd (the form before `providers.kubernetesCRD.safeNaming`). */}}
+{{- define "agentic.rateLimit.name" -}}{{- include "agentic.component" (dict "root" . "component" "ratelimit") -}}{{- end -}}
+{{- define "agentic.rateLimit.ref" -}}{{- printf "%s-%s@kubernetescrd" .Release.Namespace (include "agentic.rateLimit.name" .) -}}{{- end -}}

@@ -60,6 +60,9 @@
     and the rotation `409 not_shared`.
   - **The two counters keep the ADR's names** (no `orch_` prefix, unlike the outbox gauges).
 
+  Status note (2026-10-28, issue #284). Section 10's edge-side limit exists as an option of the chart, off by default: see the amendment at the end of that section.
+  Nothing else here changes.
+
   Status note (2026-10-03; ADR 0043's backend was built on 2026-10-04, and its tests say so: a deleted thread's links are a `404` at once and the open streams end): two decisions proposed after this one touch sharing. [ADR 0043](0043-deleting-a-thread-erases-it.md)
   (deleting a thread) makes the link of a deleted thread a `404` at once, because the nonce is a column of the row and goes with
   it, and ends open shared and owner streams; it is the deletion that *GDPR notes*, "Erasure", says is not built, and it
@@ -426,6 +429,16 @@ needs one. An edge-side limit (Traefik `RateLimit`, a CDN) is better when the cl
 *unverified* behind the production ingress ([open question 51](../open-questions.md)); the application limit does not
 depend on it, because it is per link, not per address. `sharing.mode: public` with no limiter built is a refusal at
 startup, so the order D3 asks for is enforced by the code and not only by the owner's care.
+
+*Amended (2026-10-28, issue #284): the edge-side limit is built, and off.* The chart renders the Traefik `RateLimit` this section names as an option
+(`ingress.rateLimit`, `deploy/chart/templates/ingress-ratelimit.yaml`): a token bucket for each client address, 20 requests a second with a burst of 50 as the
+starting point, named on the chart's own `Ingress` by `traefik.ingress.kubernetes.io/router.middlewares` and **off by default**, because a per-address limit
+with the wrong address throttles every client together, which is exactly what the paragraph above left *unverified* (open question 51, still open). It does not
+replace the application limit, which stays per link and is the only one that holds when the address is unusable, and it does not make `public` safe by
+itself: the owner's check of `X-Forwarded-For` on the production ingress comes first (`deploy/chart/README.md`, "A limit per client at the edge", says how). It
+covers every path of the host, not only the public routes, and not the files host. It is proven on renders and refusals (`deploy/chart/tests/render-check.sh`)
+and on a kind cluster (`deploy/chart/tests/ratelimit-e2e/`, workflow `ratelimit-e2e.yml`: unverified until CI has run it). The decision of this section is
+otherwise as written.
 
 ### 11. Audit and logs
 

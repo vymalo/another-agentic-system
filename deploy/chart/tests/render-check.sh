@@ -2238,6 +2238,105 @@ refused "an alias that two agents share" --set-json 'agents=[{"id":"chat","name"
 check "agents: a tool server may name an agent by its alias" renders -f "$ws_values" \
   --set-json 'agents=[{"id":"adam","name":"Adam","aliases":["coder"],"cardUrl":"http://a/","tokenEnv":"CODER_A2A_TOKEN"},{"id":"chat","name":"Chat","cardUrl":"http://c/","tokenEnv":"CHAT_A2A_TOKEN"}]'
 
+# ---- A limit per client address at the Ingress (issue #284): `ingress.rateLimit`, off by default ---------------------------------------------------
+# Off: not a trace of it, and the Ingress is what it was (the deployer's annotations as written). On: a Traefik `RateLimit` middleware with the numbers, and
+# the Ingress names it in `traefik.ingress.kubernetes.io/router.middlewares` as `<namespace>-<name>@kubernetescrd`, ours first, the deployer's entries after
+# it. The numbers are refused when they mean nothing (0 is "no limit" to Traefik), whether the limit is on or not. tests/ratelimit-e2e/ asks a real Traefik.
+rl_values="$chart/tests/ratelimit.values.yaml"
+rl_key='traefik.ingress.kubernetes.io/router.middlewares'
+# rl_annotation: the value of the Ingress's router.middlewares annotation in the last render (empty if none).
+rl_annotation() { doc Ingress another-agentic | sed -n "s|^    $rl_key: \(.*\)\$|\1|p"; }
+rl_annotation_is() { [ "$(rl_annotation)" = "$1" ]; }
+# the Middleware the last render made, by name, and the entry the Ingress ought to name for it (the release's namespace is another-agentic-system)
+rl_name() { doc Middleware | sed -n 's/^  name: //p'; }
+rl_ours() { printf 'another-agentic-system-%s@kubernetescrd' "$(rl_name)"; }
+rl_names_its_middleware() { [ -n "$(rl_name)" ] && rl_annotation_is "$(rl_ours)"; }
+# rl_one_annotation: exactly one router.middlewares annotation on the Ingress (the render's comments name the key too, so the Ingress's document is counted)
+rl_one_annotation() { [ "$(doc Ingress another-agentic | grep -c 'router\.middlewares:')" -eq 1 ]; }
+# rl_ingress_annotations: how many annotations the Ingress has
+rl_ingress_annotations() { doc Ingress another-agentic | awk '/^  annotations:$/ { a = 1; next } a && /^    / { n++; next } a { exit } END { print n + 0 }'; }
+rl_issuer_alone() { [ "$(rl_ingress_annotations)" -eq 1 ]; }
+rl_no_namespace() { ! doc Middleware | grep -Eq '^  namespace:'; }
+rl_helm() { helm template another-agentic-system "$chart" --namespace "${RL_NS:-another-agentic-system}" -f "$base" "$@"; }
+rl_deployer_kept_off() { rl_helm --set-json "ingress.annotations={\"$rl_key\":\"a-b@kubernetescrd\"}" | grep -Fqx "    $rl_key: a-b@kubernetescrd"; }
+rl_no_ingress_no_middleware() { rl_helm --set ingress.enabled=false | grep -Eqv '^kind: (Middleware|Ingress)$'; }
+rl_in_namespace() { RL_NS=elsewhere rl_helm --set ingress.rateLimit.enabled=true | grep -Fq "$rl_key: elsewhere-another-agentic-ratelimit@kubernetescrd"; }
+rl_bounds() { for d in 0 5; do rl_helm --set ingress.rateLimit.enabled=true --set ingress.rateLimit.sourceDepth=$d >/dev/null || return 1; done; }
+rl_units() { for p in 250ms 1s 30s 2m 1h; do rl_helm --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=$p >/dev/null || return 1; done; }
+
+render
+check "rate limit off (default): no Middleware and no Traefik custom resource of any kind" lacks '^apiVersion: traefik\.io/'
+check "rate limit off (default): the Ingress names no middleware" dlacks Ingress another-agentic 'router\.middlewares'
+check "rate limit off (default): the Ingress's annotations are the issuer's alone" rl_issuer_alone
+check "values.yaml: the limit is off by default" sh -c "grep -A2 '^  rateLimit:\$' '$chart/values.yaml' | grep -qx '    enabled: false'"
+check "rate limit off: the deployer's own router.middlewares is kept as written" rl_deployer_kept_off
+check "rate limit off, ingress off: renders, with neither a Middleware nor an Ingress" rl_no_ingress_no_middleware
+
+render -f "$rl_values"
+check "rate limit on: one Middleware, traefik.io/v1alpha1" sh -c "
+  [ \"\$(grep -Ec '^kind: Middleware\$' '$out')\" -eq 1 ] && grep -Eq '^apiVersion: traefik\.io/v1alpha1\$' '$out'"
+check "rate limit on: average, period and burst are the values'" out_all '^    average: 7$' '^    period: "500ms"$' '^    burst: 11$'
+check "rate limit on: ... average first, under rateLimit" line_after "$out" '^  rateLimit:$' 1 '^    average: 7$'
+check "rate limit on: ... the period follows the average" line_after "$out" '^    average: 7$' 1 '^    period: "500ms"$'
+check "rate limit on: ... the burst follows the period" line_after "$out" '^    period: "500ms"$' 1 '^    burst: 11$'
+check "rate limit on: the source is the address at depth 1 of X-Forwarded-For (sourceCriterion.ipStrategy.depth)" line_after "$out" '^    sourceCriterion:$' 2 '^        depth: 1$'
+check "rate limit on: ... the criterion holds the strategy" line_after "$out" '^    sourceCriterion:$' 1 '^      ipStrategy:$'
+check "rate limit on: the Middleware has no namespace of its own (Helm gives it the release's, as the Ingress's)" rl_no_namespace
+check "rate limit on: the Ingress names the middleware as <namespace>-<name>@kubernetescrd, and it is the Middleware that was made" rl_names_its_middleware
+check "rate limit on: one router.middlewares annotation in the render, on the chart's Ingress" rl_one_annotation
+check "rate limit on: no IngressRoute and no second middleware" lacks '^kind: (IngressRoute|MiddlewareTCP)$'
+check "rate limit on: the chart adds no access log of its own" lacks '(accesslog|accessLog)'
+
+# the deployer's own middlewares: ours first in one comma-separated value, theirs after it, as written; their other annotations stay
+render -f "$rl_values" --set-json 'ingress.annotations={"'"$rl_key"'":"sec-headers@kubernetescrd,auth-fwd@kubernetescrd","example.org/keep":"yes"}'
+check "rate limit on, the deployer chains middlewares: ours first, then theirs as written, in one value" rl_annotation_is "$(rl_ours),sec-headers@kubernetescrd,auth-fwd@kubernetescrd"
+check "rate limit on, the deployer chains middlewares: one router.middlewares annotation, never two" rl_one_annotation
+check "rate limit on, the deployer chains middlewares: their other annotations are kept" dhas Ingress another-agentic '^    example.org/keep: "?yes"?$'
+check "rate limit on, the deployer chains middlewares: the issuer annotation is kept" dhas Ingress another-agentic 'cert-manager.io/cluster-issuer: "cert-cloudflare"'
+render -f "$rl_values" --set-json 'ingress.annotations={"'"$rl_key"'":""}'
+check "rate limit on, the deployer's value is empty: ours alone, no trailing comma" rl_annotation_is "$(rl_ours)"
+render -f "$rl_values" --set-json 'ingress.annotations={"'"$rl_key"'":"  one@kubernetescrd  "}'
+check "rate limit on, the deployer's value has spaces around it: trimmed, ours first" rl_annotation_is "$(rl_ours),one@kubernetescrd"
+render -f "$rl_values" --set fullnameOverride=shop
+check "rate limit on, another release name: the Middleware is named for it" count '^  name: shop-ratelimit$' 1
+check "rate limit on, another release name: ... and the annotation names that one" sh -c "
+  grep -Fq '$rl_key: another-agentic-system-shop-ratelimit@kubernetescrd' '$out'"
+
+# the documented starting point is what `enabled: true` alone gives (README: average 20, period 1s, burst 50, the address of the peer)
+render --set ingress.rateLimit.enabled=true
+check "rate limit on with no other value: 20 per 1s, burst 50, the peer's address (the documented starting point)" out_all '^    average: 20$' '^    period: "1s"$' '^    burst: 50$' '^        depth: 0$'
+check "rate limit on: the annotation carries the release's namespace" rl_in_namespace
+
+# refusals: what Traefik would take but means nothing here, and what cannot work
+refused "rate limit: average 0 (Traefik reads it as no limit)" --set ingress.rateLimit.enabled=true --set ingress.rateLimit.average=0
+refused "rate limit: average negative" --set ingress.rateLimit.enabled=true --set ingress.rateLimit.average=-5
+refused "rate limit: average not whole" --set ingress.rateLimit.enabled=true --set-json 'ingress.rateLimit.average=1.5'
+refused "rate limit: average a string" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.average=20
+refused "rate limit: average beyond a million" --set ingress.rateLimit.enabled=true --set ingress.rateLimit.average=1000001
+refused "rate limit: burst 0" --set ingress.rateLimit.enabled=true --set ingress.rateLimit.burst=0
+refused "rate limit: burst not whole" --set ingress.rateLimit.enabled=true --set-json 'ingress.rateLimit.burst=2.5'
+refused "rate limit: burst null" --set ingress.rateLimit.enabled=true --set-json 'ingress.rateLimit.burst=null'
+refused "rate limit: period without a unit" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=1
+refused "rate limit: period an integer (Traefik would read seconds; the chart wants the unit written)" --set ingress.rateLimit.enabled=true --set ingress.rateLimit.period=1
+refused "rate limit: period in days" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=1d
+refused "rate limit: period fractional" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=1.5s
+refused "rate limit: period zero" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=0s
+refused "rate limit: period zero milliseconds" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=00ms
+refused "rate limit: period compound" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=1m30s
+refused "rate limit: period empty" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=
+refused "rate limit: period negative" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.period=-1s
+refused "rate limit: depth 6 (more than five proxies is a mistake)" --set ingress.rateLimit.enabled=true --set ingress.rateLimit.sourceDepth=6
+refused "rate limit: depth negative" --set ingress.rateLimit.enabled=true --set ingress.rateLimit.sourceDepth=-1
+refused "rate limit: depth not whole" --set ingress.rateLimit.enabled=true --set-json 'ingress.rateLimit.sourceDepth=1.5'
+refused "rate limit: depth a string" --set ingress.rateLimit.enabled=true --set-string ingress.rateLimit.sourceDepth=1
+refused "rate limit: enabled with ingress.enabled false (nothing would name the middleware)" --set ingress.rateLimit.enabled=true --set ingress.enabled=false
+refused "rate limit: enabled a string" --set-string ingress.rateLimit.enabled=true
+refused "rate limit: the deployer's router.middlewares is not a string" --set ingress.rateLimit.enabled=true --set-json 'ingress.annotations={"'"$rl_key"'":5}'
+refused "rate limit: a wrong number is refused while the limit is off too (found when written, not the day it is turned on)" --set ingress.rateLimit.average=0
+refused "rate limit: ... a wrong period, off" --set-string ingress.rateLimit.period=soon
+check "rate limit: depth 0 and depth 5 are accepted (the bounds)" rl_bounds
+check "rate limit: the units ms, s, m and h are accepted" rl_units
+
 # ---- The shipped values.yaml --------------------------------------------------------------------------------------------
 check "values.yaml leaves the deployment's own values empty (host, issuer, model)" sh -c "
   grep -Eq '^host: \"\"$' '$chart/values.yaml' && grep -Eq '^  issuer: \"\"$' '$chart/values.yaml' && grep -Eq '^  baseUrl: \"\"$' '$chart/values.yaml'"

@@ -1,0 +1,10 @@
+# Layered over examples/netcup.values.yaml by deploy/chart/tests/render-check.sh ("A limit per client address at the Ingress", issue #284): the limit ON, with
+# numbers that are not the chart's defaults (20 a second, burst 50, the address of the peer), so that a check that finds a number finds the one it set.
+# deploy/chart/tests/ratelimit-e2e/ has its own values, with a bucket small enough to fill in a few requests.
+ingress:
+  rateLimit:
+    enabled: true
+    average: 7
+    period: 500ms
+    burst: 11
+    sourceDepth: 1
