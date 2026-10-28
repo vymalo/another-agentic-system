@@ -20,6 +20,10 @@ use orch_testsupport::{Chat, eventually};
 #[path = "../../../crates/store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
+/// The address the binary listens on, read from its log (see the module).
+mod support;
+use support::{ANY_PORT, bound};
+
 const BIN: &str = env!("CARGO_BIN_EXE_orchestrator");
 const AGENTS: &str = "- id: helper\n  name: Helper\n  transport: local\n  agent: echo\n";
 
@@ -82,6 +86,16 @@ impl Running {
     }
 }
 
+impl support::Process for Running {
+    fn log(&self) -> String {
+        Running::log(self)
+    }
+
+    fn exited(&mut self) -> Option<ExitStatus> {
+        Running::exited(self)
+    }
+}
+
 impl Drop for Running {
     fn drop(&mut self) {
         // A failed assertion shows what the binary said: the scratch directory goes with the test.
@@ -93,19 +107,12 @@ impl Drop for Running {
     }
 }
 
-/// One replica: the binary on a free port with the agents file of these tests.
+/// One replica: the binary on a port the operating system picked when the binary bound it
+/// ([`Replica::base`] says which, once [`Replica::wait_ready`] has returned), with the agents file of
+/// these tests.
 struct Replica {
     run: RefCell<Running>,
-    base: String,
     client: reqwest::Client,
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 fn database_url_of(db: &pgdb::TestDb) -> String {
@@ -117,7 +124,6 @@ impl Replica {
     fn start(scratch: &Scratch, db: &pgdb::TestDb, name: &str, role: &str) -> Self {
         let agents = scratch.file("agents.yaml");
         fs::write(&agents, AGENTS).unwrap();
-        let addr = format!("127.0.0.1:{}", free_port());
         let log = scratch.file(&format!("{name}.log"));
         let out = fs::File::create(&log).unwrap();
         let child = Command::new(BIN)
@@ -125,7 +131,7 @@ impl Replica {
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("DATABASE_URL", database_url_of(db))
             .env("AGENTS_FILE", &agents)
-            .env("LISTEN_ADDR", &addr)
+            .env("LISTEN_ADDR", ANY_PORT)
             .env("ORCH_ROLE", role)
             .env("ORCH_INSTANCE_ID", name)
             .env("OUTBOX_LEASE_SECS", "5")
@@ -137,12 +143,30 @@ impl Replica {
             .unwrap();
         Replica {
             run: RefCell::new(Running { child, log }),
-            base: format!("http://{addr}"),
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
         }
     }
 
+    /// The base URL of the process: the address its log says it listens on, which it says once it has
+    /// connected and migrated (so after [`Replica::wait_ready`]).
+    fn base(&self) -> String {
+        let addr = self
+            .run
+            .borrow()
+            .log()
+            .lines()
+            .find_map(support::listening_addr)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the process has not said where it listens; log:\n{}",
+                    self.run.borrow().log()
+                )
+            });
+        format!("http://{addr}")
+    }
+
     async fn wait_ready(&self) {
+        let base = format!("http://{}", bound(&self.run).await);
         eventually("the binary answers /readyz", || async {
             assert!(
                 self.run.borrow_mut().exited().is_none(),
@@ -151,7 +175,7 @@ impl Replica {
             );
             let status = self
                 .client
-                .get(format!("{}/readyz", self.base))
+                .get(format!("{base}/readyz"))
                 .send()
                 .await
                 .ok()
@@ -162,7 +186,7 @@ impl Replica {
     }
 
     fn chat(&self) -> Chat {
-        Chat::new(&self.base, "alice@example.com")
+        Chat::new(&self.base(), "alice@example.com")
     }
 
     fn stop(&self, what: &str) {

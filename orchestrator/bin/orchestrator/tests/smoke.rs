@@ -19,6 +19,10 @@ use orch_testsupport::{Chat, FakeAgent, FakeAgentOptions, Frame, VerifierScript,
 #[path = "../../../crates/store-postgres/tests/support/mod.rs"]
 mod pgdb;
 
+/// The address the binary listens on, read from its log (see the module).
+mod support;
+use support::{ANY_PORT, EX_OSERR, bound, listening};
+
 const BIN: &str = env!("CARGO_BIN_EXE_orchestrator");
 const TOKEN: &str = "smoke-token";
 
@@ -99,6 +103,16 @@ impl Drop for Running {
     }
 }
 
+impl support::Process for Running {
+    fn log(&self) -> String {
+        Running::log(self)
+    }
+
+    fn exited(&mut self) -> Option<ExitStatus> {
+        Running::exited(self)
+    }
+}
+
 /// Starts the binary with exactly `env` (no inherited variables: no proxy, no stray config).
 fn spawn(scratch: &Scratch, env: &[(&str, &str)]) -> Running {
     spawn_logging_to(scratch, "out.log", env)
@@ -143,12 +157,68 @@ fn agents_yaml(card_url: &str) -> String {
     )
 }
 
+/// A port that was free a moment ago. **Not an address to serve on**: between this call and the
+/// binary's bind another test may be given the same port. Only [`serve_on_chosen_port`] uses it, for the
+/// tests that have to say their own URL to the binary before it starts; every other test asks the binary
+/// for [`ANY_PORT`] and reads the address it bound from its log.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port()
+}
+
+/// Starts the binary on a port the test chose, for a test that has to name its own address to the
+/// binary before it starts (`THREAD_TOOLS_URL` is where an agent calls back, so the binary cannot be
+/// given port 0). `start` spawns the process with `addr` as its address. A port that was free when it
+/// was chosen may be taken when the binary binds it: the binary then exits `EX_OSERR` without
+/// listening, and the test chooses another. The process that is returned has logged that it listens on
+/// the address returned, so what answers there is it and no other test's.
+async fn serve_on_chosen_port(
+    start: impl Fn(&str) -> Running,
+) -> (std::cell::RefCell<Running>, String) {
+    for _ in 0..8 {
+        let addr = format!("127.0.0.1:{}", free_port());
+        let run = std::cell::RefCell::new(start(&addr));
+        match listening(&run).await {
+            Ok(bound) => {
+                assert_eq!(bound, addr, "the binary listens where it was told to");
+                return (run, addr);
+            }
+            Err(status) if status.code() == Some(EX_OSERR) => {
+                eprintln!("{addr} was taken before the binary bound it; choosing another");
+            }
+            Err(status) => panic!(
+                "the binary exited ({status:?}) before it listened; log:\n{}",
+                run.borrow().log()
+            ),
+        }
+    }
+    panic!("no port was free for the binary after eight tries");
+}
+
+#[test]
+fn the_address_the_binary_listens_on_is_read_from_its_log_in_both_formats() {
+    let json = r#"{"role":"all","instance":"i-1","timestamp":"2026-10-28T02:00:00Z","level":"INFO","fields":{"message":"orchestrator listening","addr":"127.0.0.1:41207","agents":1,"surfaces":"agui"},"target":"orchestrator::boot"}"#;
+    assert_eq!(
+        support::listening_addr(json).as_deref(),
+        Some("127.0.0.1:41207")
+    );
+    let text = "role=all instance=i-1 2026-10-28T02:00:00Z  INFO orchestrator::boot: orchestrator listening addr=127.0.0.1:41207 agents=1 surfaces=agui";
+    assert_eq!(
+        support::listening_addr(text).as_deref(),
+        Some("127.0.0.1:41207")
+    );
+    // another line, and a line of the same words with no address, say nothing
+    for line in [
+        r#"{"fields":{"message":"database migrations applied"}}"#,
+        r#"{"fields":{"message":"orchestrator listening"}}"#,
+        "orchestrator listening",
+        "",
+    ] {
+        assert_eq!(support::listening_addr(line), None, "{line}");
+    }
 }
 
 fn path_str(p: &Path) -> &str {
@@ -1220,7 +1290,7 @@ fn the_removed_chat_api_surface_is_a_config_error_pointing_to_agui() {
     }
 }
 
-/// Starts the binary on a free port with `args` and the agents file of these tests, and waits for
+/// Starts the binary on a port it picks with `args` and the agents file of these tests, and waits for
 /// `/healthz`. Returns the process, its base URL and a client.
 async fn serve_with(
     db: &pgdb::TestDb,
@@ -1229,9 +1299,8 @@ async fn serve_with(
     args: &[&str],
 ) -> (std::cell::RefCell<Running>, String, reqwest::Client) {
     let agents = write_agents(scratch, &agents_yaml("https://a.example.com/card"));
-    let addr = format!("127.0.0.1:{}", free_port());
     let database_url = database_url_of(db);
-    let mut all_args = vec!["--listen-addr", addr.as_str()];
+    let mut all_args = vec!["--listen-addr", ANY_PORT];
     all_args.extend_from_slice(args);
     let run = std::cell::RefCell::new(spawn_with_args(
         scratch,
@@ -1245,7 +1314,7 @@ async fn serve_with(
         ],
     ));
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    let base = format!("http://{addr}");
+    let base = format!("http://{}", bound(&run).await);
     eventually("the binary answers /healthz", || async {
         assert!(
             run.borrow_mut().exited().is_none(),
@@ -1581,7 +1650,7 @@ toolServers:
 
 // ---- authentication (ADR 0033) ---------------------------------------------------------------
 
-/// Starts the binary on a free port from a configuration file that is `CONFIG` and `extra`, and
+/// Starts the binary on a port it picks from a configuration file that is `CONFIG` and `extra`, and
 /// waits for `/healthz` (the process is alive; it may not be ready).
 async fn serve_configured(
     db: &pgdb::TestDb,
@@ -1591,12 +1660,11 @@ async fn serve_configured(
 ) -> (std::cell::RefCell<Running>, String, reqwest::Client) {
     write_agents(scratch, &agents_yaml("https://a.example.com/card"));
     let config = write_config(scratch, &format!("{CONFIG}{extra}"));
-    let addr = format!("127.0.0.1:{}", free_port());
     let database_url = database_url_of(db);
     let run = std::cell::RefCell::new(spawn_with_args(
         scratch,
         log_name,
-        &["--listen-addr", addr.as_str()],
+        &["--listen-addr", ANY_PORT],
         &[
             ("ORCH_CONFIG_FILE", path_str(&config)),
             ("DATABASE_URL", &database_url),
@@ -1605,7 +1673,7 @@ async fn serve_configured(
         ],
     ));
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    let base = format!("http://{addr}");
+    let base = format!("http://{}", bound(&run).await);
     eventually("the binary answers /healthz", || async {
         assert!(
             run.borrow_mut().exited().is_none(),
@@ -2214,22 +2282,26 @@ async fn the_thread_tools_endpoint_is_mounted_by_its_name_and_a_minted_token_ope
     .await;
     let scratch = Scratch::new();
     let agents = write_agents(&scratch, &agents_yaml(&agent.card_url()));
-    let addr = format!("127.0.0.1:{}", free_port());
-    let base = format!("http://{addr}");
     let database_url = database_url_of(&db);
-    let run = std::cell::RefCell::new(spawn(
-        &scratch,
-        &[
-            ("DATABASE_URL", &database_url),
-            ("LISTEN_ADDR", &addr),
-            ("AGENTS_FILE", path_str(&agents)),
-            ("SMOKE_AGENT_TOKEN", TOKEN),
-            ("NO_PROXY", "127.0.0.1,localhost"),
-            ("ORCH_SURFACES", "agui,thread-tools"),
-            ("THREAD_TOOLS_SECRET", KEY),
-            ("THREAD_TOOLS_URL", &base),
-        ],
-    ));
+    // the agent is called back at the address the binary is told, so the port is chosen beforehand
+    let (run, addr) = serve_on_chosen_port(|addr| {
+        let base = format!("http://{addr}");
+        spawn(
+            &scratch,
+            &[
+                ("DATABASE_URL", &database_url),
+                ("LISTEN_ADDR", addr),
+                ("AGENTS_FILE", path_str(&agents)),
+                ("SMOKE_AGENT_TOKEN", TOKEN),
+                ("NO_PROXY", "127.0.0.1,localhost"),
+                ("ORCH_SURFACES", "agui,thread-tools"),
+                ("THREAD_TOOLS_SECRET", KEY),
+                ("THREAD_TOOLS_URL", &base),
+            ],
+        )
+    })
+    .await;
+    let base = format!("http://{addr}");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     eventually("the binary answers /healthz", || async {
         assert!(
@@ -2368,22 +2440,26 @@ async fn an_agent_that_lists_the_extension_calls_the_binary_back_with_the_grant_
     .await;
     let scratch = Scratch::new();
     let agents = write_agents(&scratch, &agents_yaml(&agent.card_url()));
-    let addr = format!("127.0.0.1:{}", free_port());
-    let base = format!("http://{addr}");
     let database_url = database_url_of(&db);
-    let run = std::cell::RefCell::new(spawn(
-        &scratch,
-        &[
-            ("DATABASE_URL", &database_url),
-            ("LISTEN_ADDR", &addr),
-            ("AGENTS_FILE", path_str(&agents)),
-            ("SMOKE_AGENT_TOKEN", TOKEN),
-            ("NO_PROXY", "127.0.0.1,localhost"),
-            ("ORCH_SURFACES", "agui,thread-tools"),
-            ("THREAD_TOOLS_SECRET", KEY),
-            ("THREAD_TOOLS_URL", &base),
-        ],
-    ));
+    // the agent is called back at the address the binary is told, so the port is chosen beforehand
+    let (run, addr) = serve_on_chosen_port(|addr| {
+        let base = format!("http://{addr}");
+        spawn(
+            &scratch,
+            &[
+                ("DATABASE_URL", &database_url),
+                ("LISTEN_ADDR", addr),
+                ("AGENTS_FILE", path_str(&agents)),
+                ("SMOKE_AGENT_TOKEN", TOKEN),
+                ("NO_PROXY", "127.0.0.1,localhost"),
+                ("ORCH_SURFACES", "agui,thread-tools"),
+                ("THREAD_TOOLS_SECRET", KEY),
+                ("THREAD_TOOLS_URL", &base),
+            ],
+        )
+    })
+    .await;
+    let base = format!("http://{addr}");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     eventually("the binary answers /healthz", || async {
         assert!(
@@ -2487,23 +2563,27 @@ async fn the_binary_relays_an_attached_servers_tool_with_the_configured_bearer()
             server.url()
         ),
     );
-    let addr = format!("127.0.0.1:{}", free_port());
-    let base = format!("http://{addr}");
     let database_url = database_url_of(&db);
-    let run = std::cell::RefCell::new(spawn(
-        &scratch,
-        &[
-            ("ORCH_CONFIG_FILE", path_str(&config)),
-            ("DATABASE_URL", &database_url),
-            ("LISTEN_ADDR", &addr),
-            ("SMOKE_AGENT_TOKEN", TOKEN),
-            ("SEARCH_TOKEN", BEARER),
-            ("NO_PROXY", "127.0.0.1,localhost"),
-            ("ORCH_SURFACES", "agui,thread-tools"),
-            ("THREAD_TOOLS_SECRET", KEY),
-            ("THREAD_TOOLS_URL", &base),
-        ],
-    ));
+    // the agent is called back at the address the binary is told, so the port is chosen beforehand
+    let (run, addr) = serve_on_chosen_port(|addr| {
+        let base = format!("http://{addr}");
+        spawn(
+            &scratch,
+            &[
+                ("ORCH_CONFIG_FILE", path_str(&config)),
+                ("DATABASE_URL", &database_url),
+                ("LISTEN_ADDR", addr),
+                ("SMOKE_AGENT_TOKEN", TOKEN),
+                ("SEARCH_TOKEN", BEARER),
+                ("NO_PROXY", "127.0.0.1,localhost"),
+                ("ORCH_SURFACES", "agui,thread-tools"),
+                ("THREAD_TOOLS_SECRET", KEY),
+                ("THREAD_TOOLS_URL", &base),
+            ],
+        )
+    })
+    .await;
+    let base = format!("http://{addr}");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     eventually("the binary answers /healthz", || async {
         assert!(
@@ -2597,13 +2677,12 @@ async fn mcp_is_mounted_by_its_name_and_a_token_lists_the_tools() {
     let scratch = Scratch::new();
     let tokens = write_mcp_tokens(&scratch);
     let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
-    let addr = format!("127.0.0.1:{}", free_port());
     let database_url = database_url_of(&db);
     let run = std::cell::RefCell::new(spawn(
         &scratch,
         &[
             ("DATABASE_URL", &database_url),
-            ("LISTEN_ADDR", &addr),
+            ("LISTEN_ADDR", ANY_PORT),
             ("AGENTS_FILE", path_str(&agents)),
             ("SMOKE_AGENT_TOKEN", TOKEN),
             ("NO_PROXY", "127.0.0.1,localhost"),
@@ -2615,7 +2694,7 @@ async fn mcp_is_mounted_by_its_name_and_a_token_lists_the_tools() {
         ],
     ));
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    let base = format!("http://{addr}");
+    let base = format!("http://{}", bound(&run).await);
     eventually("the binary answers /healthz", || async {
         assert!(
             run.borrow_mut().exited().is_none(),
@@ -2824,6 +2903,53 @@ async fn a_taken_listen_address_is_fatal_with_its_own_exit_code() {
     drop(taken);
 }
 
+/// The tests that name their address to the binary beforehand choose a port that was free a moment
+/// ago, and it may be taken when the binary binds it: the binary exits `EX_OSERR`, and the test chooses
+/// another and ends up talking to the process that listens there, never to another test's.
+#[tokio::test]
+async fn a_chosen_port_that_is_taken_is_chosen_again() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    let agents = write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let database_url = database_url_of(&db);
+    // held for the whole test: the first port the binary is given is not free
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken_addr = taken.local_addr().unwrap().to_string();
+    let starts = std::cell::Cell::new(0);
+    let (run, addr) = serve_on_chosen_port(|addr| {
+        starts.set(starts.get() + 1);
+        let listen = if starts.get() == 1 {
+            taken_addr.as_str()
+        } else {
+            addr
+        };
+        spawn(
+            &scratch,
+            &[
+                ("DATABASE_URL", &database_url),
+                ("LISTEN_ADDR", listen),
+                ("AGENTS_FILE", path_str(&agents)),
+                ("SMOKE_AGENT_TOKEN", TOKEN),
+                ("NO_PROXY", "127.0.0.1,localhost"),
+            ],
+        )
+    })
+    .await;
+    assert_eq!(starts.get(), 2, "the taken port was given up, once");
+    assert_ne!(addr, taken_addr);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    eventually("the binary answers /healthz", || async {
+        (http_status(&client, &format!("http://{addr}/healthz")).await == Some(200)).then_some(())
+    })
+    .await;
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    assert!(status.success(), "{}", run.borrow().log());
+    drop(taken);
+}
+
 #[tokio::test]
 async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
     let Some(db) = pgdb::TestDb::new().await else {
@@ -2838,14 +2964,12 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
 
     let scratch = Scratch::new();
     let agents = write_agents(&scratch, &agents_yaml(&agent.card_url()));
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
     let database_url = database_url_of(&db);
     let run = std::cell::RefCell::new(spawn(
         &scratch,
         &[
             ("DATABASE_URL", &database_url),
-            ("LISTEN_ADDR", &addr),
+            ("LISTEN_ADDR", ANY_PORT),
             ("AGENTS_FILE", path_str(&agents)),
             ("SMOKE_AGENT_TOKEN", TOKEN),
             ("NO_PROXY", "127.0.0.1,localhost"),
@@ -2853,7 +2977,7 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
         ],
     ));
 
-    let base = format!("http://{addr}");
+    let base = format!("http://{}", bound(&run).await);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     eventually("the binary answers /healthz", || async {
         assert!(
@@ -2942,12 +3066,13 @@ fn database_url_of(db: &pgdb::TestDb) -> String {
 /// the agent list shared with its peers.
 struct Replica {
     run: std::cell::RefCell<Running>,
-    base: String,
     client: reqwest::Client,
 }
 
 impl Replica {
-    /// Starts `log_name`'s process; `extra` is added to the common environment.
+    /// Starts `log_name`'s process; `extra` is added to the common environment. It listens on a port
+    /// of the operating system's choosing ([`Replica::base`] says which, once [`Replica::wait_ready`]
+    /// has returned).
     fn start(
         scratch: &Scratch,
         log_name: &str,
@@ -2967,10 +3092,9 @@ impl Replica {
         args: &[&str],
         extra: &[(&str, &str)],
     ) -> Self {
-        let addr = format!("127.0.0.1:{}", free_port());
         let mut env = vec![
             ("DATABASE_URL", database_url),
-            ("LISTEN_ADDR", addr.as_str()),
+            ("LISTEN_ADDR", ANY_PORT),
             ("AGENTS_FILE", path_str(agents)),
             ("SMOKE_AGENT_TOKEN", TOKEN),
             ("NO_PROXY", "127.0.0.1,localhost"),
@@ -2981,21 +3105,38 @@ impl Replica {
         env.extend_from_slice(extra);
         Replica {
             run: std::cell::RefCell::new(spawn_with_args(scratch, log_name, args, &env)),
-            base: format!("http://{addr}"),
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
         }
     }
 
+    /// The base URL of the process: the address its log says it listens on, which it says once it has
+    /// connected and migrated (so after [`Replica::wait_ready`]).
+    fn base(&self) -> String {
+        let addr = self
+            .run
+            .borrow()
+            .log()
+            .lines()
+            .find_map(support::listening_addr)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the process has not said where it listens; log:\n{}",
+                    self.run.borrow().log()
+                )
+            });
+        format!("http://{addr}")
+    }
+
     /// Waits until `/healthz` and `/readyz` both answer 200 (panics if the process exits first).
     async fn wait_ready(&self) {
+        let base = format!("http://{}", bound(&self.run).await);
         eventually("the binary answers /healthz", || async {
             assert!(
                 self.run.borrow_mut().exited().is_none(),
                 "the binary exited early; log:\n{}",
                 self.run.borrow().log()
             );
-            (http_status(&self.client, &format!("{}/healthz", self.base)).await == Some(200))
-                .then_some(())
+            (http_status(&self.client, &format!("{base}/healthz")).await == Some(200)).then_some(())
         })
         .await;
         // Ready can trail live (readiness pings the store), most of all on a loaded machine, so
@@ -3006,14 +3147,13 @@ impl Replica {
                 "the binary exited early; log:\n{}",
                 self.run.borrow().log()
             );
-            (http_status(&self.client, &format!("{}/readyz", self.base)).await == Some(200))
-                .then_some(())
+            (http_status(&self.client, &format!("{base}/readyz")).await == Some(200)).then_some(())
         })
         .await;
     }
 
     fn chat(&self) -> Chat {
-        Chat::new(&self.base, "alice@example.com")
+        Chat::new(&self.base(), "alice@example.com")
     }
 }
 
@@ -3172,7 +3312,7 @@ async fn two_processes_serve_each_others_threads() {
 
     for replica in [&a, &b] {
         assert_eq!(
-            http_status(&replica.client, &format!("{}/readyz", replica.base)).await,
+            http_status(&replica.client, &format!("{}/readyz", replica.base())).await,
             Some(200)
         );
         let status = replica.run.borrow_mut().terminate(Duration::from_secs(20));
@@ -3291,7 +3431,7 @@ async fn a_worker_serves_probes_and_no_api() {
         &[("ORCH_ROLE", "nonsense"), ("ORCH_INSTANCE_ID", "w1")],
     );
     worker.wait_ready().await;
-    let base = &worker.base;
+    let base = &worker.base();
     // The queue metrics are served by every role, without an identity.
     let (status, content_type, body) = metrics(&worker.client, base).await;
     assert_eq!(status, 200, "{body}");
@@ -3391,7 +3531,7 @@ async fn a_control_plane_alone_does_not_dispatch_until_a_worker_starts() {
     assert_eq!(agent.rpc_count("send_streaming_message"), 0);
     // The backlog is what an autoscaler reads from the control plane: one row is waiting for
     // a worker that does not exist yet.
-    let (status, _, body) = metrics(&cp.client, &cp.base).await;
+    let (status, _, body) = metrics(&cp.client, &cp.base()).await;
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("orch_outbox_rows{state=\"due\"} 1"), "{body}");
     assert!(
@@ -3428,7 +3568,7 @@ async fn a_control_plane_alone_does_not_dispatch_until_a_worker_starts() {
     assert_eq!(agent.rpc_count("send_streaming_message"), 1);
     // The row is closed with the thread: nothing is due or leased any more.
     eventually("the backlog is empty", || async {
-        let (_, _, body) = metrics(&cp.client, &cp.base).await;
+        let (_, _, body) = metrics(&cp.client, &cp.base()).await;
         (body.contains("orch_outbox_rows{state=\"due\"} 0")
             && body.contains("orch_outbox_rows{state=\"leased\"} 0"))
         .then_some(())
@@ -3881,7 +4021,7 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
         let signature = sign_generic(secret, &ts, body.as_bytes()).unwrap();
         replica
             .client
-            .post(format!("{}/webhooks/ci", replica.base))
+            .post(format!("{}/webhooks/ci", replica.base()))
             .header("X-Vymalo-Delivery", delivery)
             .header("X-Vymalo-Timestamp", ts)
             .header("X-Vymalo-Signature-256", signature)
@@ -3928,7 +4068,7 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
     // The rest of the API is still behind the identity layer.
     let anonymous = replica
         .client
-        .get(format!("{}/api/agents", replica.base))
+        .get(format!("{}/api/agents", replica.base()))
         .send()
         .await
         .unwrap();
@@ -3983,7 +4123,7 @@ async fn the_github_webhook_takes_a_signed_check_run_and_acknowledges_the_rest()
     let post = |secret: &str, event: &str, delivery: &str, body: &[u8]| {
         replica
             .client
-            .post(format!("{}/webhooks/github", replica.base))
+            .post(format!("{}/webhooks/github", replica.base()))
             .header("X-GitHub-Event", event)
             .header("X-GitHub-Delivery", delivery)
             .header("X-Hub-Signature-256", sign_github(secret, body).unwrap())
@@ -4177,19 +4317,18 @@ async fn the_platforms_agents_are_served_with_no_agent_file_and_leave_when_the_r
     .await;
 
     let scratch = Scratch::new();
-    let addr = format!("127.0.0.1:{}", free_port());
     let database_url = database_url_of(&db);
     let run = std::cell::RefCell::new(spawn(
         &scratch,
         &[
             ("DATABASE_URL", &database_url),
-            ("LISTEN_ADDR", &addr),
+            ("LISTEN_ADDR", ANY_PORT),
             ("AGENT_REGISTRY_URL", &platform.url),
             ("AGENT_REGISTRY_AGENT_TOKEN", TOKEN),
             ("NO_PROXY", "127.0.0.1,localhost"),
         ],
     ));
-    let base = format!("http://{addr}");
+    let base = format!("http://{}", bound(&run).await);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     eventually("the binary answers /readyz", || async {
         assert!(
@@ -4432,18 +4571,18 @@ async fn a_directory_store_is_made_at_startup_and_a_root_that_cannot_be_used_sto
         &scratch,
         &format!("{CONFIG}artifacts:\n  store: fs\n  fs: {{ root: data/artifacts }}\n"),
     );
-    let addr = format!("127.0.0.1:{}", free_port());
     let run = std::cell::RefCell::new(spawn(
         &scratch,
         &[
             ("ORCH_CONFIG_FILE", path_str(&config)),
             ("DATABASE_URL", &database_url),
             ("SMOKE_AGENT_TOKEN", TOKEN),
-            ("LISTEN_ADDR", &addr),
+            ("LISTEN_ADDR", ANY_PORT),
             ("NO_PROXY", "127.0.0.1,localhost"),
         ],
     ));
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let addr = bound(&run).await;
     eventually("the binary answers /healthz", || async {
         assert!(
             run.borrow_mut().exited().is_none(),
