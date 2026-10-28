@@ -842,7 +842,7 @@ async fn a_flow_begun_while_another_ends_is_not_ended_by_it() {
         if at_the_write {
             gate.arm();
         } else {
-            fx.set_token_delay(Duration::from_millis(300));
+            fx.set_token_delay(IN_FLIGHT);
         }
 
         let completing = {
@@ -862,7 +862,10 @@ async fn a_flow_begun_while_another_ends_is_not_ended_by_it() {
         if at_the_write {
             gate.reached().await;
         } else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            support::eventually("the code exchange", || async {
+                fx.requests().code_exchanges >= 1
+            })
+            .await;
         }
         // the person begins again, in another tab
         let second = fx
