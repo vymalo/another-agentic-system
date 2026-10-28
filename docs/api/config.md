@@ -129,6 +129,19 @@ threadTools:
 sharing:                      # a thread shared by a revocable link (see "sharing"); absent: nothing is shared
   mode: internal
   secret: { file: /run/secrets/sharing }
+usage:                        # the usage ledger of the people (see "usage"); absent: 24 months kept, nothing priced
+  retentionMonths: 24
+  prices:
+    currency: EUR
+    models:
+      - provider: openai
+        model: glm-5.3
+        input: "0.40"         # per million tokens, a decimal string, never a YAML number
+        cachedInput: "0.10"
+        output: "1.60"
+    sandbox:
+      cpuCoreHour: "0.04"
+      gibHour: "0.005"
 mcp:
   tokensFile: mcp-tokens.yaml
   allowedHosts: [chat.example.com]
@@ -377,6 +390,32 @@ before `public`, is enforced by the code. `sharing.secret` is one of the **fourt
 `sharing.previousSecret`). `server.publicUrl` is the address a link is shown under (`<publicUrl>/s/<token>`); without it a link is
 the path `/s/<token>`. The cap is **not** in [`GET /api/config`](#get-apiconfig) (its body is exactly `{ui}`): the web learns it per
 person from `GET /api/me` (`sharing`, the cap when the person's roles hold `thread.share`, else `disabled`).
+
+### `usage`
+
+The usage ledger of the people ([ADR 0065](../decisions/0065-a-usage-ledger-per-person.md)) keeps **counts** per person, task and UTC
+month, and `GET /api/me/usage` puts a price on a month **when it is read**, with the table below: changing a price re-prices every
+month, and the answer names the table that priced it (`prices`, `sha256:` and 16 hex digits of the parsed table, the same whatever
+the order of the entries or how a price was written). The section is optional and **an absent section changes nothing about a file
+that was valid**: 24 months are kept and nothing is priced. The file is read once at startup, so a change is a restart.
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `usage.retentionMonths` | 1 to 1200, `24`. How many UTC calendar months are kept; **the current month is one of them** (24 keeps this month and the 23 before it). A sweep removes older months, 1000 tasks at a time, every hour, in every process that runs workers (`all` and `worker`). The real number is the owner's and the law's (M5) | — | now (ADR 0065, PR 2) |
+| `usage.prices.currency` | exactly three upper-case ASCII letters (the shape of an ISO 4217 code; whether it names a currency is not checked); required with `usage.prices`. One currency for the deployment | — | now |
+| `usage.prices.models[]` | at most 256 entries: `provider` (optional, 1 to 128 bytes), `model` (1 to 128 bytes) and three **decimal strings**, all required: `input` (per million input tokens that were not read from a cache; **tokens written to a cache are input tokens and are priced here**), `cachedInput` (per million input tokens read from a cache; a model with no discount says its `input` again) and `output` (per million output tokens; **reasoning tokens are output tokens**, priced here). A usage line matches the entry with the **same provider** (an absent `provider` matches a line that reports none, and only those) **and the same model, exactly**: no case folding, no prefix. Two entries for one provider and model are refused, naming the first | — | now |
+| `usage.prices.sandbox.cpuCoreHour`, `.gibHour` | **decimal strings**, both required in the block: the price of one CPU core for one hour and of one GiB of memory for one hour, applied to what the pod *requested* for the time the commands took. Absent block: sandbox lines are **unpriced** | — | now |
+
+**A price is a decimal string**: digits, then optionally a point and one to six more digits, at most `1000000` (1 000 000 currency
+units per million tokens or per hour); no sign, exponent, space, separator or leading `+`. It is read exactly into millionths of the
+currency unit with no floating point anywhere, so a price written as a YAML **number** (`input: 0.40`) is refused as a type error
+("expected string"), because a float cannot hold `0.1`; quote it. More than six decimals is refused, not rounded. `"0"` is a price (a
+model that costs nothing says so); a model or a sandbox with **no** entry is *unpriced*, which is not the same, and the answer says it
+(`"price": null`, `"complete": false`).
+
+The refusals name the key path (`usage.prices.models[1].cachedInput`) and say what a price looks like; none quotes the value. How a
+line is priced (one division per line, rounded half up, and what makes a line unpriced) is in
+[`chat-api.yaml`](chat-api.yaml) `GET /api/me/usage` and ADR 0065.
 
 ### `toolServers`
 
