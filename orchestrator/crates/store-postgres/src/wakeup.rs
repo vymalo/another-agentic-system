@@ -6,9 +6,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{AgentId, LiveChunk, LiveEnd, LiveKind, LiveText, ThreadId};
-use orch_ports::{Topic, Wakeup, WakeupCapabilities, WakeupError};
+use orch_ports::{StoreError, Topic, Wakeup, WakeupCapabilities, WakeupError};
 use sqlx::PgPool;
-use sqlx::postgres::PgListener;
+use sqlx::postgres::{PgListener, PgPoolOptions};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
@@ -114,11 +114,33 @@ impl PgWakeup {
     /// listener attaches in the background (see [`wait_listening`](Self::wait_listening)) and
     /// keeps retrying with backoff if Postgres is unreachable.
     pub fn start(pool: PgPool) -> Self {
+        Self::spawn(pool.clone(), pool)
+    }
+
+    /// Like [`start`](Self::start), with the listener on a connection of its own to `direct_url`
+    /// while `pool` carries the `NOTIFY`s: for a deployment whose `pool` goes through a
+    /// transaction-mode pooler (PgBouncer), which cannot keep a `LISTEN`. A `NOTIFY` is one
+    /// statement and works through a pooler; the listener needs the session, so it is not taken from
+    /// `pool` but from a pool of one connection that is made here and connects on demand, retrying
+    /// like [`start`](Self::start) when the database cannot be reached.
+    ///
+    /// # Errors
+    /// [`StoreError::Internal`] if `direct_url` is not a connection string. The error never holds the
+    /// text (it may carry a password).
+    pub fn start_direct(pool: PgPool, direct_url: &str) -> Result<Self, StoreError> {
+        let options = crate::store::parse_url(direct_url)?;
+        let listener = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with(options);
+        Ok(Self::spawn(pool, listener))
+    }
+
+    fn spawn(pool: PgPool, listener: PgPool) -> Self {
         let (tx, _) = broadcast::channel(CAPACITY);
         let (live, _) = broadcast::channel(CAPACITY);
         let (listening_tx, listening) = watch::channel(false);
         let task = tokio::spawn(listen_loop(
-            pool.clone(),
+            listener,
             tx.clone(),
             live.clone(),
             listening_tx,

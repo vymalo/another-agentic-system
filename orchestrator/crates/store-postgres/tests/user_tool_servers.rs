@@ -16,7 +16,7 @@ use orch_ports::{
     CredentialRef, EgressPolicy, MAX_USER_TOOL_SERVERS, ServerRevision, UserAuth, UserToolServer,
     UserToolServerId, UserToolServerState, UserToolServerStore, UserToolServerStoreError,
 };
-use orch_store_postgres::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgUserToolServers};
+use orch_store_postgres::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgStore, PgUserToolServers};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
 use support::TestDb;
@@ -56,15 +56,17 @@ fn id_of(n: usize) -> String {
 /// A migrated schema and the store over a pool of `max` connections that waits at most three
 /// seconds for one.
 async fn store_with(db: &TestDb, max: u32, settings: &[(&str, &str)]) -> PgUserToolServers {
-    // the thread store's migrations make the table
-    let migrated = db.store().await;
-    drop(migrated);
+    // the thread store's migrations make the table, on the direct connection: no pooled session
+    // exists before the settings below are the database's
+    PgStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .expect("migrate");
     let pool = PgPoolOptions::new()
         .max_connections(max)
         .acquire_timeout(Duration::from_secs(3))
         .connect_with(
-            db.options()
-                .options(settings.iter().copied())
+            db.options_with(settings)
+                .await
                 .application_name("orch-user-tool-servers-test"),
         )
         .await

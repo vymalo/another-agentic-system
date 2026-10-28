@@ -15,7 +15,7 @@ async fn make_store() -> Option<PgStore> {
 
 async fn make_wakeup() -> Option<PgWakeup> {
     let db = TestDb::new().await?;
-    let wakeup = PgWakeup::start(db.pool("orch-test-wakeup", 4).await);
+    let wakeup = db.wakeup("orch-test-wakeup", 4).await;
     assert!(
         wakeup.wait_listening(Duration::from_secs(10)).await,
         "listener did not attach"

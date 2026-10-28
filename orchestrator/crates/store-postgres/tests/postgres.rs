@@ -228,13 +228,21 @@ async fn migrate_twice_is_a_no_op() {
 #[tokio::test]
 async fn migrate_from_many_replicas_at_once() {
     let db = db_or_skip!();
-    // Eight "replicas": separate pools on the same, still empty, schema.
+    // Eight "replicas": separate pools on the same, still empty, schema. Behind a pooler a replica
+    // migrates on its direct connection (the migrator's session lock cannot be kept by a pool).
     let mut tasks = Vec::new();
     for replica in 0..8 {
-        let pool = db.pool(&format!("orch-test-replica-{replica}"), 2).await;
-        tasks.push(tokio::spawn(async move {
-            PgStore::from_pool(pool).migrate().await
-        }));
+        if db.url == db.direct_url {
+            let pool = db.pool(&format!("orch-test-replica-{replica}"), 2).await;
+            tasks.push(tokio::spawn(async move {
+                PgStore::from_pool(pool).migrate().await
+            }));
+        } else {
+            let url = db.pinned_direct_url();
+            tasks.push(tokio::spawn(
+                async move { PgStore::migrate_direct(&url).await },
+            ));
+        }
     }
     for t in tasks {
         t.await.unwrap().unwrap();
@@ -252,8 +260,7 @@ async fn migrate_from_many_replicas_at_once() {
 #[tokio::test]
 async fn commit_in_one_process_wakes_a_subscriber_in_another() {
     let db = db_or_skip!();
-    let listener_pool = db.pool("orch-test-listener", 3).await;
-    let wakeup = PgWakeup::start(listener_pool);
+    let wakeup = db.wakeup("orch-test-listener", 3).await;
     assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
     let mut sub = wakeup.subscribe();
 
@@ -275,7 +282,7 @@ async fn commit_in_one_process_wakes_a_subscriber_in_another() {
     expect(&mut sub, Topic::Thread(id)).await;
 
     // An explicit notify from yet another connection arrives too.
-    let other = PgWakeup::start(db.pool("orch-test-other", 3).await);
+    let other = db.wakeup("orch-test-other", 3).await;
     other.notify(Topic::Outbox).await.unwrap();
     expect(&mut sub, Topic::Outbox).await;
 }
@@ -283,7 +290,7 @@ async fn commit_in_one_process_wakes_a_subscriber_in_another() {
 #[tokio::test]
 async fn a_failed_commit_notifies_nobody() {
     let db = db_or_skip!();
-    let wakeup = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    let wakeup = db.wakeup("orch-test-listener", 3).await;
     assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
     let store = db.store().await;
     let id = create(&store, vec![]).await;
@@ -336,7 +343,7 @@ async fn listener_reconnect_emits_resync_and_keeps_working() {
     let db = db_or_skip!();
     let app = format!("orch-test-listener-{}", Uuid::now_v7().simple());
     let admin = db.pool("orch-test-admin", 2).await;
-    let wakeup = PgWakeup::start(db.pool(&app, 3).await);
+    let wakeup = db.wakeup(&app, 3).await;
     assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
     let mut sub = wakeup.subscribe();
 
@@ -361,7 +368,7 @@ async fn listener_reconnect_emits_resync_and_keeps_working() {
 #[tokio::test]
 async fn slow_subscriber_gets_resync() {
     let db = db_or_skip!();
-    let wakeup = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    let wakeup = db.wakeup("orch-test-listener", 3).await;
     assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
     let mut sub = wakeup.subscribe();
     for _ in 0..3000 {
@@ -406,14 +413,18 @@ async fn next_live_of(
 #[tokio::test]
 async fn live_text_published_in_one_process_reaches_a_subscriber_in_another() {
     let db = db_or_skip!();
-    let listener = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    let listener = db.wakeup("orch-test-listener", 3).await;
     assert!(listener.wait_listening(Duration::from_secs(10)).await);
     let mut sub = listener.subscribe_live();
     let mut topics = listener.subscribe();
 
     // Another replica: its own pool and connections.
     let other_pool = db.pool("orch-test-other", 3).await;
-    let other = PgWakeup::start(other_pool.clone());
+    let other = if db.url == db.direct_url {
+        PgWakeup::start(other_pool.clone())
+    } else {
+        PgWakeup::start_direct(other_pool.clone(), &db.pinned_direct_url()).unwrap()
+    };
     let thread = ThreadId(Uuid::now_v7());
 
     // A stray payload on the channel (another version, a hand-typed NOTIFY) is not live text and
@@ -447,7 +458,7 @@ async fn live_text_works_again_after_a_listener_reconnect() {
     let db = db_or_skip!();
     let app = format!("orch-test-listener-{}", Uuid::now_v7().simple());
     let admin = db.pool("orch-test-admin", 2).await;
-    let wakeup = PgWakeup::start(db.pool(&app, 3).await);
+    let wakeup = db.wakeup(&app, 3).await;
     assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
     let mut sub = wakeup.subscribe_live();
     let mut topics = wakeup.subscribe();
@@ -478,7 +489,7 @@ async fn live_text_works_again_after_a_listener_reconnect() {
 #[tokio::test]
 async fn a_slow_live_subscriber_loses_pieces_without_a_word_and_keeps_listening() {
     let db = db_or_skip!();
-    let wakeup = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    let wakeup = db.wakeup("orch-test-listener", 3).await;
     assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
     let mut sub = wakeup.subscribe_live();
     let thread = ThreadId(Uuid::now_v7());
@@ -829,7 +840,7 @@ fn ci_row(n: u8) -> (NewInbox, WatchKey) {
 #[tokio::test]
 async fn receiving_and_rearming_wake_an_inbox_worker_in_another_process() {
     let db = db_or_skip!();
-    let wakeup = PgWakeup::start(db.pool("orch-test-listener", 3).await);
+    let wakeup = db.wakeup("orch-test-listener", 3).await;
     assert!(wakeup.wait_listening(Duration::from_secs(10)).await);
     let mut sub = wakeup.subscribe();
     let store = db.store().await;
