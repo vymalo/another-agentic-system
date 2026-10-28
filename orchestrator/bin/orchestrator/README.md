@@ -72,7 +72,7 @@ that hold secrets.
 | `AGENT_REGISTRY_AGENT_TOKEN` | unset | the bearer token sent to **every agent the registry lists** (flag `--registry-agent-token`): one deployment-wide credential until authentication to the agents is decided (open question 11). Never logged |
 | `AGENT_REGISTRY_TIMEOUT_SECS` | `3` | 1 to 60 (flag `--registry-timeout-secs`); how long one read of the registry may take. A slower one is down: its agents are not listed. Checked whether or not a URL is set |
 | `AGENT_REGISTRY_MAX_AGE_SECS` | `60` | 1 to 3600 (flag `--registry-max-age-secs`); the longest a copy of the document is kept in this process, whatever the registry's `Cache-Control` allows. Checked whether or not a URL is set |
-| `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only |
+| `LISTEN_ADDR` | `0.0.0.0:8080` | control plane: the API; worker: the probes only. A port of `0` asks the operating system for a free one: the line `orchestrator listening` (`info`, every role) has the address that was bound in its `addr`, which is how the process tests find it, and SIGTERM and SIGINT are a graceful stop from that line on (the signal handlers are installed before the address is bound) |
 | `ORCH_ROLE` | `all` | `all`, `control-plane` or `worker` (`--role`); see [Roles](#roles). Unknown is a startup error (78) |
 | `AUTH_DEV_USER` | unset | e-mail served for requests without `X-Auth-Request-Email`; development only, logs a warning; the file refuses it unless `auth.mode` is `proxy_header` |
 | `DATABASE_MAX_CONNECTIONS` | `10` | at least 2 |

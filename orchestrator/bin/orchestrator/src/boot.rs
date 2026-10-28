@@ -719,6 +719,21 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
 
     let Shared { store, app, local } = setup(&cfg).await?;
 
+    // Arm the shutdown signal before the address is bound. A future that waits for SIGTERM installs
+    // its handler the first time it is polled, and the host polls `shutdown` only once every
+    // component has started: a SIGTERM that arrived after the server answered and before that first
+    // poll would take the default action and end the process by the signal, with no drain and no
+    // "shutting down". From the line `orchestrator listening` on, a SIGTERM is a graceful stop. (One
+    // that arrives during `setup`, which can wait for a database for 30 s, still ends the process at
+    // once: nothing is served yet, so there is nothing to drain.)
+    let mut shutdown = Box::pin(shutdown);
+    let early = std::future::poll_fn(|cx| std::task::Poll::Ready(shutdown.as_mut().poll(cx))).await;
+    let shutdown = async move {
+        if early.is_pending() {
+            shutdown.await;
+        }
+    };
+
     // Bind and build everything that can fail before any component starts.
     let listener = listen(&cfg).await?;
     let grace = Some(cfg.shutdown_grace);
