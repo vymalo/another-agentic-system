@@ -1,0 +1,52 @@
+# Where the pins of deploy/chart/tests/ratelimit-e2e/ come from, and what each was verified against. `ratelimit-e2e.sh` reads the `key=value` lines (the comments
+# are for people), downloads the Traefik chart from its URL and refuses one whose SHA-256 is not the pinned one. The workflow
+# (.github/workflows/ratelimit-e2e.yml) reads `kind_node_image` from here and pins the three tools it installs (kind, kubectl, helm) with their checksums in its
+# own `env`, as backup-e2e.yml does (deploy/chart/tests/backup-e2e/UPSTREAM, whose node image this is). Move a pin and its comment together.
+#
+# NOTHING OF THE CLUSTER HALF HAS RUN where this was written (no kind, no kubectl): the pins are checked against their sources, the script against shellcheck and
+# dash, the chart's objects against helm and the vendored Middleware schema, and the SCENARIO (steps 2 to 4 of the script, its assertions unchanged) against
+# the pinned Traefik image itself, run with docker as a file-provider Traefik beside the pinned whoami and three pinned curl containers on one bridge network
+# (the Middleware's fields written into Traefik's file configuration, which reads the same struct as the Kubernetes CRD provider). That run did not exercise
+# Traefik's Kubernetes providers, the annotation `router.middlewares` or the Ingress, which is what the first run of the job `ratelimit-e2e` is for.
+#
+# VERIFIED 2026-10-28, from the sources below (anonymous requests through the sandbox's proxy):
+#
+#   * Traefik chart 42.1.3, appVersion v3.7.16: https://traefik.github.io/charts/index.yaml lists it as the newest `traefik` release (created 2026-10-22) with the
+#     digest below, and the downloaded file has that SHA-256. `kubeVersion` >=1.30 (the node image below is 1.35). The chart installs its CRDs from its `crds/`
+#     directory with `helm install` (the Middleware among them, `traefik.io_middlewares.yaml`), the IngressClass `traefik` for a release called `traefik`, and the
+#     Service `traefik` in the release's namespace (ports 80 and 443 for the entrypoints web and websecure; `service.spec.type: ClusterIP` is set here). Its default
+#     `providers.kubernetesCRD` and `providers.kubernetesIngress` are on, and `crossProviderNamespaces` is empty, which renders no flag: every namespace may
+#     name a Middleware from an Ingress. `ports.<entrypoint>.forwardedHeaders.trustedIPs` becomes `--entryPoints.<name>.forwardedHeaders.trustedIPs=` (templates/_podtemplate.tpl).
+#   * The Traefik image: docker.io/traefik:v3.7.16, index digest below (Docker Hub answered 429 to the anonymous token request, mirror.gcr.io answered the tag and the
+#     digest, and a pull by digest from it works). The chart's `image.digest` replaces the tag; `versionOverride` tells its version checks which Traefik that is.
+#   * traefik/whoami:v1.11.0, index digest below (mirror.gcr.io answered the tag; the digest pulls). curlimages/curl:8.22.0, index digest below (the tag is the one
+#     the docker-compose-patterns skill's sidecar names; the digest pulls).
+#   * kind v0.33.0, kubectl v1.35.9 and helm v3.19.0 and the node image kindest/node:v1.35.0: the pins of backup-e2e (their checksums were recomputed on 2026-10-17
+#     from kind's .sha256sum, dl.k8s.io's .sha256 and get.helm.sh's .sha256sum; this file does not recompute them).
+#   * The facts the assertions rest on are from Traefik's own source at v3.7.15 (raw.githubusercontent.com/traefik/traefik/v3.7.15), and the scenario above ran them:
+#       - pkg/middlewares/ratelimiter/rate_limiter.go: a token bucket per source, `burst` tokens, refilled at average/period; a request that finds the bucket empty is
+#         refused with 429 and `Retry-After` and `X-Retry-In` when the wait would exceed half the interval of a token (a cap of 500 ms below one request a second),
+#         else delayed; the source of a request that has none is "" and is a bucket like any other; no special case for it;
+#       - pkg/ip/strategy.go: depth 0 (no `excludedIPs`) is the host part of the peer's address (RemoteAddr); depth N is the N-th entry from the right of the FIRST
+#         `X-Forwarded-For` header line, and "" when the header has fewer entries;
+#       - pkg/middlewares/forwardedheaders/forwarded_header.go: a peer that is not in `trustedIPs` has its X-Forwarded-* headers deleted at the entrypoint, before any
+#         middleware; the peer's own address is not appended there (the proxy appends it later, after the middlewares), so a middleware sees the header as the client
+#         (or the trusted proxy in front) sent it;
+#       - the namespaced reference of an Ingress to a Middleware of the Kubernetes CRD provider is `<namespace>-<name>@kubernetescrd`
+#         (doc.traefik.io, "Kubernetes providers: Provider Namespace"), and with `providers.kubernetesCRD.safeNaming` (v3.7.11 and later) it is
+#         `<namespace>_<name>@kubernetescrd`: "A reference left in the legacy form is not resolved, and the routers using it are not created" (docs/content/migrate/v3.md at v3.7.15).
+#
+# Release assets and charts (URL, then SHA-256 of the file; the Helm repository's index.yaml carries the same digest):
+traefik_version=v3.7.16
+traefik_chart_url=https://traefik.github.io/charts/traefik/traefik-42.1.3.tgz
+traefik_chart_sha256=10ec2b032fd7ec9fa04a8816872e20ba0fafc47231f6394b5cb5d522f3b0ef50
+# By digest (the image index):
+traefik_image_digest=sha256:1336e85aaed293bd63d005086e0dd013b04078b26aaeb1c18b26a2f928af7e65
+whoami_image=traefik/whoami:v1.11.0@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
+curl_image=curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+# The cluster the workflow makes (the pin of backup-e2e/UPSTREAM and dev/kagent/UPSTREAM):
+kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+# The tools the workflow installs (each checked against its checksum, which is in the workflow):
+#   kind v0.33.0    sha256 aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+#   kubectl v1.35.9 sha256 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+#   helm v3.19.0    sha256 a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496

@@ -1,0 +1,84 @@
+name: Rate limit E2E
+
+# Does the limit per client address that the chart renders (`ingress.rateLimit`, issue #284; deploy/chart/README.md, "A limit per client at the edge") limit each
+# client address, and only that address, in a real Traefik? On a kind cluster: the Traefik chart (pinned by version and SHA-256, and the image by digest,
+# deploy/chart/tests/ratelimit-e2e/UPSTREAM), the chart's own `Ingress` and `Middleware` (`helm template -s`, the values of
+# deploy/chart/tests/ratelimit-e2e/values.yaml), a pinned whoami behind it and three client pods with addresses of their own: the control with the limit off, a
+# client refused at depth 0 while another is served, depth 1 on X-Forwarded-For (two forwarded addresses from one pod are two clients), and a Traefik that does not
+# trust the pods (everybody is one client). deploy/chart/tests/ratelimit-e2e/ratelimit-e2e.sh says what each step asserts and what the run does not prove (the
+# netcup Traefik, its `safeNaming`, the address it sees behind its load balancer).
+#
+# Not required by anything: it needs a cluster and pulls a few images, so it runs when the objects it applies or its own files change, weekly (the pins move: a
+# new Traefik) and on demand. Not part of Deploy (nothing there touches a cluster).
+
+on:
+  pull_request:
+    paths:
+      - "deploy/chart/templates/ingress*.yaml"
+      - "deploy/chart/templates/_helpers.tpl"
+      - "deploy/chart/templates/_validate.tpl"
+      - "deploy/chart/values.yaml"
+      - "deploy/chart/tests/ratelimit-e2e/**"
+      - ".github/workflows/ratelimit-e2e.yml"
+  schedule:
+    - cron: "41 4 * * 3" # Wednesdays, 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ratelimit-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ratelimit-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install kind, kubectl and helm at pinned versions (checksums checked)
+        # The versions and checksums of backup-e2e.yml (kind v0.33.0 and kubectl v1.35.9 are kagent-e2e.yml's; helm v3.19.0 is deploy.yml's).
+        env:
+          KIND_VERSION: v0.33.0
+          KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          KUBECTL_VERSION: v1.35.9
+          KUBECTL_SHA256: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+          HELM_VERSION: v3.19.0
+          HELM_SHA256: a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/bin/kind" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $RUNNER_TEMP/bin/kubectl" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP/helm"
+          cp "$RUNNER_TEMP/helm/linux-amd64/helm" "$RUNNER_TEMP/bin/helm"
+          chmod +x "$RUNNER_TEMP/bin/"*
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: The objects the chart renders (no cluster)
+        # Fails in seconds when the chart no longer renders what the scenario applies: the Ingress alone with the limit off, the Ingress naming the Middleware
+        # and then the deployer's with it on, the numbers and the depth.
+        run: sh deploy/chart/tests/ratelimit-e2e/ratelimit-e2e.sh render > /dev/null
+      - name: The cluster (the node image of deploy/chart/tests/ratelimit-e2e/UPSTREAM)
+        run: |
+          set -eu
+          image=$(sed -n 's/^kind_node_image=//p' deploy/chart/tests/ratelimit-e2e/UPSTREAM)
+          test -n "$image"
+          kind create cluster --name ratelimit-e2e --image "$image" --wait 120s
+          kubectl config current-context
+          kubectl get nodes -o wide
+      - name: The scenario (deploy/chart/tests/ratelimit-e2e/ratelimit-e2e.sh)
+        # It prints the state of the cluster itself when it fails, and undoes what it made.
+        run: sh deploy/chart/tests/ratelimit-e2e/ratelimit-e2e.sh
+      - name: What the cluster says
+        if: failure()
+        run: |
+          echo "== pods"; kubectl get pods -A -o wide || true
+          echo "== events"; kubectl get events -A --sort-by=.lastTimestamp | tail -n 60 || true
+      - name: Tear down
+        if: always()
+        run: kind delete cluster --name ratelimit-e2e || true
