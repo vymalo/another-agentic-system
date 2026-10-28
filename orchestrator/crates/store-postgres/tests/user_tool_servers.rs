@@ -840,6 +840,15 @@ async fn a_row_that_does_not_read_back_is_warned_of_by_its_id_and_by_nothing_els
     }
     let id = |n| UserToolServerId::parse(&format!("u-{}", id_of(n))).unwrap();
 
+    // A scoped subscriber alone is not enough in a binary whose tests run on several threads: while
+    // only one subscriber exists, `tracing` decides whether a call site is of interest by the default
+    // of the thread that first reaches it, and a thread with none caches "never" for everybody (the
+    // warning then reaches no subscriber, here about one run in five). A global subscriber that
+    // records nothing makes it ask each thread's own default every time, as `usage_ledger.rs` does.
+    static GLOBAL: std::sync::Once = std::sync::Once::new();
+    GLOBAL.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+    });
     let captured = Captured::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)
