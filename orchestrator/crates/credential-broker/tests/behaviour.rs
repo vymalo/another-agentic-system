@@ -24,6 +24,11 @@ fn oauth() -> UserAuth {
     UserAuth::oauth2(Vec::new(), None).unwrap()
 }
 
+/// How long the authorization server holds a token request in the tests that act while one is out:
+/// far longer than the test needs, because the test waits for the request to arrive (see
+/// [`support::eventually`]) and only then acts, and a slow runner may take a while to get there.
+const IN_FLIGHT: Duration = Duration::from_secs(2);
+
 /// A server of the mock that has been authorized.
 async fn authorized(fx: &Fx) -> (orch_core::UserId, UserToolServerId) {
     let who = owner();
@@ -392,12 +397,12 @@ async fn a_definition_edited_meanwhile_is_not_marked_by_what_was_seen_of_the_old
     let (who, id) = authorized(&fx).await;
     fx.advance(fx.access_ttl() + Duration::from_secs(1));
     fx.set_refresh_outcome(RefreshOutcome::InvalidGrant);
-    fx.set_token_delay(Duration::from_millis(300));
+    fx.set_token_delay(IN_FLIGHT);
 
     let broker = fx.broker.clone();
     let (who2, id2) = (who.clone(), id.clone());
     let lease = tokio::spawn(async move { broker.lease(&who2, &id2).await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    support::eventually("the request", || async { fx.requests().refreshes >= 1 }).await;
     // the person renames the server while the broker waits for the authorization server
     let stored = fx.servers.get(&who, &id).await.unwrap().unwrap();
     let target = policy().check_url(stored.server().url()).unwrap();
@@ -431,13 +436,20 @@ async fn a_refresh_claims_before_it_asks_and_leaves_no_claim_behind() {
         "a grant nobody is refreshing holds no claim"
     );
     fx.advance(fx.access_ttl() + Duration::from_secs(1));
-    fx.set_token_delay(Duration::from_millis(400));
+    fx.set_token_delay(IN_FLIGHT);
 
     let broker = fx.broker.clone();
     let (who2, id2) = (who.clone(), id.clone());
     let lease = tokio::spawn(async move { broker.lease(&who2, &id2).await });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    // the request is with the authorization server, and the claim is in the store
+    support::eventually("the claim and the request", || async {
+        !kept(&fx, &who, &id)
+            .await
+            .contains("\"refreshing_until\":null")
+            && fx.requests().refreshes >= 1
+    })
+    .await;
+    // the request is with the authorization server (it answers after IN_FLIGHT), and the claim is
+    // in the store
     let until = fx.now().as_second() + 10 + 10;
     let text = kept(&fx, &who, &id).await;
     assert!(
@@ -544,12 +556,12 @@ async fn a_refusal_after_another_replica_rotated_ends_nothing_and_uses_the_other
         let fx = Fx::new().await;
         let (who, id) = authorized(&fx).await;
         fx.advance(fx.access_ttl() + Duration::from_secs(1));
-        fx.set_token_delay(Duration::from_millis(400));
+        fx.set_token_delay(IN_FLIGHT);
 
         let broker = fx.broker.clone();
         let (who2, id2) = (who.clone(), id.clone());
         let lease = tokio::spawn(async move { broker.lease(&who2, &id2).await });
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        support::eventually("the request", || async { fx.requests().refreshes >= 1 }).await;
         assert_eq!(fx.requests().refreshes, 1, "the request is out");
         // the claim ran out and another replica took over, asked, and kept its tokens
         let new_expiry = fx.now().as_second() + 3600;
@@ -830,7 +842,7 @@ async fn a_flow_begun_while_another_ends_is_not_ended_by_it() {
         if at_the_write {
             gate.arm();
         } else {
-            fx.set_token_delay(Duration::from_millis(300));
+            fx.set_token_delay(IN_FLIGHT);
         }
 
         let completing = {
@@ -850,7 +862,10 @@ async fn a_flow_begun_while_another_ends_is_not_ended_by_it() {
         if at_the_write {
             gate.reached().await;
         } else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            support::eventually("the code exchange", || async {
+                fx.requests().code_exchanges >= 1
+            })
+            .await;
         }
         // the person begins again, in another tab
         let second = fx

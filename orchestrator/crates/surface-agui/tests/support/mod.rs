@@ -247,10 +247,14 @@ impl Drop for Harness {
     }
 }
 
+/// Millisecond timings for the dispatcher. The lease is long on purpose: a worker that is alive keeps its
+/// row however slow the machine is for a moment (a lease that lapses under it hands the row to a new
+/// claim, which reads the task back from a snapshot, and the log it leaves has no `working` before the
+/// artifact); no test here kills a dispatcher and waits for its lease to lapse.
 pub fn fast_dispatcher() -> DispatcherConfig {
     DispatcherConfig {
         concurrency: 8,
-        lease: Duration::from_millis(500),
+        lease: Duration::from_secs(60),
         heartbeat: Duration::from_millis(100),
         poll_interval: Duration::from_millis(50),
         max_attempts: 5,

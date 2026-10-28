@@ -319,7 +319,19 @@ async fn an_agent_that_never_streamed_still_has_its_reply_logged(backend: Backen
 /// The worker dies with the reply half written; the log gets the whole text once all the same,
 /// from the status the agent ends the turn with (read by the replica that takes over).
 async fn a_worker_that_dies_mid_stream_loses_nothing(backend: Backend) {
-    let world = world_streaming_on(backend, &[TEXT_STREAM_EXTENSION]).await;
+    // the second worker takes the row over when the first one's lease lapses
+    let world = World::with(
+        backend,
+        Setup {
+            plain: orch_testsupport::FakeAgentOptions {
+                extensions: vec![TEXT_STREAM_EXTENSION.to_owned()],
+                ..orch_testsupport::FakeAgentOptions::default()
+            },
+            lapsing_leases: true,
+            ..Setup::default()
+        },
+    )
+    .await;
     let first = world.instance("orch-1").await;
     let chat = world.chat(&first);
     let id = chat.create_thread("plain", "stream tell me", None).await;

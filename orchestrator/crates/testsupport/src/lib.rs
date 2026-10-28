@@ -39,7 +39,7 @@ pub use fake::{
     usage_totals_entry_with_sandbox,
 };
 pub use hostile::{HostileOptions, HostileToolServer};
-pub use instance::{Chat, TestInstance, fast_dispatcher, shape};
+pub use instance::{Chat, TestInstance, crashing_dispatcher, fast_dispatcher, shape};
 pub use sse::{Frame, SseClient};
 pub use thread_tools::{AskReply, announce, ask_agent, call_back, call_tool, coordinate};
 pub use tool_server::{FakeToolServer, FakeToolServerOptions};

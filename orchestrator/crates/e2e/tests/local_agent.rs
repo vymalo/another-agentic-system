@@ -14,7 +14,9 @@ use std::time::Duration;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_agent_adam::LocalAgentClient;
 use orch_agent_adam::testkit::{LocalInstance, LocalWorld, SCRIPTED, scripted_endpoint};
-use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, NewThread};
+use orch_app::{
+    AgentDirectory, AgentEntry, App, AppConfig, Dispatcher, DispatcherConfig, NewThread,
+};
 use orch_core::{AgentId, AgentTarget, AgentTaskState, Event, ThreadId, ThreadState, UserId};
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{
@@ -22,7 +24,7 @@ use orch_ports::{
     ThreadStore, UuidV7Ids, Wakeup,
 };
 use orch_store_postgres::{PgStore, PgWakeup};
-use orch_testsupport::{eventually, fast_dispatcher};
+use orch_testsupport::{crashing_dispatcher, eventually, fast_dispatcher};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -86,6 +88,10 @@ struct World {
     db: Db,
     local: LocalWorld,
     a2a: A2aAgentClient,
+    /// Whether a dispatcher's lease lapses within a second: for the test that kills a process and has
+    /// another take its row over. Otherwise a worker that is alive cannot lose its row to a slow
+    /// machine, which would leave the log a takeover leaves.
+    lapsing_leases: bool,
 }
 
 enum Db {
@@ -95,6 +101,10 @@ enum Db {
 
 impl World {
     async fn start(backend: Backend) -> Self {
+        Self::with(backend, false).await
+    }
+
+    async fn with(backend: Backend, lapsing_leases: bool) -> Self {
         let (db, local) = match backend {
             Backend::Memory => (
                 Db::Memory(MemoryStore::new(), MemoryWakeup::new()),
@@ -117,6 +127,7 @@ impl World {
                 ..A2aConfig::default()
             })
             .unwrap(),
+            lapsing_leases,
         }
     }
 
@@ -151,9 +162,14 @@ impl World {
             }
         };
         let stop = CancellationToken::new();
+        let cfg = if self.lapsing_leases {
+            crashing_dispatcher()
+        } else {
+            fast_dispatcher()
+        };
         let dispatcher = match &app {
-            AnyApp::Memory(app) => spawn_dispatcher(app, owner, &stop),
-            AnyApp::Postgres(app) => spawn_dispatcher(app, owner, &stop),
+            AnyApp::Memory(app) => spawn_dispatcher(app, cfg, owner, &stop),
+            AnyApp::Postgres(app) => spawn_dispatcher(app, cfg, owner, &stop),
         };
         Instance {
             app,
@@ -195,10 +211,11 @@ fn app<S: ThreadStore, W: Wakeup>(
 
 fn spawn_dispatcher<S: ThreadStore, W: Wakeup>(
     app: &Arc<App<Stack<S, W>>>,
+    cfg: DispatcherConfig,
     owner: &str,
     stop: &CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(Dispatcher::new(Arc::clone(app), fast_dispatcher(), owner).run(stop.clone()))
+    tokio::spawn(Dispatcher::new(Arc::clone(app), cfg, owner).run(stop.clone()))
 }
 
 enum AnyApp {
@@ -341,7 +358,7 @@ async fn echo_through_the_dispatcher(backend: Backend) {
 }
 
 async fn restart_mid_task_finishes_with_no_gap_and_no_duplicate(backend: Backend) {
-    let world = World::start(backend).await;
+    let world = World::with(backend, true).await;
     let mut first = world.instance("orch-1").await;
     let id = first.create(SCRIPTED, "gate crash").await;
     first.wait_state(id, ThreadState::Working).await;
