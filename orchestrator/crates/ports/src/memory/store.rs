@@ -10,11 +10,11 @@ use orch_core::{
 };
 
 use crate::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, Commit, CommitOutcome, ForkOrigin,
-    InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease, ListOrder, NewInbox,
-    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxStats, OutboxStatus,
-    Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
-    UsageBackfill, UsageLedger,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ClaimOrder, Commit, CommitOutcome,
+    ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease, ListOrder,
+    NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxStats,
+    OutboxStatus, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
+    ThreadStore, UsageBackfill, UsageLedger,
 };
 
 struct StoredEvent {
@@ -1024,6 +1024,69 @@ fn list_rail(inner: &Inner, owner: &UserId, listing: &ThreadListing) -> Vec<Thre
     out
 }
 
+/// The positions in `inner.outbox` of the rows [`ThreadStore::claim_outbox`] takes, at most
+/// `limit`, in the order `order` chooses them. Nothing is changed: the rows that may be claimed are
+/// read from the outbox as it stands, which is also what the Postgres statement does.
+fn choose(inner: &Inner, now: Timestamp, limit: usize, order: ClaimOrder) -> Vec<usize> {
+    let candidates = (0..inner.outbox.len()).filter(|&i| claimable(inner, i, now));
+    match order {
+        ClaimOrder::Fifo => candidates.take(limit).collect(),
+        ClaimOrder::Fair => {
+            // the row's person is the owner of its thread
+            let owner_of = |i: usize| {
+                inner
+                    .threads
+                    .get(&inner.outbox[i].thread_id)
+                    .map(|e| &e.record.owner)
+            };
+            let mut running: HashMap<Option<&UserId>, u64> = HashMap::new();
+            for (i, row) in inner.outbox.iter().enumerate() {
+                if row.status == OutboxStatus::Inflight && row.lease_until.is_some_and(|u| u > now)
+                {
+                    *running.entry(owner_of(i)).or_default() += 1;
+                }
+            }
+            let mut rank: HashMap<Option<&UserId>, u64> = HashMap::new();
+            let mut keyed: Vec<(u64, usize)> = candidates
+                .map(|i| {
+                    if inner.outbox[i].kind == OutboxKind::Cancel {
+                        return (0, i);
+                    }
+                    let person = owner_of(i);
+                    let rank = rank.entry(person).or_default();
+                    *rank += 1;
+                    (running.get(&person).copied().unwrap_or(0) + *rank, i)
+                })
+                .collect();
+            // equal loads: the older row, which is the lower position
+            keyed.sort_unstable();
+            keyed.into_iter().take(limit).map(|(_, i)| i).collect()
+        }
+    }
+}
+
+/// Whether row `i` is due at `now` and the per-thread rule lets it be claimed.
+fn claimable(inner: &Inner, i: usize, now: Timestamp) -> bool {
+    let row = &inner.outbox[i];
+    let due = match row.status {
+        OutboxStatus::Pending => row.next_attempt_at <= now,
+        OutboxStatus::Inflight => row.lease_until.is_some_and(|until| until <= now),
+        OutboxStatus::Delivered | OutboxStatus::Dead | OutboxStatus::Skipped => false,
+    };
+    due && match row.kind {
+        OutboxKind::Cancel
+        | OutboxKind::Verify
+        | OutboxKind::Ask
+        | OutboxKind::Title
+        | OutboxKind::Description => true,
+        // one lane for delegations and one for steers: a steer is for the turn the open
+        // delegation is running, so it never waits behind it (ADR 0036)
+        OutboxKind::Delegate | OutboxKind::Steer => !inner.outbox[..i].iter().any(|older| {
+            older.thread_id == row.thread_id && older.kind == row.kind && older.status.is_open()
+        }),
+    }
+}
+
 impl ThreadStore for MemoryStore {
     async fn ping(&self) -> Result<(), StoreError> {
         Ok(())
@@ -1314,39 +1377,14 @@ impl ThreadStore for MemoryStore {
         now: Timestamp,
         lease: Duration,
         limit: u32,
+        order: ClaimOrder,
     ) -> Result<Vec<OutboxItem>, StoreError> {
         let mut inner = self.lock();
-        let mut claimed = Vec::new();
-        for i in 0..inner.outbox.len() {
-            if claimed.len() >= limit as usize {
-                break;
-            }
-            let row = &inner.outbox[i];
-            let due = match row.status {
-                OutboxStatus::Pending => row.next_attempt_at <= now,
-                OutboxStatus::Inflight => row.lease_until.is_some_and(|until| until <= now),
-                OutboxStatus::Delivered | OutboxStatus::Dead | OutboxStatus::Skipped => false,
-            };
-            if !due {
-                continue;
-            }
-            let blocked = match row.kind {
-                OutboxKind::Cancel
-                | OutboxKind::Verify
-                | OutboxKind::Ask
-                | OutboxKind::Title
-                | OutboxKind::Description => false,
-                // one lane for delegations and one for steers: a steer is for the turn the open
-                // delegation is running, so it never waits behind it (ADR 0036)
-                OutboxKind::Delegate | OutboxKind::Steer => inner.outbox[..i].iter().any(|older| {
-                    older.thread_id == row.thread_id
-                        && older.kind == row.kind
-                        && older.status.is_open()
-                }),
-            };
-            if blocked {
-                continue;
-            }
+        let mut chosen = choose(&inner, now, limit as usize, order);
+        // claimed, and handed back, oldest first
+        chosen.sort_unstable();
+        let mut claimed = Vec::with_capacity(chosen.len());
+        for i in chosen {
             let row = &mut inner.outbox[i];
             row.status = OutboxStatus::Inflight;
             row.lease_owner = Some(owner.to_owned());

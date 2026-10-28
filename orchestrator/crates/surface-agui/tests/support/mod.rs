@@ -254,6 +254,7 @@ impl Drop for Harness {
 pub fn fast_dispatcher() -> DispatcherConfig {
     DispatcherConfig {
         concurrency: 8,
+        order: orch_ports::ClaimOrder::Fair,
         lease: Duration::from_secs(60),
         heartbeat: Duration::from_millis(100),
         poll_interval: Duration::from_millis(50),

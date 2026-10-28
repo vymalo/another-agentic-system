@@ -706,7 +706,13 @@ async fn a_task_the_agent_made_for_a_message_as_the_thread_ended_is_adopted_and_
         .unwrap();
     let rows = w
         .store
-        .claim_outbox("test", SystemClock.now(), Duration::from_secs(30), 10)
+        .claim_outbox(
+            "test",
+            SystemClock.now(),
+            Duration::from_secs(30),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);

@@ -702,7 +702,13 @@ async fn a_worker_that_lost_its_lease_stops_writing() {
     assert_eq!(w.store.release_leases("d1", now).await.unwrap(), 1);
     let stolen = w
         .store
-        .claim_outbox("thief", SystemClock.now(), Duration::from_secs(60), 10)
+        .claim_outbox(
+            "thief",
+            SystemClock.now(),
+            Duration::from_secs(60),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(stolen.len(), 1);
@@ -750,6 +756,7 @@ async fn a_late_result_is_dropped_after_a_reclaim_by(owner: &str, first_owner: &
             SystemClock.now() + Duration::from_secs(1),
             Duration::from_secs(3600),
             10,
+            orch_ports::ClaimOrder::Fair,
         )
         .await
         .unwrap();
@@ -878,7 +885,13 @@ async fn graceful_shutdown_releases_leases_for_other_replicas() {
     wait_state(&app, &alice(), t.id, ThreadState::Working).await;
     assert!(
         w.store
-            .claim_outbox("d2", SystemClock.now(), Duration::from_secs(60), 10)
+            .claim_outbox(
+                "d2",
+                SystemClock.now(),
+                Duration::from_secs(60),
+                10,
+                orch_ports::ClaimOrder::Fair
+            )
             .await
             .unwrap()
             .is_empty(),
@@ -887,7 +900,13 @@ async fn graceful_shutdown_releases_leases_for_other_replicas() {
     run.shutdown().await;
     let rows = w
         .store
-        .claim_outbox("d2", SystemClock.now(), Duration::from_secs(60), 10)
+        .claim_outbox(
+            "d2",
+            SystemClock.now(),
+            Duration::from_secs(60),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(rows.len(), 1, "released on shutdown");

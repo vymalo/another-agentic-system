@@ -38,6 +38,17 @@ macro_rules! thread_store_conformance {
             commit_contiguous_seq version_conflict_writes_nothing duplicate_key_writes_nothing
             concurrent_writers_keep_seq_contiguous list_events_after_limit latest_events_newest_first
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
+            a_fair_claim_serves_the_person_with_fewer_jobs_running_first
+            a_fair_claim_gives_one_person_every_slot a_fair_claim_interleaves_the_people
+            a_fair_claim_counts_only_live_leases a_fair_claim_counts_running_rows_of_every_kind
+            a_fair_claim_serves_cancel_rows_first
+            a_cancel_row_takes_no_place_in_the_ranks_of_its_persons_rows
+            a_fair_claim_keeps_the_per_thread_order
+            fair_claimers_at_once_take_disjoint_rows_of_both_people
+            a_fair_claim_is_not_blinded_by_a_long_queue
+            a_fair_claim_takes_the_older_rows_among_equal_loads
+            a_fair_claim_ranks_a_persons_rows_by_age_and_not_by_id
+            a_fifo_claim_takes_the_oldest_rows_whoever_they_are_for
             retry_not_claimable_before_due complete_outcomes mark_sent_is_atomic
             the_binding_adopts_the_agents_context_once
             skip_unsent_delegates a_commit_can_skip_the_unsent_delegates_it_supersedes

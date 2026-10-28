@@ -1077,7 +1077,7 @@ impl ThreadStore for RacyStore {
         ui_catalog_event(thread: ThreadId, digest: &str)
             -> Result<Option<orch_core::Event>, StoreError>;
         get_binding(thread: ThreadId) -> Result<Option<orch_ports::AgentBinding>, StoreError>;
-        claim_outbox(owner: &str, now: Timestamp, lease: Duration, limit: u32)
+        claim_outbox(owner: &str, now: Timestamp, lease: Duration, limit: u32, order: orch_ports::ClaimOrder)
             -> Result<Vec<orch_ports::OutboxItem>, StoreError>;
         renew_lease(lease: &orch_ports::Lease, until: Timestamp) -> Result<bool, StoreError>;
         mark_sent(lease: &orch_ports::Lease, binding: orch_ports::BindingUpdate, now: Timestamp)

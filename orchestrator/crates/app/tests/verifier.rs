@@ -749,6 +749,7 @@ async fn a_worker_that_lost_its_claim_writes_nothing() {
             SystemClock.now() + Duration::from_secs(1),
             Duration::from_secs(3600),
             10,
+            orch_ports::ClaimOrder::Fair,
         )
         .await
         .unwrap();
@@ -858,7 +859,13 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
     // Play the first claimant: it sends the request and dies before recording anything.
     let claimed = w
         .store
-        .claim_outbox("d1", SystemClock.now(), Duration::from_millis(50), 10)
+        .claim_outbox(
+            "d1",
+            SystemClock.now(),
+            Duration::from_millis(50),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
@@ -962,7 +969,13 @@ async fn a_verdict_streamed_before_a_crash_is_read_from_the_task_not_lost() {
 async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
     let claimed = w
         .store
-        .claim_outbox("d1", SystemClock.now(), Duration::from_millis(50), 10)
+        .claim_outbox(
+            "d1",
+            SystemClock.now(),
+            Duration::from_millis(50),
+            10,
+            orch_ports::ClaimOrder::Fair,
+        )
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);

@@ -89,6 +89,7 @@ async fn a_crash_between_send_and_recording_is_recovered_by_message_id() {
         orch_ports::Clock::now(&orch_ports::SystemClock),
         Duration::from_millis(50),
         10,
+        orch_ports::ClaimOrder::Fair,
     )
     .await
     .unwrap();

@@ -102,6 +102,7 @@ impl World {
 pub fn fast() -> DispatcherConfig {
     DispatcherConfig {
         concurrency: 8,
+        order: orch_ports::ClaimOrder::Fair,
         lease: Duration::from_millis(400),
         heartbeat: Duration::from_millis(100),
         poll_interval: Duration::from_millis(50),
