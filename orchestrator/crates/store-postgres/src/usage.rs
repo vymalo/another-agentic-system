@@ -780,7 +780,7 @@ impl UsageLedger for PgStore {
     }
 }
 
-/// How long the backfill waits for a thread's lock before it leaves the thread for a later run. for a thread's lock before it leaves the thread for a later run.
+/// How long the backfill waits for a thread's lock before it leaves the thread for a later run.
 const BACKFILL_LOCK_TIMEOUT: &str = "5s";
 
 /// Whether the error is Postgres' `lock_not_available` (`55P03`), what `lock_timeout` raises.
