@@ -128,10 +128,29 @@ person has no credit, no pass, or too many runs at once.
 **Epic:** [M2: Usage and limits per person](https://github.com/vymalo/another-agentic-system/issues/274).
 Related: [sys#170](https://github.com/vymalo/another-agentic-system/issues/170) (token budgets).
 
-**Done already.** Tokens are recorded as `model_usage` events of the thread ([ADR 0056](docs/decisions/0056-token-usage-per-model-call.md)),
-with no price and no total per person. Sandbox time is not recorded. The dispatcher has 32 global slots and the edge
-sets no rate limit by default: the chart can render one per client address (`ingress.rateLimit`, off, on renders and a kind job that CI has not run yet), and whether the netcup ingress
-shows the right address is still [open question 51](docs/open-questions.md).
+**Done already** (2026-10-28):
+
+- **A usage ledger per person.** It is written in the commit of each usage event, keeps a task's totals with the call
+  reported twice counted once, and outlives an erased thread ([ADR 0065](docs/decisions/0065-a-usage-ledger-per-person.md),
+  proposed).
+  - `GET /api/me/usage?month=YYYY-MM` answers the caller's own month, priced by the `usage.prices` table of the
+    configuration. Prices are in integers, and a model with no price is said so, never counted as free.
+  - A retention sweep removes old months (`usage.retentionMonths`, 24 by default).
+  - Proven by `dev/usage-ledger-e2e.sh` on the mocks. [sys#281](https://github.com/vymalo/another-agentic-system/issues/281)
+    is closed.
+- **Sandbox time per run** is reported by the coder and kept in the ledger (`sandbox` of `usage/v1`,
+  [adam#126](https://github.com/vymalo/another-adam-rs/issues/126) closed).
+- **The dispatcher gives each person a fair share of its slots.** The person with the fewest jobs running gets the
+  next free slot, across replicas ([ADR 0066](docs/decisions/0066-a-fair-share-of-the-dispatcher.md), proposed).
+  `dispatcher.order: fifo` brings the old order back. [sys#283](https://github.com/vymalo/another-agentic-system/issues/283)
+  is closed.
+- **The chart can limit each client address at the Ingress** (`ingress.rateLimit`, a Traefik `RateLimit` middleware).
+  - It is proven on kind (`ratelimit-e2e.yml`, run 40695070844, 2026-10-28).
+  - It is **off by default**: whether the netcup ingress shows each client's real address is still
+    [open question 51](docs/open-questions.md), and turning the limit on waits for that check.
+  - [sys#284](https://github.com/vymalo/another-agentic-system/issues/284) is closed.
+- **Left:** refusing a run before dispatch ([sys#282](https://github.com/vymalo/another-agentic-system/issues/282)), which
+  waits on the owner's plan decisions. Nothing of M2 has run on the live deployment.
 
 | Ticket | Repo | Size | Labels | Who and when |
 |---|---|---|---|---|
