@@ -2337,6 +2337,169 @@ refused "rate limit: ... a wrong period, off" --set-string ingress.rateLimit.per
 check "rate limit: depth 0 and depth 5 are accepted (the bounds)" rl_bounds
 check "rate limit: the units ms, s, m and h are accepted" rl_units
 
+# ---- Scaling the database: `database.instances`, `database.resources` and the connection pooler (issue #290; README.md, "Scaling the database") -------------
+# Off by default, and then the render is the one of a chart that has never heard of it: the Cluster has `instances: 1` and no `resources`, there is no Pooler, and
+# the orchestrator reads the app Secret's `uri` as a file. Scaled out: three instances with resources. With the pooler: a Pooler (transaction mode, with
+# max_prepared_statements), the orchestrator's `database.url` the pooler's Service and its `database.directUrl` the cluster's own `-rw` Service, both composed by the
+# Deployment from the app Secret's keys, so that no ConfigMap holds a URL or a password. The agents' databases are never pooled.
+pool_values="$chart/tests/pooler.values.yaml"
+db_values_block() { awk '/^database:/ { b = 1; next } b && /^[^ #]/ { b = 0 } b' "$chart/values.yaml"; }
+vals_default_off() {
+  db_values_block > "$sec" &&
+    grep -Eq '^  instances: 1$' "$sec" && grep -Eq '^  resources: \{\}$' "$sec" && grep -Eq '^    enabled: false$' "$sec" && grep -Eq '^    resources: \{\}$' "$sec"
+}
+vals_pooler_parameters() {
+  db_values_block > "$sec" &&
+    grep -Eq '^      max_prepared_statements: "200"$' "$sec" && grep -Eq '^      max_client_conn: "1000"$' "$sec" && grep -Eq '^      default_pool_size: "20"$' "$sec" &&
+    ! grep -Eq '^ +pool_?[mM]ode:' "$sec"
+}
+pool_strip() { # pool_strip <render>: the render without the documents the pooler changes (the Pooler, the Cluster, the orchestrator's ConfigMap and Deployment)
+  awk '
+    function flush() {
+      if (buf != "" && buf !~ /(^|\n)kind: (Pooler|Cluster)\n/ && !(buf ~ /(^|\n)kind: (ConfigMap|Deployment)\n/ && buf ~ /\n  name: another-agentic-orchestrator\n/)) printf "---\n%s", buf
+      buf = ""
+    }
+    /^---$/ { flush(); next }
+    { buf = buf $0 "\n" }
+    END { flush() }' "$1"
+}
+same_elsewhere() { pool_strip "$out.scale-default" > "$sec"; pool_strip "$out" > "$sec2"; cmp -s "$sec" "$sec2"; }
+orchestrator_docs_same() {
+  [ "$(doc_in "$out.scale-default" ConfigMap another-agentic-orchestrator | sha256sum)" = "$(doc ConfigMap another-agentic-orchestrator | sha256sum)" ] &&
+    [ "$(doc_in "$out.scale-default" Deployment another-agentic-orchestrator | sha256sum)" = "$(doc Deployment another-agentic-orchestrator | sha256sum)" ]
+}
+checksum_moved() { # the orchestrator's pod restarts when its configuration does
+  [ "$(doc_in "$out.scale-default" Deployment another-agentic-orchestrator | grep 'checksum/config:')" != "$(doc Deployment another-agentic-orchestrator | grep 'checksum/config:')" ]
+}
+cluster_lacks_resources() { ! doc Cluster another-agentic-db | grep -Eq '^  resources:'; }
+check "scale: values.yaml defaults: database.instances 1, database.resources empty, the pooler off with no resources" vals_default_off
+check "scale: values.yaml's pooler parameters are strings, max_prepared_statements among them, and the pool mode is not a value" vals_pooler_parameters
+render
+config_of config.yaml "$cfg"
+check "scale: the default render has no Pooler, no ORCH_DB_ variable and nothing of the pooler" lacks '^kind: Pooler$|ORCH_DB_|db-pooler|poolMode'
+check "scale: the default Cluster has instances: 1 ..." dhas Cluster another-agentic-db '^  instances: 1$'
+check "scale: ... and no resources key" cluster_lacks_resources
+check "scale: the default configuration reads the app Secret's uri file ..." cfg_has '^  url: \{ file: /run/secrets/db/uri \}$'
+check "scale: ... and has no directUrl" cfg_lacks 'directUrl'
+check "scale: the default Deployment mounts the app Secret's uri file" dhas Deployment another-agentic-orchestrator '^              mountPath: /run/secrets/db$'
+cp "$out" "$out.scale-default"
+
+# Three instances with resources, no pooler: only the Cluster changes.
+render --set database.instances=3 --set database.resources.requests.cpu=500m --set database.resources.requests.memory=1Gi --set database.resources.limits.memory=2Gi
+doc Cluster another-agentic-db > "$sec"
+check "scale: database.instances and database.resources are the Cluster's spec.instances and spec.resources" sec_all '^  instances: 3$' '^  resources:$' '^    limits:$' '^      memory: 2Gi$' '^    requests:$' '^      cpu: 500m$' '^      memory: 1Gi$'
+check "scale: ... spec.resources comes right before spec.storage" line_after "$sec" '^  storage:$' -1 '^      memory: 1Gi$'
+check "scale: three instances alone render no Pooler and leave the orchestrator on the uri file" sh -c "! grep -Eq '^kind: Pooler\$|ORCH_DB_' '$out' && grep -Eq '/run/secrets/db/uri' '$out'"
+check "scale: three instances and resources change the Cluster and nothing else (no other pod restarts)" same_elsewhere
+check "scale: ... and the orchestrator's ConfigMap and Deployment are the default's" orchestrator_docs_same
+
+# The pooler on, with a fixture away from the defaults (three instances, resources everywhere, default_pool_size 30).
+render -f "$pool_values"
+config_of config.yaml "$cfg"
+doc Pooler another-agentic-db-pooler > "$sec"
+check "pooler: one Pooler, the CloudNativePG kind, named for the release and not like the cluster (CloudNativePG refuses that)" sh -c "
+  [ \"\$(grep -Ec '^kind: Pooler\$' '$out')\" -eq 1 ] && grep -Eq '^apiVersion: postgresql\\.cnpg\\.io/v1\$' '$sec' && grep -Eq '^  name: another-agentic-db-pooler\$' '$sec' && ! grep -Eq '^  name: another-agentic-db\$' '$sec'"
+check "pooler: it is read/write and two pods" sec_all '^  type: rw$' '^  instances: 2$'
+check "pooler: it is of the orchestrator's Cluster (the name is under spec.cluster)" line_after "$sec" '^  cluster:$' 1 '^    name: another-agentic-db$'
+check "pooler: the pool mode is transaction, under spec.pgbouncer" line_after "$sec" '^  pgbouncer:$' 1 '^    poolMode: transaction$'
+check "pooler: no other pool mode anywhere (session and statement mode break the orchestrator)" sh -c "! grep -Eqi 'poolMode: (session|statement)|pool_mode' '$sec'"
+check "pooler: the parameters are strings in key order, max_prepared_statements among them, default_pool_size from the fixture" sec_all '^      default_pool_size: "30"$' '^      max_client_conn: "1000"$' '^      max_prepared_statements: "200"$'
+check "pooler: PgBouncer's resources are on a container named pgbouncer (the operator merges by that name)" line_after "$sec" '^        - name: pgbouncer$' 1 '^          resources:$'
+check "pooler: ... with the fixture's requests and limit" sec_all '^              cpu: 100m$' '^              memory: 128Mi$' '^              memory: 256Mi$'
+check "pooler: the Cluster is three instances, as the fixture says" dhas Cluster another-agentic-db '^  instances: 3$'
+check "pooler: database.url and database.directUrl are { env } references" cfg_all '^  url: \{ env: ORCH_DB_POOLED_URL \}$' '^  directUrl: \{ env: ORCH_DB_DIRECT_URL \}$'
+check "pooler: the configuration names no file of the app Secret and holds no URL" cfg_lacks '/run/secrets/db|postgres(ql)?://'
+check "pooler: no ConfigMap holds a URL, a password or a host of the database" dlacks ConfigMap "" 'postgres(ql)?://|password|db-rw|db-pooler'
+doc Deployment another-agentic-orchestrator > "$sec"
+# shellcheck disable=SC2016 # the text of a Kubernetes variable reference, not the shell's
+pooled_url_ok() { grep -Fq 'value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@another-agentic-db-pooler.another-agentic-system.svc:5432/$(ORCH_DB_NAME)"' "$sec"; }
+# shellcheck disable=SC2016
+direct_url_ok() { grep -Fq 'value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@another-agentic-db-rw.another-agentic-system.svc:5432/$(ORCH_DB_NAME)"' "$sec"; }
+env_before_urls() { # the kubelet expands $(NAME) from the variables declared above it: the three Secret keys come first
+  awk '/- name: ORCH_DB_USER$/ { u = NR } /- name: ORCH_DB_PASSWORD$/ { p = NR } /- name: ORCH_DB_NAME$/ { n = NR } /- name: ORCH_DB_POOLED_URL$/ { a = NR } /- name: ORCH_DB_DIRECT_URL$/ { d = NR }
+       END { exit !(u && p && n && a && d && u < a && p < a && n < a && u < d && p < d && n < d) }' "$sec"
+}
+secret_keys_ok() {
+  awk '/- name: ORCH_DB_USER$/ { f = 1 } f == 1 && /key: username$/ { a = 1 } /- name: ORCH_DB_PASSWORD$/ { f = 2 } f == 2 && /key: password$/ { b = 1 } /- name: ORCH_DB_NAME$/ { f = 3 } f == 3 && /key: dbname$/ { c = 1 }
+       END { exit !(a && b && c) }' "$sec" &&
+    [ "$(grep -Ec '^                  name: another-agentic-db-app$' "$sec")" -eq 3 ]
+}
+check "pooler: ORCH_DB_POOLED_URL is the app Secret's role on the pooler's Service, port 5432" pooled_url_ok
+check "pooler: ORCH_DB_DIRECT_URL is the same role on the cluster's -rw Service, port 5432" direct_url_ok
+check "pooler: the three Secret keys are declared above the two URLs that name them" env_before_urls
+check "pooler: username, password and dbname come from the app Secret's keys (secretKeyRef, never a value)" secret_keys_ok
+check "pooler: the Deployment mounts no uri file and no db volume any more" sh -c "! grep -Eq 'mountPath: /run/secrets/db|path: uri|^        - name: db\$' '$sec'"
+check "pooler: no secret-named environment variable has a literal value" fails literal_secret_env
+check "pooler: every image is still pinned" images_ok
+check "pooler: the orchestrator restarts when the pooler comes (the checksum of its configuration moves)" checksum_moved
+externalsecrets_direct() {
+  ! doc ExternalSecret "" | grep -q 'db-pooler' && doc ExternalSecret "" | grep -Eq 'uri: "postgresql://agent:.*@another-agentic-db-rw\.another-agentic-system\.svc:5432/agent"'
+}
+check "pooler: the agents' databases stay direct: no ExternalSecret names the pooler, the chat agent's URI is on the -rw Service" externalsecrets_direct
+cp "$out" "$out.pool"
+cp "$out.scale-default" "$out.keep-default"
+check "pooler: turning it on changes the Cluster, the orchestrator's ConfigMap and Deployment and adds the Pooler, and no other document" same_elsewhere
+
+# The pooler with the coders: their URIs are the direct ones.
+render -f "$pool_values" -f "$chart/tests/coders.values.yaml"
+coders_direct() {
+  [ "$(doc ExternalSecret "" | grep -Ec 'uri: "postgresql://coder(vymalo|stephane):.*@another-agentic-db-rw\.another-agentic-system\.svc:5432/coder(vymalo|stephane)"')" -eq 2 ] && ! doc ExternalSecret "" | grep -q 'db-pooler'
+}
+check "pooler, two coders: each coder's database URI is on the -rw Service, and no ExternalSecret names the pooler" coders_direct
+
+# Defaults of the pooler when only `enabled` is set: two pods, transaction, the three parameters, no template (no resources).
+render --set database.pooler.enabled=true
+doc Pooler another-agentic-db-pooler > "$sec"
+check "pooler, enabled alone: two pods, transaction, 200 prepared statements, 1000 clients and a pool of 20" sec_all '^  instances: 2$' '^    poolMode: transaction$' '^      max_prepared_statements: "200"$' '^      max_client_conn: "1000"$' '^      default_pool_size: "20"$'
+check "pooler, enabled alone: no template key (no resources, nothing to merge)" sh -c "! grep -Eq '^  template:' '$sec'"
+render --set database.pooler.enabled=true --set-json 'database.pooler.parameters.max_client_conn=1000000' --set-string database.pooler.parameters.max_prepared_statements=500
+check "pooler: a number from a values file or JSON (a float64) is written whole (1000000, never 1e+06), a string as it is" out_all '^      max_client_conn: "1000000"$' '^      max_prepared_statements: "500"$'
+render --set database.pooler.enabled=true --set database.pooler.parameters.max_client_conn=null
+doc Pooler another-agentic-db-pooler > "$sec"
+check "pooler: a parameter set to null is dropped (Helm deletes the key) and the others stay" sh -c "! grep -q 'max_client_conn' '$sec' && grep -Eq '^      max_prepared_statements: \"200\"\$' '$sec'"
+
+# Refusals, and what is accepted.
+refused "database.instances 0" --set database.instances=0
+refused "database.instances negative" --set database.instances=-1
+refused "database.instances not whole" --set-json 'database.instances=1.5'
+refused "database.instances a string" --set-string database.instances=3
+refused "database.instances null" --set-json 'database.instances=null'
+refused "database.instances above the typo guard (20)" --set database.instances=21
+refused "database.pooler.instances 0, with the pooler on" -f "$pool_values" --set database.pooler.instances=0
+refused "database.pooler.instances not whole, with the pooler on" -f "$pool_values" --set-json 'database.pooler.instances=2.5'
+refused "database.pooler.instances 0, with the pooler off (found when written)" --set database.pooler.instances=0
+refused "database.pooler.enabled as the string true (the string false would be on)" --set-string database.pooler.enabled=true
+refused "the pooler with max_prepared_statements 0" -f "$pool_values" --set database.pooler.parameters.max_prepared_statements=0
+refused "the pooler with max_prepared_statements the string 0" -f "$pool_values" --set-string database.pooler.parameters.max_prepared_statements=0
+refused "the pooler with max_prepared_statements negative" -f "$pool_values" --set database.pooler.parameters.max_prepared_statements=-1
+refused "the pooler with max_prepared_statements not whole" -f "$pool_values" --set-json 'database.pooler.parameters.max_prepared_statements=1.5'
+refused "the pooler with max_prepared_statements not a number" -f "$pool_values" --set-string database.pooler.parameters.max_prepared_statements=lots
+refused "the pooler with max_prepared_statements removed (null)" -f "$pool_values" --set database.pooler.parameters.max_prepared_statements=null
+refused "the pooler with all its parameters removed" -f "$pool_values" --set-json 'database.pooler.parameters=null'
+refused "the pooler with the parameters a list" -f "$pool_values" --set-json 'database.pooler.parameters=["max_prepared_statements"]'
+refused_saying "the pooler with max_prepared_statements 0 says which setting" "max_prepared_statements" -f "$pool_values" --set database.pooler.parameters.max_prepared_statements=0
+refused "pool_mode among the parameters (the mode is not a value)" -f "$pool_values" --set-string database.pooler.parameters.pool_mode=session
+refused "poolMode among the parameters" -f "$pool_values" --set-string database.pooler.parameters.poolMode=statement
+refused "a parameter that is a boolean" -f "$pool_values" --set-json 'database.pooler.parameters.server_round_robin=true'
+refused "a parameter that is a map" -f "$pool_values" --set-json 'database.pooler.parameters.x_y={"a":1}'
+refused "a parameter named in capitals" -f "$pool_values" --set-string database.pooler.parameters.MAX_CLIENT_CONN=10
+refused "database.resources with a misspelt key (limit)" --set-json 'database.resources={"limit":{"memory":"2Gi"}}'
+refused "database.resources a list" --set-json 'database.resources=[]'
+refused "database.pooler.resources with a misspelt key (request)" --set-json 'database.pooler.resources={"request":{"cpu":"100m"}}'
+refused "database.pooler.resources a string" --set-string database.pooler.resources=big
+instances_accepted() { for n in 1 3 20; do renders --set database.instances=$n || return 1; done; }
+pooler_instances_accepted() { for n in 1 2 20; do renders -f "$pool_values" --set database.pooler.instances=$n || return 1; done; }
+mps_accepted() {
+  for v in 1 200 5000; do renders -f "$pool_values" --set database.pooler.parameters.max_prepared_statements=$v || return 1; done
+  renders -f "$pool_values" --set-string database.pooler.parameters.max_prepared_statements=200
+}
+check "scale: database.instances of 1, 3 and 20 are accepted" instances_accepted
+check "scale: ... and the pooler's of 1, 2 and 20" pooler_instances_accepted
+check "scale: max_prepared_statements 0 is not looked at while the pooler is off (nothing of it is written)" renders --set database.pooler.parameters.max_prepared_statements=0
+check "scale: max_prepared_statements of 1, 200 and 5000 (numbers and strings) are accepted with the pooler on" mps_accepted
+rm -f "$out.scale-default" "$out.pool" "$out.keep-default"
+render
+
 # ---- The shipped values.yaml --------------------------------------------------------------------------------------------
 check "values.yaml leaves the deployment's own values empty (host, issuer, model)" sh -c "
   grep -Eq '^host: \"\"$' '$chart/values.yaml' && grep -Eq '^  issuer: \"\"$' '$chart/values.yaml' && grep -Eq '^  baseUrl: \"\"$' '$chart/values.yaml'"

@@ -1,0 +1,40 @@
+{{- if .Values.database.pooler.enabled }}
+{{- $root := dict "root" . "component" "db-pooler" }}
+{{- $pooler := .Values.database.pooler }}
+# The connection pooler of the orchestrator's database (`database.pooler.enabled`, README.md "Scaling the database"): a CloudNativePG `Pooler`, PgBouncer pods in front of the
+# cluster's primary (`type: rw`, the `<cluster>-rw` Service). It makes one Service, named like the Pooler, that the orchestrator's `database.url` names (orchestrator-configmap.yaml);
+# the orchestrator's `database.directUrl` is the cluster's own `-rw` Service, for what a transaction-mode pooler cannot carry (docs/api/config.md, "Database behind a pooler").
+# The pool mode is `transaction`, written here and not a value: the connections the orchestrator makes are made for it, and statement mode breaks transactions.
+# PgBouncer authenticates the orchestrator's role by the role's own password, through the `auth_query` that CloudNativePG sets up for the Pooler (its user
+# `cnpg_pooler_pgbouncer`), so the app Secret of the cluster is all the orchestrator needs. `type: rw`, the Service and the user are the operator's (CloudNativePG 1.30).
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: {{ include "agentic.db.pooler.name" . }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+spec:
+  cluster:
+    name: {{ include "agentic.db.orchestrator" . }}
+  type: rw
+  instances: {{ int $pooler.instances }}
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      {{- /* Every value a string, in key order: the CRD is a map of strings, and a number would fail the apply. */}}
+      {{- range $k := keys $pooler.parameters | sortAlpha }}
+      {{- $v := get $pooler.parameters $k }}
+      {{- if not (kindIs "invalid" $v) }}
+      {{ $k }}: {{ include "agentic.db.pooler.value" $v | quote }}
+      {{- end }}
+      {{- end }}
+  {{- /* The `pgbouncer` container is named in the pod template so that the operator merges these resources into its own container. Only when set. */}}
+  {{- with $pooler.resources }}
+  template:
+    spec:
+      containers:
+        - name: pgbouncer
+          resources:
+            {{- toYaml . | nindent 12 }}
+  {{- end }}
+{{- end }}

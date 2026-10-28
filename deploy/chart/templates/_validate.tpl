@@ -612,9 +612,49 @@ missing identity must fail the render rather than silently serve a link another 
 {{- fail "orchestrator.toolServers needs the thread-tools surface in orchestrator.surfaces: the relay is one of its providers (ADR 0024)" -}}
 {{- end -}}
 {{- end -}}
-{{- /* The databases. */ -}}
-{{- if lt (int .Values.database.instances) 1 -}}
-{{- fail "database.instances must be at least 1" -}}
+{{- /* The databases. `instances` is a whole number (`int` would cut 1.5 to 1 and quietly run no replica) and so is the pooler's; both are checked whether or not the pooler is on, so a wrong
+       value is found when it is written and not the day the pooler is turned on. The ceiling is a typo guard (a PVC per instance), not CloudNativePG's. */ -}}
+{{- include "agentic.checkWhole" (dict "name" "database.instances" "value" .Values.database.instances "min" 1 "max" 20) -}}
+{{- include "agentic.checkWhole" (dict "name" "database.pooler.instances" "value" .Values.database.pooler.instances "min" 1 "max" 20) -}}
+{{- if not (kindIs "bool" .Values.database.pooler.enabled) -}}
+{{- fail (printf "database.pooler.enabled must be true or false, got %q of type %s" (toString .Values.database.pooler.enabled) (kindOf .Values.database.pooler.enabled)) -}}
+{{- end -}}
+{{- /* Resources are a map of requests, limits and claims (Kubernetes' ResourceRequirements); a typo such as `limit` would otherwise be an unknown field for the API server at the sync. */ -}}
+{{- range $at, $res := dict "database.resources" .Values.database.resources "database.pooler.resources" .Values.database.pooler.resources -}}
+{{- if not (kindIs "map" $res) -}}
+{{- fail (printf "%s must be a map of requests and limits (empty for none), got %s" $at (kindOf $res)) -}}
+{{- end -}}
+{{- range $k := keys $res -}}
+{{- if not (has $k (list "requests" "limits" "claims")) -}}
+{{- fail (printf "%s: %q is not requests, limits or claims" $at $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* The pooler's settings. The pool mode is NOT a value (templates/cnpg-pooler.yaml writes `transaction`), and `pool_mode` among the parameters is refused rather than
+       overridden. `max_prepared_statements` above 0 is what the orchestrator's named prepared statements need in transaction mode (docs/api/config.md, "Database behind a pooler"): with 0, or
+       with the key removed (`null` deletes a default), the first statements of two clients collide on a server connection and the orchestrator fails at boot or under load. */ -}}
+{{- $pp := .Values.database.pooler.parameters -}}
+{{- if not (kindIs "map" $pp) -}}
+{{- fail (printf "database.pooler.parameters must be a map of PgBouncer settings, got %s" (kindOf $pp)) -}}
+{{- end -}}
+{{- if .Values.database.pooler.enabled -}}
+{{- range $k, $v := $pp -}}
+{{- if not (regexMatch "^[a-z][a-z0-9_]*$" $k) -}}
+{{- fail (printf "database.pooler.parameters: %q is not a PgBouncer setting name (lower case letters, digits and _)" $k) -}}
+{{- end -}}
+{{- if has $k (list "pool_mode" "poolmode" "poolMode") -}}
+{{- fail "database.pooler.parameters: the pool mode is not a value: it is transaction, which the orchestrator's connections are made for (statement mode breaks transactions, and session mode needs no pooler)" -}}
+{{- end -}}
+{{- if not (or (kindIs "string" $v) (kindIs "float64" $v) (kindIs "int64" $v) (kindIs "int" $v)) -}}
+{{- fail (printf "database.pooler.parameters.%s must be a string or a number (a YAML on, off, yes or no is a boolean: write it as a string), got %s" $k (kindOf $v)) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (hasKey $pp "max_prepared_statements") -}}
+{{- fail "database.pooler.enabled needs database.pooler.parameters.max_prepared_statements, above 0: the orchestrator's named prepared statements collide on a server connection in transaction mode without it" -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" (include "agentic.db.pooler.value" (get $pp "max_prepared_statements"))) -}}
+{{- fail (printf "database.pooler.parameters.max_prepared_statements must be a whole number above 0 (PgBouncer 1.21 or later; the chart writes 200), got %q: 0 is refused because the orchestrator's named prepared statements then collide on a server connection in transaction mode" (include "agentic.db.pooler.value" (get $pp "max_prepared_statements"))) -}}
+{{- end -}}
 {{- end -}}
 {{- /* The other databases live in that cluster, each with a role whose password is a property of the AWS secret. The coders' (the older
        `sharedDatabase.coder` and `sharedDatabase.coders`) are checked by the helper that reads them. */ -}}

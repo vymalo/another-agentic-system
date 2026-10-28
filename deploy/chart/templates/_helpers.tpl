@@ -77,6 +77,19 @@ adam-rs's chart from an existing Secret). Each of the last two has a role of its
 ExternalSecret fills: `username`, `password` and `uri`.
 */}}
 {{- define "agentic.db.host" -}}{{- printf "%s-rw.%s.svc" (include "agentic.db.orchestrator" .) .Release.Namespace -}}{{- end -}}
+
+{{/*
+The connection pooler in front of the cluster's primary (`database.pooler.enabled`): "true" or nothing; the name of the Pooler, which is also the name of the Service
+CloudNativePG makes for it (a Pooler may not have the name of a Cluster: `<fullname>-db-pooler` is not `<fullname>-db`); and its host. Only the ORCHESTRATOR is
+pointed at it: the agents' databases (`agentic.db.host`, templates/externalsecrets.yaml) stay direct.
+*/}}
+{{- define "agentic.db.pooler" -}}{{- if .Values.database.pooler.enabled -}}true{{- end -}}{{- end -}}
+{{- define "agentic.db.pooler.name" -}}{{- include "agentic.component" (dict "root" . "component" "db-pooler") -}}{{- end -}}
+{{/* A PgBouncer setting as the Pooler's string: a whole number written out (a float64 from a values file would print 1000000 as 1e+06), anything else as it is. */}}
+{{- define "agentic.db.pooler.value" -}}
+{{- if and (kindIs "float64" .) (eq (floor .) .) -}}{{- printf "%d" (int64 .) -}}{{- else -}}{{- toString . -}}{{- end -}}
+{{- end -}}
+{{- define "agentic.db.pooler.host" -}}{{- printf "%s.%s.svc" (include "agentic.db.pooler.name" .) .Release.Namespace -}}{{- end -}}
 {{- define "agentic.secret.db.agent" -}}{{- include "agentic.component" (dict "root" . "component" "db-agent") -}}{{- end -}}
 
 {{/*

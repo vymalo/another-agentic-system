@@ -59,6 +59,30 @@ spec:
               value: /etc/orchestrator/config.yaml
             - name: RUST_LOG
               value: {{ .Values.orchestrator.logLevel | quote }}
+            {{- if include "agentic.db.pooler" . }}
+            {{- /* The two URLs of the database behind a pooler, composed by the kubelet from the app Secret's own keys (`username`, `password`, `dbname`): `$(NAME)` is
+                   expanded from the variables above it in this list, and the Deployment holds the references, never the password. CloudNativePG makes the password of 64
+                   letters and digits (URL-safe), so it needs no escaping; docs/api/config.md, "Database behind a pooler", deploy/chart/README.md, "Scaling the database". */}}
+            - name: ORCH_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic.db.orchestrator" . }}-app
+                  key: username
+            - name: ORCH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic.db.orchestrator" . }}-app
+                  key: password
+            - name: ORCH_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic.db.orchestrator" . }}-app
+                  key: dbname
+            - name: ORCH_DB_POOLED_URL
+              value: {{ printf "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@%s:5432/$(ORCH_DB_NAME)" (include "agentic.db.pooler.host" .) | quote }}
+            - name: ORCH_DB_DIRECT_URL
+              value: {{ printf "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@%s:5432/$(ORCH_DB_NAME)" (include "agentic.db.host" .) | quote }}
+            {{- end }}
             {{- /* The bearer of each agent: the agents file names the variable (tokenEnv), the ExternalSecret fills the key. */}}
             {{- range (include "agentic.tokenEnvs" . | trim | splitList "\n") }}
             {{- if . }}
@@ -98,9 +122,12 @@ spec:
             - name: secrets
               mountPath: /run/secrets/orchestrator
               readOnly: true
+            {{- /* The `uri` file is the URL without a pooler; with one the URLs are the variables above and the Secret's `uri` is not mounted. */}}
+            {{- if not (include "agentic.db.pooler" .) }}
             - name: db
               mountPath: /run/secrets/db
               readOnly: true
+            {{- end }}
             {{- if not (include "agentic.artifactsS3" .) }}
             - name: artifacts
               mountPath: /var/lib/orchestrator/artifacts
@@ -151,6 +178,7 @@ spec:
               - key: artifacts-s3-secret-access-key
                 path: artifacts-s3-secret-access-key
               {{- end }}
+        {{- if not (include "agentic.db.pooler" .) }}
         - name: db
           secret:
             secretName: {{ include "agentic.db.orchestrator" . }}-app
@@ -158,6 +186,7 @@ spec:
             items:
               - key: uri
                 path: uri
+        {{- end }}
         {{- if not (include "agentic.artifactsS3" .) }}
         - name: artifacts
           persistentVolumeClaim:

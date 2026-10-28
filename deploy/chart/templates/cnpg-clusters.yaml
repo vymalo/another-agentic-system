@@ -7,6 +7,11 @@
 # ExternalSecret fills from the AWS secret) and a `Database` object that creates the database with that role as its owner (the
 # `Database` CRD is CloudNativePG 1.25 or later: README.md, "One database cluster"). A role and its database exist only with
 # the agent that needs them (`chat.enabled`, `sharedDatabase.coder.enabled`).
+{{- if .Values.database.pooler.enabled }}
+# With `database.pooler.enabled` the orchestrator does not read `uri` (see cnpg-pooler.yaml): its Deployment builds the pooler's URL and the database's own from this Secret's
+# `username`, `password` and `dbname`. The password still never passes through this chart.
+{{- end }}
+{{- /* `database.instances` and `database.resources` are the pods' count and size; the connection pooler in front of the primary, when it is on, is cnpg-pooler.yaml (README.md, "Scaling the database"). */}}
 {{- $root := dict "root" . "component" "db" }}
 {{- $cluster := include "agentic.db.orchestrator" . }}
 {{- /* The database `agent` is the chat agent's run store, and the browser agent's beside it (runs are keyed by the agent's name). */}}
@@ -23,6 +28,11 @@ spec:
   instances: {{ .Values.database.instances }}
   {{- with .Values.database.imageName }}
   imageName: {{ . | quote }}
+  {{- end }}
+  {{- /* Only when set: the default render has no `resources` key and the pods have none, as before. */}}
+  {{- with .Values.database.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   storage:
     size: {{ .Values.database.storage.size | quote }}

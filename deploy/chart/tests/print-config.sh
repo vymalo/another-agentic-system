@@ -84,6 +84,16 @@ fi
 
 # One dummy variable per `tokenEnv` of the agents file.
 envs=$(sed -n 's/^ *tokenEnv: //p' "$work/etc/agents.yaml")
+# And one per `{ env: NAME }` of the configuration itself: with the database behind a pooler (`database.pooler.enabled`) the two URLs are variables the
+# Deployment composes. The orchestrator refuses `directUrl` equal to `url`, so the two dummies are different URLs, as the real ones are.
+cfgenvs=$(sed -n 's/^.*{ env: \([A-Za-z0-9_]*\) }.*$/\1/p' "$work/etc/config.yaml")
+dummy_env() { # dummy_env NAME: the value of NAME's dummy
+  case $1 in
+    ORCH_DB_POOLED_URL) printf '%s' 'postgresql://dummy:dummy@pooler.invalid:5432/orchestrator' ;;
+    ORCH_DB_DIRECT_URL) printf '%s' 'postgresql://dummy:dummy@db-rw.invalid:5432/orchestrator' ;;
+    *) printf '%s' "$dummy" ;;
+  esac
+}
 
 case "$mode" in
   docker)
@@ -91,6 +101,7 @@ case "$mode" in
       -v "$work/etc:/etc/orchestrator:ro" -v "$work/secrets/orchestrator:/run/secrets/orchestrator:ro" -v "$work/secrets/db:/run/secrets/db:ro" \
       -e ORCH_CONFIG_FILE=/etc/orchestrator/config.yaml
     for e in $envs; do set -- "$@" -e "$e=$dummy"; done
+    for e in $cfgenvs; do set -- "$@" -e "$e=$(dummy_env "$e")"; done
     chmod -R a+rX "$work"
     if [ "$job" = job ]; then
       # shellcheck disable=SC2086 # the arguments are words of the rendered Job, split on purpose
@@ -102,6 +113,7 @@ case "$mode" in
   bin)
     sed -i "s#/run/secrets/#$work/secrets/#g" "$work/etc/config.yaml"
     for e in $envs; do export "$e=$dummy"; done
+    for e in $cfgenvs; do export "$e=$(dummy_env "$e")"; done
     if [ "$job" = job ]; then
       jobargs=$(printf '%s' "$jobargs" | sed "s#/var/lib/orchestrator/artifacts#$work/empty#")
       # shellcheck disable=SC2086 # the arguments are words of the rendered Job, split on purpose

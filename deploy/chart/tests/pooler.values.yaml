@@ -1,0 +1,15 @@
+# Layered over examples/netcup.values.yaml: the database scaled out. Three PostgreSQL pods with resources, and a connection pooler (PgBouncer, transaction mode)
+# of two pods with resources and one setting changed, in front of the primary for the orchestrator (README.md, "Scaling the database").
+database:
+  instances: 3
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { memory: 2Gi }
+  pooler:
+    enabled: true
+    instances: 2
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 256Mi }
+    parameters:
+      default_pool_size: "30"
