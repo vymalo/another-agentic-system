@@ -1,7 +1,7 @@
 # CRD schemas for kubeconform
 
-The chart renders six custom resources: a CloudNativePG `Cluster`, its `Database` objects, an `ExternalSecret` and, with `backup.enabled`, a
-`ScheduledBackup` and the barman-cloud plugin's `ObjectStore`, and, with `ingress.rateLimit.enabled`, a Traefik `Middleware`. The `Deploy` workflow validates them (and `examples/restore-cluster.yaml` and `examples/restore-cutover.yaml`) with
+The chart renders seven custom resources: a CloudNativePG `Cluster`, its `Database` objects, an `ExternalSecret` and, with `backup.enabled`, a
+`ScheduledBackup` and the barman-cloud plugin's `ObjectStore`, with `database.pooler.enabled`, a CloudNativePG `Pooler`, and, with `ingress.rateLimit.enabled`, a Traefik `Middleware`. The `Deploy` workflow validates them (and `examples/restore-cluster.yaml` and `examples/restore-cutover.yaml`) with
 kubeconform against the JSON schemas in this directory.
 
 The `Cluster` and the `ExternalSecret` files are byte-for-byte copies of the ones in [vymalo/another-adam-rs](https://github.com/vymalo/another-adam-rs)
@@ -18,6 +18,7 @@ later `logLevel` and `additionalContainerArgs`), so the chart uses only fields t
 |---|---|
 | `postgresql.cnpg.io/cluster_v1.json` | `postgresql.cnpg.io/v1` `Cluster` |
 | `postgresql.cnpg.io/database_v1.json` | `postgresql.cnpg.io/v1` `Database` (CloudNativePG 1.25 or later) |
+| `postgresql.cnpg.io/pooler_v1.json` | `postgresql.cnpg.io/v1` `Pooler` (with `database.pooler.enabled`: PgBouncer in front of the primary) |
 | `postgresql.cnpg.io/scheduledbackup_v1.json` | `postgresql.cnpg.io/v1` `ScheduledBackup` (with `backup.enabled`) |
 | `barmancloud.cnpg.io/objectstore_v1.json` | `barmancloud.cnpg.io/v1` `ObjectStore` of the barman-cloud plugin (with `backup.enabled`) |
 | `external-secrets.io/externalsecret_v1.json` | `external-secrets.io/v1` `ExternalSecret` |
@@ -30,13 +31,17 @@ The `Middleware` file is fetched from the same catalog commit (2026-10-28, `curl
 HTTP 200). That commit's schema describes Traefik v3.6's `Middleware` (its `rateLimit` has `average`, `burst`, `period`, `sourceCriterion` and `redis`), so the chart uses
 only fields it knows and `-strict` would reject a newer one. The Traefik that `tests/ratelimit-e2e` runs is newer (v3.7.16) and accepts the same fields.
 
-To update, pick a newer catalog commit and fetch the same six paths. If the chart gains a custom resource (a cert-manager
+The `Pooler` file is fetched from the same catalog commit too (2026-10-28, `curl` from `raw.githubusercontent.com/datreeio/CRDs-catalog/<commit>/postgresql.cnpg.io/pooler_v1.json`,
+HTTP 200). Its schema has `spec.cluster`, `type`, `instances`, `template`, `pgbouncer.poolMode` (`session` or `transaction`) and `pgbouncer.parameters`, which is all the chart
+writes; `-strict` rejects any field the catalog's copy lacks, such as the `imageCatalogRef` of a later CloudNativePG (the chart does not set it).
+
+To update, pick a newer catalog commit and fetch the same seven paths. If the chart gains a custom resource (a cert-manager
 `Certificate`, say; the Ingress asks for its certificate through an annotation, so none is rendered today), add its schema
 here, because kubeconform fails on a kind that has no schema.
 
 ```sh
 C=<catalog commit>
-for f in postgresql.cnpg.io/cluster_v1.json postgresql.cnpg.io/database_v1.json postgresql.cnpg.io/scheduledbackup_v1.json \
+for f in postgresql.cnpg.io/cluster_v1.json postgresql.cnpg.io/database_v1.json postgresql.cnpg.io/pooler_v1.json postgresql.cnpg.io/scheduledbackup_v1.json \
          barmancloud.cnpg.io/objectstore_v1.json external-secrets.io/externalsecret_v1.json traefik.io/middleware_v1alpha1.json; do
   curl -fsSL -o "deploy/chart/tests/schemas/$f" "https://raw.githubusercontent.com/datreeio/CRDs-catalog/$C/$f"
 done

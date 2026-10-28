@@ -144,7 +144,9 @@ commented; the ones that matter:
 | `externalSecrets.properties.oauth2RedisPassword` | `oauth2_redis_password` | [the new property](#the-aws-secret); read only with `sessionStore: redis` |
 | `ingress.clusterIssuer`, `className` | `cert-cloudflare`, `traefik` | the certificate's issuer |
 | `ingress.rateLimit.enabled`, `.average`, `.period`, `.burst`, `.sourceDepth` | `false`, `20`, `1s`, `50`, `0` | [a limit per client address at the Ingress](#a-limit-per-client-at-the-edge): a Traefik `RateLimit`, **off** because the limit is only as good as the address it counts. `average` per `period` (whole numbers from 1; `ms`, `s`, `m`, `h`), a bucket of `burst`, the client being the peer (`sourceDepth: 0`) or the N-th entry from the right of `X-Forwarded-For` (1 to 5). A wrong number is refused, on or off; on without `ingress.enabled` is refused. The deployer's own `router.middlewares` annotation is kept after ours |
-| `database.*` | 1 instance, `longhorn`, 10Gi | the one CNPG Cluster ([one cluster, three databases](#one-database-cluster)); the chat agent has no `chat.database` any more |
+| `database.name`, `.owner`, `.storage.*`, `.imageName` | `orchestrator`, `orchestrator`, `longhorn` 10Gi, `""` | the one CNPG Cluster ([one cluster, three databases](#one-database-cluster)); the chat agent has no `chat.database` any more |
+| `database.instances`, `database.resources` | `1`, `{}` | [the size of the cluster](#scaling-the-database-issue-290): a whole number from 1 to 20 (3 is a primary and two replicas), and the Cluster's `resources` (`requests`, `limits`, `claims`; a starting point is `500m` and `1Gi` with a `2Gi` memory limit, **not a measurement**). Empty: nothing is rendered |
+| `database.pooler.enabled`, `.instances`, `.resources`, `.parameters` | `false`, `2`, `{}`, `max_prepared_statements: "200"`, `max_client_conn: "1000"`, `default_pool_size: "20"` | [a CloudNativePG `Pooler`](#scaling-the-database-issue-290) (PgBouncer, **transaction mode**, which is not a value) in front of the primary for the orchestrator's `database.url`, with `database.directUrl` on the cluster itself. **Off**, and then nothing of it is rendered. **Turn it on only once `orchestrator.image.tag` is at or after the commit that introduced `database.directUrl`** ([the pinned image](#the-pinned-orchestrator-image)). Refused: `max_prepared_statements` 0, removed or not a whole number, `pool_mode` among the parameters, a count that is not a whole number from 1 to 20, a boolean parameter, a misspelt `resources` key |
 | `sharedDatabase.coders` | `[]` | one entry `{ name, secretName, passwordProperty }` per coder: a role, a `Database` and the Secret that coder's chart reads (key `uri`), on the one cluster ([several coders](#several-coders-one-per-github-owner)). Refused: a name that is not lower-case letters and digits, `agent`, `postgres`, `template0`, `template1`, the orchestrator's database or owner, or a name, Secret or property used twice; a missing `passwordProperty` (except for the name `coder`) |
 | `sharedDatabase.coder.enabled`, `.secretName` | `false`, `coder-db-uri` | **the older form, one coder**: the same as one entry named `coder` (the render is unchanged: [tests/golden](tests/golden)); off: no coder role, database or Secret, and no `coder_db_password` is read. Both this and `coders`: refused |
 | `externalSecrets.properties.agentDbPassword`, `coderDbPassword`, `sharingSecret` | `agent_db_password`, `coder_db_password`, `sharing_secret` | [the new properties](#the-aws-secret); each is read only by what is turned on |
@@ -238,6 +240,87 @@ Cluster); until then `sharedDatabase.coder.enabled: true` only prepares the role
 
 Creating a role and a database from objects is idempotent: a `Database` that already exists in Postgres with the same name is adopted by
 CNPG's reconcile (*unverified*; here the databases are new). Removing a `Database` object leaves the database (`retain`).
+
+## Scaling the database (issue #290)
+
+For more than one orchestrator, or a database that survives the loss of a node: the cluster gets more instances, and a connection pooler carries the orchestrator's
+requests so that every replica of the orchestrator keeps a small pool. Both are values, **off by default** (`database.instances: 1`, `database.pooler.enabled: false`),
+and then nothing of them is rendered (`tests/render-check.sh` asserts the absence, and the database documents are `tests/golden`'s byte for byte). The orchestrator's side, and the reasoning about which of its
+connections can go through a pooler, is [`docs/api/config.md`, "Database behind a pooler"](../../docs/api/config.md#database-behind-a-pooler); this is the chart's.
+
+| Value | What it does |
+|---|---|
+| `database.instances` | the Cluster's `spec.instances`. `3` is one primary and two replicas streaming from it, each on a volume of `storage.size`; CloudNativePG promotes a replica when the primary is lost, and by default it prefers (does not require) a node of its own for each (`enablePodAntiAffinity`, `preferred`, CloudNativePG's documentation, "Scheduling"). On one node the replicas are copies and no protection against losing it |
+| `database.resources` | the Cluster's `spec.resources` for each PostgreSQL pod. Empty: not rendered |
+| `database.pooler.enabled` | renders `templates/cnpg-pooler.yaml`, a `Pooler` of type `rw` named `<fullname>-db-pooler` (it may not be named like the Cluster), and points the orchestrator at it |
+| `database.pooler.instances` | the PgBouncer pods; they keep no state, so `2` keeps the database reachable while one is replaced |
+| `database.pooler.resources` | the resources of the `pgbouncer` container of those pods. Empty: not rendered. A starting point, **not a measurement**: `100m` and `128Mi` requested, a `256Mi` memory limit |
+| `database.pooler.parameters` | PgBouncer settings, written as strings; merged key by key over the chart's three, so a value you set replaces only its own and `null` drops one (not `max_prepared_statements`: see below). CloudNativePG refuses a name it does not list |
+
+**The pool mode is not a value.** The chart writes `transaction`. Session mode needs no pooler's help and statement mode breaks transactions, and the orchestrator's
+connections are made for transaction mode (`SET LOCAL`, transaction-scoped advisory locks). `max_prepared_statements` must be above 0 (PgBouncer 1.21 or later): the
+orchestrator's driver names its prepared statements, and without the setting two clients collide on a server connection (`prepared statement "sqlx_s_1" already exists`,
+SQLSTATE 42P05). The render is refused with it at 0, removed or not a number, and with `pool_mode` among the parameters.
+
+`default_pool_size` is per pooler pod and per user and database, and `max_client_conn` per pod: the orchestrator's most is about `pooler.instances` x `default_pool_size`
+server connections, and with the migrations' and the listeners' (one each per orchestrator process), the agents' and the operator's own it must stay well below the
+database's `max_connections` (PostgreSQL's default is 100; CloudNativePG does not set one). 2 pods x 20 is 40. Nothing here measured it.
+
+### What it costs
+
+With `instances: 3` and the pooler on with two pods, the starting resources above come to five pods where the default render has one, with
+**1.7 CPU and 3.25Gi requested** (3 x 500m + 2 x 100m, 3 x 1Gi + 2 x 128Mi) and a memory limit of 6.5Gi, and **two more volumes of `storage.size`** (30Gi in all with the default 10Gi, on `longhorn`). The CloudNativePG operator is
+not the chart's. These are the numbers of a starting point; a database that holds the chat of a few people is not known to need them, and a smaller one is a value.
+
+### What stays on the database itself, and the agents
+
+The orchestrator's `database.url` is the pooler's Service and its `database.directUrl` is the cluster's `-rw` Service. Direct: the migrations at boot (sqlx's migrator holds a
+**session** advisory lock across its statements) and the `LISTEN` connection of the wakeup (`LISTEN` is session state), and the commands that open the database. Everything else goes through
+the pooler: the request pool, the dispatcher, the inbox, the purge and sweep workers and the `NOTIFY`s. Why, and what was observed against PgBouncer 1.22.0, is in
+[`docs/api/config.md`](../../docs/api/config.md#database-behind-a-pooler). **The agents' own databases (the chat's, the browser's, each coder's) are never pooled**: their URIs
+are on the `-rw` Service as before, with the pooler on or off, and this change did not look at whether adam's run store could use a pooler. No NetworkPolicy changes: the chart's policies
+do not restrict the databases ([Not in v0](#not-in-v0)), so the orchestrator reaches the pooler and the pooler reaches the primary.
+
+### How the two URLs are built, and why that is safe
+
+The orchestrator takes a URL as one secret (`{ env }` or `{ file }`), and a pooler is another host. The `uri` key of the app Secret names the cluster's own host, so with the pooler on
+the Deployment does not mount it. It builds the two URLs instead, from the same Secret's `username`, `password` and `dbname`:
+
+```yaml
+- { name: ORCH_DB_USER,     valueFrom: { secretKeyRef: { name: another-agentic-db-app, key: username } } }
+- { name: ORCH_DB_PASSWORD, valueFrom: { secretKeyRef: { name: another-agentic-db-app, key: password } } }
+- { name: ORCH_DB_NAME,     valueFrom: { secretKeyRef: { name: another-agentic-db-app, key: dbname } } }
+- name: ORCH_DB_POOLED_URL      # database.url:       { env: ORCH_DB_POOLED_URL }
+  value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@another-agentic-db-pooler.<namespace>.svc:5432/$(ORCH_DB_NAME)"
+- name: ORCH_DB_DIRECT_URL      # database.directUrl: { env: ORCH_DB_DIRECT_URL }
+  value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@another-agentic-db-rw.<namespace>.svc:5432/$(ORCH_DB_NAME)"
+```
+
+* **No secret is in a ConfigMap or in the Deployment.** The ConfigMap holds two references (`url: { env: ... }`), and the Deployment holds `$(...)` references, which the kubelet fills
+  in when it starts the container. `$(NAME)` is expanded from the variables declared above it, including those that come from a `secretKeyRef`, so the three Secret keys come first
+  (*verified 2026-10-28* in the kubelet's `makeEnvironmentVariables`, Kubernetes v1.35.0; a reference to an undefined variable stays as the text `$(NAME)` and would fail to log in, which
+  `pooler-e2e` would show). The password is then in the container's environment, as the agents' bearers already are, and in no mounted file.
+* **The password needs no escaping.** CloudNativePG generates it with `password.Generate(64, 10, 0, false, true)`: 64 characters, no symbols, so only `a-z`, `A-Z` and `0-9`
+  (*verified 2026-10-28* in CloudNativePG v1.30.1, `internal/controller/cluster_create.go`, and go-password v0.4.0). A URL carries those as they are, where the `uri` key
+  escapes (`url.UserPassword`). A password you put in the app Secret yourself (the chart does not offer it) must be as plain, or the URL breaks; the render cannot see it. The e2e asserts that the generated one is.
+* **The Secret keys** are `username`, `user`, `password`, `dbname`, `host`, `port`, `pgpass`, `uri`, `jdbc-uri`, `fqdn-uri` and `fqdn-jdbc-uri` (`pkg/specs/secrets.go`, v1.30.1); none is for a pooler, and `host` is always the `-rw` Service.
+* The pooler authenticates the orchestrator's role by the role's own password through the `auth_query` CloudNativePG sets up for it, so no second credential exists.
+
+An orchestrator that took the host apart from the credential (a `database.host`, say) would need none of this; that is a change to the orchestrator, not made here.
+
+### Turn it on
+
+1. `orchestrator.image.tag` at or after the commit that introduced `database.directUrl` (an older image refuses the key, exit 78). `deploy.yml` reads the pooler render through the pinned image once it is,
+   and says so until then; `pooler-e2e` refuses to start before.
+2. The CloudNativePG operator must know the `Pooler` kind (it is older than the `Database` kind, so any release this chart already needs has it: *unverified* below 1.30.1, which is the end-to-end's and the vendored schema's) and its default PgBouncer image must be 1.21 or later (1.25.2 in 1.30.1; *verified 2026-10-28*). A pinned `spec.pgbouncer.image` is not a value here: the operator's own choice is the one CloudNativePG tests.
+3. `database.instances: 3` first, if you want replicas, and let the cluster settle (`kubectl get cluster`): CloudNativePG adds two instances and two volumes and does not restart the primary (*unverified* on netcup).
+4. Then `database.pooler.enabled: true`. In one sync the Pooler, the new ConfigMap and the Deployment arrive together; the orchestrator may start before the Pooler's Service has an endpoint, fail to connect, and
+   restart until it does (*unverified* on netcup). Turning it off again is the same change the other way: the orchestrator reads `uri` as before.
+
+### The pooler's end-to-end on kind
+
+[`tests/pooler-e2e`](tests/pooler-e2e/README.md) (`pooler-e2e.yml`) applies the chart's own objects to a kind cluster: three instances with the resources above and a pooler of two pods, then the orchestrator
+image the chart pins, with the chart's configuration, a mock issuer and a mock agent. It asserts what the database and the pooler say about who connected. **It had not run when this was written.**
 
 ## Backups
 
@@ -1698,4 +1781,5 @@ across preview releases with data on the volume. With `rustfs.ingress.enabled`: 
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
 With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `backup.enabled`: everything on netcup ([the list](#facts-and-where-they-come-from)): the plugin, a backup, the WAL, a restore; and, anywhere, the [kind end-to-end](#the-end-to-end-on-kind) until CI has run it once.
+With `database.instances` above 1 and `database.pooler.enabled`: everything on netcup ([the list](#turn-it-on)), the resource sizes (starting points), PgBouncer 1.25.2 with the orchestrator (the orchestrator's CI ran 1.26.1 and 1.22.0), a failover under load, and the [kind end-to-end](#the-poolers-end-to-end-on-kind) until CI has run it once.
 With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

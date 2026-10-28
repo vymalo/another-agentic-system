@@ -207,8 +207,12 @@ Related: [sys#151](https://github.com/vymalo/another-agentic-system/issues/151) 
 
 **Done already.** Continuous backups of the orchestrator's database to S3 are built and passed a kind end-to-end in CI.
 They were not run on the live deployment, and [sys#151](https://github.com/vymalo/another-agentic-system/issues/151)
-is still open. Today each database is one instance with no pooler, nothing is pruned, and nothing has been
-load-tested.
+is still open. The orchestrator can use a pooler (`database.directUrl`, [sys#309](https://github.com/vymalo/another-agentic-system/pull/309)),
+and the chart can run its database as three instances with resources and put a CloudNativePG pooler in front of it
+([sys#290](https://github.com/vymalo/another-agentic-system/issues/290), `database.instances`, `database.resources` and
+`database.pooler`, all off by default). That is proven on renders and by a kind end-to-end that CI had not run when this was
+written; it has not run on the live deployment. The coder's database has not changed: one instance with no pooler. Nothing
+is pruned, and nothing has been load-tested.
 
 | Ticket | Repo | Size | Labels | Who and when |
 |---|---|---|---|---|

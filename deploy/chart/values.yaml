@@ -680,6 +680,8 @@ ingress:
 # The deployment's one Postgres (CloudNativePG): the orchestrator's database, and beside it the databases `agent` (the chat
 # agent's runs) and, with `sharedDatabase.coders` (or `sharedDatabase.coder`), one per coder, each owned by a role of its own (README.md, "One database cluster").
 database:
+  # How many PostgreSQL pods the cluster runs: 1 is a single primary (no failover), 3 is a primary and two replicas, each with its own volume of
+  # `storage.size`, and CloudNativePG promotes a replica when the primary is lost (README.md, "Scaling the database"). A whole number, at least 1.
   instances: 1
   name: orchestrator
   owner: orchestrator
@@ -688,6 +690,44 @@ database:
     storageClass: longhorn
   # Empty: the operator's default PostgreSQL image.
   imageName: ""
+  # The resources of each PostgreSQL pod (the Cluster's `spec.resources`, a Kubernetes `requests` and `limits`). Empty: nothing is rendered and the
+  # pod has none, which is what the cluster always had. A STARTING POINT for a few replicas of the orchestrator, NOT a measurement (nothing here has
+  # been run under load): a request of 500m CPU and 1Gi of memory and a memory limit of 2Gi, as
+  #   resources:
+  #     requests: { cpu: 500m, memory: 1Gi }
+  #     limits: { memory: 2Gi }
+  # A pod needs a request to be scheduled with a guarantee, and a memory limit so that one query cannot take the node; no CPU limit, so that a busy
+  # primary is not throttled.
+  resources: {}
+  # A connection pooler in front of the primary: a CloudNativePG `Pooler` (PgBouncer), the orchestrator's `database.url`, with `database.directUrl`
+  # kept on the database itself for what a transaction-mode pooler cannot carry (README.md, "Scaling the database"; docs/api/config.md, "Database
+  # behind a pooler"). OFF: nothing of it is rendered, and the orchestrator's connection is the one it always had. The agents' own databases (the chat's,
+  # the coders') are never pooled.
+  pooler:
+    enabled: false
+    # How many PgBouncer pods. They hold no state, so 2 keeps the database reachable while one is replaced. A whole number, at least 1.
+    instances: 2
+    # The resources of each PgBouncer pod (the `pgbouncer` container of the Pooler's pod template): a starting point, not a measurement, of
+    #   resources:
+    #     requests: { cpu: 100m, memory: 128Mi }
+    #     limits: { memory: 256Mi }
+    # Empty: nothing is rendered.
+    resources: {}
+    # PgBouncer settings, written to the Pooler as strings (`spec.pgbouncer.parameters`; CloudNativePG refuses a name it does not list). The pool
+    # MODE is not a value: it is `transaction` and nothing else (the orchestrator's connections are made for it, and statement mode breaks
+    # transactions). Merged with these, key by key, so a value you set replaces only its own key:
+    #   * max_prepared_statements: above 0, PgBouncer 1.21 or later (the Pooler's default image is 1.25). It is what lets PgBouncer keep the orchestrator's
+    #     named prepared statements across server connections; with 0 the first statements of two clients collide on a server connection
+    #     (`prepared statement "sqlx_s_1" already exists`). The render is REFUSED with 0 or anything that is not a whole number above 0.
+    #   * max_client_conn: the client connections ONE PgBouncer pod accepts (PgBouncer's own default is 100). The orchestrator keeps up to
+    #     `database.maxConnections` (10) per process, so 1000 leaves room for many replicas and the agents' bursts.
+    #   * default_pool_size: the server connections ONE pod opens to the database per user and database (PgBouncer's own default is 20). The orchestrator's
+    #     most is `instances` x this, and it must stay well below the database's `max_connections` (PostgreSQL's own default is 100 and CloudNativePG
+    #     does not set one; the migrations', the listeners', the agents' and the operator's own connections count too): 2 pods x 20 is 40 of 100.
+    parameters:
+      max_prepared_statements: "200"
+      max_client_conn: "1000"
+      default_pool_size: "20"
   # Backups of this cluster are `backup` below (OFF by default; deploy/chart/README.md, "Backups").
 
 # Continuous backups of the database cluster above to an S3 bucket, by the barman-cloud plugin of CloudNativePG (issue #151; ADR 0041,

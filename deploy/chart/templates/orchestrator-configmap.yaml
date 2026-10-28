@@ -43,7 +43,14 @@ data:
     log:
       format: json
     database:
+      {{- if include "agentic.db.pooler" . }}
+      {{- /* With the pooler: the request pool goes through PgBouncer, and the migrations and the LISTEN connection to the database itself (docs/api/config.md, "Database behind a pooler"). Both are the
+             variables of the Deployment, which builds each URL from the cluster's app Secret: a URL holds the password, so it is a reference here, never a value. */}}
+      url: { env: ORCH_DB_POOLED_URL }
+      directUrl: { env: ORCH_DB_DIRECT_URL }
+      {{- else }}
       url: { file: /run/secrets/db/uri }
+      {{- end }}
     agents:
       file: agents.yaml
     {{- if include "agentic.hasModel" . }}

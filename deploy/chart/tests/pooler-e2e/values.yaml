@@ -1,0 +1,35 @@
+# Layered over the chart's own values.yaml by pooler-e2e.sh (in this directory), NOT over examples/netcup.values.yaml: the database scaled out, the
+# documented way (README.md, "Scaling the database"), and the least else that lets the orchestrator start. Only the database objects, the orchestrator's
+# ConfigMap, Deployment, Service and claim are rendered and applied (`helm template -s ...`), so everything else here is what the chart needs to render at all.
+#
+#   * three PostgreSQL pods with the documented starting resources and a pooler of two PgBouncer pods in transaction mode: the shape the chart documents;
+#   * `host` and `auth.issuer` are placeholders: the issuer must be https for the chart, and pooler-e2e.sh puts the in-cluster mock issuer in its place in the
+#     rendered ConfigMap (that and `server.environment`, development, are the only two lines it changes; it asserts the diff is those two);
+#   * one agent, a WireMock A2A stand-in the script runs under the name the dev stack gives it (`mock-agent`), with no gate;
+#   * no chat agent and no model, ExternalSecrets off: the orchestrator's Secret `another-agentic-orchestrator` is the script's own (random values);
+#   * the artifacts stay on the chart's volume, on a class of the chart's default name (`longhorn`), which the script gives the kind cluster.
+host: pooler-e2e.example.org
+auth:
+  issuer: https://auth.pooler-e2e.example.org/realms/e2e
+chat:
+  enabled: false
+agents:
+  - id: mock-coder
+    name: Mock coder
+    cardUrl: "http://mock-agent:8080/.well-known/agent-card.json"
+    tokenEnv: CODER_A2A_TOKEN
+externalSecrets:
+  enabled: false
+networkPolicy:
+  enabled: false
+database:
+  instances: 3
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { memory: 2Gi }
+  pooler:
+    enabled: true
+    instances: 2
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 256Mi }
