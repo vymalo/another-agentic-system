@@ -1,6 +1,10 @@
 //! Test isolation, as `orch-store-postgres`' tests do it: every store gets its own schema
 //! (`search_path`), so the tests run in parallel against one database. Set `ORCH_TEST_DATABASE_URL`
 //! to run them; without it they skip (the same variable, so the one Postgres of CI serves both).
+//!
+//! Behind a transaction-mode pooler (issue 290) a database of its own replaces the schema, as in
+//! `orch-store-postgres`' tests: set `ORCH_TEST_DIRECT_DATABASE_URL` to the database itself and
+//! `ORCH_TEST_DATABASE_URL` to the pooler's address of it.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::str::FromStr;
@@ -13,11 +17,32 @@ use sqlx::{Connection, PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 const ENV: &str = "ORCH_TEST_DATABASE_URL";
+const DIRECT_ENV: &str = "ORCH_TEST_DIRECT_DATABASE_URL";
 const SCHEMA_PREFIX: &str = "tsp_";
 const STALE_AFTER_SECS: u64 = 3600;
+/// A database is bigger than a schema, so it is swept sooner (and not when its test ends: a helper
+/// may return the store and let the `TestDb` go while the test goes on).
+const STALE_DATABASE_AFTER_SECS: u64 = 900;
 
 pub fn database_url() -> Option<String> {
     std::env::var(ENV).ok().filter(|v| !v.is_empty())
+}
+
+/// The database itself, when the main variable is a pooler's address of it.
+pub fn direct_database_url() -> Option<String> {
+    std::env::var(DIRECT_ENV).ok().filter(|v| !v.is_empty())
+}
+
+/// `url` with its database replaced: the path between the authority and the query.
+fn with_database(url: &str, database: &str) -> String {
+    let authority_start = url.find("://").map_or(0, |i| i + 3);
+    let path_start = url[authority_start..]
+        .find('/')
+        .map_or(url.len(), |i| authority_start + i);
+    let query_start = url[path_start..]
+        .find('?')
+        .map_or(url.len(), |i| path_start + i);
+    format!("{}/{}{}", &url[..path_start], database, &url[query_start..])
 }
 
 fn now_secs() -> u64 {
@@ -56,13 +81,19 @@ pub fn ring_k1() -> Keyring {
 /// is down.
 const STORE_CONNECTIONS: u32 = 8;
 
-/// An isolated schema: created, and all connections of the returned options use it.
+/// An isolated schema (or, behind a pooler, an isolated database): created, and all connections of
+/// the returned options use it.
 #[derive(Clone)]
 pub struct TestDb {
+    /// Where queries go: the pooler's address when `ORCH_TEST_DIRECT_DATABASE_URL` is set.
     pub url: String,
+    /// The same database over a connection that is not pooled: what a migration takes.
+    pub direct_url: String,
     pub schema: String,
     /// Random, one per test: in the owners this test makes (see [`owner`](Self::owner)).
     tag: String,
+    /// Whether the isolation is a database of its own, not a schema.
+    dedicated: bool,
 }
 
 impl TestDb {
@@ -71,6 +102,9 @@ impl TestDb {
             eprintln!("skipped: {ENV} is not set");
             return None;
         };
+        if let Some(direct) = direct_database_url() {
+            return Some(Self::in_database(&url, direct).await);
+        }
         let schema = format!("{SCHEMA_PREFIX}{}_{}", now_secs(), Uuid::now_v7().simple());
         let mut conn = PgConnection::connect(&url)
             .await
@@ -81,10 +115,50 @@ impl TestDb {
             .expect("create schema");
         drop_stale_schemas(&mut conn).await;
         Some(Self {
+            direct_url: url.clone(),
             url,
             schema,
             tag: Uuid::now_v7().simple().to_string(),
+            dedicated: false,
         })
+    }
+
+    /// A database of its own, made over the direct URL.
+    async fn in_database(url: &str, direct: String) -> Self {
+        let name = format!("{SCHEMA_PREFIX}{}_{}", now_secs(), Uuid::now_v7().simple());
+        let mut conn = PgConnection::connect(&direct)
+            .await
+            .expect("connect to test database");
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
+            .execute(&mut conn)
+            .await
+            .expect("create database");
+        drop_stale_databases(&mut conn).await;
+        Self {
+            url: with_database(url, &name),
+            direct_url: with_database(&direct, &name),
+            schema: "public".to_owned(),
+            tag: Uuid::now_v7().simple().to_string(),
+            dedicated: true,
+        }
+    }
+
+    /// `direct_url` for a process or a call that has no options of ours: with the `search_path` of
+    /// the schema when the isolation is a schema.
+    pub fn pinned_direct_url(&self) -> String {
+        if self.dedicated {
+            self.direct_url.clone()
+        } else {
+            let sep = if self.direct_url.contains('?') {
+                '&'
+            } else {
+                '?'
+            };
+            format!(
+                "{}{sep}options=-c%20search_path%3D{}",
+                self.direct_url, self.schema
+            )
+        }
     }
 
     /// A person that only this test has. The advisory lock of a key is a hash of its owner and
@@ -96,9 +170,14 @@ impl TestDb {
     }
 
     pub fn options(&self) -> PgConnectOptions {
-        PgConnectOptions::from_str(&self.url)
+        let options = PgConnectOptions::from_str(&self.url)
             .expect("valid ORCH_TEST_DATABASE_URL")
-            .options([("search_path", self.schema.as_str())])
+            .extra_float_digits(None);
+        if self.dedicated {
+            options
+        } else {
+            options.options([("search_path", self.schema.as_str())])
+        }
     }
 
     /// A pool confined to this schema.
@@ -108,14 +187,34 @@ impl TestDb {
 
     /// A pool confined to this schema whose sessions have the given settings from the start (what
     /// a role or a database setting does: `ALTER ROLE ... SET`).
+    ///
+    /// A pooler cannot carry a startup option, so with a database of its own the settings are the
+    /// database's (`ALTER DATABASE ... SET`, over the direct URL) and reach the sessions opened after
+    /// this call.
     pub async fn pool_with(&self, app: &str, max: u32, settings: &[(&str, &str)]) -> PgPool {
+        let options = if self.dedicated && !settings.is_empty() {
+            let mut conn = PgConnection::connect(&self.direct_url)
+                .await
+                .expect("connect directly");
+            let name: String = sqlx::query_scalar("SELECT current_database()")
+                .fetch_one(&mut conn)
+                .await
+                .expect("database name");
+            for (key, value) in settings {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "ALTER DATABASE \"{name}\" SET {key} = '{value}'"
+                )))
+                .execute(&mut conn)
+                .await
+                .expect("alter database");
+            }
+            self.options()
+        } else {
+            self.options().options(settings.iter().copied())
+        };
         PgPoolOptions::new()
             .max_connections(max)
-            .connect_with(
-                self.options()
-                    .options(settings.iter().copied())
-                    .application_name(app),
-            )
+            .connect_with(options.application_name(app))
             .await
             .expect("connect pool")
     }
@@ -126,7 +225,9 @@ impl TestDb {
             self.pool("orch-secrets-test", STORE_CONNECTIONS).await,
             keys,
         );
-        store.migrate().await.expect("migrate");
+        PgSecretStore::migrate_direct(&self.pinned_direct_url())
+            .await
+            .expect("migrate");
         store
     }
 
@@ -200,6 +301,28 @@ pub async fn wait_for_waiters(pool: &PgPool, key: i64, at_least: i64) {
 /// [`wait_for_waiters`] for one.
 pub async fn wait_for_a_waiter(pool: &PgPool, key: i64) {
     wait_for_waiters(pool, key, 1).await;
+}
+
+/// Best effort: databases of runs that crashed before nobody cleaned up.
+async fn drop_stale_databases(conn: &mut PgConnection) {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT datname FROM pg_database WHERE datname LIKE 'tsp\\_%'")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap_or_default();
+    for (name,) in rows {
+        let created = name
+            .strip_prefix(SCHEMA_PREFIX)
+            .and_then(|rest| rest.split('_').next())
+            .and_then(|secs| secs.parse::<u64>().ok());
+        if created.is_some_and(|c| now_secs().saturating_sub(c) > STALE_DATABASE_AFTER_SECS) {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"
+            )))
+            .execute(&mut *conn)
+            .await;
+        }
+    }
 }
 
 /// Best effort: schemas of runs that crashed before nobody cleaned up.

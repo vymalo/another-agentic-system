@@ -6,7 +6,7 @@ use std::time::Duration;
 use orch_core::UserId;
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore, SecretVersion};
 use sha2::{Digest as _, Sha256};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::envelope::{Envelope, NONCE_LEN, OpenError, SealError};
@@ -76,7 +76,7 @@ impl PgSecretStore {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections.max(1))
             .acquire_timeout(ACQUIRE_TIMEOUT)
-            .connect(url)
+            .connect_with(parse_url(url)?)
             .await
             .map_err(db_err)?;
         Ok(Self::from_pool(pool, keys))
@@ -102,9 +102,33 @@ impl PgSecretStore {
     /// [`SecretError::Unavailable`] if the database cannot be reached or rejects a statement;
     /// [`SecretError::Corrupt`] if the history does not match the migrations of this build.
     pub async fn migrate(&self) -> Result<(), SecretError> {
-        let mut migrator = sqlx::migrate!("./migrations");
-        migrator.dangerous_set_table_name(MIGRATIONS_TABLE);
-        migrator.run(&self.pool).await.map_err(migrate_err)
+        migrator().run(&self.pool).await.map_err(migrate_err)
+    }
+
+    /// [`migrate`](Self::migrate) on one connection of its own to `url` (a pool of one, closed when it is done).
+    ///
+    /// For a deployment whose pool goes through a transaction-mode pooler (PgBouncer): the migrator's
+    /// advisory lock is a session lock held across statements, which such a pooler cannot keep.
+    /// `url` is the database itself. Same effect and errors as [`migrate`](Self::migrate); it touches
+    /// no pool.
+    ///
+    /// # Errors
+    /// [`SecretError::Unavailable`] if the database cannot be reached or rejects a statement, or `url`
+    /// is not a connection string (the error never holds the text, it may carry a password);
+    /// [`SecretError::Corrupt`] if the history does not match the migrations of this build.
+    pub async fn migrate_direct(url: &str) -> Result<(), SecretError> {
+        // One connection, taken by the migrator for the whole run: its lock and its statements share a
+        // session. A pool of one rather than a bare connection, which a spawned task cannot lend
+        // (sqlx's "implementation of `Acquire` is not general enough").
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(parse_url(url)?)
+            .await
+            .map_err(db_err)?;
+        let outcome = migrator().run(&pool).await.map_err(migrate_err);
+        // The lock goes with the session whether or not this succeeded.
+        pool.close().await;
+        outcome
     }
 
     /// Closes the pool: every later call fails as [`SecretError::Unavailable`], as a database that
@@ -404,6 +428,21 @@ fn transient(err: &sqlx::Error) -> bool {
 /// time shows as a store that is down, and the log has the cause. A driver error holds no
 /// parameter of the statement, so no secret and no ciphertext. [`is_outage`] reads the source back
 /// for the caller that must tell an outage from a refusal.
+fn migrator() -> sqlx::migrate::Migrator {
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.dangerous_set_table_name(MIGRATIONS_TABLE);
+    migrator
+}
+
+/// A connection string as options, for every connection this crate opens by itself. The error never
+/// holds the text: it may carry a password. `extra_float_digits` is not sent: PgBouncer refuses the
+/// startup parameter sqlx sends by default (see `orch-store-postgres`, `parse_url`).
+fn parse_url(url: &str) -> Result<PgConnectOptions, SecretError> {
+    url.parse::<PgConnectOptions>()
+        .map(|options| options.extra_float_digits(None))
+        .map_err(|_| SecretError::unavailable("the connection string cannot be parsed"))
+}
+
 pub(crate) fn db_err(err: sqlx::Error) -> SecretError {
     if matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some(LOCK_NOT_AVAILABLE))
     {
