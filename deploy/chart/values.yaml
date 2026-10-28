@@ -652,6 +652,30 @@ ingress:
   # Empty: <fullname>-tls.
   tlsSecretName: ""
   annotations: {}
+  # A limit on requests per client address, at the Ingress: a Traefik `RateLimit` middleware (`traefik.io/v1alpha1`, a CRD of the cluster's Traefik)
+  # that the chart renders and names on its own Ingress with the annotation `traefik.ingress.kubernetes.io/router.middlewares`. OFF by default, and
+  # that is the safe default: the limit is per client address, and where Traefik does not see the real address (behind a load balancer or a CDN that
+  # it does not trust, or with `sourceDepth` wrong for the proxies in front) every client is one address and the limit throttles everybody together
+  # (deploy/chart/README.md, "A limit per client at the edge"; open question 51 is that check, *unverified* on netcup). Turn it on after looking at what
+  # `X-Forwarded-For` holds there. A refused client gets Traefik's own 429; the chart adds no access log.
+  #   Starting point (*unverified* under real traffic): average 20, period 1s, burst 50 per client address. The bucket is Traefik's token bucket:
+  #   `burst` requests at once, refilled at `average` per `period`. A request counts once, when it arrives, so an SSE stream counts once, at connect.
+  #   The limit lives in each Traefik pod's memory, not in the cluster: with two Traefik pods a client can have twice the rate.
+  #   The annotation names the middleware as `<namespace>-<name>@kubernetescrd`, the form of Traefik before `providers.kubernetesCRD.safeNaming`;
+  #   a Traefik that has `safeNaming` on wants `<namespace>_<name>@kubernetescrd` and does not create the router for the old form (the site is
+  #   not served): keep `enabled: false` there until the form is known (README).
+  rateLimit:
+    enabled: false
+    # Requests allowed per `period` for one client address: a whole number, at least 1.
+    average: 20
+    # The period of `average`: a whole number and a unit, `ms`, `s`, `m` or `h` (`1s`, `500ms`, `1m`).
+    period: 1s
+    # The bucket: requests one client may make at once. A whole number, at least 1.
+    burst: 50
+    # Which address is the client's: 0 is the address of the peer that connected to Traefik (right when Traefik is the first hop). 1 to 5 is the
+    # N-th address from the RIGHT of `X-Forwarded-For`: 1 when one trusted proxy in front appends the client's address (the proxy must be in the
+    # entrypoint's `forwardedHeaders.trustedIPs`, else Traefik drops the header and every request has no source). Never more than the proxies you trust.
+    sourceDepth: 0
 
 # The deployment's one Postgres (CloudNativePG): the orchestrator's database, and beside it the databases `agent` (the chat
 # agent's runs) and, with `sharedDatabase.coders` (or `sharedDatabase.coder`), one per coder, each owned by a role of its own (README.md, "One database cluster").

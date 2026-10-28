@@ -129,6 +129,26 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if and (not (include "agentic.sharing.public" .)) (or .Values.sharing.public.stepIo .Values.sharing.public.files) -}}
 {{- fail "sharing.public.stepIo and sharing.public.files only apply with sharing.mode public (the orchestrator refuses a key that does nothing)" -}}
 {{- end -}}
+{{- /* The limit per client address at the Ingress (issue #284): a closed boolean, an Ingress to name the middleware on, and numbers Traefik would take
+       but that mean nothing here (0 is "no limit" to Traefik, which would leave the key on and the limit off). The numbers are checked whether or not the
+       limit is on, so a wrong one is found when it is written and not the day it is turned on. */ -}}
+{{- $rl := .Values.ingress.rateLimit -}}
+{{- if not (kindIs "bool" $rl.enabled) -}}
+{{- fail (printf "ingress.rateLimit.enabled must be true or false, got %v" $rl.enabled) -}}
+{{- end -}}
+{{- include "agentic.checkWhole" (dict "name" "ingress.rateLimit.average" "value" $rl.average "min" 1 "max" 1000000) -}}
+{{- include "agentic.checkWhole" (dict "name" "ingress.rateLimit.burst" "value" $rl.burst "min" 1 "max" 1000000) -}}
+{{- include "agentic.checkWhole" (dict "name" "ingress.rateLimit.sourceDepth" "value" $rl.sourceDepth "min" 0 "max" 5) -}}
+{{- if or (not (kindIs "string" $rl.period)) (not (regexMatch "^[0-9]+(ms|s|m|h)$" $rl.period)) (regexMatch "^0+[a-z]+$" $rl.period) -}}
+{{- fail (printf "ingress.rateLimit.period must be a whole number above zero and a unit (ms, s, m or h), for example 1s, 500ms or 1m, got %v" $rl.period) -}}
+{{- end -}}
+{{- if and $rl.enabled (not .Values.ingress.enabled) -}}
+{{- fail "ingress.rateLimit.enabled needs ingress.enabled: the limit is a middleware named on the chart's own Ingress, and without the Ingress nothing would use it" -}}
+{{- end -}}
+{{- $mwKey := "traefik.ingress.kubernetes.io/router.middlewares" -}}
+{{- if and $rl.enabled (hasKey (default dict .Values.ingress.annotations) $mwKey) (not (kindIs "string" (get .Values.ingress.annotations $mwKey))) -}}
+{{- fail (printf "ingress.annotations: %s must be a string, a comma-separated list of <namespace>-<name>@kubernetescrd, got %s" $mwKey (kindOf (get .Values.ingress.annotations $mwKey))) -}}
+{{- end -}}
 {{- /* The keys of the stored secrets (ADR 0046, slice 3): a closed boolean, and when on a list of keys that the orchestrator would accept, each from a property of
        its own (a key read twice is a rotation that rotates nothing), with a current key that is one of them. The orchestrator checks the same, but at the first sync. */ -}}
 {{- $us := .Values.orchestrator.userSecrets -}}
