@@ -85,8 +85,7 @@ fn text(bytes: &[u8]) -> String {
 
 /// The database of a test schema, as a URL the binary connects to.
 fn database_url_of(db: &pgdb::TestDb) -> String {
-    let sep = if db.url.contains('?') { '&' } else { '?' };
-    format!("{}{sep}options=-c%20search_path%3D{}", db.url, db.schema)
+    db.pinned_url()
 }
 
 /// The one line of JSON the command prints on stdout.
@@ -216,7 +215,9 @@ async fn it_folds_in_the_logs_the_ledger_has_not_been_through_and_a_second_run_f
     let scratch = Scratch::new();
     let url = database_url_of(&db);
     let store = PgStore::connect_with(&url, 2).await.unwrap();
-    store.migrate().await.unwrap();
+    PgStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .unwrap();
     let alice = UserId::new("alice@example.com");
     for n in 0..3_u64 {
         store
@@ -301,4 +302,47 @@ async fn it_folds_in_the_logs_the_ledger_has_not_been_through_and_a_second_run_f
     for stream in [&out, &err] {
         assert!(!stream.contains("password"), "{stream}");
     }
+}
+
+/// With `database.directUrl` the command opens the database itself and never the pooler: here the
+/// pooled `database.url` is an address nobody listens on, and the command still goes through the
+/// (empty) log. Without the key the same file cannot connect (69, the database is down).
+#[tokio::test]
+async fn it_connects_to_the_direct_url_when_the_file_has_one() {
+    let Some(db) = pgdb::TestDb::new().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let scratch = Scratch::new();
+    PgStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .unwrap();
+    let nobody = "postgres://nobody:pw@127.0.0.1:1/none";
+    let direct = db.pinned_direct_url();
+    let with_key = scratch.write(
+        "with-key.yaml",
+        "version: 1
+database: { url: { env: DATABASE_URL }, directUrl: { env: DATABASE_DIRECT_URL } }
+agents: { file: /nowhere/agents.yaml }
+",
+    );
+    let out = run(
+        &["--config", path_str(&with_key), "usage", "backfill"],
+        &[("DATABASE_URL", nobody), ("DATABASE_DIRECT_URL", &direct)],
+    );
+    assert_eq!(code(&out), 0, "stderr: {}", text(&out.stderr));
+    assert_eq!(report(&out)["complete"], true);
+    for stream in [text(&out.stdout), text(&out.stderr)] {
+        assert!(
+            !stream.contains(&direct) && !stream.contains(nobody),
+            "{stream}"
+        );
+    }
+
+    let without = config(&scratch);
+    let out = run(
+        &["--config", path_str(&without), "usage", "backfill"],
+        &[("DATABASE_URL", nobody)],
+    );
+    assert_eq!(code(&out), 69, "stderr: {}", text(&out.stderr));
 }

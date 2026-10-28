@@ -156,12 +156,10 @@ mod command {
 
     /// Connects, applies the migrations, re-seals.
     async fn run(loaded: UserSecretsOnly) -> Result<RewrapReport, orch_ports::SecretError> {
-        let store = PgSecretStore::connect_with(
-            loaded.database_url.expose_secret(),
-            loaded.keyring,
-            CONNECTIONS,
-        )
-        .await?;
+        // a command holds a session across statements: the database itself when the file has one
+        let url = loaded.connection_url().clone();
+        let store =
+            PgSecretStore::connect_with(url.expose_secret(), loaded.keyring, CONNECTIONS).await?;
         let outcome = async {
             store.migrate().await?;
             tracing::info!(

@@ -20,9 +20,10 @@ use crate::secret::{MAX_SECRET_FILE_BYTES, Resolve, Secret};
 use crate::tree::child;
 use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
-    AuthScopes, Config, Environment, LogFormat, MAX_PRESIGN_TTL_SECS, MAX_UPLOAD_BYTES_LIMIT,
-    MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS, OAUTH_CALLBACK_PATH, Prompt,
-    SecretRef, SharingMode, Surface, ToolServer, UrlRef, UserSecrets, UserToolServers,
+    AuthScopes, Config, Database, Environment, LogFormat, MAX_PRESIGN_TTL_SECS,
+    MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
+    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SharingMode, Surface, ToolServer, UrlRef, UserSecrets,
+    UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -58,6 +59,8 @@ const BASE_URL_EXPECTED: &str =
 pub struct Secrets {
     /// `database.url`.
     pub database_url: Secret,
+    /// `database.directUrl`, when the file sets it.
+    pub database_direct_url: Option<Secret>,
     /// `agents.registry.token`.
     pub registry_token: Option<Secret>,
     /// `agents.registry.agentToken`.
@@ -203,6 +206,8 @@ pub struct ValidatedArtifacts {
 pub struct ValidatedUserSecrets {
     /// `database.url`.
     pub database_url: Secret,
+    /// `database.directUrl`, when the file sets it.
+    pub database_direct_url: Option<Secret>,
     /// `secrets`, defaults filled in.
     pub secrets: UserSecrets,
     /// `secrets.pg.keys`, resolved; empty unless `secrets.store` is `pg`.
@@ -218,6 +223,8 @@ pub struct ValidatedUserSecrets {
 pub struct ValidatedDatabase {
     /// `database.url`.
     pub database_url: Secret,
+    /// `database.directUrl`, when the file sets it.
+    pub database_direct_url: Option<Secret>,
     /// `log.format`.
     pub log_format: LogFormat,
 }
@@ -382,12 +389,13 @@ impl Config {
             resolver,
         };
         checker.user_secrets(&section);
-        let database_url = checker.resolve(&self.database.url, "database.url", true);
+        let (database_url, database_direct_url) = checker.database(&self.database);
         let keys = checker.user_secret_keys(&section);
         let mut errors = checker.errors;
         match database_url {
             Some(database_url) if errors.is_empty() => Ok(ValidatedUserSecrets {
                 database_url,
+                database_direct_url,
                 secrets: section,
                 keys,
                 log_format: self.log.format,
@@ -420,11 +428,12 @@ impl Config {
             base_dir,
             resolver,
         };
-        let database_url = checker.resolve(&self.database.url, "database.url", true);
+        let (database_url, database_direct_url) = checker.database(&self.database);
         let mut errors = checker.errors;
         match database_url {
             Some(database_url) if errors.is_empty() => Ok(ValidatedDatabase {
                 database_url,
+                database_direct_url,
                 log_format: self.log.format,
             }),
             _ => {
@@ -1360,7 +1369,7 @@ impl Checker<'_> {
         let generic_mounted = serves && surfaces.contains(&Surface::WebhookGeneric);
         let github_mounted = serves && surfaces.contains(&Surface::WebhookGithub);
 
-        let database_url = self.resolve(&cfg.database.url, "database.url", true);
+        let (database_url, database_direct_url) = self.database(&cfg.database);
         let (registry_token, registry_agent_token) = match &cfg.agents.registry {
             Some(registry) => (
                 self.optional(&registry.token, "agents.registry.token"),
@@ -1514,6 +1523,7 @@ impl Checker<'_> {
         };
         Some(Secrets {
             database_url: database_url?,
+            database_direct_url,
             registry_token,
             registry_agent_token,
             thread_tools_secret,
@@ -1735,6 +1745,23 @@ impl Checker<'_> {
             }
         }
         keys
+    }
+
+    /// `database.url` and `database.directUrl`, resolved. The direct URL must not be the text of the
+    /// pooled one: the file would say two endpoints and mean one, and every migration would go through
+    /// the pooler it was meant to avoid. The error names the key and carries no value.
+    fn database(&mut self, database: &Database) -> (Option<Secret>, Option<Secret>) {
+        let url = self.resolve(&database.url, "database.url", true);
+        let direct = self.optional(&database.direct_url, "database.directUrl");
+        if let (Some(url), Some(direct)) = (&url, &direct)
+            && url.expose() == direct.expose()
+        {
+            self.invalid(
+                "database.directUrl",
+                "is the same as database.url: leave it out when there is no pooler in front of the database",
+            );
+        }
+        (url, direct)
     }
 
     fn optional(&mut self, reference: &Option<SecretRef>, path: &str) -> Option<Secret> {

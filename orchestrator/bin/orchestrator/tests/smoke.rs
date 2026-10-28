@@ -132,11 +132,19 @@ fn spawn_with_args(
 ) -> Running {
     let log = scratch.file(log_name);
     let out = fs::File::create(&log).unwrap();
+    // Behind a pooler (`ORCH_TEST_DIRECT_DATABASE_URL`) the process is also given the database itself,
+    // as a deployment is: its migrations and its listener cannot go through the pooler.
+    let direct = env
+        .iter()
+        .find(|(name, _)| *name == "DATABASE_URL")
+        .filter(|_| !env.iter().any(|(name, _)| *name == "DATABASE_DIRECT_URL"))
+        .and_then(|(_, url)| pgdb::direct_counterpart(url));
     let child = Command::new(BIN)
         .args(args)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .envs(env.iter().copied())
+        .envs(direct.as_deref().map(|url| ("DATABASE_DIRECT_URL", url)))
         .stdin(Stdio::null())
         .stdout(out.try_clone().unwrap())
         .stderr(out)
@@ -1648,6 +1656,134 @@ toolServers:
     assert!(!out.stderr.contains("hunter2"), "{}", out.stderr);
 }
 
+// ---- the database behind a pooler (issue 290) -------------------------------------------------
+
+/// `url` with `application_name=app` in its query.
+fn named_connection(url: &str, app: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}application_name={app}")
+}
+
+/// With `database.directUrl` the migrations and the `LISTEN` of the wakeup take the database itself and
+/// everything else takes `database.url`, proven from the database's side: the two URLs name their
+/// connections (`application_name`), an event trigger records the name of the session of every DDL
+/// statement, and `pg_stat_activity` says which session listens. No pooler is needed (both URLs may be
+/// the server's); with one (`ORCH_TEST_DIRECT_DATABASE_URL`) the same assertions hold through it.
+#[tokio::test]
+async fn with_a_direct_url_the_migrations_and_the_listener_take_it_and_nothing_else_does() {
+    let Some(db) = pgdb::TestDb::isolated_database().await else {
+        eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let observer = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(db.direct_options().application_name("smoke-observer"))
+        .await
+        .unwrap();
+    for statement in [
+        "CREATE TABLE ddl_audit (app text NOT NULL)",
+        "CREATE FUNCTION audit_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN \
+         INSERT INTO public.ddl_audit VALUES (current_setting('application_name')); END $$",
+        "CREATE EVENT TRIGGER audit_ddl ON ddl_command_end EXECUTE FUNCTION audit_ddl()",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&observer)
+            .await
+            .unwrap();
+    }
+
+    let scratch = Scratch::new();
+    write_agents(&scratch, &agents_yaml("https://a.example.com/card"));
+    let config = write_config(
+        &scratch,
+        "version: 1
+database:
+  url: { env: DATABASE_URL }
+  directUrl: { env: DATABASE_DIRECT_URL }
+agents:
+  file: agents.yaml
+",
+    );
+    let pooled = named_connection(&db.url, "smoke-pooled");
+    let direct = named_connection(&db.direct_url, "smoke-direct");
+    let run = std::cell::RefCell::new(spawn_with_args(
+        &scratch,
+        "direct.log",
+        &["--listen-addr", ANY_PORT],
+        &[
+            ("ORCH_CONFIG_FILE", path_str(&config)),
+            ("DATABASE_URL", &pooled),
+            ("DATABASE_DIRECT_URL", &direct),
+            ("SMOKE_AGENT_TOKEN", TOKEN),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+        ],
+    ));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://{}", bound(&run).await);
+    eventually("the binary is ready", || async {
+        assert!(
+            run.borrow_mut().exited().is_none(),
+            "the binary exited early; log:\n{}",
+            run.borrow().log()
+        );
+        (http_status(&client, &format!("{base}/readyz")).await == Some(200)).then_some(())
+    })
+    .await;
+
+    // every DDL statement of the history was run by the session that was named direct
+    let apps: Vec<String> = sqlx::query_scalar("SELECT DISTINCT app FROM ddl_audit")
+        .fetch_all(&observer)
+        .await
+        .unwrap();
+    assert_eq!(apps, ["smoke-direct"], "the migrations' sessions");
+
+    // the listener is one session, the direct one; a LISTEN on the pooled URL would be a second
+    let listening: Vec<String> = eventually("the listener is attached", || async {
+        let found: Vec<String> = sqlx::query_scalar(
+            "SELECT application_name FROM pg_stat_activity \
+             WHERE datname = current_database() AND pid <> pg_backend_pid() \
+             AND query ILIKE 'LISTEN%'",
+        )
+        .fetch_all(&observer)
+        .await
+        .unwrap();
+        (!found.is_empty()).then_some(found)
+    })
+    .await;
+    assert_eq!(listening, ["smoke-direct"], "who listens");
+
+    // the request pool serves a request, and (without a pooler, where its connections stay) it is the
+    // pooled URL's: the sessions of that name are never the ones that listen
+    let status = status_of(
+        &client,
+        &base,
+        "GET",
+        "/api/threads",
+        Some("alice@example.com"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    if std::env::var("ORCH_TEST_DIRECT_DATABASE_URL").is_err() {
+        let pooled_sessions: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND application_name = 'smoke-pooled'",
+        )
+        .fetch_one(&observer)
+        .await
+        .unwrap();
+        assert!(pooled_sessions >= 1, "the request pool is the pooled URL's");
+    }
+
+    let status = run.borrow_mut().terminate(Duration::from_secs(20));
+    let log = run.borrow().log();
+    assert!(status.success(), "unclean exit {status:?}; log:\n{log}");
+    assert!(log.contains("database.directUrl is set"), "{log}");
+    assert!(
+        !log.contains("smoke-direct") && !log.contains("hunter"),
+        "{log}"
+    );
+}
+
 // ---- authentication (ADR 0033) ---------------------------------------------------------------
 
 /// Starts the binary on a port it picks from a configuration file that is `CONFIG` and `extra`, and
@@ -3058,8 +3194,7 @@ async fn serves_a_thread_to_completion_and_exits_cleanly_on_sigterm() {
 
 /// The orchestrator database URL confined to the test's schema.
 fn database_url_of(db: &pgdb::TestDb) -> String {
-    let sep = if db.url.contains('?') { '&' } else { '?' };
-    format!("{}{sep}options=-c%20search_path%3D{}", db.url, db.schema)
+    db.pinned_url()
 }
 
 /// One orchestrator process of a multi-process test: its own address and log, the database and

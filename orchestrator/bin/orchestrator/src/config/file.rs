@@ -331,10 +331,23 @@ fn load_store_from(
 pub struct UserSecretsOnly {
     /// `database.url`.
     pub database_url: SecretString,
+    /// `database.directUrl`, when the file sets it.
+    pub database_direct_url: Option<SecretString>,
     /// The keys of `secrets.pg`, with `secrets.pg.current` the one that seals.
     pub keyring: orch_secrets_pg::Keyring,
     /// `log.format`.
     pub log_format: LogFormat,
+}
+
+#[cfg(feature = "secrets-pg")]
+impl UserSecretsOnly {
+    /// Where the command connects: the database itself when the file has `database.directUrl`,
+    /// else the one URL.
+    pub fn connection_url(&self) -> &SecretString {
+        self.database_direct_url
+            .as_ref()
+            .unwrap_or(&self.database_url)
+    }
 }
 
 #[cfg(feature = "secrets-pg")]
@@ -343,6 +356,10 @@ impl std::fmt::Debug for UserSecretsOnly {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UserSecretsOnly")
             .field("database_url", &"<redacted>")
+            .field(
+                "database_direct_url",
+                &self.database_direct_url.as_ref().map(|_| "<redacted>"),
+            )
             .field("keyring", &self.keyring)
             .field("log_format", &self.log_format)
             .finish()
@@ -402,6 +419,10 @@ fn load_user_secrets_from(
         crate::user_tools::keyring(pg, &valid.keys).map_err(|e| document(e.to_string()))?;
     Ok(UserSecretsOnly {
         database_url: SecretString::from(valid.database_url.expose()),
+        database_direct_url: valid
+            .database_direct_url
+            .as_ref()
+            .map(|url| SecretString::from(url.expose())),
         keyring,
         log_format: match valid.log_format {
             orch_config::LogFormat::Json => LogFormat::Json,
@@ -415,8 +436,20 @@ fn load_user_secrets_from(
 pub struct DatabaseOnly {
     /// `database.url`.
     pub database_url: SecretString,
+    /// `database.directUrl`, when the file sets it.
+    pub database_direct_url: Option<SecretString>,
     /// `log.format`.
     pub log_format: LogFormat,
+}
+
+impl DatabaseOnly {
+    /// Where a command connects: the database itself when the file has `database.directUrl`
+    /// (a command holds a session across statements and has no use for a pooler), else the one URL.
+    pub fn connection_url(&self) -> &SecretString {
+        self.database_direct_url
+            .as_ref()
+            .unwrap_or(&self.database_url)
+    }
 }
 
 impl std::fmt::Debug for DatabaseOnly {
@@ -424,6 +457,10 @@ impl std::fmt::Debug for DatabaseOnly {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatabaseOnly")
             .field("database_url", &"<redacted>")
+            .field(
+                "database_direct_url",
+                &self.database_direct_url.as_ref().map(|_| "<redacted>"),
+            )
             .field("log_format", &self.log_format)
             .finish()
     }
@@ -472,6 +509,10 @@ fn load_database_from(
         .map_err(file_errors)?;
     Ok(DatabaseOnly {
         database_url: SecretString::from(valid.database_url.expose()),
+        database_direct_url: valid
+            .database_direct_url
+            .as_ref()
+            .map(|url| SecretString::from(url.expose())),
         log_format: match valid.log_format {
             orch_config::LogFormat::Json => LogFormat::Json,
             orch_config::LogFormat::Text => LogFormat::Text,
@@ -588,6 +629,12 @@ const SETTINGS: &[Setting] = &[
     setting("DATABASE_URL", &["database", "url"], Kind::Secret, |a| {
         &a.database_url
     }),
+    setting(
+        "DATABASE_DIRECT_URL",
+        &["database", "directUrl"],
+        Kind::Secret,
+        |a| &a.database_direct_url,
+    ),
     setting("AGENTS_FILE", &["agents", "file"], Kind::Text, |a| {
         &a.agents_file
     }),
@@ -920,6 +967,7 @@ impl Setting {
 pub fn secret_flags() -> impl Iterator<Item = (&'static str, &'static str)> {
     [
         ("DATABASE_URL", "database_url"),
+        ("DATABASE_DIRECT_URL", "database_direct_url"),
         ("AGENT_REGISTRY_TOKEN", "registry_token"),
         ("AGENT_REGISTRY_AGENT_TOKEN", "registry_agent_token"),
         ("THREAD_TOOLS_SECRET", "thread_tools_secret"),
@@ -1393,6 +1441,10 @@ fn project(
     let mut a = Args {
         hostname,
         database_url: some(s.database_url.expose().to_owned()),
+        database_direct_url: s
+            .database_direct_url
+            .as_ref()
+            .map(|url| url.expose().to_owned()),
         agents_file: valid.agents_file().map(|p| p.display().to_string()),
         listen_addr: some(c.server.listen.clone()),
         role: some(c.server.role.as_str().to_owned()),
@@ -2461,6 +2513,59 @@ auth:
         assert!(loaded.merged.unwrap().contains("file: /run/secrets/key"));
     }
 
+    /// `database.directUrl` (issue 290): absent, no direct URL; set, the service has it, the merged
+    /// configuration shows the reference and neither text is printed anywhere.
+    #[test]
+    fn the_direct_database_url_is_the_files_and_none_without_it() {
+        assert_eq!(
+            load_file_only(&base(), FILE)
+                .unwrap()
+                .config
+                .database_direct_url,
+            None
+        );
+        let file = FILE.replace(
+            "  url: { env: DATABASE_URL }\n",
+            "  url: { env: DATABASE_URL }\n  directUrl: { env: DATABASE_DIRECT_URL }\n",
+        );
+        let mut pairs = base();
+        pairs.push(("DATABASE_DIRECT_URL", "postgres://u:hunter3@db-direct/orch"));
+        let loaded = load_file_only(&pairs, &file).unwrap();
+        assert_eq!(
+            loaded.config.database_direct_url.as_deref(),
+            Some("postgres://u:hunter3@db-direct/orch")
+        );
+        assert_eq!(loaded.config.database_url, "postgres://u:hunter2@db/orch");
+        let merged = loaded.merged.as_deref().unwrap();
+        assert!(merged.contains("directUrl") && merged.contains("DATABASE_DIRECT_URL"));
+        let shown = format!("{merged} {:?}", loaded.config);
+        assert!(
+            !shown.contains("hunter2") && !shown.contains("hunter3"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn a_direct_database_url_that_is_the_url_or_does_not_resolve_is_refused_at_its_key() {
+        let file = FILE.replace(
+            "  url: { env: DATABASE_URL }\n",
+            "  url: { env: DATABASE_URL }\n  directUrl: { env: DATABASE_DIRECT_URL }\n",
+        );
+        let mut same = base();
+        same.push(("DATABASE_DIRECT_URL", "postgres://u:hunter2@db/orch"));
+        let errors = lines(load_file_only(&same, &file));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].starts_with("database.directUrl: is the same as database.url"),
+            "{errors:?}"
+        );
+        assert!(!errors[0].contains("hunter2"), "{errors:?}");
+
+        let errors = lines(load_file_only(&base(), &file));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("database.directUrl: "), "{errors:?}");
+    }
+
     #[test]
     fn a_flag_wins_over_its_variable_for_a_secret_the_file_names_as_a_variable() {
         let flags = FlagSecrets::from([("DATABASE_URL", "postgres://flag@db/orch".to_owned())]);
@@ -3452,13 +3557,13 @@ agents:
                 s.var
             );
         }
-        // 55 variables have a key; the build without `agent-local` has no flag for one of them.
+        // 56 variables have a key; the build without `agent-local` has no flag for one of them.
         assert_eq!(
             SETTINGS.len(),
             if cfg!(feature = "agent-local") {
-                55
+                56
             } else {
-                54
+                55
             }
         );
     }
@@ -3890,6 +3995,37 @@ log: { format: text }
             assert!(!format!("{loaded:?}").contains("hunter2"));
         }
 
+        /// A command that opens the database takes the direct URL when the file has one.
+        #[test]
+        fn a_command_connects_to_the_direct_url_when_there_is_one() {
+            use secrecy::ExposeSecret as _;
+            let loaded = load_database_from(FILE, Path::new("/etc/orch"), env, nothing).unwrap();
+            assert_eq!(
+                loaded.connection_url().expose_secret(),
+                "postgres://u:hunter2@db/orch",
+                "without the key, the one URL"
+            );
+            let text = FILE.replace(
+                "database: { url: { env: DATABASE_URL } }",
+                "database: { url: { env: DATABASE_URL }, directUrl: { env: DATABASE_DIRECT_URL } }",
+            );
+            let env = |name: &str| match name {
+                "DATABASE_URL" => Some("postgres://u:hunter2@pooler/orch".to_owned()),
+                "DATABASE_DIRECT_URL" => Some("postgres://u:hunter3@db/orch".to_owned()),
+                _ => None,
+            };
+            let loaded = load_database_from(&text, Path::new("/etc/orch"), env, nothing).unwrap();
+            assert_eq!(
+                loaded.connection_url().expose_secret(),
+                "postgres://u:hunter3@db/orch"
+            );
+            let shown = format!("{loaded:?}");
+            assert!(
+                !shown.contains("hunter2") && !shown.contains("hunter3"),
+                "{shown}"
+            );
+        }
+
         #[test]
         fn the_database_is_named_when_it_is_not_given() {
             let err =
@@ -4039,6 +4175,43 @@ secrets:
             let shown = format!("{loaded:?}");
             assert!(
                 !shown.contains("hunter2") && !shown.contains(&K1[..16]) && shown.contains("k2"),
+                "{shown}"
+            );
+        }
+
+        /// The re-seal opens the database on the direct URL when the file has one.
+        #[test]
+        fn rewrap_connects_to_the_direct_url_when_there_is_one() {
+            use secrecy::ExposeSecret as _;
+            let text = format!("{FILE}{SECTION}");
+            let loaded = load(&text).unwrap();
+            assert_eq!(
+                loaded.connection_url().expose_secret(),
+                "postgres://u:hunter2@db/orch"
+            );
+            let with_direct = text.replace(
+                "  url: { env: DATABASE_URL }\n",
+                "  url: { env: DATABASE_URL }\n  directUrl: { env: DATABASE_DIRECT_URL }\n",
+            );
+            assert_ne!(
+                with_direct, text,
+                "the file has a database section to extend"
+            );
+            let text = with_direct;
+            let env = |name: &str| match name {
+                "DATABASE_URL" => Some("postgres://u:hunter2@pooler/orch".to_owned()),
+                "DATABASE_DIRECT_URL" => Some("postgres://u:hunter3@db/orch".to_owned()),
+                _ => None,
+            };
+            let loaded =
+                load_user_secrets_from(&text, Path::new("/etc/orch"), env, only_the_keys).unwrap();
+            assert_eq!(
+                loaded.connection_url().expose_secret(),
+                "postgres://u:hunter3@db/orch"
+            );
+            let shown = format!("{loaded:?}");
+            assert!(
+                !shown.contains("hunter2") && !shown.contains("hunter3"),
                 "{shown}"
             );
         }

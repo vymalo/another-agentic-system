@@ -2696,6 +2696,60 @@ The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the co
 [`orch-agui-projection`](../orchestrator/crates/agui-projection/README.md) and the streaming code in
 [`orch-surface-agui`](../orchestrator/crates/surface-agui/README.md).
 
+### The database behind a pooler (issue 290)
+
+**Built (PR 1 of the issue; the chart's pooler is PR 2).** With `database.directUrl` set, `database.url` is the address of a
+transaction-mode pooler (PgBouncer) and `directUrl` the database itself. The composition root is the only place that decides
+(the adapters take a pool or a URL): what needs a **session** takes the direct URL, everything else the pool. Configuration,
+the table of what uses which, the requirements on the pooler and what was and was not proven: [`config.md`](api/config.md#database-behind-a-pooler).
+
+```mermaid
+sequenceDiagram
+  participant B as orchestrator boot
+  participant D as Postgres (directUrl)
+  participant P as pooler (url)
+  B->>D: PgStore::migrate_direct (one connection, the session advisory lock of sqlx)
+  B->>D: PgSecretStore::migrate_direct (when userToolServers has a secrets section)
+  B->>P: PgStore::connect_with (the request pool, prepared statements kept by the pooler)
+  B->>D: PgWakeup::start_direct (a pool of one: the LISTEN connection, retried with backoff)
+  B->>D: LocalAgents::connect (agent-local: the notifier and the journal's tables)
+  B->>P: LocalAgents::connect (agent-local: the journal's queries)
+  Note over B,P: dispatcher, inbox, purge, sweeps and every NOTIFY use the pool
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Migrating: boot
+  Migrating --> Pooled: the history is applied on the direct connection
+  Pooled --> Listening: the wakeup listener attaches (direct)
+  Pooled --> Polling: the listener cannot attach
+  Polling --> Listening: it attaches (backoff)
+  Listening --> Polling: the connection is lost, Resync to every subscriber
+  Listening --> [*]: SIGTERM
+```
+
+**What must stay direct, and why.**
+
+| Construct | Where | Scope | So |
+|---|---|---|---|
+| `LISTEN` | `PgWakeup`, adam-rs's `PgNotify` | the session | direct (a pooled listener hears nothing) |
+| `pg_advisory_lock` / `pg_advisory_unlock` | sqlx's migrator, in `PgStore::migrate` and `PgSecretStore::migrate` | the session | `migrate_direct` on one connection |
+| `pg_advisory_xact_lock` | the thread store (watch keys), `PgUserToolServers`, `PgSecretStore`, adam-rs's journal | the transaction | pooled |
+| `SET LOCAL lock_timeout`, `set_config('lock_timeout', .., true)`, `SET TRANSACTION ISOLATION LEVEL` | the thread store, the usage ledger, the pending authorizations, the secret store | the transaction | pooled |
+| prepared statements | every query | the connection | pooled, through PgBouncer's `max_prepared_statements` (1.21 or later) |
+
+*Verified 2026-10-28* by reading every `advisory`, `SET`, `set_config` and `LISTEN` of `orchestrator/crates`, `orchestrator/bin` and
+adam-rs at the pinned revision, and by the suites below. A new session-scoped construct (a `SET` that outlives its transaction, a
+`pg_advisory_lock`, a `LISTEN`, a cursor `WITH HOLD`, a temporary table) must take the direct connection or be made
+transaction-scoped; `orch-store-postgres`' `tests/direct.rs` and the CI job `pooler` are what fail when one slips in behind a pooler.
+
+**How it is proven.** `orchestrator.yml`, job `pooler`: Postgres 16 and a pinned PgBouncer (transaction mode,
+`max_prepared_statements = 200`) with the suites of `orch-store-postgres`, `orch-secrets-pg` and the binary's Postgres tests run
+through the pooler (`ORCH_TEST_DATABASE_URL` the pooler, `ORCH_TEST_DIRECT_DATABASE_URL` the database, a database per test
+because a pooler cannot carry a `search_path`). The routing is proven from the database's side without a pooler: connections
+are told apart by `application_name`, an event trigger records the session of every DDL statement, and `pg_stat_activity` says
+which session listens.
+
 ## Testing
 
 **Built.**

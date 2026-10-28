@@ -334,8 +334,11 @@ async fn writers_of_one_key_do_not_depend_on_the_isolation_the_database_defaults
     let Some(db) = TestDb::new().await else {
         return;
     };
-    // the schema is made in the ordinary way
-    db.store(ring_k1()).await;
+    // the schema is made on the direct connection: behind a pooler the setting below is the database's,
+    // and a pooled session opened before it would not have it
+    PgSecretStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .unwrap();
     let repeatable = [("default_transaction_isolation", "repeatable read")];
     let pool = db
         .pool_with("orch-secrets-repeatable", 8, &repeatable)

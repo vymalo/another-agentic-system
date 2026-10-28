@@ -494,6 +494,7 @@ pub async fn build_for_role(
     role: Role,
     settings: Option<&UserToolsSettings>,
     database_url: &str,
+    direct_url: Option<&str>,
     store: &PgStore,
 ) -> anyhow::Result<ConfiguredUserTools> {
     let serving = settings_for(role, settings);
@@ -504,7 +505,7 @@ pub async fn build_for_role(
              used by the control plane (the API and the thread-tools endpoint), so it builds nothing for them"
         );
     }
-    build(serving, database_url, store).await
+    build(serving, database_url, direct_url, store).await
 }
 
 /// Builds the ports for `settings`: the feature off (`None`) is the refusing bundle and opens
@@ -521,9 +522,10 @@ pub async fn build_for_role(
 pub async fn build(
     settings: Option<&UserToolsSettings>,
     database_url: &str,
+    direct_url: Option<&str>,
     store: &PgStore,
 ) -> anyhow::Result<ConfiguredUserTools> {
-    assemble(settings, database_url, store)
+    assemble(settings, database_url, direct_url, store)
         .await
         .map(|(tools, _sealed)| tools)
 }
@@ -532,6 +534,7 @@ pub async fn build(
 async fn assemble(
     settings: Option<&UserToolsSettings>,
     database_url: &str,
+    direct_url: Option<&str>,
     store: &PgStore,
 ) -> anyhow::Result<(ConfiguredUserTools, Sealed)> {
     let Some(settings) = settings else {
@@ -551,11 +554,13 @@ async fn assemble(
         let secrets = PgSecretStore::connect(database_url, keyring.clone())
             .await
             .context("cannot connect the secret store to Postgres (secrets)")?;
-        // Idempotent and serialised by sqlx's advisory lock: every replica may run it at boot.
-        secrets
-            .migrate()
-            .await
-            .context("cannot apply the migrations of the secret store (secrets)")?;
+        // Idempotent and serialised by sqlx's advisory lock: every replica may run it at boot. With a
+        // pooler in front (`database.directUrl`) on a connection of the database itself.
+        match direct_url {
+            Some(direct) => PgSecretStore::migrate_direct(direct).await,
+            None => secrets.migrate().await,
+        }
+        .context("cannot apply the migrations of the secret store (secrets)")?;
         let broker = Broker::builder(secrets.clone(), servers.clone(), settings.egress.clone())
             .config(oauth)
             .build()
@@ -579,7 +584,7 @@ async fn assemble(
     }
 
     // no `secrets` section (a store this build lacks was refused when the file was read)
-    let _ = (database_url, oauth);
+    let _ = (database_url, direct_url, oauth);
     warn_about_stranded_credentials(&servers).await;
     let tools =
         UserTools::without_credentials(settings.egress.clone(), ConfiguredServers::Pg(servers));

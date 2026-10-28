@@ -14,7 +14,7 @@ use orch_ports::{
     OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
     ThreadStore,
 };
-use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::codec::{
@@ -60,7 +60,7 @@ impl PgStore {
     pub async fn connect_with(url: &str, max_connections: u32) -> Result<Self, StoreError> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections.max(1))
-            .connect(url)
+            .connect_with(parse_url(url)?)
             .await
             .map_err(store_err)?;
         Ok(Self { pool })
@@ -87,6 +87,49 @@ impl PgStore {
     pub async fn migrate(&self) -> Result<(), StoreError> {
         MIGRATOR.run(&self.pool).await.map_err(migrate_err)
     }
+
+    /// [`migrate`](Self::migrate) on one connection of its own to `url` (a pool of one, closed when it is done).
+    ///
+    /// For a deployment whose request pool goes through a transaction-mode pooler (PgBouncer): the
+    /// migrator takes a **session** advisory lock (`pg_advisory_lock`) and holds it across its
+    /// statements, which a pooler that hands the server connection to someone else between two
+    /// transactions cannot keep (the lock would be left on a connection nobody owns, and the next
+    /// replica's migration would wait for it). `url` is the database itself. Same effect and errors as
+    /// [`migrate`](Self::migrate), safe from every replica at the same time; it touches no pool.
+    ///
+    /// # Errors
+    /// [`StoreError::Unavailable`] if the database is unreachable; [`StoreError::Internal`] if `url`
+    /// is not a connection string (the error never holds the text, it may carry a password) or the
+    /// database rejects a migration's statements; [`StoreError::Corrupt`] if an applied migration was
+    /// edited afterwards.
+    pub async fn migrate_direct(url: &str) -> Result<(), StoreError> {
+        // One connection, taken by the migrator for the whole run: its lock and its statements share a
+        // session. A pool of one rather than a bare connection, which a spawned task cannot lend
+        // (sqlx's "implementation of `Acquire` is not general enough").
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(parse_url(url)?)
+            .await
+            .map_err(store_err)?;
+        let outcome = MIGRATOR.run(&pool).await.map_err(migrate_err);
+        // The lock goes with the session whether or not this succeeded.
+        pool.close().await;
+        outcome
+    }
+}
+
+/// A connection string as options, for every connection this crate opens by itself. The error never
+/// holds the text: it may carry a password.
+///
+/// `extra_float_digits` is not sent. sqlx sends it as a startup parameter by default, and PgBouncer
+/// refuses a startup parameter it does not track ("unsupported startup parameter:
+/// extra_float_digits", *verified 2026-10-28* against PgBouncer 1.22.0), so every connection through
+/// a pooler would fail unless its operator listed it in `ignore_startup_parameters`. It only changes
+/// how a float is written in the text protocol, and sqlx reads every result in the binary one.
+pub(crate) fn parse_url(url: &str) -> Result<PgConnectOptions, StoreError> {
+    url.parse::<PgConnectOptions>()
+        .map(|options| options.extra_float_digits(None))
+        .map_err(|_| StoreError::internal("the connection string cannot be parsed"))
 }
 
 impl PgStore {

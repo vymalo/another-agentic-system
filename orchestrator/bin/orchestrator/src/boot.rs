@@ -462,15 +462,33 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     let store = PgStore::connect_with(&cfg.database_url, cfg.database_max_connections)
         .await
         .context("cannot connect to Postgres (DATABASE_URL)")?;
-    // Idempotent and serialised by sqlx's advisory lock: every replica may run it at boot.
-    store
-        .migrate()
-        .await
-        .context("cannot apply the database migrations")?;
+    // Idempotent and serialised by sqlx's advisory lock: every replica may run it at boot. That lock
+    // is a session lock, so with a pooler in front (`database.directUrl`) the migrations run on a
+    // connection of the database itself, and so does the `LISTEN` of the wakeup: both need a session
+    // that a transaction-mode pooler cannot keep. Everything else uses the pool.
+    match cfg.database_direct_url.as_deref() {
+        Some(direct) => {
+            tracing::info!(
+                "database.directUrl is set: the migrations and the LISTEN connection use it, \
+                 everything else database.url"
+            );
+            PgStore::migrate_direct(direct)
+                .await
+                .context("cannot apply the database migrations (database.directUrl)")?;
+        }
+        None => store
+            .migrate()
+            .await
+            .context("cannot apply the database migrations")?,
+    }
     tracing::info!("database migrations applied");
 
     let pool = store.pool().clone();
-    let wakeup = PgWakeup::start(pool);
+    let wakeup = match cfg.database_direct_url.as_deref() {
+        Some(direct) => PgWakeup::start_direct(pool, direct)
+            .context("cannot start the wakeup listener (database.directUrl)")?,
+        None => PgWakeup::start(pool),
+    };
     if !wakeup.wait_listening(LISTEN_ATTACH_TIMEOUT).await {
         tracing::warn!("the wakeup listener is not attached yet; falling back to polling");
     }
@@ -529,6 +547,7 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
         cfg.role,
         cfg.user_tools.as_ref(),
         &cfg.database_url,
+        cfg.database_direct_url.as_deref(),
         &store,
     )
     .await?;

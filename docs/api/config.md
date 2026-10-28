@@ -202,6 +202,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header`, and an `http://` `auth.jwt.issuer` or `jwksUrl` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
+| `database.directUrl` | **secret**, none; never the same text as `database.url` (exit 78 naming the key) | `DATABASE_DIRECT_URL` | now; [Database behind a pooler](#database-behind-a-pooler). The database itself, for what cannot go through a transaction-mode pooler: the migrations at boot, the `LISTEN` connection and the commands that open the database. Absent: everything uses `database.url`, as before |
 | `database.maxConnections` | ≥ 2, `10` | `DATABASE_MAX_CONNECTIONS` | now |
 | `dispatcher.concurrency` | ≥ 1, `32` | `DISPATCHER_CONCURRENCY` | now |
 | `dispatcher.outboxLeaseSecs` | ≥ 3, `30` | `OUTBOX_LEASE_SECS` | now |
@@ -210,6 +211,34 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `inbox.pollSecs` | ≥ 1, `2` | `INBOX_POLL_SECS` | now |
 | `inbox.parkedTtlSecs` | ≥ 1, `86400` | `INBOX_PARKED_TTL_SECS` | now |
 | `inbox.maxAttempts` | ≥ 1, `10` | `INBOX_MAX_ATTEMPTS` | now |
+
+### Database behind a pooler
+
+With many replicas, each holds a pool, and Postgres has a fixed number of connections: a connection pooler in front of it (PgBouncer, which CloudNativePG runs as a `Pooler`) lets every replica keep a small pool. Then `database.url` is **the pooler's address** and `database.directUrl` is **the database itself**. Without `directUrl` nothing changes: every connection uses `database.url`, as it always did.
+
+| Used for | Connection | Why |
+|---|---|---|
+| The migrations at boot (the thread store's, the secret store's, the in-process agents' journal's) | `directUrl` | sqlx's migrator takes a **session** advisory lock (`pg_advisory_lock`) and holds it across its statements; a transaction-mode pooler hands the server connection to someone else between two transactions |
+| The `LISTEN` connection of the wakeup, and the in-process agents' notifier | `directUrl` | `LISTEN` is session state; a pooler in transaction mode cannot keep it |
+| `orchestrator usage backfill` and `orchestrator secrets rewrap` | `directUrl` | a command holds a session across statements and has no use for a pooler |
+| Everything else: the request pool, the dispatcher, the inbox, the purge and sweep workers, the in-process agents' journal, the `NOTIFY`s | `url` | each is a statement or a transaction |
+
+**What must stay direct, and why** (*verified 2026-10-28*):
+
+- **`LISTEN`.** PgBouncer's own feature map lists `LISTEN` as never supported in transaction pooling (pgbouncer.org/features.html). Observed against PgBouncer 1.22.0: a listener taken from a pooled pool believes it is attached and hears nothing, and PgBouncer logs `got packet 'A' from server when not linked`. A `NOTIFY` is a single statement and pools fine.
+- **sqlx's migration lock.** `sqlx-postgres` 0.9.0 takes `SELECT pg_advisory_lock($1)` and releases it with `pg_advisory_unlock` (`src/migrate.rs`, read at 0.9.0). Observed against PgBouncer 1.22.0: eight replicas migrating through a pooled pool race, so a migration runs twice and fails (`column ... already exists`) or a lock is left held on a server connection nobody owns, which would stop the next replica's migration. Each replica's migration therefore runs on one connection of its own to `directUrl`, closed when it is done.
+
+**What is safe through a pooler:** every other lock the orchestrator takes is transaction-scoped (`pg_advisory_xact_lock`, in the thread store, the people's server definitions, the secret store and adam-rs's journal), and every setting is `SET LOCAL lock_timeout`, `set_config(.., true)` or `SET TRANSACTION`, so none outlives its transaction. *Verified 2026-10-28* by reading every `advisory`, `SET` and `set_config` in `orchestrator/crates` and `orchestrator/bin`, and by running the whole of `orch-store-postgres`, `orch-secrets-pg` and the binary's Postgres tests through PgBouncer in transaction mode (`orchestrator.yml`, job `pooler`).
+
+**What the pooler must be:**
+
+- `pool_mode = transaction` (session mode needs none of this; statement mode breaks transactions).
+- `max_prepared_statements` above 0, which needs **PgBouncer 1.21.0 (2023-10-16) or later** (its changelog: "Add support for protocol-level named prepared statements"; pgbouncer.org/changelog.html, *verified 2026-10-28*). sqlx caches named prepared statements per connection; the setting is what lets PgBouncer keep them across server connections. With `max_prepared_statements = 0` the first statements of two clients collide on a server connection (`prepared statement "sqlx_s_1" already exists`, SQLSTATE 42P05; *verified 2026-10-28* against PgBouncer 1.22.0), so the orchestrator would fail at boot or under load. CI runs 200.
+- No startup option in either URL (`options=-c ...`): PgBouncer refuses the ones it does not track (`unsupported startup parameter in options`). The orchestrator does not send sqlx's default `extra_float_digits` either, which PgBouncer 1.22.0 refuses (`unsupported startup parameter: extra_float_digits`), so `ignore_startup_parameters` needs no entry for it.
+
+`database.maxConnections` stays the size of the request pool. With `directUrl` the wakeup's listener is no longer taken from it, so the pool of at least 2 is for the requests alone; the listener, the migrations and a command's session are extra connections to the database itself (one each, per process).
+
+Not proven here: other poolers (Pgpool-II, Supavisor), PgBouncer versions other than 1.22.0 and 1.26.1, a CloudNativePG `Pooler` (the chart does not deploy one yet), and a real load: the suites run on a pooler with a few connections, and measure nothing.
 
 ### `agents`
 

@@ -144,7 +144,7 @@ ready file.
 * **Deployment notes.** Each replica of a process that has a local agent configured holds
   `AGENT_LOCAL_CONCURRENCY + 4` more database connections than `DATABASE_MAX_CONNECTIONS` (a pool of its own, one
   connection of which is the notifier's listener, which needs a session: a direct connection or a session-mode pooler,
-  not a transaction-mode one). A step that runs tools can starve the process that hosts it (lesson 1), so give such a
+  not a transaction-mode one: with `database.directUrl` the pool has `AGENT_LOCAL_CONCURRENCY + 2` connections to `database.url` and the notifier takes 3 to the database itself). A step that runs tools can starve the process that hosts it (lesson 1), so give such a
   worker its own pod and limits.
 
 ### Container image
@@ -405,7 +405,10 @@ ORCH_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/orch_test \
 ```
 
 Without `ORCH_TEST_DATABASE_URL` the Postgres variants print a skip notice and
-pass; CI always sets it (a `postgres:16` service). CI also refuses a pull request
+pass; CI always sets it (a `postgres:16` service). CI's job `pooler` runs the Postgres
+suites a second time through a pinned PgBouncer in transaction mode, with
+`ORCH_TEST_DATABASE_URL` the pooler and `ORCH_TEST_DIRECT_DATABASE_URL` the
+database itself (`crates/store-postgres/README.md` says how to run it by hand). CI also refuses a pull request
 that edits, renames or deletes an already applied migration. With it set:
 
 - **Store conformance.** The `ThreadStore`/`Wakeup` testkit runs against both

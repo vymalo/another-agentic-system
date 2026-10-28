@@ -94,8 +94,7 @@ fn the_redirect_is_built_only_for_the_path_the_router_serves() {
 
 /// The database of a test schema, as a URL the secret store connects to.
 fn database_url_of(db: &pgdb::TestDb) -> String {
-    let sep = if db.url.contains('?') { '&' } else { '?' };
-    format!("{}{sep}options=-c%20search_path%3D{}", db.url, db.schema)
+    db.pinned_url()
 }
 
 #[tokio::test]
@@ -105,7 +104,7 @@ async fn the_feature_off_builds_the_refusing_bundle_and_opens_nothing() {
         .connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
         .unwrap();
     let store = PgStore::from_pool(pool.clone());
-    let tools = build(None, "postgres://nobody@127.0.0.1:1/nothing", &store)
+    let tools = build(None, "postgres://nobody@127.0.0.1:1/nothing", None, &store)
         .await
         .unwrap();
     assert_eq!(pool.size(), 0, "no connection was opened");
@@ -134,7 +133,7 @@ async fn enabled_without_secrets_keeps_definitions_and_refuses_every_credential(
         return;
     };
     let store = db.store().await;
-    let tools = build(Some(&settings(false)), &database_url_of(&db), &store)
+    let tools = build(Some(&settings(false)), &database_url_of(&db), None, &store)
         .await
         .unwrap();
     assert_eq!(tools.mode(), UserToolsMode::WithoutCredentials);
@@ -196,7 +195,7 @@ async fn enabled_with_secrets_keeps_credentials_sealed_in_a_pool_of_its_own() {
     drop(migrated);
     let store = PgStore::from_pool(db.pool("thread-store", 2).await);
     // the sealed store is the broker's alone (the bundle has none to give); `assemble` shows it
-    let (tools, sealed) = assemble(Some(&settings(true)), &database_url_of(&db), &store)
+    let (tools, sealed) = assemble(Some(&settings(true)), &database_url_of(&db), None, &store)
         .await
         .unwrap();
     let sealed = sealed.expect("a secrets section builds a sealed store");
@@ -282,7 +281,7 @@ async fn a_client_metadata_url_the_broker_refuses_stops_startup_as_a_configurati
     let mut bad = settings(true);
     // the file's rules refuse this; the broker does too, and a build that got here is refused
     bad.client_metadata_url = Some("http://chat.example.com/client.json".to_owned());
-    let error = build(Some(&bad), &database_url_of(&db), &store)
+    let error = build(Some(&bad), &database_url_of(&db), None, &store)
         .await
         .unwrap_err();
     assert_eq!(crate::exit_code(&error), 78, "{error:#}");
@@ -298,6 +297,7 @@ async fn a_secret_store_whose_database_is_down_stops_startup_as_an_outage() {
     let error = build(
         Some(&settings(true)),
         "postgres://nobody@127.0.0.1:1/nothing",
+        None,
         &store,
     )
     .await
@@ -319,13 +319,23 @@ async fn a_secret_store_whose_database_refuses_its_migrations_is_not_an_outage()
     // sessions that may write nothing, as a role without the privilege to create the table: the
     // database answers, and refuses; waiting for it to come back would not help, so the process
     // exits 1 like the thread store's rejected statement, and not 69 as for an outage
-    let url = format!(
-        "{}%20-c%20default_transaction_read_only%3Don",
-        database_url_of(&db)
-    );
-    let error = build(Some(&settings(true)), &url, &store)
+    let read_only = "default_transaction_read_only%3Don";
+    let error = if db.has_database() {
+        // behind a pooler: a pooled session cannot carry the option, and the migrations take the
+        // direct connection anyway, so that is the one that is made read-only
+        let direct = format!("{}?options=-c%20{read_only}", db.pinned_direct_url());
+        build(
+            Some(&settings(true)),
+            &database_url_of(&db),
+            Some(&direct),
+            &store,
+        )
         .await
-        .unwrap_err();
+    } else {
+        let url = format!("{}%20-c%20{read_only}", database_url_of(&db));
+        build(Some(&settings(true)), &url, None, &store).await
+    }
+    .unwrap_err();
     assert_eq!(crate::exit_code(&error), 1, "{error:#}");
     assert!(
         format!("{error:#}").contains("cannot apply the migrations of the secret store"),
@@ -370,6 +380,7 @@ async fn a_worker_builds_the_refusing_bundle_and_opens_no_connection() {
         Role::Worker,
         Some(&settings(true)),
         nowhere,
+        None,
         &store,
     ))
     .await;
@@ -383,14 +394,14 @@ async fn a_worker_builds_the_refusing_bundle_and_opens_no_connection() {
     assert!(!log.contains("kept sealed"), "{log}");
 
     // a worker of a deployment that did not enable the feature has nothing to say
-    let (tools, log) = logging(build_for_role(Role::Worker, None, nowhere, &store)).await;
+    let (tools, log) = logging(build_for_role(Role::Worker, None, nowhere, None, &store)).await;
     assert_eq!(tools.unwrap().mode(), UserToolsMode::Off);
     assert!(log.is_empty(), "{log}");
 
     // and a process that serves routes does open the secret store, and finds no database
     #[cfg(feature = "secrets-pg")]
     for role in [Role::All, Role::ControlPlane] {
-        let error = build_for_role(role, Some(&settings(true)), nowhere, &store)
+        let error = build_for_role(role, Some(&settings(true)), nowhere, None, &store)
             .await
             .unwrap_err();
         assert_eq!(crate::exit_code(&error), 69, "{role}: {error:#}");
@@ -411,9 +422,15 @@ async fn a_process_that_serves_routes_builds_the_ports_and_a_worker_does_not() {
             return;
         };
         let store = db.store().await;
-        let tools = build_for_role(role, Some(&settings(true)), &database_url_of(&db), &store)
-            .await
-            .unwrap();
+        let tools = build_for_role(
+            role,
+            Some(&settings(true)),
+            &database_url_of(&db),
+            None,
+            &store,
+        )
+        .await
+        .unwrap();
         assert_eq!(tools.mode(), mode, "{role}");
         let tables: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM information_schema.tables \
@@ -453,7 +470,13 @@ async fn a_deployment_without_secrets_says_how_many_servers_hold_a_credential_an
     let bob = UserId::new("bob-sentinel-owner@example.test");
 
     // none stranded: nothing to say about it
-    let (tools, log) = logging(build(Some(&settings(false)), &database_url_of(&db), &store)).await;
+    let (tools, log) = logging(build(
+        Some(&settings(false)),
+        &database_url_of(&db),
+        None,
+        &store,
+    ))
+    .await;
     assert_eq!(tools.unwrap().mode(), UserToolsMode::WithoutCredentials);
     assert!(!log.contains("hold a credential"), "{log}");
 
@@ -470,7 +493,13 @@ async fn a_deployment_without_secrets_says_how_many_servers_hold_a_credential_an
         .await
         .unwrap();
 
-    let (tools, log) = logging(build(Some(&settings(false)), &database_url_of(&db), &store)).await;
+    let (tools, log) = logging(build(
+        Some(&settings(false)),
+        &database_url_of(&db),
+        None,
+        &store,
+    ))
+    .await;
     let tools = tools.unwrap();
     assert!(
         log.contains("2 of people's own MCP servers hold a credential"),
@@ -501,7 +530,13 @@ async fn a_deployment_without_secrets_says_how_many_servers_hold_a_credential_an
     assert_eq!(tools.servers().list(&alice).await.unwrap().len(), 1);
     // bob's, under the same id, is still there
     assert!(tools.servers().get(&bob, &id).await.unwrap().is_some());
-    let (_, log) = logging(build(Some(&settings(false)), &database_url_of(&db), &store)).await;
+    let (_, log) = logging(build(
+        Some(&settings(false)),
+        &database_url_of(&db),
+        None,
+        &store,
+    ))
+    .await;
     assert!(
         log.contains("1 of people's own MCP servers hold a credential"),
         "{log}"
@@ -522,14 +557,19 @@ async fn the_stranded_servers_are_counted_only_where_no_credentials_are_kept() {
         .await
         .unwrap();
 
-    let (tools, log) = logging(build(None, &database_url_of(&db), &store)).await;
+    let (tools, log) = logging(build(None, &database_url_of(&db), None, &store)).await;
     assert_eq!(tools.unwrap().mode(), UserToolsMode::Off);
     assert!(log.is_empty(), "off says nothing: {log}");
 
     #[cfg(feature = "secrets-pg")]
     {
-        let (tools, log) =
-            logging(build(Some(&settings(true)), &database_url_of(&db), &store)).await;
+        let (tools, log) = logging(build(
+            Some(&settings(true)),
+            &database_url_of(&db),
+            None,
+            &store,
+        ))
+        .await;
         assert_eq!(tools.unwrap().mode(), UserToolsMode::Full);
         assert!(!log.contains("hold a credential"), "{log}");
     }
@@ -549,6 +589,7 @@ async fn a_count_that_fails_is_a_warning_and_not_a_stop() {
     let (tools, log) = logging(build(
         Some(&settings(false)),
         &database_url_of(&db),
+        None,
         &closed,
     ))
     .await;

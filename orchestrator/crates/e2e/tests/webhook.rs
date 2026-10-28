@@ -185,7 +185,7 @@ async fn memory_rig(required: &[&str]) -> Rig<MemoryStore, MemoryWakeup> {
 async fn postgres_rig(required: &[&str]) -> Option<Rig<PgStore, PgWakeup>> {
     let db = pgdb::TestDb::new().await?;
     let store = db.store().await; // migrates
-    let wakeup = PgWakeup::start(db.pool("e2e-webhook", 4).await);
+    let wakeup = db.wakeup("e2e-webhook", 4).await;
     assert!(
         wakeup.wait_listening(Duration::from_secs(10)).await,
         "the wakeup listener did not attach"

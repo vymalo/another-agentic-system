@@ -16,7 +16,7 @@ use orch_ports::{
     CredentialRef, EgressPolicy, MAX_USER_TOOL_SERVERS, ServerRevision, UserAuth, UserToolServer,
     UserToolServerId, UserToolServerState, UserToolServerStore, UserToolServerStoreError,
 };
-use orch_store_postgres::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgUserToolServers};
+use orch_store_postgres::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgStore, PgUserToolServers};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
 use support::TestDb;
@@ -56,15 +56,17 @@ fn id_of(n: usize) -> String {
 /// A migrated schema and the store over a pool of `max` connections that waits at most three
 /// seconds for one.
 async fn store_with(db: &TestDb, max: u32, settings: &[(&str, &str)]) -> PgUserToolServers {
-    // the thread store's migrations make the table
-    let migrated = db.store().await;
-    drop(migrated);
+    // the thread store's migrations make the table, on the direct connection: no pooled session
+    // exists before the settings below are the database's
+    PgStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .expect("migrate");
     let pool = PgPoolOptions::new()
         .max_connections(max)
         .acquire_timeout(Duration::from_secs(3))
         .connect_with(
-            db.options()
-                .options(settings.iter().copied())
+            db.options_with(settings)
+                .await
                 .application_name("orch-user-tool-servers-test"),
         )
         .await
@@ -838,6 +840,15 @@ async fn a_row_that_does_not_read_back_is_warned_of_by_its_id_and_by_nothing_els
     }
     let id = |n| UserToolServerId::parse(&format!("u-{}", id_of(n))).unwrap();
 
+    // A scoped subscriber alone is not enough in a binary whose tests run on several threads: while
+    // only one subscriber exists, `tracing` decides whether a call site is of interest by the default
+    // of the thread that first reaches it, and a thread with none caches "never" for everybody (the
+    // warning then reaches no subscriber, here about one run in five). A global subscriber that
+    // records nothing makes it ask each thread's own default every time, as `usage_ledger.rs` does.
+    static GLOBAL: std::sync::Once = std::sync::Once::new();
+    GLOBAL.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+    });
     let captured = Captured::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)
