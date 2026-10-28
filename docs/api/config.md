@@ -238,7 +238,9 @@ With many replicas, each holds a pool, and Postgres has a fixed number of connec
 
 `database.maxConnections` stays the size of the request pool. With `directUrl` the wakeup's listener is no longer taken from it, so the pool of at least 2 is for the requests alone; the listener, the migrations and a command's session are extra connections to the database itself (one each, per process).
 
-Not proven here: other poolers (Pgpool-II, Supavisor), PgBouncer versions other than 1.22.0 and 1.26.1, a CloudNativePG `Pooler` (the chart does not deploy one yet), and a real load: the suites run on a pooler with a few connections, and measure nothing.
+The chart can deploy one: a CloudNativePG `Pooler` in transaction mode with `max_prepared_statements` set, the orchestrator's `url` the pooler and its `directUrl` the cluster's `-rw` Service ([`deploy/chart/README.md`](../../deploy/chart/README.md#scaling-the-database-issue-290), off by default; its kind end-to-end had not run when this was written).
+
+Not proven here: other poolers (Pgpool-II, Supavisor), PgBouncer versions other than 1.22.0 and 1.26.1 (the chart's `Pooler` runs the operator's default, 1.25.2 in CloudNativePG 1.30.1), and a real load: the suites run on a pooler with a few connections, and measure nothing.
 
 ### `agents`
 

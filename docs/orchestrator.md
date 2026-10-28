@@ -2698,7 +2698,7 @@ The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the co
 
 ### The database behind a pooler (issue 290)
 
-**Built (PR 1 of the issue; the chart's pooler is PR 2).** With `database.directUrl` set, `database.url` is the address of a
+**Built (PR 1 of the issue is the orchestrator; PR 2 is the chart's pooler, [`deploy/chart/README.md`](../deploy/chart/README.md#scaling-the-database-issue-290)).** With `database.directUrl` set, `database.url` is the address of a
 transaction-mode pooler (PgBouncer) and `directUrl` the database itself. The composition root is the only place that decides
 (the adapters take a pool or a URL): what needs a **session** takes the direct URL, everything else the pool. Configuration,
 the table of what uses which, the requirements on the pooler and what was and was not proven: [`config.md`](api/config.md#database-behind-a-pooler).
