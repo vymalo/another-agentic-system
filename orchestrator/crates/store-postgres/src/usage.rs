@@ -768,7 +768,7 @@ impl UsageLedger for PgStore {
         // for the next sweep instead of making the sweep wait behind it.
         let removed = sqlx::query(
             "DELETE FROM usage_tasks WHERE id IN (SELECT id FROM usage_tasks WHERE month < $1 \
-             ORDER BY month, id LIMIT $2 FOR UPDATE SKIP LOCKED)",
+             ORDER BY month LIMIT $2 FOR UPDATE SKIP LOCKED)",
         )
         .bind(before.to_string())
         .bind(i64::from(limit.max(1)))
