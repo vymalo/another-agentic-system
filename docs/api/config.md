@@ -205,6 +205,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `database.maxConnections` | ≥ 2, `10` | `DATABASE_MAX_CONNECTIONS` | now |
 | `dispatcher.concurrency` | ≥ 1, `32` | `DISPATCHER_CONCURRENCY` | now |
 | `dispatcher.outboxLeaseSecs` | ≥ 3, `30` | `OUTBOX_LEASE_SECS` | now |
+| `dispatcher.order` | `fair` \| `fifo`, `fair` | — | now; [ADR 0066](../decisions/0066-a-fair-share-of-the-dispatcher.md). Which due rows a claim takes first when more are waiting than there are free slots. `fair`: the person (the owner of the row's thread) with the fewest jobs running gets the next free slot, and among equals the oldest row; with one person it is the oldest-first order, and a `cancel` row always goes first. `fifo`: the oldest row first, whoever it is for, as before the ADR; a switch to roll back to. A job that runs is never taken back. |
 | `inbox.leaseSecs` | ≥ 3, `30` | `INBOX_LEASE_SECS` | now |
 | `inbox.pollSecs` | ≥ 1, `2` | `INBOX_POLL_SECS` | now |
 | `inbox.parkedTtlSecs` | ≥ 1, `86400` | `INBOX_PARKED_TTL_SECS` | now |

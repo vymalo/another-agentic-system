@@ -1504,6 +1504,10 @@ fn project(
             max_turns: c.server.history.max_turns as usize,
             max_page_bytes: usize::try_from(c.server.history.max_page_bytes).unwrap_or(usize::MAX),
         },
+        dispatcher_order: match c.dispatcher.order {
+            orch_config::DispatcherOrder::Fair => orch_ports::ClaimOrder::Fair,
+            orch_config::DispatcherOrder::Fifo => orch_ports::ClaimOrder::Fifo,
+        },
         cors_allowed_origins: c
             .server
             .cors
@@ -1978,6 +1982,41 @@ auth:
     userClaim: preferred_username
     rolesClaim: realm_access.roles
 ";
+
+    /// `dispatcher.order` (ADR 0066) reaches the configuration: `fair` without the key, and what the
+    /// file says with it; a word that is neither is refused at its key.
+    #[test]
+    fn the_dispatcher_order_is_the_files_and_fair_without_it() {
+        use orch_ports::ClaimOrder;
+        // what the dispatcher is built with is what the file said, with the other settings as ever
+        let order = |extra: &str| {
+            let config = load_file_only(&base(), &format!("{FILE}{extra}"))
+                .unwrap()
+                .config;
+            let built = crate::boot::dispatcher_config(&config);
+            assert_eq!(built.order, config.dispatcher_order);
+            assert_eq!(built.concurrency, config.dispatcher_concurrency);
+            assert_eq!(built.lease, config.outbox_lease);
+            config.dispatcher_order
+        };
+        assert_eq!(order(""), ClaimOrder::Fair);
+        assert_eq!(order("dispatcher: { concurrency: 4 }\n"), ClaimOrder::Fair);
+        assert_eq!(order("dispatcher: { order: fair }\n"), ClaimOrder::Fair);
+        assert_eq!(
+            order("dispatcher: { concurrency: 4, order: fifo }\n"),
+            ClaimOrder::Fifo
+        );
+        let errors = lines(load_file_only(
+            &base(),
+            &format!("{FILE}dispatcher: {{ order: lifo }}\n"),
+        ));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("dispatcher.order:"), "{errors:?}");
+        assert!(
+            errors[0].contains("fair") && errors[0].contains("fifo"),
+            "{errors:?}"
+        );
+    }
 
     #[test]
     fn without_an_auth_section_the_proxy_header_is_how_requests_are_authenticated() {

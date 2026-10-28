@@ -427,6 +427,33 @@ pub struct Dispatcher {
     #[serde(default = "default_lease_secs")]
     #[schemars(range(min = 3))]
     pub outbox_lease_secs: u64,
+    /// Which due rows a claim takes first when more are waiting than there are free slots, `fair`
+    /// or `fifo` (default `fair`, ADR 0066).
+    /// `fifo` is the oldest-first order the dispatcher had before, kept as a switch to roll back to.
+    #[serde(default)]
+    pub order: DispatcherOrder,
+}
+
+/// The order the dispatcher claims due rows in (ADR 0066).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatcherOrder {
+    /// The person with the fewest jobs running gets the next free slot; among equals, the oldest row.
+    /// With one person, the same as `fifo`.
+    #[default]
+    Fair,
+    /// The oldest row first, whoever it is for.
+    Fifo,
+}
+
+impl DispatcherOrder {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            DispatcherOrder::Fair => "fair",
+            DispatcherOrder::Fifo => "fifo",
+        }
+    }
 }
 
 fn default_concurrency() -> u64 {
@@ -442,6 +469,7 @@ impl Default for Dispatcher {
         Dispatcher {
             concurrency: default_concurrency(),
             outbox_lease_secs: default_lease_secs(),
+            order: DispatcherOrder::default(),
         }
     }
 }

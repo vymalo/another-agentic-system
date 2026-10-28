@@ -1304,6 +1304,9 @@ pub struct Config {
     /// `server.history` (ADR 0059): what one page of a thread's history may hold. The defaults from
     /// the environment alone (the section has no variable).
     pub history: orch_app::HistorySettings,
+    /// `dispatcher.order` (ADR 0066): which due rows a claim takes first. `Fair` from the
+    /// environment alone (the key has no variable).
+    pub dispatcher_order: orch_ports::ClaimOrder,
 }
 
 impl fmt::Debug for Config {
@@ -1334,6 +1337,7 @@ impl fmt::Debug for Config {
             .field("public_limits", &self.public_limits)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("history", &self.history)
+            .field("dispatcher_order", &self.dispatcher_order)
             .field("tool_servers", &self.tool_servers)
             .field(
                 "tool_endpoints",
@@ -1748,6 +1752,7 @@ impl Config {
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
             history: resolved.history,
+            dispatcher_order: resolved.dispatcher_order,
         })
     }
 }
@@ -2631,6 +2636,8 @@ struct Resolved {
     cors_allowed_origins: Vec<String>,
     /// `server.history`.
     history: orch_app::HistorySettings,
+    /// `dispatcher.order` (ADR 0066).
+    dispatcher_order: orch_ports::ClaimOrder,
     /// `toolServers`, the public part of each server.
     tool_servers: Vec<ToolServerInfo>,
     /// `toolServers`, the URL and the credentials of each, for the relay.

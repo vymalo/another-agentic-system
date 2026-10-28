@@ -3,7 +3,7 @@
 
 mod support;
 
-use orch_config::{ErrorKind, Role, SecretRef, Surface, render};
+use orch_config::{DispatcherOrder, ErrorKind, Role, SecretRef, Surface, render};
 use support::{Fake, LONG, lines, load};
 
 /// A file with only what is required.
@@ -40,6 +40,7 @@ fn a_minimal_file_is_valid_and_every_default_is_filled_in() {
     assert_eq!(c.database.max_connections, 10);
     assert_eq!(c.dispatcher.concurrency, 32);
     assert_eq!(c.dispatcher.outbox_lease_secs, 30);
+    assert_eq!(c.dispatcher.order, DispatcherOrder::Fair);
     assert_eq!(c.inbox.lease_secs, 30);
     assert_eq!(c.inbox.poll_secs, 2);
     assert_eq!(c.inbox.parked_ttl_secs, 86_400);
@@ -244,6 +245,38 @@ dispatcher:
     assert_eq!(valid.config.inbox.lease_secs, 9);
     assert_eq!(valid.config.dispatcher.concurrency, 5);
     assert_eq!(valid.config.dispatcher.outbox_lease_secs, 7);
+}
+
+/// `dispatcher.order` (ADR 0066): `fair` or `fifo`, `fair` without the key, and nothing else.
+#[test]
+fn the_dispatcher_order_is_fair_or_fifo() {
+    let with = |order: &str| {
+        format!(
+            "\
+version: 1
+database: {{ url: {{ env: DATABASE_URL }} }}
+agents: {{ file: agents.yaml }}
+dispatcher: {{ order: {order} }}
+"
+        )
+    };
+    for (word, want) in [
+        ("fair", DispatcherOrder::Fair),
+        ("fifo", DispatcherOrder::Fifo),
+    ] {
+        let valid = load(&with(word), &minimal_env()).unwrap();
+        assert_eq!(valid.config.dispatcher.order, want, "{word}");
+        assert_eq!(want.as_str(), word);
+    }
+    assert_eq!(
+        lines(load(&with("lifo"), &minimal_env())),
+        ["dispatcher.order: not an allowed value (allowed: fair, fifo)"]
+    );
+    let listed = lines(load(&with("[fair]"), &minimal_env()));
+    assert!(
+        !listed.is_empty() && listed.iter().all(|e| e.starts_with("dispatcher.order:")),
+        "{listed:?}"
+    );
 }
 
 #[test]
