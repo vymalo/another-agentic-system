@@ -34,6 +34,7 @@ mod routes;
 mod shared;
 pub mod sse;
 pub mod trace;
+mod usage;
 mod user_tools;
 
 use std::sync::Arc;
@@ -396,8 +397,11 @@ pub fn router_with_surfaces<P: Ports>(
         Arc::clone(&identity_app),
         auth::require_access::<P>,
     ));
+    // `/api/me/usage` (ADR 0065) is the caller's own data and asks for an identity only, as `/api/me`
+    // does: it has no owner parameter.
     let me = Router::new()
         .route("/api/me", get(routes::me::<P>))
+        .route("/api/me/usage", get(usage::my_usage::<P>))
         .with_state(state_for_me)
         .layer(timeout);
     // The public routes of a shared thread (ADR 0040): outside the identity layer, so no identity can

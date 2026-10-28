@@ -642,8 +642,9 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 25] = [
+    let auth_ops: [(&str, reqwest::Method, String); 26] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
+        ("getMyUsage", reqwest::Method::GET, "/api/me/usage".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
         ("getRegistry", reqwest::Method::GET, "/api/registry".into()),
         ("getConfig", reqwest::Method::GET, "/api/config".into()),
@@ -784,6 +785,26 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         "this deployment shares up to the world"
     );
     assert_eq!(me["agents"], json!({"read": ["*"], "invoke": ["*"]}));
+
+    // getMyUsage: the caller's own month, never cached; a person who used nothing reads an empty month
+    // that is complete, and nothing is priced here (no table is configured)
+    let r = h.get("/api/me/usage", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("getMyUsage", &r);
+    let usage = r.json();
+    assert_eq!(
+        (&usage["tasks"], &usage["currency"], &usage["prices"]),
+        (&json!(0), &Value::Null, &Value::Null)
+    );
+    assert_eq!(usage["total"]["amount"], "0.000000");
+    assert_eq!(usage["total"]["complete"], true);
+    // a month that is not YYYY-MM, and a key that is not `month` (there is no owner), are 400
+    for bad in ["?month=2026-13", "?month=", "?owner=bob@example.com"] {
+        let r = h.get(&format!("/api/me/usage{bad}"), Some(ALICE)).await;
+        assert_eq!(r.status, 400, "{bad}");
+        c.check("getMyUsage", &r);
+    }
 
     // listAgents
     let r = h.get("/api/agents", Some(ALICE)).await;

@@ -132,6 +132,59 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Me" }
+  /api/me/usage:
+    get:
+      operationId: getMyUsage
+      summary: What the caller used in a month, priced
+      description: |
+        The caller's own usage in one UTC calendar month, from the **usage ledger of the people**
+        ([ADR 0065](../decisions/0065-a-usage-ledger-per-person.md)): the tokens their threads used, per provider and
+        model, and the time the commands of their runs used in a sandbox, per shape of the sandbox, with a price on each
+        line and a priced total. **There is no `owner` or `user` parameter and none will be**: the route answers for the
+        authenticated person and for nobody else, whatever their roles (as `getMe` does; a person whose roles grant
+        nothing reads their own usage too). Another key in the query is a 400. The answer is never cached.
+
+        **What is counted.** A task (an agent's A2A task in a thread) counts once: its latest `model_usage_total` replaces
+        its counts, and while it has none its `model_usage` calls add up (`usage-v1.md`). A task is counted in the UTC month
+        of the **latest event that changed it**, whole, so a task that crosses a month end moves into the later month when
+        its next event arrives and **the figure of a month that has ended is not final** while a task of it is open. The
+        usage of a thread outlives the thread: erasing a thread does not remove it. Months older than
+        `usage.retentionMonths` (24 by default, the current month one of them) are removed by a sweep and read as empty.
+
+        **How it is priced** (`usage.prices` of the configuration, in integers, no floating point: money is millionths of
+        the currency unit, written with exactly six decimals). The table is the **current** one: changing it re-prices every
+        month, and `prices` says which table priced this answer (`sha256:` and 16 hex digits of its canonical form; `null`
+        with no table). A model line costs `(inputTokens - cachedInputTokens) * input + cachedInputTokens * cachedInput +
+        outputTokens * output` per million tokens, divided **once** by 1 000 000 and rounded half up; cached tokens are a
+        part of the input (capped at it), tokens written to a cache are input tokens, and reasoning tokens are output
+        tokens: none is a charge of its own. A line matches the table's entry for the same `provider` (a line with none
+        matches an entry with none) and the same `model`, exactly. A sandbox line costs `hours * (cores * cpuCoreHour +
+        gib * gibHour)` with `hours = milliseconds / 3 600 000`, `cores = cpuMillis / 1000` and `gib = memoryBytes / 2^30`,
+        one exact fraction rounded half up; a shape that lacks `cpuMillis` or `memoryBytes` (the pod asked for none) has no
+        price.
+
+        **A line with no price is said so and is never counted as free.** `price` is `null` for a model the table does not
+        price (or any model, when there is no table), for a sandbox shape the table does not price or that has no CPU or
+        memory request, and for a line whose arithmetic would overflow; `unmeasured` lists the tasks whose commands ran where
+        the sandbox is not measured (`local`, `devcontainer`), which are never priced. `total.amount` is the **sum of the
+        priced lines**, and `total.complete` is `true` only when no line is unpriced and nothing is unmeasured (a month with
+        no usage at all is complete, at `0.000000`); `total.unpriced` says what is missing. A client that shows the total
+        shows it as "at least" when `complete` is `false`.
+      parameters:
+        - name: month
+          in: query
+          required: false
+          description: "The UTC calendar month, `YYYY-MM` (a year from 0001 and a month from 01 to 12). The current UTC month by default. A month the ledger holds nothing for (in the future, or older than the retention) is an empty, complete answer, not an error"
+          schema: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", example: "2026-10" }
+      responses:
+        "400": { description: "`month` is not `YYYY-MM` (or is given more than once), or the query has another key, `owner` included", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "200":
+          description: The caller's month
+          headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MyUsage" }
   /api/agents:
     get:
       operationId: listAgents
@@ -1616,6 +1669,83 @@ components:
           type: string
           enum: [plan, edits, auto, bypass]
           description: "The highest access tier the person may pick for a message ([`access-tier/v1`](access-tier-v1.md#8-roles-and-the-web), [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): the highest `auth.roles.<role>.maxTier` of their roles that let them invoke an agent, and absent when any of those has no cap (the built-in `user` and `admin` have none; a role that cannot invoke any agent has no say). A hint, never a check, and not what the web draws its chip from: the cap differs by agent, so the capabilities document of the selected agent (`getAgentCapabilities`) carries the person's cap for that agent (`maxTier`), and the orchestrator decides per agent, over the roles that let them invoke that agent, when the message is written (`422`)"
+    MyUsage:
+      type: object
+      required: [month, currency, prices, tasks, models, sandbox, unmeasured, total]
+      description: "What a person used in a UTC month, priced (`getMyUsage`)"
+      properties:
+        month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", description: "The month, `YYYY-MM`" }
+        currency: { type: [string, "null"], pattern: "^[A-Z]{3}$", description: "The currency of every price on the page, three upper-case letters (`usage.prices.currency`); `null` when the deployment configured no prices" }
+        prices: { type: [string, "null"], pattern: "^sha256:[0-9a-f]{16}$", description: "Which price table priced this answer: `sha256:` and the first 16 hex digits of the SHA-256 of its canonical form (the same whatever the order of its entries or how a price was written); `null` when no prices are configured. Prices are the current table's: an answer for a past month is priced as of now" }
+        tasks: { type: integer, minimum: 0, description: "How many tasks the month holds" }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/UsageModelLine" }
+          description: "The tokens per provider and model, ordered by provider (none first) and model"
+        sandbox:
+          type: array
+          items: { $ref: "#/components/schemas/UsageSandboxLine" }
+          description: "The measured sandbox time per shape, ordered by environment, CPU and memory (a shape without a request first)"
+        unmeasured:
+          type: array
+          items: { $ref: "#/components/schemas/UsageUnmeasured" }
+          description: "The tasks whose commands ran where the sandbox is not measured, per environment; their time is not zero, it is not known, and it is never priced"
+        total: { $ref: "#/components/schemas/UsageTotal" }
+    UsageModelLine:
+      type: object
+      required: [model, inputTokens, outputTokens, totalTokens, price]
+      description: "The month's tokens of one provider and model, AG-UI's `TokenUsage` accounting, with the price"
+      properties:
+        provider: { type: string, description: "The provider as the agent reported it; absent when it reported none" }
+        model: { type: string }
+        inputTokens: { type: integer, minimum: 0, description: "Every prompt token (a total)" }
+        outputTokens: { type: integer, minimum: 0, description: "Every completion token, reasoning included (a total)" }
+        totalTokens: { type: integer, minimum: 0, description: "`inputTokens` plus `outputTokens`" }
+        reasoningTokens: { type: integer, minimum: 0, description: "Output tokens spent on reasoning: part of `outputTokens`. Absent until a task of the month says it" }
+        cachedInputTokens: { type: integer, minimum: 0, description: "Input tokens read from a provider cache: part of `inputTokens`. Absent until a task of the month says it" }
+        cacheWriteInputTokens: { type: integer, minimum: 0, description: "Input tokens written to a provider cache: part of `inputTokens`, priced as input. Absent until a task of the month says it" }
+        price: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{6}$", description: "What the line costs in `currency`, six decimals (a string: money is never a JSON number); `null` when it cannot be priced (see `total.unpriced`)" }
+    UsageSandboxLine:
+      type: object
+      required: [environment, commands, milliseconds, price]
+      description: "The time the commands of the month's runs used in a sandbox of one shape, summed"
+      properties:
+        environment: { type: string, enum: [kubernetes, local, devcontainer], description: "Where the commands ran; in practice `kubernetes`, the one environment that measures them" }
+        cpuMillis: { type: integer, minimum: 0, description: "The CPU the sandbox reserved, in millicores; absent when the pod asked for none (the line is then unpriced)" }
+        memoryBytes: { type: integer, minimum: 0, description: "The memory the sandbox reserved, in bytes; absent when the pod asked for none (the line is then unpriced)" }
+        commands: { type: integer, minimum: 0, description: "How many commands ran" }
+        milliseconds: { type: integer, minimum: 0, description: "The sum of their wall times in milliseconds; commands that ran at the same time are summed, so it can exceed the time the runs took" }
+        price: { type: [string, "null"], pattern: "^[0-9]+\\.[0-9]{6}$", description: "What the line costs in `currency`, six decimals; `null` when it cannot be priced" }
+    UsageUnmeasured:
+      type: object
+      required: [environment, tasks]
+      properties:
+        environment: { type: string, enum: [kubernetes, local, devcontainer] }
+        tasks: { type: integer, minimum: 0, description: "How many tasks of the month ran their commands there" }
+    UsageTotal:
+      type: object
+      required: [amount, currency, complete, unpriced]
+      properties:
+        amount: { type: string, pattern: "^[0-9]+\\.[0-9]{6}$", description: "The sum of the lines that are priced, six decimals. With `complete: false` it is a floor, not the cost" }
+        currency: { type: [string, "null"], pattern: "^[A-Z]{3}$", description: "As `currency` of the answer" }
+        complete: { type: boolean, description: "`true` when every line is priced and nothing is unmeasured, and for a month with no usage at all" }
+        unpriced: { $ref: "#/components/schemas/UsageUnpriced" }
+    UsageUnpriced:
+      type: object
+      required: [models, sandbox, unmeasured]
+      description: "What `total.amount` leaves out"
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            required: [model]
+            properties:
+              provider: { type: string }
+              model: { type: string }
+          description: "The model lines with no price"
+        sandbox: { type: integer, minimum: 0, description: "How many sandbox lines (shapes) have no price" }
+        unmeasured: { type: integer, minimum: 0, description: "How many tasks ran their commands where the sandbox is not measured" }
     Permission:
       type: object
       required: [permission]

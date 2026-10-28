@@ -236,6 +236,16 @@ before.)
 
 The orchestrator's own model calls (thread titles, descriptions) are not reported here.
 
+**What becomes of the figures after the log** ([ADR 0065](../decisions/0065-a-usage-ledger-per-person.md)). The `model_usage` and
+`model_usage_total` events are also folded, in the transaction that logs them, into the **usage ledger of the people**: one row per task,
+in the UTC month of the latest event that changed it, which outlives the thread. A total replaces the task's counts and its `sandbox`
+whole (the rule of section 4, never added to the calls or to an earlier total), and a call adds only while the task has no total. A
+person reads their month, **priced with the table of the deployment** (`usage.prices`, [`config.md`](config.md#usage)), at
+`GET /api/me/usage?month=YYYY-MM` ([`getMyUsage`](chat-api.yaml)): the tokens per provider and model, the sandbox time per shape with the
+price of each line, and a total that says whether it is complete. A `sandbox` that was **not measured** (section 5: `local`,
+`devcontainer`) is never priced and makes the total incomplete: not measured is not zero. Prices are not in the ledger and not in this
+contract: they are the deployment's, applied when the month is read.
+
 ## Verified and unverified (2026-10-27, `sandbox`)
 
 - *Verified 2026-10-27* by reading adam-rs at `55bbe9f` (`docs/decisions/0043-sandbox-time-as-usage.md`,
