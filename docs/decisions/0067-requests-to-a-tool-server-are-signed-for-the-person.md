@@ -92,6 +92,6 @@ a request is signed when it is sent and nothing is kept; the replay record is th
 |---|---|
 | `rmcp` 3.5.0's client opens with `server/discover` in `Discover` mode and works over its streamable HTTP transport with this crate's own HTTP backend | **Verified 2026-11-02** by `orch-tools-mcp`'s `tests/signed.rs`, a real MCP server over HTTP that speaks only `2026-07-28` |
 | The bytes are those of the real `sign_claims`, and the real `open_claims` opens them | **Verified 2026-11-02**: the known-answer test, and `crates/signed-request/interop` run locally against `cratestack-cose` 0.17.2 |
-| The interoperability job passes in this repository's CI | **Unverified** until the workflow has run |
+| The interoperability job passes in this repository's CI | **Verified 2026-11-02**: the job `signed-request-interop` passed on the pull request that brought it (#311) |
 | A cratestack MCP endpoint on vaam's side admits the header with `ask_provider()` and `open_claims` | **Unverified**: the library calls are verified; vaam's endpoint is not built |
 | The first deployment's clocks agree within 30 seconds | **Unverified** (NTP) |

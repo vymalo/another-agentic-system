@@ -3,8 +3,8 @@
 - **Status:** **proposed (2026-11-02)**, written before the code and implemented by the same change
   ([ADR 0067](../decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md)). The orchestrator's side is built
   (`orch-signed-request`, `orch-tools-mcp`, the relay and `toolServers[].signing`), proven on mocks and, when it was written, against
-  the real `cratestack-cose` 0.17.2 (the [interoperability crate](#how-this-page-is-kept-true), run on 2026-11-02; its CI job has not run
-  in this repository yet). **No tool server verifies it yet**: the receiving side of the first one (vaam-apps, on a cratestack 0.17.2
+  the real `cratestack-cose` 0.17.2 (the [interoperability crate](#how-this-page-is-kept-true), run on 2026-11-02, locally and by its CI job on
+  the pull request that brought it, #311). **No tool server verifies it yet**: the receiving side of the first one (vaam-apps, on a cratestack 0.17.2
   MCP endpoint) is written against this page.
 - **Served by:** nobody: this is not an A2A extension and an agent never sees it. **Used by:** the orchestrator's relay when it
   calls a tool server on an agent's behalf, and the tool servers that choose to verify it.
@@ -347,6 +347,6 @@ fails in the check named: `PUT` or `/mcp2` or one more space in the body (5); `a
 | `kid` is the first 8 bytes of the RFC 9679 thumbprint of the Ed25519 key | **Verified 2026-11-02**: `src/thumbprint.rs` at the tag, and the example (`34b84aeaf4b08543`) |
 | A cratestack MCP guard gives an `AuthProvider` the method, the resource's path, the query and the exact body bytes, and asks `AuthProvider::credential` before the body is read when the deployment uses `ask_provider()` | **Verified 2026-11-02**: `crates/cratestack-mcp/src/streamable_http/{guard,auth,credential,presence}.rs` and `cratestack-core/src/{context,credential}.rs` at the tag |
 | `cratestack-cose` 0.17.2 needs Rust 1.98 (`rust-version`), the orchestrator builds on 1.94.1 | **Verified 2026-11-02**: `cargo info cratestack-cose` and `orchestrator/rust-toolchain.toml` |
-| The orchestrator's bytes open with the real `cratestack_cose::open_claims` at 0.17.2, the real `sign_claims` writes the same bytes, and the reference verifier accepts what the real `sign_claims` writes | **Verified 2026-11-02** by running `orchestrator/crates/signed-request/interop` (4 tests, Rust 1.98.1). **Unverified in CI** until the job `signed-request-interop` has run in this repository |
+| The orchestrator's bytes open with the real `cratestack_cose::open_claims` at 0.17.2, the real `sign_claims` writes the same bytes, and the reference verifier accepts what the real `sign_claims` writes | **Verified 2026-11-02** by running `orchestrator/crates/signed-request/interop` (4 tests, Rust 1.98.1). and by the CI job `signed-request-interop` on the pull request that brought it (#311) |
 | A tool server on cratestack verifies all of the above in the order given | **Unverified**: not built yet. The steps are the contract; the first implementation will say where this page is wrong |
 | The orchestrator's clock and the server's agree within 30 seconds in the deployment | **Unverified**: an operational assumption (NTP) |
