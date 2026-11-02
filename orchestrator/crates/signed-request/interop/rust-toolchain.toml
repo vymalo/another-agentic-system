@@ -1,0 +1,4 @@
+# cratestack-cose 0.17.2 needs Rust 1.98 (its rust-version); the orchestrator's own toolchain is 1.94.1. This crate is built on its own.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"

@@ -1322,6 +1322,14 @@
           "minLength": 1,
           "type": "string"
         },
+        "protocol": {
+          "$ref": "#/$defs/ToolServerProtocol",
+          "description": "The MCP revision the server speaks, which decides how a session opens: `legacy` (the default) opens with `initialize`, `2026-07-28` with `server/discover` and no fallback. A server that speaks only `2026-07-28` refuses `initialize`."
+        },
+        "signing": {
+          "$ref": "#/$defs/ToolServerSigning",
+          "description": "Sign every request to the server, in place of a bearer (ADR 0067, `docs/api/signed-tool-requests-v1.md`): each HTTP request carries one header that binds it to its thread and the thread's owner. Refused together with `bearer`."
+        },
         "timeoutSecs": {
           "default": 120,
           "description": "Seconds one call may take, 1 to 600 (default 120).",
@@ -1348,6 +1356,43 @@
         "id",
         "name",
         "url"
+      ],
+      "type": "object"
+    },
+    "ToolServerProtocol": {
+      "description": "The MCP revision a tool server speaks (`toolServers[].protocol`).",
+      "enum": [
+        "legacy",
+        "2026-07-28"
+      ],
+      "type": "string"
+    },
+    "ToolServerSigning": {
+      "additionalProperties": false,
+      "description": "How the requests to one tool server are signed (ADR 0067).",
+      "properties": {
+        "audience": {
+          "description": "The name the tool server calls itself, 1 to 256 characters of one line: the `aud` of every signed request, compared by exact string equality. By convention the URL of its MCP endpoint.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The Ed25519 private key the requests are signed with, a PKCS#8 PEM block (`openssl genpkey -algorithm ed25519`), by reference. One key for one server: the server pins its public half."
+        },
+        "ttlSecs": {
+          "default": 30,
+          "description": "Seconds a signed request lives, 1 to 60 (default 30).",
+          "format": "uint64",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "audience"
       ],
       "type": "object"
     },

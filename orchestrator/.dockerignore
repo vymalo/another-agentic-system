@@ -6,3 +6,6 @@ target/
 rust-toolchain.toml
 Dockerfile
 .dockerignore
+# The interoperability crate of orch-signed-request (ADR 0067) has a toolchain and a workspace of its own and is built by its own
+# CI job: nothing in the image needs it, and cargo-chef would take its manifest for one of the workspace's.
+crates/signed-request/interop/

@@ -177,7 +177,7 @@ orchestrator --config dev/orchestrator.yaml --print-config     # the merged conf
   is for, the timeout); **the URL and the credentials are in `Config.tool_endpoints` only**, one `orch_ports::ToolServerEndpoint`
   per server (id, URL, timeout, the bearer and the header values resolved, as `ToolSecret`s), which the relay (feature `tool-relay`) reads and nothing else does, and which appear in no `Debug` (the configuration's lists the ids), event, answer or log line. A mistake is exit 78 naming the key, never a value; an `agents` id that is not an
   agent of the agents file is one too (checked only when the file's own list is the whole list, that is, with no platform registry);
-  a server that has a credential and a plain `http://` URL logs a warning naming the server.
+  a server that has a credential, or signs its requests, and a plain `http://` URL logs a warning naming the server. **ADR 0067:** `protocol` (`legacy` or `2026-07-28`) and `signing { key, audience, ttlSecs }` reach the endpoint as `ToolProtocol` and `ToolSigning`; the `signing.key` is read as a secret reference, and with the feature `tool-relay` a value that is not an Ed25519 PKCS#8 PEM stops the process at startup (exit 78, `toolServers[i].signing.key`, never its text).
 * The compose stack is configured this way:* The compose stack is configured this way: [`dev/orchestrator.yaml`](../../../dev/orchestrator.yaml) (and
   [`dev/orchestrator.live.yaml`](../../../dev/orchestrator.live.yaml) for `compose.live.yaml`). The `local-agent` profile stays on
   variables, which keeps the old path covered by a stack that runs.

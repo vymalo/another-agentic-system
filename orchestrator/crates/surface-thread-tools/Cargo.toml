@@ -31,6 +31,9 @@ orch-credential-broker.workspace = true
 orch-surface-agui.workspace = true
 orch-testsupport.workspace = true
 orch-tools-mcp.workspace = true
+# The key and the public half a signed tool server pins (`tests/signed_relay.rs`, ADR 0067).
+orch-signed-request.workspace = true
+base64.workspace = true
 orch-log-filter.workspace = true
 tracing-subscriber.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }

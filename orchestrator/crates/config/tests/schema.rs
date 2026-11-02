@@ -70,7 +70,7 @@ fn url_ref_fields(schema: &Value) -> Vec<String> {
 
 /// ADR 0034 amended (2026-10-04): a model endpoint's `baseUrl` is the first key that is not a
 /// secret and takes `{ env }` or `{ file }`. A second one is a change of the contract, so it
-/// fails here first. A `UrlRef` is not a `SecretRef`: the sixteen secrets below stay sixteen.
+/// fails here first. A `UrlRef` is not a `SecretRef`: the seventeen secrets below stay seventeen.
 #[test]
 fn the_only_url_that_may_be_a_reference_is_a_model_endpoints_base_url() {
     assert_eq!(url_ref_fields(&orch_config::schema()), ["Endpoint.baseUrl"]);
@@ -99,11 +99,12 @@ fn the_only_url_that_may_be_a_reference_is_a_model_endpoints_base_url() {
 
 /// ADR 0034: "the secrets are the eight values of today that are secrets" and, with ADR 0032, the
 /// two credentials of the S3 store, with ADR 0024, the bearer and the headers of a tool server, and,
-/// with ADR 0046, the keys that seal a person's credentials, and, with issue 290, the direct connection
-/// string of the database. A seventeenth, or a string where one of these is, would be a change of the
-/// contract, so it fails here first.
+/// with ADR 0046, the keys that seal a person's credentials, with issue 290, the direct connection
+/// string of the database, and, with ADR 0067, the key a tool server's requests are signed with. An
+/// eighteenth, or a string where one of these is, would be a change of the contract, so it fails
+/// here first.
 #[test]
-fn the_secrets_are_the_sixteen_the_contract_names() {
+fn the_secrets_are_the_seventeen_the_contract_names() {
     assert_eq!(
         secret_fields(&orch_config::schema()),
         [
@@ -120,6 +121,7 @@ fn the_secrets_are_the_sixteen_the_contract_names() {
             "ThreadTools.secret",
             "ToolServer.bearer",
             "ToolServer.headers",
+            "ToolServerSigning.key",
             "UserSecretKey.key",
             "WebhookGeneric.secrets",
             "WebhookGithub.secrets",

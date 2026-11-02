@@ -123,10 +123,10 @@ pub use store::{
     StoreError, ThreadListing, ThreadStore,
 };
 pub use tools::{
-    MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, MAX_USER_SERVER_TOOLS, MAX_USER_TOOL_SCHEMA_BYTES,
-    MAX_USER_TOOL_TITLE_BYTES, MIN_SCRUBBABLE_SECRET_BYTES, RESERVED_HEADERS, ToolCall,
-    ToolCallOutput, ToolDef, ToolSecret, ToolServerClient, ToolServerEndpoint, ToolServerError,
-    is_reserved_header,
+    ActingFor, MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, MAX_USER_SERVER_TOOLS,
+    MAX_USER_TOOL_SCHEMA_BYTES, MAX_USER_TOOL_TITLE_BYTES, MIN_SCRUBBABLE_SECRET_BYTES,
+    RESERVED_HEADERS, ToolCall, ToolCallOutput, ToolDef, ToolProtocol, ToolSecret,
+    ToolServerClient, ToolServerEndpoint, ToolServerError, ToolSigning, is_reserved_header,
 };
 pub use usage_ledger::{UsageBackfill, UsageLedger};
 pub use user_tools::{

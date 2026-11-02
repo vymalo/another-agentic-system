@@ -1,0 +1,24 @@
+[package]
+name = "orch-signed-request-interop"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Holds orch-signed-request to the real cratestack-cose 0.17.2: the real open_claims opens its bytes, the real sign_claims writes the same ones. Its own toolchain (Rust 1.98) and its own workspace: cratestack-cose needs a newer Rust than the orchestrator."
+readme = "README.md"
+
+# Not a member of the orchestrator's workspace, on purpose: `cratestack-cose` 0.17.2 has `rust-version = "1.98.0"`, the workspace
+# builds on 1.94.1. The empty table makes this crate the root of its own workspace (and of its own `Cargo.lock`).
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+orch-signed-request = { path = "..", features = ["verify"] }
+# The exact version the contract is written against.
+cratestack-cose = "=0.17.2"
+base64 = "0.22"
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "macros"] }
+uuid = "1"

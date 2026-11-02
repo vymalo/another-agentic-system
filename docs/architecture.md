@@ -527,6 +527,12 @@ tools of its own per-thread endpoint, finds `websearch__search` among them, and 
 calls the server through the `ToolServerClient` port (`orch-tools-mcp` in the binary), and reports each call as one **step**
 with the server's icon, so the person sees it and the agent does not report it twice (`_meta.reportsStep`).
 
+*2026-11-02 ([ADR 0067](decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md)).* A server of the deployment's list can speak
+MCP `2026-07-28` (`toolServers[].protocol`: the session opens with `server/discover`) and can take **signed requests** instead of a bearer
+(`toolServers[].signing`): every HTTP request the relay makes to it carries one header that binds the request, the thread and **the thread's owner**
+(the person the tool runs for, not the agent), so the tool server can authorise the person; the contract is
+[`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md). A server that is not configured for it is called exactly as above.
+
 ```mermaid
 sequenceDiagram
   autonumber

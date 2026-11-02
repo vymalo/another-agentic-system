@@ -8,6 +8,10 @@ name: Orchestrator
 #        for queries and the direct URL for what must be direct (the migrations, the LISTEN connection). A pinned
 #        edoburu/pgbouncer image (tag and digest) with the configuration of crates/store-postgres/tests/pgbouncer;
 #        its version and its pool mode are asserted before the tests run.
+# signed-request-interop: the signed requests to a tool server (ADR 0067) against the real cratestack-cose 0.17.2, which needs
+#        Rust 1.98 where the workspace is on 1.94.1: a crate of its own, outside the workspace, with its own toolchain
+#        (orchestrator/crates/signed-request/interop). The real `open_claims` opens what the orchestrator signs and the real
+#        `sign_claims` writes the same bytes.
 # image: builds the container image (pull requests: build only, to validate the Dockerfile;
 #        main: build and push to ghcr.io) and, before anything is pushed, runs it against a
 #        Postgres service: non-root, /healthz and /readyz answer, SIGTERM exits cleanly.
@@ -160,6 +164,23 @@ jobs:
       # binary hosting an echo agent, and the roles splitting the work) against the database.
       - run: cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings
       - run: cargo test -p orchestrator --features agent-local --locked
+
+  signed-request-interop:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: orchestrator/crates/signed-request/interop
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the toolchain the crate pins
+        # not the workspace's 1.94.1: cratestack-cose 0.17.2 has rust-version 1.98.0
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator/crates/signed-request/interop -> target"
+      - run: cargo +1.98.1 test --locked
 
   pooler:
     runs-on: ubuntu-latest

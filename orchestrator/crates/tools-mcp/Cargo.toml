@@ -10,6 +10,8 @@ readme = "README.md"
 
 [dependencies]
 orch-ports.workspace = true
+# The signed requests to a tool server that takes them (`sign.rs`, ADR 0067).
+orch-signed-request.workspace = true
 # The client side of rmcp, for this crate only (the surfaces use its server side).
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 # `stream`: the body of a response is read in chunks, to cut it at a bound (`wire.rs`).
@@ -19,6 +21,9 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["time", "net"] }
 thiserror.workspace = true
 tracing.workspace = true
+# The time a request is signed at (whole seconds), and the thread of a signed request.
+jiff.workspace = true
+uuid.workspace = true
 futures.workspace = true
 bytes.workspace = true
 # The connector layer that judges the address a connection was made to (`peer.rs`) and the SSE parser of the
@@ -30,11 +35,14 @@ tower.workspace = true
 
 [dev-dependencies]
 orch-core.workspace = true
+# The receiving side of a signed request, to verify what the client sent (`tests/signed.rs`).
+orch-signed-request = { workspace = true, features = ["verify"] }
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-testsupport.workspace = true
 # `test-util`: a test that runs on a paused clock (a lookup that never answers).
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "test-util"] }
 axum.workspace = true
+base64.workspace = true
 
 [lints]
 workspace = true

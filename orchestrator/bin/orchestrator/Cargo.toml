@@ -34,7 +34,7 @@ surface-thread-tools = ["dep:orch-surface-thread-tools", "dep:orch-thread-token"
 # like the surfaces: with no `toolServers` in the configuration, or without the surface mounted, it does
 # nothing. Without the feature a configuration that lists servers still loads (a person can attach them)
 # and the process says at startup that no agent can use them.
-tool-relay = ["surface-thread-tools", "dep:orch-tools-mcp"]
+tool-relay = ["surface-thread-tools", "dep:orch-tools-mcp", "dep:orch-signed-request"]
 # The webhook routes (ADR 0017): signed CI results, machine routes outside the identity layer.
 # On by default, but a route is mounted only when ORCH_SURFACES names it and its secrets are set.
 surface-webhook = ["dep:orch-surface-webhook"]
@@ -88,6 +88,8 @@ orch-surface-mcp = { workspace = true, optional = true }
 orch-surface-thread-tools = { workspace = true, optional = true }
 orch-thread-token = { workspace = true, optional = true }
 orch-tools-mcp = { workspace = true, optional = true }
+# Reads the signing key of a tool server at startup, so that a key that is not one stops the process (`tool-relay`, ADR 0067).
+orch-signed-request = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-model-openai.workspace = true

@@ -43,6 +43,7 @@ orch-surface-thread-tools = { path = "crates/surface-thread-tools" }
 orch-surface-webhook = { path = "crates/surface-webhook" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-thread-token = { path = "crates/thread-token" }
+orch-signed-request = { path = "crates/signed-request" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
 # The adam-rs crates (ADR 0015), all pinned to one full commit sha, never a branch or a tag; a PR
@@ -125,3 +126,6 @@ aes-gcm = { version = "0.11", default-features = false, features = ["aes", "allo
 hmac = "0.12"
 # The thread-tools token (`orch-thread-token`): base64url without padding, the encoding of a JWS.
 base64 = "0.22"
+# Ed25519 for the signed requests to a tool server (`orch-signed-request`, ADR 0067): already in the tree as rustls'
+# crypto provider, so the crate adds no new library.
+aws-lc-rs = "1.18"
