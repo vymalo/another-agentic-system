@@ -20,7 +20,7 @@ use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
-use orch_core::{BoxError, Classify, ErrorClass};
+use orch_core::{BoxError, Classify, ErrorClass, ThreadId, UserId};
 
 use crate::EgressRefusal;
 use serde_json::{Map, Value};
@@ -110,7 +110,10 @@ impl fmt::Debug for ToolSecret {
 /// the id, the URL, the names of the headers and the timeout, never a value.
 ///
 /// A request to the server is `POST url` (MCP over streamable HTTP) with `Authorization: Bearer
-/// <bearer>` when there is a bearer, and each of `headers` as given.
+/// <bearer>` when there is a bearer, and each of `headers` as given. A server that takes **signed
+/// requests** ([`signing`](ToolServerEndpoint::signing)) is sent no bearer: every request carries
+/// one header that binds it to the thread and its owner
+/// ([`signed-tool-requests-v1`](../../../../docs/api/signed-tool-requests-v1.md), ADR 0067).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToolServerEndpoint {
     /// The server's id in the configuration (`toolServers[].id`), for logs and for the names of
@@ -128,6 +131,73 @@ pub struct ToolServerEndpoint {
     /// that wants another limit for one call clones the endpoint with
     /// [`with_timeout`](ToolServerEndpoint::with_timeout).
     pub timeout: Duration,
+    /// The MCP revision the server speaks, which decides how a session opens
+    /// (`toolServers[].protocol`). [`ToolProtocol::Legacy`] unless the configuration says otherwise.
+    pub protocol: ToolProtocol,
+    /// How the orchestrator signs its requests to the server, in place of a bearer
+    /// (`toolServers[].signing`). A signed request also needs [`acting_for`](Self::acting_for).
+    pub signing: Option<ToolSigning>,
+    /// For whom the request is made, when the server wants to know: the thread and its owner. The
+    /// relay sets it on a copy of the endpoint for each request ([`with_acting_for`](Self::with_acting_for)); it
+    /// is not configuration.
+    pub acting_for: Option<ActingFor>,
+}
+
+/// The MCP revision a tool server speaks: how the orchestrator opens a session with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ToolProtocol {
+    /// The handshake every server had before MCP `2026-07-28`: `initialize`, then
+    /// `notifications/initialized`.
+    #[default]
+    Legacy,
+    /// MCP `2026-07-28`: no `initialize`; the session opens with `server/discover` and every request
+    /// carries its own protocol version. A server that speaks only this revision refuses a legacy
+    /// `initialize`.
+    V2026_07_28,
+}
+
+/// How the orchestrator signs the requests to one tool server (ADR 0067): the key, the name the
+/// server calls itself, and how long a signed request lives. `Debug` shows the audience and the
+/// lifetime and never the key.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ToolSigning {
+    /// The Ed25519 private key, a PKCS#8 PEM block. Read by the client for each request; wiped when
+    /// dropped.
+    pub key: ToolSecret,
+    /// The audience of the signed objects: the name the tool server calls itself, compared by exact
+    /// string equality.
+    pub audience: String,
+    /// How long a signed request lives, in seconds, 1 to 60.
+    pub ttl_secs: u64,
+}
+
+impl fmt::Debug for ToolSigning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolSigning")
+            .field("key", &self.key)
+            .field("audience", &self.audience)
+            .field("ttl_secs", &self.ttl_secs)
+            .finish()
+    }
+}
+
+/// For whom a request to a tool server is made: the thread, and the person who owns it. `Debug`
+/// shows the thread and not the person.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ActingFor {
+    /// The thread the call is made for.
+    pub thread: ThreadId,
+    /// The thread's owner: the identity the orchestrator holds for the thread.
+    pub owner: UserId,
+}
+
+impl fmt::Debug for ActingFor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActingFor")
+            .field("thread", &self.thread)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ToolServerEndpoint {
@@ -139,7 +209,32 @@ impl ToolServerEndpoint {
             bearer: None,
             headers: Vec::new(),
             timeout,
+            protocol: ToolProtocol::Legacy,
+            signing: None,
+            acting_for: None,
         }
+    }
+
+    /// The same endpoint, for a server that speaks `protocol`.
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: ToolProtocol) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
+    /// The same endpoint, with its requests signed as `signing` says (and no bearer).
+    #[must_use]
+    pub fn with_signing(mut self, signing: ToolSigning) -> Self {
+        self.signing = Some(signing);
+        self
+    }
+
+    /// The same endpoint, for a request made for `thread` on behalf of `owner`. A client signs with
+    /// it; a server that is not signed never sees it.
+    #[must_use]
+    pub fn with_acting_for(mut self, thread: ThreadId, owner: UserId) -> Self {
+        self.acting_for = Some(ActingFor { thread, owner });
+        self
     }
 
     /// The same endpoint with `bearer` as its bearer token.
@@ -179,6 +274,9 @@ impl fmt::Debug for ToolServerEndpoint {
                     .collect::<Vec<_>>(),
             )
             .field("timeout", &self.timeout)
+            .field("protocol", &self.protocol)
+            .field("signing", &self.signing)
+            .field("acting_for", &self.acting_for)
             .finish()
     }
 }
@@ -560,6 +658,40 @@ mod tests {
             endpoint.bearer.as_ref().unwrap().expose(),
             "tok-very-secret"
         );
+    }
+
+    #[test]
+    fn debug_shows_neither_the_signing_key_nor_the_person_a_request_is_for() {
+        let thread: ThreadId = "0194a6c2-6b1e-7c3a-9f40-5d2e8b7a1c33".parse().unwrap();
+        let endpoint =
+            ToolServerEndpoint::new("vaam", "https://tools.example/mcp", Duration::from_secs(5))
+                .with_protocol(ToolProtocol::V2026_07_28)
+                .with_signing(ToolSigning {
+                    key: ToolSecret::new("-----BEGIN PRIVATE KEY-----very-secret"),
+                    audience: "https://tools.example/mcp".to_owned(),
+                    ttl_secs: 30,
+                })
+                .with_acting_for(thread, UserId::new("Amina@Example.com"));
+        let text = format!("{endpoint:?}");
+        assert!(
+            !text.contains("very-secret") && !text.contains("PRIVATE"),
+            "{text}"
+        );
+        assert!(!text.to_lowercase().contains("amina"), "{text}");
+        assert!(
+            text.contains("V2026_07_28")
+                && text.contains("ttl_secs: 30")
+                && text.contains("0194a6c2"),
+            "{text}"
+        );
+        // what a copy for a request says, and what the original does not
+        assert_eq!(
+            endpoint.acting_for.as_ref().map(|a| a.owner.as_str()),
+            Some("amina@example.com")
+        );
+        let plain = ToolServerEndpoint::new("x", "http://x.test/mcp", Duration::from_secs(1));
+        assert_eq!(plain.protocol, ToolProtocol::Legacy);
+        assert!(plain.signing.is_none() && plain.acting_for.is_none());
     }
 
     #[test]

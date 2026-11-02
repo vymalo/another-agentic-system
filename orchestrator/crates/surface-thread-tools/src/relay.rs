@@ -42,6 +42,7 @@ mod own;
 pub use limits::{MAX_IN_FLIGHT, MAX_PER_OWNER, PERMIT_WAIT};
 pub use own::{NEEDS_SIGN_IN, USER_SERVER_TIMEOUT};
 
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -141,6 +142,23 @@ pub enum RelayError {
 struct Server {
     info: ToolServerInfo,
     endpoint: ToolServerEndpoint,
+}
+
+impl Server {
+    /// The endpoint as a request made for `ctx`'s thread reaches the server. A server that takes **signed requests** is told
+    /// for whom: the thread, and the thread's owner (the person the tool runs for, whoever asked the agent, and whichever
+    /// agent of the thread is calling). That is a copy of the endpoint with the two added; any other server is called with the
+    /// endpoint itself, and never learns either (`docs/api/signed-tool-requests-v1.md`).
+    fn endpoint_for(&self, ctx: &ToolCtx) -> Cow<'_, ToolServerEndpoint> {
+        if self.endpoint.signing.is_none() {
+            return Cow::Borrowed(&self.endpoint);
+        }
+        Cow::Owned(
+            self.endpoint
+                .clone()
+                .with_acting_for(ctx.claims.thread, ctx.owner.clone()),
+        )
+    }
 }
 
 /// The provider of the relayed tools. Built by the composition root from the deployment's list;
@@ -658,7 +676,8 @@ impl<P: Ports, C: ToolServerClient> ThreadToolProvider for RelayTools<P, C> {
         };
         let servers = self.served(&record, &ctx.claims.agent);
         let deployment = join_all(servers.iter().map(|server| async move {
-            (*server, self.client.list_tools(&server.endpoint).await)
+            let endpoint = server.endpoint_for(ctx);
+            (*server, self.client.list_tools(&endpoint).await)
         }));
         // the owner's own servers, listed at the same time; the deployment's come first
         let (listings, own_tools) = futures::join!(deployment, self.list_own(ctx, &record));
@@ -826,9 +845,9 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             .await;
         let call = ToolCall::new(tool).with_arguments(args);
         let bound = server.endpoint.timeout + CLIENT_GRACE;
+        let endpoint = server.endpoint_for(ctx);
         let upstream = async {
-            match tokio::time::timeout(bound, self.client.call_tool(&server.endpoint, &call)).await
-            {
+            match tokio::time::timeout(bound, self.client.call_tool(&endpoint, &call)).await {
                 Ok(answer) => answer,
                 Err(_) => Err(ToolServerError::TimedOut {
                     after: server.endpoint.timeout,

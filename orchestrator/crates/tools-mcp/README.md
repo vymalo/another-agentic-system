@@ -32,6 +32,19 @@ never one a person or an agent typed.
 The port's `list_tools(&ToolServerEndpoint)` and `call_tool(&ToolServerEndpoint, &ToolCall)` are the whole
 interface; the types are in [`orch-ports`](../ports/README.md#api-at-a-glance).
 
+**A server can speak MCP `2026-07-28` and take signed requests** (ADR 0067). `ToolServerEndpoint::protocol` is `Legacy` (the default) or
+`V2026_07_28`: the second opens the session with **`server/discover`** (`rmcp` 3.5.0's `ClientLifecycleMode::Discover`, that revision only) and
+**never falls back** to `initialize`; a server that answers something else is an error, and one that lists other revisions only is
+`Protocol` ("the server does not speak MCP 2026-07-28"). `ToolServerEndpoint::signing` makes the client send **no bearer** and put one header,
+`Tool-Request-Claims`, on every HTTP request of the session, made by [`orch-signed-request`](../signed-request/README.md) just before the
+bytes leave and over those exact bytes (the body is serialised once, hashed, signed and sent as it is), for the thread and the owner in
+`ToolServerEndpoint::acting_for`; the contract is [`signed-tool-requests-v1`](../../../docs/api/signed-tool-requests-v1.md). A signed
+session is always built by this crate's own HTTP backend (`wire.rs`), with the response bound of the guarded client (4 MiB), because
+`rmcp`'s backend hands the message to the HTTP client to serialise. Everything that can be wrong with a signed request is found before the
+first byte is sent, as `Misconfigured` (a bearer beside the signing, the header set by hand, no thread or owner, a key that is not an Ed25519
+PKCS#8 PEM, an audience or a lifetime out of bounds, an owner or a path over the limits, a URL with a query), and the text holds no key; a request
+is never sent unsigned for it.
+
 **One request is one session.** Each call connects, runs `initialize`, makes its one request
 (`tools/list` with all its pages, or `tools/call` with the arguments and the request's `_meta`) and lets
 the session go; nothing is kept between requests and no listing is cached, so any replica serves any
@@ -160,6 +173,17 @@ message go back into an agent's model, so they are data to pass on. The icons a 
 status (the tests of both shapes would fail on a change); a refused connection is `Client(reqwest::Error)`.
 
 ## Tests
+
+* `tests/signed.rs` (ADR 0067): a real MCP server over HTTP that speaks **only `2026-07-28`** and verifies every request
+  (`FakeToolServerOptions::modern_only().signed(..)`): the session opens with `server/discover` and no `initialize` is ever sent; every request of a listing and a call
+  is accepted (the signature, the audience, the time, the method, the path and the digest of the bytes received) with no `Authorization`, for
+  the thread and the owner of the endpoint (trimmed and lower-cased), a `cti` of its own each; a call captured from the wire fails when the
+  method, the path or one byte of the body is changed, and when the thread or the owner is changed in the signed payload; the same bytes sent again
+  are refused (the server's job: check 6); a server that speaks only the new revision refuses the old handshake and the same server told its revision is
+  listed and called; a server that has no `server/discover` is an error and not a fallback; eight ways a signed request cannot be made (no thread, a
+  bearer, the header set by hand, a bad key, no audience, a long lifetime, a long owner, a query) are `Misconfigured`, hold no key, and **send nothing**; another
+  audience or another key is refused by the server as `Unauthenticated`; two threads through one client get their own owners; and the legacy path
+  (a bearer, `initialize`) is unchanged and sent no claims.
 
 Offline: a real MCP server over HTTP on a loopback port (`orch_testsupport::FakeToolServer`). No
 environment variables.

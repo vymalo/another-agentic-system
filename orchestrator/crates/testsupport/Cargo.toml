@@ -14,6 +14,8 @@ orch-ports = { workspace = true, features = ["testkit"] }
 orch-app.workspace = true
 orch-api.workspace = true
 orch-surface-agui.workspace = true
+# The receiving side of a signed request, for the fake tool server that verifies what the relay sends (ADR 0067).
+orch-signed-request = { workspace = true, features = ["verify"] }
 a2a-lf.workspace = true
 a2a-server-lf.workspace = true
 async-trait.workspace = true

@@ -22,8 +22,8 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Database, Environment, LogFormat, MAX_PRESIGN_TTL_SECS,
     MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
-    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SharingMode, Surface, ToolServer, UrlRef, UserSecrets,
-    UserToolServers,
+    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SharingMode, Surface, ToolServer, ToolServerSigning,
+    UrlRef, UserSecrets, UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -113,6 +113,9 @@ pub struct ToolServerSecrets {
     pub bearer: Option<Secret>,
     /// `toolServers[].headers`, by header name as written in the file, in the order of the names.
     pub headers: Vec<(String, Secret)>,
+    /// `toolServers[].signing.key`: the PEM text as it was read. That it is an Ed25519 key is checked where it is used (the
+    /// binary), which has the crypto; here it is only a value that was found and is not blank.
+    pub signing_key: Option<Secret>,
 }
 
 /// The prompts of the tasks (`tasks.<task>.system`), read: the text itself, whether it was written
@@ -693,6 +696,41 @@ impl Checker<'_> {
         self.auth(cfg);
     }
 
+    /// `toolServers[].signing` (ADR 0067): no bearer beside it, a header of its own that no `headers` entry takes, an audience
+    /// the contract can carry. The lifetime's bounds are a shape error (`range`), checked before this runs.
+    fn tool_server_signing(&mut self, at: &str, server: &ToolServer, signing: &ToolServerSigning) {
+        let here = format!("{at}.signing");
+        if server.bearer.is_some() {
+            self.invalid(
+                &here,
+                "a server that takes signed requests takes no bearer: signing replaces it",
+            );
+        }
+        if server
+            .headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("tool-request-claims"))
+        {
+            self.invalid(
+                format!("{at}.headers"),
+                "Tool-Request-Claims is the header the signed requests carry, set by signing",
+            );
+        }
+        let audience = signing.audience.as_str();
+        if audience.is_empty() || audience.len() > 256 || audience.chars().any(char::is_control) {
+            self.invalid(
+                format!("{here}.audience"),
+                "an audience is 1 to 256 bytes of one line: the name the tool server calls itself",
+            );
+        }
+        if !(1..=crate::types::MAX_TOOL_SIGNING_TTL_SECS).contains(&signing.ttl_secs) {
+            self.invalid(
+                format!("{here}.ttlSecs"),
+                "a signed request lives 1 to 60 seconds",
+            );
+        }
+    }
+
     /// `toolServers` (ADR 0024): ids that tell the servers apart and make `<id>__<tool>` unambiguous,
     /// a URL with no credential in it, an icon that is a small `data:` image, header names the
     /// client can send, tool and agent lists that name something.
@@ -759,6 +797,9 @@ impl Checker<'_> {
                     format!("{at}.headers"),
                     "Authorization is set by bearer, once",
                 );
+            }
+            if let Some(signing) = &server.signing {
+                self.tool_server_signing(&at, server, signing);
             }
             let mut names: Vec<String> = Vec::new();
             for name in server.headers.keys() {
@@ -1513,8 +1554,24 @@ impl Checker<'_> {
                     "the value is not one a header can hold",
                 );
             }
-            if bearer.is_some() || !headers.is_empty() {
-                tool_servers.insert(server.id.clone(), ToolServerSecrets { bearer, headers });
+            let signing_key = server.signing.as_ref().and_then(|signing| {
+                let path = format!("{at}.signing.key");
+                let key = self.resolve(&signing.key, &path, true)?;
+                if key.expose().trim().is_empty() {
+                    self.invalid(&path, "the key is empty");
+                    return None;
+                }
+                Some(key)
+            });
+            if bearer.is_some() || !headers.is_empty() || signing_key.is_some() {
+                tool_servers.insert(
+                    server.id.clone(),
+                    ToolServerSecrets {
+                        bearer,
+                        headers,
+                        signing_key,
+                    },
+                );
             }
         }
         let user_secret_keys = match &cfg.secrets {

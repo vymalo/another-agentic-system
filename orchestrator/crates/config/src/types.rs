@@ -2299,8 +2299,56 @@ pub struct ToolServer {
     #[serde(default = "default_tool_server_timeout_secs")]
     #[schemars(range(min = 1, max = 600))]
     pub timeout_secs: u64,
+    /// The MCP revision the server speaks, which decides how a session opens: `legacy` (the default) opens with
+    /// `initialize`, `2026-07-28` with `server/discover` and no fallback. A server that speaks only `2026-07-28`
+    /// refuses `initialize`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ToolServerProtocol>,
+    /// Sign every request to the server, in place of a bearer (ADR 0067,
+    /// `docs/api/signed-tool-requests-v1.md`): each HTTP request carries one header that binds it to its
+    /// thread and the thread's owner. Refused together with `bearer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing: Option<ToolServerSigning>,
 }
 
 fn default_tool_server_timeout_secs() -> u64 {
     DEFAULT_TOOL_SERVER_TIMEOUT_SECS
+}
+
+/// The MCP revision a tool server speaks (`toolServers[].protocol`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum ToolServerProtocol {
+    /// The handshake of every revision before `2026-07-28`: `initialize`.
+    #[serde(rename = "legacy")]
+    Legacy,
+    /// MCP `2026-07-28`: `server/discover`, and every request carries its own protocol version.
+    #[serde(rename = "2026-07-28")]
+    V2026_07_28,
+}
+
+/// The default of `toolServers[].signing.ttlSecs`.
+pub const DEFAULT_TOOL_SIGNING_TTL_SECS: u64 = 30;
+
+/// The longest `toolServers[].signing.ttlSecs`, and the longest an object of the contract lives.
+pub const MAX_TOOL_SIGNING_TTL_SECS: u64 = 60;
+
+/// How the requests to one tool server are signed (ADR 0067).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolServerSigning {
+    /// The Ed25519 private key the requests are signed with, a PKCS#8 PEM block (`openssl genpkey -algorithm
+    /// ed25519`), by reference. One key for one server: the server pins its public half.
+    pub key: SecretRef,
+    /// The name the tool server calls itself, 1 to 256 characters of one line: the `aud` of every signed
+    /// request, compared by exact string equality. By convention the URL of its MCP endpoint.
+    #[schemars(length(min = 1, max = 256))]
+    pub audience: String,
+    /// Seconds a signed request lives, 1 to 60 (default 30).
+    #[serde(default = "default_tool_signing_ttl_secs")]
+    #[schemars(range(min = 1, max = 60))]
+    pub ttl_secs: u64,
+}
+
+fn default_tool_signing_ttl_secs() -> u64 {
+    DEFAULT_TOOL_SIGNING_TTL_SECS
 }

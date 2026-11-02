@@ -31,7 +31,7 @@ use std::time::Duration;
 use orch_app::{PublicConfig, TaskSettings, ToolServerInfo, UiHistory, UiSettings};
 use orch_config::{Resolve, SecretRef, UrlRef, Validated};
 use orch_core::{AgentId, LanguageRule, TaskKind};
-use orch_ports::{ToolSecret, ToolServerEndpoint};
+use orch_ports::{ToolProtocol, ToolSecret, ToolServerEndpoint, ToolSigning};
 use secrecy::SecretString;
 use serde_json::{Map, Value};
 
@@ -68,8 +68,9 @@ pub enum Note {
     },
     /// No file: the environment alone configures the process, which is deprecated.
     EnvironmentOnly,
-    /// A tool server (`toolServers`) that has a credential is at a plain `http://` URL: the
-    /// credential travels in the clear. A warning naming the server's id, never a URL or a value.
+    /// A tool server (`toolServers`) that has a credential, or signs its requests, is at a plain `http://` URL: the
+    /// credential, or the person each signed request names, travels in the clear. A warning naming the server's id,
+    /// never a URL or a value.
     ToolServerCredentialOverHttp {
         /// The server's id.
         id: String,
@@ -100,8 +101,9 @@ impl Note {
                 (docs/api/config.md)"
                 .to_owned(),
             Note::ToolServerCredentialOverHttp { id } => format!(
-                "the tool server {id} has a credential and a plain http:// URL: the credential is \
-                 sent in the clear; use https outside development"
+                "the tool server {id} has a credential or signs its requests, and has a plain http:// \
+                 URL: the credential, or the person each request names, is sent in the clear; use https \
+                 outside development"
             ),
         }
     }
@@ -1291,6 +1293,8 @@ fn load_file(
     let loaded = Config::load_with(file_args, resolved, &env, &read)
         .map_err(|e| ConfigError::Document(vec![legacy_line(&e)]))?;
     tool_server_agents(&valid.config.tool_servers, &loaded)?;
+    #[cfg(feature = "tool-relay")]
+    tool_server_signing_keys(&valid)?;
     notes.extend(tool_server_notes(&valid));
     notes.extend(process_notes(&args, &env));
     Ok(Loaded {
@@ -1746,7 +1750,11 @@ fn tool_endpoints_of(valid: &Validated) -> Vec<ToolServerEndpoint> {
                 &server.id,
                 server.url.trim(),
                 Duration::from_secs(server.timeout_secs),
-            );
+            )
+            .with_protocol(match server.protocol {
+                Some(orch_config::ToolServerProtocol::V2026_07_28) => ToolProtocol::V2026_07_28,
+                Some(orch_config::ToolServerProtocol::Legacy) | None => ToolProtocol::Legacy,
+            });
             if let Some(secrets) = valid.secrets.tool_servers.get(&server.id) {
                 if let Some(bearer) = &secrets.bearer {
                     endpoint = endpoint.with_bearer(ToolSecret::new(bearer.expose()));
@@ -1754,10 +1762,46 @@ fn tool_endpoints_of(valid: &Validated) -> Vec<ToolServerEndpoint> {
                 for (name, value) in &secrets.headers {
                     endpoint = endpoint.with_header(name, ToolSecret::new(value.expose()));
                 }
+                if let (Some(signing), Some(key)) = (&server.signing, &secrets.signing_key) {
+                    endpoint = endpoint.with_signing(ToolSigning {
+                        key: ToolSecret::new(key.expose()),
+                        audience: signing.audience.clone(),
+                        ttl_secs: signing.ttl_secs,
+                    });
+                }
             }
             endpoint
         })
         .collect()
+}
+
+/// The signing key of each `toolServers[].signing` is an Ed25519 private key (a PKCS#8 PEM block): a process that was given
+/// something else stops at startup, naming the key and never its text, and not at the first call of an agent (ADR 0067).
+#[cfg(feature = "tool-relay")]
+fn tool_server_signing_keys(valid: &Validated) -> Result<(), ConfigError> {
+    let errors: Vec<String> = valid
+        .config
+        .tool_servers
+        .iter()
+        .enumerate()
+        .filter(|(_, server)| server.signing.is_some())
+        .filter_map(|(i, server)| {
+            let key = valid
+                .secrets
+                .tool_servers
+                .get(&server.id)?
+                .signing_key
+                .as_ref()?;
+            orch_signed_request::SigningKey::from_pkcs8_pem(key.expose())
+                .err()
+                .map(|e| format!("toolServers[{i}].signing.key: {e}"))
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ConfigError::Document(errors))
+    }
 }
 
 /// A server's `agents` list names agents that exist: with a platform registry the agents are not
@@ -3172,6 +3216,74 @@ toolServers:
 
     /// The relay's part of the servers: the URL, the timeout and the credentials resolved, as the
     /// port's endpoint type, in the order of the file, and in no `Debug`.
+    const SIGNING_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIHRocm93YXdheS1lZDI1NTE5LXNlZWQtZG8tbm90LXVz\n-----END PRIVATE KEY-----\n";
+
+    fn signed_server(key_env: &str) -> String {
+        format!(
+            "{FILE}toolServers:
+  - id: vaam
+    name: Vaam
+    url: https://api.vaam.store/mcp
+    protocol: '2026-07-28'
+    signing:
+      key: {{ env: {key_env} }}
+      audience: https://api.vaam.store/mcp
+      ttlSecs: 20
+  - id: old
+    name: Old
+    url: https://old.example.com/mcp
+"
+        )
+    }
+
+    /// ADR 0067: a server that speaks MCP `2026-07-28` and takes signed requests reaches the relay as such, a server that says
+    /// neither is what it always was, and the key is in no `Debug`.
+    #[test]
+    fn a_server_that_speaks_2026_07_28_and_takes_signed_requests_reaches_the_relay_so() {
+        let mut pairs = base();
+        pairs.push(("VAAM_SIGNING_KEY", SIGNING_PEM));
+        let loaded = load_file_only(&pairs, &signed_server("VAAM_SIGNING_KEY")).unwrap();
+        let [vaam, old] = loaded.config.tool_endpoints.as_slice() else {
+            panic!("two endpoints");
+        };
+        assert_eq!(vaam.protocol, ToolProtocol::V2026_07_28);
+        let signing = vaam.signing.as_ref().expect("signing");
+        assert_eq!(signing.audience, "https://api.vaam.store/mcp");
+        assert_eq!(signing.ttl_secs, 20);
+        assert_eq!(signing.key.expose(), SIGNING_PEM.trim());
+        assert!(vaam.bearer.is_none(), "a signed server is sent no bearer");
+        assert!(
+            vaam.acting_for.is_none(),
+            "for whom is the relay's, for each request"
+        );
+        assert_eq!(old.protocol, ToolProtocol::Legacy);
+        assert!(old.signing.is_none() && old.acting_for.is_none());
+        let shown = format!("{:?} {:?}", loaded.config, loaded.config.tool_endpoints);
+        assert!(
+            !shown.contains("MC4CAQAw") && !shown.contains("PRIVATE KEY"),
+            "{shown}"
+        );
+    }
+
+    /// ADR 0067: a signing key that is not an Ed25519 key stops the process at startup, naming the key and never its text.
+    #[test]
+    #[cfg(feature = "tool-relay")]
+    fn a_signing_key_that_is_not_an_ed25519_key_stops_the_process_naming_the_key() {
+        let mut pairs = base();
+        pairs.push(("VAAM_SIGNING_KEY", "not a key at all, SECRET-TEXT-0042"));
+        let errors = lines(load_file_only(&pairs, &signed_server("VAAM_SIGNING_KEY")));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].starts_with("toolServers[0].signing.key: "),
+            "{errors:?}"
+        );
+        assert!(!errors[0].contains("SECRET-TEXT-0042"), "{errors:?}");
+        // and the same file with a real key loads
+        pairs.pop();
+        pairs.push(("VAAM_SIGNING_KEY", SIGNING_PEM));
+        load_file_only(&pairs, &signed_server("VAAM_SIGNING_KEY")).unwrap();
+    }
+
     #[test]
     fn the_tool_servers_reach_the_relay_as_endpoints_with_their_credentials() {
         let file =

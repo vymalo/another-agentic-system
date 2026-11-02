@@ -13,20 +13,32 @@
 //! A request with no `Authorization: Bearer <token>` of the one the server wants, or without a
 //! header it was told to require, is answered 401 (with `WWW-Authenticate: Bearer`, as a real
 //! server does, unless asked not to) before MCP is spoken.
+//!
+//! It can also play a server that speaks **only MCP `2026-07-28`** (`modern_only`: it refuses a legacy
+//! `initialize`, as a cratestack MCP endpoint does) and one that takes **signed requests**
+//! (`signed`: every request must carry a `Tool-Request-Claims` that verifies as
+//! `docs/api/signed-tool-requests-v1.md` says, for the audience and the keys it was told, and whose `cti` it
+//! has not seen; the verdict of every request is in [`FakeToolServer::signed_requests`]).
 
+use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use orch_ports::testkit::tool_server::{FAIL_TEXT, SeenRequest};
+use orch_signed_request::HEADER as CLAIMS_HEADER;
+use orch_signed_request::verify::{Incoming, Verified, Verifier, VerifyError};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig,
+    Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -47,7 +59,43 @@ struct Shared {
     bearer: Option<String>,
     required_headers: Vec<(String, String)>,
     www_authenticate: bool,
+    modern_only: bool,
+    signed: Option<Signed>,
     seen: Mutex<Vec<SeenRequest>>,
+}
+
+/// A server that takes signed requests: what it checks, and what it saw.
+struct Signed {
+    verifier: Verifier,
+    cti_seen: Mutex<BTreeSet<([u8; 8], [u8; 16])>>,
+    journal: Mutex<Vec<SignedRequest>>,
+}
+
+/// One request to a server that takes signed requests, and the verdict on it. A request that is refused is here
+/// too (it is not in [`FakeToolServer::seen`]).
+#[derive(Debug, Clone)]
+pub struct SignedRequest {
+    /// The method of the request line.
+    pub method: String,
+    /// The path of the request line.
+    pub path: String,
+    /// The bytes of the body, as received.
+    pub body: Vec<u8>,
+    /// The value(s) of `Tool-Request-Claims`.
+    pub claims_headers: Vec<String>,
+    /// Whether the request carried an `Authorization` header.
+    pub had_authorization: bool,
+    /// Checks 1 to 5 of the contract: what the object says, or the check that failed.
+    pub verdict: Result<Verified, VerifyError>,
+    /// Check 6: the `cti` had been seen before. Such a request is refused.
+    pub replayed: bool,
+}
+
+impl SignedRequest {
+    /// Whether the server let the request through to MCP.
+    pub fn accepted(&self) -> bool {
+        self.verdict.is_ok() && !self.replayed
+    }
 }
 
 /// How a [`FakeToolServer`] is set up. Without any of it, it wants no credentials, keeps no session
@@ -73,6 +121,11 @@ pub struct FakeToolServerOptions {
     /// message, and every listed tool's description says it too. A client that passes a stranger's
     /// words on must not pass the credential with them.
     pub leaky: bool,
+    /// Speaks MCP `2026-07-28` and nothing else: a legacy `initialize` is refused with the list of the versions it speaks,
+    /// as a cratestack MCP endpoint does.
+    pub modern_only: bool,
+    /// Takes signed requests: the audience it calls itself and the public keys it pins (at most two).
+    pub signed: Option<(String, Vec<[u8; 32]>)>,
 }
 
 impl Default for FakeToolServerOptions {
@@ -84,6 +137,8 @@ impl Default for FakeToolServerOptions {
             www_authenticate: true,
             path: None,
             leaky: false,
+            modern_only: false,
+            signed: None,
         }
     }
 }
@@ -124,6 +179,20 @@ impl FakeToolServerOptions {
         self
     }
 
+    /// Speaks only MCP `2026-07-28` (see [`FakeToolServerOptions::modern_only`]).
+    #[must_use]
+    pub fn modern_only(mut self) -> Self {
+        self.modern_only = true;
+        self
+    }
+
+    /// Takes signed requests for `audience`, pinning `keys` (see [`FakeToolServerOptions::signed`]).
+    #[must_use]
+    pub fn signed(mut self, audience: impl Into<String>, keys: &[[u8; 32]]) -> Self {
+        self.signed = Some((audience.into(), keys.to_vec()));
+        self
+    }
+
     /// Mounts the server at `path` (which starts with `/`) in place of `/mcp`.
     #[must_use]
     pub fn at_path(mut self, path: impl Into<String>) -> Self {
@@ -144,11 +213,25 @@ impl FakeToolServer {
     /// Starts a server on a free port of the loopback address.
     pub async fn spawn(options: FakeToolServerOptions) -> Self {
         let path = options.path.clone().unwrap_or_else(|| PATH.to_owned());
+        let signed = options.signed.map(|(audience, keys)| {
+            let verifier = keys
+                .into_iter()
+                .fold(Verifier::new(audience, 30), |verifier, key| {
+                    verifier.pin(key).unwrap()
+                });
+            Signed {
+                verifier,
+                cti_seen: Mutex::new(BTreeSet::new()),
+                journal: Mutex::new(Vec::new()),
+            }
+        });
         let shared = Arc::new(Shared {
             leaky: options.leaky,
             bearer: options.bearer,
             required_headers: options.required_headers,
             www_authenticate: options.www_authenticate,
+            modern_only: options.modern_only,
+            signed,
             seen: Mutex::new(Vec::new()),
         });
         let stop = CancellationToken::new();
@@ -182,6 +265,7 @@ impl FakeToolServer {
                 ),
             )
         }
+        .layer(from_fn_with_state(Arc::clone(&shared), require_signature))
         .layer(from_fn_with_state(Arc::clone(&shared), require_credentials));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -212,6 +296,18 @@ impl FakeToolServer {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Every request a server that takes signed requests received, refused ones included, oldest first, with the verdict
+    /// of the contract's checks on it. Empty for a server that does not.
+    pub fn signed_requests(&self) -> Vec<SignedRequest> {
+        self.shared.signed.as_ref().map_or_else(Vec::new, |signed| {
+            signed
+                .journal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        })
     }
 
     /// The URL of an endpoint where nothing listens: a port that was free a moment ago.
@@ -246,6 +342,82 @@ async fn require_credentials(
         return next.run(request).await;
     }
     let mut refused = (StatusCode::UNAUTHORIZED, "credentials refused").into_response();
+    if shared.www_authenticate {
+        refused.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            "Bearer realm=\"fake\"".parse().unwrap(),
+        );
+    }
+    refused
+}
+
+/// The signature of the request, checked before MCP is spoken: checks 1 to 6 of
+/// `docs/api/signed-tool-requests-v1.md`. Every verdict is written to the journal; a request that fails is a bare 401.
+async fn require_signature(
+    State(shared): State<Arc<Shared>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(signed) = &shared.signed else {
+        return next.run(request).await;
+    };
+    let (parts, body) = request.into_parts();
+    let Ok(body) = axum::body::to_bytes(body, 4 * 1024 * 1024).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    let claims_headers: Vec<String> = parts
+        .headers
+        .get_all(CLAIMS_HEADER)
+        .iter()
+        .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
+        .collect();
+    let values: Vec<&str> = claims_headers.iter().map(String::as_str).collect();
+    let content_encoding = parts
+        .headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let verdict = signed.verifier.verify(
+        &values,
+        &Incoming {
+            method: parts.method.as_str(),
+            path: parts.uri.path(),
+            query: parts.uri.query(),
+            body: &body,
+            content_encoding,
+        },
+        now,
+    );
+    // check 6, last, and only for an object that passed the rest
+    let replayed = match &verdict {
+        Ok(verified) => !signed
+            .cti_seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((verified.kid, verified.cti)),
+        Err(_) => false,
+    };
+    let accepted = verdict.is_ok() && !replayed;
+    signed
+        .journal
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(SignedRequest {
+            method: parts.method.as_str().to_owned(),
+            path: parts.uri.path().to_owned(),
+            body: body.to_vec(),
+            claims_headers: claims_headers.clone(),
+            had_authorization: parts.headers.contains_key(header::AUTHORIZATION),
+            verdict,
+            replayed,
+        });
+    if accepted {
+        return next.run(Request::from_parts(parts, Body::from(body))).await;
+    }
+    // no detail: which check failed is for the journal
+    let mut refused = (StatusCode::UNAUTHORIZED, "").into_response();
     if shared.www_authenticate {
         refused.headers_mut().insert(
             header::WWW_AUTHENTICATE,
@@ -338,6 +510,15 @@ fn tools() -> Vec<Tool> {
 }
 
 impl ServerHandler for Handler {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        if self.0.modern_only {
+            // like a cratestack MCP endpoint: no version with an `initialize` handshake
+            Cow::Owned(vec![ProtocolVersion::V_2026_07_28])
+        } else {
+            Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
+        }
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }

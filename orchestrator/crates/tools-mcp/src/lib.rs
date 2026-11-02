@@ -88,6 +88,7 @@
 //! guarded client and for the deployment's.
 
 mod peer;
+mod sign;
 mod wire;
 
 use std::borrow::Cow;
@@ -99,25 +100,27 @@ use std::time::Duration;
 use orch_ports::{
     EgressPolicy, EgressRefusal, LOOKUP_TIMEOUT, LookupFailure, MAX_RESULT_BYTES,
     MAX_USER_SERVER_TOOLS, MAX_USER_TOOL_SCHEMA_BYTES, ToolCall, ToolCallOutput, ToolDef,
-    ToolServerClient, ToolServerEndpoint, ToolServerError, is_reserved_header, judge_lookup,
+    ToolProtocol, ToolServerClient, ToolServerEndpoint, ToolServerError, is_reserved_header,
+    judge_lookup,
 };
 pub use orch_ports::{HostLookup, LookupFuture};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, MetaObject, PaginatedRequestParams, RequestMetaObject,
-    Tool,
+    CallToolRequestParams, CallToolResult, MetaObject, PaginatedRequestParams, ProtocolVersion,
+    RequestMetaObject, Tool,
 };
 use rmcp::service::{ClientInitializeError, RunningService, ServiceError};
 use rmcp::transport::streamable_http_client::{
     SseError, StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
     StreamableHttpError,
 };
-use rmcp::{RoleClient, ServiceExt};
+use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient};
 use tokio::time::Instant;
 
 use crate::peer::PeerGuard;
-use crate::wire::{ANSWER_TOO_LARGE, BodyError, Cut, WireClient};
+use crate::sign::Signing;
+use crate::wire::{ANSWER_TOO_LARGE, BodyError, Cut, SIGNING_FAILED, WireClient};
 
 /// The longest the connection of a request may take to be made, whatever the endpoint's timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -363,11 +366,26 @@ impl McpToolClient {
     ) -> Result<(RunningService<RoleClient, ()>, Cut), ToolServerError> {
         let url = self.admitted(server)?;
         let max_body = self.guard.as_ref().map(|g| g.limits.max_response_bytes);
-        let wire = WireClient::new(self.http.clone(), max_body);
+        let signing = Signing::of(server, &url)?;
+        let wire = WireClient::new(self.http.clone(), max_body, signing);
         let cut = wire.cut();
         let transport =
             StreamableHttpClientTransport::with_client(wire, transport_config(server, &url)?);
-        match tokio::time::timeout_at(deadline, ().serve(transport)).await {
+        let lifecycle = match server.protocol {
+            ToolProtocol::Legacy => ClientLifecycleMode::Initialize,
+            // `server/discover`, with this revision alone: no fallback to `initialize`, so a server that is not one is an
+            // error and not a different conversation than the one configured
+            ToolProtocol::V2026_07_28 => ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+            _ => {
+                return Err(ToolServerError::Misconfigured(
+                    "the server speaks an MCP revision this client does not".to_owned(),
+                ));
+            }
+        };
+        let started = ().serve_with_lifecycle(transport, lifecycle);
+        match tokio::time::timeout_at(deadline, started).await {
             Ok(Ok(client)) => Ok((client, cut)),
             Ok(Err(_)) if cut.tripped() => Err(too_large_answer()),
             Ok(Err(error)) => Err(from_handshake(&error).with_source(error)),
@@ -615,6 +633,10 @@ fn from_handshake(error: &ClientInitializeError) -> ToolServerError {
             ToolServerError::unreachable("the server closed the connection during the handshake")
         }
         ClientInitializeError::JsonRpcError(e) => ToolServerError::remote(e.code.0, &e.message),
+        // a server configured for `2026-07-28` that lists other revisions only
+        ClientInitializeError::NoCompatibleProtocolVersion { .. } => {
+            ToolServerError::protocol("the server does not speak MCP 2026-07-28")
+        }
         _ => ToolServerError::protocol("the MCP handshake failed"),
     }
 }
@@ -658,6 +680,10 @@ fn from_http(error: &StreamableHttpError<reqwest::Error>) -> ToolServerError {
         // (rmcp 3.5): the status is read from it, the body (untrusted) is not repeated anywhere.
         StreamableHttpError::UnexpectedServerResponse(message) if message == ANSWER_TOO_LARGE => {
             too_large_answer()
+        }
+        // nothing was sent: the request could not be signed
+        StreamableHttpError::UnexpectedServerResponse(message) if message == SIGNING_FAILED => {
+            ToolServerError::Misconfigured("the request could not be signed".to_owned())
         }
         StreamableHttpError::UnexpectedServerResponse(message) => match status_in(message) {
             Some(status) => from_status(status),

@@ -172,7 +172,9 @@ struct Prepared {
 
 /// What one pass of [`prepare`](RelayTools::prepare) came to.
 enum Leased {
-    Ready(Prepared),
+    /// Boxed: a server's endpoint carries the room for the signing of a deployment's server (ADR 0067), which a person's own
+    /// never use, and the other variant carries nothing.
+    Ready(Box<Prepared>),
     /// The definition's revision changed between the read and the lease.
     Moved,
 }
@@ -527,7 +529,7 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
         let mut stored = first;
         for attempt in 0..2 {
             if let Leased::Ready(prepared) = self.prepare_once(owner, &stored).await? {
-                return Ok(prepared);
+                return Ok(*prepared);
             }
             tracing::info!(
                 server = %id,
@@ -574,11 +576,11 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
             ToolServerEndpoint::new(server.id().as_str(), server.url(), USER_SERVER_TIMEOUT);
         let revision = stored.revision();
         if !wants_credential {
-            return Ok(Leased::Ready(Prepared {
+            return Ok(Leased::Ready(Box::new(Prepared {
                 endpoint,
                 revision,
                 holds_credential: false,
-            }));
+            })));
         }
         let id = server.id().clone();
         let lease = match ports.broker().lease(owner, &id).await {
@@ -629,11 +631,11 @@ impl<P: Ports, C: ToolServerClient> RelayTools<P, C> {
         // the definition again: the lease was made for the revision the URL was read from, or it is
         // not used (dropping `endpoint` wipes the credential)
         match ports.servers().get(owner, &id).await {
-            Ok(Some(now)) if now.revision() == revision => Ok(Leased::Ready(Prepared {
+            Ok(Some(now)) if now.revision() == revision => Ok(Leased::Ready(Box::new(Prepared {
                 endpoint,
                 revision,
                 holds_credential: true,
-            })),
+            }))),
             Ok(Some(_)) => Ok(Leased::Moved),
             Ok(None) => Err(Cannot::Gone),
             Err(error) => {
