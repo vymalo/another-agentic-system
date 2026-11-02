@@ -685,6 +685,15 @@ MCP client and `FakeToolServer`s, on both stores):
   `timeoutSecs` of the tool's `_meta` (the server's plus 5) is an upper bound the agent can wait for.
 - **No credential** is in a step, an event, a frame, the export, any table of the database or a log line: the tests search
   all of them for the bearer and a header value (`tables_mentioning`), and for the thread token.
+- **A server can be signed for, and speak MCP `2026-07-28`** (*2026-11-02*, [ADR 0067](../decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md)).
+  A `toolServers` entry with `protocol: "2026-07-28"` is opened with `server/discover`, not `initialize`; one with `signing` is sent
+  **no bearer**: every HTTP request the relay makes to it (the handshake, each page of the listing, the call) carries one
+  `Tool-Request-Claims` header, a signed object that binds the request and **the thread of the call and the thread's owner**
+  (`ToolCtx.owner`: the person the tool runs for, whichever agent calls it and whoever asked that agent), so the tool server can
+  authorise the person. The relay hands the client a copy of the endpoint that says for whom, for a signed server only; any other
+  server is called as before and learns neither the thread nor the person. The wire contract, which a tool server is written against,
+  is [`signed-tool-requests-v1.md`](signed-tool-requests-v1.md). A signed request that cannot be made is a failed call ("... is not set up
+  for use"), never an unsigned one.
 
 ```mermaid
 sequenceDiagram
