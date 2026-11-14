@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { currentMonth, isMonth, monthLabel, nextMonth, previousMonth } from "./month";
 
 describe("months of the usage page (UTC, YYYY-MM)", () => {
@@ -30,5 +30,39 @@ describe("months of the usage page (UTC, YYYY-MM)", () => {
   it("names a month in words", () => {
     expect(monthLabel("2026-10")).toBe("October 2026");
     expect(monthLabel("2026-01")).toBe("January 2026");
+  });
+});
+
+/*
+ * The month is a UTC one whatever zone the browser is in. CI runs under TZ=UTC, where a read of the local month
+ * cannot be told from the UTC one, so these run in zones a day away from it (`Etc/GMT+12` is UTC-12, `Etc/GMT-14` is UTC+14).
+ */
+describe("currentMonth is the UTC month in any zone", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const inZone = (tz: string, at: string) => {
+    vi.stubEnv("TZ", tz);
+    const now = new Date(at);
+    return now;
+  };
+
+  it("the zone under test is really applied (the guard of the cases below)", () => {
+    const now = inZone("Etc/GMT+12", "2026-12-01T11:30:00Z");
+    expect(now.getMonth()).toBe(10); // November, locally
+    expect(now.getUTCMonth()).toBe(11);
+  });
+
+  it("2026-11-30T23:30 at UTC-12 is already December in UTC", () => {
+    expect(currentMonth(inZone("Etc/GMT+12", "2026-11-30T23:30:00-12:00"))).toBe("2026-12");
+  });
+
+  it("2026-11-30T23:30 at UTC+14 is still November in UTC", () => {
+    expect(currentMonth(inZone("Etc/GMT-14", "2026-11-30T23:30:00+14:00"))).toBe("2026-11");
+  });
+
+  it("a person ahead of UTC on its last evening of the month is in the month that has not ended", () => {
+    const now = inZone("Etc/GMT-14", "2026-11-30T20:00:00Z");
+    expect(now.getMonth()).toBe(11); // December, locally
+    expect(currentMonth(now)).toBe("2026-11");
   });
 });

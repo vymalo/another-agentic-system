@@ -7,6 +7,8 @@ import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import { useMyUsage } from "@/features/me/hooks/use-my-usage";
 import { currentMonth, monthLabel, nextMonth, previousMonth } from "@/features/me/lib/month";
+import { readAnswer } from "@/features/me/lib/usage-answer";
+import { openSignIn } from "@/lib/api/session";
 import type { ApiMyUsage, ApiUsageModelLine, ApiUsageSandboxLine } from "@/lib/api/types";
 
 /*
@@ -37,13 +39,23 @@ const trimmed = (v: number) => String(Number(v.toFixed(2)));
 /** The size a sandbox reserved: the CPU and memory its pod asked for, which no request leaves unknown. */
 function shape(line: ApiUsageSandboxLine): string {
   const parts: string[] = [];
-  if (line.cpuMillis !== undefined) parts.push(`${trimmed(line.cpuMillis / 1000)} cores`);
+  if (line.cpuMillis !== undefined) {
+    const cores = trimmed(line.cpuMillis / 1000);
+    parts.push(`${cores} ${cores === "1" ? "core" : "cores"}`);
+  }
   if (line.memoryBytes !== undefined) parts.push(`${trimmed(line.memoryBytes / 2 ** 30)} GiB`);
   return parts.length > 0 ? parts.join(", ") : "size not requested";
 }
 
 const modelName = (m: { provider?: string; model: string }) =>
   m.provider ? `${m.provider} / ${m.model}` : m.model;
+
+/** The tasks whose sandbox time was not measured: what the lines and the total each say, the larger of the two. */
+const unmeasuredTasks = (usage: ApiMyUsage) =>
+  Math.max(
+    usage.unmeasured.reduce((sum, u) => sum + u.tasks, 0),
+    usage.total.unpriced.unmeasured,
+  );
 
 /** What the total leaves out, in words. */
 function leftOut(usage: ApiMyUsage): string[] {
@@ -97,12 +109,21 @@ function TotalCard({ usage }: { usage: ApiMyUsage }) {
       )}
       {usage.currency !== null && !total.complete ? (
         <div className="mt-2 text-sm text-muted-foreground">
-          <p>This is the sum of the lines that have a price, not the whole cost. Left out:</p>
-          <ul className="mt-1 list-disc ps-5">
-            {out.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
+          {out.length > 0 ? (
+            <>
+              <p>This is the sum of the lines that have a price, not the whole cost. Left out:</p>
+              <ul className="mt-1 list-disc ps-5">
+                {out.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p>
+              This is the sum of the lines that have a price, not the whole cost. The answer does
+              not say which lines are left out (lines past its limit are not priced).
+            </p>
+          )}
         </div>
       ) : null}
       {usage.prices ? (
@@ -118,18 +139,28 @@ function TotalCard({ usage }: { usage: ApiMyUsage }) {
 function Totals({ usage }: { usage: ApiMyUsage }) {
   const tokens = usage.models.reduce((sum, m) => sum + m.totalTokens, 0);
   const ms = usage.sandbox.reduce((sum, s) => sum + s.milliseconds, 0);
+  const unmeasured = unmeasuredTasks(usage);
   return (
     <dl className="grid grid-cols-3 gap-3 text-sm">
       {(
         [
-          ["Tasks", n(usage.tasks)],
-          ["Tokens", n(tokens)],
-          ["Sandbox time", duration(ms)],
+          ["Tasks", n(usage.tasks), null],
+          ["Tokens", n(tokens), null],
+          [
+            "Sandbox time",
+            duration(ms),
+            unmeasured > 0 ? `${plural(unmeasured, "task")} not measured` : null,
+          ],
         ] as const
-      ).map(([label, value]) => (
+      ).map(([label, value, note]) => (
         <div key={label} className="rounded-xl bg-muted px-3 py-2">
           <dt className="text-xs text-muted-foreground">{label}</dt>
-          <dd className="mt-0.5 font-medium tabular-nums">{value}</dd>
+          <dd className="mt-0.5 font-medium tabular-nums">
+            {value}
+            {note ? (
+              <span className="block text-xs font-normal text-muted-foreground">{note}</span>
+            ) : null}
+          </dd>
         </div>
       ))}
     </dl>
@@ -163,8 +194,12 @@ function ModelsTable({ lines, currency }: { lines: ApiUsageModelLine[]; currency
         </tr>
       </thead>
       <tbody>
-        {lines.map((m) => (
-          <tr key={`${m.provider ?? ""}/${m.model}`} className="border-b border-border/60">
+        {lines.map((m, i) => (
+          <tr
+            // biome-ignore lint/suspicious/noArrayIndexKey: two lines may name one model; the answer's order is the identity
+            key={`${m.provider ?? ""}/${m.model}/${i}`}
+            className="border-b border-border/60"
+          >
             <th scope="row" className="py-2 pe-3 text-start align-top font-normal">
               <span className="block font-medium break-all">{m.model}</span>
               {m.provider ? (
@@ -226,9 +261,10 @@ function SandboxTable({
         </tr>
       </thead>
       <tbody>
-        {lines.map((s) => (
+        {lines.map((s, i) => (
           <tr
-            key={`${s.environment}/${s.cpuMillis ?? ""}/${s.memoryBytes ?? ""}`}
+            // biome-ignore lint/suspicious/noArrayIndexKey: two lines may name one shape; the answer's order is the identity
+            key={`${s.environment}/${s.cpuMillis ?? ""}/${s.memoryBytes ?? ""}/${i}`}
             className="border-b border-border/60"
           >
             <th scope="row" className="py-2 pe-3 text-start align-top font-normal">
@@ -253,9 +289,14 @@ function SandboxTable({
   );
 }
 
-function Month({ usage }: { usage: ApiMyUsage }) {
+function Month({ usage, partial }: { usage: ApiMyUsage; partial: boolean }) {
   return (
     <div className="flex flex-col gap-6">
+      {partial ? (
+        <InlineStatus role="status">
+          The answer left out part of the month, so some lines may be missing.
+        </InlineStatus>
+      ) : null}
       <TotalCard usage={usage} />
       <Totals usage={usage} />
       <section aria-labelledby="usage-models" className="flex flex-col gap-2">
@@ -276,8 +317,9 @@ function Month({ usage }: { usage: ApiMyUsage }) {
 
 /**
  * `/usage`: the person's own month, from the usage ledger (ADR 0065). No permission gates it: the route answers for
- * the authenticated person and for nobody else. The month buttons stay on the screen while a month loads, so the focus
- * is never lost; the future has nothing to read, so **Next month** stops at the current one.
+ * the authenticated person and for nobody else. The month buttons stay on the screen while a month loads, and
+ * **Next month** stops at the current one (the future has nothing to read) by `aria-disabled`, not `disabled`, so
+ * that it keeps the focus it has when it gets there. Figures are drawn only for the month the page names.
  */
 export function UsagePage() {
   const now = currentMonth();
@@ -285,6 +327,11 @@ export function UsagePage() {
   const read = useMyUsage(month);
   const before = previousMonth(month);
   const after = nextMonth(month);
+  const noBefore = before === null;
+  const noAfter = after === null || month >= now;
+  const answer = read.status === "ready" ? readAnswer(read.usage) : null;
+  // an answer for another month than the one on the screen is not drawn under it
+  const stale = answer !== null && answer.usage.month !== month;
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 px-4 py-6 md:px-6">
       <header className="flex flex-col gap-4">
@@ -302,7 +349,8 @@ export function UsagePage() {
             variant="outline"
             size="icon"
             aria-label="Previous month"
-            disabled={before === null}
+            aria-disabled={noBefore}
+            className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
             onClick={() => before && setMonth(before)}
           >
             <ChevronLeftIcon aria-hidden="true" />
@@ -319,17 +367,42 @@ export function UsagePage() {
             variant="outline"
             size="icon"
             aria-label="Next month"
-            disabled={after === null || month >= now}
-            onClick={() => after && setMonth(after)}
+            aria-disabled={noAfter}
+            className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+            onClick={() => !noAfter && after && setMonth(after)}
           >
             <ChevronRightIcon aria-hidden="true" />
           </Button>
         </fieldset>
+        <p className="text-xs text-muted-foreground">Months are UTC calendar months.</p>
       </header>
-      {read.status === "loading" ? <LoadingStatus>Loading usage</LoadingStatus> : null}
-      {read.status === "ready" ? <Month usage={read.usage} /> : null}
+      {read.status === "loading" || stale ? <LoadingStatus>Loading usage</LoadingStatus> : null}
+      {answer !== null && !stale ? <Month usage={answer.usage} partial={answer.partial} /> : null}
+      {read.status === "ready" && answer === null ? (
+        <InlineStatus
+          tone="error"
+          role="alert"
+          action={{ label: "Try again", onClick: read.reload }}
+        >
+          The usage for this month could not be read: the answer was incomplete.
+        </InlineStatus>
+      ) : null}
       {read.status === "unavailable" ? (
         <InlineStatus role="status">This deployment does not report usage.</InlineStatus>
+      ) : null}
+      {read.status === "signed-out" ? (
+        <InlineStatus
+          role="status"
+          action={{
+            label: "Sign in",
+            // a deployment with no sign-in built in has nothing to open: reading again is all there is
+            onClick: () => {
+              if (openSignIn() === "none") read.reload();
+            },
+          }}
+        >
+          You are signed out. Sign in to see your usage.
+        </InlineStatus>
       ) : null}
       {read.status === "error" ? (
         <InlineStatus

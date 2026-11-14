@@ -185,8 +185,10 @@ test("moves between months by keyboard", async ({ page, answers }) => {
   await answers({ "*": COMPLETE, [BEFORE]: { ...INCOMPLETE, month: BEFORE } });
   await page.goto("/usage");
   await expect(total(page)).toContainText("3.391593 EUR");
-  // the future has nothing to read
-  await expect(page.getByRole("button", { name: "Next month" })).toBeDisabled();
+  // the future has nothing to read: the button says so and stays focusable (aria-disabled, not disabled)
+  const next = page.getByRole("button", { name: "Next month" });
+  await expect(next).toHaveAttribute("aria-disabled", "true");
+  expect(await next.evaluate((b) => (b as HTMLButtonElement).disabled)).toBe(false);
 
   const previous = page.getByRole("button", { name: "Previous month" });
   await previous.focus();
@@ -197,11 +199,17 @@ test("moves between months by keyboard", async ({ page, answers }) => {
   await expect(previous).toBeFocused();
 
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: "Next month" })).toBeFocused();
+  await expect(next).toBeFocused();
   await page.keyboard.press("Space");
   await expect(page.getByText(monthLabel(NOW), { exact: true })).toBeVisible();
   await expect(total(page)).toContainText("3.391593 EUR");
-  await expect(page.getByRole("button", { name: "Next month" })).toBeDisabled();
+  // at the current month the button that was pressed is the one that still has the focus
+  await expect(next).toHaveAttribute("aria-disabled", "true");
+  await expect(next).toBeFocused();
+  // and pressing it again changes nothing
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(monthLabel(NOW), { exact: true })).toBeVisible();
+  await expect(next).toBeFocused();
 });
 
 test("a read that fails is said in words and can be tried again", async ({ page, answers }) => {

@@ -372,7 +372,7 @@ reached from the account menu's **Usage** item (no permission gates it). A page,
 - **Amounts are drawn as the API wrote them**, six decimals and the currency after: a string is never turned into a number (no rounding, no loss), and a long one wraps (`break-all`) rather than overflow. A deployment with no currency has **no money anywhere**: no cost column, no "Not priced", one line under Total that says so.
   Tokens and sandbox time are always shown.
 - **Empty is a sentence, not a hero:** a month with nothing is complete at `0.000000`, with "No model usage this month." and "No sandbox time this month." where the tables would be. Loading is the skeleton rows, a failure the destructive line with **Try again**.
-- **Keyboard and screen reader:** the month switch is a `fieldset` named Month, the month is a polite live region (a change is announced), the buttons keep the focus while a month loads, **Next month** is disabled on the current month, tables have captions (visually hidden: the headings name them), column headers and row headers.
+- **Keyboard and screen reader:** the month switch is a `fieldset` named Month, the month is a polite live region (a change is announced), the buttons keep the focus while a month loads, **Next month** is `aria-disabled` (dimmed, still focusable, its handler guarded) on the current month, so that the focus it has when it gets there is not dropped; one line under the switch says months are UTC ones; tables have captions (visually hidden: the headings name them), column headers and row headers.
 
 ## Mentions
 

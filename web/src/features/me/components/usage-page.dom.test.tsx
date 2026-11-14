@@ -22,6 +22,9 @@ vi.mock("@/features/me/hooks/use-my-usage", () => ({
   },
 }));
 
+const session = vi.hoisted(() => ({ openSignIn: vi.fn(() => "popup" as const) }));
+vi.mock("@/lib/api/session", () => ({ openSignIn: session.openSignIn }));
+
 import { UsagePage } from "./usage-page";
 
 const MONTH = currentMonth();
@@ -205,15 +208,170 @@ describe("the usage page", () => {
   it("moves between months and never past the current one", () => {
     ready(EMPTY);
     render(<UsagePage />);
-    const next = screen.getByRole("button", { name: "Next month" }) as HTMLButtonElement;
-    expect(next.disabled).toBe(true);
+    const next = screen.getByRole("button", { name: "Next month" });
+    expect(next.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(next);
+    expect(hook.asked.at(-1)).toBe(MONTH);
     fireEvent.click(screen.getByRole("button", { name: "Previous month" }));
     expect(hook.asked.at(-1)).toBe(previousMonth(MONTH));
-    expect((screen.getByRole("button", { name: "Next month" }) as HTMLButtonElement).disabled).toBe(
-      false,
+    expect(screen.getByRole("button", { name: "Next month" }).getAttribute("aria-disabled")).toBe(
+      "false",
     );
     fireEvent.click(screen.getByRole("button", { name: "Next month" }));
     expect(hook.asked.at(-1)).toBe(MONTH);
+  });
+
+  it("keeps the focus on Next month when it stops at the current month (aria-disabled, not disabled)", () => {
+    ready(EMPTY);
+    render(<UsagePage />);
+    fireEvent.click(screen.getByRole("button", { name: "Previous month" }));
+    const next = screen.getByRole("button", { name: "Next month" }) as HTMLButtonElement;
+    next.focus();
+    expect(document.activeElement).toBe(next);
+    fireEvent.click(next);
+    // it is the current month now: the button said so, and still has the focus
+    const after = screen.getByRole("button", { name: "Next month" }) as HTMLButtonElement;
+    expect(after.getAttribute("aria-disabled")).toBe("true");
+    expect(after.disabled).toBe(false);
+    expect(document.activeElement).toBe(after);
+    // and pressing it again reads nothing
+    const asked = hook.asked.length;
+    fireEvent.click(after);
+    expect(hook.asked.slice(asked).every((m) => m === MONTH)).toBe(true);
+  });
+
+  it("never draws the figures of another month under the month it names (a stale answer is loading)", () => {
+    ready({ ...COMPLETE, month: previousMonth(MONTH) ?? "" });
+    render(<UsagePage />);
+    expect(screen.getByRole("status").textContent).toContain("Loading usage");
+    expect(screen.queryByRole("region", { name: "Total" })).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(document.querySelector("[data-slot=month]")?.textContent).toContain(
+      String(new Date().getUTCFullYear()),
+    );
+  });
+
+  it("says in one line that months are UTC ones", () => {
+    ready(EMPTY);
+    render(<UsagePage />);
+    expect(screen.getByText(/months are UTC/i)).toBeTruthy();
+  });
+
+  it("line amounts beyond double precision are shown exactly (a line price is never a number)", () => {
+    ready({
+      ...COMPLETE,
+      models: [{ ...COMPLETE.models[0], price: "1234567890123.456789" } as never],
+      sandbox: [{ ...COMPLETE.sandbox[0], price: "9007199254740993.000001" } as never],
+    });
+    render(<UsagePage />);
+    expect(screen.getByRole("table", { name: "Models" }).textContent).toContain(
+      "1234567890123.456789 EUR",
+    );
+    expect(screen.getByRole("table", { name: "Sandbox" }).textContent).toContain(
+      "9007199254740993.000001 EUR",
+    );
+  });
+
+  it("an answer that lacks an array draws the rest and says it was incomplete, whichever array is absent", () => {
+    for (const key of ["models", "sandbox", "unmeasured"] as const) {
+      cleanup();
+      const partial = { ...COMPLETE } as Record<string, unknown>;
+      delete partial[key];
+      ready(partial as unknown as ApiMyUsage);
+      render(<UsagePage />);
+      expect(total().textContent, key).toContain("123456789012345678.100000 EUR");
+      expect(screen.getByText(/left out part of the month/i), key).toBeTruthy();
+    }
+    cleanup();
+    ready({ ...COMPLETE, total: { ...COMPLETE.total, unpriced: undefined } } as never);
+    render(<UsagePage />);
+    expect(screen.getByText(/left out part of the month/i)).toBeTruthy();
+  });
+
+  it("a complete answer carries no such note", () => {
+    ready(COMPLETE);
+    render(<UsagePage />);
+    expect(screen.queryByText(/left out part of the month/i)).toBeNull();
+  });
+
+  it("an answer with no total has no figure to show: the error state, never a throw", () => {
+    const noTotal = { ...COMPLETE } as Record<string, unknown>;
+    delete noTotal.total;
+    ready(noTotal as unknown as ApiMyUsage);
+    render(<UsagePage />);
+    expect(screen.getByRole("alert").textContent).toContain("could not be read");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(hook.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("says a total that is not complete and names nothing in a sentence of its own, with no empty list", () => {
+    ready({
+      ...COMPLETE,
+      total: { ...COMPLETE.total, complete: false },
+    });
+    render(<UsagePage />);
+    expect(total().textContent).toContain("At least");
+    expect(total().textContent).toMatch(/does not say which/i);
+    expect(total().textContent).not.toContain("Left out:");
+    expect(within(total()).queryByRole("list")).toBeNull();
+  });
+
+  it("with no currency, still says how many tasks' sandbox time was not measured, beside the sandbox figure", () => {
+    ready({
+      ...COMPLETE,
+      currency: null,
+      prices: null,
+      models: COMPLETE.models.map((m) => ({ ...m, price: null })),
+      sandbox: COMPLETE.sandbox.map((s) => ({ ...s, price: null })),
+      unmeasured: [{ environment: "local", tasks: 2 }],
+      total: {
+        ...COMPLETE.total,
+        currency: null,
+        complete: false,
+        unpriced: { models: [], sandbox: 0, unmeasured: 2 },
+      },
+    });
+    render(<UsagePage />);
+    const tile = screen.getByText("Sandbox time").parentElement as HTMLElement;
+    expect(tile.textContent).toContain("1 h 12 min");
+    expect(tile.textContent).toMatch(/2 tasks not measured/);
+  });
+
+  it("no such note on the sandbox figure when every task was measured", () => {
+    ready(COMPLETE);
+    render(<UsagePage />);
+    const tile = screen.getByText("Sandbox time").parentElement as HTMLElement;
+    expect(tile.textContent).not.toMatch(/not measured/);
+  });
+
+  it("says 1 core, not '1 cores'", () => {
+    ready({ ...COMPLETE, sandbox: [{ ...COMPLETE.sandbox[0], cpuMillis: 1000 } as never] });
+    render(<UsagePage />);
+    const text = screen.getByRole("table", { name: "Sandbox" }).textContent ?? "";
+    expect(text).toContain("1 core,");
+    expect(text).not.toContain("1 cores");
+  });
+
+  it("two lines of one model (or one shape) do not collide on a React key", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    ready({
+      ...COMPLETE,
+      models: [COMPLETE.models[0], COMPLETE.models[0]] as never,
+      sandbox: [COMPLETE.sandbox[0], COMPLETE.sandbox[0]] as never,
+    });
+    render(<UsagePage />);
+    expect(screen.getAllByRole("row", { name: /glm-5\.3/ })).toHaveLength(2);
+    expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key|unique "key"/);
+    errors.mockRestore();
+  });
+
+  it("a signed-out person is told so, with the app's own Sign in", () => {
+    hook.state = { status: "signed-out" };
+    render(<UsagePage />);
+    expect(screen.getByRole("status").textContent).toMatch(/signed out/i);
+    expect(screen.queryByText(/something went wrong/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(session.openSignIn).toHaveBeenCalledTimes(1);
   });
 
   it("says a failed read in words and offers to try again", () => {
