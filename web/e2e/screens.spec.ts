@@ -917,6 +917,9 @@ for (const scheme of ["light", "dark"] as const) {
       if (isMobile && (await panelToggle(page).getAttribute("aria-expanded")) === "true") {
         await hideActivity(page);
       }
+      // the answer's code block is highlighted by a chunk that loads on the first block: a still taken before it is in
+      // shows plain text one run and colours the next
+      await expect(page.locator("pre code [data-token]").first()).toBeVisible();
       await shot(page, "shared-page");
 
       // a link that does not work

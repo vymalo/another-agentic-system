@@ -101,6 +101,40 @@ describe("setChoice and applyTheme", () => {
     stop();
   });
 
+  it("stores the word System when System is chosen, never the theme it resolves to", () => {
+    device(true);
+    setChoice("system");
+    expect(localStorage.getItem(THEME_KEY)).toBe("system");
+    expect(root().dataset.theme).toBe("dark");
+    setChoice("light");
+    setChoice("system");
+    expect(localStorage.getItem(THEME_KEY)).toBe("system");
+  });
+
+  it("follows another tab's choice, and re-reads when another tab clears storage (a storage event with no key)", () => {
+    device(false);
+    const seen = vi.fn();
+    const stop = subscribeTheme(seen);
+    setChoice("dark");
+    expect(root().dataset.theme).toBe("dark");
+    // another tab chose Light
+    localStorage.setItem(THEME_KEY, "light");
+    window.dispatchEvent(new StorageEvent("storage", { key: THEME_KEY, newValue: "light" }));
+    expect(getChoice()).toBe("light");
+    expect(root().dataset.theme).toBe("light");
+    // another tab chose Dark, then cleared everything: `localStorage.clear()` reports key null
+    setChoice("dark");
+    localStorage.clear();
+    window.dispatchEvent(new StorageEvent("storage", { key: null }));
+    expect(getChoice()).toBe("system");
+    expect(root().dataset.theme).toBe("light");
+    // a key of something else is no business of the theme's
+    setChoice("dark");
+    window.dispatchEvent(new StorageEvent("storage", { key: "chat.sidebar", newValue: "closed" }));
+    expect(getChoice()).toBe("dark");
+    stop();
+  });
+
   it("keeps working for the session when storage refuses", () => {
     device(false);
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {

@@ -59,7 +59,7 @@ export function AccountMenu() {
   const initial = (title.trim()[0] ?? "?").toUpperCase();
   return (
     <div data-slot="account" className="shrink-0 border-t px-2 py-2">
-      {/* not modal, like the other menus of the app: axe reports the siblings of a modal menu as aria-hidden and focusable (DESIGN.md) */}
+      {/* not modal: axe reports the buttons around a modal menu as aria-hidden yet focusable (DESIGN.md "Which menus are modal") */}
       <DropdownMenu modal={false}>
         <Tooltip>
           <TooltipTrigger asChild>

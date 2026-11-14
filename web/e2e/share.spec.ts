@@ -328,6 +328,27 @@ test.describe("the owner shares a thread", () => {
 });
 
 test.describe("the page of a link", () => {
+  test("has the Theme button (there is no account menu here): Dark is chosen, shown and kept after a reload", async ({
+    page,
+    join,
+  }) => {
+    const owner = await join({ sharing: "public" });
+    const id = await threadOf(owner, `Fix the redirect loop ${uuidv7().slice(-8)}`);
+    const token = await shareAs(owner, id, "internal");
+    await join({ me: "admin", sharing: "public" });
+    await page.emulateMedia({ colorScheme: "light" });
+
+    await page.goto(`/s/${token}`);
+    await expect(banner(page)).toHaveText("Shared conversation, read only");
+    await page.getByRole("button", { name: "Theme" }).click();
+    await page.getByRole("menuitemradio", { name: "Dark" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await page.reload();
+    await expect(banner(page)).toHaveText("Shared conversation, read only");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(page.getByRole("button", { name: "Theme" })).toBeVisible();
+  });
+
   test("a signed-in reader has the conversation and nothing that acts, and not the owner's address", async ({
     page,
     join,

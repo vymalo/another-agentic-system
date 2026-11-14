@@ -119,8 +119,17 @@ export function subscribeTheme(listener: () => void): () => void {
       notify();
     };
     const onStorage = (event: StorageEvent) => {
-      if (event.key !== THEME_KEY) return;
-      choice = parseChoice(event.newValue);
+      // a key of something else is not ours; no key at all is `localStorage.clear()` in another tab: read it again
+      if (event.key !== null && event.key !== THEME_KEY) return;
+      if (event.key === null) {
+        try {
+          choice = parseChoice(localStorage.getItem(THEME_KEY));
+        } catch {
+          choice = "system";
+        }
+      } else {
+        choice = parseChoice(event.newValue);
+      }
       applyTheme(choice);
       notify();
     };

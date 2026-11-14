@@ -142,6 +142,8 @@ test.describe("on a light device", () => {
     await page.keyboard.press("Enter");
     await expect.poll(() => theme(page)).toBe("dark");
     await expect(page.getByRole("menuitemradio", { name: "Dark" })).toBeChecked();
+    // the keyboard's place is kept: the chosen item still has the focus, so the person can go on with the arrows
+    await expect(page.getByRole("menuitemradio", { name: "Dark" })).toBeFocused();
     // the menu stays, and nothing moved: the group is the same size as before
     await expect(group).toBeVisible();
     await page.keyboard.press("Escape");
@@ -216,6 +218,146 @@ test.describe("on a light device", () => {
     await choose(page, isMobile, "Dark");
     await expect.poll(async () => (await svg()).includes("#232723")).toBe(true); // --muted, dark
     expect(await svg()).not.toContain("#f3f2ec");
+  });
+});
+
+const BAR = { light: "#ffffff", dark: "#141614" }; // the `theme-color` of each theme (src/lib/theme.ts)
+
+/** Whether every `theme-color` meta of the page holds `colour` (and there is at least one). */
+const barIs = (page: Page, colour: string) =>
+  page.evaluate((expected) => {
+    const metas = [...document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')];
+    return metas.length > 0 && metas.every((m) => m.content === expected);
+  }, colour);
+
+for (const [device, chosen] of [
+  ["light", "dark"],
+  ["dark", "light"],
+] as const) {
+  test.describe(`${chosen} stored on a ${device} device`, () => {
+    test.use({ colorScheme: device });
+
+    test("the address bar's colour is the chosen theme's, on both theme-color metas", async ({
+      page,
+    }) => {
+      await page.addInitScript((value) => localStorage.setItem("chat.theme", value), chosen);
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await expect.poll(() => barIs(page, BAR[chosen])).toBe(true);
+    });
+  });
+}
+
+test.describe("the Theme button where there is no account menu", () => {
+  test.use({ colorScheme: "light" });
+
+  test("the sign-in screen has it: Dark is chosen, shown and kept after a reload", async ({
+    page,
+  }) => {
+    // the mock is an edge deployment: the page is told it is a browser-mode one, whose issuer is never reached here
+    await page.route("**/api/public/auth", (route) =>
+      route.fulfill({
+        json: {
+          issuer: "https://auth.example.com/realms/acme",
+          clientId: "web",
+          scope: "openid email profile offline_access",
+        },
+      }),
+    );
+    await page.goto("/");
+    await expect(page.locator('[data-slot="sign-in"]')).toBeVisible();
+    await page.getByRole("button", { name: "Theme" }).click();
+    await page.getByRole("menuitemradio", { name: "Dark" }).click();
+    await expect.poll(() => theme(page)).toBe("dark");
+    await page.reload();
+    await expect(page.locator('[data-slot="sign-in"]')).toBeVisible();
+    expect(await theme(page)).toBe("dark");
+    await expect(page.getByRole("button", { name: "Theme" })).toBeVisible();
+  });
+});
+
+test.describe("on a light device, in print", () => {
+  test.use({ colorScheme: "light" });
+
+  test("a dark theme prints with the light colours, and the screen is dark again after", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => localStorage.setItem("chat.theme", "dark"));
+    await page.goto("/");
+    await expect(agentPicker(page)).toBeVisible();
+    const look = () =>
+      page.evaluate(() => ({
+        background: getComputedStyle(document.body).backgroundColor,
+        text: getComputedStyle(document.body).color,
+        scheme: getComputedStyle(document.documentElement).colorScheme,
+      }));
+    expect(await theme(page)).toBe("dark");
+    expect(await look()).toEqual({
+      background: DARK_BACKGROUND,
+      text: "rgb(232, 233, 228)",
+      scheme: "dark",
+    });
+    await page.emulateMedia({ media: "print" });
+    // paper is white: the light tokens, though the page's theme is still dark
+    expect(await theme(page)).toBe("dark");
+    expect(await look()).toEqual({
+      background: LIGHT_BACKGROUND,
+      text: "rgb(26, 29, 26)",
+      scheme: "light",
+    });
+    await page.emulateMedia({ media: "screen" });
+    expect((await look()).background).toBe(DARK_BACKGROUND);
+  });
+});
+
+test.describe("two tabs of one browser", () => {
+  test.use({ colorScheme: "light" });
+
+  test("a choice made in one is followed by the other, and so is a cleared storage", async ({
+    context,
+    page,
+    isMobile,
+  }) => {
+    await page.goto("/");
+    await expect(agentPicker(page)).toBeVisible();
+    const other = await context.newPage();
+    await other.goto("/");
+    await expect(agentPicker(other)).toBeVisible();
+    await choose(page, isMobile, "Dark");
+    await expect.poll(() => theme(other)).toBe("dark");
+    // `localStorage.clear()` in this tab tells the other tab with no key: it reads the choice again (System)
+    await page.evaluate(() => localStorage.clear());
+    await expect.poll(() => theme(other)).toBe("light");
+  });
+});
+
+test.describe("the head script, with storage that throws from the first byte", () => {
+  test.use({ colorScheme: "dark" });
+
+  test("raises nothing, and has set the device's theme before the body exists", async ({
+    page,
+  }) => {
+    const problems: string[] = [];
+    page.on("pageerror", (e) => problems.push(`pageerror: ${e.message}`));
+    page.on("console", (m) => {
+      // a 404 of the mock for a resource is no script's error (it happens with storage working, too)
+      if (m.type() === "error" && !/^Failed to load resource/.test(m.text()))
+        problems.push(`console: ${m.text()}`);
+    });
+    await page.addInitScript(() => {
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        get() {
+          throw new DOMException("blocked", "SecurityError");
+        },
+      });
+    });
+    await recordTheme(page);
+    await page.goto("/");
+    await expect(agentPicker(page)).toBeVisible();
+    const log = await recorded(page);
+    expect(log.events.slice(0, 2)).toEqual(["attr:dark", "body"]);
+    expect(problems).toEqual([]);
   });
 });
 
