@@ -35,7 +35,13 @@ export function MyServersPage() {
   async function add(fields: ServerFields): Promise<FormOutcome> {
     setAdded(null);
     const result = await view.add(buildCreate(fields));
-    if (!result.ok) return { ok: false, message: result.failure.message };
+    if (!result.ok) {
+      return {
+        ok: false,
+        message: result.failure.message,
+        ...(result.failure.field ? { field: result.failure.field } : {}),
+      };
+    }
     setAdding(false);
     setAdded(result.value.name);
     return { ok: true };
@@ -100,6 +106,15 @@ export function MyServersPage() {
               the ones you added, and delete them.
             </InlineStatus>
           )}
+          {state.readError ? (
+            <InlineStatus
+              tone="warning"
+              role="status"
+              action={{ label: "Try again", onClick: view.reload }}
+            >
+              The list could not be refreshed: {state.readError} What is shown may be out of date.
+            </InlineStatus>
+          ) : null}
           {state.unreadable ? (
             <InlineStatus tone="warning" role="status">
               One of your servers could not be read, so none are listed here. They are not lost: ask

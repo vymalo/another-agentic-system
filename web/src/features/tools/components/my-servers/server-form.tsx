@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useId, useState } from "react";
+import { type FormEvent, useEffect, useId, useState } from "react";
 import { InlineStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,10 @@ import {
 /** `add`: a new server. `edit`: its name, address and authentication. `key`: a new token or key and nothing else. */
 export type FormMode = "add" | "edit" | "key";
 
-export type FormOutcome = { ok: true } | { ok: false; message: string };
+/** The field of the form a refusal is about, where its `code` names one (`url_refused`: the address). */
+export type FormField = "url" | "kind";
+
+export type FormOutcome = { ok: true } | { ok: false; message: string; field?: FormField };
 
 type Props = {
   mode: FormMode;
@@ -54,7 +57,7 @@ export function ServerForm({ mode, kinds, server, onSubmit, onCancel }: Props) {
   const id = useId();
   const [fields, setFields] = useState<ServerFields>(() => start(kinds, server));
   const [pending, setPending] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<{ message: string; field?: FormField } | null>(null);
   const set = <K extends keyof ServerFields>(key: K, value: ServerFields[K]) =>
     setFields((f) => ({ ...f, [key]: value }));
 
@@ -85,8 +88,19 @@ export function ServerForm({ mode, kinds, server, onSubmit, onCancel }: Props) {
     setPending(false);
     if (outcome.ok) {
       if (mode === "add") setFields(start(kinds));
-    } else setProblem(outcome.message);
+    } else {
+      setProblem({ message: outcome.message, ...(outcome.field ? { field: outcome.field } : {}) });
+    }
   }
+
+  // a refusal about a field: the words are tied to it (`aria-invalid`, `aria-describedby`) and the focus goes there
+  const bad = problem?.field;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new refusal about the same field moves the focus again
+  useEffect(() => {
+    if (bad) document.getElementById(`${id}-${bad}`)?.focus();
+  }, [bad, id, problem]);
+  const errorId = `${id}-error`;
+  const tie = (field: FormField, help: string) => (bad === field ? `${help} ${errorId}` : help);
 
   return (
     <form
@@ -118,7 +132,8 @@ export function ServerForm({ mode, kinds, server, onSubmit, onCancel }: Props) {
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
-              aria-describedby={`${id}-url-help`}
+              aria-invalid={bad === "url" ? true : undefined}
+              aria-describedby={tie("url", `${id}-url-help`)}
               onChange={(e) => set("url", e.target.value)}
             />
             <p id={`${id}-url-help`} className="text-xs text-muted-foreground">
@@ -131,7 +146,8 @@ export function ServerForm({ mode, kinds, server, onSubmit, onCancel }: Props) {
             <NativeSelect
               id={`${id}-kind`}
               value={fields.kind}
-              aria-describedby={`${id}-kind-help`}
+              aria-invalid={bad === "kind" ? true : undefined}
+              aria-describedby={tie("kind", `${id}-kind-help`)}
               className="w-full sm:w-64"
               onChange={(e) => set("kind", e.target.value as Kind)}
             >
@@ -215,9 +231,11 @@ export function ServerForm({ mode, kinds, server, onSubmit, onCancel }: Props) {
         </InlineStatus>
       ) : null}
       {problem ? (
-        <InlineStatus tone="error" role="alert">
-          {problem}
-        </InlineStatus>
+        <div id={errorId}>
+          <InlineStatus tone="error" role="alert">
+            {problem.message}
+          </InlineStatus>
+        </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" disabled={pending || !complete}>

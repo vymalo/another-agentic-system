@@ -9,6 +9,7 @@ import {
   isOwn,
   moveWarning,
   nextAction,
+  openableLink,
   scopesOf,
   standing,
   takesSecret,
@@ -253,6 +254,17 @@ describe("failureOf: the words come from the status and the code, never a guesse
 
   it("says the limit with the number the list gave", () => {
     expect(f(409, "too_many_servers").message).toContain("8");
+    // the number is the list's, not ours
+    expect(
+      failureOf({ status: 409, code: "too_many_servers" }, { retryAfter: null, limit: 5 }).message,
+    ).toContain("5 servers");
+  });
+
+  it("names the field a code is about, so the screen can tie the words to it", () => {
+    expect(f(400, "url_refused", "x").field).toBe("url");
+    expect(f(422, "credentials_not_kept").field).toBe("kind");
+    expect(f(409, "stale_revision").field).toBeUndefined();
+    expect(f(400, undefined, "`secret` is short").field).toBeUndefined();
   });
 
   it("says a refused address with the guard's own sentence, never an address of ours", () => {
@@ -318,5 +330,53 @@ describe("attachable and isOwn: what the picker offers", () => {
     expect(
       standing({ status: "needs_auth", reason: "not_connected", auth: { kind: "oauth2" } }).label,
     ).toBe("Needs a sign-in");
+  });
+});
+
+describe("openableLink: the one rule for a sign-in link before anything is opened", () => {
+  const issuer = "https://login.stranger.example";
+
+  it("opens an https link and says where it goes: the host of the link itself", () => {
+    expect(openableLink("https://login.stranger.example/authorize?state=s", issuer)).toEqual({
+      ok: true,
+      href: "https://login.stranger.example/authorize?state=s",
+      host: "login.stranger.example",
+      issuerHost: "login.stranger.example",
+      sameHost: true,
+    });
+  });
+
+  it("opens a link on another host than the issuer (RFC 8414 lets an authorization endpoint live elsewhere), and says both hosts", () => {
+    const link = openableLink("https://accounts.other.example/o/authorize?x=1", issuer);
+    expect(link).toMatchObject({
+      ok: true,
+      host: "accounts.other.example",
+      issuerHost: "login.stranger.example",
+      sameHost: false,
+    });
+  });
+
+  it("opens http only on this machine, for a dev authorization server", () => {
+    for (const url of ["http://127.0.0.1:4010/a", "http://localhost/a", "http://[::1]:9/a"]) {
+      expect(openableLink(url, issuer).ok, url).toBe(true);
+    }
+    expect(openableLink("http://example.com/a", issuer).ok).toBe(false);
+  });
+
+  it("opens nothing else: javascript:, data:, blob:, file:, a relative or malformed link, user information, nothing", () => {
+    for (const url of [
+      "javascript:alert(1)",
+      "JaVaScRiPt:alert(1)",
+      "data:text/html,<script>1</script>",
+      "blob:https://login.stranger.example/x",
+      "file:///etc/passwd",
+      "/authorize?state=s",
+      "//login.stranger.example/authorize",
+      "not a url",
+      "https://user:pass@login.stranger.example/a",
+      "",
+    ]) {
+      expect(openableLink(url, issuer), url).toEqual({ ok: false });
+    }
   });
 });

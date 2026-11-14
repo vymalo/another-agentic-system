@@ -44,6 +44,14 @@ const refused = (status: number, error: object, headers: Record<string, string> 
   response: { status, ok: false, headers: new Headers(headers) },
 });
 
+const deferred = <T,>() => {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
+
 beforeEach(() => {
   client.GET.mockReset().mockResolvedValue(listing());
   client.POST.mockReset();
@@ -123,6 +131,71 @@ describe("reading the list", () => {
     );
     expect(client.GET).toHaveBeenCalledTimes(2);
     clock.mockRestore();
+  });
+});
+
+describe("a list that is already on screen", () => {
+  it("stays when a later read fails, and the failure is said beside it; the next good read clears it", async () => {
+    const hook = await ready();
+    client.GET.mockResolvedValueOnce(
+      refused(503, { title: "x", status: 503, detail: "Storage is unavailable" }),
+    );
+    act(() => hook.result.current.reload());
+    await waitFor(() =>
+      expect(hook.result.current.state).toMatchObject({
+        status: "ready",
+        servers: [{ id: "u-abcdefghij" }],
+        readError: "Storage is unavailable",
+      }),
+    );
+    // a 404 or a 403 later is a failure beside the list too, not a list replaced by a page that says nothing of it
+    client.GET.mockResolvedValueOnce(refused(404, { title: "x", status: 404 }));
+    act(() => hook.result.current.reload());
+    await waitFor(() => expect(hook.result.current.state).toMatchObject({ status: "ready" }));
+    client.GET.mockResolvedValueOnce(listing([row({ revision: "9" })]));
+    act(() => hook.result.current.reload());
+    await waitFor(() =>
+      expect(hook.result.current.state).toMatchObject({
+        readError: null,
+        servers: [{ revision: "9" }],
+      }),
+    );
+  });
+
+  it("is not overwritten by an older read that answers late", async () => {
+    const hook = await ready();
+    const slow = deferred<ReturnType<typeof listing>>();
+    client.GET.mockReturnValueOnce(slow.promise);
+    client.GET.mockResolvedValueOnce(listing([row({ name: "Newer", revision: "8" })]));
+    act(() => hook.result.current.reload());
+    act(() => hook.result.current.reload());
+    await waitFor(() =>
+      expect(hook.result.current.state).toMatchObject({ servers: [{ name: "Newer" }] }),
+    );
+    await act(async () => {
+      slow.resolve(listing([row({ name: "Older", revision: "2" })]));
+    });
+    expect(hook.result.current.state).toMatchObject({
+      servers: [{ name: "Newer", revision: "8" }],
+    });
+  });
+
+  it("is not overwritten by a read that began before a write the person made and answers after it", async () => {
+    const hook = await ready();
+    const slow = deferred<ReturnType<typeof listing>>();
+    client.GET.mockReturnValueOnce(slow.promise);
+    act(() => hook.result.current.reload());
+    client.PATCH.mockResolvedValueOnce({
+      data: row({ name: "Mine", revision: "5" }),
+      response: { status: 200, ok: true, headers: new Headers() },
+    });
+    await act(async () => {
+      await hook.result.current.update("u-abcdefghij", { name: "Mine", revision: "1" });
+    });
+    await act(async () => {
+      slow.resolve(listing([row({ name: "Before my change", revision: "1" })]));
+    });
+    expect(hook.result.current.state).toMatchObject({ servers: [{ name: "Mine", revision: "5" }] });
   });
 });
 

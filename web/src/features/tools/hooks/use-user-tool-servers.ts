@@ -28,6 +28,8 @@ export type UserServersState =
       kinds: Kind[];
       /** A definition did not read back: the list is empty and the others are not lost (`error.code: unreadable`). */
       unreadable: boolean;
+      /** Why the last read failed, beside the list it left on screen; null after a good read. */
+      readError: string | null;
     }
   /** 404: the deployment has people's own servers off. A fact, not a failure. */
   | { status: "off" }
@@ -86,6 +88,11 @@ export function useUserToolServers(): UserToolServersView {
       settled.current = mine;
       setState(next);
     };
+    const later = (readError: string) => {
+      if (!alive.current || mine < settled.current) return;
+      settled.current = mine;
+      setState((s) => (s.status === "ready" ? { ...s, readError } : s));
+    };
     api
       .GET("/api/user-tool-servers")
       .then(({ data, error, response }) => {
@@ -98,15 +105,23 @@ export function useUserToolServers(): UserToolServersView {
             limit: data.limit,
             kinds: data.kinds as Kind[],
             unreadable: data.error?.code === "unreadable",
+            readError: null,
           });
+        } else if (shown.current) {
+          // a list on screen stays when a later read fails, whatever the failure: it is said beside it
+          later(
+            response.status === 401
+              ? "You are signed out. Sign in again to see changes."
+              : problemMessage(error),
+          );
         } else if (response.status === 404) apply({ status: "off" });
         else if (response.status === 403) apply({ status: "no-access" });
         else if (response.status === 401) apply({ status: "signed-out" });
-        // a list on screen stays when a later read fails
-        else if (!shown.current) apply({ status: "error", message: problemMessage(error) });
+        else apply({ status: "error", message: problemMessage(error) });
       })
       .catch((e: unknown) => {
-        if (!shown.current) apply({ status: "error", message: problemMessage(e) });
+        if (shown.current) later(problemMessage(e));
+        else apply({ status: "error", message: problemMessage(e) });
       });
   }, []);
 
@@ -128,6 +143,8 @@ export function useUserToolServers(): UserToolServersView {
   }, [load]);
 
   const put = useCallback((server: ApiUserToolServer) => {
+    // a read that began before this write may carry what it changed: it is dropped when it answers
+    settled.current = ++asked.current;
     setState((s) =>
       s.status === "ready"
         ? { ...s, servers: [...s.servers.filter((x) => x.id !== server.id), server].sort(byName) }
@@ -192,6 +209,7 @@ export function useUserToolServers(): UserToolServersView {
         });
         // a second delete is a 404: the server is gone, which is what was asked
         if (response.ok || response.status === 404) {
+          settled.current = ++asked.current;
           setState((s) =>
             s.status === "ready" ? { ...s, servers: s.servers.filter((x) => x.id !== id) } : s,
           );

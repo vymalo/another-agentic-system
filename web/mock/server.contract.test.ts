@@ -4958,6 +4958,8 @@ describe("people's own MCP servers (ADR 0046), as the mock does them", () => {
       headers: { "Content-Type": "application/json", ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+  /** Every `code` the mock answered, with the operation: the contract must name each (`Problem.code` is a free string). */
+  const answered: { template: string; method: string; code: string }[] = [];
   /** The answer is documented, the problem has the code, and nothing a person typed is in it. */
   const problemOf = async (
     template: string,
@@ -4970,6 +4972,7 @@ describe("people's own MCP servers (ADR 0046), as the mock does them", () => {
     expect(await res.clone().text()).not.toContain(SECRET);
     const body = (await expectDocumented(template, method, res)) as Problem;
     expect(body.code).toBe(code);
+    if (body.code) answered.push({ template, method, code: body.code });
     return body;
   };
   /** Adds a server; the answer is documented and the secret is not in it. */
@@ -5416,6 +5419,35 @@ describe("people's own MCP servers (ADR 0046), as the mock does them", () => {
       expect((await me(role)).permissions, role).not.toContainEqual({
         permission: "tools.user.add",
       });
+    }
+  });
+
+  it("every code the mock answered on these routes is named in the contract's text for that operation, or in the description of Problem.code", () => {
+    const codeDescription = JSON.stringify(
+      (
+        (contract.components as { responses: Record<string, unknown> }).responses.Problem as {
+          content: Record<string, unknown>;
+        }
+      ).content,
+    );
+    expect(answered.length).toBeGreaterThan(20);
+    const codes = new Set(answered.map((a) => a.code));
+    // the codes the web acts on are all among them
+    for (const code of [
+      "stale_revision",
+      "too_many_servers",
+      "url_refused",
+      "egress_refused",
+      "rate_limited",
+    ]) {
+      expect(codes.has(code), code).toBe(true);
+    }
+    for (const { template, method, code } of answered) {
+      const operation = JSON.stringify(contract.paths[template]?.[method]);
+      expect(
+        operation.includes(code) || codeDescription.includes(code),
+        `${method} ${template} answered \`${code}\`, which the contract does not name`,
+      ).toBe(true);
     }
   });
 });

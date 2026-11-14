@@ -217,31 +217,79 @@ describe("ServerRow: Connect (OAuth)", () => {
       state: "added",
       hasCredential: false,
     });
+  const flowAt = (authorizeUrl: string, issuer = "https://login.stranger.example") =>
+    ok({ authorizeUrl, issuer, expiresAt: new Date(Date.now() + 600_000).toISOString() });
+  /** The link in the dialog: a real link, so a pop-up blocker has nothing to block. Its default navigation is jsdom's to refuse. */
+  const link = (dialog: HTMLElement) => {
+    const a = within(dialog).getByRole("link", { name: /^Continue to/ });
+    a.addEventListener("click", (event) => event.preventDefault());
+    return a as HTMLAnchorElement;
+  };
 
-  it("shows where the person is about to be sent BEFORE it opens anything, then opens the link alone, with no opener", async () => {
+  it("shows where the person is about to be sent BEFORE it opens anything, and the link it offers goes to exactly that host", async () => {
     const { a } = renderRow(needs());
+    a.authorize.mockResolvedValueOnce(
+      flowAt("https://login.stranger.example/authorize?state=abc123"),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
     const dialog = await screen.findByRole("alertdialog");
     expect(a.authorize).toHaveBeenCalledWith("u-abcdefghij");
-    expect(dialog.textContent).toContain("login.stranger.example");
-    expect(dialog.textContent).toContain("https://login.stranger.example");
+    // the sentence names the destination, and it is the host of the link that is offered
+    const sentence = dialog.querySelector('[data-slot="destination"]')?.textContent;
+    expect(sentence).toBe("login.stranger.example");
+    expect(dialog.textContent).toContain("You will be sent to login.stranger.example");
     expect(dialog.textContent).toMatch(/chosen by the server you added, not by this deployment/);
-    // nothing is opened by showing it, and the link is not drawn as text or an anchor
+    expect(dialog.textContent).toContain("https://login.stranger.example");
+    const go = link(dialog);
+    expect(new URL(go.href).host).toBe(sentence);
+    expect(go.getAttribute("target")).toBe("_blank");
+    expect(go.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(go.textContent).toBe("Continue to login.stranger.example");
+    // nothing was opened by showing it, and after the dialog the link is in no markup
     expect(open).not.toHaveBeenCalled();
-    expect(document.body.innerHTML).not.toContain("abc123");
-    expect(dialog.querySelector("a")).toBeNull();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Continue to login.stranger.example" }),
-    );
-    expect(open).toHaveBeenCalledWith(AUTHORIZE_URL, "_blank", "noopener,noreferrer");
-    // the dialog is gone, the link with it, and the row waits for the person to come back
+    fireEvent.click(go);
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(document.body.innerHTML).not.toContain("abc123");
-    expect(screen.getByRole("status").textContent).toContain(
-      "Finish signing in in the other window",
+  });
+
+  it("names both hosts when the authorization endpoint is not on the issuer's host, and sends the person to the real one", async () => {
+    const { a } = renderRow(needs());
+    a.authorize.mockResolvedValueOnce(flowAt("https://accounts.other.example/o/authorize?state=s"));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.querySelector('[data-slot="destination"]')?.textContent).toBe(
+      "accounts.other.example",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
-    expect(a.reload).toHaveBeenCalled();
+    const hosts = dialog.querySelector('[data-slot="hosts"]')?.textContent ?? "";
+    expect(hosts).toContain("login.stranger.example");
+    expect(hosts).toContain("accounts.other.example");
+    expect(new URL(link(dialog).href).host).toBe("accounts.other.example");
+  });
+
+  it("opens nothing, and says the server gave a link that cannot be opened, for javascript:, data:, http, a relative and a malformed link", async () => {
+    for (const bad of [
+      "javascript:alert(document.domain)",
+      "data:text/html,<script>alert(1)</script>",
+      "http://example.com/authorize",
+      "/authorize?state=s",
+      "not a url",
+    ]) {
+      const { a, unmount } = renderRow(needs());
+      a.authorize.mockResolvedValueOnce(flowAt(bad));
+      fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog.textContent, bad).toContain("gave a sign-in link that cannot be opened");
+      expect(within(dialog).queryByRole("link"), bad).toBeNull();
+      expect(dialog.querySelector("a"), bad).toBeNull();
+      expect(
+        (within(dialog).getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled,
+        bad,
+      ).toBe(true);
+      expect(open, bad).not.toHaveBeenCalled();
+      expect(desktop.open, bad).not.toHaveBeenCalled();
+      expect(document.body.innerHTML, bad).not.toContain("javascript:");
+      unmount();
+    }
   });
 
   it("opens nothing when the person cancels", async () => {
@@ -266,6 +314,7 @@ describe("ServerRow: Connect (OAuth)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog.textContent).toContain("This link has ended");
+    expect(within(dialog).queryByRole("link")).toBeNull();
     expect(
       (within(dialog).getByRole("button", { name: /^Continue to/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
@@ -282,16 +331,45 @@ describe("ServerRow: Connect (OAuth)", () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it("opens the system browser through the app in the desktop and mobile apps, never a window of the webview", async () => {
+  it("does not claim a window opened: the row says it is waiting, true whether or not a pop-up was blocked, and offers the page again", async () => {
+    const { a } = renderRow(needs());
+    fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(link(dialog));
+    const waiting = await screen.findByRole("status");
+    expect(waiting.textContent).toContain("Waiting for you to finish signing in");
+    expect(waiting.textContent).not.toMatch(/other window/);
+    fireEvent.click(within(waiting).getByRole("button", { name: "Check now" }));
+    expect(a.reload).toHaveBeenCalled();
+    // a new flow replaces the old one: a new dialog, with a new link
+    fireEvent.click(within(waiting).getByRole("button", { name: "Open the sign-in page again" }));
+    await waitFor(() => expect(a.authorize).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("alertdialog")).toBeTruthy();
+  });
+
+  it("opens the system browser through the app in the desktop and mobile apps, and never a link of the webview", async () => {
     desktop.native = true;
     renderRow(needs());
     fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
     const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).queryByRole("link")).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: /^Continue to/ }));
     await waitFor(() => expect(desktop.open).toHaveBeenCalledWith(AUTHORIZE_URL));
     expect(open).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(screen.getByRole("status").textContent).toContain("Finish signing in");
+    expect(screen.getByRole("status").textContent).toContain("Waiting for you");
+  });
+
+  it("gives the app nothing to open for a link that cannot be opened", async () => {
+    desktop.native = true;
+    const { a } = renderRow(needs());
+    a.authorize.mockResolvedValueOnce(flowAt("javascript:alert(1)"));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      (within(dialog).getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(desktop.open).not.toHaveBeenCalled();
   });
 
   it("says so, and stays, when the app cannot open the sign-in (its native side opens only its own issuer's addresses)", async () => {
@@ -306,28 +384,102 @@ describe("ServerRow: Connect (OAuth)", () => {
         "Connect this server from the web app",
       ),
     );
-    expect(open).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).not.toBeNull();
     expect(screen.queryByRole("status")).toBeNull();
   });
 
-  it("stops waiting once the server reads ready", async () => {
+  it("stops waiting once the server reads ready, with the same revision or a new one", async () => {
     const { a, rerender } = renderRow(needs());
     fireEvent.click(screen.getByRole("button", { name: "Connect Search" }));
     const dialog = await screen.findByRole("alertdialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Continue to/ }));
+    fireEvent.click(link(dialog));
     await screen.findByRole("status");
+    const again = (revision: string) =>
+      rerender(
+        <ul>
+          <ServerRow
+            server={server({ auth: { kind: "oauth2" }, revision })}
+            kinds={ALL}
+            canChange
+            actions={a}
+          />
+        </ul>,
+      );
+    // ready under the revision the row had when the person went: not waiting any more (the status says it)
+    again(needs().revision);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText("Ready.")).toBeTruthy();
+    again("4");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("ServerRow: a form opened on a row keeps that row", () => {
+  it("sends the revision it was opened on, and the words of a 409 when the server has moved, so a re-read never lets old values overwrite a newer change", async () => {
+    const { a, rerender } = renderRow(server({ name: "Search", revision: "3" }));
+    a.update.mockResolvedValueOnce(
+      refuse(
+        "This server was changed since you opened it. Check it, then make your change again.",
+        true,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit Search" }));
+    // the list is read again behind the open form: another tab renamed the server
     rerender(
       <ul>
         <ServerRow
-          server={server({ auth: { kind: "oauth2" }, revision: "4" })}
+          server={server({ name: "Renamed elsewhere", revision: "9" })}
           kinds={ALL}
           canChange
           actions={a}
         />
       </ul>,
     );
-    expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.getByText("Ready.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Address"), {
+      target: { value: "https://moved.example.com/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(a.update).toHaveBeenCalledTimes(1));
+    // the revision N the form was opened on, and only what differs from the row it was opened on: not a rename back
+    expect(a.update).toHaveBeenCalledWith("u-abcdefghij", {
+      url: "https://moved.example.com/mcp",
+      revision: "3",
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain("changed since you opened it");
+  });
+
+  it("does the same for a new key", async () => {
+    const { a, rerender } = renderRow(server({ revision: "3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Replace the key of Search" }));
+    rerender(
+      <ul>
+        <ServerRow server={server({ revision: "9" })} kinds={ALL} canChange actions={a} />
+      </ul>,
+    );
+    fireEvent.change(screen.getByLabelText("New token"), { target: { value: SECRET } });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+    await waitFor(() =>
+      expect(a.update).toHaveBeenCalledWith("u-abcdefghij", { secret: SECRET, revision: "3" }),
+    );
+  });
+
+  it("ties a refused address to the Address field and moves the focus there", async () => {
+    const { a } = renderRow(server());
+    a.update.mockResolvedValueOnce({
+      ok: false as const,
+      failure: { message: "That address was refused. no.", reread: false, field: "url" as const },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Search" }));
+    fireEvent.change(screen.getByLabelText("Address"), {
+      target: { value: "https://10.0.0.1/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    const address = screen.getByLabelText("Address") as HTMLInputElement;
+    await waitFor(() => expect(address.getAttribute("aria-invalid")).toBe("true"));
+    const alert = await screen.findByRole("alert");
+    expect(address.getAttribute("aria-describedby")).toContain(alert.parentElement?.id ?? "x");
+    expect(document.activeElement).toBe(address);
+    // another field is untouched
+    expect(screen.getByLabelText("Name").getAttribute("aria-invalid")).toBeNull();
   });
 });

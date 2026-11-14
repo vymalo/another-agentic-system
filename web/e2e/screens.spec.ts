@@ -586,7 +586,7 @@ for (const scheme of ["light", "dark"] as const) {
         name: "Team search",
         url: "https://search.example.com/mcp",
         auth: { kind: "bearer" },
-        secret: "screens-only-token-value",
+        secret: "FAKE-not-a-real-token-0000",
       });
       await add({
         name: "Notes",
@@ -597,7 +597,7 @@ for (const scheme of ["light", "dark"] as const) {
         name: "Wiki",
         url: "https://wiki.example.com/mcp",
         auth: { kind: "api_key", header: "X-Api-Key" },
-        secret: "screens-only-key-value",
+        secret: "FAKE-not-a-real-key-0000",
       });
       expect((await hook("/__mock/user-tools", { denyHosts: ["wiki.example.com"] })).status).toBe(
         204,

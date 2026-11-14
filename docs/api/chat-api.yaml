@@ -333,19 +333,35 @@ paths:
            servers: when the list is that long the client does not offer Add, and the server's 409 `too_many_servers` is
            the race only. The `secret` is typed once, kept nowhere (not in storage, a URL or a log), cleared when the
            request is sent, and never filled in from an answer: no answer holds one.
-        3. **Re-key** (a `needs_auth` or `needs_reauth` server of kind `bearer` or `api_key`, or a key to replace):
-           `PATCH` `{secret, revision}` with the `revision` of the row as listed and nothing else. The answer is the
-           server `connected`. **Rename**: `{name, revision}`. **Move** (a new `url`, or a new `auth`): `{url, auth,
-           revision}`; the server forgets the credential first, so the screen says "you will be asked for the key
-           again" before it is sent, and the answer is `needs_auth`. **Delete**: `DELETE` the id; it takes no
-           revision. A 409 `stale_revision` is not an error to retry: read the list again and let the person decide again.
-        4. **Connect** (an `oauth2` server that is `needs_auth`, or any to authorize again): `POST` `.../authorize` with
-           no body. Show `issuer`, the authorization server the person is about to be sent to, **before** opening
-           `authorizeUrl` in a browser (a new window or tab on the web, the system browser on the desktop, an in-app tab
-           on mobile); never log or keep the URL. The browser comes back to `finishUserToolAuthorization`, which no
-           client calls. The client learns the outcome by reading this list again, when the person returns to the app
-           (the window regains focus) and while it waits: `ready` is done, anything else after `expiresAt` is "not
-           finished; connect again". A 429 `rate_limited` carries `Retry-After`.
+        3. **Change.** `PATCH` takes any non-empty combination of `name`, `url`, `auth` and `secret`, and the `revision` of the row as
+           listed (`orchestrator/crates/app/src/user_tools.rs`, `edit_user_tool_server`; an edit that names none of the first four is
+           a 400). A client sends **only what differs** from the row the person opened the form on, with **that row's** `revision`
+           (a form that is open while the list is read again keeps its own revision, so a stale edit is a 409 and never overwrites a
+           newer change). What each does: `name`, or the `header` of an `api_key`, is written and the credential kept; `secret`
+           alone (the kind must be `bearer` or `api_key`, else a 400) re-keys it and the server is `connected`, which also brings a
+           `needs_reauth` or `revoked` one back; a new `url`, a new `auth.kind`, other `scopes` or another `clientId` forgets the
+           credential first (the server is `added`, or `connected` if the kind is `none`), and a `secret` in the same request (kind
+           `bearer` or `api_key`) is then kept for the new definition and the server is `connected`; any other combination is those
+           effects together. A client says before it sends that a move forgets the credential. **Delete**: `DELETE` the id; it takes no
+           revision, and a 404 answering it means the server is already gone, which is what was asked. A 409 `stale_revision` is not
+           to be retried: read the list again and let the person decide again.
+        4. **Connect** (an `oauth2` server that is `needs_auth`; and an `oauth2` server that is not, to authorize it again with
+           another account or a wider scope, which the server allows): `POST` `.../authorize` with no body. Show the person where
+           they are being sent, **before** anything opens, and open `authorizeUrl` **only when** it parses, is `https:` (or `http:`
+           on a loopback host, for a development authorization server) and has no user information; `javascript:`, `data:`, a
+           relative or a malformed link is never opened, and the client says the server gave a link that cannot be opened. The
+           orchestrator takes the authorization endpoint from the authorization server's own RFC 8414 metadata and judges its shape
+           (`https`, a public host, no fragment: `orchestrator/crates/credential-broker/src/discovery.rs`, `found_in`), **not** that
+           it is on the issuer's host, so the client shows **the host of `authorizeUrl` itself** as the destination and, when it
+           differs from the `issuer`'s, names both. Open it in a browser the client cannot lose control of: a link the person
+           clicks (`target="_blank"`, no opener, no referrer) on the web, the system browser on the desktop, an in-app tab on mobile.
+           A client cannot know that a window it opened stayed open (a pop-up blocker returns the same as success), so it says
+           "waiting for you to finish signing in", never that a window opened, and offers **Check now** and **Open the sign-in page
+           again** (`authorizeUserToolServer` again: a later call ends the earlier flow). It never logs or keeps the URL. The browser
+           comes back to `finishUserToolAuthorization`, which no client calls. The client learns the outcome by reading this list
+           again: when the person returns to the app (the window regains focus; the web reads at most once in a quarter second, so
+           a focus and a visibility change together are one read) and on the person's request. `ready` is done; anything else after
+           `expiresAt` is "not finished; connect again". A 429 `rate_limited` carries `Retry-After`.
         5. **Attach.** The picker is `listToolServers`: the person's own servers have `own: true`. Offer a `ready` one
            like any other and send the whole set with `putThreadTools`. One that is not `ready` is not offered for
            attaching: `needs_auth` says what to do (give a key, or Connect, on the screen above: `ToolServer` does not
@@ -355,7 +371,8 @@ paths:
            it is a person's own words: a 400's, which never quotes a value): 400 `url_refused` (the address is refused:
            `detail` says why for a person); 403 `forbidden` (the permission is gone) or `no_access`; 404 (the server is
            gone, or the feature is off: read the list); 409 `too_many_servers`, `stale_revision`; 422
-           `credentials_not_kept`, `egress_refused`, `oauth_not_configured`; 429 `rate_limited`; 503 `broker_down`,
+           `credentials_not_kept` (add, change and authorize), `egress_refused` and `oauth_not_configured` (**`authorizeUserToolServer` only**: add and
+           change answer a refused address as the 400 `url_refused`, `orchestrator/crates/app/src/user_tools/authorize.rs`); 429 `rate_limited`; 503 `broker_down`,
            `authorization_unavailable`, or no `code` (the server is being changed: wait `Retry-After` and try again).
            After **any** failed write whose outcome is unknown (a 500, a 503, a lost connection) the client reads this list
            again: a write runs to its end on the server whether or not the client waits.

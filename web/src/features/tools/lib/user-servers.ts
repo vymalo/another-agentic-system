@@ -141,6 +141,44 @@ export const isOwn = (server: ApiToolServer): boolean => server.own === true;
 export const attachable = (server: ApiToolServer): boolean =>
   !isOwn(server) || server.status === "ready";
 
+// ---- the sign-in link --------------------------------------------------------------------------
+
+export type OpenableLink =
+  | { ok: false }
+  | { ok: true; href: string; host: string; issuerHost: string; sameHost: boolean };
+
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Whether a `authorizeUrl` may be opened, and where it goes. The orchestrator takes the authorization endpoint from the
+ * server's own RFC 8414 metadata and judges only its shape (`credential-broker/src/discovery.rs`, `found_in`): `https`, a
+ * public host, no fragment. It does **not** require the endpoint to be on the issuer's origin, which the RFC allows. So the
+ * rule is: parse it; `https:`, or `http:` on this machine (a dev authorization server); no user information; and the person
+ * is shown the host of **the link itself**, beside the issuer's when they differ. Anything else (`javascript:`, `data:`, a
+ * relative or malformed link) is never opened.
+ */
+export function openableLink(authorizeUrl: string, issuer: string): OpenableLink {
+  let url: URL;
+  try {
+    url = new URL(authorizeUrl);
+  } catch {
+    return { ok: false };
+  }
+  const secure = url.protocol === "https:";
+  const local = url.protocol === "http:" && LOOPBACK.has(url.hostname);
+  if (!(secure || local) || url.username !== "" || url.password !== "" || url.hostname === "") {
+    return { ok: false };
+  }
+  const issuerHost = hostOf(issuer);
+  return {
+    ok: true,
+    href: url.href,
+    host: url.host,
+    issuerHost,
+    sameHost: url.host === issuerHost,
+  };
+}
+
 // ---- what is sent -------------------------------------------------------------------------------
 
 /** What the form holds. The secret is the person's typing: the form clears it the moment it is sent. */
@@ -223,6 +261,8 @@ export function moveWarning(was: ApiUserToolServer, f: ServerFields): string | n
 // ---- what failed, in words ------------------------------------------------------------------------
 
 export type Failure = {
+  /** The field of the form the words are about, where the `code` names one; else none. */
+  field?: "url" | "kind";
   message: string;
   /** The outcome is not what the person asked for or not known: the list must be read again. */
   reread: boolean;
@@ -241,7 +281,11 @@ export function failureOf(
   context: { retryAfter: string | null; limit: number },
 ): Failure {
   const { status, code, detail } = problem;
-  const say = (message: string, reread = false): Failure => ({ message, reread });
+  const say = (message: string, reread = false, field?: Failure["field"]): Failure => ({
+    message,
+    reread,
+    ...(field ? { field } : {}),
+  });
   switch (code) {
     case "stale_revision":
       return say(
@@ -256,10 +300,14 @@ export function failureOf(
     case "url_refused":
       return say(
         `That address was refused. ${detail ?? "This deployment does not allow connections to it."}`,
+        false,
+        "url",
       );
     case "credentials_not_kept":
       return say(
         "This deployment keeps no credentials: only a server that needs no authentication can be added or changed to.",
+        false,
+        "kind",
       );
     case "egress_refused":
       return say(

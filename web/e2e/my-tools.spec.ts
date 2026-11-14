@@ -224,6 +224,65 @@ test("the ninth is refused, in words, and the form goes away at the limit", asyn
   await expect(rowOf(page, "Ninth")).toHaveCount(0);
 });
 
+test("a refused add leaves the secret nowhere: not in the page, not in any field, not in storage, not in the console", async ({
+  page,
+  mine,
+}) => {
+  const console_: string[] = [];
+  page.on("console", (m) => console_.push(m.text()));
+  page.on("pageerror", (e) => console_.push(String(e)));
+  const nowhere = async (why: string) => {
+    const where = await page.evaluate(() => ({
+      text: document.body.innerText,
+      values: [...document.querySelectorAll("input, textarea, select")].map(
+        (i) => (i as HTMLInputElement).value,
+      ),
+      stored: JSON.stringify([{ ...localStorage }, { ...sessionStorage }, location.href]),
+    }));
+    expect(where.text, why).not.toContain(SECRET);
+    expect(where.values.join("|"), why).not.toContain(SECRET);
+    expect(where.stored, why).not.toContain(SECRET);
+    expect(console_.join("\n"), why).not.toContain(SECRET);
+  };
+  // 7 servers, so the page has room and another tab can take the last place
+  for (let i = 0; i < 7; i++) await mine.seed(bearer(`S${i}`, `s${i}.example.com`));
+  await page.goto("/tools");
+  await page.getByRole("button", { name: "Add a server" }).click();
+  const add = async (secret: string) => {
+    await fillAdd(page, {
+      name: "New",
+      url: "https://new.example.com/mcp",
+      kind: "bearer",
+      secret,
+    });
+    await page.getByRole("button", { name: "Add server" }).click();
+  };
+  // a 400 (the secret is too short for the server) quotes nothing
+  await add("short");
+  await expect(errorLine(page)).toBeVisible();
+  await nowhere("after a 400");
+  // a 503 from the credential broker
+  await page.route("**/api/user-tool-servers", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/problem+json",
+          body: JSON.stringify({ title: "Unavailable", status: 503, code: "broker_down" }),
+        })
+      : route.continue(),
+  );
+  await add(SECRET);
+  await expect(errorLine(page)).toContainText("could not be kept or removed");
+  await nowhere("after a 503");
+  await page.unroute("**/api/user-tool-servers");
+  // a 409 (another tab took the last place)
+  await mine.seed(bearer("S7", "s7.example.com"));
+  await add(SECRET);
+  await expect(page.getByText(/You have 8 servers/)).toBeVisible();
+  await nowhere("after a 409");
+  expect(console_.join("\n")).not.toContain(SECRET);
+});
+
 test("an address the deployment refuses is said in words and keeps what was typed", async ({
   page,
   mine,
@@ -232,6 +291,9 @@ test("an address the deployment refuses is said in words and keeps what was type
   await fillAdd(page, { name: "Inside", url: "https://10.0.0.5/mcp", kind: "none" });
   await page.getByRole("button", { name: "Add server" }).click();
   await expect(errorLine(page)).toContainText("That address was refused");
+  // the words are tied to the Address field, and the focus is there
+  await expect(page.getByLabel("Address")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByLabel("Address")).toBeFocused();
   await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Inside");
   await expect(rowOf(page, "Inside")).toHaveCount(0);
   // nothing was written
@@ -259,12 +321,13 @@ test("oauth2 shows the issuer before anything opens, then turns ready when the p
   await expect(dialog).toContainText("login.stranger.example");
   await expect(dialog).toContainText("chosen by the server you added, not by this deployment");
   expect(context.pages()).toHaveLength(1);
-  expect(await page.content()).not.toContain("/__mock/oauth/approve");
+  // the way on is a real link to exactly the host the dialog names; nothing has been opened yet
+  const go = dialog.getByRole("link", { name: "Continue to 127.0.0.1:4010" });
+  await expect(go).toHaveAttribute("target", "_blank");
+  await expect(go).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(dialog).toContainText("You will be sent to 127.0.0.1:4010");
 
-  const [consent] = await Promise.all([
-    context.waitForEvent("page"),
-    dialog.getByRole("button", { name: "Continue to login.stranger.example" }).click(),
-  ]);
+  const [consent] = await Promise.all([context.waitForEvent("page"), go.click()]);
   await consent.waitForLoadState("domcontentloaded");
   // the stand-in for the authorization server sent the browser to the callback, which says so in fixed words
   await expect(consent.getByRole("heading", { name: "The server is connected" })).toBeVisible();
@@ -275,7 +338,7 @@ test("oauth2 shows the issuer before anything opens, then turns ready when the p
   await page.bringToFront();
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(row.locator('[data-slot="status"]')).toContainText("Ready.");
-  await expect(row).not.toContainText("Finish signing in");
+  await expect(row).not.toContainText("Waiting for you");
   expect(await page.content()).not.toContain("state=");
 });
 
@@ -296,14 +359,14 @@ test("a person who declines is told nothing was connected, and the row is as it 
     context.waitForEvent("page"),
     page
       .getByRole("alertdialog")
-      .getByRole("button", { name: /^Continue to/ })
+      .getByRole("link", { name: /^Continue to/ })
       .click(),
   ]);
   await expect(
     consent.getByRole("heading", { name: "The authorization was not completed" }),
   ).toBeVisible();
   await consent.close();
-  await expect(row).toContainText("Finish signing in in the other window");
+  await expect(row).toContainText("Waiting for you to finish signing in");
   await row.getByRole("button", { name: "Check now" }).click();
   await expect(row.locator('[data-slot="status"]')).toContainText("Needs a sign-in.");
 });

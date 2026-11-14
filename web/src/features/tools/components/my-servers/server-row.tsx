@@ -42,7 +42,11 @@ const TONE = {
  * row was read at; a stale one is the server's 409 and is told in words, with the list read again.
  */
 export function ServerRow({ server, kinds, canChange, actions }: Props) {
-  const [panel, setPanel] = useState<"edit" | "key" | null>(null);
+  // The form is opened on the row as it is then, and keeps it: a re-read of the list that changes the row under an open form
+  // must not give the form's old values the new revision, so a save diffs against, and sends the revision of, what was opened
+  const [panel, setPanel] = useState<{ mode: "edit" | "key"; base: ApiUserToolServer } | null>(
+    null,
+  );
   const [deleting, setDeleting] = useState(false);
   const [flow, setFlow] = useState<ApiUserToolAuthorization | null>(null);
   // the revision the row had when the person went to sign in: while it is the same and the server is not ready, they are still at it
@@ -66,7 +70,8 @@ export function ServerRow({ server, kinds, canChange, actions }: Props) {
   }
 
   async function save(fields: ServerFields): Promise<FormOutcome> {
-    const body = buildChange(server, fields);
+    if (!panel) return { ok: true };
+    const body = buildChange(panel.base, fields);
     if (body === null) {
       setPanel(null);
       return { ok: true };
@@ -77,7 +82,11 @@ export function ServerRow({ server, kinds, canChange, actions }: Props) {
       setFailure(null);
       return { ok: true };
     }
-    return { ok: false, message: result.failure.message };
+    return {
+      ok: false,
+      message: result.failure.message,
+      ...(result.failure.field ? { field: result.failure.field } : {}),
+    };
   }
 
   return (
@@ -104,12 +113,33 @@ export function ServerRow({ server, kinds, canChange, actions }: Props) {
         </div>
       </div>
       {waiting === server.revision && server.status !== "ready" ? (
-        <InlineStatus
+        // said so it is true whether or not a window opened (a pop-up blocker is not something a page can see)
+        <div
           role="status"
-          action={{ label: "Check now", onClick: () => actions.reload() }}
+          data-slot="waiting"
+          className="my-1 flex flex-wrap items-baseline gap-x-3 text-sm text-muted-foreground"
         >
-          Finish signing in in the other window. This list updates when you come back.
-        </InlineStatus>
+          <span>Waiting for you to finish signing in. This list updates when you come back.</span>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-0 py-1"
+            onClick={() => actions.reload()}
+          >
+            Check now
+          </Button>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-0 py-1"
+            disabled={connecting}
+            onClick={connect}
+          >
+            Open the sign-in page again
+          </Button>
+        </div>
       ) : null}
       {failure ? (
         <InlineStatus tone="error" role="alert">
@@ -119,9 +149,9 @@ export function ServerRow({ server, kinds, canChange, actions }: Props) {
       {panel ? (
         <div className="rounded-lg bg-muted/50 p-3">
           <ServerForm
-            mode={panel}
+            mode={panel.mode}
             kinds={kinds}
-            server={server}
+            server={panel.base}
             onSubmit={save}
             onCancel={() => setPanel(null)}
           />
@@ -144,7 +174,7 @@ export function ServerRow({ server, kinds, canChange, actions }: Props) {
               type="button"
               size="sm"
               aria-label={`Add a key to ${server.name}`}
-              onClick={() => setPanel("key")}
+              onClick={() => setPanel({ mode: "key", base: server })}
             >
               Add key
             </Button>
@@ -167,7 +197,7 @@ export function ServerRow({ server, kinds, canChange, actions }: Props) {
               size="sm"
               variant="outline"
               aria-label={`Replace the key of ${server.name}`}
-              onClick={() => setPanel("key")}
+              onClick={() => setPanel({ mode: "key", base: server })}
             >
               Replace key
             </Button>
@@ -178,7 +208,7 @@ export function ServerRow({ server, kinds, canChange, actions }: Props) {
               size="sm"
               variant="outline"
               aria-label={`Edit ${server.name}`}
-              onClick={() => setPanel("edit")}
+              onClick={() => setPanel({ mode: "edit", base: server })}
             >
               Edit
             </Button>
