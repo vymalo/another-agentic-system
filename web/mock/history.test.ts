@@ -279,7 +279,7 @@ describe("the mock's history route", () => {
       initialTurns: 12,
       pageTurns: 20,
       maxTurns: 100,
-      projection: 1,
+      projection: 2,
       windowed: true,
     });
     await get("/__mock/config?session=a&history=on&initialTurns=3", { method: "POST" });

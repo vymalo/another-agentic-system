@@ -603,7 +603,15 @@ function forkLog(name: string): Event[] {
 
 describe("the mock's projection against the AG-UI goldens of a fork, a description, attached servers, mentions and usage", () => {
   // the description's log too: the projection alone, from the events the orchestrator wrote
-  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, ...ASKS, ...USAGE, ...AGAIN, "description"]) {
+  for (const name of [
+    ...FORKS,
+    ...TOOLS,
+    ...MENTIONS,
+    ...ASKS,
+    ...USAGE,
+    ...AGAIN,
+    "description",
+  ]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
       const log = forkLog(name);
       // the thread's title is the first message's first line, as the golden test of the real

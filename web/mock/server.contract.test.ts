@@ -662,7 +662,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       initialTurns: 12,
       pageTurns: 20,
       maxTurns: 100,
-      projection: 1,
+      projection: 2,
       windowed: true,
     };
     const res = await fetch(`${base}/api/config`);
@@ -1757,8 +1757,9 @@ describe("choices-v8, choices-v8-bad and plan (mock only): catalog version 8", (
     // the orchestrator names a surface's message by the event that made it: the same in every run
     expect(new Set(all.map((s) => s.id)).size).toBe(1);
     expect(JSON.stringify(all.at(-1)?.ops.at(0))).toContain('"surfaceId":"plan-run-1"');
-    // each snapshot is the whole surface so far: it grows by one create and one update each time
-    expect(all.map((s) => s.ops.length)).toEqual([2, 4, 6, 8, 10]);
+    // each snapshot is the whole surface that is alive: every send is a create and an update, and a
+    // create starts the surface over, so the dead copies before it are not replayed (docs/api/agui.md)
+    expect(all.map((s) => s.ops.length)).toEqual([2, 2, 2, 2, 2]);
     const last = componentsOf(all.at(-1)?.ops ?? [])
       .filter((c) => c.component === "Checklist")
       .at(-1) as {
