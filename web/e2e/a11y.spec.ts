@@ -251,6 +251,34 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: the five kinds of question of version 7 (open, with answers held back, answered, and read back) have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "choices-v7 now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      await expect(page.getByRole("radiogroup", { name: "Delete the old branch?" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      // a number that is out of range, with its words under it, and the held button
+      const budget = page.getByRole("textbox", { name: /What is the monthly budget/ });
+      await budget.fill("1500");
+      await expect(page.getByText("The most is 1000 EUR.")).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      // a day out of range, a point of the scale chosen, a rank moved
+      await page.getByLabel(/When should it ship/).fill("2027-01-02");
+      await expect(page.getByText("The latest day is 2026-12-31.")).toBeVisible();
+      await page.getByText("7", { exact: true }).click();
+      await page.getByRole("button", { name: "Move Risk up" }).click();
+      expect(await axeViolations(page)).toEqual([]);
+      // all valid, sent, and read back: the form as it was answered and the person's answer
+      await budget.fill("250.5");
+      await page.getByLabel(/When should it ship/).fill("2026-12-15");
+      await page.getByRole("button", { name: "Send answers" }).click();
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator('[data-slot="answer-bubble"]')).toBeVisible();
+      await expect(page.locator('[data-slot="answer-rank"]')).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: an answer of words, cards and a graph has no serious violations (the graph drawn, its source open)", async ({
       page,
     }) => {

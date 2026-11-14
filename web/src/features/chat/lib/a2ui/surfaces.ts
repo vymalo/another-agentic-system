@@ -76,3 +76,30 @@ export function surfaceOperations(
   }
   return undefined;
 }
+
+/**
+ * Whether the person has already acted on surface `surfaceId` since message `messageId` drew it: a
+ * `vymalo.action` that names the surface comes after it in the transcript. A form that was sent
+ * stays answered when the thread waits again, say because the agent asked again after refusing the
+ * answer (docs/api/ui-catalog-v1.md, "Receiving an answer"): the new form is the open one.
+ */
+export function answeredAfter(
+  messages: readonly Message[],
+  messageId: string,
+  surfaceId: string,
+): boolean {
+  const at = messages.findIndex((m) => m.id === messageId);
+  if (at < 0) return false;
+  const name = activityPartName(ACTIVITY.action);
+  return messages
+    .slice(at + 1)
+    .some((m) =>
+      m.content.some(
+        (p) =>
+          p.type === "data" &&
+          p.name === name &&
+          isRecord(p.data) &&
+          p.data.surfaceId === surfaceId,
+      ),
+    );
+}

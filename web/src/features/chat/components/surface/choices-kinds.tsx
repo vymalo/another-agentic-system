@@ -20,6 +20,7 @@ import {
   yesLabel,
 } from "@/features/chat/lib/a2ui/choices-kinds";
 import type { StepIcon } from "@/features/chat/lib/agui/vymalo";
+import { cn } from "@/lib/utils";
 
 /*
  * The five kinds of question of catalog version 7 (docs/api/ui-catalog-v1.md, "Version 7"): a yes or
@@ -115,6 +116,7 @@ function RadioTile({
   value,
   label,
   note,
+  fill = false,
   checked,
   onPick,
 }: {
@@ -123,13 +125,15 @@ function RadioTile({
   label: string;
   /** The words at an end of a scale, said to a screen reader as the description. */
   note?: string | undefined;
+  /** The tile takes the whole width it is given (a yes or no), instead of the width of its words. */
+  fill?: boolean;
   checked: boolean;
   onPick: () => void;
 }) {
   const id = useId();
   const described = `${id}-n`;
   return (
-    <div className="flex min-w-0 flex-col items-center gap-1">
+    <div className={cn("flex min-w-0 flex-col gap-1", fill ? "items-stretch" : "items-center")}>
       <div data-slot="choices-option" className={`${TILE} justify-center`}>
         <input
           id={id}
@@ -170,6 +174,7 @@ function Confirm({ question, name, state, enabled, onChange }: Props) {
         <RadioTile
           name={name}
           value={YES}
+          fill
           label={yesLabel(question)}
           checked={chosen === YES}
           onPick={pick(YES)}
@@ -177,6 +182,7 @@ function Confirm({ question, name, state, enabled, onChange }: Props) {
         <RadioTile
           name={name}
           value={NO}
+          fill
           label={noLabel(question)}
           checked={chosen === NO}
           onPick={pick(NO)}
@@ -364,7 +370,9 @@ function Rank({ question, state, enabled, onChange }: Props) {
                   {Icon ? (
                     <Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
                   ) : null}
-                  <span className="[overflow-wrap:anywhere]">{option.label}</span>
+                  <span data-slot="choices-rank-label" className="[overflow-wrap:anywhere]">
+                    {option.label}
+                  </span>
                   {option.recommended ? (
                     <Badge variant="secondary" data-slot="choices-recommended">
                       Recommended

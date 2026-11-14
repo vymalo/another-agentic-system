@@ -291,7 +291,7 @@ describe("rank: put the options in order", () => {
   };
   const labels = () =>
     Array.from(document.querySelectorAll('[data-slot="choices-rank-item"]')).map(
-      (li) => li.querySelector("span.flex-1 span span")?.textContent,
+      (li) => li.querySelector('[data-slot="choices-rank-label"]')?.textContent,
     );
   const move = (label: string, way: "up" | "down") =>
     click(screen.getByRole("button", { name: `Move ${label} ${way}` }));

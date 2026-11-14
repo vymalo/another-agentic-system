@@ -1,5 +1,6 @@
 "use client";
 
+import { useAuiState } from "@assistant-ui/react";
 import { CheckIcon, ChevronsUpDownIcon, ImageOffIcon, XIcon } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +28,7 @@ import {
 import { isKind } from "@/features/chat/lib/a2ui/choices-kinds";
 import { contextTooLarge } from "@/features/chat/lib/a2ui/context";
 import { MAX_CONTEXT_BYTES } from "@/features/chat/lib/a2ui/limits";
+import { answeredAfter } from "@/features/chat/lib/a2ui/surfaces";
 import type { StepIcon } from "@/features/chat/lib/agui/vymalo";
 import { cn } from "@/lib/utils";
 import { KindQuestion } from "./choices-kinds";
@@ -644,11 +646,15 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
   const spec = readChoices(props);
   const [state, setState] = useState<AnswerState>(() => (spec ? initialState(spec) : new Map()));
   const [note, setNote] = useState("");
+  const answered = useAuiState((s) =>
+    answeredAfter(s.thread.messages, s.message.id, view.surfaceId),
+  );
   if (!spec) return null;
 
   // the answers go to the agent while the thread waits for them, from the newest copy only; once
-  // sent (or in a thread that moved on) the choices stay as they were, and stop taking input
-  const enabled = view.live && host.canSend;
+  // sent (or in a thread that moved on) the choices stay as they were, and stop taking input,
+  // and so does a form that was sent when the thread waits again (the agent asked again)
+  const enabled = view.live && host.canSend && !answered;
   const left = missing(spec, state);
   const patch = (id: string, p: Partial<QuestionState>) =>
     setState((s) => new Map(s).set(id, { ...(s.get(id) ?? EMPTY), ...p }));
