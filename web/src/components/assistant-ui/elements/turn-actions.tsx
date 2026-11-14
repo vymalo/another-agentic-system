@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckIcon, CopyIcon, SplitIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, RefreshCwIcon, SplitIcon } from "lucide-react";
 import type { FC } from "react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
@@ -9,6 +9,9 @@ import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 /** What "Fork from here" says while the turn it would copy is still going on. */
 export const FORK_WAIT = "Fork from here (once the agent has finished this turn)";
 
+/** What "Regenerate" says while the turn it would say again is still going on. */
+export const REGENERATE_WAIT = "Regenerate (once the agent has finished this turn)";
+
 type Props = {
   /** The agent's words in this turn, for Copy. */
   text: string;
@@ -16,6 +19,12 @@ type Props = {
   runId: string | undefined;
   /** This is the newest turn of the thread: the one that is going on while the thread works. */
   last: boolean;
+  /**
+   * The message of the person that began this turn, when it can be said again: its `seq` in the log and
+   * its words. Absent when the turn began with a form answer, a mention (an edit carries none) or
+   * before the page has read the message's place in the log.
+   */
+  began?: { seq: number; text: string } | undefined;
 };
 
 /**
@@ -23,16 +32,21 @@ type Props = {
  * makes a new chat that holds the conversation up to the end of this turn (ADR 0029). They show
  * on hover and on focus (always on a touch screen, which has no hover), under the turn.
  *
+ * **Regenerate** is on the newest turn only: an edit of the message that began it with the same
+ * words (ADR 0029, amended 2026-11-14), so the answer is a new version and `‹ 2/2 ›` goes between
+ * them. It is not offered to a person who may not write in the thread, and not on a shared link.
+ *
  * Fork is disabled while the turn is going on: nothing of a turn that is not over can be copied
  * (the server says `turn_open`), and it is not offered before it is known where the turn ends.
  */
-export const TurnActions: FC<Props> = ({ text, runId, last }) => {
+export const TurnActions: FC<Props> = ({ text, runId, last, began }) => {
   const fork = useThreadFork();
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   const forkable = fork.available && fork.canForkRun(runId);
   const open = fork.turnOpen && last;
   const unavailable = open || fork.busy;
-  if (!text && !forkable) return null;
+  const regenerable = fork.available && last && began !== undefined;
+  if (!text && !forkable && !regenerable) return null;
   return (
     <div
       data-slot="turn-actions"
@@ -47,6 +61,21 @@ export const TurnActions: FC<Props> = ({ text, runId, last }) => {
           onClick={() => copyToClipboard(text)}
         >
           {isCopied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
+        </TooltipIconButton>
+      ) : null}
+      {regenerable && began ? (
+        <TooltipIconButton
+          tooltip={open ? REGENERATE_WAIT : "Regenerate"}
+          aria-label="Regenerate"
+          data-slot="regenerate"
+          aria-disabled={unavailable}
+          side="bottom"
+          className="size-7 rounded-md p-0 aria-disabled:opacity-50 [&_svg]:size-3.5"
+          onClick={() => {
+            if (!unavailable) void fork.regenerate(began.seq, began.text);
+          }}
+        >
+          <RefreshCwIcon aria-hidden="true" />
         </TooltipIconButton>
       ) : null}
       {forkable && runId !== undefined ? (
