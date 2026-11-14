@@ -8,6 +8,11 @@ import { progressWords } from "@/features/chat/lib/a2ui/status";
 export const ANNOUNCE_AFTER_MS = 800;
 /** The longest a change waits for that quiet: a plan updated more often than that is still announced. */
 export const ANNOUNCE_MAX_WAIT_MS = 5000;
+/**
+ * A plan that was drawn less than this ago is still being populated (a transcript that replays, or one that has not
+ * switched to the thread yet): what changes in that time is the plan arriving, not the plan changing.
+ */
+export const ANNOUNCE_SETTLE_MS = 1000;
 /** How long what the page remembers of a plan outlives the last component that showed it. */
 const FORGET_AFTER_MS = 5000;
 
@@ -22,6 +27,8 @@ type Entry = {
   timer: ReturnType<typeof setTimeout> | undefined;
   /** When the change now waiting first came (the maximum wait counts from it). */
   since: number;
+  /** When the page first drew this plan. */
+  born: number;
   listeners: Set<() => void>;
 };
 
@@ -53,6 +60,7 @@ function entryOf(id: string): Entry {
       text: "",
       timer: undefined,
       since: 0,
+      born: Date.now(),
       listeners: new Set(),
     };
     entries.set(id, e);
@@ -71,6 +79,7 @@ function track(entry: Entry, signature: string, progress: Progress): void {
   entry.seen = signature;
   entry.progress = progress;
   const now = Date.now();
+  if (now - entry.born < ANNOUNCE_SETTLE_MS) return;
   if (entry.timer === undefined) entry.since = now;
   clearTimeout(entry.timer);
   const wait = Math.max(0, Math.min(ANNOUNCE_AFTER_MS, entry.since + ANNOUNCE_MAX_WAIT_MS - now));

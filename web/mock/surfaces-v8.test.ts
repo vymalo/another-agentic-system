@@ -57,7 +57,7 @@ describe("the page's vectors, judged by the second implementation", () => {
       cases: (SurfaceCase & { because: string; result: string })[];
     }>("v8-surfaces");
     for (const c of cases) expect(surfaceResult(c, files, check), c.because).toBe(c.result);
-    expect(cases.length).toBe(44);
+    expect(cases.length).toBe(46);
   });
 
   it("a checklist's progress and its schema (checklists)", () => {

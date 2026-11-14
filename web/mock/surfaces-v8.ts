@@ -49,6 +49,8 @@ export type SurfaceCase = {
   catalog?: "basic";
   components: Rec[];
   operationsAfter?: Rec[];
+  /** The operations are `operationsAfter` alone: no createSurface, no updateComponents of the case. */
+  noCreate?: boolean;
 };
 
 /**
@@ -64,9 +66,25 @@ export function surfaceResult(
 ): string {
   const surfaceId = c.surfaceId ?? "s1";
   const after = c.operationsAfter ?? [];
-  // a createSurface later starts the surface over: nothing before it is alive, and the new surface has no components
-  if (after.some((op) => isRec(op.createSurface))) return "pending";
-  if (after.at(-1) && isRec(after.at(-1)?.deleteSurface)) return "deleted";
+  // the operations that follow: a createSurface starts the surface over (nothing before it is alive, and the new
+  // surface has no components yet), a deleteSurface removes it, and an updateComponents for a surface that is not
+  // there (deleted, or never created) is refused (rule shape)
+  let exists = c.noCreate !== true;
+  let deleted = false;
+  let restarted = false;
+  for (const op of after) {
+    if (isRec(op.createSurface)) {
+      exists = true;
+      restarted = true;
+      deleted = false;
+    } else if (isRec(op.deleteSurface)) {
+      exists = false;
+      deleted = true;
+    } else if (isRec(op.updateComponents) && !exists) return "refused:shape";
+  }
+  if (c.noCreate === true) return after.length === 0 ? "pending" : "refused:shape";
+  if (restarted) return "pending";
+  if (deleted) return "deleted";
   const components = c.components;
   const own = c.catalog !== "basic";
   const byId = new Map(components.map((x) => [String(x.id), x]));

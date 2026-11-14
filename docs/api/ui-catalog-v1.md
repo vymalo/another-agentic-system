@@ -2199,10 +2199,15 @@ An agent's plan is one surface that it sends again each time the plan changes. T
 2. **A `createSurface` for a surface that exists starts it over**: its components and its data model are gone and the ones that follow are
    the surface (A2UI's rule; *verified 2026-11-14* in the reducer the web uses). So **everything before the last `createSurface` of a
    surface is dead**: a client reads only the operations from the last one, and the size limit of the surface counts only those (the limit is
-   **64 KiB** of the operations written as JSON, 65,536 bytes of UTF-8, and **400 components**: [ADR 0013](../decisions/0013-a2ui-generative-ui.md)).
-   The orchestrator still holds and replays all of them, up to its own cap ([`agui.md`](agui.md#surfaces-in-the-projection)), and the client
+   **64 KiB** of the operations written as JSON, 65,536 bytes of UTF-8, and **400 components** of the surface once applied: the web's `MAX_BYTES`
+   and `MAX_COMPONENTS` and [ADR 0013](../decisions/0013-a2ui-generative-ui.md) decision "Limits, as built", *verified 2026-11-14* in
+   `web/src/features/chat/lib/a2ui/limits.ts` and `prepare.ts`). The orchestrator has two limits of its own and neither is this one: a payload
+   of at most 64 KiB (`MAX_OPERATIONS_BYTES` in `orchestrator/crates/core/src/ui.rs`, the same figure, so that a payload the client would refuse is never stored;
+   it has no bound on components) and **256 KiB** of accumulated operations that its projection replays (`MAX_SURFACE_BYTES`, *verified 2026-11-14* in the same file),
+   which is not a limit a client applies.
+   The orchestrator still holds and replays all of them, up to that cap ([`agui.md`](agui.md#surfaces-in-the-projection)), and the client
    skips the dead ones **only when every operation before that `createSurface` names the same surface as it does**; a payload in which any
-   earlier operation names another surface is not cut at all and is refused whole by the check of its shape (rule `surfaces`). An `updateComponents` alone does not start anything over: it adds
+   earlier operation names another surface is not cut at all and is refused whole by the check of its shape (rule `surfaces`). An `updateComponents` for a surface that is not there, because it was deleted by a `deleteSurface` before it or never created, is **refused as a whole** (rule `shape`); a `createSurface` after a `deleteSurface` makes the surface again. An `updateComponents` alone does not start anything over: it adds
    to the components and replaces those that have the same `id`.
 3. **A copy of a surface that is not a plan.** Each run that sends the surface holds a copy of it in the conversation. The newest copy is
    the live one; an older copy draws one line, "This interface was updated further down.", and nothing when the newest copy deletes the
@@ -2321,7 +2326,7 @@ agent; the usual plan is a `Column` of a `Text` and a `Checklist`. The agent sen
   done"** ("N of M" is the **sum** over every `Checklist` of the surface: the items done, and the items that are not dropped; "Plan updated" when it has
   none) after the plan has changed and has been **quiet for
   0.8 s** and at the latest **5 s** after the burst began, so a burst of updates is one announcement and the last state is the one said, and a
-  plan that is updated more often than every 0.8 s is still announced. Only the newest drawing is announced. What the client remembers to
+  plan that is updated more often than every 0.8 s is still announced. Only the newest drawing is announced. A plan that changes within **1 s** of the client first drawing it is still arriving (a replay, or a transcript that has not yet switched to the thread), and nothing is said. What the client remembers to
   tell that the plan changed is keyed by the thread and the plan's `surfaceId`. It says nothing for the first copy the client draws
   (the person reads it where it stands: a thread opened later draws the plan as it is, and so does a client that was not showing the plan
   when the agent sent its first copies), nothing for the words the agent streams (the region reads the plan only), and nothing when a copy
@@ -2372,7 +2377,7 @@ Vectors for what a surface may be and hold (`v8-surfaces`: `files`, the files th
 `kind` is an `image`; and `cases`, each a surface with its `components` (the operations are one `createSurface` for the `surfaceId`, `s1`
 unless the case says, and one `updateComponents` with these; the case's `catalog` is this catalog when absent and `basic` for the A2UI basic catalog
 `https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json`; its `operationsAfter` are operations that follow) and its `result`: `drawn`,
-`pending`, `deleted` or `refused:<rule>`; the block holds **44 cases**). The catalog is version 8's and the thread's version is 8:
+`pending`, `deleted` or `refused:<rule>`; `noCreate` says that the operations are `operationsAfter` alone; the block holds **46 cases**). The catalog is version 8's and the thread's version is 8:
 
 ```json v8-surfaces
 {
@@ -2421,7 +2426,9 @@ unless the case says, and one `updateComponents` with these; the case's `catalog
     {"because": "nine ids shown in one form and one of them not in the surface yet: the count (schema) comes before pending", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "a", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1", "t2", "t3", "t4"]}, {"id": "b", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t5", "t6", "t7", "t8"]}, {"id": "c", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["gone"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}, {"id": "t2", "component": "Text", "text": "Some words"}, {"id": "t3", "component": "Text", "text": "Some words"}, {"id": "t4", "component": "Text", "text": "Some words"}, {"id": "t5", "component": "Text", "text": "Some words"}, {"id": "t6", "component": "Text", "text": "Some words"}, {"id": "t7", "component": "Text", "text": "Some words"}, {"id": "t8", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
     {"because": "a plan whose Choices shows a Table: the plan rule (action) comes before what the form shows (schema)", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["tb"]}]}, {"id": "tb", "component": "Table", "columns": [{"key": "a", "label": "A"}], "rows": [{"a": "1"}]}], "result": "refused:action"},
     {"because": "the agent deleted the surface: nothing is drawn", "components": [{"id": "root", "component": "Column", "children": ["t"]}, {"id": "t", "component": "Text", "text": "Some words"}], "operationsAfter": [{"version": "v0.9.1", "deleteSurface": {"surfaceId": "s1"}}], "result": "deleted"},
-    {"because": "a second createSurface for the surface, with another catalogId, starts it over: nothing of the first is alive and the new surface has no components yet", "components": [{"id": "root", "component": "Column", "children": ["t"]}, {"id": "t", "component": "Text", "text": "Some words"}], "operationsAfter": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"}}], "result": "pending"}
+    {"because": "a second createSurface for the surface, with another catalogId, starts it over: nothing of the first is alive and the new surface has no components yet", "components": [{"id": "root", "component": "Column", "children": ["t"]}, {"id": "t", "component": "Text", "text": "Some words"}], "operationsAfter": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"}}], "result": "pending"},
+    {"because": "an updateComponents for the surface after its deleteSurface: the surface is not there, the payload is refused", "components": [{"id": "root", "component": "Column", "children": ["t"]}, {"id": "t", "component": "Text", "text": "Some words"}], "operationsAfter": [{"version": "v0.9.1", "deleteSurface": {"surfaceId": "s1"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [{"id": "t", "component": "Text", "text": "Again"}]}}], "result": "refused:shape"},
+    {"because": "an updateComponents for a surface that was never created", "components": [], "noCreate": true, "operationsAfter": [{"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [{"id": "t", "component": "Text", "text": "Again"}]}}], "result": "refused:shape"}
   ]
 }
 ```

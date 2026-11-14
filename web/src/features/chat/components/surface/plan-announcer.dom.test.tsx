@@ -6,6 +6,7 @@ import { ThreadViewProvider } from "../thread-view";
 import {
   ANNOUNCE_AFTER_MS,
   ANNOUNCE_MAX_WAIT_MS,
+  ANNOUNCE_SETTLE_MS,
   forgetPlans,
   PlanAnnouncer,
 } from "./plan-announcer";
@@ -31,6 +32,13 @@ const quiet = (ms = ANNOUNCE_AFTER_MS + 10) => act(() => void vi.advanceTimersBy
 const said = (c: HTMLElement) =>
   [...(region(c)?.querySelectorAll("p") ?? [])].map((p) => p.textContent);
 
+/** The first drawing of a plan, and the time it takes to settle: what follows is a change. */
+const start = (ui: ReactNode) => {
+  const v = render(ui);
+  act(() => void vi.advanceTimersByTime(ANNOUNCE_SETTLE_MS));
+  return v;
+};
+
 function Plan({
   thread = "t1",
   surfaceId = "plan-a",
@@ -53,7 +61,7 @@ function Plan({
 
 describe("PlanAnnouncer", () => {
   it("says nothing for the first copy, then the change once it has been quiet", () => {
-    const view = render(<Plan signature="one" progress={{ done: 0, total: 2 }} />);
+    const view = start(<Plan signature="one" progress={{ done: 0, total: 2 }} />);
     quiet();
     expect(said(view.container)).toEqual([]);
     view.rerender(<Plan signature="two" progress={{ done: 1, total: 2 }} />);
@@ -63,14 +71,14 @@ describe("PlanAnnouncer", () => {
   });
 
   it("says a plan with no checklist plainly", () => {
-    const view = render(<Plan signature="one" />);
+    const view = start(<Plan signature="one" />);
     view.rerender(<Plan signature="two" />);
     quiet();
     expect(said(view.container)).toEqual(["Plan updated"]);
   });
 
   it("two changes 400 ms apart are one announcement, after 0.8 s of quiet from the last", () => {
-    const view = render(<Plan signature="one" progress={{ done: 0, total: 3 }} />);
+    const view = start(<Plan signature="one" progress={{ done: 0, total: 3 }} />);
     view.rerender(<Plan signature="two" progress={{ done: 1, total: 3 }} />);
     quiet(400);
     view.rerender(<Plan signature="three" progress={{ done: 2, total: 3 }} />);
@@ -82,7 +90,7 @@ describe("PlanAnnouncer", () => {
   });
 
   it("a plan updated more often than every 0.8 s is still announced, at the latest after the maximum wait", () => {
-    const view = render(<Plan signature="s0" progress={{ done: 0, total: 100 }} />);
+    const view = start(<Plan signature="s0" progress={{ done: 0, total: 100 }} />);
     let n = 0;
     // a change every 400 ms for ten seconds: never quiet for 0.8 s
     for (let t = 0; t < 10_000; t += 400) {
@@ -94,14 +102,14 @@ describe("PlanAnnouncer", () => {
     expect(lines.length).toBeGreaterThanOrEqual(1);
     expect(lines.length).toBeLessThanOrEqual(Math.ceil(10_000 / ANNOUNCE_MAX_WAIT_MS) + 1);
     // the first one came by the maximum, not by a quiet that never was
-    const first = render(<Plan thread="t2" signature="a" />);
+    const first = start(<Plan thread="t2" signature="a" />);
     first.rerender(<Plan thread="t2" signature="b" />);
     quiet(ANNOUNCE_MAX_WAIT_MS);
     expect(said(first.container)).toEqual(["Plan updated"]);
   });
 
   it("a change that is waited for survives the message being drawn again", () => {
-    const first = render(<Plan signature="one" progress={{ done: 0, total: 2 }} />);
+    const first = start(<Plan signature="one" progress={{ done: 0, total: 2 }} />);
     first.rerender(<Plan signature="two" progress={{ done: 1, total: 2 }} />);
     // the run ends: the message is drawn again, and the old one goes away with its timer's owner
     first.unmount();
@@ -112,16 +120,16 @@ describe("PlanAnnouncer", () => {
   });
 
   it("a plan drawn again unchanged is not a change", () => {
-    const first = render(<Plan signature="one" progress={{ done: 0, total: 1 }} />);
+    const first = start(<Plan signature="one" progress={{ done: 0, total: 1 }} />);
     first.unmount();
-    const again = render(<Plan signature="one" progress={{ done: 0, total: 1 }} />);
+    const again = start(<Plan signature="one" progress={{ done: 0, total: 1 }} />);
     quiet();
     expect(said(again.container)).toEqual([]);
   });
 
   it("another plan of the thread has its own memory", () => {
-    const a = render(<Plan surfaceId="plan-a" signature="one" />);
-    const b = render(<Plan surfaceId="plan-b" signature="other" />);
+    const a = start(<Plan surfaceId="plan-a" signature="one" />);
+    const b = start(<Plan surfaceId="plan-b" signature="other" />);
     quiet();
     expect(said(a.container)).toEqual([]);
     expect(said(b.container)).toEqual([]);
@@ -129,9 +137,9 @@ describe("PlanAnnouncer", () => {
 
   it("another thread has its own memory: its first copy is not announced and its first update is", () => {
     // thread A has a plan; the person moves to thread B, whose plan has the very same id
-    const a = render(<Plan thread="thread-a" signature="from-a" />);
+    const a = start(<Plan thread="thread-a" signature="from-a" />);
     a.unmount();
-    const b = render(<Plan thread="thread-b" signature="from-b" />);
+    const b = start(<Plan thread="thread-b" signature="from-b" />);
     quiet();
     expect(said(b.container)).toEqual([]);
     b.rerender(
@@ -141,8 +149,16 @@ describe("PlanAnnouncer", () => {
     expect(said(b.container)).toEqual(["Plan updated: 1 of 2 done"]);
   });
 
+  it("a change in the first second after a plan is drawn is the plan arriving, not changing", () => {
+    const view = render(<Plan signature="one" progress={{ done: 0, total: 2 }} />);
+    act(() => void vi.advanceTimersByTime(ANNOUNCE_SETTLE_MS - 100));
+    view.rerender(<Plan signature="two" progress={{ done: 1, total: 2 }} />);
+    quiet();
+    expect(said(view.container)).toEqual([]);
+  });
+
   it("is a polite status region that is always in the page", () => {
-    const view = render(<Plan signature="one" />);
+    const view = start(<Plan signature="one" />);
     const r = region(view.container);
     expect(r?.getAttribute("role")).toBe("status");
     expect(r?.getAttribute("aria-live")).toBe("polite");

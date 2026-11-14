@@ -131,6 +131,7 @@ describe("the contract page: what a surface may be and hold", () => {
     catalog?: "basic";
     components: Rec[];
     operationsAfter?: Rec[];
+    noCreate?: boolean;
     result: string;
   };
   const { files, cases } = block<{
@@ -143,7 +144,8 @@ describe("the contract page: what a surface may be and hold", () => {
     mimeType: f.kind === "image" ? "image/png" : "text/plain",
   }));
   const BASIC = "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json";
-  const operations = (c: Surface) => [
+  const operations = (c: Surface) => (c.noCreate ? (c.operationsAfter ?? []) : operationsFull(c));
+  const operationsFull = (c: Surface) => [
     {
       version: "v0.9.1",
       createSurface: {
@@ -185,6 +187,7 @@ describe("the contract page: what a surface may be and hold", () => {
       "refused:expansion": 2,
       "refused:artifact": 2,
       "refused:action": 5,
+      "refused:shape": 2,
     });
   });
 

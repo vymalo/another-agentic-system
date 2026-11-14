@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ANNOUNCE_AFTER_MS,
   ANNOUNCE_MAX_WAIT_MS,
+  ANNOUNCE_SETTLE_MS,
 } from "@/features/chat/components/surface/plan-announcer";
 import { MAX_SHOW, MAX_SHOWN_IN_FORM, SHOWABLE } from "../choices";
 import { MAX_BYTES, MAX_COMPONENTS } from "../limits";
@@ -90,6 +91,11 @@ describe("the numbers of the page are the code's", () => {
   it("the announcer: quiet for 0.8 s, and at the latest 5 s", () => {
     const quiet = grab(/quiet for\s+([\d.]+) s/, "the quiet of the announcer")[1];
     expect(Number(quiet) * 1000).toBe(ANNOUNCE_AFTER_MS);
+    const settle = grab(
+      /within \*\*(\d+) s\*\* of the client first drawing/,
+      "the settling time",
+    )[1];
+    expect(Number(settle) * 1000).toBe(ANNOUNCE_SETTLE_MS);
     const max = grab(/at the latest \*\*(\d+) s\*\* after the burst/, "the maximum wait")[1];
     expect(Number(max) * 1000).toBe(ANNOUNCE_MAX_WAIT_MS);
   });

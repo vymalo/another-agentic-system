@@ -2,7 +2,7 @@
 import { act, cleanup, configure, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { OWN_CATALOG } from "@/features/chat/lib/a2ui/catalog";
-import { ANNOUNCE_AFTER_MS, forgetPlans } from "./plan-announcer";
+import { ANNOUNCE_AFTER_MS, ANNOUNCE_SETTLE_MS, forgetPlans } from "./plan-announcer";
 import { actionRun, mountSurfaces, resetSeq, stubLayout, surfaceRun } from "./testing";
 
 /*
@@ -218,6 +218,9 @@ describe("the plan is announced politely, once, and only when it changes", () =>
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const m = mount();
     await feed(m, surfaceRun([copy([item("A", "doing"), item("B", "todo")])], { end: "success" }));
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_SETTLE_MS);
+    });
     const burst = [
       [item("A", "done"), item("B", "todo")],
       [item("A", "done"), item("B", "doing")],
@@ -242,6 +245,9 @@ describe("the plan is announced politely, once, and only when it changes", () =>
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const m = mount({ canSend: true });
     await feed(m, surfaceRun([copy([item("A", "doing")])], { end: "success" }));
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_SETTLE_MS);
+    });
     await feed(
       m,
       surfaceRun([copy([item("A", "done")])], { runId: "run-2", user: false, end: "success" }),
