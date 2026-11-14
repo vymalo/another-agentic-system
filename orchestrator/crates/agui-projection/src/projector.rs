@@ -133,7 +133,8 @@ struct TextRecord {
     text: String,
 }
 
-/// An A2UI surface the thread has: every operation the agent sent for it so far, as sent. The
+/// An A2UI surface the thread has: the operations that are alive, as sent (those from its last
+/// `createSurface`, which starts a surface over). The
 /// whole surface is what each snapshot carries, so the last snapshot of a surface renders it
 /// completely on the live stream, on replay and in history.
 #[derive(Debug, Clone)]
@@ -144,8 +145,9 @@ struct Surface {
     version: UiVersion,
     operations: Vec<Value>,
     bytes: usize,
-    /// It outgrew [`MAX_SURFACE_BYTES`]: nothing more is replayed for it (the viewer keeps the
-    /// last snapshot it got), and the viewer was told once.
+    /// The alive operations outgrew [`MAX_SURFACE_BYTES`]: nothing more is replayed for it (the
+    /// viewer keeps the last snapshot it got), and the viewer was told once. A `createSurface`
+    /// starts the surface over and clears this.
     overflowed: bool,
 }
 
@@ -1119,10 +1121,21 @@ impl Projector {
                 bytes: 0,
                 overflowed: false,
             });
-            if surface.overflowed {
+            if info.op == SurfaceOp::Create {
+                // A `createSurface` for a surface that exists starts it over (A2UI): what came
+                // before is dead, so it is neither replayed nor counted, and a surface that had
+                // outgrown the cap is shown again when the new copy fits.
+                surface.operations.clear();
+                surface.bytes = 0;
+                surface.overflowed = false;
+                surface.version = info.version;
+            }
+            // A delete is a few bytes and ends the surface whatever its size, capped or not.
+            let ends = info.op == SurfaceOp::Delete;
+            if surface.overflowed && !ends {
                 continue;
             }
-            if surface.bytes.saturating_add(size) > MAX_SURFACE_BYTES {
+            if !ends && surface.bytes.saturating_add(size) > MAX_SURFACE_BYTES {
                 surface.overflowed = true;
                 overflow.get_or_insert(id);
                 continue;

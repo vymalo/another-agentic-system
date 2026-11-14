@@ -465,3 +465,264 @@ fn resuming_with_a_cursor_yields_exactly_the_rest() {
     assert_eq!(last_of(&resumed).unwrap().2.len(), 3);
     assert!(upto.len() < all.len());
 }
+
+// ---- the replay buffer holds only what is alive (UI catalog v1, "A surface sent again", rule 2)
+
+fn plan_create(id: &str) -> Value {
+    json!({"version": "v0.9.1", "createSurface": {"surfaceId": id, "catalogId": "c"}})
+}
+
+fn plan_text(id: &str, text: &str) -> Value {
+    json!({"version": "v0.9.1", "updateComponents": {"surfaceId": id, "components": [
+        {"id": "root", "component": "Text", "text": text}]}})
+}
+
+fn plan_delete(id: &str) -> Value {
+    json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": id}})
+}
+
+fn filler(id: &str, bytes: usize) -> Value {
+    json!({"version": "v0.9.1", "updateDataModel": {"surfaceId": id, "value": "x".repeat(bytes)}})
+}
+
+fn errors(frames: &[Frame]) -> usize {
+    frames
+        .iter()
+        .filter(
+            |f| matches!(&f.event, Agui::ActivitySnapshot(a) if a.activity_type == "vymalo.error"),
+        )
+        .count()
+}
+
+/// The first eight characters of every text an `updateComponents` of `ops` sets.
+fn texts(ops: &[Value]) -> Vec<String> {
+    ops.iter()
+        .filter_map(|op| op["updateComponents"]["components"][0]["text"].as_str())
+        .map(|t| t.chars().take(8).collect())
+        .collect()
+}
+
+#[test]
+fn a_plan_sent_again_whole_two_hundred_times_is_still_projected_and_replays_one_copy() {
+    let mut events = vec![user(1), working(2)];
+    for n in 0..200_i64 {
+        let text = format!("copy{n:04}{}", "p".repeat(4_000));
+        events.push(surface(
+            3 + n,
+            vec![plan_create("plan-1"), plan_text("plan-1", &text)],
+        ));
+    }
+    let (projector, frames) = project(&events);
+    let got = snapshots(&frames);
+    assert_eq!(got.len(), 200, "every copy is projected");
+    assert_eq!(errors(&frames), 0, "{}", lines(&frames).join("\n"));
+    let (id, replace, last) = got.last().unwrap();
+    assert_eq!(id, "a2ui-3", "one message id for the plan");
+    assert_eq!(*replace, Some(true));
+    assert_eq!(last.len(), 2, "one create and one update: one copy");
+    assert_eq!(texts(last), ["copy0199"], "the newest copy");
+    assert!(known(&projector).surfaces.contains_key("plan-1"));
+    verify::check(&frames).unwrap();
+}
+
+#[test]
+fn a_create_starts_the_surface_over_and_the_replay_is_the_last_create_and_what_follows() {
+    let (_, frames) = project(&[
+        user(1),
+        working(2),
+        surface(3, vec![plan_create("plan-1"), plan_text("plan-1", "one")]),
+        surface(4, vec![plan_text("plan-1", "two")]),
+        surface(5, vec![plan_text("plan-1", "three")]),
+        surface(6, vec![plan_create("plan-1")]),
+        surface(7, vec![plan_text("plan-1", "four")]),
+    ]);
+    let got = snapshots(&frames);
+    assert_eq!(got.len(), 5);
+    assert_eq!(got[2].2.len(), 4, "before the second create: all of it");
+    assert_eq!(
+        got[3].2,
+        vec![plan_create("plan-1")],
+        "the create alone: what came before is dead"
+    );
+    assert_eq!(
+        got[4].2,
+        vec![plan_create("plan-1"), plan_text("plan-1", "four")]
+    );
+}
+
+#[test]
+fn a_create_in_the_middle_of_a_payload_kills_what_the_payload_sent_before_it() {
+    let (_, frames) = project(&[
+        user(1),
+        working(2),
+        surface(
+            3,
+            vec![
+                plan_create("plan-1"),
+                plan_text("plan-1", "old"),
+                plan_create("plan-1"),
+                plan_text("plan-1", "new"),
+            ],
+        ),
+    ]);
+    let got = snapshots(&frames);
+    assert_eq!(got.len(), 1);
+    assert_eq!(texts(&got[0].2), ["new"]);
+    assert_eq!(got[0].2.len(), 2);
+}
+
+#[test]
+fn a_delete_then_a_create_under_the_same_id_is_a_new_copy_and_nothing_older_is_replayed() {
+    let (projector, frames) = project(&[
+        user(1),
+        working(2),
+        surface(3, vec![plan_create("plan-1"), plan_text("plan-1", "old")]),
+        surface(4, vec![plan_delete("plan-1")]),
+        surface(5, vec![plan_create("plan-1"), plan_text("plan-1", "new")]),
+    ]);
+    let got = snapshots(&frames);
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[1].2.last().unwrap(), &plan_delete("plan-1"));
+    assert_eq!(got[2].0, "a2ui-5", "a new surface under a new message id");
+    assert_eq!(got[2].2.len(), 2);
+    assert_eq!(texts(&got[2].2), ["new"]);
+    assert!(known(&projector).surfaces.contains_key("plan-1"));
+}
+
+#[test]
+fn one_alive_copy_larger_than_the_cap_still_overflows_with_the_error_line() {
+    let half = MAX_SURFACE_BYTES / 2;
+    let (_, frames) = project(&[
+        user(1),
+        working(2),
+        surface(3, vec![plan_create("plan-1"), filler("plan-1", half)]),
+        surface(4, vec![filler("plan-1", half)]),
+        surface(5, vec![plan_text("plan-1", "never shown")]),
+    ]);
+    assert_eq!(snapshots(&frames).len(), 1, "the second filler did not fit");
+    assert_eq!(errors(&frames), 1, "{}", lines(&frames).join("\n"));
+}
+
+#[test]
+fn a_surface_that_overflowed_and_is_sent_again_whole_within_the_cap_comes_back() {
+    let half = MAX_SURFACE_BYTES / 2;
+    let (_, frames) = project(&[
+        user(1),
+        working(2),
+        surface(3, vec![plan_create("plan-1"), filler("plan-1", half)]),
+        surface(4, vec![filler("plan-1", half)]),
+        surface(5, vec![plan_text("plan-1", "stalled")]),
+        surface(6, vec![plan_create("plan-1"), plan_text("plan-1", "back")]),
+        surface(7, vec![plan_text("plan-1", "and on")]),
+    ]);
+    let got = snapshots(&frames);
+    assert_eq!(got.len(), 3, "the first, the new copy, the update after it");
+    assert_eq!(texts(&got[1].2), ["back"]);
+    assert_eq!(got[1].2.len(), 2);
+    assert_eq!(texts(&got[2].2), ["back", "and on"]);
+    assert_eq!(errors(&frames), 1, "told once, when it overflowed");
+}
+
+#[test]
+fn a_delete_ends_a_surface_that_had_overflowed() {
+    let half = MAX_SURFACE_BYTES / 2;
+    let (projector, _) = project(&[
+        user(1),
+        working(2),
+        surface(3, vec![plan_create("plan-1"), filler("plan-1", half)]),
+        surface(4, vec![filler("plan-1", half)]),
+        surface(5, vec![plan_delete("plan-1")]),
+    ]);
+    assert!(
+        known(&projector).surfaces.is_empty(),
+        "a capped surface can still be deleted"
+    );
+}
+
+#[test]
+fn two_surfaces_interleaved_keep_their_own_buffers() {
+    let (_, frames) = project(&[
+        user(1),
+        working(2),
+        surface(3, vec![plan_create("plan-1"), plan_text("plan-1", "a1")]),
+        surface(4, vec![plan_create("s9"), plan_text("s9", "b1")]),
+        surface(5, vec![plan_create("plan-1"), plan_text("plan-1", "a2")]),
+        surface(6, vec![plan_text("s9", "b2")]),
+    ]);
+    let got = snapshots(&frames);
+    let last_of = |message: &str| {
+        got.iter()
+            .rev()
+            .find(|g| g.0 == message)
+            .map(|g| g.2.clone())
+            .unwrap()
+    };
+    let plan = last_of("a2ui-3");
+    assert_eq!(texts(&plan), ["a2"]);
+    assert_eq!(plan.len(), 2, "the plan restarted");
+    let other = last_of("a2ui-4");
+    assert_eq!(texts(&other), ["b1", "b2"], "s9 was not restarted");
+    assert_eq!(other.len(), 3);
+}
+
+mod replay_property {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The surface a client has after reading `ops` in order, as far as the generated operations
+    /// can tell: whether it exists, whether it has components, and its data model.
+    fn reduce(ops: &[Value], surface: &str) -> Option<(bool, Option<Value>)> {
+        let mut state: Option<(bool, Option<Value>)> = None;
+        for op in ops {
+            let body = |key: &str| op.get(key).filter(|b| b["surfaceId"] == surface);
+            if body("createSurface").is_some() {
+                state = Some((false, None));
+            } else if body("updateComponents").is_some() {
+                state.get_or_insert((false, None)).0 = true;
+            } else if let Some(b) = body("updateDataModel") {
+                state.get_or_insert((false, None)).1 = Some(b["value"].clone());
+            } else if body("deleteSurface").is_some() {
+                state = None;
+            }
+        }
+        state
+    }
+
+    fn names(op: &Value, surface: &str) -> bool {
+        op.as_object()
+            .is_some_and(|o| o.values().any(|v| v.get("surfaceId") == Some(&json!(surface))))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// For any sequence of operations over two surfaces, the last snapshot of each surface
+        /// (what a late viewer is given) makes the surface that applying the whole sequence
+        /// makes, and holds at most one `createSurface`.
+        #[test]
+        fn replaying_the_buffer_gives_the_surface_the_whole_sequence_makes(
+            steps in proptest::collection::vec((0_u8..2, 0_u8..4), 1..40),
+            split in 1_usize..6,
+        ) {
+            let all: Vec<Value> = steps.iter().map(|(s, o)| surface_op(*s, *o)).collect();
+            let mut events = vec![user(1), working(2)];
+            for (n, chunk) in all.chunks(split).enumerate() {
+                events.push(surface(3 + i64::try_from(n).unwrap(), chunk.to_vec()));
+            }
+            let (_, frames) = project(&events);
+            let got = snapshots(&frames);
+            for s in 0..2_u8 {
+                let id = format!("s{s}");
+                let replayed: Vec<Value> = got
+                    .iter()
+                    .rev()
+                    .find(|g| g.2.iter().any(|op| names(op, &id)))
+                    .map(|g| g.2.clone())
+                    .unwrap_or_default();
+                prop_assert_eq!(reduce(&replayed, &id), reduce(&all, &id), "surface {}", id);
+                let creates = replayed.iter().filter(|op| op.get("createSurface").is_some()).count();
+                prop_assert!(creates <= 1, "{} creates in one replay", creates);
+            }
+        }
+    }
+}
