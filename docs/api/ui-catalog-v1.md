@@ -295,6 +295,8 @@ label, the subtitle and the mark; the whole tile is the target), `text` and `lon
 required question holds the button until it has an answer (and `min` of them), and a `max` reached stops further boxes
 from being taken.
 
+A form stops taking input once the person has acted after it, see [Answered forms](#answered-forms) (version 7's section, true of every version).
+
 When the web builds the catalog (`catalog.json`), the file and this page change together; until then this page is the
 contract.
 
@@ -1438,16 +1440,18 @@ when it is not so, is [Versions and degradation](#versions-and-degradation).
 
 | `type` | The person | Members of the question (the rest of the kind's members are refused) | The answer's `values` |
 |---|---|---|---|
-| `confirm` | answers yes or no, in the agent's two phrases | `yesLabel` and `noLabel` (each 1 to 40 characters; "Yes" and "No" when absent); `default`: `"yes"` or `"no"`, **the safe answer**, chosen before the person touches anything | `["yes"]` or `["no"]`, whatever the labels say |
+| `confirm` | answers yes or no, in the agent's two phrases | `yesLabel` and `noLabel` (each 1 to 40 characters; "Yes" and "No" when absent); `default`: `"yes"` or `"no"`, **the safe answer**, chosen before the person touches anything (a string, never a list) | `["yes"]` or `["no"]`, whatever the labels say |
 | `number` | types a number | `minValue`, `maxValue`, `step` (decimal strings: [the grammar](#the-decimal-and-the-date)); `unit` (1 to 20 characters, shown beside the box); `default` (a decimal string) | one decimal string: `["12.5"]` |
 | `scale` | picks a point from a short run of whole numbers | `from` (0 or 1; 1 when absent), `to` (2 to 10, **required**, above `from`); `fromLabel`, `toLabel` (1 to 60 characters: the words at the two ends); `default` (a whole number as a string) | one whole number as a string: `["4"]` |
 | `date` | picks a day | `minDate`, `maxDate` (`YYYY-MM-DD`); `default` (a date) | one date: `["2026-12-15"]` |
-| `rank` | puts the options in order, the best first | `options`: 2 to 12, each `value`, `label` and optionally `description`, `icon`, `recommended`, **no `image`**; `default`: every option's `value` once, the order the list starts in | **every** option's `value` once, in the person's order: `["c", "a", "b"]` |
+| `rank` | puts the options in order, the best first | `options`: 2 to 12, each `value`, `label` and optionally `description`, `icon`, `recommended`, **no `image`**; `default`: every option's `value` once, as a list: the order the list **starts** in, never an answer by itself | **every** option's `value` once, in the person's order: `["c", "a", "b"]` |
 
 Every kind also has the members all questions have: `id`, `question`, `help` and `required` (as in
-[version 5](#version-5-questions-with-a-title-a-description-and-typed-options)). A member belongs to its kind: `yesLabel`
-on a `number`, or `step` on a `date`, is refused. None of the five has `multiple`, `allowOther`, `min` or `max`, and only a
-`rank` has `options`.
+[version 5](#version-5-questions-with-a-title-a-description-and-typed-options)); **`required` is `true` when it is absent**.
+A member belongs to its kind: `yesLabel` on a `number`, or `step` on a `date`, is refused, and so is a member of a kind on any
+of the six older types (`step` on a `single`, `unit` on a `text`). None of the five has `multiple`, `allowOther`, `min` or
+`max`, and only a `rank` has `options`. A `default` is **a string** for `confirm`, `number`, `scale` and `date` and **a list**
+for `rank`: a one-element list on a `number` is a refused question, not a form that is read as a string.
 
 #### The decimal and the date
 
@@ -1458,15 +1462,21 @@ string comes out as it went in, and the receiver reads it with its own decimal t
 
 | | Grammar | Notes |
 |---|---|---|
-| decimal | `-?(0\|[1-9][0-9]{0,14})(\.[0-9]{1,6})?` | ASCII digits only, a minus sign (never a plus), a point (never a comma), no leading zero (`05`), no exponent (`1e3`), no space, no thousands separator, at most 15 digits before the point and 6 after. `-0` and `-0.0` are refused: zero has no sign. `2.50` is allowed and equals `2.5` |
+| decimal | `-?(0\|[1-9][0-9]{0,14})(\.[0-9]{1,6})?` | ASCII digits only, a minus sign (never a plus), a point (never a comma), no leading zero (`05`), no exponent (`1e3`), no space, no thousands separator, at most 15 digits before the point and 6 after. Zero has no sign: `-0`, `-0.0` and `-0.000000` are refused, `0`, `0.0` and `0.000000` are not. `2.50` is allowed and equals `2.5`. Refused as well: `1.`, `.5`, `+1`, `1e3`, `1,5`, a space or a line break anywhere, and a digit that is not ASCII (`٣`, `３`) |
 | whole number (`scale`) | `0\|[1-9][0-9]?` | `7`, never `07` or `7.0` |
 | date | `YYYY-MM-DD` | four digits of year (0001 to 9999), two of month and two of day, **a day that exists** in the proleptic Gregorian calendar (`2028-02-29` yes, `2027-02-29` and `2026-04-31` no) |
 
 Decimals are **compared as exact decimals**, never through floating point: `1000.5` is above `1000`, and `0.1 + 0.2` is `0.3`.
 A value is **on the step** when it is `minValue` (or `0` when the question has none) plus a whole number of `step`s, exactly
-(`step: "0.5"` from `0`: `250.5` yes, `250.25` no). `step` is above zero. A date is a **calendar day, not an instant**: it has no
+(`step: "0.5"` from `0`: `250.5` yes, `250.25` no; the count of steps may be negative: from `-5` by `2.5`, `-2.5` is on the step). `step` is above zero. A date is a **calendar day, not an instant**: it has no
 time and no zone, it is the same day everywhere, and no client or receiver converts it (a client that builds it from a local
 time and sends the UTC form is wrong). Dates compare as text, which is right because the form is fixed-width.
+
+**Trimming.** The **client** trims what a person typed before it builds the answer (a person's stray space is not a mistake worth
+a refusal); the **receiver never trims**: a value with white space in it is `grammar`. **Locale.** The wire form never depends on
+locale: a decimal always has a point and a date is always `YYYY-MM-DD`. What a client *displays* may follow the viewer's locale
+(the point may be shown as a comma by a client that converts on the way in and out, a day may be written out in the viewer's
+language), as long as what it sends is the wire form.
 
 #### Rules JSON Schema cannot say
 
@@ -1478,8 +1488,11 @@ to change) and by the agent before it asks. They hold for a Choices of any versi
   `min` and `max`; a member of one kind is not on another;
 - `minValue` is at most `maxValue`, `step` is above zero, `minDate` is at most `maxDate` and both are real days, `to` is above
   `from`, and a `scale` has a `to`;
+- a `default` has the shape of its kind (a string, or for `rank` a list); the same value in the other shape is a refused question;
 - every `default` is an answer the kind accepts under [the rules below](#receiving-an-answer): inside the bounds, on the step, a
   real day, `yes` or `no`, every option once. A `rank` without a `default` starts in the order of its options.
+
+The cases of [`invalid-questions`](#receiving-an-answer) below are questions every one of these rules refuses.
 
 #### How a client draws them, and what it checks
 
@@ -1489,16 +1502,16 @@ trustworthy as the client that drew it. What a client must do:
 
 | Kind | Control | Must |
 |---|---|---|
-| `confirm` | two radio buttons, the yes first, in a `radiogroup` | name the group with the question; arrows move; the safe answer is chosen when there is a `default`; a state that is never told by colour alone |
+| `confirm` | two radio buttons, the yes first, in a `radiogroup` | name the group with the question; arrows move; the safe answer is chosen when there is a `default`; a state that is never told by colour alone; when the question is optional, a **Clear answer** control that returns it to no answer |
 | `number` | a text box (`inputmode="decimal"`, not a browser number box: its locale and exponent forms are not this grammar) with the `unit` beside it | take only the grammar and say it in the error ("Use digits and a point, like 12.5"); say the bound or the step that is broken ("The most is 1000 EUR"); the unit is in the control's name |
-| `scale` | the points as radio buttons in a `radiogroup`, `fromLabel` by the first and `toLabel` by the last | each point has its number as its name, the ends add their words; arrows move; at most 11 points fit a phone's width by wrapping |
+| `scale` | the points as radio buttons in a `radiogroup`, `fromLabel` by the first and `toLabel` by the last | each point has its number as its name, and the words at the two ends are the **description** of the first and the last point (`aria-describedby`), not part of the name; arrows move; at most 11 points fit a phone's width by wrapping; when the question is optional, a **Clear answer** control |
 | `date` | a native date control with `min` and `max` (or a text box for `YYYY-MM-DD`, which then says the format) | send the control's own `YYYY-MM-DD` and nothing built from a `Date`; say the bound that is broken |
-| `rank` | an ordered list; each item has a **Move up** and a **Move down** button named with the item ("Move Beta up") | be fully operable by keyboard without drag and drop (drag may exist as an extra); say the new place in words after each move ("Beta, 1 of 3"); a button at the end of the list that cannot move says so and keeps the focus; until the person has moved an item or pressed **Keep this order**, a required rank is not answered (the agent's own order is not their ranking) |
+| `rank` | an ordered list; each item has a **Move up** and a **Move down** button named with the item ("Move Beta up") | be fully operable by keyboard without drag and drop (drag may exist as an extra); say the new place in words after each move ("Beta, 1 of 3"); a button at the end of the list that cannot move says so **in words** in the same polite status line ("Cost is already first") and keeps the focus, and a consecutive message differs from the last so that it is announced again; the focus stays on the button that was used, in both directions; until the person has moved an item or pressed **Keep this order**, a required rank is not answered, **whether or not it has a `default` and on a second ask too** (the order the list starts in is the agent's, or the person's earlier one, and is not an answer until they say it is); when the question is optional, a **Clear answer** control returns it to untouched |
 
-Every control has an accessible name (the question's words, with "(optional)" when it is not required), its `help` is linked as
-its description, an error is words linked to the control and never a colour, and a target is at least 44 CSS pixels. The
+Every control has an accessible name (the question's words, with "(optional)" when it is not required; for a group, the name of its legend), its `help` is linked as
+its description, **a required question that has no answer yet says what it needs next to the control, in words linked to it** ("Choose yes or no", "Enter a number", "Move an item, or keep the order, to answer"), a button that holds the form back stays reachable by keyboard and says why (`aria-disabled`, linked to the hint), a list is a list to a screen reader (`role="list"`), an error is words linked to the control and never a colour, and a target is at least 44 CSS pixels. The
 chat shows the answer as the person's own, with the labels they saw: `Delete it` for `yes`, `250.5 EUR`, `7`, the day written
-out, a rank as a numbered list; a question the person skipped says "No answer".
+out in the viewer's own locale, a rank as a numbered list; a question the person skipped says "No answer".
 
 #### The answer
 
@@ -1515,7 +1528,7 @@ order, `{id, values}`. Every kind puts what the person gave in `values`, as stri
 ]}}
 ```
 
-`values` of a `rank` is the one place where the **order is the person's**; everywhere else it is the order of the options. A
+`values` of a `rank` is the one place where the **order is the person's**; an untouched optional `rank`, and an optional `confirm`, `scale`, `number` or `date` that was cleared, is `[]`; everywhere else it is the order of the options. A
 question that is not required and was left alone has `values: []`, as in version 5: that is how "the person did not answer" looks
 for every kind (there is no separate "declined" member), and a required question is never sent empty.
 
@@ -1524,57 +1537,142 @@ for every kind (there is no separate "declined" member), and a required question
 **The orchestrator relays an answer and does not read it**: it checks the action's envelope and size and that the thread has the
 surface ([`agui.md`](agui.md#actions)), and nothing of the questions. The receiver is the **agent** that asked, which holds the
 form it sent, and it **must validate every answer again**, whatever the client claims to have checked. For each question of the form,
-in order, the first rule that fails is the answer's reason:
+in order, the first rule that fails is the answer's reason. **The rules are tried in the order of this table** (the whole answer first, then each question, the rules of one question top to bottom): a rank answered `["a", "a", "d"]` where `d` is not an option fails `not_offered`, not `not_a_permutation`.
 
 | Rule | A receiver refuses when |
 |---|---|
-| `unknown` | the answers are not exactly the form's questions, once each, in question order |
-| `unexpected` | an entry of one of the five kinds has a member other than `id` and `values` (`other`, `text`) |
-| `required` | `values` is empty and the question is required |
+| `unknown` | the answers are not exactly the form's questions, once each, in question order (an answer to a question the form does not have, a missing or repeated one, another order), or `answers` is missing, or an entry's `values` is not a list |
+| `unexpected` | an entry of one of the five kinds has a member other than `id` and `values` (`other` and `text` are refused whatever they hold, even an empty string), or the context has a member other than `answers` and `note`, or a `note` when the form has no `freeInput` |
+| `required` | `values` is empty and the question is required (`required` is `true` when it is absent) |
 | `too_many` | `values` has more than one value (a `rank` is judged by `not_a_permutation`) |
 | `not_offered` | `confirm`: a value that is not `yes` or `no`; `rank`: a value that is not one of the options |
-| `grammar` | `number`, `scale`, `date`: the value is not [the grammar](#the-decimal-and-the-date) (a real day included) |
+| `grammar` | `number`, `scale`, `date`: the value is not [the grammar](#the-decimal-and-the-date) (a real day included), **or is not a string** (`[250.5]`); `confirm` and `rank` refuse a value that is not a string as `not_offered` |
 | `below_min` | `number` is below `minValue`, `scale` below `from`, `date` before `minDate` |
 | `above_max` | `number` is above `maxValue`, `scale` above `to`, `date` after `maxDate` |
 | `off_step` | `number` is not on its `step` |
 | `not_a_permutation` | `rank`: not every option exactly once |
 
+These rules are about the five kinds. **The older types are not covered here**: version 5 defined the shape of their answers and not how
+a receiver checks them, so an agent checks a `single`, a `multiple`, a `select`, an `images` and a typed answer against the question's
+own limits (`required`, the option values, `min`, `max`, the lengths of `other` and `text`) as it sees fit.
+
 An answer that fails any rule is **not acted on**. The receiver tells the person, in words, in a message of the same task: the
 question (its `id`, and its words) and the rule, for example `The answer to "budget" was not used (above_max): 1500 is above
-the most, 1000 EUR.` It then **asks again**, with the same form as a new surface, each question that was valid carrying the person's answer as its
-`default` (so nothing the person gave is lost; a receiver may instead ask only the questions that failed). The form that was sent
-stays answered: a client does not take a second answer to it, even though the thread waits again. It never repairs an answer: no clamping, no rounding, no sorting, no substituting the
+the most, 1000 EUR.` It then **asks again**, with the same form as **a new surface with a new `surfaceId`** (the earlier one stays on the screen as it was answered), each question that was valid carrying the person's answer as its
+`default` (so nothing the person gave is lost; a receiver may instead ask only the questions that failed). A form that was sent stays answered, see [Answered forms](#answered-forms). It never repairs an answer: no clamping, no rounding, no sorting, no substituting the
 default. A conforming client does not send such an answer, so a refusal means a stale form, another client or a hand-made
 action, and the message is for the person who then reads it.
 
 The cases below are the contract's conformance vectors: each is a question, the `values` of its answer, and the rule a receiver
 answers (`null`: accepted). A receiver and a client's own check both pass them (the web's tests, the mock's receiver and a test
-of this page read this block).
+of this page read this block, and a test fails when a case is deleted: the block holds **133 cases**).
 
 ```json vectors
 [
   {"question": {"id": "ship", "question": "Delete the branch?", "type": "confirm", "yesLabel": "Delete it", "noLabel": "Keep it", "default": "no"},
-   "cases": [[["yes"], null], [["no"], null], [["maybe"], "not_offered"], [["Yes"], "not_offered"], [["yes", "no"], "too_many"], [[], "required"]]},
+   "cases": [[["yes"], null], [["no"], null], [["maybe"], "not_offered"], [["Yes"], "not_offered"], [[""], "not_offered"], [[true], "not_offered"], [[1], "not_offered"], [["yes", "no"], "too_many"], [["yes", "maybe"], "too_many"], [[], "required"]]},
+  {"question": {"id": "maybe", "question": "Keep it?", "type": "confirm", "required": false},
+   "cases": [[[], null], [["yes"], null], [["no"], null]]},
   {"question": {"id": "budget", "question": "Budget?", "type": "number", "unit": "EUR", "minValue": "0", "maxValue": "1000", "step": "0.5"},
-   "cases": [[["250"], null], [["250.5"], null], [["0"], null], [["1000"], null], [["250.25"], "off_step"], [["1000.5"], "above_max"],
-             [["-1"], "below_min"], [["1e3"], "grammar"], [["1,5"], "grammar"], [[" 5"], "grammar"], [["05"], "grammar"], [["-0"], "grammar"],
-             [["+5"], "grammar"], [[""], "grammar"], [["250", "300"], "too_many"], [[], "required"]]},
+   "cases": [[["250"], null], [["250.5"], null], [["0"], null], [["0.0"], null], [["0.000000"], null], [["1000"], null], [["999.5"], null], [["250.25"], "off_step"], [["1000.5"], "above_max"], [["-1"], "below_min"], [["-0.5"], "below_min"], [["1e3"], "grammar"], [["1E3"], "grammar"], [["1,5"], "grammar"], [[" 5"], "grammar"], [["5 "], "grammar"], [["5\n"], "grammar"], [["1 000"], "grammar"], [["05"], "grammar"], [["-0"], "grammar"], [["-0.0"], "grammar"], [["-0.000000"], "grammar"], [["+5"], "grammar"], [["+1"], "grammar"], [["1."], "grammar"], [[".5"], "grammar"], [[""], "grammar"], [["٣"], "grammar"], [["５"], "grammar"], [["NaN"], "grammar"], [[250.5], "grammar"], [[true], "grammar"], [[null], "grammar"], [["250", "300"], "too_many"], [[250.5, 300], "too_many"], [[], "required"]]},
+  {"question": {"id": "must", "question": "How many?", "type": "number", "required": true},
+   "cases": [[[], "required"], [["3"], null]]},
   {"question": {"id": "ratio", "question": "Ratio?", "type": "number", "required": false},
-   "cases": [[[], null], [["-0.000001"], null], [["123456789012345.123456"], null], [["1234567890123456"], "grammar"], [["0.1234567"], "grammar"]]},
+   "cases": [[[], null], [["0.0"], null], [["-0.000001"], null], [["123456789012345.123456"], null], [["1234567890123456"], "grammar"], [["0.1234567"], "grammar"]]},
+  {"question": {"id": "tenth", "question": "Tenths?", "type": "number", "minValue": "0.1", "maxValue": "1", "step": "0.1"},
+   "cases": [[["0.3"], null], [["0.1"], null], [["1"], null], [["0.35"], "off_step"], [["0.05"], "below_min"], [["1.1"], "above_max"]]},
+  {"question": {"id": "odd", "question": "Odd?", "type": "number", "minValue": "1", "maxValue": "10", "step": "2"},
+   "cases": [[["1"], null], [["3"], null], [["9"], null], [["4"], "off_step"], [["0"], "below_min"], [["11"], "above_max"]]},
+  {"question": {"id": "signed", "question": "Signed?", "type": "number", "minValue": "-5", "maxValue": "5", "step": "2.5"},
+   "cases": [[["-5"], null], [["-2.5"], null], [["0"], null], [["5"], null], [["-3"], "off_step"], [["-5.5"], "below_min"], [["7.5"], "above_max"]]},
   {"question": {"id": "nps", "question": "How likely?", "type": "scale", "from": 0, "to": 10, "fromLabel": "Not at all", "toLabel": "Certainly"},
-   "cases": [[["0"], null], [["7"], null], [["10"], null], [["11"], "above_max"], [["-1"], "grammar"], [["3.5"], "grammar"], [["07"], "grammar"], [[], "required"]]},
+   "cases": [[["0"], null], [["7"], null], [["10"], null], [["11"], "above_max"], [["-1"], "grammar"], [["3.5"], "grammar"], [["10.0"], "grammar"], [["07"], "grammar"], [["7 "], "grammar"], [["٧"], "grammar"], [[7], "grammar"], [["1", "2"], "too_many"], [[], "required"]]},
   {"question": {"id": "level", "question": "Level?", "type": "scale", "to": 5},
    "cases": [[["1"], null], [["5"], null], [["0"], "below_min"], [["6"], "above_max"]]},
+  {"question": {"id": "soft", "question": "Level, if any?", "type": "scale", "to": 5, "required": false},
+   "cases": [[[], null], [["3"], null]]},
   {"question": {"id": "when", "question": "Which day?", "type": "date", "minDate": "2026-12-01", "maxDate": "2026-12-31"},
-   "cases": [[["2026-12-15"], null], [["2026-12-01"], null], [["2026-12-31"], null], [["2026-11-30"], "below_min"], [["2027-01-01"], "above_max"],
-             [["2026-12-1"], "grammar"], [["12/15/2026"], "grammar"], [["2026-12-15T00:00:00Z"], "grammar"], [["2026-13-01"], "grammar"], [[], "required"]]},
+   "cases": [[["2026-12-15"], null], [["2026-12-01"], null], [["2026-12-31"], null], [["2026-11-30"], "below_min"], [["2027-01-01"], "above_max"], [["2026-12-1"], "grammar"], [["12/15/2026"], "grammar"], [["2026-12-15T00:00:00Z"], "grammar"], [["2026-13-01"], "grammar"], [["２０２６-12-15"], "grammar"], [[20261215], "grammar"], [["2026-12-15", "2026-12-16"], "too_many"], [[], "required"]]},
   {"question": {"id": "any", "question": "Any day?", "type": "date"},
-   "cases": [[["2028-02-29"], null], [["2027-02-29"], "grammar"], [["2026-04-31"], "grammar"], [["0000-01-01"], "grammar"], [["9999-12-31"], null]]},
+   "cases": [[["2028-02-29"], null], [["2000-02-29"], null], [["0001-01-01"], null], [["9999-12-31"], null], [["2027-02-29"], "grammar"], [["1900-02-29"], "grammar"], [["2100-02-29"], "grammar"], [["2026-04-31"], "grammar"], [["0000-01-01"], "grammar"], [["2026-00-10"], "grammar"], [["2026-12-00"], "grammar"]]},
   {"question": {"id": "order", "question": "Put these in order", "type": "rank", "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}, {"value": "c", "label": "Gamma"}]},
-   "cases": [[["c", "a", "b"], null], [["a", "b", "c"], null], [["a", "b"], "not_a_permutation"], [["a", "a", "b"], "not_a_permutation"],
-             [["a", "b", "c", "c"], "not_a_permutation"], [["a", "b", "d"], "not_offered"], [[], "required"]]},
+   "cases": [[["c", "a", "b"], null], [["a", "b", "c"], null], [["a", "b"], "not_a_permutation"], [["a", "a", "b"], "not_a_permutation"], [["a", "b", "c", "c"], "not_a_permutation"], [["a", "b", "d"], "not_offered"], [["a", "a", "d"], "not_offered"], [["d"], "not_offered"], [["a", "b", "c", ""], "not_offered"], [[1, 2, 3], "not_offered"], [[], "required"]]},
   {"question": {"id": "later", "question": "Order these later", "type": "rank", "required": false, "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
    "cases": [[[], null], [["b", "a"], null], [["a"], "not_a_permutation"]]}
+]
+```
+
+Whole answers (`whole-answers`: a form, the context an action carries, and the first refusal as `[question id, rule]`, `*` for the whole answer, `null` for none; `freeInput` says whether the form has a free box):
+
+```json whole-answers
+[
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": ["5"]}]}, "refusal": null},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "zz", "values": ["5"]}]}, "refusal": ["*", "unknown"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}]}, "refusal": ["*", "unknown"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "n", "values": ["5"]}, {"id": "ok", "values": ["yes"]}]}, "refusal": ["*", "unknown"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": ["5"]}, {"id": "n", "values": ["5"]}]}, "refusal": ["*", "unknown"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {}, "refusal": ["*", "unknown"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": "5"}]}, "refusal": ["n", "unknown"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"], "other": ""}, {"id": "n", "values": ["5"]}]}, "refusal": ["ok", "unexpected"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": ["5"], "text": "5"}]}, "refusal": ["n", "unexpected"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": ["5"]}], "note": "hi"}, "refusal": ["*", "unexpected"]},
+  {"freeInput": true, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": ["5"]}], "note": "hi"}, "refusal": null},
+  {"freeInput": true, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": ["5"]}], "extra": 1}, "refusal": ["*", "unexpected"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["maybe"]}, {"id": "n", "values": [""]}]}, "refusal": ["ok", "not_offered"]},
+  {"freeInput": false, "questions": [{"id": "ok", "question": "OK?", "type": "confirm"}, {"id": "n", "question": "How many?", "type": "number"}], "context": {"answers": [{"id": "ok", "values": ["yes"]}, {"id": "n", "values": []}]}, "refusal": ["n", "required"]}
+]
+```
+
+Questions every rule of [Rules JSON Schema cannot say](#rules-json-schema-cannot-say) refuses (`invalid-questions`; a client refuses the surface, rule `schema`, and an agent does not send them):
+
+```json invalid-questions
+[
+  {"because": "minValue above maxValue", "question": {"id": "q", "question": "Q?", "type": "number", "minValue": "10", "maxValue": "5"}},
+  {"because": "step of zero", "question": {"id": "q", "question": "Q?", "type": "number", "step": "0"}},
+  {"because": "a negative step", "question": {"id": "q", "question": "Q?", "type": "number", "step": "-1"}},
+  {"because": "a minus zero minValue", "question": {"id": "q", "question": "Q?", "type": "number", "minValue": "-0"}},
+  {"because": "a bound that is a JSON number", "question": {"id": "q", "question": "Q?", "type": "number", "maxValue": 5}},
+  {"because": "a default out of bounds", "question": {"id": "q", "question": "Q?", "type": "number", "maxValue": "10", "default": "11"}},
+  {"because": "a default off the step", "question": {"id": "q", "question": "Q?", "type": "number", "step": "0.5", "default": "0.25"}},
+  {"because": "a one-element list as the default of a number", "question": {"id": "q", "question": "Q?", "type": "number", "default": ["5"]}},
+  {"because": "a list as the default of a confirm", "question": {"id": "q", "question": "Q?", "type": "confirm", "default": ["yes"]}},
+  {"because": "a default that is not yes or no", "question": {"id": "q", "question": "Q?", "type": "confirm", "default": "maybe"}},
+  {"because": "options on a confirm", "question": {"id": "q", "question": "Q?", "type": "confirm", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}},
+  {"because": "a scale with no to", "question": {"id": "q", "question": "Q?", "type": "scale"}},
+  {"because": "a scale whose to is 1", "question": {"id": "q", "question": "Q?", "type": "scale", "to": 1}},
+  {"because": "a scale whose to is 11", "question": {"id": "q", "question": "Q?", "type": "scale", "to": 11}},
+  {"because": "a scale whose from is 2", "question": {"id": "q", "question": "Q?", "type": "scale", "from": 2, "to": 5}},
+  {"because": "a scale whose to is not above from", "question": {"id": "q", "question": "Q?", "type": "scale", "from": 1, "to": 1}},
+  {"because": "a scale default outside the points", "question": {"id": "q", "question": "Q?", "type": "scale", "to": 5, "default": "6"}},
+  {"because": "a date range that is backwards", "question": {"id": "q", "question": "Q?", "type": "date", "minDate": "2026-12-31", "maxDate": "2026-12-01"}},
+  {"because": "a minDate that is not a day", "question": {"id": "q", "question": "Q?", "type": "date", "minDate": "2026-02-30"}},
+  {"because": "a date default after maxDate", "question": {"id": "q", "question": "Q?", "type": "date", "maxDate": "2026-12-01", "default": "2026-12-02"}},
+  {"because": "thirteen options on a rank", "question": {"id": "q", "question": "Q?", "type": "rank", "options": [{"value": "v0", "label": "V0"}, {"value": "v1", "label": "V1"}, {"value": "v2", "label": "V2"}, {"value": "v3", "label": "V3"}, {"value": "v4", "label": "V4"}, {"value": "v5", "label": "V5"}, {"value": "v6", "label": "V6"}, {"value": "v7", "label": "V7"}, {"value": "v8", "label": "V8"}, {"value": "v9", "label": "V9"}, {"value": "v10", "label": "V10"}, {"value": "v11", "label": "V11"}, {"value": "v12", "label": "V12"}]}},
+  {"because": "one option on a rank", "question": {"id": "q", "question": "Q?", "type": "rank", "options": [{"value": "a", "label": "A"}]}},
+  {"because": "a rank with no options", "question": {"id": "q", "question": "Q?", "type": "rank"}},
+  {"because": "a rank default that is not every option", "question": {"id": "q", "question": "Q?", "type": "rank", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "default": ["a"]}},
+  {"because": "a rank default that repeats an option", "question": {"id": "q", "question": "Q?", "type": "rank", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "default": ["a", "a"]}},
+  {"because": "a string as the default of a rank", "question": {"id": "q", "question": "Q?", "type": "rank", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "default": "a"}},
+  {"because": "a picture on a rank option", "question": {"id": "q", "question": "Q?", "type": "rank", "options": [{"value": "a", "label": "A", "image": {"sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "x"}}, {"value": "b", "label": "B"}]}},
+  {"because": "yesLabel on a number", "question": {"id": "q", "question": "Q?", "type": "number", "yesLabel": "Go"}},
+  {"because": "step on a date", "question": {"id": "q", "question": "Q?", "type": "date", "step": "1"}},
+  {"because": "unit on a scale", "question": {"id": "q", "question": "Q?", "type": "scale", "to": 5, "unit": "pt"}},
+  {"because": "step on a single", "question": {"id": "q", "question": "Q?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "step": "1"}},
+  {"because": "unit on a text", "question": {"id": "q", "question": "Q?", "type": "text", "unit": "kg"}},
+  {"because": "multiple on a number", "question": {"id": "q", "question": "Q?", "type": "number", "multiple": true}},
+  {"because": "min on a rank", "question": {"id": "q", "question": "Q?", "type": "rank", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "min": 1}}
+]
+```
+
+Surfaces (`surfaces`: the thread's catalog version, a question, and what a client of version 7 does with it; see [Versions and degradation](#versions-and-degradation)):
+
+```json surfaces
+[
+  {"threadVersion": 7, "question": {"id": "q", "question": "Q?", "type": "confirm"}, "result": "drawn"},
+  {"threadVersion": 6, "question": {"id": "q", "question": "Q?", "type": "confirm"}, "result": "drawn"},
+  {"threadVersion": 99, "question": {"id": "q", "question": "Q?", "type": "slider"}, "result": "refused:schema"},
+  {"threadVersion": 6, "question": {"id": "q", "question": "Q?", "type": "slider"}, "result": "refused:schema"},
+  {"threadVersion": 7, "question": {"id": "q", "question": "Q?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}, "result": "drawn"}
 ]
 ```
 
@@ -1601,14 +1699,24 @@ answer itself, by the same rules:
 | `date` | a `text` question whose `help` says `YYYY-MM-DD` |
 | `rank` | a `text` question whose `help` lists the options with a number each and asks for the numbers in order |
 
+**The version limits the agent, not the client**: a client of version 7 draws a kind whatever version its thread has recorded (the case `"threadVersion": 6` of `surfaces`).
+
 **When a client meets a kind it does not know** (an old client opening a thread that moved on, or a client of version 7 opening
-a later one's), it refuses the **whole surface**, visibly, as [section 8](#8-what-the-web-does-with-a-surface) says: a client
+a later one's), it refuses the **whole surface**, visibly, as [section 8](#8-what-the-web-does-with-a-surface) says. **This is the `schema` refusal and never the "needs a newer version" placeholder**: that placeholder is for a *component* the client lacks (rule 3 of section 8), and a `type` is a member of a component the client has, so an unknown `type` is refused as `schema` even when the thread's version is higher (the case `"type": "slider"` of `surfaces`): a client
 of version 6 draws the refusal of rule `schema` whose reason names the place of the `type` (`questions.1.type`), with the raw operations. It
 **never guesses** a control (a text box for an unknown kind would send an answer the receiver expects in another shape).
 The person then answers **in words, by a message**. So the one rule on the agent that asks with these kinds is: **the
 `question` of every question is a complete sentence a person can answer in a message** (with its options or bounds in its `help`),
 and **a message sent while the ask is open is the answer**: the agent reads it as the answer to the whole form, as it would
 a version 6 form that could not be drawn.
+
+#### The whole catalog
+
+The page holds the schema of `Choices` and the five components' vocabulary is in the sections above; **the whole catalog is one file**, `web/src/features/chat/lib/a2ui/catalog/catalog.json` of this repository, with its version and digest in `catalog.lock.json` next to it (version 7: `sha256:6df9a37d0ae6fa53b8d22145dc1b5674b6d3f228d1c1b83b2ec640d7b3093d49`). At run time it is delivered to an agent in the message (`inlineCatalogs`) or by `get_ui_catalog` ([section 6](#6-the-refetch)). The digest is computed as [section 2](#2-digest-version-and-the-lock) says; **a client of the catalog does not need to compute it**: the screen that owns the catalog and the orchestrator that records it do, and a reader that wants to know whether its copy is current compares the `digest` it was sent.
+
+#### Answered forms
+
+*(This rule is for a `Choices` of any version; it is written here because version 7 is the first to need it.)* A form is **answered**, and stops taking input, as soon as the person has acted on the thread after it: an action on it, an action on any later form, or a plain message. So when the thread waits again (an agent that asks again, or that refused an answer), only the form it asks last is open. A message sent while a form is open answers the ask in words and closes the form like an action does.
 
 #### Examples
 
@@ -2130,7 +2238,7 @@ files the thread holds:
    uniqueness rules and the URL rule; an `Image`, and the picture of an option of a Choices, must name an image file of this thread, else the surface is
    refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), the `FileCard` of [version 6](#version-6-code-and-files), the pictures and media of [version 6](#version-6-media)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`, and [version 7's](#rules-json-schema-cannot-say)). Custom components are lowered to
    `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid`, `vymalo.Image` and the 19 components of version 6 (`vymalo.Code` and the rest) so the converter keeps them.
-3. **Ours, but the component is not known here.** When the thread's version is higher than the web's, the part is
+3. **Ours, but the component is not known here** (a component, not a member: an unknown `type` of a `Choices` question is rule 6, `schema`, whatever the thread's version). When the thread's version is higher than the web's, the part is
    shown as a visible placeholder, "This part of the answer needs a newer version of the app", with a reload button.
    It is refused visibly, rule 4 of ADR 0013, not dropped. Otherwise the surface is refused with the rule `catalog`.
 4. **A basic catalog id.** Today's vocabulary rules hold, and our custom components are refused there.

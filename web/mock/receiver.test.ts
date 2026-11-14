@@ -83,3 +83,20 @@ describe("the answer as a whole", () => {
     expect(refusalOf({ type: "number", maxValue: "10" }, ["10"])).toBeUndefined();
   });
 });
+
+describe("the whole answers of the contract", () => {
+  const cases = block("whole-answers") as {
+    freeInput: boolean;
+    questions: Rec[];
+    context: unknown;
+    refusal: [string, string] | null;
+  }[];
+
+  it("refuses first what the page says, by question and rule", () => {
+    expect(cases.length).toBe(14);
+    for (const { freeInput, questions, context, refusal } of cases) {
+      const got = receive(questions, context, { freeInput })[0];
+      expect(got ? [got.id, got.rule] : null, JSON.stringify(context)).toEqual(refusal);
+    }
+  });
+});

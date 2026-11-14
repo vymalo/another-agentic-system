@@ -42,10 +42,8 @@ const unit = (q: Rec) => (typeof q.unit === "string" ? ` ${q.unit}` : "");
 
 /** The first rule that fails for the `values` of one question of the five kinds, or undefined. */
 export function refusalOf(q: Rec, values: unknown): Omit<Refusal, "id"> | undefined {
-  if (!Array.isArray(values) || !values.every((v) => typeof v === "string")) {
-    return { rule: "unknown", reason: "values is not a list of strings" };
-  }
-  const v = values as string[];
+  if (!Array.isArray(values)) return { rule: "unknown", reason: "values is not a list" };
+  const v = values as unknown[];
   const required = q.required !== false;
   if (v.length === 0) {
     return required ? { rule: "required", reason: "it needs an answer" } : undefined;
@@ -60,7 +58,13 @@ export function refusalOf(q: Rec, values: unknown): Omit<Refusal, "id"> | undefi
     return undefined;
   }
   if (v.length > 1) return { rule: "too_many", reason: "one answer is expected" };
-  const value = v[0] as string;
+  const value = v[0];
+  if (typeof value !== "string") {
+    // not a string: refused as the kind's own rule refuses a wrong one
+    return q.type === "confirm"
+      ? { rule: "not_offered", reason: "it is not yes or no" }
+      : { rule: "grammar", reason: "it is not text" };
+  }
   switch (q.type) {
     case "confirm":
       return value === "yes" || value === "no"
@@ -122,10 +126,21 @@ export function refusalOf(q: Rec, values: unknown): Omit<Refusal, "id"> | undefi
  * the answers must be the questions, once each, in order (`unknown`), carry nothing but `id` and
  * `values` (`unexpected`), and each pass its question's rules.
  */
-export function receive(questions: readonly Rec[], context: unknown): Refusal[] {
+export function receive(
+  questions: readonly Rec[],
+  context: unknown,
+  form: { freeInput?: boolean } = {},
+): Refusal[] {
   const answers = isRecord(context) ? context.answers : undefined;
   if (!Array.isArray(answers)) {
     return [{ id: "*", rule: "unknown", reason: "the answer has no answers" }];
+  }
+  const members = Object.keys(context as Rec).filter((k) => k !== "answers" && k !== "note");
+  const note = "note" in (context as Rec) && !form.freeInput;
+  if (members.length > 0 || note) {
+    return [
+      { id: "*", rule: "unexpected", reason: "the context carries more than the form allows" },
+    ];
   }
   const ids = answers.map((a) => (isRecord(a) ? a.id : undefined));
   if (ids.length !== questions.length || ids.some((id, i) => id !== (questions[i] as Rec).id)) {

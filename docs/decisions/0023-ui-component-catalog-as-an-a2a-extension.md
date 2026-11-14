@@ -229,3 +229,14 @@ changes:** it treats the catalog as a document and a Choices answer as an action
 ([`ui-catalog-v1.md`](../api/ui-catalog-v1.md#the-forms-catalog-of-an-ask)) already carries the thread's `Choices` schema unchanged.
 **Not built, and not proven:** an adam-rs agent that asks with the kinds and validates the answer (its slice 11); a second client; a
 live model, a real browser other than Chromium, a screen reader.
+
+**Amended after review (2026-11-14):** two reviews, one of them a validator written in Python from the page alone (it agreed with every
+vector), found the page still left a stranger guessing; the choices are now written in it. `required` is `true` when absent; the rules
+are tried in the table's order; a value that is not a string is `grammar` (`not_offered` for `confirm` and `rank`); a `note` without a
+`freeInput` and `other` or `text` on a kind, even empty, are `unexpected`; the receiver never trims and the client does; a `default` is
+a string, or a list for `rank`, and the other shape is a refused question; **a rank's `default` is the order it starts in and never an
+answer, on a re-ask too** (the person acts once); an optional confirm, scale or rank has a **Clear answer** control; a re-ask is a
+new surface; a form is answered once the person acts after it, by an action or a plain message (this is true of every version); an
+unknown `type` is a `schema` refusal, never the "needs a newer version" placeholder; display follows the locale and the wire form
+never does; the whole catalog is one file and a client need not compute its digest. The vectors grew from 64 to 133 cases, with
+blocks for whole answers, invalid questions and surfaces, and a test fails when one is deleted.

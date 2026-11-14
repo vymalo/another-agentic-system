@@ -646,9 +646,7 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
   const spec = readChoices(props);
   const [state, setState] = useState<AnswerState>(() => (spec ? initialState(spec) : new Map()));
   const [note, setNote] = useState("");
-  const answered = useAuiState((s) =>
-    answeredAfter(s.thread.messages, s.message.id, view.surfaceId),
-  );
+  const answered = useAuiState((s) => answeredAfter(s.thread.messages, s.message.id));
   if (!spec) return null;
 
   // the answers go to the agent while the thread waits for them, from the newest copy only; once
@@ -721,8 +719,11 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Button
           type="button"
-          disabled={!enabled || left > 0}
+          disabled={!enabled}
+          // held by words, not by `disabled`: a disabled button cannot be reached by keyboard to read why
+          aria-disabled={enabled && left > 0 ? true : undefined}
           aria-describedby={enabled && left > 0 ? hint : undefined}
+          className="aria-disabled:opacity-50"
           onClick={send}
         >
           {spec.submitLabel ?? "Send answers"}

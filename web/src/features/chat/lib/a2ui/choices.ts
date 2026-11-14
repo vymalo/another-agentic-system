@@ -121,6 +121,8 @@ export type ChoiceQuestion = {
   /** `date`: the earliest and latest day, `YYYY-MM-DD`. */
   minDate?: string;
   maxDate?: string;
+  /** What shape the `default` was written in, to refuse the wrong one for the kind. */
+  defaultShape?: "string" | "list";
 };
 
 export type FreeInput = { label: string; placeholder?: string };
@@ -225,6 +227,8 @@ function readQuestion(v: unknown): ChoiceQuestion | undefined {
       ...(multipleGiven !== undefined ? { multiple: multipleGiven } : {}),
     },
     ...own,
+    ...(typeof given === "string" ? { defaultShape: "string" as const } : {}),
+    ...(Array.isArray(given) ? { defaultShape: "list" as const } : {}),
   };
 }
 
@@ -410,12 +414,11 @@ export function initialState(spec: ChoicesSpec): AnswerState {
       continue;
     }
     const known = new Set(q.options.map((o) => o.value));
-    // a rank starts in its default order (every option once); a yes or no and a point are as given
+    // a rank's default is the order it starts in, and is no answer until the person acts; a yes or no
+    // and a point are answers as given
     const values =
       q.type === "rank"
-        ? q.defaults.length === q.options.length && q.defaults.every((d) => known.has(d))
-          ? q.defaults
-          : []
+        ? []
         : q.type === "confirm"
           ? q.defaults.filter((d) => d === "yes" || d === "no").slice(0, 1)
           : q.type === "scale"
@@ -597,7 +600,7 @@ function kindLine(
       return { chosen: value !== undefined && end ? [`${value} (${end})`] : [...values] };
     }
     case "date":
-      return { chosen: values.map(longDate) };
+      return { chosen: values.map((v) => longDate(v)) };
     case "rank":
       return {
         chosen: values.map((v) => q.options.find((o) => o.value === v)?.label ?? v),

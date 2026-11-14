@@ -14,7 +14,13 @@ import {
   missing,
   readChoices,
 } from "./choices";
-import { checkValues, compareDecimals, isCalendarDate, parseDecimal } from "./choices-kinds";
+import {
+  checkValues,
+  compareDecimals,
+  isCalendarDate,
+  longDate,
+  parseDecimal,
+} from "./choices-kinds";
 
 /**
  * The five kinds of question of catalog version 7 (docs/api/ui-catalog-v1.md, "Version 7"): the
@@ -302,7 +308,8 @@ describe("answering", () => {
     expect(s.get("n")?.text).toBe("250");
     expect(s.get("s")?.values).toEqual(["4"]);
     expect(s.get("d")?.text).toBe("2026-12-15");
-    expect(s.get("r")?.values).toEqual(["c", "a", "b"]);
+    // a rank's default is the order it starts in and is no answer until the person acts
+    expect(s.get("r")).toBeUndefined();
     // nothing without a default: a rank untouched is not the person's ranking
     expect(initialState(form).size).toBe(0);
   });
@@ -375,7 +382,7 @@ describe("answering", () => {
     expect(lines[0]).toMatchObject({ question: "Delete it?", chosen: ["Delete it"] });
     expect(lines[1]?.chosen).toEqual(["250.5 EUR"]);
     expect(lines[2]?.chosen).toEqual(["10"]);
-    expect(lines[3]?.chosen).toEqual(["15 December 2026"]);
+    expect(lines[3]?.chosen).toEqual([longDate("2026-12-15")]);
     expect(lines[4]).toMatchObject({ ordered: true, chosen: ["Gamma", "Alpha", "Beta"] });
     expect(lines[5]).toMatchObject({ question: "z", chosen: [] });
   });
@@ -391,17 +398,66 @@ describe("answering", () => {
     expect(answerLines([{ id: "c", values: ["no"] }], q)[0]?.chosen).toEqual(["No"]);
   });
 
-  it("shows a date as the same day for everyone, whatever the zone of the browser", () => {
-    const q = spec(DATE).questions;
-    expect(answerLines([{ id: "d", values: ["2026-01-01"] }], q)[0]?.chosen).toEqual([
-      "1 January 2026",
-    ]);
-    expect(answerLines([{ id: "d", values: ["2026-12-31"] }], q)[0]?.chosen).toEqual([
-      "31 December 2026",
-    ]);
+  it("writes a day in the viewer's locale and never in another zone's day", () => {
+    expect(longDate("2026-12-15", "en-GB")).toBe("15 December 2026");
+    expect(longDate("2026-12-15", "en-US")).toBe("December 15, 2026");
+    expect(longDate("2026-12-15", "de")).toBe("15. Dezember 2026");
+    expect(longDate("0099-01-02", "en-GB")).toBe("2 January 99");
+    expect(longDate("2026-02-30", "en-GB")).toBe("2026-02-30"); // not a day: shown as it was sent
   });
+
+  for (const zone of ["Pacific/Kiritimati", "America/Los_Angeles", "UTC"]) {
+    it(`shows a day as the same day in the zone ${zone}`, () => {
+      const before = process.env.TZ;
+      process.env.TZ = zone;
+      try {
+        const offset = new Date(2026, 0, 1).getTimezoneOffset();
+        if (zone !== "UTC") expect(offset, "the zone took").not.toBe(0);
+        expect(longDate("2026-01-01", "en-GB")).toBe("1 January 2026");
+        expect(longDate("2026-12-31", "en-GB")).toBe("31 December 2026");
+        expect(longDate("2026-03-29", "en-GB")).toBe("29 March 2026");
+      } finally {
+        if (before === undefined) delete process.env.TZ;
+        else process.env.TZ = before;
+      }
+    });
+  }
 
   it("shows a value the surface does not hold as it was sent", () => {
     expect(answerLines([{ id: "n", values: ["5"] }], undefined)[0]?.chosen).toEqual(["5"]);
+  });
+});
+
+describe("what is refused that the older tests did not say", () => {
+  it("a value that is not a string is refused as the kind's own rule refuses a wrong one", () => {
+    const rule = (q: Rec, values: unknown[]) => checkValues(question(q), values)?.rule ?? null;
+    expect(rule(CONFIRM, [true])).toBe("not_offered");
+    expect(rule(NUMBER, [250.5])).toBe("grammar");
+    expect(rule(SCALE, [7])).toBe("grammar");
+    expect(rule(DATE, [20261215])).toBe("grammar");
+    expect(rule(RANK, [1, 2, 3])).toBe("not_offered");
+    expect(rule(NUMBER, [250.5, 300])).toBe("too_many");
+  });
+
+  it("a default has the shape of its kind: a string, and for a rank a list", () => {
+    expect(refused({ ...NUMBER, default: ["5"] })).toMatch(/must be a string/);
+    expect(refused({ ...CONFIRM, default: ["yes"] })).toMatch(/must be a string/);
+    expect(refused({ ...SCALE, default: ["3"] })).toMatch(/must be a string/);
+    expect(refused({ ...DATE, default: ["2026-12-15"] })).toMatch(/must be a string/);
+    expect(refused({ ...RANK, default: "a" })).toMatch(/must be a list/);
+  });
+
+  it("a member of a kind is refused on the older types too", () => {
+    const single = {
+      id: "s",
+      question: "S?",
+      options: [
+        { value: "a", label: "A" },
+        { value: "b", label: "B" },
+      ],
+    };
+    expect(refused({ ...single, step: "1" })).toMatch(/step/);
+    expect(refused({ ...single, yesLabel: "Go" })).toMatch(/yesLabel/);
+    expect(refused({ id: "t", question: "T?", type: "text", unit: "kg" })).toMatch(/unit/);
   });
 });

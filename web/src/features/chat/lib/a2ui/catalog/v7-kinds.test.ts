@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { duplicateIn, limitsIn, readChoices } from "../choices";
 import { checkValues } from "../choices-kinds";
+import { prepareSurface } from "../prepare";
 import lock from "./catalog.lock.json";
 import { catalogDigest } from "./digest";
 import { componentNames, OWN_CATALOG } from "./index";
@@ -194,6 +195,69 @@ describe("the contract page (docs/api/ui-catalog-v1.md, Version 7)", () => {
       }
     }
     expect(cases).toBeGreaterThanOrEqual(60);
+  });
+
+  it("pins the vectors: deleting a case fails, whatever else is left", () => {
+    const vectors = block("vectors") as { cases: [unknown[], string | null][] }[];
+    const all = vectors.flatMap((v) => v.cases);
+    // the page says how many there are
+    const said = /the block holds \*\*(\d+) cases\*\*/.exec(doc);
+    expect(said, "the page states the count").not.toBeNull();
+    expect(all.length).toBe(Number(said?.[1]));
+    // and how many of each rule: a deleted case drops one of these
+    const per: Record<string, number> = {};
+    for (const [, rule] of all) per[String(rule)] = (per[String(rule)] ?? 0) + 1;
+    expect(per).toEqual({
+      null: 45,
+      not_offered: 10,
+      too_many: 6,
+      required: 6,
+      off_step: 4,
+      above_max: 7,
+      below_min: 7,
+      grammar: 44,
+      not_a_permutation: 4,
+    });
+    expect(vectors.length).toBe(15);
+  });
+
+  it("every question the page says is invalid is refused: by the schema or by the rules", () => {
+    const invalid = block("invalid-questions") as { because: string; question: Rec }[];
+    expect(invalid.length).toBe(34);
+    for (const { because, question } of invalid) {
+      const form = choices(question);
+      const spec = readChoices(form);
+      const refused =
+        check(form) !== undefined || spec === undefined || limitsIn(spec) !== undefined;
+      expect(refused, because).toBe(true);
+    }
+  });
+
+  it("an unknown type is a schema refusal whatever the thread's version; a kind is drawn at any version", () => {
+    const cases = block("surfaces") as { threadVersion: number; question: Rec; result: string }[];
+    expect(cases.length).toBe(5);
+    for (const { threadVersion, question, result } of cases) {
+      const surface = {
+        version: "v0.9.1",
+        createSurface: { surfaceId: "s1", catalogId: OWN_CATALOG.catalogId },
+      };
+      const update = {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: "s1",
+          components: [
+            { id: "root", component: "Column", children: ["pick"] },
+            { id: "pick", component: "Choices", questions: [question] },
+          ],
+        },
+      };
+      const prepared = prepareSurface([surface, update], { threadVersion });
+      if (result === "drawn") expect(prepared.kind, JSON.stringify(question)).toBe("surface");
+      else {
+        expect(prepared.kind, JSON.stringify(question)).toBe("refused");
+        expect(`refused:${(prepared as { rule: string }).rule}`).toBe(result);
+      }
+    }
   });
 
   it("every rule the page names has a case, and every case names a rule of the page", () => {

@@ -2164,16 +2164,16 @@ adds five values of a question's `type`, drawn by `components/surface/choices-ki
 | `number` | a text box (`inputmode="decimal"`, not a browser number box) with its unit beside it, its bounds and step said under the question | one decimal string, as typed and trimmed |
 | `scale` | native radio buttons for the points, `fromLabel` and `toLabel` under the two ends (their description) | one whole number as a string |
 | `date` | the browser's date control with `min` and `max` (`9999-12-31` when there is no latest day, so a year has four digits) | `["YYYY-MM-DD"]`, the control's own value |
-| `rank` | an ordered list; each item has a **Move up** and a **Move down** button named with the item (`aria-disabled` at an end, so the keyboard keeps its place), the new place said in a polite `status`, **Keep this order** until the person has moved something | every option's value, in the person's order |
+| `rank` | an ordered list; each item has a **Move up** and a **Move down** button named with the item (`aria-disabled` at an end, so the keyboard keeps its place), the new place said in a polite `status`, **Keep this order** until the person has moved something (a `default` is the order it starts in, never an answer, on a second ask too), **Clear answer** when it is optional and touched, `role="list"` | every option's value, in the person's order |
 
-The client runs the receiver's check (`checkValues`: the rules `required`, `too_many`, `not_offered`, `grammar`, `below_min`,
+A required question with no answer says what it needs next to the control (`aria-describedby`); an optional confirm, scale and rank have **Clear answer**; Send is held with `aria-disabled` and its hint, so a keyboard can reach it. The client runs the receiver's check (`checkValues`: the rules `required`, `too_many`, `not_offered`, `grammar`, `below_min`,
 `above_max`, `off_step`, `not_a_permutation`) on what the person has done, says the first failure in words under the control
 (`aria-invalid`, `aria-describedby`, a polite line that is always in the page) and holds Send until every question is valid, so a
-number out of range cannot be sent. Decimals are compared as `bigint` millionths and a date is checked against the calendar,
-never through `Number` or `Date`. The bubble reads the answer back as the person saw it (`Delete it`, `250.5 EUR`, `10 (Certainly)`,
-`15 December 2026`, a rank as a numbered list, `No answer` for a skipped one), and a form that was sent stays answered (and takes no
-input) when the thread waits again, so the form an agent asks again after refusing an answer is the only open one
-(`answeredAfter` in `lib/a2ui/surfaces.ts`). The orchestrator does not read an answer: the agent validates, and the mock's scripted
+number out of range cannot be sent. Decimals are compared as `bigint` millionths and a date is checked against the calendar, never through floating point or a
+`Date` (a scale's whole number is read with `Number` only after a regular expression has said it is one, and `longDate` makes a
+`Date` only to write the day in UTC, in the viewer's locale: the wire form never depends on locale, display may). The bubble reads the answer back as the person saw it (`Delete it`, `250.5 EUR`, `10 (Certainly)`,
+`15 December 2026`, a rank as a numbered list, `No answer` for a skipped one), and a form is answered, and takes no input, once the person has acted after it (an action on it or on a later form, or a plain message) even when the thread waits again, so the form an agent asks again after refusing an answer is the only open one
+(`answeredAfter` in `lib/a2ui/surfaces.ts`; the contract's "Answered forms"). The orchestrator does not read an answer: the agent validates, and the mock's scripted
 agent does (`mock/receiver.ts`, from the contract page alone). A client that does not know a `type` refuses the whole surface
 visibly (rule `schema`) and the person answers in words.
 

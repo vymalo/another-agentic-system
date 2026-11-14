@@ -147,7 +147,7 @@ test.describe("the five kinds of question (catalog version 7)", () => {
       ["Delete the old branch?", "Keep it"],
       ["What is the monthly budget?", "250.5 EUR"],
       ["How likely are you to recommend it?", "7"],
-      ["When should it ship?", "15 December 2026"],
+      ["When should it ship?", "December 15, 2026"],
       ["Put these in order of importance", "RiskSpeedCost"],
     ]);
     await expect(page.locator('[data-slot="answer-rank"] li')).toHaveText([
@@ -172,6 +172,59 @@ test.describe("the five kinds of question (catalog version 7)", () => {
     await page.reload();
     await expect(page.locator('[data-slot="answer-bubble"]')).toBeVisible();
     await expect(send(page)).toBeDisabled();
+  });
+
+  test("the focus stays on the Move button that was used, up and down, and an end button says so in words", async ({
+    page,
+  }) => {
+    await startThread(page, "choices-v7 now", "Reviewer");
+    await expect(badge(page)).toHaveText("Your turn");
+    const focusedName = () =>
+      page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
+    const status = page.getByRole("status").filter({ hasText: /of 3|already/ });
+
+    const down = page.getByRole("button", { name: "Move Cost down" });
+    await down.focus();
+    await page.keyboard.press("Enter");
+    await expect(items(page)).toHaveText(["Speed", "Risk", "Cost"]);
+    expect(await focusedName()).toBe("Move Cost down");
+    await expect(status).toHaveText("Cost, 3 of 3");
+
+    const up = page.getByRole("button", { name: "Move Cost up" });
+    await up.focus();
+    await page.keyboard.press("Enter");
+    await expect(items(page)).toHaveText(["Speed", "Cost", "Risk"]);
+    expect(await focusedName()).toBe("Move Cost up");
+
+    // the end of the list: nothing moves, the words say so, and say it again the second time
+    const top = page.getByRole("button", { name: "Move Speed up" });
+    await top.focus();
+    await page.keyboard.press("Enter");
+    await expect(status).toHaveText(/^Speed is already first/);
+    const first = await status.textContent();
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => await status.textContent()).not.toBe(first);
+    expect(await focusedName()).toBe("Move Speed up");
+  });
+
+  test("a form that has no answer yet says what it needs, and the held button stays in the tab order", async ({
+    page,
+  }) => {
+    await startThread(page, "choices-v7 now", "Reviewer");
+    await expect(badge(page)).toHaveText("Your turn");
+    await expect(page.getByText("Enter a number.")).toBeVisible();
+    await expect(page.getByText("Pick a day.")).toBeVisible();
+    await expect(page.getByText("Move an item, or keep the order, to answer.")).toBeVisible();
+    // a held button can be focused, so that its reason is read
+    await send(page).focus();
+    await expect(send(page)).toBeFocused();
+    await expect(send(page)).toHaveAttribute("aria-disabled", "true");
+    // an optional scale that was answered can be cleared
+    await page.getByText("7", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Clear answer to How likely are you to recommend it?" })
+      .click();
+    await expect(nps(page).getByRole("radio", { checked: true })).toHaveCount(0);
   });
 
   test("an out-of-range number cannot be sent and says why, in words, until it is right", async ({
@@ -315,6 +368,12 @@ test.describe("the five kinds of question (catalog version 7)", () => {
     await expect(forms.first().getByRole("textbox", { name: /monthly budget/ })).toBeDisabled();
 
     await again.getByRole("textbox", { name: /monthly budget/ }).fill("999.5");
+    // the order it starts in is the person's earlier one, and still no answer until they say so
+    await expect(again.getByRole("button", { name: "Send answers" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await again.getByRole("button", { name: "Keep this order" }).click();
     await again.getByRole("button", { name: "Send answers" }).click();
     await expect(badge(page)).toHaveText("Done");
     expect(posts).toHaveLength(3);

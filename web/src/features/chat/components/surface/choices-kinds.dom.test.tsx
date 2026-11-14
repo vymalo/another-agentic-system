@@ -61,7 +61,12 @@ async function mountForm(
 }
 
 const send = () => screen.getByRole("button", { name: "Send answers" }) as HTMLButtonElement;
+/** The button is held back: really disabled, or `aria-disabled` while it says why (it stays reachable). */
+const held = (b: HTMLElement) =>
+  (b as HTMLButtonElement).disabled || b.getAttribute("aria-disabled") === "true";
 const click = (el: Element) => fireEvent.click(el);
+/** What the rank's polite status line says, without the no-break space that makes a repeat new. */
+const said = () => (screen.getByRole("status").textContent ?? "").replace(/\u00a0/g, "");
 const sent = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls[0]?.[0] as Rec;
 const opt = (value: string, label = value, extra: Rec = {}) => ({ value, label, ...extra });
 
@@ -85,7 +90,7 @@ describe("confirm: a yes or no in the agent's own words", () => {
     expect(radios.map((r) => r.labels?.[0]?.textContent)).toEqual(["Delete it", "Keep it"]);
     expect(radios.map((r) => r.checked)).toEqual([false, true]);
     // the safe default is an answer: the form can go
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     m.agent.stop();
   });
 
@@ -105,7 +110,7 @@ describe("confirm: a yes or no in the agent's own words", () => {
     const radios = screen.getAllByRole("radio") as HTMLInputElement[];
     expect(radios.map((r) => r.labels?.[0]?.textContent)).toEqual(["Yes", "No"]);
     expect(radios.some((r) => r.checked)).toBe(false);
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     expect(screen.getByText("1 question is not answered yet.")).toBeTruthy();
     m.agent.stop();
   });
@@ -133,14 +138,14 @@ describe("number: a decimal that cannot be out of range", () => {
       document.getElementById(input.getAttribute("aria-describedby")?.split(" ")[0] ?? "")
         ?.textContent,
     ).toBe("From 0 to 1000 EUR. In steps of 0.5.");
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     m.agent.stop();
   });
 
   it("an out-of-range number holds the button and says why, in words linked to the box", async () => {
     const m = await mountForm([q]);
     fireEvent.change(box(), { target: { value: "1500" } });
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     const message = document.querySelector('[data-slot="choices-problem"]') as HTMLElement;
     expect(message.textContent).toContain("The most is 1000 EUR.");
     expect(box().getAttribute("aria-invalid")).toBe("true");
@@ -152,7 +157,7 @@ describe("number: a decimal that cannot be out of range", () => {
     fireEvent.change(box(), { target: { value: "1e3" } });
     expect(message.textContent).toContain("digits and a point");
     fireEvent.change(box(), { target: { value: "1,5" } });
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     m.agent.stop();
   });
 
@@ -163,7 +168,7 @@ describe("number: a decimal that cannot be out of range", () => {
     fireEvent.change(box(), { target: { value: " 250.50 " } });
     expect(document.querySelector('[data-slot="choices-problem"]')?.textContent).toBe("");
     expect(box().getAttribute("aria-invalid")).toBeNull();
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     click(send());
     expect(sent(sendAction)).toMatchObject({
       context: { answers: [{ id: "budget", values: ["250.50"] }] },
@@ -175,7 +180,7 @@ describe("number: a decimal that cannot be out of range", () => {
     const sendAction = vi.fn();
     const m = await mountForm([{ ...q, required: false }], {}, { send: sendAction });
     expect(screen.getByText("(optional)")).toBeTruthy();
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     click(send());
     expect(sent(sendAction)).toMatchObject({
       context: { answers: [{ id: "budget", values: [] }] },
@@ -186,7 +191,7 @@ describe("number: a decimal that cannot be out of range", () => {
   it("starts from its default", async () => {
     const m = await mountForm([{ ...q, default: "250" }]);
     expect((box() as HTMLInputElement).value).toBe("250");
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     m.agent.stop();
   });
 });
@@ -245,7 +250,7 @@ describe("date: a calendar day, as the browser's own control gives it", () => {
     expect(box().type).toBe("date");
     expect(box().min).toBe("2026-12-01");
     expect(box().max).toBe("2026-12-31");
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     m.agent.stop();
   });
 
@@ -259,7 +264,7 @@ describe("date: a calendar day, as the browser's own control gives it", () => {
     const sendAction = vi.fn();
     const m = await mountForm([q], {}, { send: sendAction });
     fireEvent.change(box(), { target: { value: "2027-01-02" } });
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     expect(document.querySelector('[data-slot="choices-problem"]')?.textContent).toContain(
       "The latest day is 2026-12-31.",
     );
@@ -268,7 +273,7 @@ describe("date: a calendar day, as the browser's own control gives it", () => {
       "The earliest day is 2026-12-01.",
     );
     fireEvent.change(box(), { target: { value: "2026-12-15" } });
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     click(send());
     expect(sent(sendAction)).toMatchObject({
       context: { answers: [{ id: "when", values: ["2026-12-15"] }] },
@@ -313,10 +318,10 @@ describe("rank: put the options in order", () => {
   it("is not answered until an item has moved or the order is kept: the agent's order is not their ranking", async () => {
     const sendAction = vi.fn();
     const m = await mountForm([q], {}, { send: sendAction });
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     expect(screen.getByText("Move an item, or keep the order, to answer.")).toBeTruthy();
     click(screen.getByRole("button", { name: "Keep this order" }));
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     expect(screen.queryByRole("button", { name: "Keep this order" })).toBeNull();
     click(send());
     expect(sent(sendAction)).toMatchObject({
@@ -330,13 +335,13 @@ describe("rank: put the options in order", () => {
     const m = await mountForm([q], {}, { send: sendAction });
     move("Risk", "up");
     expect(labels()).toEqual(["Speed", "Risk", "Cost"]);
-    expect(screen.getByRole("status").textContent).toBe("Risk, 2 of 3");
+    expect(said()).toBe("Risk, 2 of 3");
     move("Risk", "up");
     expect(labels()).toEqual(["Risk", "Speed", "Cost"]);
-    expect(screen.getByRole("status").textContent).toBe("Risk, 1 of 3");
+    expect(said()).toBe("Risk, 1 of 3");
     move("Cost", "up");
     expect(labels()).toEqual(["Risk", "Cost", "Speed"]);
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     click(send());
     expect(sent(sendAction)).toMatchObject({
       context: { answers: [{ id: "order", values: ["risk", "cost", "speed"] }] },
@@ -370,7 +375,7 @@ describe("rank: put the options in order", () => {
     m.agent.stop();
   });
 
-  it("starts in its default order, which is an answer; an optional rank may be left alone", async () => {
+  it("starts in its default order, which is not an answer: a required rank still waits for the person, and an untouched optional one is empty", async () => {
     const sendAction = vi.fn();
     const m = await mountForm(
       [
@@ -380,7 +385,11 @@ describe("rank: put the options in order", () => {
       {},
       { send: sendAction },
     );
-    expect(send().disabled).toBe(false);
+    expect(labels().slice(0, 3)).toEqual(["Risk", "Speed", "Cost"]);
+    expect(held(send())).toBe(true);
+    expect(screen.getByText("Move an item, or keep the order, to answer.")).toBeTruthy();
+    click(screen.getAllByRole("button", { name: "Keep this order" })[0] as Element);
+    expect(held(send())).toBe(false);
     click(send());
     expect(sent(sendAction)).toMatchObject({
       context: {
@@ -390,6 +399,44 @@ describe("rank: put the options in order", () => {
         ],
       },
     });
+    m.agent.stop();
+  });
+
+  it("is a list to a screen reader, and says in words that an end button cannot move, and says it again the second time", async () => {
+    const m = await mountForm([q]);
+    expect(screen.getByRole("list", { name: /Put these in order/ }).getAttribute("role")).toBe(
+      "list",
+    );
+    move("Speed", "up");
+    expect(said()).toBe("Speed is already first");
+    const first = screen.getByRole("status").textContent;
+    move("Speed", "up");
+    // the same words twice end differently, so that a screen reader says them again
+    expect(screen.getByRole("status").textContent).not.toBe(first);
+    expect(said()).toBe("Speed is already first");
+    move("Risk", "down");
+    expect(said()).toBe("Risk is already last");
+    m.agent.stop();
+  });
+
+  it("an optional rank that was touched can be cleared and is empty again", async () => {
+    const sendAction = vi.fn();
+    const m = await mountForm([{ ...q, required: false }], {}, { send: sendAction });
+    expect(screen.queryByRole("button", { name: /^Clear answer/ })).toBeNull();
+    move("Risk", "up");
+    click(screen.getByRole("button", { name: "Clear answer to Put these in order of importance" }));
+    expect(labels()).toEqual(["Speed", "Cost", "Risk"]);
+    click(send());
+    expect(sent(sendAction)).toMatchObject({ context: { answers: [{ id: "order", values: [] }] } });
+    m.agent.stop();
+  });
+
+  it("a required rank that has no answer says what it needs, linked to the group", async () => {
+    const m = await mountForm([q]);
+    const group = screen.getByRole("group", { name: /Put these in order of importance/ });
+    const need = document.querySelector('[data-slot="choices-need"]') as HTMLElement;
+    expect(need.textContent).toBe("Move an item, or keep the order, to answer.");
+    expect(group.getAttribute("aria-describedby")).toContain(need.id);
     m.agent.stop();
   });
 });
@@ -451,7 +498,7 @@ describe("the form with all five, once answered", () => {
       ["Delete the old branch?", "Delete it"],
       ["What is the monthly budget?", "250.5 EUR"],
       ["How likely?", "10 (Certainly)"],
-      ["When should it ship?", "15 December 2026"],
+      ["When should it ship?", "December 15, 2026"],
       ["Order these", "RiskSpeedCost"],
       ["Anything?", "No answer"],
     ]);
@@ -475,6 +522,118 @@ describe("the form with all five, once answered", () => {
     for (const button of screen.getAllByRole("button", { name: /^Move / })) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
+    m.agent.stop();
+  });
+});
+
+describe("what a required question needs, and how an optional one is cleared and named", () => {
+  it("a required confirm, scale, number and date say what they need, linked to the control", async () => {
+    const m = await mountForm([
+      { id: "c", question: "Go on?", type: "confirm" },
+      { id: "s", question: "How much?", type: "scale", to: 5 },
+      { id: "n", question: "How many?", type: "number" },
+      { id: "d", question: "Which day?", type: "date" },
+    ]);
+    const needs = Array.from(document.querySelectorAll('[data-slot="choices-need"]'));
+    expect(needs.map((n) => n.textContent)).toEqual([
+      "Choose yes or no.",
+      "Choose a point from 1 to 5.",
+      "Enter a number.",
+      "Pick a day.",
+    ]);
+    const linked = (el: HTMLElement, id: string) =>
+      expect(el.getAttribute("aria-describedby") ?? "").toContain(id);
+    linked(screen.getByRole("radiogroup", { name: "Go on?" }), (needs[0] as HTMLElement).id);
+    linked(screen.getByRole("radiogroup", { name: "How much?" }), (needs[1] as HTMLElement).id);
+    linked(screen.getByRole("textbox", { name: /How many/ }), (needs[2] as HTMLElement).id);
+    linked(screen.getByLabelText(/Which day/), (needs[3] as HTMLElement).id);
+    // once answered the need is gone
+    click(screen.getByRole("radio", { name: "Yes" }));
+    expect(document.querySelectorAll('[data-slot="choices-need"]')).toHaveLength(3);
+    m.agent.stop();
+  });
+
+  it("an optional confirm, scale and rank carry (optional) in the name of their group", async () => {
+    const m = await mountForm([
+      { id: "c", question: "Go on?", type: "confirm", required: false },
+      { id: "s", question: "How much?", type: "scale", to: 5, required: false },
+      {
+        id: "r",
+        question: "Order these",
+        type: "rank",
+        required: false,
+        options: [opt("a", "A"), opt("b", "B")],
+      },
+    ]);
+    expect(screen.getByRole("radiogroup", { name: /^Go on\?\s*\(optional\)$/ })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: /^How much\?\s*\(optional\)$/ })).toBeTruthy();
+    expect(screen.getByRole("group", { name: /^Order these\s*\(optional\)$/ })).toBeTruthy();
+    m.agent.stop();
+  });
+
+  it("an optional confirm and scale that were answered can be cleared, and are empty again", async () => {
+    const sendAction = vi.fn();
+    const m = await mountForm(
+      [
+        { id: "c", question: "Go on?", type: "confirm", required: false },
+        { id: "s", question: "How much?", type: "scale", to: 5, required: false },
+      ],
+      {},
+      { send: sendAction },
+    );
+    expect(screen.queryByRole("button", { name: /^Clear answer/ })).toBeNull();
+    click(screen.getByRole("radio", { name: "Yes" }));
+    click(screen.getByRole("radio", { name: "3" }));
+    click(screen.getByRole("button", { name: "Clear answer to Go on?" }));
+    click(screen.getByRole("button", { name: "Clear answer to How much?" }));
+    expect((screen.getByRole("radio", { name: "Yes" }) as HTMLInputElement).checked).toBe(false);
+    click(send());
+    expect(sent(sendAction)).toMatchObject({
+      context: {
+        answers: [
+          { id: "c", values: [] },
+          { id: "s", values: [] },
+        ],
+      },
+    });
+    m.agent.stop();
+  });
+
+  it("a Send that is held stays reachable by keyboard and says why", async () => {
+    const m = await mountForm([{ id: "c", question: "Go on?", type: "confirm" }]);
+    const button = send();
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    const hint = document.getElementById(button.getAttribute("aria-describedby") ?? "");
+    expect(hint?.textContent).toBe("1 question is not answered yet.");
+    m.agent.stop();
+  });
+});
+
+describe("a form that was sent is closed when the thread waits again", () => {
+  it("a later action on the surface closes it, and a plain message does too", async () => {
+    const m = mountSurfaces({ canSend: true, state: "blocked" }, {}, undefined, {
+      catalogVersion: OWN_CATALOG.version,
+    });
+    const ask = [{ id: "c", question: "Go on?", type: "confirm", default: "yes" }];
+    await feed(m, surfaceRun([form(ask)], { end: "interrupt" }));
+    expect(held(send())).toBe(false);
+    // the person answered; the agent asks again and the thread waits again
+    await act(async () => {
+      m.stream.frames([
+        ...actionRun({
+          surfaceId: "s1",
+          name: "answer",
+          sourceComponentId: "pick",
+          context: { answers: [{ id: "c", values: ["yes"] }] },
+        }),
+      ]);
+    });
+    await screen.findByText("Going on.");
+    expect(
+      (screen.getByRole("radio", { name: "Yes" }) as HTMLInputElement).matches(":disabled"),
+    ).toBe(true);
+    expect(send().disabled).toBe(true);
     m.agent.stop();
   });
 });

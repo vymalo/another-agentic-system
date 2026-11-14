@@ -68,16 +68,12 @@ export function isCalendarDate(text: string): boolean {
  * A day written out for a person: `15 December 2026`. It is a day and not an instant, so it is
  * built in UTC and shown in UTC: the same day for everyone, whatever the zone of the browser.
  */
-export function longDate(text: string): string {
+export function longDate(text: string, locale?: string): string {
   if (!isCalendarDate(text)) return text;
   const at = new Date(0);
   at.setUTCFullYear(Number(text.slice(0, 4)), Number(text.slice(5, 7)) - 1, Number(text.slice(8)));
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "UTC",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  }).format(at);
+  // display follows the viewer's locale (`undefined`: the browser's); the wire form never does
+  return new Intl.DateTimeFormat(locale, { timeZone: "UTC", dateStyle: "long" }).format(at);
 }
 
 // ---- scale and confirm --------------------------------------------------------------------
@@ -147,8 +143,8 @@ function checkDate(q: ChoiceQuestion, value: string): Problem | undefined {
   return undefined;
 }
 
-function checkRank(q: ChoiceQuestion, values: readonly string[]): Problem | undefined {
-  const offered = new Set(q.options.map((o) => o.value));
+function checkRank(q: ChoiceQuestion, values: readonly unknown[]): Problem | undefined {
+  const offered = new Set<unknown>(q.options.map((o) => o.value));
   const stray = values.find((v) => !offered.has(v));
   if (stray !== undefined)
     return problem("not_offered", `${JSON.stringify(stray)} is not one of the options.`);
@@ -163,13 +159,19 @@ function checkRank(q: ChoiceQuestion, values: readonly string[]): Problem | unde
  * five kinds: undefined when the answer is acceptable, else the first rule that fails. An empty
  * `values` is accepted only when the question is not required.
  */
-export function checkValues(q: ChoiceQuestion, values: readonly string[]): Problem | undefined {
+export function checkValues(q: ChoiceQuestion, values: readonly unknown[]): Problem | undefined {
   if (values.length === 0) {
     return q.required ? problem("required", "Answer this question.") : undefined;
   }
   if (q.type === "rank") return checkRank(q, values);
   if (values.length > 1) return problem("too_many", "Give one answer.");
-  const value = values[0] as string;
+  const value = values[0];
+  if (typeof value !== "string") {
+    // a value that is not a string is refused as the kind's own rule refuses a wrong one
+    return q.type === "confirm"
+      ? problem("not_offered", "Choose yes or no.")
+      : problem("grammar", "Give the answer as text.");
+  }
   switch (q.type) {
     case "confirm":
       return value === YES || value === NO
@@ -263,6 +265,10 @@ export function kindLimits(q: ChoiceQuestion): string | undefined {
     }
     default:
       break;
+  }
+  // a default has the shape of its kind: a string, and for a rank a list
+  if (q.defaultShape !== undefined && q.defaultShape !== (q.type === "rank" ? "list" : "string")) {
+    return `the default of ${at} must be ${q.type === "rank" ? "a list of the options' values" : "a string"}`;
   }
   const given = q.defaultText !== undefined ? [q.defaultText] : q.defaults;
   if (given.length > 0) {

@@ -72,27 +72,44 @@ function Problem({ id, text }: { id: string; text: string | undefined }) {
   );
 }
 
+/** What a required question that is not answered yet needs: next to the control, and linked to it. */
+function Needs({ id, text }: { id: string; text: string }) {
+  return (
+    <p id={id} data-slot="choices-need" className="text-xs text-muted-foreground">
+      {text}
+    </p>
+  );
+}
+
 /** The legend, help and group of a question answered by radio buttons or a list. */
 function Group({
   question,
   radiogroup,
   children,
   enabled,
+  need,
+  onClear,
 }: {
   question: ChoiceQuestion;
   radiogroup: boolean;
   children: ReactNode;
   enabled: boolean;
+  /** What a required question that has no answer yet needs, said next to it and linked to it. */
+  need?: string | undefined;
+  /** An optional question that has an answer can be cleared. */
+  onClear?: (() => void) | undefined;
 }) {
   const legend = useId();
   const help = useId();
+  const needId = useId();
+  const describedBy = [question.help ? help : "", need ? needId : ""].filter(Boolean).join(" ");
   return (
     <fieldset
       data-slot="choices-question"
       data-kind={question.type}
       role={radiogroup ? "radiogroup" : undefined}
       aria-labelledby={legend}
-      aria-describedby={question.help ? help : undefined}
+      aria-describedby={describedBy || undefined}
       disabled={!enabled}
       className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0"
     >
@@ -106,6 +123,21 @@ function Group({
         </p>
       ) : null}
       {children}
+      {need && enabled ? <Needs id={needId} text={need} /> : null}
+      {onClear && enabled ? (
+        <div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            data-slot="choices-clear"
+            aria-label={`Clear answer to ${question.question}`}
+            onClick={onClear}
+          >
+            Clear answer
+          </Button>
+        </div>
+      ) : null}
     </fieldset>
   );
 }
@@ -169,7 +201,15 @@ function Confirm({ question, name, state, enabled, onChange }: Props) {
   const chosen = state.values[0];
   const pick = (value: string) => () => onChange({ values: [value] });
   return (
-    <Group question={question} radiogroup enabled={enabled}>
+    <Group
+      question={question}
+      radiogroup
+      enabled={enabled}
+      need={question.required && chosen === undefined ? "Choose yes or no." : undefined}
+      onClear={
+        !question.required && chosen !== undefined ? () => onChange({ values: [] }) : undefined
+      }
+    >
       <div className="grid grid-cols-2 gap-2">
         <RadioTile
           name={name}
@@ -197,7 +237,19 @@ function Scale({ question, name, state, enabled, onChange }: Props) {
   const first = points[0];
   const last = points.at(-1);
   return (
-    <Group question={question} radiogroup enabled={enabled}>
+    <Group
+      question={question}
+      radiogroup
+      enabled={enabled}
+      need={
+        question.required && state.values.length === 0
+          ? `Choose a point from ${first} to ${last}.`
+          : undefined
+      }
+      onClear={
+        !question.required && state.values.length > 0 ? () => onChange({ values: [] }) : undefined
+      }
+    >
       <div data-slot="choices-scale" className="flex flex-wrap items-start gap-2">
         {points.map((point) => {
           const value = String(point);
@@ -240,6 +292,8 @@ function Typed({ question, state, enabled, onChange }: Props) {
   const id = useId();
   const notes = `${id}-notes`;
   const problem = `${id}-problem`;
+  const needId = `${id}-need`;
+  const needed = question.required && state.text.trim() === "" && enabled;
   const number = question.type === "number";
   const text = state.text;
   // an empty box is "not answered yet" (the form says so); a box with something in it is judged now
@@ -276,7 +330,9 @@ function Typed({ question, state, enabled, onChange }: Props) {
             maxLength={32}
             disabled={!enabled}
             aria-invalid={failure ? true : undefined}
-            aria-describedby={[help ? notes : "", problem].filter(Boolean).join(" ")}
+            aria-describedby={[help ? notes : "", problem, needed ? needId : ""]
+              .filter(Boolean)
+              .join(" ")}
             onChange={(e) => onChange({ text: e.target.value })}
             className="max-w-48"
           />
@@ -290,7 +346,9 @@ function Typed({ question, state, enabled, onChange }: Props) {
             max={question.maxDate ?? "9999-12-31"}
             disabled={!enabled}
             aria-invalid={failure ? true : undefined}
-            aria-describedby={[help ? notes : "", problem].filter(Boolean).join(" ")}
+            aria-describedby={[help ? notes : "", problem, needed ? needId : ""]
+              .filter(Boolean)
+              .join(" ")}
             onChange={(e) => onChange({ text: e.target.value })}
             className="max-w-48"
           />
@@ -302,18 +360,29 @@ function Typed({ question, state, enabled, onChange }: Props) {
         ) : null}
       </div>
       <Problem id={problem} text={failure?.message} />
+      {needed ? <Needs id={needId} text={number ? "Enter a number." : "Pick a day."} /> : null}
     </div>
   );
 }
 
 /** The order the list is shown in: the person's, else the agent's. */
 const orderOf = (q: ChoiceQuestion, s: QuestionState): string[] =>
-  s.values.length === q.options.length ? s.values : q.options.map((o) => o.value);
+  s.values.length === q.options.length
+    ? s.values
+    : q.defaults.length === q.options.length
+      ? q.defaults // the order the agent (or the person's earlier answer) starts the list in
+      : q.options.map((o) => o.value);
 
 function Rank({ question, state, enabled, onChange }: Props) {
   const order = orderOf(question, state);
   const touched = state.values.length > 0;
   const [said, setSaid] = useState("");
+  const spoken = useRef(0);
+  // the same words twice are not announced again: every other message ends in a no-break space
+  const say = (text: string) => {
+    spoken.current += 1;
+    setSaid(spoken.current % 2 === 0 ? `${text}\u00a0` : text);
+  };
   // after a move the keyboard stays on the button it used, whichever place the item is now in
   const keep = useRef<string | undefined>(undefined);
   const list = useRef<HTMLOListElement>(null);
@@ -329,22 +398,36 @@ function Rank({ question, state, enabled, onChange }: Props) {
   const move = (value: string, by: -1 | 1) => {
     const from = order.indexOf(value);
     const to = from + by;
-    if (to < 0 || to >= order.length) return; // a button at an end of the list does nothing, and says so
+    const name = question.options.find((o) => o.value === value)?.label ?? value;
+    if (to < 0 || to >= order.length) {
+      // a button at an end of the list does nothing, and says so in words
+      say(`${name} is already ${by < 0 ? "first" : "last"}`);
+      return;
+    }
     const next = [...order];
     next.splice(from, 1);
     next.splice(to, 0, value);
     keep.current = `${value}:${by < 0 ? "up" : "down"}`;
-    const label = question.options.find((o) => o.value === value)?.label ?? value;
-    setSaid(`${label}, ${to + 1} of ${order.length}`);
+    say(`${name}, ${to + 1} of ${order.length}`);
     onChange({ values: next });
   };
 
   return (
-    <Group question={question} radiogroup={false} enabled={enabled}>
+    <Group
+      question={question}
+      radiogroup={false}
+      enabled={enabled}
+      need={
+        question.required && !touched ? "Move an item, or keep the order, to answer." : undefined
+      }
+      onClear={!question.required && touched ? () => onChange({ values: [] }) : undefined}
+    >
       <ol
         ref={list}
         data-slot="choices-rank"
         aria-label={`${question.question}: the first is the best`}
+        // biome-ignore lint/a11y/noRedundantRoles: list-none drops the list for VoiceOver (Safari) unless the role is said
+        role="list"
         className="m-0 flex list-none flex-col gap-2 p-0"
       >
         {order.map((value, index) => {
@@ -430,11 +513,6 @@ function Rank({ question, state, enabled, onChange }: Props) {
           >
             Keep this order
           </Button>
-          {question.required ? (
-            <span className="text-xs text-muted-foreground">
-              Move an item, or keep the order, to answer.
-            </span>
-          ) : null}
         </div>
       )}
     </Group>

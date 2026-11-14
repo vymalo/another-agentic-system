@@ -77,6 +77,9 @@ const choicesSurface = (extra: Rec = {}, questions: Rec[] = THREE) =>
   );
 
 const send = () => screen.getByRole("button", { name: "Send answers" }) as HTMLButtonElement;
+/** The button is held back: really disabled, or `aria-disabled` while it says why (it stays reachable). */
+const held = (b: HTMLElement) =>
+  (b as HTMLButtonElement).disabled || b.getAttribute("aria-disabled") === "true";
 const group = (name: string) => screen.getByRole("radiogroup", { name }) as HTMLElement;
 const radio = (question: string, label: string) =>
   within(group(question)).getByRole("radio", { name: label }) as HTMLInputElement;
@@ -143,17 +146,17 @@ describe("the Choices component", () => {
 
   it("Send is off until every required question is answered, and says how many are left", async () => {
     const m = await mountChoices();
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     expect(screen.getByText("2 questions are not answered yet.")).toBeTruthy();
     expect(send().getAttribute("aria-describedby")).toBe(
       screen.getByText("2 questions are not answered yet.").id,
     );
     click(radio("Which database?", "Postgres"));
     expect(screen.getByText("1 question is not answered yet.")).toBeTruthy();
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     // the optional question never blocks
     click(radio("Which login?", "No login"));
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     expect(screen.queryByText(/not answered yet/)).toBeNull();
     expect(send().getAttribute("aria-describedby")).toBeNull();
     m.agent.stop();
@@ -221,9 +224,9 @@ describe("the Choices component", () => {
     // an empty 'Other' answers nothing
     click(radio("Which database?", "Other"));
     expect(radio("Which database?", "Postgres").checked).toBe(false);
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     fireEvent.change(other, { target: { value: "  Cockroach  " } });
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     click(send());
     expect(sendAction.mock.calls[0]?.[0].context.answers[0]).toEqual({
       id: "db",
@@ -291,7 +294,7 @@ describe("the Choices component", () => {
       catalogVersion: OWN_CATALOG.version,
     });
     await feed(m, surfaceRun([choicesSurface()]));
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     // a control inside a disabled fieldset is disabled (jsdom says so through :disabled)
     for (const r of [...screen.getAllByRole("radio"), ...screen.getAllByRole("checkbox")]) {
       expect(r.matches(":disabled")).toBe(true);
@@ -490,7 +493,7 @@ describe("the person's answer in the transcript", () => {
     });
     await screen.findByText("Going on.");
     for (const r of screen.getAllByRole("radio")) expect(r.matches(":disabled")).toBe(true);
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     m.agent.stop();
   });
 });

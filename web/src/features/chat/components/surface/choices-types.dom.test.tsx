@@ -78,6 +78,9 @@ async function mountForm(
 }
 
 const send = () => screen.getByRole("button", { name: "Send answers" }) as HTMLButtonElement;
+/** The button is held back: really disabled, or `aria-disabled` while it says why (it stays reachable). */
+const held = (b: HTMLElement) =>
+  (b as HTMLButtonElement).disabled || b.getAttribute("aria-disabled") === "true";
 const click = (el: Element) => fireEvent.click(el);
 const sent = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls[0]?.[0] as Rec;
 
@@ -165,7 +168,7 @@ describe("options: a title, a subtitle, an icon and a recommended mark; a defaul
     ).toBeTruthy();
     // the default is chosen before the person does anything, and the form can go as it is
     expect(pg.checked).toBe(true);
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     m.agent.stop();
   });
 
@@ -223,9 +226,9 @@ describe("type multiple: min and max", () => {
     const box = (label: string) =>
       screen.getByRole("checkbox", { name: label }) as HTMLInputElement;
     click(box("Alpha"));
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     click(box("Beta"));
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     click(box("Gamma"));
     // three chosen: the fourth cannot be taken, the three can be given back
     expect(box("Delta").disabled).toBe(true);
@@ -302,7 +305,7 @@ describe("type select: a list that is searched", () => {
     expect(screen.queryByRole("listbox")).toBeNull();
     expect(combo().value).toBe("Banana");
     expect(sendAction).not.toHaveBeenCalled();
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     fireEvent.focus(combo());
     expect(screen.getAllByRole("option").map((o) => o.getAttribute("aria-selected"))).toEqual([
       "false",
@@ -490,11 +493,11 @@ describe("types text and longText", () => {
     const sendAction = vi.fn();
     const m = await mountForm(questions, {}, { send: sendAction });
     const name = screen.getByLabelText("What is the project called?");
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     fireEvent.change(name, { target: { value: "   " } });
-    expect(send().disabled).toBe(true);
+    expect(held(send())).toBe(true);
     fireEvent.change(name, { target: { value: "  Quokka  " } });
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     fireEvent.keyDown(name, { key: "Enter" });
     expect(sendAction).not.toHaveBeenCalled();
     click(send());
@@ -512,7 +515,7 @@ describe("types text and longText", () => {
   it("a default is the text it starts with", async () => {
     const m = await mountForm([{ id: "name", question: "Name?", type: "text", default: "Quokka" }]);
     expect((screen.getByLabelText("Name?") as HTMLInputElement).value).toBe("Quokka");
-    expect(send().disabled).toBe(false);
+    expect(held(send())).toBe(false);
     m.agent.stop();
   });
 });
