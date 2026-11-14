@@ -76,6 +76,14 @@ export async function exportMenuItem(page: Page): Promise<Locator> {
   return item;
 }
 
+/** "Export Markdown", the item beside Export JSON: opens the menu and returns the item. */
+export async function exportMarkdownItem(page: Page): Promise<Locator> {
+  const item = page.getByRole("menuitem", { name: /Export Markdown|Preparing Markdown…/ });
+  if (!(await item.isVisible())) await page.getByRole("button", { name: "Thread options" }).click();
+  await expect(item).toBeVisible();
+  return item;
+}
+
 /** The agent picker of the top bar: a button, "Agent: Adam", that opens a menu. */
 export const agentPicker = (page: Page) => page.getByRole("button", { name: /^Agent:/ });
 

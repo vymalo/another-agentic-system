@@ -3,6 +3,7 @@
 import {
   DownloadIcon,
   EllipsisIcon,
+  FileTextIcon,
   PencilIcon,
   Share2Icon,
   TextCursorInputIcon,
@@ -119,7 +120,17 @@ export function ThreadMenu({
             title="Download this chat as a JSON file, to share with a developer"
           >
             <DownloadIcon aria-hidden="true" />
-            {exporter.exporting ? "Exporting…" : "Export JSON"}
+            {exporter.exporting && exporter.format === "json" ? "Exporting…" : "Export JSON"}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={disabled || exporter.exporting}
+            onSelect={exporter.runMarkdown}
+            title="Download this chat as a Markdown file to read or keep"
+          >
+            <FileTextIcon aria-hidden="true" />
+            {exporter.exporting && exporter.format === "markdown"
+              ? "Preparing Markdown…"
+              : "Export Markdown"}
           </DropdownMenuItem>
           {share ? (
             <DropdownMenuItem

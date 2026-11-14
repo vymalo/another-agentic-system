@@ -1,3 +1,4 @@
+import { markdownFilename, threadToMarkdown } from "@/features/chat/lib/thread-markdown";
 import { api, problemMessage } from "@/lib/api/client";
 
 export type ThreadExportFile = { blob: Blob; filename: string };
@@ -57,4 +58,20 @@ export function saveFile({ blob, filename }: ThreadExportFile): void {
   // The click only starts the download: Firefox and Safari abort a large one whose object URL is
   // revoked too early, so it lives as long as FileSaver.js keeps it (40 s).
   setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS);
+}
+
+/**
+ * **Export Markdown**: the same `GET /api/threads/{id}/export` as Export JSON, read as a document and written as the Markdown
+ * of docs/api/thread-markdown-v1.md (`threadToMarkdown`, pure): no other request, and nothing in the file the JSON does not hold.
+ */
+export async function fetchThreadMarkdown(threadId: string): Promise<ThreadExportFile> {
+  const revision = webRevision();
+  const { data, error } = await api.GET("/api/threads/{threadId}/export", {
+    params: { path: { threadId }, header: revision ? { "X-Web-Revision": revision } : {} },
+  });
+  if (!data) throw new Error(problemMessage(error));
+  return {
+    blob: new Blob([threadToMarkdown(data)], { type: "text/markdown;charset=utf-8" }),
+    filename: markdownFilename(threadId),
+  };
 }
