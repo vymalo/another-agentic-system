@@ -1603,7 +1603,7 @@ answer itself, by the same rules:
 
 **When a client meets a kind it does not know** (an old client opening a thread that moved on, or a client of version 7 opening
 a later one's), it refuses the **whole surface**, visibly, as [section 8](#8-what-the-web-does-with-a-surface) says: a client
-of version 6 draws the refusal of rule `schema` whose reason names the question and the `type`, with the raw operations. It
+of version 6 draws the refusal of rule `schema` whose reason names the place of the `type` (`questions.1.type`), with the raw operations. It
 **never guesses** a control (a text box for an unknown kind would send an answer the receiver expects in another shape).
 The person then answers **in words, by a message**. So the one rule on the agent that asks with these kinds is: **the
 `question` of every question is a complete sentence a person can answer in a message** (with its options or bounds in its `help`),

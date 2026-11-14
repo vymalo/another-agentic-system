@@ -210,7 +210,7 @@ answers as it did):
    also covers a later version). An agent that knows only version 6 never uses a kind it was not told, so nothing changes for it
    or for a client of version 6. When an agent wants a kind a screen lacks it asks in the nearest version 6 form (`single` with two
    options, `text` with the grammar in its help, ...) and validates the text itself. A client that meets a kind it does not know
-   refuses the **whole surface** visibly (rule `schema` in a client of version 6, whose reason names the question and the `type`)
+   refuses the **whole surface** visibly (rule `schema` in a client of version 6, whose reason names the place of the `type`, `questions.1.type`)
    and never guesses a control; the person answers in words by a message. The one rule on the agent: **the `question` of every question
    is a sentence a person can answer in a message, and a message sent while the ask is open is the answer.**
 5. **Accessibility is part of the contract**: a yes or no and a scale are `radiogroup`s of native radio buttons; a number is a text

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { duplicateIn, limitsIn, readChoices } from "../choices";
 import { checkValues } from "../choices-kinds";
 import lock from "./catalog.lock.json";
+import { catalogDigest } from "./digest";
 import { componentNames, OWN_CATALOG } from "./index";
 import { compileCatalog } from "./validate";
 
@@ -230,5 +231,67 @@ describe("the contract page (docs/api/ui-catalog-v1.md, Version 7)", () => {
     const written = blocks.filter((b) => !Array.isArray(b) && "Choices" in b);
     expect(written.length).toBe(1);
     expect(written[0]?.Choices).toEqual(OWN_CATALOG.catalog.components.Choices);
+  });
+});
+
+/**
+ * Version 7 only adds: take the five types, the members that belong to them and the new words of the
+ * description away and what is left is the catalog of version 6, digest for digest. So an agent that
+ * knows only version 6 keeps working (every Choices it can write is still valid), and a client of
+ * version 6 reads the same Choices and refuses a kind it does not know.
+ */
+describe("version 7 is version 6 and additions", () => {
+  const V6_DESCRIPTION =
+    'ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option\'s image an image file shared in this conversation), text or longText (the person types). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default "answer"), context = {answers:[{id, values:[option value…], other?, text?}], note?} in question order.';
+  const V6_DIGEST = "sha256:f0baf255994b3c80144a5f3db634f06bce37253eb43efb4a85b33c47628c105d";
+  const NEW_MEMBERS = [
+    "yesLabel",
+    "noLabel",
+    "minValue",
+    "maxValue",
+    "step",
+    "unit",
+    "from",
+    "to",
+    "fromLabel",
+    "toLabel",
+    "minDate",
+    "maxDate",
+  ];
+  const asVersion6 = () => {
+    const catalog = structuredClone(OWN_CATALOG.catalog) as {
+      components: { Choices: Rec & { description: string; properties: Rec } };
+    } & Rec;
+    const choices = catalog.components.Choices;
+    choices.description = V6_DESCRIPTION;
+    const question = (choices.properties.questions as Rec).items as { properties: Rec };
+    for (const member of NEW_MEMBERS) delete question.properties[member];
+    (question.properties.type as { enum: string[] }).enum = [
+      "single",
+      "multiple",
+      "select",
+      "images",
+      "text",
+      "longText",
+    ];
+    return catalog as unknown as typeof OWN_CATALOG.catalog;
+  };
+
+  it("takes the additions away and the digest is the one version 6 shipped", async () => {
+    expect(await catalogDigest(asVersion6())).toBe(V6_DIGEST);
+  });
+
+  it("a client of version 6 refuses a kind it does not know, at the place of its type", () => {
+    const v6 = compileCatalog(asVersion6());
+    for (const type of ["confirm", "number", "scale", "date", "rank"]) {
+      const bad = choices(
+        { id: "a", question: "A?", options: [] },
+        { id: "q", question: "Q?", type },
+      );
+      expect(v6.check("Choices", bad), type).toMatch(/^questions\.1\.type: /);
+    }
+    // and what it knows it still takes
+    const known = choices({ id: "a", question: "A?", type: "text" });
+    expect(v6.check("Choices", known)).toBeUndefined();
   });
 });
