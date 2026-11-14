@@ -79,10 +79,11 @@ finish() {
 }
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
-uuid7() { # uuid7 N: a time-ordered id (UUIDv7), as the web makes a thread's; N orders the ids made in one millisecond
-  ms=$(date +%s%3N 2>/dev/null)
-  case $ms in *[!0-9]* | '') ms=$(($(date +%s) * 1000)) ;; esac
-  hex=$(printf '%012x' "$((ms + $1))")
+# The clock is read once: a clock that steps back between two readings would put a later id before an earlier one.
+now_ms=$(date +%s%3N 2>/dev/null)
+case $now_ms in *[!0-9]* | '') now_ms=$(($(date +%s) * 1000)) ;; esac
+uuid7() { # uuid7 N: a time-ordered id (UUIDv7), as the web makes a thread's; N orders the ids of this script
+  hex=$(printf '%012x' "$((now_ms + $1))")
   r=$(uuid | tr -d -)
   printf '%s-%s-7%s-%s-%s\n' "$(printf %s "$hex" | cut -c1-8)" "$(printf %s "$hex" | cut -c9-12)" \
     "$(printf %s "$r" | cut -c14-16)" "$(printf %s "$r" | cut -c17-20)" "$(printf %s "$r" | cut -c21-32)"
