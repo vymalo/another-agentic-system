@@ -687,14 +687,41 @@ handle_block() {
     on { print }
     on && $0 == "\t}" { on = 0 }'
 }
-# The one route of every edge that asks for no sign-in: the web's runtime configuration (`@runtimeConfig`); it is left out here.
-edge_has_no_public_route() { ! caddyfile | awk '/^\t(@runtimeConfig|handle @runtimeConfig) \{$/ { skip = 1 } !skip { print } skip && $0 == "\t}" { skip = 0 }' | grep -Eq 'header_up -Authorization|public/shared|handle @public|/s/\*'; }
+# The two routes of every edge that ask for no sign-in and are not sharing's: the web's runtime configuration (`@runtimeConfig`) and the OAuth
+# callback of a person's own MCP server (`@oauthCallback`, ADR 0046); both are left out here, and checked on their own below.
+edge_has_no_public_route() { ! caddyfile | awk '/^\t(@runtimeConfig|handle @runtimeConfig|@oauthCallback|handle @oauthCallback) \{$/ { skip = 1 } !skip { print } skip && $0 == "\t}" { skip = 0 }' | grep -Eq 'header_up -Authorization|public/shared|handle @public|/s/\*'; }
 runtime_config_public() {
   b=$(handle_block @runtimeConfig)
   printf '%s\n' "$b" | grep -Fq 'another-agentic-web:3000' && printf '%s\n' "$b" | grep -Fq 'header_up -Authorization' &&
     ! printf '%s\n' "$b" | grep -Eq 'forward_auth|copy_headers|oauth2-proxy' &&
     m=$(caddyfile | awk -v t="$T" '$0 == t "@runtimeConfig {" { on = 1; next } on && $0 == t "}" { on = 0 } on { print }') &&
     printf '%s\n' "$m" | grep -Fq 'method GET HEAD' && printf '%s\n' "$m" | grep -Fq 'path /config.json'
+}
+# The OAuth callback of a person's own MCP server (ADR 0046): exactly `GET` of one path, to the orchestrator, no identity carried, no sign-in asked.
+oauth_callback_exact() {
+  matcher_is @oauthCallback 'method GET' 'path /api/user-tool-servers/oauth/callback' &&
+    in_block @oauthCallback 'another-agentic-orchestrator:8080' && in_block @oauthCallback 'header_up -Authorization' &&
+    in_block @oauthCallback 'header_up -X-Auth-Request-Email' && not_in_block @oauthCallback 'forward_auth|copy_headers|oauth2-proxy|another-agentic-web'
+}
+# No other route under /api/user-tool-servers is public: a `path` of the file that names the prefix is the callback's, and only that.
+no_other_user_tool_path() {
+  [ "$(caddyfile | grep -Ec 'user-tool-servers')" -eq 1 ] && caddyfile | grep -Eq "^${T}${T}path /api/user-tool-servers/oauth/callback\$"
+}
+oauth_callback_first() {
+  caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@oauthCallback.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'
+}
+# dev/Caddyfile (the edge dev/user-tools-e2e.sh runs against) has the same block, line for line, with its upstream's name.
+oauth_callback_region() {
+  awk -v t="$T" '
+    $0 == t "@oauthCallback {" { on = 1 }
+    on { print }
+    on && $0 == t "handle @oauthCallback {" { h = 1 }
+    on && h && $0 == t "}" { exit }'
+}
+chart_oauth_callback() { caddyfile | grep -v '^$' | oauth_callback_region | sed 's/another-agentic-orchestrator:8080/orchestrator:8080/'; }
+dev_oauth_callback() { grep -Ev "^${T}*#" "$repo/dev/Caddyfile" | grep -v '^$' | oauth_callback_region; }
+dev_has_the_chart_oauth_callback() {
+  _chart=$(chart_oauth_callback) && [ "$(printf '%s\n' "$_chart" | grep -c .)" -gt 8 ] && [ "$_chart" = "$(dev_oauth_callback)" ]
 }
 sharing_off_everywhere() { ! grep -Ev '^ *#' "$out" | grep -Eq 'sharing_secret|sharing-secret|thread\.share|public/shared'; }
 public_paths() { caddyfile | grep -E "^${T}${T}path " | sed "s/^${T}${T}path //" | sort | tr '\n' '|'; }
@@ -778,10 +805,14 @@ config_of config.yaml "$cfg"
 check "sharing off (default): the configuration has no sharing key and no role holds thread.share" cfg_lacks '^sharing:|thread.share'
 check "sharing off (default): no sharing secret, permission or public route anywhere in the render" sharing_off_everywhere
 check "sharing off (default): the edge has no public route (no header stripped, no /s/, no public/shared)" edge_has_no_public_route
-check "sharing off (default): seven handle blocks in the Caddyfile (health, oauth2, thread-tools, config.json, api, agui, the web)" test "$(n_handles)" -eq 7
-check "sharing off (default): only the health check, oauth2-proxy's own routes, the thread tools' 404 and config.json skip forward_auth" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|'
+check "sharing off (default): eight handle blocks in the Caddyfile (health, oauth2, thread-tools, config.json, the OAuth callback, api, agui, the web)" test "$(n_handles)" -eq 8
+check "sharing off (default): only the health check, oauth2-proxy's own routes, the thread tools' 404, config.json and the OAuth callback skip forward_auth" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@oauthCallback|'
 check "sharing off (default): the API, the AG-UI route and the web are what asks oauth2-proxy" test "$(handles_by_auth with)" = '/api/*|/agui/*|(web)|'
 check "edge mode: /config.json (the web's runtime configuration) is read with no sign-in, GET and HEAD only, from the web" runtime_config_public
+check "edge mode: the OAuth callback of a person's own MCP server is read with no sign-in, GET of its one path only, from the orchestrator, carrying no identity" oauth_callback_exact
+check "edge mode: no other path under /api/user-tool-servers is public (the callback is the one the file names)" no_other_user_tool_path
+check "edge mode: the OAuth callback comes before /api/* and /agui/*, so that Caddy takes it first" oauth_callback_first
+check "edge mode: dev/Caddyfile has the same OAuth callback block, line for line (the dev edge of dev/user-tools-e2e.sh)" dev_has_the_chart_oauth_callback
 check "values.yaml: sharing.mode is disabled by default" sh -c "awk '/^sharing:/{m=1} m && /^  mode:/{print \$2; exit}' '$chart/values.yaml' | grep -qx disabled"
 cp "$out" "$out.off"
 
@@ -802,8 +833,8 @@ check "sharing internal: no Secret object, no secret-named literal, still produc
   ! grep -Eq '^kind: Secret\$' '$out' && grep -Eq '^  environment: production\$' '$cfg' && grep -Eq '^  mode: jwt\$' '$cfg'"
 check "sharing internal: no secret-named environment variable has a literal value" fails literal_secret_env
 check "sharing internal: the edge is the default one (the page and the API stay behind sign-in)" edge_has_no_public_route
-check "sharing internal: seven handle blocks, as with sharing off" test "$(n_handles)" -eq 7
-check "sharing internal: the same four handles skip forward_auth as without sharing (no public link at this cap)" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|'
+check "sharing internal: eight handle blocks, as with sharing off" test "$(n_handles)" -eq 8
+check "sharing internal: the same five handles skip forward_auth as without sharing (no public link at this cap)" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@oauthCallback|'
 render --set sharing.mode=internal --set 'sharing.roles={user}'
 config_of config.yaml "$cfg"
 user_only() { role_has user thread.share && ! role_has admin thread.share; }
@@ -820,15 +851,15 @@ check "sharing public: the secret is a { file } reference" cfg_has '^  secret: \
 check "sharing public: every secret key of the configuration is a reference" test -z "$(plain_secret_in_config)"
 check "sharing public: no token-looking value in the render, no secret-named literal" sh -c "! grep -Eq '(ghp_|github_pat_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20})' '$out'"
 check "sharing public: no secret-named environment variable has a literal value" fails literal_secret_env
-check "sharing public: ten handle blocks: the seven, and the three public ones, no fourth" test "$(n_handles)" -eq 10
-check "sharing public: the public routes are exactly the page and its files, /api/public/shared/* and /agui/public/shared/*" test "$(public_paths)" = '/agui/public/shared/*|/api/public/shared/*|/config.json|/s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*|'
+check "sharing public: eleven handle blocks: the eight, and the three public ones, no fourth" test "$(n_handles)" -eq 11
+check "sharing public: the public routes are exactly the page and its files, /api/public/shared/* and /agui/public/shared/*, the OAuth callback and config.json" test "$(public_paths)" = '/agui/public/shared/*|/api/public/shared/*|/api/user-tool-servers/oauth/callback|/config.json|/s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*|'
 check "sharing public: three public blocks and config.json's, each GET and HEAD only" test "$(caddyfile | grep -Ec "^${T}${T}method GET HEAD\$")" -eq 4
 check "sharing public: each public block drops the client's Authorization and X-Auth-Request-Email, and asks no sign-in" public_blocks_ok
 check "sharing public: the public blocks come before /api/*, /agui/* and the catch-all (Caddy takes the first match)" public_first
 check "sharing public: the three protected routes still ask oauth2-proxy (forward_auth, copy_headers: three, as without sharing)" count '^\s+copy_headers Authorization$' 3
 check "sharing public: the public API goes to the orchestrator and the page to the web, nothing to oauth2-proxy" public_targets
 check "sharing public: the thread tools are still not routed, nor /mcp, nor webhooks" no_other_surface
-check "sharing public: ONLY the health check, oauth2-proxy's own routes, the thread tools' 404, config.json and the three public links skip forward_auth" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@publicApi|@publicAgui|@publicWeb|'
+check "sharing public: ONLY the health check, oauth2-proxy's own routes, the thread tools' 404, config.json, the OAuth callback and the three public links skip forward_auth" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@oauthCallback|@publicApi|@publicAgui|@publicWeb|'
 check "sharing public: the API, the AG-UI route and the web are still what asks oauth2-proxy" test "$(handles_by_auth with)" = '/api/*|/agui/*|(web)|'
 check "sharing public: @publicApi is GET and HEAD of /api/public/shared/* and of nothing else" matcher_is @publicApi 'method GET HEAD' 'path /api/public/shared/*'
 check "sharing public: @publicAgui is GET and HEAD of /agui/public/shared/* and of nothing else" matcher_is @publicAgui 'method GET HEAD' 'path /agui/public/shared/*'
@@ -1002,7 +1033,7 @@ config_of config.yaml "$cfg"
 check "browser off (default): the configuration has no dpop and no browser section" cfg_lacks '^  (dpop|browser):'
 check "browser off (default): no DPoP matcher and no public auth route in the render" lacks 'DPoP|dpop|public/auth'
 check "browser off (default): the web has no WEB_CSP_CONNECT_SRC" lacks 'WEB_CSP_CONNECT_SRC'
-check "browser off (default): seven handle blocks in the Caddyfile" test "$(n_handles)" -eq 7
+check "browser off (default): eight handle blocks in the Caddyfile" test "$(n_handles)" -eq 8
 check "browser off (default): the web's catch-all goes to the web" catch_all_is_web
 check "browser off (default): ... after asking oauth2-proxy (forward_auth), a 401 sent to sign in" in_block '' 'forward_auth'
 check "browser off (default): ... a 401 sent to /oauth2/start" in_block '' '/oauth2/start'
@@ -1018,8 +1049,8 @@ check "browser on: the web's client and scope are told (auth.browser), with offl
   '^  browser:$' '^    clientId: "another-agentic-web"$' '^    scope: "openid email profile offline_access"$'
 check "browser on: still a production, jwt, fail-closed configuration with the same audience" cfg_all '^  environment: production$' '^  mode: jwt$' '^  defaultRole: null$' '^      - another-agentic$'
 check "browser on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
-check "browser on: ten handle blocks: the seven, the public auth route and the two DPoP ones, no eleventh" test "$(n_handles)" -eq 10
-check "browser on: the handles that skip forward_auth are the four of before, the public auth route, the two DPoP routes and the web's pages, and no other" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@publicAuth|@dpopApi|@dpopAgui|(web)|'
+check "browser on: eleven handle blocks: the eight, the public auth route and the two DPoP ones, no twelfth" test "$(n_handles)" -eq 11
+check "browser on: the handles that skip forward_auth are the five of before, the public auth route, the two DPoP routes and the web's pages, and no other" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@oauthCallback|@publicAuth|@dpopApi|@dpopAgui|(web)|'
 check "browser on: /api/* and /agui/* are what still asks oauth2-proxy" test "$(handles_by_auth with)" = '/api/*|/agui/*|'
 check "browser mode: /config.json is read with no sign-in too" runtime_config_public
 check "browser on: the DPoP matcher of /api/*" matcher_has @dpopApi 'path /api/*'
@@ -1058,9 +1089,9 @@ render --set auth.browser.enabled=true --set auth.browser.clientId=web-two --set
 config_of config.yaml "$cfg"
 check "browser on: the client id and the scope are values" cfg_all '^    clientId: "web-two"$' '^    scope: "openid email"$'
 render --set auth.browser.enabled=true --set sharing.mode=public
-check "browser on with public sharing: thirteen handle blocks (the seven, the three public links, the three of the browser)" test "$(n_handles)" -eq 13
+check "browser on with public sharing: fourteen handle blocks (the eight, the three public links, the three of the browser)" test "$(n_handles)" -eq 14
 check "browser on with public sharing: the public links keep their own routes, stripped of identity" public_blocks_ok
-check "browser on with public sharing: the handles that skip forward_auth are those of the two features and no other" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@publicApi|@publicAgui|@publicWeb|@publicAuth|@dpopApi|@dpopAgui|(web)|'
+check "browser on with public sharing: the handles that skip forward_auth are those of the two features and no other" test "$(handles_by_auth without)" = '/edge-healthz|/oauth2/*|/thread-tools/*|@runtimeConfig|@oauthCallback|@publicApi|@publicAgui|@publicWeb|@publicAuth|@dpopApi|@dpopAgui|(web)|'
 check "browser on with public sharing: dev/Caddyfile still has the same three public blocks" dev_has_the_chart_public_blocks
 all_public_first() {
   caddyfile | grep -E "^${T}handle " | awk '{ o = o $2 "|" } END { exit (o ~ /@publicApi.*@publicAgui.*@publicWeb.*@publicAuth.*@dpopApi.*@dpopAgui.*\/api\/\*.*\/agui\/\*/) ? 0 : 1 }'

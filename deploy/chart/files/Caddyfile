@@ -15,7 +15,9 @@
 # is read anywhere.
 #   * the API and the AG-UI routes: a 401 is the client's answer (a program must not be redirected);
 #   * the web: a 401 sends the browser to /oauth2/start, which signs it in and brings it back;
-#   * /oauth2/*: oauth2-proxy itself (start, callback, sign_out, auth).
+#   * /oauth2/*: oauth2-proxy itself (start, callback, sign_out, auth);
+#   * exactly `GET /api/user-tool-servers/oauth/callback`: where the browser comes back to after a person authorizes a server of their
+#     own (ADR 0046), with no sign-in, as in dev/Caddyfile (below).
 # Public sharing (ADR 0040, section 9): only with `sharing.mode: public`, the routes marked "public link" below are reachable WITHOUT
 # sign-in, each its own `handle` before the one it would otherwise fall into, GET and HEAD only, with
 # `header_up -Authorization -X-Auth-Request-Email` so that no identity can ride along. They are exactly: the page `/s/*`, the web's
@@ -83,6 +85,26 @@ With it off none of this is in the file (the render is the one of a chart that h
 	}
 	handle @runtimeConfig {
 		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "web") }}:3000 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+
+	# The OAuth callback of a person's own MCP server (ADR 0046, slice 4c): the browser that comes back from the authorization server has no
+	# session here (on the desktop it is the system browser, on mobile the in-app tab: ADR 0047), so this one path is open, GET only, and
+	# drops whatever identity the client sent: the orchestrator reads none on this route, it finds the person by the `state` kept when the
+	# flow began, takes it once, and answers a fixed page (and a 404 where the deployment has people's own servers off). Exactly this
+	# path: HEAD is not let through (the orchestrator answers it 405 anyway, so a prefetch cannot spend a state), and no other route
+	# under /api/user-tool-servers becomes public. Caddy's `path` matcher is wider than a string comparison (case, a doubled `/`, `%2F`,
+	# dot segments), and the request goes on as it came; that is fail closed, because the orchestrator's router matches the path
+	# exactly and its fallback is behind the identity layer (the long comment of dev/Caddyfile, and dev/user-tools-e2e.sh, say it
+	# at length). A public path added here later must be as exact on the orchestrator's side as the callback is.
+	@oauthCallback {
+		method GET
+		path /api/user-tool-servers/oauth/callback
+	}
+	handle @oauthCallback {
+		reverse_proxy {{ include "agentic.component" (dict "root" . "component" "orchestrator") }}:8080 {
 			header_up -Authorization
 			header_up -X-Auth-Request-Email
 		}
