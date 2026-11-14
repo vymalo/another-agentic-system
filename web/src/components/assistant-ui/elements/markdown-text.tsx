@@ -1,6 +1,6 @@
 "use client";
 
-import type { TextMessagePartProps } from "@assistant-ui/react";
+import { type TextMessagePartProps, useMessagePartText } from "@assistant-ui/react";
 import {
   type CodeHeaderProps,
   MarkdownTextPrimitive,
@@ -8,7 +8,6 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import { CheckIcon, CopyIcon, ImageIcon } from "lucide-react";
-import "katex/dist/katex.min.css";
 import {
   type ComponentProps,
   type ComponentPropsWithoutRef,
@@ -16,12 +15,12 @@ import {
   type FC,
   memo,
   useContext,
+  useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
-import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
 
 import { SyntaxHighlighter } from "@/components/assistant-ui/elements/syntax-highlighter";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -30,7 +29,6 @@ import { useSharedImage } from "@/features/chat/hooks/use-inline-images";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { plainName } from "@/features/chat/lib/files";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import { rehypeMathLabel } from "@/lib/rehype-math-label";
 import { cn } from "@/lib/utils";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
@@ -51,25 +49,52 @@ const useShallowStable = <T extends Record<string, unknown> | undefined>(value: 
   return ref.current;
 };
 
-/*
- * Math (web/README.md "Code and math in answers"): `$$...$$`, inline or as a block. A single dollar is NOT math
- * (`singleDollarTextMath: false`), so "$5 or $10" is a price. KaTeX never throws on a bad formula (it draws the
- * source in the error colour), trusts nothing (no `\href`, no `\includegraphics`), and cuts a formula that
- * expands without end at `maxExpand`. Its fonts are bundled, so the CSP's `font-src 'self'` holds.
- */
 type PrimitiveProps = ComponentProps<typeof MarkdownTextPrimitive>;
-const REMARK_PLUGINS = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as NonNullable<
-  PrimitiveProps["remarkPlugins"]
->;
-const REHYPE_PLUGINS = [
-  [
-    rehypeKatex,
-    { throwOnError: false, strict: "ignore", trust: false, maxSize: 20, maxExpand: 1000 },
-  ],
-  rehypeMathLabel,
-] as NonNullable<PrimitiveProps["rehypePlugins"]>;
+type Remark = NonNullable<PrimitiveProps["remarkPlugins"]>;
+type Rehype = NonNullable<PrimitiveProps["rehypePlugins"]>;
+type MathModule = typeof import("@/lib/math");
+
+const NO_REHYPE: Rehype = [];
+const GFM: Remark = [remarkGfm];
+
+/** Whether a text has a formula in it. A single dollar is a price (src/lib/math.ts), so only `$$` counts. */
+const hasMath = (text: string) => text.includes("$$");
+
+let loadedMath: MathModule | undefined;
+
+/**
+ * Math is its own chunk: KaTeX is 77 KB gzipped and most threads have no formula. It is fetched when a text first
+ * holds `$$`, and until it is there (or if it never comes) the text is shown as it was written.
+ */
+function useMath(text: string): MathModule | undefined {
+  const [math, setMath] = useState(loadedMath);
+  const wanted = !math && hasMath(text);
+  useEffect(() => {
+    if (!wanted) return;
+    let current = true;
+    import("@/lib/math").then(
+      (module) => {
+        loadedMath = module;
+        if (current) setMath(module);
+      },
+      () => {
+        // the text stays text
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [wanted]);
+  return math;
+}
 
 const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
+  const math = useMath(useMessagePartText().text);
+  const remarkPlugins = useMemo(
+    () => (math ? [remarkGfm, ...math.remarkPlugins] : GFM) as Remark,
+    [math],
+  );
+  const rehypePlugins = (math?.rehypePlugins ?? NO_REHYPE) as Rehype;
   const stableComponents = useShallowStable(components);
   const markdownComponents = useMemo(() => {
     if (!stableComponents) return defaultComponents;
@@ -81,8 +106,8 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
 
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={REHYPE_PLUGINS}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
       className="aui-md"
       components={markdownComponents}
       smooth={false}

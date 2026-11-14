@@ -168,12 +168,23 @@ describe("MarkdownText", () => {
     await waitFor(() => expect(log.querySelectorAll(".katex").length).toBeGreaterThan(0));
     expect(log.textContent).toContain("here");
     expect(log.textContent).toContain("there");
+    // the formula KaTeX cannot read is its source, in the page's own error colour (not KaTeX's red)
+    const broken = log.querySelector<HTMLElement>(".katex-error");
+    expect(broken?.textContent).toBe("\\frac{");
+    expect(broken?.getAttribute("style")).toContain("var(--destructive)");
   });
 
-  it("dollar prices are not read as math", async () => {
-    const log = await renderAgentText("It costs $5 or $10, and $20 more later.");
-    expect(log.querySelector(".katex")).toBeNull();
-    expect(log.textContent).toContain("It costs $5 or $10, and $20 more later.");
+  it("dollar prices are not read as math, with the math plugins loaded or not", async () => {
+    const before = await renderAgentText("It costs $5 or $10, and $20 more later.");
+    expect(before.querySelector(".katex")).toBeNull();
+    expect(before.textContent).toContain("It costs $5 or $10, and $20 more later.");
+    cleanup();
+
+    // an answer that also holds a real formula loads KaTeX; the prices around it are still prices
+    const after = await renderAgentText("It costs $5 or $10, and $20 more, so $$x^2$$ and $7.");
+    await waitFor(() => expect(after.querySelectorAll(".katex").length).toBe(1));
+    expect(after.textContent).toContain("It costs $5 or $10, and $20 more, so ");
+    expect(after.textContent).toContain(" and $7.");
   });
 
   it("the time of a turn is text a screen reader reaches, not only a tooltip", async () => {
