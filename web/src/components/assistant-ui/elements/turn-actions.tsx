@@ -1,10 +1,11 @@
 "use client";
 
-import { CheckIcon, CopyIcon, RefreshCwIcon, SplitIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, RefreshCwIcon, SplitIcon, TriangleAlertIcon } from "lucide-react";
 import type { FC } from "react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { QuoteButton } from "@/features/chat/components/quote";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { COPY_FAILED, useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
 /** What "Fork from here" says while the turn it would copy is still going on. */
 export const FORK_WAIT = "Fork from here (once the agent has finished this turn)";
@@ -13,7 +14,7 @@ export const FORK_WAIT = "Fork from here (once the agent has finished this turn)
 export const REGENERATE_WAIT = "Regenerate (once the agent has finished this turn)";
 
 type Props = {
-  /** The agent's words in this turn, for Copy. */
+  /** The agent's words in this turn, for Copy and Quote: its source text, with one line for each surface it drew. */
   text: string;
   /** The `runId` of the log run this turn is (the marker part says it): where the turn ends in the log. */
   runId: string | undefined;
@@ -28,7 +29,7 @@ type Props = {
 };
 
 /**
- * What a person can do with a finished agent turn: copy its words, and **fork from here**, which
+ * What a person can do with a finished agent turn: copy its words (the Markdown source as `text/plain`, and a failure said in words), quote them into the composer, and **fork from here**, which
  * makes a new chat that holds the conversation up to the end of this turn (ADR 0029). They show
  * on hover and on focus (always on a touch screen, which has no hover), under the turn.
  *
@@ -41,7 +42,7 @@ type Props = {
  */
 export const TurnActions: FC<Props> = ({ text, runId, last, began }) => {
   const fork = useThreadFork();
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const { isCopied, failed, copyToClipboard } = useCopyToClipboard();
   const forkable = fork.available && fork.canForkRun(runId);
   const open = fork.turnOpen && last;
   const unavailable = open || fork.busy;
@@ -53,15 +54,27 @@ export const TurnActions: FC<Props> = ({ text, runId, last, began }) => {
       className="-ms-1.5 flex items-center gap-0.5 text-muted-foreground transition-opacity [@media(hover:hover)]:opacity-0 group-focus-within/turn:opacity-100 group-hover/turn:opacity-100"
     >
       {text ? (
-        <TooltipIconButton
-          tooltip={isCopied ? "Copied" : "Copy"}
-          aria-label="Copy"
-          side="bottom"
-          className="size-7 rounded-md p-0 [&_svg]:size-3.5"
-          onClick={() => copyToClipboard(text)}
-        >
-          {isCopied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
-        </TooltipIconButton>
+        <>
+          <TooltipIconButton
+            tooltip={failed ? COPY_FAILED : isCopied ? "Copied" : "Copy"}
+            aria-label="Copy"
+            side="bottom"
+            className="size-7 rounded-md p-0 [&_svg]:size-3.5"
+            onClick={() => copyToClipboard(text)}
+          >
+            {failed ? (
+              <TriangleAlertIcon aria-hidden="true" />
+            ) : isCopied ? (
+              <CheckIcon aria-hidden="true" />
+            ) : (
+              <CopyIcon aria-hidden="true" />
+            )}
+          </TooltipIconButton>
+          <span role="status" data-slot="copy-note" className={failed ? "text-xs" : "sr-only"}>
+            {failed ? COPY_FAILED : ""}
+          </span>
+          <QuoteButton source={text} />
+        </>
       ) : null}
       {regenerable && began ? (
         <TooltipIconButton

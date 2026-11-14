@@ -30,9 +30,11 @@ import { TurnCards } from "@/features/chat/components/cards/turn-cards";
 import { DeliveryNote } from "@/features/chat/components/delivery-note";
 import { type EarlierControl, useEarlierControl } from "@/features/chat/components/earlier";
 import { LiveDraft, useLiveDrafts } from "@/features/chat/components/live-drafts";
+import { QuoteButton } from "@/features/chat/components/quote";
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { reasoningIdOf, Thinking } from "@/features/chat/components/thinking";
 import { useThreadView } from "@/features/chat/components/thread-view";
+import { surfacePlaceholders } from "@/features/chat/lib/a2ui/placeholder";
 import { drawnDrafts, drawnReasoning } from "@/features/chat/lib/agui/live-drafts";
 import {
   ACTIVITY,
@@ -438,6 +440,10 @@ export const UserMessage: FC = () => {
       {editing ? null : (
         <div className="mt-0.5 flex items-center gap-0.5 text-muted-foreground">
           <MessageBranches seq={seq} />
+          <QuoteButton
+            source={text}
+            className="transition-opacity group-focus-within/user:opacity-100 group-hover/user:opacity-100 focus-visible:opacity-100 [@media(hover:hover)]:opacity-0"
+          />
           {editable ? (
             <TooltipIconButton
               ref={editButton}
@@ -609,10 +615,22 @@ export const AssistantMessage: FC = () => {
   if (lastDrawn < 0 && !running && answers.length === 0 && tools.length === 0) return null;
   // the answer and the working text of the turn (ADR 0031); Copy takes the answer
   const roles = textRoles(content, running);
-  const ownWords = content
+  const textWords = content
     .flatMap((p, i) =>
       p.type === "text" && p.text?.trim() && roles.get(i) !== "working" ? [p.text] : [],
     )
+    .join("\n\n");
+  const surfacePart = activityPartName(ACTIVITY.surface);
+  const ownWords = content
+    .flatMap((p, i) => {
+      if (p.type === "text") return p.text?.trim() && roles.get(i) !== "working" ? [p.text] : [];
+      // a surface has no text: one line says what was drawn (docs/api/message-text-v1.md, "Client recipe")
+      if (p.type === "data" && p.name === surfacePart) {
+        const data = p.data as { a2ui_operations?: unknown } | undefined;
+        return surfacePlaceholders(data?.a2ui_operations);
+      }
+      return [];
+    })
     .join("\n\n");
   const writing = newest
     ? drawnDrafts(
@@ -702,7 +720,7 @@ export const AssistantMessage: FC = () => {
         {writing.map((d) => (
           <LiveDraft key={d.id} id={d.id} text={d.text} />
         ))}
-        <TurnCards words={[ownWords, ...writing.map((d) => d.text)].join("\n\n")} />
+        <TurnCards words={[textWords, ...writing.map((d) => d.text)].join("\n\n")} />
         <TurnActions text={ownWords} runId={runId} last={isLast} began={began} />
       </div>
     </MessagePrimitive.Root>

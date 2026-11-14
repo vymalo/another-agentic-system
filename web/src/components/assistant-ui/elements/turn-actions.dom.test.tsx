@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { QuoteTargetContext } from "@/features/chat/components/quote";
 import type { ThreadFork } from "@/features/threads/components/fork-provider";
+import { COPY_FAILED } from "@/hooks/use-copy-to-clipboard";
 import { REGENERATE_WAIT, TurnActions } from "./turn-actions";
 
 /*
@@ -93,5 +95,64 @@ describe("Regenerate under the newest finished turn", () => {
       { available: false, readOnly: "Read only: your roles do not let you write in threads." },
     );
     expect(button()).toBeNull();
+  });
+});
+
+describe("Copy and Quote under a turn", () => {
+  const stubClipboard = (writeText: (text: string) => Promise<void>) =>
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+  it("Copy puts the source text on the clipboard, not what the page draws", async () => {
+    const writeText = vi.fn(async () => {});
+    stubClipboard(writeText);
+    show({ text: "# Title\n\n**bold** and `code`" });
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("# Title\n\n**bold** and `code`"));
+    await waitFor(() => expect(screen.getAllByText("Copied").length).toBeGreaterThan(0));
+  });
+
+  it("says in words when the browser refuses", async () => {
+    stubClipboard(() => Promise.reject(new Error("denied")));
+    show();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(screen.getAllByText(COPY_FAILED).length).toBeGreaterThan(0));
+  });
+
+  it("says it too when there is no clipboard at all (an insecure page)", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(screen.getAllByText(COPY_FAILED).length).toBeGreaterThan(0));
+  });
+
+  it("Quote is offered only where there is a composer, and quotes the whole message when nothing is selected", () => {
+    show();
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    cleanup();
+    const insert = vi.fn();
+    fork = forkOf();
+    render(
+      <TooltipProvider>
+        <QuoteTargetContext.Provider value={{ available: true, insert }}>
+          <div data-slot="agent-turn">
+            <TurnActions text={"one\n\ntwo"} runId="run-1" last began={began} />
+          </div>
+        </QuoteTargetContext.Provider>
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Quote" }));
+    expect(insert).toHaveBeenCalledWith("> one\n>\n> two");
+  });
+
+  it("Quote is not offered where the composer is not (a link, a person who may only read)", () => {
+    render(
+      <TooltipProvider>
+        <QuoteTargetContext.Provider value={{ available: false, insert: vi.fn() }}>
+          <TurnActions text="words" runId="run-1" last={false} />
+        </QuoteTargetContext.Provider>
+      </TooltipProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
   });
 });
