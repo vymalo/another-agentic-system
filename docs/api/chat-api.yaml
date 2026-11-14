@@ -302,8 +302,9 @@ paths:
         sorted by name, each with the URL they typed, the shape of its authentication (never a secret), its `state`, the
         `status` and `reason` the picker shows and the `revision` an edit sends back. Needs no permission of its own
         (`tools.user.add` gates changes, not reading what one added); another person's servers are not here, for any role.
-        `limit` is the most one person holds (8) and `kinds` the kinds of authentication this deployment accepts: `none`
-        only when it keeps no credentials (it has no `secrets` section).
+        `limit` is the most one person holds (8) and `kinds` the kinds of authentication this deployment accepts: all four
+        (`none`, `bearer`, `api_key`, `oauth2`) where it keeps credentials, and **only `none`** where it keeps none (it has no
+        `secrets` section) (`orch_app::user_tool_kinds`, `orchestrator/crates/app/src/user_tools.rs`).
 
         **`status`** is the definition's state and the deployment's rules, with the first of these that holds:
         `unavailable` / `not_permitted` when the caller's roles lack `tools.user.add`; `unavailable` / `egress_refused`
@@ -317,6 +318,47 @@ paths:
         deployment's depends on this. Each server can still be deleted by its id (`deleteUserToolServer` reads nothing of
         the row); the answer cannot name the damaged one, and the orchestrator's log does (one warning per damaged row, by
         its id). A store that is down is a 503. Never cached. 404 when the feature is off.
+
+        **Client recipe: the person's own servers** (what the web's "My tool servers" page does; a client needs nothing
+        else, and the server enforces every step, so a client only offers what the server would accept).
+        1. **Whether to offer the screen.** `getMe` lists `tools.user.add` for a person whose roles hold it. It does not say
+           whether the deployment has the feature on: a holder in a deployment with it off gets a 404 from this route,
+           which the screen says in words ("this deployment does not let people add servers") and offers nothing under.
+           A person without the permission still reads their servers here and deletes them (`deleteUserToolServer` needs
+           none); the screen says that their roles do not let them add or change one, and offers only Delete.
+        2. **Add.** Offer the `kinds` of this answer and no others (a deployment that keeps no credentials lists only
+           `none`). `POST` `{name, url, auth}` and, for `bearer` or `api_key`, `secret`; an `api_key` also names
+           its `auth.header`, an `oauth2` its optional `scopes` and `clientId`. The answer is the server as listed: show its
+           `status`, and for `oauth2` (`needs_auth`, `not_connected`) the **Connect** step below. Hold at most `limit`
+           servers: when the list is that long the client does not offer Add, and the server's 409 `too_many_servers` is
+           the race only. The `secret` is typed once, kept nowhere (not in storage, a URL or a log), cleared when the
+           request is sent, and never filled in from an answer: no answer holds one.
+        3. **Re-key** (a `needs_auth` or `needs_reauth` server of kind `bearer` or `api_key`, or a key to replace):
+           `PATCH` `{secret, revision}` with the `revision` of the row as listed and nothing else. The answer is the
+           server `connected`. **Rename**: `{name, revision}`. **Move** (a new `url`, or a new `auth`): `{url, auth,
+           revision}`; the server forgets the credential first, so the screen says "you will be asked for the key
+           again" before it is sent, and the answer is `needs_auth`. **Delete**: `DELETE` the id; it takes no
+           revision. A 409 `stale_revision` is not an error to retry: read the list again and let the person decide again.
+        4. **Connect** (an `oauth2` server that is `needs_auth`, or any to authorize again): `POST` `.../authorize` with
+           no body. Show `issuer`, the authorization server the person is about to be sent to, **before** opening
+           `authorizeUrl` in a browser (a new window or tab on the web, the system browser on the desktop, an in-app tab
+           on mobile); never log or keep the URL. The browser comes back to `finishUserToolAuthorization`, which no
+           client calls. The client learns the outcome by reading this list again, when the person returns to the app
+           (the window regains focus) and while it waits: `ready` is done, anything else after `expiresAt` is "not
+           finished; connect again". A 429 `rate_limited` carries `Retry-After`.
+        5. **Attach.** The picker is `listToolServers`: the person's own servers have `own: true`. Offer a `ready` one
+           like any other and send the whole set with `putThreadTools`. One that is not `ready` is not offered for
+           attaching: `needs_auth` says what to do (give a key, or Connect, on the screen above: `ToolServer` does not
+           say which, so a client takes the kind from this list's `auth.kind` by id), `unavailable` says its `reason`.
+           A 422 `tool_server_needs_auth` or `tool_server_unavailable` from `putThreadTools` is the race only.
+        6. **Errors, by `code`** (a client chooses its words from the status and the `code`, and shows `detail` only where
+           it is a person's own words: a 400's, which never quotes a value): 400 `url_refused` (the address is refused:
+           `detail` says why for a person); 403 `forbidden` (the permission is gone) or `no_access`; 404 (the server is
+           gone, or the feature is off: read the list); 409 `too_many_servers`, `stale_revision`; 422
+           `credentials_not_kept`, `egress_refused`, `oauth_not_configured`; 429 `rate_limited`; 503 `broker_down`,
+           `authorization_unavailable`, or no `code` (the server is being changed: wait `Retry-After` and try again).
+           After **any** failed write whose outcome is unknown (a 500, a 503, a lost connection) the client reads this list
+           again: a write runs to its end on the server whether or not the client waits.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -519,8 +561,9 @@ paths:
         carries neither the app's bearer token nor the web's cookie ([ADR 0047](../decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)),
         so no credential is read (an `Authorization` header or a cookie is ignored) and the person is found by the `state`
         alone: `state` → (who began, which server, until when), kept when the flow began and **taken once**. The edge must let
-        a `GET` of this path through to the orchestrator with no sign-in (the chart's does not yet: see the rollout steps of the
-        ADR).
+        a `GET` of this path through to the orchestrator with no sign-in (the dev stack's and the chart's edges do, since
+        2026-11-14, and nothing else under `/api/user-tool-servers`; the chart still renders no `userToolServers` values: see the rollout steps
+        of the ADR).
 
         The authorization server's redirect is read for `code`, `state`, `iss` (RFC 9207) and `error`, and nothing else
         (`error_description` is never read). A parameter that is one of the four and appears twice makes the request invalid and
@@ -1657,7 +1700,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `Retry-After`); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
   schemas:
     BrowserAuth:
       type: object
@@ -1685,7 +1728,7 @@ components:
         permissions:
           type: array
           items: { $ref: "#/components/schemas/Permission" }
-          description: "What the roles grant, in the order `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read`, `admin`"
+          description: "What the roles grant, in the order `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`, `tools.user.add`. `tools.user.add` is listed for a role that holds it whether or not the deployment has people's own MCP servers on (the routes are then a 404)"
         agents: { $ref: "#/components/schemas/MeAgents" }
         maxTier:
           type: string
@@ -2115,7 +2158,7 @@ components:
       properties:
         servers: { type: array, maxItems: 8, items: { $ref: "#/components/schemas/UserToolServer" }, description: "The caller's own servers, sorted by name and then id. Empty when `error` is present" }
         limit: { type: integer, minimum: 1, description: "The most servers one person holds" }
-        kinds: { type: array, items: { type: string, enum: [none, bearer, api_key, oauth2] }, description: "The kinds of authentication this deployment accepts for a server of one's own: `none` only when it keeps no credentials. A hint for the screen; the writes check" }
+        kinds: { type: array, items: { type: string, enum: [none, bearer, api_key, oauth2] }, description: "The kinds of authentication this deployment accepts for a server of one's own: all four where it keeps credentials, only `none` where it keeps none (no `secrets` section). A hint for the screen; the writes check" }
         error:
           type: object
           required: [code, detail]
