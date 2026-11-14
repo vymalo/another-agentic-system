@@ -64,6 +64,22 @@ import {
   TIERS,
   type Tier,
 } from "./tier";
+import {
+  approvalRedirect,
+  authorizeUserToolServer,
+  CALLBACK_PATH,
+  configure as configureUserTools,
+  createUserToolServer,
+  deleteUserToolServer,
+  finishAuthorization,
+  listUserToolServers,
+  newUserTools,
+  notReady,
+  ownToolServers,
+  type Reply,
+  type UserTools,
+  updateUserToolServer,
+} from "./user-tools";
 
 type Thread = components["schemas"]["Thread"];
 type Event = components["schemas"]["Event"];
@@ -383,6 +399,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     toolServers: ToolServer[];
     /** What `GET /api/me/usage` answers (ADR 0065) by month, `"*"` for any other: as a test sets it (`POST /__mock/my-usage`). */
     myUsage: Record<string, MyUsage>;
+    /** The person's own MCP servers and the deployment's rules for them (ADR 0046; `user-tools.ts`, `POST /__mock/user-tools`). */
+    userTools: UserTools;
     /** The deployment's cap on sharing (`sharing.mode`, ADR 0040); what `/api/me` says is the cap for a role that may share. */
     sharing: Sharing;
     /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
@@ -415,6 +433,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         tiers: new Map(),
         toolServers: [...TOOL_SERVERS],
         myUsage: {},
+        userTools: newUserTools(),
         sharing: "internal",
         signedIn: true,
         stale: false,
@@ -535,6 +554,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       { title, status, ...(detail ? { detail } : {}), ...(code ? { code } : {}) },
       "application/problem+json",
     );
+
+  /** An answer of `user-tools.ts`: JSON or a problem, or the callback's page; a 204 and a 405 have no body. */
+  const reply = (res: http.ServerResponse, r: Reply) => {
+    const type = r.type ?? "application/json";
+    res.writeHead(r.status, { "Content-Type": type, "Cache-Control": "no-store", ...r.headers });
+    if (r.status === 204 || r.status === 405) return void res.end();
+    res.end(typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? {}));
+  };
+  /** A request's JSON body, or `undefined` when it is none or not JSON (the routes answer 400 to both). */
+  const readBody = (req: http.IncomingMessage): Promise<unknown> =>
+    readJson(req).catch(() => undefined);
 
   const readJson = (req: http.IncomingMessage): Promise<unknown> =>
     new Promise((resolve, reject) => {
@@ -1010,15 +1040,24 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     ids: readonly string[],
     agentId: string,
     attached: ReadonlySet<string>,
-  ): string | undefined {
-    if (new Set(ids).size > MAX_SERVERS) return `more than ${MAX_SERVERS} servers`;
-    const listed = registryOf(sessionOf(req)).toolServers;
+  ): { detail: string; code?: string } | undefined {
+    if (new Set(ids).size > MAX_SERVERS) return { detail: `more than ${MAX_SERVERS} servers` };
+    const registry = registryOf(sessionOf(req));
+    const can = holds(meOf(req), "tools.user.add");
+    const listed = [...registry.toolServers, ...ownToolServers(registry.userTools, can)];
     const offered = offeredFor(req, agentId);
     for (const id of ids) {
       if (attached.has(id)) continue;
-      if (!listed.some((t) => t.id === id)) return `the server ${id} is not offered`;
-      if (!offered.some((t) => t.id === id)) {
-        return `the server ${id} is not offered for the agent ${agentId}`;
+      if (!listed.some((t) => t.id === id)) return { detail: `the server ${id} is not offered` };
+      // one of the person's own that is not `ready` (ADR 0046): a call to action, or a cause that clears
+      const own = notReady(registry.userTools, can, id);
+      if (own) {
+        const body = own.body as { detail: string; code: string };
+        return { detail: body.detail, code: body.code };
+      }
+      // a person's own server has no `agents` list: it is offered for every agent
+      if (!id.startsWith("u-") && !offered.some((t) => t.id === id)) {
+        return { detail: `the server ${id} is not offered for the agent ${agentId}` };
       }
     }
     return undefined;
@@ -1087,7 +1126,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 400, "Bad Request", "a server id is lower-case letters, digits and -");
     }
     const refused = refusedServers(req, ids, thread.target.agentId, new Set(thread.tools ?? []));
-    if (refused !== undefined) return problem(res, 422, "Unprocessable", refused);
+    if (refused !== undefined) {
+      return problem(res, 422, "Unprocessable", refused.detail, refused.code);
+    }
     setTools(thread, ids, { type: "user", name: meOf(req).user });
     return sendJson(res, 200, { servers: thread.tools ?? [] });
   }
@@ -1524,6 +1565,33 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       registryOf(url.searchParams.has("session") ? session : sessionOf(req)).myUsage = answers;
       return void res.writeHead(204).end();
     }
+    // The person's own MCP servers (ADR 0046) as a test sets the deployment's rules for its own session: `enabled`,
+    // `credentials`, `issuer`, `denyHosts`, `authorize` and `mark` (see `user-tools.ts`).
+    if (path === "/__mock/user-tools" && method === "POST") {
+      const refusal = configureUserTools(
+        registryOf(url.searchParams.has("session") ? session : sessionOf(req)).userTools,
+        await readJson(req).catch(() => undefined),
+      );
+      if (refusal) return problem(res, 400, "Bad Request", refusal);
+      return void res.writeHead(204).end();
+    }
+    // A stand-in for the authorization server's consent page: the browser of the person is sent here by `authorizeUrl`,
+    // and on to the callback as the real one would (`?decline=1`: the person said no).
+    if (path === "/__mock/oauth/approve" && method === "GET") {
+      const state = url.searchParams.get("state") ?? "";
+      const issuer = [...registries.values()].find((r) => r.userTools.flows.has(state))?.userTools
+        .config.issuer;
+      res.writeHead(302, {
+        Location: approvalRedirect(
+          state,
+          issuer ?? "https://auth.mock-issuer.example",
+          url.searchParams.get("decline") === "1",
+        ),
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+      });
+      return void res.end();
+    }
     if (path === "/__mock/registry/agents" && method === "POST") {
       const agent = (await readJson(req)) as Agent;
       registryOf(session).agents.push({ ...agent, source: "registry" });
@@ -1531,7 +1599,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     // A session that is not signed in (`?signedIn=false`): every route but the public ones is the 401
     // the edge's identity layer gives (the public routes are outside it, ADR 0040)
-    const publicRoute = path.startsWith("/api/public/") || path.startsWith("/agui/public/");
+    const publicRoute =
+      path.startsWith("/api/public/") || path.startsWith("/agui/public/") || path === CALLBACK_PATH;
     // which kind of deployment this is (ADR 0054, decision 7): the issuer the web signs in at, or none
     if (path === "/api/public/auth" && method === "GET") {
       res.setHeader("Cache-Control", "no-store");
@@ -1577,6 +1646,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         ...(what?.startsWith("artifacts/") ? { sha256: decodeURIComponent(shared[5] ?? "") } : {}),
       });
     }
+    // `finishUserToolAuthorization` (ADR 0046): outside the identity layer, the person found by the `state` alone.
+    if (path === CALLBACK_PATH) {
+      const found = (state: string) => {
+        for (const r of registries.values()) {
+          const flow = r.userTools.flows.get(state);
+          if (flow) return { tools: r.userTools, flow };
+        }
+        return undefined;
+      };
+      return reply(res, finishAuthorization(found, method, url.searchParams, Date.now()));
+    }
     // `GET /api/me` (`getMe`, ADR 0033): who the session is and what its roles let it do; the one
     // route that answers a person whose roles grant nothing. Every other route of the APIs refuses
     // such a person (`no_access`).
@@ -1599,6 +1679,34 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         "your roles do not grant access to this API",
         "no_access",
       );
+    }
+    // People's own MCP servers (ADR 0046): `tools.user.add` for a change, no permission to read or to delete.
+    if (path === "/api/user-tool-servers" && (method === "GET" || method === "POST")) {
+      const tools = registryOf(sessionOf(req)).userTools;
+      const can = holds(meOf(req), "tools.user.add");
+      return reply(
+        res,
+        method === "GET"
+          ? listUserToolServers(tools, can)
+          : createUserToolServer(tools, can, await readBody(req)),
+      );
+    }
+    const own = /^\/api\/user-tool-servers\/(u-[a-z0-9]{10})(\/authorize)?$/.exec(path);
+    if (own) {
+      const tools = registryOf(sessionOf(req)).userTools;
+      const can = holds(meOf(req), "tools.user.add");
+      const id = own[1] ?? "";
+      if (!own[2] && method === "PATCH") {
+        return reply(res, updateUserToolServer(tools, can, id, await readBody(req)));
+      }
+      if (!own[2] && method === "DELETE") return reply(res, deleteUserToolServer(tools, id));
+      if (own[2] && method === "POST") {
+        const port = (server.address() as { port: number } | null)?.port ?? 4010;
+        return reply(
+          res,
+          authorizeUserToolServer(tools, can, id, `http://127.0.0.1:${port}`, Date.now()),
+        );
+      }
     }
     if (path === "/api/agents" && method === "GET") {
       if (!holds(meOf(req), "agent.read")) return forbid(res, "agent.read");
@@ -1640,7 +1748,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // deployment's order. It takes `thread.write`, as attaching does; never cached.
     if (path === "/api/tool-servers" && method === "GET") {
       if (!holds(meOf(req), "thread.write")) return forbid(res, "thread.write");
-      return sendJson(res, 200, registryOf(sessionOf(req)).toolServers);
+      const registry = registryOf(sessionOf(req));
+      return sendJson(res, 200, [
+        ...registry.toolServers,
+        ...ownToolServers(registry.userTools, holds(meOf(req), "tools.user.add")),
+      ]);
     }
 
     if (path === "/api/threads" && method === "GET") return listThreads(req, res, url);
@@ -2973,7 +3085,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         if (!ok) return problem(res, 400, "Unknown release", `No release "${release}"`);
       }
       const refused = refusedServers(req, tools, agent.id, new Set());
-      if (refused !== undefined) return problem(res, 422, "Unprocessable", refused);
+      if (refused !== undefined) {
+        return problem(res, 422, "Unprocessable", refused.detail, refused.code);
+      }
       const now = new Date().toISOString();
       const created: Thread = {
         id: threadId,

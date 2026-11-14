@@ -4924,3 +4924,498 @@ describe("the person's own list (ADR 0042) and deleting a thread (ADR 0043), as 
     });
   });
 });
+
+describe("people's own MCP servers (ADR 0046), as the mock does them", () => {
+  type Own = components["schemas"]["UserToolServer"];
+  type Listing = components["schemas"]["UserToolServers"];
+  type ToolServer = components["schemas"]["ToolServer"];
+  type Authorization = components["schemas"]["UserToolAuthorization"];
+  type Problem = { title: string; status: number; detail?: string; code?: string };
+
+  const LIST = "/api/user-tool-servers";
+  const ONE = "/api/user-tool-servers/{serverId}";
+  const AUTHORIZE = "/api/user-tool-servers/{serverId}/authorize";
+  const CALLBACK = "/api/user-tool-servers/oauth/callback";
+  /** A token of the shape a person pastes: it must be in no answer, whatever the answer. */
+  const SECRET = "tok-9f3a-this-is-a-secret-value";
+
+  let sessions = 0;
+  /** A session of its own, as the web carries it (a cookie): who it is, and the deployment's rules for the servers. */
+  async function session(me = "tool-maker", rules: Record<string, unknown> = {}) {
+    const name = `user-tools-${++sessions}`;
+    expect((await post(`/__mock/config?me=${me}&session=${name}`)).status).toBe(204);
+    if (Object.keys(rules).length > 0) {
+      expect((await post(`/__mock/user-tools?session=${name}`, rules)).status).toBe(204);
+    }
+    return { Cookie: `mock-registry=${name}` };
+  }
+  const nameOf = (who: Record<string, string>) => who.Cookie?.split("=")[1] ?? "";
+  const rules = async (who: Record<string, string>, body: unknown) =>
+    expect((await post(`/__mock/user-tools?session=${nameOf(who)}`, body)).status).toBe(204);
+  const send = (method: string, p: string, headers: Record<string, string>, body?: unknown) =>
+    fetch(base + p, {
+      method,
+      headers: { "Content-Type": "application/json", ...headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  /** The answer is documented, the problem has the code, and nothing a person typed is in it. */
+  const problemOf = async (
+    template: string,
+    method: string,
+    res: Response,
+    status: number,
+    code?: string,
+  ): Promise<Problem> => {
+    expect(res.status).toBe(status);
+    expect(await res.clone().text()).not.toContain(SECRET);
+    const body = (await expectDocumented(template, method, res)) as Problem;
+    expect(body.code).toBe(code);
+    return body;
+  };
+  /** Adds a server; the answer is documented and the secret is not in it. */
+  async function add(headers: Record<string, string>, body: unknown): Promise<Own> {
+    const res = await send("POST", LIST, headers, body);
+    expect(res.status).toBe(201);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.clone().text()).not.toContain(SECRET);
+    return (await expectDocumented(LIST, "post", res)) as Own;
+  }
+  const listing = async (headers: Record<string, string>): Promise<Listing> => {
+    const res = await send("GET", LIST, headers);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.clone().text()).not.toContain(SECRET);
+    return (await expectDocumented(LIST, "get", res)) as Listing;
+  };
+  const bearer = (name: string, url = "https://mcp.example.com/mcp") => ({
+    name,
+    url,
+    auth: { kind: "bearer" },
+    secret: SECRET,
+  });
+  const oauth = (name: string, url = "https://oauth.example.com/mcp") => ({
+    name,
+    url,
+    auth: { kind: "oauth2", scopes: ["read"] },
+  });
+  const plain = (name: string, url = "https://a.example.com/mcp") => ({
+    name,
+    url,
+    auth: { kind: "none" },
+  });
+
+  /** Asserts a page of the callback is the one the contract documents for `status`: its headers, and fixed words. */
+  async function expectPage(res: Response, status: number): Promise<string> {
+    expect(res.status).toBe(status);
+    const def = resolveRef<{
+      headers?: Record<string, { description: string }>;
+      content?: Record<string, unknown>;
+    }>(contract.paths[CALLBACK]?.get?.responses[String(status)]);
+    expect(def.content?.["text/html"], `${status} is a documented page`).toBeDefined();
+    expect(res.headers.get("content-type")).toContain("text/html");
+    for (const [name, header] of Object.entries(def.headers ?? {})) {
+      expect(res.headers.get(name), name).toBe(header.description.replaceAll("`", ""));
+    }
+    return res.text();
+  }
+
+  it("listUserToolServers: empty, the limit and the kinds a deployment accepts, never cached, and readable without the permission", async () => {
+    const own = await listing(await session());
+    expect(own).toEqual({ servers: [], limit: 8, kinds: ["none", "bearer", "api_key", "oauth2"] });
+    // a deployment that keeps no credentials takes `none` alone
+    expect((await listing(await session("tool-maker", { credentials: false }))).kinds).toEqual([
+      "none",
+    ]);
+    // reading needs no `tools.user.add`: the built-in `user` role has none and still reads
+    expect((await listing(await session("user"))).servers).toEqual([]);
+    // a person whose roles grant nothing is refused by the identity layer's own answer
+    const nobody = await session("no-access");
+    await problemOf(LIST, "get", await send("GET", LIST, nobody), 403, "no_access");
+  });
+
+  it("every route of the feature is a 404 in a deployment that has it off", async () => {
+    const off = await session("tool-maker", { enabled: false });
+    await problemOf(LIST, "get", await send("GET", LIST, off), 404);
+    await problemOf(LIST, "post", await send("POST", LIST, off, bearer("A")), 404);
+    await problemOf(ONE, "delete", await send("DELETE", `${LIST}/u-abcdefghij`, off), 404);
+    await problemOf(
+      AUTHORIZE,
+      "post",
+      await send("POST", `${LIST}/u-abcdefghij/authorize`, off),
+      404,
+    );
+    // the deployment's own list is what it was
+    const res = await send("GET", "/api/tool-servers", off);
+    const list = (await expectDocumented("/api/tool-servers", "get", res)) as ToolServer[];
+    expect(list.every((s) => s.own === undefined)).toBe(true);
+  });
+
+  it("createUserToolServer: each kind, sorted by name, the secret kept nowhere, the ninth refused", async () => {
+    const who = await session();
+    const none = await add(who, plain("Zed", "https://zed.example.com/mcp"));
+    expect(none).toMatchObject({
+      own: true,
+      status: "ready",
+      state: "connected",
+      hasCredential: false,
+    });
+    expect(none.id).toMatch(/^u-[a-z0-9]{10}$/);
+    const key = await add(who, {
+      name: "Key",
+      url: "https://key.example.com/mcp",
+      auth: { kind: "api_key", header: "X-Api-Key" },
+      secret: SECRET,
+    });
+    expect(key).toMatchObject({ status: "ready", state: "connected", hasCredential: true });
+    expect(key.auth).toEqual({ kind: "api_key", header: "X-Api-Key" });
+    expect(await add(who, bearer("Bear"))).toMatchObject({ status: "ready", hasCredential: true });
+    const flow = await add(who, oauth("Auth"));
+    expect(flow).toMatchObject({
+      status: "needs_auth",
+      reason: "not_connected",
+      state: "added",
+      hasCredential: false,
+    });
+    expect(flow.auth).toEqual({ kind: "oauth2", scopes: ["read"] });
+    // sorted by name, and every answer is the listing's
+    expect((await listing(who)).servers.map((s) => s.name)).toEqual(["Auth", "Bear", "Key", "Zed"]);
+    // another person (session) holds none of them
+    expect((await listing(await session())).servers).toEqual([]);
+    // up to eight, and the ninth is refused with its code, nothing written
+    for (let i = 0; i < 4; i++) {
+      await add(who, bearer(`More ${i}`, `https://more${i}.example.com/mcp`));
+    }
+    const ninth = await send("POST", LIST, who, bearer("Ninth"));
+    const body = await problemOf(LIST, "post", ninth, 409, "too_many_servers");
+    expect(body.detail).toContain("8");
+    expect((await listing(who)).servers).toHaveLength(8);
+  });
+
+  it("createUserToolServer refuses before it writes: the permission, the values, the address, a deployment without credentials", async () => {
+    const who = await session();
+    // a role without `tools.user.add` (the built-in `user`)
+    const user = await session("user");
+    await problemOf(LIST, "post", await send("POST", LIST, user, bearer("A")), 403, "forbidden");
+    // values: each is a 400 that quotes nothing
+    const url = "https://a.example.com/mcp";
+    const bad: unknown[] = [
+      { ...bearer("A"), secret: "short" },
+      { ...bearer("A"), secret: ` ${SECRET}` },
+      { name: "A", url, auth: { kind: "bearer" } },
+      { name: "A", url, auth: { kind: "none" }, secret: SECRET },
+      { name: "A", url, auth: { kind: "api_key", header: "Authorization" }, secret: SECRET },
+      { name: "A", url, auth: { kind: "api_key", header: "Mcp-Session" }, secret: SECRET },
+      { name: "A", url: "http://a.example.com/mcp", auth: { kind: "none" } },
+      { name: "A", url: "https://user:pass@a.example.com/mcp", auth: { kind: "none" } },
+      { name: "A", url: "https://a.example.com/mcp?token=1", auth: { kind: "none" } },
+      { name: "  ", url, auth: { kind: "none" } },
+      { name: "two\nlines", url, auth: { kind: "none" } },
+      { ...bearer("A"), extra: SECRET },
+    ];
+    for (const body of bad) {
+      const problem = await problemOf(LIST, "post", await send("POST", LIST, who, body), 400);
+      expect(problem.detail ?? "").not.toContain("extra");
+    }
+    expect((await send("POST", LIST, who, undefined)).status).toBe(400);
+    // an address the guard refuses is `url_refused`, with the reason for a person and no address in it
+    for (const refused of [
+      "https://localhost/mcp",
+      "https://127.0.0.1/mcp",
+      "https://10.1.2.3/mcp",
+      "https://192.168.0.9/mcp",
+      "https://169.254.169.254/mcp",
+      "https://db.internal/mcp",
+    ]) {
+      const problem = await problemOf(
+        LIST,
+        "post",
+        await send("POST", LIST, who, bearer("A", refused)),
+        400,
+        "url_refused",
+      );
+      expect(problem.detail).not.toMatch(/\d+\.\d+\.\d+\.\d+|localhost|internal/);
+    }
+    expect((await listing(who)).servers).toEqual([]);
+    // a deployment that keeps no credentials: only `none`
+    const keeps = await session("tool-maker", { credentials: false });
+    await problemOf(
+      LIST,
+      "post",
+      await send("POST", LIST, keeps, bearer("A")),
+      422,
+      "credentials_not_kept",
+    );
+    expect((await add(keeps, plain("A"))).status).toBe("ready");
+  });
+
+  it("updateUserToolServer: a rename keeps the credential, a re-key reconnects, a move forgets it, a stale revision is a 409, nothing that differs writes nothing", async () => {
+    const who = await session();
+    const server = await add(who, bearer("Bear"));
+    const patch = (body: unknown, id = server.id) => send("PATCH", `${LIST}/${id}`, who, body);
+    const changed = async (body: unknown) =>
+      (await expectDocumented(ONE, "patch", await patch(body))) as Own;
+    // a rename
+    const renamed = await changed({ name: " Renamed ", revision: server.revision });
+    expect(renamed).toMatchObject({ name: "Renamed", state: "connected", hasCredential: true });
+    expect(renamed.revision).not.toBe(server.revision);
+    // the old revision is stale, and the answer says what to do; nothing is written
+    const stale = await problemOf(
+      ONE,
+      "patch",
+      await patch({ name: "Again", revision: server.revision }),
+      409,
+      "stale_revision",
+    );
+    expect(stale.detail).toContain("read it again");
+    expect((await listing(who)).servers[0]?.name).toBe("Renamed");
+    // a move forgets the credential: `added`, needs a key again
+    const moved = await changed({
+      url: "https://moved.example.com/mcp",
+      revision: renamed.revision,
+    });
+    expect(moved).toMatchObject({
+      status: "needs_auth",
+      reason: "not_connected",
+      state: "added",
+      hasCredential: false,
+    });
+    // a new key reconnects it (nothing else is needed)
+    const rekeyed = await changed({ secret: SECRET, revision: moved.revision });
+    expect(rekeyed).toMatchObject({ status: "ready", state: "connected", hasCredential: true });
+    // a grant that ended is `needs_auth` / `reauthorize`, and a new key brings it back
+    await rules(who, { mark: { name: "Renamed", state: "needs_reauth" } });
+    const ended = (await listing(who)).servers[0] as Own;
+    expect(ended).toMatchObject({
+      status: "needs_auth",
+      reason: "reauthorize",
+      state: "needs_reauth",
+    });
+    const back = await changed({ secret: SECRET, revision: ended.revision });
+    expect(back.status).toBe("ready");
+    // nothing that differs: nothing is written, the revision stays
+    expect((await changed({ name: "Renamed" })).revision).toBe(back.revision);
+    // without a revision the change is made to the server as it is now
+    const free = await changed({ name: "Free" });
+    expect(free.name).toBe("Free");
+    // refusals: nothing named, a secret for a kind that takes none, a refused address, another person's server
+    await problemOf(ONE, "patch", await patch({ revision: free.revision }), 400);
+    await problemOf(ONE, "patch", await patch({ url: "https://10.0.0.1/mcp" }), 400, "url_refused");
+    await problemOf(ONE, "patch", await patch({ auth: { kind: "none" }, secret: SECRET }), 400);
+    await problemOf(ONE, "patch", await patch({ name: "X" }, "u-aaaaaaaaaa"), 404);
+    const other = await session();
+    const theirs = await send("PATCH", `${LIST}/${server.id}`, other, { name: "Mine now" });
+    await problemOf(ONE, "patch", theirs, 404);
+    // a role without the permission cannot change it
+    const user = await session("user");
+    const denied = await send("PATCH", `${LIST}/${server.id}`, user, { name: "Y" });
+    await problemOf(ONE, "patch", denied, 403, "forbidden");
+    expect((await listing(who)).servers).toHaveLength(1);
+  });
+
+  it("updateUserToolServer in a deployment that keeps no credentials: a change that needs the broker is a 422", async () => {
+    const who = await session();
+    const server = await add(who, bearer("Bear"));
+    await rules(who, { credentials: false });
+    const move = await send("PATCH", `${LIST}/${server.id}`, who, {
+      url: "https://moved.example.com/mcp",
+    });
+    await problemOf(ONE, "patch", move, 422, "credentials_not_kept");
+    // it is `unavailable` to its owner meanwhile, and a rename still works
+    expect((await listing(who)).servers[0]).toMatchObject({
+      status: "unavailable",
+      reason: "broker_down",
+    });
+    const renamed = await send("PATCH", `${LIST}/${server.id}`, who, { name: "Renamed" });
+    expect(renamed.status).toBe(200);
+  });
+
+  it("deleteUserToolServer needs no permission and a second delete is a 404", async () => {
+    const who = await session();
+    const server = await add(who, bearer("Bear"));
+    // the permission is taken away: the server is `unavailable` / `not_permitted`, and can still be deleted
+    expect((await post(`/__mock/config?me=user&session=${nameOf(who)}`)).status).toBe(204);
+    expect((await listing(who)).servers[0]).toMatchObject({
+      status: "unavailable",
+      reason: "not_permitted",
+    });
+    const gone = await send("DELETE", `${LIST}/${server.id}`, who);
+    expect(gone.status).toBe(204);
+    expect(await expectDocumented(ONE, "delete", gone)).toBeUndefined();
+    expect((await listing(who)).servers).toEqual([]);
+    await problemOf(ONE, "delete", await send("DELETE", `${LIST}/${server.id}`, who), 404);
+  });
+
+  it("listToolServers has the person's own servers after the deployment's, with their status; the deployment's have none", async () => {
+    const who = await session();
+    const ready = await add(who, bearer("Beta"));
+    const waiting = await add(who, oauth("Alpha"));
+    const res = await send("GET", "/api/tool-servers", who);
+    const list = (await expectDocumented("/api/tool-servers", "get", res)) as ToolServer[];
+    expect(list.map((s) => s.id)).toEqual(["websearch", "github", "docs", waiting.id, ready.id]);
+    expect(list.slice(0, 3).every((s) => s.own === undefined && s.status === undefined)).toBe(true);
+    expect(list[3]).toEqual({
+      id: waiting.id,
+      name: "Alpha",
+      own: true,
+      status: "needs_auth",
+      reason: "not_connected",
+    });
+    expect(list[4]).toEqual({ id: ready.id, name: "Beta", own: true, status: "ready" });
+    // no URL, header or credential of a person's server is in it
+    expect(JSON.stringify(list)).not.toMatch(/example\.com|X-Api-Key|secret/i);
+  });
+
+  it("putThreadTools attaches a person's `ready` server for any agent, and refuses one that is not, by code", async () => {
+    const who = await session();
+    const ready = await add(who, bearer("Beta"));
+    const waiting = await add(who, oauth("Alpha"));
+    const threadId = newId();
+    const run = await fetch(`${base}/agui/agents/reviewer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...who },
+      body: JSON.stringify({
+        state: {},
+        tools: [],
+        context: [],
+        forwardedProps: {},
+        threadId,
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: "echo tools" }],
+      }),
+    });
+    expect(run.status).toBe(200);
+    await frames(run);
+    const TOOLS = "/api/threads/{threadId}/tools";
+    const put = (servers: string[]) =>
+      send("PUT", `/api/threads/${threadId}/tools`, who, { servers });
+    // a person's server has no `agents` list: the reviewer may have it
+    expect((await put([ready.id])).status).toBe(200);
+    // a call to action
+    const needs = await problemOf(
+      TOOLS,
+      "put",
+      await put([ready.id, waiting.id]),
+      422,
+      "tool_server_needs_auth",
+    );
+    expect(needs.detail).toContain(waiting.id);
+    // a cause that clears by itself: today's lists refuse the address. The server the thread has is not checked again
+    await rules(who, { denyHosts: ["mcp.example.com"] });
+    expect((await put([ready.id])).status).toBe(200);
+    const other = await add(who, bearer("Gamma", "https://gamma.example.com/mcp"));
+    await rules(who, { denyHosts: ["gamma.example.com"] });
+    await problemOf(TOOLS, "put", await put([ready.id, other.id]), 422, "tool_server_unavailable");
+    // an id that is not the person's and not the deployment's is not offered, with no code
+    await problemOf(TOOLS, "put", await put(["u-aaaaaaaaaa"]), 422);
+  });
+
+  it("authorizeUserToolServer: where to send the person, the issuer to show first, one flow at a time, and its refusals", async () => {
+    const who = await session("tool-maker", { issuer: "https://login.stranger.example" });
+    const server = await add(who, oauth("Alpha"));
+    const res = await send("POST", `${LIST}/${server.id}/authorize`, who);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const flow = (await expectDocumented(AUTHORIZE, "post", res)) as Authorization;
+    expect(flow.issuer).toBe("https://login.stranger.example");
+    const first = new URL(flow.authorizeUrl).searchParams.get("state") ?? "";
+    expect(first).not.toBe("");
+    expect(new Date(flow.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    // the server is written nothing
+    expect((await listing(who)).servers[0]).toMatchObject({
+      status: "needs_auth",
+      revision: server.revision,
+    });
+    // a later call ends the earlier flow: its state is no longer one
+    const again = await send("POST", `${LIST}/${server.id}/authorize`, who);
+    const second = (await again.json()) as Authorization;
+    await expectPage(await fetch(`${base}${CALLBACK}?code=c&state=${first}`), 400);
+    expect(new URL(second.authorizeUrl).searchParams.get("state")).not.toBe(first);
+    // a server that is not oauth2, another person's, or unknown is one 404
+    const token = await add(who, bearer("Beta"));
+    await problemOf(
+      AUTHORIZE,
+      "post",
+      await send("POST", `${LIST}/${token.id}/authorize`, who),
+      404,
+    );
+    const strangers = await send("POST", `${LIST}/${server.id}/authorize`, await session());
+    await problemOf(AUTHORIZE, "post", strangers, 404);
+    // no permission: 403 `forbidden`
+    const user = await send("POST", `${LIST}/${server.id}/authorize`, await session("user"));
+    await problemOf(AUTHORIZE, "post", user, 403, "forbidden");
+    // the deployment's refusals, each with its code
+    for (const [rule, status] of [
+      ["egress_refused", 422],
+      ["oauth_not_configured", 422],
+      ["authorization_unavailable", 503],
+    ] as const) {
+      await rules(who, { authorize: rule });
+      const refused = await send("POST", `${LIST}/${server.id}/authorize`, who);
+      if (status === 503) expect(refused.headers.get("retry-after")).toBeTruthy();
+      await problemOf(AUTHORIZE, "post", refused, status, rule);
+    }
+    // ten calls a minute: the eleventh is a 429 with `Retry-After`
+    const limited = await session();
+    const only = await add(limited, oauth("Alpha"));
+    let last: Response | undefined;
+    for (let i = 0; i < 11; i++) last = await send("POST", `${LIST}/${only.id}/authorize`, limited);
+    expect(last?.headers.get("retry-after")).toBeTruthy();
+    await problemOf(AUTHORIZE, "post", last as Response, 429, "rate_limited");
+  });
+
+  it("the callback connects the server for the state alone, once, with a page of fixed words; a decline or a reused state changes nothing", async () => {
+    const who = await session();
+    const server = await add(who, oauth("Alpha"));
+    const authorize = async () => {
+      const res = await send("POST", `${LIST}/${server.id}/authorize`, who);
+      return (await res.json()) as Authorization;
+    };
+    // the consent page's stand-in sends the browser to the callback, which carries no session at all
+    const done = await authorize();
+    const approved = await fetch(done.authorizeUrl, { redirect: "manual" });
+    expect(approved.status).toBe(302);
+    const where = approved.headers.get("location") ?? "";
+    expect(where.startsWith(CALLBACK)).toBe(true);
+    const page = await expectPage(await fetch(base + where), 200);
+    // nothing of the request is in the page
+    expect(page).not.toContain(new URL(done.authorizeUrl).searchParams.get("state") ?? "x");
+    expect(page).not.toContain("mock-code");
+    expect((await listing(who)).servers[0]).toMatchObject({
+      status: "ready",
+      state: "connected",
+      hasCredential: true,
+    });
+    expect((await listing(who)).servers[0]?.revision).not.toBe(server.revision);
+    // the state was taken once
+    await expectPage(await fetch(base + where), 400);
+    // a person who declined: the page says it was not completed, the server stays as it was
+    const second = await authorize();
+    const declined = await fetch(`${second.authorizeUrl}&decline=1`, { redirect: "manual" });
+    await expectPage(await fetch(base + (declined.headers.get("location") ?? "")), 400);
+    expect((await listing(who)).servers[0]?.status).toBe("ready");
+    // `HEAD` is a 405 that spends nothing; a parameter twice is invalid and spends nothing
+    const third = await authorize();
+    const state = new URL(third.authorizeUrl).searchParams.get("state") ?? "";
+    const head = await fetch(`${base}${CALLBACK}?code=c&state=${state}`, { method: "HEAD" });
+    expect(head.status).toBe(405);
+    expect(head.headers.get("allow")).toBe("GET");
+    await expectPage(await fetch(`${base}${CALLBACK}?code=a&code=b&state=${state}`), 400);
+    await expectPage(await fetch(`${base}${CALLBACK}?code=c&state=${state}`), 200);
+    // no state, an unknown one
+    await expectPage(await fetch(`${base}${CALLBACK}?code=c`), 400);
+    await expectPage(await fetch(`${base}${CALLBACK}?code=c&state=nope`), 400);
+  });
+
+  it("a `tool-maker` is a person with `tools.user.add`; the built-in roles hold none", async () => {
+    const me = async (who: string) => {
+      const res = await send("GET", "/api/me", await session(who));
+      return (await res.json()) as components["schemas"]["Me"];
+    };
+    expect((await me("tool-maker")).permissions).toContainEqual({ permission: "tools.user.add" });
+    for (const role of ["user", "admin", "read-only", "limited", "capped"]) {
+      expect((await me(role)).permissions, role).not.toContainEqual({
+        permission: "tools.user.add",
+      });
+    }
+  });
+});
