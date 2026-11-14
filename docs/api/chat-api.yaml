@@ -943,6 +943,11 @@ paths:
         e-mail address (`thread.owner`, and the `actor` of the owner's messages); it holds no credential the
         orchestrator uses (no bearer token, webhook secret or database URL is ever in the log).
         Read it before sharing it: a person can paste anything into a chat.
+
+        **Client recipe: Export Markdown.** The same document is the input of the Markdown file of
+        [`thread-markdown-v1.md`](thread-markdown-v1.md): a client writes it from this response, with no other
+        request, so that every client writes the same file. Only what this export holds is written, and not a step's
+        `input` or `output`. A share link has no export route, so a reader of a link cannot make that file (a gap the page names).
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":

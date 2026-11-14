@@ -68,6 +68,13 @@ These are the web's numbers; another client MAY choose its own, and SHOULD say w
 While the text is still arriving, a client SHOULD NOT colour code (the block grows on every piece and the colours would flicker:
 coloured, plain, coloured) and MUST follow rule 4 for `$$`. It colours the block once, when the text is final.
 
+## Client recipe: copy and quote
+
+A client copies and quotes the **source text** of a message (the Markdown above), never the drawn page: Copy puts it on the clipboard
+as `text/plain` and nothing else, so no markup travels into another app, and says in words when the clipboard refuses; Quote puts it, or
+the selected part, into the composer as a block quote the person edits. A quote is the person's own words, with no link in the API to
+the message. The rules, with selections, code and the file export, are in [`thread-markdown-v1.md`](thread-markdown-v1.md#client-recipe-for-copy-and-quote).
+
 ## How a client is built from this
 
 The web's implementation, its libraries, its tests and its limits are in

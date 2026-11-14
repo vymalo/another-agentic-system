@@ -75,7 +75,7 @@ contract).
 | `POST /api/threads/{id}/fork` | **Fork from here** (a turn action) and **continue with another agent** (the agent menu, after a question): `{after: <an event of the turn>, target?}` makes a new chat that holds the conversation up to the end of that turn, and the page goes to it ([ADR 0029](../docs/decisions/0029-forking-a-thread-copies-its-log.md)); **Edit** under a message of the person is the same route with `{replace: <seq>, text, messageId}`: a new chat that holds what came before the message, the new words and the agent's answer, and the page goes to it at `#m-<seq>`. **Regenerate** (the newest turn only) is an edit with the same words and no `tier`, so the server keeps the tier of the message it replaces; it is not offered for a turn that began with a form answer, while a question waits for its answer, for a message that mentioned an agent or was sent while the agent worked, to a read-only person or on a share link. The page chooses the id of the fork, kept for a repeat of the same request. `409 turn_open` is shown under the top bar ("The agent is still working on this turn…"); the buttons are disabled while a turn runs, so it is the race only |
 | `GET /api/threads/{id}/branches`, `GET /api/threads?branches=include` | the versions of a message: `‹ 2/3 ›` under a message that was edited (each version is a thread; the arrows go to it). The thread list leaves the edits out, and highlights the conversation's first thread while an edit is open |
 | `GET /api/threads?order=rail`, `?archived=only`, `PATCH /api/threads/{id}/rail`, `DELETE /api/threads/{id}` | **the person's own list** ([ADR 0042](../docs/decisions/0042-the-thread-list-is-the-owners.md), [ADR 0043](../docs/decisions/0043-deleting-a-thread-erases-it.md); DESIGN.md "The thread list"): the list is read in the server's order (`order=rail`: each top-level thread, then the threads nested under it; `limit` counts the top-level ones, so the next page is `before=<the last of them>`), Archived only while its section is open (`archived=only`); each row's menu is one `arrangeThread` call (`{pinned}`, `{archived}`, `{nested: false}`) followed by a read, because the ranks are the server's (a `422` with `code: bad_anchor` or `nested_row`, like a `404`, only reads the list again); **Delete** asks first and is `deleteThread`, which a chat that works answers with `409 thread_active`: the dialog then offers **Stop and delete** (`POST /cancel`, `GET /api/threads/{id}` every 400 ms until it is not working, 30 s at most, then the `DELETE`). The menu has Delete only when `GET /api/me` lists `thread.delete` |
-| `GET /api/threads/{id}/export` | **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The request carries the header `X-Web-Revision`, this build's `NEXT_PUBLIC_BUILD_REVISION` (a Docker build argument, the commit sha in the workflow; none in a local build), and the file says it as `versions.web.revision` beside the orchestrator's and the agents' builds ([ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)). The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
+| `GET /api/threads/{id}/export` | **Export Markdown** (the same call, written by `threadToMarkdown`: [Quote, Copy and Export Markdown](#quote-copy-and-export-markdown)) and **Export JSON** in the thread's overflow menu (the `…` of the top bar): the whole thread (messages, agent statuses, artifacts, check, CI and verifier cards, reworks, the job) as `thread-<id>.json`, to send to a developer. The request carries the header `X-Web-Revision`, this build's `NEXT_PUBLIC_BUILD_REVISION` (a Docker build argument, the commit sha in the workflow; none in a local build), and the file says it as `versions.web.revision` beside the orchestrator's and the agents' builds ([ADR 0053](../docs/decisions/0053-a-thread-export-says-which-builds-made-it.md)). The file is the server's: its `thread` carries the description and its log the `thread_described` events, whether or not the web shows descriptions |
 
 The four legacy interaction operations (`createThread`, `postMessage`, `listEvents`,
 `streamEvents`) were removed from the contract and the orchestrator on 2026-09-30 (ADR 0012); the web
@@ -199,6 +199,32 @@ stateDiagram-v2
   for an http(s) URL outside a link, a link to it (a URL can carry what the agent read).
 - **Thread ids** are UUIDv7 (`src/lib/uuid.ts`): the consumer mints them, and the orchestrator lists
   threads by id, newest first.
+
+### Quote, Copy and Export Markdown
+
+Three things a person expects of a chat, each written as a contract so a second client does the same:
+[`docs/api/thread-markdown-v1.md`](../docs/api/thread-markdown-v1.md) (the mapping of a thread to a file, and the client recipe of Copy and
+Quote). The web's implementation:
+
+- **Quote** (`features/chat/components/quote.tsx`, `lib/quote.ts`, pure). A button under the person's own messages and under each agent
+  turn. It puts a Markdown block quote into the composer (`composer.setText`, so mentions follow) at the box's caret, else at its end, **without
+  sending**, and moves the focus into the box after the quote. Nothing is selected: the message's source text. A selection inside one
+  message: its text as shown, in a fenced block inside the quote when it is inside one code block. A selection across two messages
+  quotes nothing and says why (a polite `role="status"` line beside the button); a selection elsewhere, or in another message, is not
+  read. The press does not take the focus from the page (`mousedown` is prevented), so the selection is still there when `click` reads it.
+  The composer registers through `QuoteProvider`; with none (a shared link, a thread the person may only read) the button is not drawn.
+  A quote is the person's words: nothing links it to the message in the API.
+- **Copy** (`turn-actions.tsx`, `hooks/use-copy-to-clipboard.ts`). Before: the text parts of the answer joined by blank lines, which is the
+  message's Markdown source, and a refusal of the browser was ignored. Now: the same, plus one `[Interface: …]` line in order where a
+  surface was drawn (`lib/a2ui/placeholder.ts`), written as **`text/plain`** (`navigator.clipboard.writeText`, never HTML), and a refusal
+  (permission, an insecure page, no clipboard API) is said in words, on the turn's Copy and on a code block's, in a polite status line.
+  The code block's own Copy copies only its code (it already did).
+- **Export Markdown** (`lib/thread-markdown.ts`, pure; `lib/export-thread.ts`; the thread menu). Beside Export JSON: it reads the same
+  `GET /api/threads/{id}/export` and writes `thread-<id>.md` with `threadToMarkdown(doc)`. No second request; a share link has no export route,
+  so there is no item there. Golden files `mock/thread-markdown/*.md` (a plain chat with steps, code and math, a form with its answers, a
+  fork made by regenerating, a kept file) are played from the mock and compared exactly by `mock/thread-markdown.test.ts`
+  (`UPDATE_GOLDEN=1` rewrites them) and, for the file the browser downloads, by `e2e/export.spec.ts`; `e2e/quote.spec.ts` drives Quote.
+  *Unverified:* the clipboard in browsers other than Chromium, and the desktop app's download.
 
 ### Code and math in answers
 
