@@ -208,7 +208,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 type Run = {
   timer: NodeJS.Timeout | undefined;
   pending: Step[];
-  resume: ((answer: string) => Step[]) | undefined;
+  resume: ((answer: string, context?: Record<string, unknown>) => Step[]) | undefined;
   /** Set while the run waits at a `{ pause: "release" }` step: goes on with the steps after it. */
   release?: () => void;
   /**
@@ -3415,7 +3415,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;
-    if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}${chosen(context)}`));
+    if (resumeScript) {
+      play(thread, resumeScript(`ui-action ${strings.name}${chosen(context)}`, context));
+    }
     return startViewer(res, thread, {
       fromSeq: from,
       end: "first-close",

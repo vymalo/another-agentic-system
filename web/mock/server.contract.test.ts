@@ -1532,6 +1532,155 @@ describe("choices-v5 and choices-deck (mock only): a form of version 5, and its 
   });
 });
 
+describe("choices-v7 (mock only): the five kinds of version 7, and a receiver that checks again", () => {
+  type Frame = { event: Record<string, unknown> };
+  const questionsOf = (body: Frame[], surfaceId: string) => {
+    const surfaces = body.filter((f) => f.event.activityType === "a2ui-surface");
+    const content = surfaces
+      .map((f) => f.event.content as { a2ui_operations: Record<string, unknown>[] })
+      .find((c) => JSON.stringify(c.a2ui_operations[0]).includes(`"surfaceId":"${surfaceId}"`));
+    const update = content?.a2ui_operations.find((o) => "updateComponents" in o) as {
+      updateComponents: { components: Record<string, unknown>[] };
+    };
+    const choices = update.updateComponents.components.find((c) => c.component === "Choices");
+    return {
+      choices: choices as Record<string, unknown>,
+      questions: (choices?.questions ?? []) as Record<string, unknown>[],
+    };
+  };
+  const answerWith = async (threadId: string, surfaceId: string, answers: unknown[]) => {
+    const answer = await postRun(base, "reviewer", {
+      threadId,
+      runId: newId(),
+      messages: [],
+      forwardedProps: {
+        a2uiAction: {
+          userAction: {
+            name: "answer",
+            surfaceId,
+            sourceComponentId: "pick",
+            context: { answers },
+          },
+        },
+      },
+    });
+    // the orchestrator relays an answer and does not read it: even a bad one is accepted (200)
+    expect(answer.status).toBe(200);
+    return (await validated(await frames(answer), "answer run")) as Frame[];
+  };
+  const VALID = [
+    { id: "ship", values: ["no"] },
+    { id: "budget", values: ["250.5"] },
+    { id: "nps", values: [] },
+    { id: "when", values: ["2026-12-15"] },
+    { id: "order", values: ["risk", "speed", "cost"] },
+  ];
+
+  it("asks one form of the five kinds, valid under the web's catalog and its rules", async () => {
+    const { threadId, body } = await startThread("choices-v7 please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    const { choices, questions } = questionsOf(body, "s1");
+    expect(OWN_COMPILED.check("Choices", choices)).toBeUndefined();
+    expect(questions.map((q) => q.type)).toEqual(["confirm", "number", "scale", "date", "rank"]);
+    expect(questions[0]).toMatchObject({
+      default: "no",
+      yesLabel: "Delete it",
+      noLabel: "Keep it",
+    });
+    expect(questions[1]).toMatchObject({
+      minValue: "0",
+      maxValue: "1000",
+      step: "0.5",
+      unit: "EUR",
+    });
+    await waitForState(threadId, ["blocked"]);
+  });
+
+  it("a valid answer ends the job, the rank in the person's order", async () => {
+    const { threadId } = await startThread("choices-v7 please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    await waitForState(threadId, ["blocked"]);
+    const run = await answerWith(threadId, "s1", VALID);
+    expect(JSON.stringify(run)).toContain(
+      "answered: ui-action answer ship=no budget=250.5 nps= when=2026-12-15 order=risk,speed,cost",
+    );
+    await waitForState(threadId, ["done"]);
+  });
+
+  it("an answer that breaks a rule is not acted on: the agent names the question and the rule, and asks again", async () => {
+    const { threadId } = await startThread("choices-v7 please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    await waitForState(threadId, ["blocked"]);
+    const bad = VALID.map((a) =>
+      a.id === "budget"
+        ? { id: "budget", values: ["1500"] }
+        : a.id === "when"
+          ? { id: "when", values: ["2026-11-30"] }
+          : a,
+    );
+    const refused = await answerWith(threadId, "s1", bad);
+    const text = JSON.stringify(refused);
+    expect(text).toContain('The answer to \\"budget\\" was not used (above_max)');
+    expect(text).toContain('The answer to \\"when\\" was not used (below_min)');
+    expect(text).not.toContain("answered:");
+    // the thread waits again, with a form of its own: nothing the person gave is lost
+    const waiting = await waitForState(threadId, ["blocked"]);
+    expect(waiting.state).toBe("blocked");
+    const again = questionsOf(refused, "s2");
+    expect(OWN_COMPILED.check("Choices", again.choices)).toBeUndefined();
+    const byId = Object.fromEntries(again.questions.map((q) => [String(q.id), q]));
+    expect(byId.ship).toMatchObject({ default: "no" });
+    expect(byId.order).toMatchObject({ default: ["risk", "speed", "cost"] });
+    expect(byId.budget?.default).toBeUndefined();
+    expect(byId.when?.default).toBeUndefined();
+    // and the second answer is judged the same way, then ends the job
+    const fixed = await answerWith(
+      threadId,
+      "s2",
+      bad.map((a) =>
+        a.id === "budget"
+          ? { id: "budget", values: ["999.5"] }
+          : a.id === "when"
+            ? { id: "when", values: ["2026-12-01"] }
+            : a,
+      ),
+    );
+    expect(JSON.stringify(fixed)).toContain(
+      "answered: ui-action answer ship=no budget=999.5 nps= when=2026-12-01 order=risk,speed,cost",
+    );
+    await waitForState(threadId, ["done"]);
+  });
+
+  it("refuses a rank that is not every option once, an off-step number and a made-up day, and repairs none", async () => {
+    const { threadId } = await startThread("choices-v7 please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    await waitForState(threadId, ["blocked"]);
+    const refused = await answerWith(
+      threadId,
+      "s1",
+      VALID.map((a) =>
+        a.id === "order"
+          ? { id: "order", values: ["speed", "cost"] }
+          : a.id === "budget"
+            ? { id: "budget", values: ["250.25"] }
+            : a.id === "when"
+              ? { id: "when", values: ["2026-02-30"] }
+              : a,
+      ),
+    );
+    const text = JSON.stringify(refused);
+    expect(text).toContain("was not used (off_step)");
+    expect(text).toContain("was not used (grammar)");
+    expect(text).toContain("was not used (not_a_permutation)");
+    expect(text).not.toContain("answered:");
+    await waitForState(threadId, ["blocked"]);
+  });
+});
+
 describe("cards-mermaid (mock only): text, three cards and a graph in one answer", () => {
   const surfaceOf = (body: { event: Record<string, unknown> }[]) => {
     const surfaces = body.filter((f) => f.event.activityType === "a2ui-surface");

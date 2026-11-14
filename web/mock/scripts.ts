@@ -11,6 +11,7 @@ import {
   SHOT_MATCHES,
   TONE,
 } from "./files";
+import { receive, refusalText } from "./receiver";
 
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];
@@ -244,6 +245,142 @@ const choicesV5Surface = (): Step => ({
     ],
   },
 });
+
+/**
+ * The five questions of the `choices-v7` script, one of each kind of catalog version 7: a yes or no
+ * whose safe answer is no, a number of euros in steps of a half, a scale from 0 to 10 that may be
+ * skipped, a day in December and a list to put in order.
+ */
+const V7_QUESTIONS: Record<string, unknown>[] = [
+  {
+    id: "ship",
+    question: "Delete the old branch?",
+    help: "It cannot be restored.",
+    type: "confirm",
+    yesLabel: "Delete it",
+    noLabel: "Keep it",
+    default: "no",
+  },
+  {
+    id: "budget",
+    question: "What is the monthly budget?",
+    type: "number",
+    unit: "EUR",
+    minValue: "0",
+    maxValue: "1000",
+    step: "0.5",
+  },
+  {
+    id: "nps",
+    question: "How likely are you to recommend it?",
+    type: "scale",
+    from: 0,
+    to: 10,
+    fromLabel: "Not at all",
+    toLabel: "Certainly",
+    required: false,
+  },
+  {
+    id: "when",
+    question: "When should it ship?",
+    type: "date",
+    minDate: "2026-12-01",
+    maxDate: "2026-12-31",
+  },
+  {
+    id: "order",
+    question: "Put these in order of importance",
+    help: "The most important first.",
+    type: "rank",
+    options: [
+      { value: "speed", label: "Speed", icon: "execute" },
+      { value: "cost", label: "Cost" },
+      { value: "risk", label: "Risk", description: "What can go wrong" },
+    ],
+  },
+];
+
+/** A Choices of the given questions under the web's own catalog, as the surface `surfaceId`. */
+const choicesV7Surface = (surfaceId: string, questions: Record<string, unknown>[]): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId,
+          components: [
+            { id: "root", component: "Column", children: ["pick"] },
+            {
+              id: "pick",
+              component: "Choices",
+              title: "Before I ship",
+              description: "Nothing is changed until you answer.",
+              submitLabel: "Send answers",
+              questions,
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+/**
+ * The `choices-v7` script: one form of the five kinds. The agent is the receiver (the orchestrator
+ * relays an answer and does not read it): it checks the answer again with the rules of the contract
+ * (`receive`, written from the page alone). An answer that fails is **not acted on**: the agent says
+ * which question and which rule, in words, and asks again with the same form, each question that
+ * was valid carrying the person's answer as its default. A valid one ends the job.
+ */
+function choicesV7Script(): {
+  start: Step[];
+  resume: (answer: string, context?: Record<string, unknown>) => Step[];
+} {
+  let asked = V7_QUESTIONS;
+  let surfaces = 1;
+  const block: Step[] = [
+    { kind: "agent_status", data: { status: "input_required", detail: "Five questions" } },
+    { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+  ];
+  return {
+    start: [working, choicesV7Surface(`s${surfaces}`, asked), ...block],
+    resume: (answer, context) => {
+      const refusals = receive(asked, context);
+      if (refusals.length === 0) return [working, ...finish(`answered: ${answer}`)];
+      const failed = new Set(refusals.map((r) => r.id));
+      const given = new Map(
+        (Array.isArray(context?.answers) ? context.answers : []).flatMap((a: unknown) => {
+          const r = a as { id?: unknown; values?: unknown };
+          return typeof r.id === "string" && Array.isArray(r.values) && r.values.length > 0
+            ? [[r.id, r.values as string[]] as const]
+            : [];
+        }),
+      );
+      // the valid answers become the defaults of the next form: nothing the person gave is lost
+      asked = asked.map((q) => {
+        const values = given.get(String(q.id));
+        if (failed.has(String(q.id)) || values === undefined) return q;
+        return { ...q, default: q.type === "rank" ? values : values[0] };
+      });
+      surfaces += 1;
+      return [
+        working,
+        {
+          kind: "agent_message",
+          data: {
+            messageId: nextMessageId(),
+            final: true,
+            text: `${refusals.map(refusalText).join(" ")} Please answer again.`,
+          },
+        },
+        choicesV7Surface(`s${surfaces}`, asked),
+        ...block,
+      ];
+    },
+  };
+}
 
 /** The twelve ways to log in of the `choices-deck` list: more than a radio list takes in a chat. */
 const LOGIN_PROVIDERS: [string, string, string][] = [
@@ -1712,6 +1849,9 @@ export const LONG_FAILURE = [
  * - `choices-v5`: a Choices of version 5: a title, a description, a free box and four questions (a radio list with a
  *   help line, a default, an icon and a recommended option; checkboxes with a minimum of 1 and a maximum of 2; a short
  *   text; an optional long text), then done as `ui-action answer db=pg envs=dev name=text:… note:…`.
+ * - `choices-v7`: one form of the five kinds of catalog version 7 (a yes or no, a number, a scale, a day, a rank). The agent
+ *   validates the answer as a receiver does (mock/receiver.ts): a valid one ends the job as `answered: ui-action answer ship=no
+ *   budget=250.5 …`; one that fails is not acted on, the agent names the question and the rule and asks again (a form of its own, `s2`).
  * - `choices-deck`: the coder shares two screenshots, then asks with a Choices of an image deck (each option a
  *   picture of a shared file, one recommended) and a searchable list of twelve ways to log in (several, at most
  *   three) and a free box; the answers resume it to done as `ui-action answer layout=matches login=github,passkey`.
@@ -1838,7 +1978,8 @@ export const LONG_FAILURE = [
  */
 export function scriptFor(text: string): {
   start: Step[];
-  resume?: (answer: string) => Step[];
+  /** The agent's next steps for the person's answer: the words, and for an action its `context`. */
+  resume?: (answer: string, context?: Record<string, unknown>) => Step[];
   /** A newer UI opened the thread: its catalog has this version (the mock records it as current). */
   newerCatalog?: number;
   /** The gate the thread's job runs under; absent: none, and the run ends at `completed`. */
@@ -2792,6 +2933,8 @@ export function scriptFor(text: string): {
         ],
         resume: (answer) => [working, ...finish(`answered: ${answer}`)],
       };
+    case "choices-v7":
+      return choicesV7Script();
     case "choices-deck":
       return {
         start: [
