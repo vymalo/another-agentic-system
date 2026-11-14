@@ -945,12 +945,21 @@ forced on a device of the other scheme.
 
 The person chooses **System** (the default), **Light** or **Dark**, on this device (decision 2026-11-14; ADR 0011 amended). The rule is one
 sentence: **a component reads the page's theme, never the device's.** The page's theme is `<html data-theme="light|dark">`, set before the
-first paint by a head script (allowed by its hash, never `'unsafe-inline'`) and kept by `lib/theme.ts`; the tokens above are
+first paint by a head script (allowed by its hash in the page's `<meta>` policy, which voids the header's `'unsafe-inline'`: `lib/csp.ts`) and kept by `lib/theme.ts`; the tokens above are
 `:root` and `:root[data-theme="dark"]`, `dark:` is a variant of that attribute, and `color-scheme` follows it so native controls
 and scrollbars match. Anything that draws apart from CSS (a diagram, a canvas, a chart's colours read into script) takes
 `usePageTheme()` and draws again when it changes; a dark diagram on a light page is the bug this prevents. No new
 `prefers-color-scheme` in a stylesheet or `matchMedia` in a component: `lib/theme.ts` is the one place that asks the device, and only
 while System is chosen.
+
+**Print is always light.** Paper is white and Chromium drops backgrounds when printing, so a dark theme would print light text on nothing. The dark
+tokens, `color-scheme: dark`, the `dark:` variant and the highlighter's dark colours are therefore `@media screen` only: under `print` the page
+uses the light tokens whatever is chosen (`e2e/theme.spec.ts` emulates print on a forced dark theme). A drawn diagram is a picture and prints as it was
+drawn.
+
+**Two limits, stated and not built.** The theme is the page's: the desktop app's window chrome and title bar follow the operating system, not an
+in-app choice. And another tab's choice (and a cleared storage) is followed through the `storage` event, which is proven in the browser by one
+spec with two pages of one context (`e2e/theme.spec.ts`), not across separate browsers or profiles, which share no storage anyway.
 
 The control is a **Theme** group of three radio items (System, Light, Dark) in the account menu: the current one is checked,
 the arrows move, Enter chooses, and the menu stays open so the change is seen. The group has the same size in every state, so
@@ -992,6 +1001,17 @@ focusable though hidden), and axe is run with the picker's menu open and with th
 in both schemes. The tools picker is the same kind of menu (checkbox items, not modal) and its chips are a labelled
 list of native buttons; axe is run with it open, with chips, with the flag for an agent that cannot use them, and on a thread
 whose steps carry a server's icon, in both schemes (`e2e/tools.spec.ts`), and the whole of it works from the keyboard alone.
+
+**Which menus are modal.** A Radix menu is modal by default: while it is open it puts `aria-hidden` on the rest of the page, locks scrolling and
+swallows a click outside it. In this layout that is wrong for the menus that sit inside the sidebar or beside a field, and axe says so: with the
+account menu modal, `aria-hidden-focus` (serious) was reported on the open menu, because the buttons around it (Close sidebar, the threads' menu
+buttons, the Archived toggle, the Account button itself) are in the hidden subtree and still reachable by Tab (*observed 2026-11-14* in
+`e2e/a11y.spec.ts`, Chromium). **Not modal** (`modal={false}`): the agent picker, the Send split's menu, the tools picker, the access-tier
+chip's menu, the **account menu** and the **Theme** button's menu. **Modal** (Radix default): a thread's overflow menu (`thread-menu.tsx`) and a
+thread row's menu (`thread-row.tsx`). What a non-modal menu gives up: the rest of the page is not hidden from assistive technology while it is
+open (a screen reader can leave the menu by browsing), nothing locks the scroll, and a click outside closes the menu and reaches what is under it.
+The focus still goes into the menu when it opens, the arrows move in it, and Escape closes it and gives the focus back to its button. The two
+modal menus are not changed here; if axe is ever run with one of them open it will say the same.
 
 ## A surface that needs a newer version of the app
 
@@ -1060,7 +1080,8 @@ quiet as the rest of the page: no colour of their own, nothing that moves, nothi
   quiet disclosure, "Diagram source" (12 px muted, a triangle), that opens the graph's text in the page's code block (12 px radius
   corners at 6, `--muted` fill, monospace, scrolls and takes focus). The picture is drawn **in the page's own tokens**, so a graph is a
   neighbour of the cards and not a screenshot of another app: nodes `--muted` with a `--input` border, text `--foreground`, lines
-  `--muted-foreground`, the surface's `--card` behind; dark mode is the dark tokens (`prefers-color-scheme`, as everywhere). **Plain
+  `--muted-foreground`, the surface's `--card` behind; dark mode is the dark tokens of **the page's theme** (`<html data-theme>`, "Theme" under Colour; the graph is drawn again when the theme changes, and it is
+a picture, so it prints as it was drawn). **Plain
   shapes**: mermaid's `classic` look, no drop shadows, no gradients, no hand-drawn style. At most its natural size and never wider than
   the card: on a phone it scales down with its text, and the source is the way to read it at full size.
 - **A graph that cannot be drawn** is the same figure with a destructive-toned callout in place of the picture: a circle-alert icon,

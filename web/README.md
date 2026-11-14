@@ -2504,8 +2504,8 @@ stateDiagram-v2
   and `color-scheme: dark`, so native controls, scrollbars and the date input follow), Tailwind's `dark:` variant (`@custom-variant dark`), the highlighter's colours
   and the diagrams read it. **Nothing in the app asks `prefers-color-scheme`** except the head script and `lib/theme.ts`, which turn it into the attribute while System is chosen.
 - **No flash.** `THEME_SCRIPT` (`src/lib/theme.ts`) is an inline script in `<head>`, like the sidebar's and the panel's: it sets the attribute before the body exists. The page's
-  policy allows it **by the SHA-256 of its exact bytes** (`scripts/csp-meta.ts` writes the hash of every inline script into each page of the export; `'unsafe-inline'` is never
-  in the page's `script-src`, and no directive got looser). The static export and the desktop app's webview load the same pages. A change to the
+  policy allows it **by the SHA-256 of its exact bytes** (`scripts/csp-meta.ts` writes the hash of every inline script into each page of the export; the static server's header still lists `'unsafe-inline'` in its
+  `script-src` and the page's `<meta>`, which names `'self'` and these hashes, voids it, `lib/csp.ts`; no directive of either half got looser). The static export and the desktop app's webview load the same pages. A change to the
   script's bytes without its hash is blocked, and `e2e/csp.spec.ts` shows it. Storage that refuses (a private window, blocked site data) leaves System, and a choice then lasts for the session.
 - **What read the device, and what reads the page now.**
 
@@ -2521,13 +2521,17 @@ stateDiagram-v2
 
 - **The control.** The account menu holds a **Theme** group of three radio items (a `menuitemradio` group named *Theme*: the arrows move, Enter or Space chooses, the menu stays
   open so that the change is seen, and the group is the same size in every state). Where there is no account menu it is a button of its own, **Theme**: on the sign-in screen, on a
-  shared conversation, and in the sidebar footer of a local run with nobody signed in. Its menu is not modal, like the other menus of the app (DESIGN.md "Accessibility").
+  shared conversation, and in the sidebar footer of a local run with nobody signed in. Its menu, like the account menu's, is not modal, for the reason and with the costs in DESIGN.md "Which menus are modal" (some of the app's menus are modal and are not changed).
 - **Tests:** `src/lib/theme.test.ts` (the three words, the resolution, live following and its end, the subscribers, storage refused, the address bar's colour, and
   `THEME_SCRIPT` run against every stored value on both devices, equal to `resolveTheme`), `components/theme/theme-menu.dom.test.tsx`,
   `e2e/theme.spec.ts` (follows the device by default and live; a chosen theme survives a reload on a device of the other scheme with `data-theme` set once, before the
   body, and the background already right at `DOMContentLoaded`; System again; the group and the keyboard; no size change; storage refused; a code block and a diagram follow the
   chosen theme; `color-scheme`), `e2e/csp.spec.ts` (the script is allowed by its hash and a changed one is blocked) and `e2e/a11y.spec.ts` ("dark chosen on a light device" and "light
   chosen on a dark device", forced through the stored choice, on a new thread, a finished one and the open account menu).
+- **Print is light.** The dark tokens, `color-scheme: dark`, the `dark:` variant and the highlighter's dark colours apply to `@media screen` only, so a page printed
+  from a dark theme uses the light tokens (a drawn diagram prints as it was drawn). `e2e/theme.spec.ts` emulates print on a forced dark theme.
+- **Limits.** The desktop app's window chrome and title bar follow the operating system, not an in-app choice. A choice in one tab is followed by the others through the `storage`
+  event (and a cleared storage is read again): proven by two pages of one browser context in `e2e/theme.spec.ts`, and in unit tests.
 - **Not proven:** a browser other than Chromium, and the desktop app's webview (its policy is Tauri's, beside the same meta; the head script is the third of its kind there).
 
 ## Layout
