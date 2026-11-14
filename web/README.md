@@ -213,7 +213,7 @@ either.* The Markdown of an answer (`components/assistant-ui/elements/markdown-t
 | **Highlighting** | `@assistant-ui/react-markdown` 0.14.17 has a `components.SyntaxHighlighter` slot (read in its types, `SyntaxHighlighterProps`), so the highlighter plugs in there and no `code` override was needed. It receives the block's `language` and `code` and draws `<pre><code>` of `[data-token]` spans. The code is **plain text at once** and is coloured **once, when the answer is final**: while the text part is streaming (`useMessagePartText().status` is `running`) the block stays plain, because colouring each version of a block that grows would flicker (coloured, plain on the next piece, coloured again); when the text ends the block is coloured and stays so. **A block over 20,000 characters or 500 lines stays plain** (`MAX_CODE_CHARS`, `MAX_CODE_LINES` in `highlight.ts`): Shiki runs on the main thread and 200,000 characters took 1.3 s. An unknown language, none, a block over the limits and any failure of the highlighter leave the plain text | `elements/syntax-highlighter.tsx`, `src/lib/highlight.ts` |
 | **Engine** | [Shiki](https://shiki.style) with `createJavaScriptRegexEngine`. The WebAssembly engine is never imported, because the page's policy has no `wasm-unsafe-eval` and must not gain it (`e2e/code-math.spec.ts` fails on a violation and on any `.wasm` request) | `src/lib/highlight.ts` |
 | **Languages** | 14: Rust, TypeScript, TSX, JavaScript, JSX, JSON, Bash, Python, SQL, Go, diff, Dockerfile, HTML, CSS: what the coder and the researcher write about this family of projects (Rust services, this web, their shell, SQL for the stores, diffs for changes) plus HTML and CSS for the web. **YAML and TOML are not bundled**: their grammars name no licence we could verify, and a grammar we cannot verify is not shipped (`third-party-notices.md`); they stay plain text until one is. Aliases (`rs`, `ts`, `sh`, ...) are in `highlight.ts`. Shiki, its engine, the two themes and each grammar are **separate chunks, fetched on the first fenced block and on the first block of each language**: a thread with no code downloads none of them. Markdown and the rest of Shiki's 200 grammars are left out on purpose (each is a chunk; Markdown embeds a dozen more). Adding one is a line in `LANGUAGES` | `src/lib/highlight.ts` |
-| **Colours** | Two themes at once, `github-light-high-contrast` and `github-dark-high-contrast`, chosen for contrast on the code box (`--muted` at 40 % over the page): a token carries both colours as `--shiki-light` and `--shiki-dark`, and `globals.css` picks one by `prefers-color-scheme`, like every colour of the app (no toggle exists, so there is none to follow). axe passes on the answer in both schemes (`e2e/code-math.spec.ts`) | `src/app/globals.css` |
+| **Colours** | Two themes at once, `github-light-high-contrast` and `github-dark-high-contrast`, chosen for contrast on the code box (`--muted` at 40 % over the page): a token carries both colours as `--shiki-light` and `--shiki-dark`, and `globals.css` picks one by the **page's theme** (`<html data-theme>`, [Theme](#theme)), never by the device's scheme. axe passes on the answer in both schemes (`e2e/code-math.spec.ts`) and a block follows a chosen theme on a device of the other (`e2e/theme.spec.ts`) | `src/app/globals.css` |
 | **Math** | `remark-math` with `singleDollarTextMath: false` and `rehype-katex`, behind a rule of ours (`remark-display-math.ts`): **display math only, `$$` on lines of its own**, opening and closing, or a `$$...$$` that is a paragraph by itself (what a model writes for a short formula). `$$` beside any other text is **text, exactly as written** ("In bash, $$ is the pid; print $$ twice.", "pay $5 $$ or $10 $$ tomorrow"), `$$` in inline code and in a fence is code, and **a single dollar is a price**. A `$$` fence that is not closed yet (a streaming answer) is text, so a half-written formula does not flash an error. **A formula over 5,000 characters is a block of code**, never given to KaTeX (50,000 characters took KaTeX 1.9 s and made 4 MB of DOM, again on every piece of a stream). `\(...\)` and `\[...\]` are *not* read: `remark-math` 6 parses `$` and `$$` only (*verified 2026-11-14* in its readme), and an agent that writes them gets text. The KaTeX settings are the security controls and are held by tests (`markdown-text.dom.test.tsx`, each failing when its setting is loosened): `trust: false` (no `\href`, `\url`, `\includegraphics`, `\htmlId`, `\htmlClass`, `\htmlStyle`, `\htmlData`: the commands are drawn as their names in the error colour), `maxExpand: 1000` (a macro that expands without end is cut) and `maxSize: 20`. A formula KaTeX cannot read is drawn as its source in the error colour (`rehype-katex` makes KaTeX throw and draws it again without throwing, so `throwOnError` is not ours to set). The fonts are bundled, so `font-src 'self'` holds | `src/lib/math.ts`, `src/lib/remark-display-math.ts` |
 | **Math is lazy too** | KaTeX, the plugins and the stylesheet are 77 KB gzipped, and most threads have no formula, so `src/lib/math.ts` is its own chunk, imported when the text of a part first has a line that starts with `$$`. Until it arrives (a few milliseconds from the page's own origin) and if it never does, the text is shown as it was written | `elements/markdown-text.tsx` |
 | **Accessible name** | KaTeX draws a formula as MathML (exposed, so a screen reader reads the formula itself) and as `aria-hidden` HTML (seen). Nothing gives it a name made of its TeX source: raw TeX is not what a person should hear. A display formula wider than its column scrolls sideways, and **only then** it is a tab stop (`tabindex="0"`, `role="group"`, `aria-label="Formula"`, set by `useScrollableFormulas` in `markdown-text.tsx`, measured again when the column resizes and when the fonts arrive); a formula that fits is not focusable. Held by `e2e/code-math.spec.ts` (a real layout) and the jsdom test with stubbed widths | `elements/markdown-text.tsx` |
@@ -2251,7 +2251,7 @@ stateDiagram-v2
 | `Mermaid` | A figure: the **title** as a heading, the **picture**, the **caption**, and a closed disclosure "Diagram source" with the graph as text (the picture's text alternative; its `alt` is the title, else the caption, else "Diagram"). The picture is an `<img>` whose `src` is a data URL of the SVG mermaid drew: **never markup of the page**, so nothing in a graph can run a script, follow a link or load anything. mermaid is imported when a graph is first drawn, with `import()`, in chunks of its own: the code every thread loads does not grow (the build's first-load size is the same as without it) |
 | Security options | `securityLevel: "strict"`; `htmlLabels: false`; `maxTextSize` 20,000 (the schema's limit); `suppressErrorRendering` (mermaid leaves no error drawing in the page); `startOnLoad: false`. A graph's own directive (`%%{init}%%`) or front matter cannot change them, nor the theme, `themeVariables`, `themeCSS`, the font, the look or the layout, because the app adds them to mermaid's `secure` list (`SECURE_KEYS`; a test requires it to hold everything mermaid's own list holds, so an upgrade that adds a key is caught). The tests run the pinned mermaid against hostile directives and front matter, and a browser test draws a graph that tries a script, an `onerror`, a click handler and a link |
 | The picture | `svgImage` (`lib/a2ui/mermaid.ts`) parses mermaid's string as HTML (it was written for `innerHTML`: an image is parsed as XML, where `&nbsp;` is an error) and writes it out as XML. It refuses a script, a `foreignObject`, a frame, an embed, a stylesheet link, an event-handler attribute and CSS that loads (`@import`, a `url()` that is not `#id`); drops a link's `href` that leaves the picture; replaces the root's `width`, `height` and `style` by the size of the `viewBox`. All of that is a second line: an image runs nothing anyway |
-| Colours | Read from the page's tokens when drawing (`--card`, `--foreground`, `--muted`, `--muted-foreground`, `--input`, `--border`, `--brand`, `--sidebar…`: DESIGN.md "Colour") into mermaid's `base` theme, `darkMode` set by `prefers-color-scheme`; a change of scheme draws again over the old picture. An image cannot use the page's CSS variables or its font, so the colours are values and the font is the system's (`ui-sans-serif, system-ui…`) |
+| Colours | Read from the page's tokens when drawing (`--card`, `--foreground`, `--muted`, `--muted-foreground`, `--input`, `--border`, `--brand`, `--sidebar…`: DESIGN.md "Colour") into mermaid's `base` theme, `darkMode` set by the **page's theme** (`usePageTheme`, [Theme](#theme)), not the device's; a change of theme, chosen or followed, draws again over the old picture. An image cannot use the page's CSS variables or its font, so the colours are values and the font is the system's (`ui-sans-serif, system-ui…`) |
 | A graph that cannot be drawn | A destructive-toned callout in the surface (not an `alert`: a replay must not announce it again): "The graph could not be drawn.", the first three lines of mermaid's message (the place, the line, a caret) and the source, scrollable and focusable. It is the graph's failure, not the surface's: the cards and text beside it are drawn. An oversize source, a wrong property or a graph under the basic catalog is the schema's: the whole surface is refused as for any component (rule `schema` or `catalog`) |
 
 Rendering in an `<img>` was checked in Chromium for ten kinds (flowchart, sequence, class, state, entity relationship, Gantt, pie,
@@ -2463,6 +2463,73 @@ amended 2026-10-11, and the repository's `third-party-notices.md`):
   `steps/step-opencode-icon.dom.test.tsx` and `lib/step-label.test.ts` (`github__get_file_contents` is "Get file contents").
 
 
+## Theme
+
+The person chooses **System** (the default: it follows the device), **Light** or **Dark** ([ADR 0011](../docs/decisions/0011-web-shadcn-tailwind-feature-layout.md),
+amended 2026-11-14; [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), slice 5). It is a display preference of
+**this device and of this client**: it is kept in `localStorage` (`chat.theme`) and nowhere else, no API route or field carries it, and another client
+of the same API keeps its own. The client-agnostic rule is met by there being nothing to implement.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Browser (parsing the page)
+  participant S as THEME_SCRIPT (head, inline, by hash)
+  participant R as React (hydration)
+  participant T as lib/theme.ts
+  actor U as Person
+  B->>S: runs before the body exists, so before the first paint
+  S->>S: localStorage "chat.theme" (light or dark, else the device's prefers-color-scheme)
+  S-->>B: html data-theme = light or dark
+  B->>B: the stylesheet paints with that theme's tokens
+  R->>T: ThemeSync mounts: the address bar's colour, and listening starts
+  U->>T: the Theme group of the account menu: setChoice
+  T-->>B: html data-theme, localStorage, the theme-color metas
+  Note over T,B: while System is chosen the device's change event applies the new theme, and another tab's choice arrives as a storage event
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> System: nothing stored, or anything but light and dark
+  System --> Light: choose Light
+  System --> Dark: choose Dark
+  Light --> System: choose System
+  Dark --> System: choose System
+  Light --> Dark: choose Dark
+  Dark --> Light: choose Light
+  System --> System: the device changes (data-theme follows it)
+```
+
+- **One attribute.** `<html data-theme="light|dark">` is always the *resolved* theme, never "system". The stylesheet (`:root[data-theme="dark"]` holds the dark tokens
+  and `color-scheme: dark`, so native controls, scrollbars and the date input follow), Tailwind's `dark:` variant (`@custom-variant dark`), the highlighter's colours
+  and the diagrams read it. **Nothing in the app asks `prefers-color-scheme`** except the head script and `lib/theme.ts`, which turn it into the attribute while System is chosen.
+- **No flash.** `THEME_SCRIPT` (`src/lib/theme.ts`) is an inline script in `<head>`, like the sidebar's and the panel's: it sets the attribute before the body exists. The page's
+  policy allows it **by the SHA-256 of its exact bytes** (`scripts/csp-meta.ts` writes the hash of every inline script into each page of the export; `'unsafe-inline'` is never
+  in the page's `script-src`, and no directive got looser). The static export and the desktop app's webview load the same pages. A change to the
+  script's bytes without its hash is blocked, and `e2e/csp.spec.ts` shows it. Storage that refuses (a private window, blocked site data) leaves System, and a choice then lasts for the session.
+- **What read the device, and what reads the page now.**
+
+| Was | Now |
+|---|---|
+| `@custom-variant dark (@media (prefers-color-scheme: dark))` and the dark token block of `globals.css` | `:root[data-theme="dark"]`, and the variant `&:where([data-theme="dark"], [data-theme="dark"] *)` |
+| the highlighter's `--shiki-dark` rule (`globals.css`) | `:root[data-theme="dark"] .aui-md-pre [data-token]` |
+| `Mermaid` (`matchMedia` in `mermaid.tsx`) | `usePageTheme()` (`lib/use-theme.ts`): draws again when the page's theme changes |
+| the layout's two `theme-color` metas (the address bar) | the same two for System; a chosen theme sets both to its colour (`applyTheme`), restored for System |
+| KaTeX, the charts and the panda | no change: they inherit `color` or use the tokens, which follow the attribute; the panda's fills never change |
+| the web app manifest's `theme_color` | no change: it is the brand green, whatever the scheme |
+| the `<picture>` of the screenshots in these docs | no change: documents, not the app; they follow the reader's device |
+
+- **The control.** The account menu holds a **Theme** group of three radio items (a `menuitemradio` group named *Theme*: the arrows move, Enter or Space chooses, the menu stays
+  open so that the change is seen, and the group is the same size in every state). Where there is no account menu it is a button of its own, **Theme**: on the sign-in screen, on a
+  shared conversation, and in the sidebar footer of a local run with nobody signed in. Its menu is not modal, like the other menus of the app (DESIGN.md "Accessibility").
+- **Tests:** `src/lib/theme.test.ts` (the three words, the resolution, live following and its end, the subscribers, storage refused, the address bar's colour, and
+  `THEME_SCRIPT` run against every stored value on both devices, equal to `resolveTheme`), `components/theme/theme-menu.dom.test.tsx`,
+  `e2e/theme.spec.ts` (follows the device by default and live; a chosen theme survives a reload on a device of the other scheme with `data-theme` set once, before the
+  body, and the background already right at `DOMContentLoaded`; System again; the group and the keyboard; no size change; storage refused; a code block and a diagram follow the
+  chosen theme; `color-scheme`), `e2e/csp.spec.ts` (the script is allowed by its hash and a changed one is blocked) and `e2e/a11y.spec.ts` ("dark chosen on a light device" and "light
+  chosen on a dark device", forced through the stored choice, on a new thread, a finished one and the open account menu).
+- **Not proven:** a browser other than Chromium, and the desktop app's webview (its policy is Tauri's, beside the same meta; the head script is the third of its kind there).
+
 ## Layout
 
 Every file name is kebab-case (`pnpm check` fails otherwise). Tests sit next to the code they test.
@@ -2568,8 +2635,8 @@ scripts/                       `pnpm catalog:lock` (the UI catalog's lock)
 ```
 
 The look is [DESIGN.md](DESIGN.md), the brief with the references it is drawn from; the theme is
-`src/app/globals.css`: its tokens (light, and dark under `prefers-color-scheme`) mapped onto
-shadcn's names, Inter self-hosted (`@fontsource-variable/inter`). There is no theme toggle.
+`src/app/globals.css`: its tokens (light, and dark under `<html data-theme="dark">`, [Theme](#theme)) mapped onto
+shadcn's names, Inter self-hosted (`@fontsource-variable/inter`).
 The brand (the panda, the wordmark, the agent avatar, the colours) is DESIGN.md's "Brand". The
 icons are generated from one drawing, `public/brand/panda.svg`: after changing it, run
 `pnpm brand:icons`, which renders `src/app/icon.svg`, `src/app/favicon.ico`,

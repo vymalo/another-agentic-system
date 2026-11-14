@@ -938,7 +938,24 @@ and an icon). The working badge is neutral ink: the green says "alive", the word
 | `--verifying` | `#6b3fa0` | `#cfb6f7` |
 
 `--brand` as text is at least 4.5:1 on every surface it sits on (5.6:1 on white; 6.9:1 or better in
-dark). Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11y.spec.ts`.
+dark). Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11y.spec.ts`, and with each theme
+forced on a device of the other scheme.
+
+### Theme
+
+The person chooses **System** (the default), **Light** or **Dark**, on this device (decision 2026-11-14; ADR 0011 amended). The rule is one
+sentence: **a component reads the page's theme, never the device's.** The page's theme is `<html data-theme="light|dark">`, set before the
+first paint by a head script (allowed by its hash, never `'unsafe-inline'`) and kept by `lib/theme.ts`; the tokens above are
+`:root` and `:root[data-theme="dark"]`, `dark:` is a variant of that attribute, and `color-scheme` follows it so native controls
+and scrollbars match. Anything that draws apart from CSS (a diagram, a canvas, a chart's colours read into script) takes
+`usePageTheme()` and draws again when it changes; a dark diagram on a light page is the bug this prevents. No new
+`prefers-color-scheme` in a stylesheet or `matchMedia` in a component: `lib/theme.ts` is the one place that asks the device, and only
+while System is chosen.
+
+The control is a **Theme** group of three radio items (System, Light, Dark) in the account menu: the current one is checked,
+the arrows move, Enter chooses, and the menu stays open so the change is seen. The group has the same size in every state, so
+nothing moves. Where there is no account menu (the sign-in screen, a shared conversation, a local run with nobody signed in)
+the same group opens from a **Theme** icon button.
 
 ## Motion
 
