@@ -220,7 +220,7 @@ impl UiCatalogData {
 
     /// The **forms catalog** derived from this one: what an asked agent is sent (ADR 0026, amended
     /// 2026-10-17), so that it can draw a form and nothing else. It is
-    /// `{catalogId: <this id>/forms, components: {Choices: <this catalog's Choices, unchanged>}}`,
+    /// `{catalogId: <this id>/forms, components: {Choices: <this catalog's Choices, without `show`>}}`,
     /// with this catalog's `version` (the agent reads from the version what a `Choices` may hold)
     /// and the digest of the contract computed over the canonical JSON of the derived catalog, as
     /// for any catalog. It is derived at send time and never recorded: the same catalog gives the
@@ -242,7 +242,7 @@ impl UiCatalogData {
         }
         let catalog = serde_json::json!({
             "catalogId": catalog_id,
-            "components": {"Choices": choices},
+            "components": {"Choices": without_show(choices)},
         });
         let digest = catalog_digest(&catalog).ok()?;
         Some(UiCatalogData {
@@ -252,6 +252,31 @@ impl UiCatalogData {
             catalog,
         })
     }
+}
+
+/// The sentence of a version 8 `Choices` description that offers `show`, as it begins.
+const SHOW_SENTENCE_START: &str = " Only when the thread's catalog is version 8 or more: ";
+
+/// A `Choices` schema for an asked agent: the question's `show` member is taken out, and the
+/// sentence of the description that offers it (it runs to the next full stop followed by a space,
+/// or to the end). The display components `show` names are not in a forms catalog, and an asked
+/// agent's surfaces are not drawn, so the schema must not invite it. A `Choices` that has no
+/// `show` (versions 1 to 7) is returned as it is, byte for byte.
+fn without_show(choices: &Value) -> Value {
+    let mut copy = choices.clone();
+    let removed = copy
+        .pointer_mut("/properties/questions/items/properties")
+        .and_then(Value::as_object_mut)
+        .is_some_and(|properties| properties.remove("show").is_some());
+    if removed
+        && let Some(Value::String(text)) = copy.get_mut("description")
+        && let Some(start) = text.find(SHOW_SENTENCE_START)
+    {
+        let rest = start + SHOW_SENTENCE_START.len();
+        let end = text[rest..].find(". ").map_or(text.len(), |i| rest + i + 1);
+        text.replace_range(start..end, "");
+    }
+    copy
 }
 
 /// The members of the object the web sends; anything else in it is refused.
@@ -720,13 +745,17 @@ mod tests {
         assert_eq!(screen(7).forms_only().unwrap().version, 7);
     }
 
-    /// ADR 0026, note of 2026-11-14: a screen of catalog version 8, whose `Choices` can `show` components of its
-    /// surface, still sends an asked agent `Choices` alone. Nobody sees an asked agent's surfaces, and a lone display
-    /// component is exactly the surface that was taken away from it (third note of 2026-10-17).
+    /// ADR 0026, notes of 2026-11-14: a screen of catalog version 8, whose `Choices` can `show` components of its
+    /// surface, sends an asked agent `Choices` alone and without `show`. Nobody sees an asked agent's surfaces, and a
+    /// lone display component is exactly the surface that was taken away from it (third note of 2026-10-17), so the
+    /// schema must not invite what the catalog cannot draw.
     #[test]
-    fn forms_only_keeps_choices_alone_when_its_schema_can_show() {
+    fn forms_only_keeps_choices_alone_and_takes_show_out_of_its_schema() {
+        let before = "A form. Only when the thread's catalog is version 7 or more: confirm and rank.";
+        let sentence = " Only when the thread's catalog is version 8 or more: a question may carry show, 1 to 4 ids of components of the same surface (Text or Chart), drawn with the question; an image needs its alt.";
         let choices = json!({
             "type": "object",
+            "description": format!("{before}{sentence}"),
             "properties": {
                 "component": {"const": "Choices"},
                 "questions": {
@@ -764,12 +793,19 @@ mod tests {
             catalog,
         };
         let forms = screen.forms_only().unwrap();
-        assert_eq!(forms.version, 8);
+        assert_eq!(forms.version, 8, "the version is the thread's, as before");
+        let mut honest = choices.clone();
+        honest["description"] = json!(before);
+        honest["properties"]["questions"]["items"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("show");
         assert_eq!(
             forms.catalog,
-            json!({"catalogId": format!("{ID}/forms"), "components": {"Choices": choices}}),
-            "the schema is the screen's, with its `show`, and the components it may name are not here"
+            json!({"catalogId": format!("{ID}/forms"), "components": {"Choices": honest}}),
+            "the screen's `Choices` without `show` and without the sentence that offers it; the components it names are not here"
         );
+        assert_ne!(forms.digest, screen.digest);
         // the same every time, and a catalog the orchestrator would take
         for _ in 0..3 {
             assert_eq!(screen.forms_only().unwrap(), forms);
