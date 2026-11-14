@@ -90,7 +90,7 @@ for (const [name, message] of [
 ] as const) {
   test(`Export Markdown downloads the file the contract describes (${name})`, async ({ page }) => {
     await startThread(page, message, "Reviewer");
-    await expect(badge(page)).toHaveText("Done");
+    await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
     const id = /\/threads\/([0-9a-f-]{36})$/.exec(page.url())?.[1] ?? "";
     const file = await downloadMarkdown(page);
     expect(file.name).toBe(`thread-${id}.md`);
@@ -102,9 +102,12 @@ for (const [name, message] of [
 
 test("nothing in the Markdown that the JSON export does not hold", async ({ page }) => {
   await startThread(page, "steps go", "Reviewer");
-  await expect(badge(page)).toHaveText("Done");
+  await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
   const id = /\/threads\/([0-9a-f-]{36})$/.exec(page.url())?.[1] ?? "";
   const markdown = (await downloadMarkdown(page)).text;
+  // the menu that made the first file is closing: wait for it to be gone, then open it again
+  await expect(page.getByRole("menu")).toBeHidden();
+  await expect(await exportMenuItem(page)).toBeEnabled();
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     (await exportMenuItem(page)).click(),

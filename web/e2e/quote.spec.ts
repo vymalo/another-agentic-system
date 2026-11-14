@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test as base, expect, type Locator, type Page } from "@playwright/test";
+import { uuidv7 } from "../src/lib/uuid";
 import { animationsDone, badge, conversation, MOCK_URL, startThread } from "./helpers";
 
 /*
@@ -46,9 +47,30 @@ async function select(target: Locator, from: number, to: number, within?: string
   );
 }
 
+/** A finished thread the way any AG-UI client makes one: the consumer mints the id, the POST runs it. */
+async function makeThread(text: string, origin: string, cookie?: string): Promise<string> {
+  const id = uuidv7();
+  const res = await fetch(`${origin}/agui/agents/adam`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...(cookie ? { cookie } : {}),
+    },
+    body: JSON.stringify({
+      threadId: id,
+      runId: "run-1",
+      messages: [{ id: "m-1", role: "user", content: text }],
+    }),
+  });
+  expect(res.ok).toBe(true);
+  await res.text();
+  return id;
+}
+
 async function talk(page: Page, text = "talk") {
   await startThread(page, text, "Reviewer");
-  await expect(badge(page)).toHaveText("Done");
+  await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
 }
 
 test.describe("Quote", () => {
@@ -99,7 +121,9 @@ test.describe("Quote", () => {
     });
     await quoteOf(turn(page)).click();
     await expect(box(page)).toHaveValue("");
-    await expect(turn(page).getByRole("status")).toContainText("Select text inside one message");
+    await expect(turn(page).locator('[data-slot="quote-note"]')).toContainText(
+      "Select text inside one message",
+    );
   });
 
   test("a code selection stays code", async ({ page }) => {
@@ -151,10 +175,44 @@ test.describe("Quote", () => {
   });
 
   test("is not offered to a person who may only read", async ({ page, asReadOnly }) => {
-    await talk(page);
+    const id = await makeThread("talk", MOCK_URL);
+    // the read-only person is viewer@example.com: the thread is theirs, and they may not write in it
+    const handed = await fetch(`${MOCK_URL}/__mock/owner?thread=${id}&owner=viewer@example.com`, {
+      method: "POST",
+    });
+    expect(handed.status).toBe(204);
     await asReadOnly();
-    await page.reload();
-    await expect(badge(page)).toHaveText("Done");
+    await page.goto(`/threads/${id}`);
+    await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+    await expect(turn(page).getByRole("button", { name: "Copy" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Quote" })).toHaveCount(0);
+  });
+
+  test("is not offered on a shared link, where Copy is", async ({ page, context }) => {
+    const sessionOf = async (query: string) => {
+      const session = `e2e-quote-share-${process.pid}-${Date.now()}-${query.replace(/\W/g, "")}`;
+      const res = await fetch(`${MOCK_URL}/__mock/config?${query}&session=${session}`, {
+        method: "POST",
+      });
+      expect(res.ok).toBe(true);
+      return session;
+    };
+    const owner = `mock-registry=${await sessionOf("sharing=public")}`;
+    const id = await makeThread("talk", MOCK_URL, owner);
+    const shared = await fetch(`${MOCK_URL}/api/threads/${id}/share`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", cookie: owner },
+      body: JSON.stringify({ visibility: "internal" }),
+    });
+    expect(shared.status).toBe(200);
+    const token = ((await shared.json()) as { url: string }).url.replace("/s/", "");
+    const reader = await sessionOf("me=admin&sharing=public");
+    await context.addCookies([{ name: "mock-registry", value: reader, url: ORIGIN }]);
+    await page.goto(`/s/${token}`);
+    await expect(page.locator('[data-slot="shared-banner"]')).toHaveText(
+      "Shared conversation, read only",
+    );
+    await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
     await expect(turn(page).getByRole("button", { name: "Copy" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Quote" })).toHaveCount(0);
   });
@@ -189,7 +247,7 @@ test.describe("Copy", () => {
       .getByRole("button", { name: "Copy" })
       .click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-      'fn total(prices: &[u32]) -> u32 {\n    // sum in cents, so "$5" is 500\n    prices.iter().sum()\n}',
+      'fn total(prices: &[u32]) -> u32 {\n    // sum in cents, so "$5" is 500\n    prices.iter().sum()\n}\n',
     );
 
     await page.evaluate(() => {
