@@ -502,6 +502,63 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "account-menu");
     });
 
+    // the usage page (ADR 0065): a month with a model and a sandbox shape the deployment does not price, so the total reads "at least"
+    test("usage page", async ({ page, context }) => {
+      const session = `screens-usage-${uuidv7()}`;
+      const price = (model: string, input: number, output: number, price: string | null) => ({
+        provider: "zai",
+        model,
+        inputTokens: input,
+        outputTokens: output,
+        totalTokens: input + output,
+        price,
+      });
+      const hook = await fetch(`${MOCK_URL}/__mock/my-usage?session=${session}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          "*": {
+            month: "x",
+            currency: "EUR",
+            prices: "sha256:0123456789abcdef",
+            tasks: 12,
+            models: [
+              { ...price("glm-5.3", 1_250_000, 310_500, "3.141593"), cachedInputTokens: 400_000 },
+              price("glm-5.3-mini", 48_200, 9_100, null),
+            ],
+            sandbox: [
+              {
+                environment: "kubernetes",
+                cpuMillis: 2000,
+                memoryBytes: 4 * 2 ** 30,
+                commands: 41,
+                milliseconds: 4_320_000,
+                price: "0.250000",
+              },
+            ],
+            unmeasured: [],
+            total: {
+              amount: "3.391593",
+              currency: "EUR",
+              complete: false,
+              unpriced: {
+                models: [{ provider: "zai", model: "glm-5.3-mini" }],
+                sandbox: 0,
+                unmeasured: 0,
+              },
+            },
+          },
+        }),
+      });
+      expect(hook.status).toBe(204);
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      await page.goto("/usage");
+      await expect(page.getByRole("region", { name: "Total" })).toContainText("At least");
+      await shot(page, "usage-page");
+    });
+
     test("sign-in screen, and the same after a sign-in lapsed (browser mode)", async ({ page }) => {
       // the mock is an edge deployment: the page is told it is a browser-mode one, whose issuer is never reached here
       const issuer = "https://auth.example.com/realms/acme";

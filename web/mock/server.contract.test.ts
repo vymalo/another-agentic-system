@@ -2283,6 +2283,91 @@ describe("who the session is, and what its roles let it do (ADR 0033), as the mo
     expect(own.every((t) => t.owner === "admin@example.com")).toBe(true);
   });
 
+  it("getMyUsage: the caller's own month, validated against MyUsage, never cached, no role needed (ADR 0065)", async () => {
+    // nothing set: an empty, complete month of the month asked (the current UTC one by default)
+    const own = await as("user");
+    const res = await get("/api/me/usage?month=2026-10", own);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const empty = (await expectDocumented("/api/me/usage", "get", res)) as {
+      month: string;
+      total: { amount: string; complete: boolean };
+    };
+    expect(empty.month).toBe("2026-10");
+    expect(empty.total).toMatchObject({ amount: "0.000000", complete: true });
+    const now = (await (await get("/api/me/usage", own)).json()) as { month: string };
+    expect(now.month).toBe(new Date().toISOString().slice(0, 7));
+
+    // what a test sets: a month of its own and `*` for the others, the answer carrying the month asked
+    const priced = {
+      month: "2026-09",
+      currency: "EUR",
+      prices: "sha256:0123456789abcdef",
+      tasks: 1,
+      models: [
+        {
+          model: "glm-5.3",
+          inputTokens: 10,
+          outputTokens: 5,
+          totalTokens: 15,
+          price: null,
+        },
+      ],
+      sandbox: [],
+      unmeasured: [{ environment: "local", tasks: 1 }],
+      total: {
+        amount: "0.000000",
+        currency: "EUR",
+        complete: false,
+        unpriced: { models: [{ model: "glm-5.3" }], sandbox: 0, unmeasured: 1 },
+      },
+    };
+    expect((await send("POST", "/__mock/my-usage", own, { "2026-09": priced })).status).toBe(204);
+    const set = await get("/api/me/usage?month=2026-09", own);
+    expect(await expectDocumented("/api/me/usage", "get", set)).toEqual(priced);
+    const other = await get("/api/me/usage?month=2026-08", own);
+    expect(((await other.json()) as { tasks: number }).tasks).toBe(0);
+    expect(
+      (await send("POST", "/__mock/my-usage", own, { "*": { ...priced, month: "x" } })).status,
+    ).toBe(204);
+    const any = (await (await get("/api/me/usage?month=2025-02", own)).json()) as {
+      month: string;
+      models: unknown[];
+    };
+    expect(any.month).toBe("2025-02");
+    expect(any.models).toHaveLength(1);
+    expect((await send("POST", "/__mock/my-usage", own, { "2026-9": priced })).status).toBe(400);
+
+    // a person whose roles are read-only, and another session, read their own: no permission gates it
+    const reader = await as("read-only");
+    expect((await get("/api/me/usage?month=2026-09", reader)).status).toBe(200);
+    expect(
+      ((await (await get("/api/me/usage?month=2026-09", reader)).json()) as { tasks: number })
+        .tasks,
+    ).toBe(0);
+    // and so does a person whose roles grant nothing: the one route, with `GET /api/me`, that answers them
+    expect((await get("/api/me/usage", await as("no-access"))).status).toBe(200);
+
+    // a bad month, a month twice, `owner` and any other key are a 400 (a problem)
+    for (const query of [
+      "month=2026-13",
+      "month=2026-1",
+      "month=",
+      "month=2026-10&month=2026-09",
+      "owner=someone@example.com",
+      "month=2026-10&owner=dev@example.com",
+      "user=x",
+    ]) {
+      const bad = await problemOf(
+        "/api/me/usage",
+        "get",
+        await get(`/api/me/usage?${query}`, own),
+        400,
+      );
+      expect(bad.status, query).toBe(400);
+    }
+  });
+
   it("an administrator does not read another's thread, nor change it: 404 on every read, rename, cancel, fork and run", async () => {
     const admin = await as("admin");
     const theirs = await threadOf({}, "echo theirs");

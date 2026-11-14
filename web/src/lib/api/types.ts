@@ -7,6 +7,10 @@ export type ApiAgent = components["schemas"]["Agent"];
 export type ApiMention = components["schemas"]["Mention"];
 export type ApiMe = components["schemas"]["Me"];
 export type ApiPermission = components["schemas"]["Permission"];
+/** What the caller used in a UTC month, priced (`getMyUsage`, ADR 0065); every amount is a string, never a number. */
+export type ApiMyUsage = components["schemas"]["MyUsage"];
+export type ApiUsageModelLine = components["schemas"]["UsageModelLine"];
+export type ApiUsageSandboxLine = components["schemas"]["UsageSandboxLine"];
 /** How the person's own list shows a thread (`arrangeThread`, ADR 0042): pin, archive, eject or place it. */
 export type ApiArrangement = components["schemas"]["ThreadArrangement"];
 export type ApiToolServer = components["schemas"]["ToolServer"];

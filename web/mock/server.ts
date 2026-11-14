@@ -43,6 +43,7 @@ import {
 import { type BrowserAuthOptions, createIssuer } from "./issuer";
 import { LiveOverlay, type LivePiece } from "./live";
 import { checkAgainstText, checkAgents, type MentionRef, readMentions } from "./mentions";
+import { answerFor, type MyUsage, parseAnswers, readQuery } from "./my-usage";
 import {
   type Audience,
   type CatalogRef,
@@ -380,6 +381,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     tiers: Map<string, CardTiers>;
     /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
     toolServers: ToolServer[];
+    /** What `GET /api/me/usage` answers (ADR 0065) by month, `"*"` for any other: as a test sets it (`POST /__mock/my-usage`). */
+    myUsage: Record<string, MyUsage>;
     /** The deployment's cap on sharing (`sharing.mode`, ADR 0040); what `/api/me` says is the cap for a role that may share. */
     sharing: Sharing;
     /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
@@ -411,6 +414,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         me: "user",
         tiers: new Map(),
         toolServers: [...TOOL_SERVERS],
+        myUsage: {},
         sharing: "internal",
         signedIn: true,
         stale: false,
@@ -1505,6 +1509,21 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       else tiers.set(body.agent, body.params);
       return void res.writeHead(204).end();
     }
+    // What `GET /api/me/usage` answers for this session (ADR 0065): `{ "<YYYY-MM>": MyUsage, "*": MyUsage }`, the body
+    // taken whole (see `my-usage.ts`); a month it names none for is an empty, complete one.
+    if (path === "/__mock/my-usage" && method === "POST") {
+      const answers = parseAnswers(await readJson(req));
+      if (!answers) {
+        return problem(
+          res,
+          400,
+          "Bad Request",
+          "the body is an object of `YYYY-MM` (or `*`) to MyUsage",
+        );
+      }
+      registryOf(url.searchParams.has("session") ? session : sessionOf(req)).myUsage = answers;
+      return void res.writeHead(204).end();
+    }
     if (path === "/__mock/registry/agents" && method === "POST") {
       const agent = (await readJson(req)) as Agent;
       registryOf(session).agents.push({ ...agent, source: "registry" });
@@ -1562,6 +1581,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // route that answers a person whose roles grant nothing. Every other route of the APIs refuses
     // such a person (`no_access`).
     if (path === "/api/me" && method === "GET") return sendJson(res, 200, meOf(req));
+    // `GET /api/me/usage` (`getMyUsage`, ADR 0065): the caller's own month. No permission gates it, so a person whose roles
+    // grant nothing reads their own too, and there is no `owner`: it, like any other key, is a 400. Never cached (`sendJson`).
+    if (path === "/api/me/usage" && method === "GET") {
+      const asked = readQuery(url.searchParams);
+      if ("error" in asked) return problem(res, 400, "Bad Request", asked.error);
+      return sendJson(res, 200, answerFor(registryOf(sessionOf(req)).myUsage, asked.month));
+    }
     if (
       (path.startsWith("/api/") || path.startsWith("/agui/")) &&
       meOf(req).permissions.length === 0

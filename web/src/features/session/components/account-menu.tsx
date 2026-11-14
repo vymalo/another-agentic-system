@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronsUpDownIcon, LogOutIcon } from "lucide-react";
+import { ChartNoAxesColumnIcon, ChevronsUpDownIcon, LogOutIcon } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +19,7 @@ import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
 
 /** The words, one place: the menu, the no-access screen and the tests read them. */
 export const SIGN_OUT_LABEL = "Sign out";
+export const USAGE_LABEL = "Usage";
 
 /** Whether this deployment has a sign-in to end; it is known once the page has asked (`useBrowserAuth`). */
 export function useCanSignOut(): boolean {
@@ -26,7 +28,7 @@ export function useCanSignOut(): boolean {
 }
 
 /**
- * The person at the foot of the sidebar: who they are (`GET /api/me`) and a menu with **Sign out**. In
+ * The person at the foot of the sidebar: who they are (`GET /api/me`) and a menu with **Usage** (the page of what they used this month, ADR 0065) and **Sign out**. In
  * browser mode it revokes the refresh token, deletes this browser's key and session and ends the
  * issuer's session (ADR 0054, decision 11); with an edge it goes to oauth2-proxy's sign-out. Nothing
  * when there is neither a person to show nor a sign-in to end (a local run without an edge).
@@ -83,9 +85,16 @@ export function AccountMenu() {
               <DropdownMenuLabel className="truncate font-normal">
                 Signed in as <span className="font-medium text-foreground">{email}</span>
               </DropdownMenuLabel>
-              {signOut ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuSeparator />
             </>
           ) : null}
+          {/* no permission gates it: the route answers for the person who asks, and for nobody else (ADR 0065) */}
+          <DropdownMenuItem asChild>
+            <Link href="/usage">
+              <ChartNoAxesColumnIcon aria-hidden="true" />
+              {USAGE_LABEL}
+            </Link>
+          </DropdownMenuItem>
           {signOut ? (
             <DropdownMenuItem
               disabled={leaving}

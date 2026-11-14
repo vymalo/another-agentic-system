@@ -90,6 +90,15 @@ describe("the account menu", () => {
     expect(container.querySelector('[data-slot="account"]')).toBeNull();
   });
 
+  it("links to the usage page, whatever the person's roles are and with or without a sign-in to end", async () => {
+    setBrowserAuth(null);
+    state.me = { status: "ready", me: { ...ME, roles: [], permissions: [] } };
+    render(<AccountMenu />, { wrapper: TooltipProvider });
+    await openMenu();
+    const usage = screen.getByRole("menuitem", { name: "Usage" });
+    expect(usage.getAttribute("href")).toBe("/usage");
+  });
+
   it("waits for the deployment's kind before it offers Sign out", () => {
     vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
     state.me = { status: "unknown", me: null };
