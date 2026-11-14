@@ -1164,6 +1164,8 @@ stateDiagram-v2
 - **An edit** (`kind: "edit"`) is the same copy up to just before a person's message, then `thread_forked`, then the
   replacing message in the same commit: the frames above, then the new run (`user_message`, `job_started`, the agent's
   events) with `jobNumber` and `forkedFrom` in every snapshot.
+- **Regenerate the last answer** is an edit of the person's message that began the newest turn with its own words and no
+  `tier`; the recipe, and when a client should not offer it, is in `forkThread` of the [contract](chat-api.yaml).
 
 ### A fork made with its first message
 

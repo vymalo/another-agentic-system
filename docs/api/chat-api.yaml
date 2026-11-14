@@ -934,6 +934,28 @@ paths:
           `listThreads` unless asked for, and `listBranches` finds its siblings. A conversation holds at most 256
           threads, its first thread and the threads made from it this way: the 256th edit is a 409.
 
+        **Regenerate the last answer** is an edit with the same words; the server has no route of its own for it
+        ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md), amended 2026-11-14). A client does this:
+        1. Take the person's message that began the **newest** turn and `POST` `{id, replace: <its seq>, text: <its words,
+           unchanged>, messageId}`. Send **no `tier`**: the server then keeps the replaced message's tier (below). The
+           answer is a new version of that message: `listBranches` finds it, and the client goes to the new thread.
+        2. `id` and `messageId` are new UUIDs for each regenerate and the **same** ones for a retry after a failure
+           (a lost response, a 5xx), so a retry never makes a second thread; the next regenerate, of the same
+           message too, mints new ones.
+        3. Do not offer it when the client can see, from what the API gives it, that the edit would lose something:
+           the thread is `queued`, `working` or `verifying` (the turn is not over); the thread is `blocked` with a
+           question open (the edit would drop it); the newest turn did not begin with a message of a person but with a
+           form answer (`ui_action`, the `vymalo.action` activity: there is no message to replace); the message mentioned
+           agents (`vymalo.mentions` in its `START` metadata: an edit carries none); the message was sent while the agent
+           worked (`vymalo.delivery`, `steer` or `interrupt`: the turn also holds the agent's earlier work, which an
+           edit of that message keeps, so it is not "again"); the caller holds no `thread.write` (`getMe`); or the
+           thread is read through a share link (the owner's routes are a 404 to a reader).
+
+        The server enforces only the caller's `thread.write` (403), ownership (404, a share link's reader included),
+        that `replace` is a message of a person (422) and the tier rules below. Everything else in step 3 is the client's
+        courtesy: a request that ignores it is accepted. The `seq` of a person's message is the resume point (SSE `id:`)
+        of the last frame of that message in the stream ([`agui.md`](agui.md)).
+
         `tier` ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
         [`access-tier-v1.md`](access-tier-v1.md)) is the access tier of the message the fork carries, one of `plan`, `edits`,
         `auto`, `bypass`, read as `forwardedProps["vymalo.tier"]` is; it goes with `text`. An **edit** that names none is
