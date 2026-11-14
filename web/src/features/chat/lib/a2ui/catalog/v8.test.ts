@@ -4,10 +4,10 @@ import { describe, expect, it } from "vitest";
 import { ACTIVITY, activityPartName } from "@/features/chat/lib/agui/vymalo";
 import { aliveOperations, prepareSurface } from "../prepare";
 import { progressOf, progressWords, readItems } from "../status";
-import { latestPlan, latestSurface, placeOf } from "../surfaces";
+import { answeredAfter, latestPlan, latestSurface, placeOf, planDataOf } from "../surfaces";
 import lock from "./catalog.lock.json";
 import { catalogDigest } from "./digest";
-import { asVersion7, V7_DIGEST } from "./earlier";
+import { asVersion7, V7_DIGEST, VERSION_7 } from "./earlier";
 import { OWN_CATALOG } from "./index";
 import { compileCatalog } from "./validate";
 
@@ -119,8 +119,8 @@ describe("the contract page (docs/api/ui-catalog-v1.md, Version 8): a checklist"
 
   it("states how many cases there are, and every one of them is there", () => {
     expect(cases.length).toBe(said("checklists"));
-    expect(cases.filter((c) => c.progress === null).length).toBe(7);
-    expect(cases.length).toBe(14);
+    expect(cases.filter((c) => c.progress === null).length).toBe(8);
+    expect(cases.length).toBe(16);
   });
 });
 
@@ -128,7 +128,9 @@ describe("the contract page: what a surface may be and hold", () => {
   type Surface = {
     because: string;
     surfaceId?: string;
+    catalog?: "basic";
     components: Rec[];
+    operationsAfter?: Rec[];
     result: string;
   };
   const { files, cases } = block<{
@@ -140,12 +142,23 @@ describe("the contract page: what a surface may be and hold", () => {
     preview: f.kind === "image" ? ("image" as const) : null,
     mimeType: f.kind === "image" ? "image/png" : "text/plain",
   }));
-  const operations = (surfaceId: string, components: Rec[]) => [
-    { version: "v0.9.1", createSurface: { surfaceId, catalogId: OWN_CATALOG.catalogId } },
-    { version: "v0.9.1", updateComponents: { surfaceId, components } },
+  const BASIC = "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json";
+  const operations = (c: Surface) => [
+    {
+      version: "v0.9.1",
+      createSurface: {
+        surfaceId: c.surfaceId ?? "s1",
+        catalogId: c.catalog === "basic" ? BASIC : OWN_CATALOG.catalogId,
+      },
+    },
+    {
+      version: "v0.9.1",
+      updateComponents: { surfaceId: c.surfaceId ?? "s1", components: c.components },
+    },
+    ...(c.operationsAfter ?? []),
   ];
   const resultOf = (c: Surface): string => {
-    const got = prepareSurface(operations(c.surfaceId ?? "s1", c.components), {
+    const got = prepareSurface(operations(c), {
       files: kept,
       threadVersion: 8,
     });
@@ -165,12 +178,13 @@ describe("the contract page: what a surface may be and hold", () => {
     const per: Record<string, number> = {};
     for (const c of cases) per[c.result] = (per[c.result] ?? 0) + 1;
     expect(per).toEqual({
-      drawn: 11,
-      pending: 2,
-      "refused:schema": 16,
+      drawn: 14,
+      pending: 3,
+      deleted: 1,
+      "refused:schema": 17,
       "refused:expansion": 2,
       "refused:artifact": 2,
-      "refused:action": 1,
+      "refused:action": 5,
     });
   });
 
@@ -183,6 +197,14 @@ describe("the contract page: what a surface may be and hold", () => {
       expect(drawn.has(name), name).toBe(true);
     }
     expect(doc).toContain("a closed list of seven components");
+    // the page says that a plan refuses an input with no action, and a Button of an event, and allows a link
+    const plans = cases.filter((c) => c.surfaceId === "plan-1" && c.catalog === "basic");
+    expect(plans.map((c) => c.result)).toEqual([
+      "refused:action",
+      "refused:action",
+      "refused:action",
+      "drawn",
+    ]);
   });
 
   it("a plan that holds a form is refused whole, and a form is drawn under every id that is not a plan", () => {
@@ -209,7 +231,7 @@ describe("the contract page: a surface that is started over", () => {
       expect(aliveOperations(c.operations).length, c.because).toBe(c.operations.length - c.from);
     }
     expect(cases.length).toBe(said("restarts"));
-    expect(cases.length).toBe(5);
+    expect(cases.length).toBe(6);
   });
 
   it("a surface sent again whole many times counts only its last copy against the size limit", () => {
@@ -248,46 +270,117 @@ describe("the contract page: a surface that is started over", () => {
 });
 
 describe("the contract page: a surface sent again, and the plan", () => {
-  type Copy = { key: string; surfaceId: string; marker: string };
+  type Copy = { key: string; surfaceId: string; marker: string; deleted?: boolean };
+  type Item = Copy | { person: true };
   const cases =
-    block<{ because: string; copies: Copy[]; result: string[]; pinned: string | null }[]>("copies");
-  const transcript = (copies: Copy[]) =>
-    copies.map((c, i) => ({
-      id: `m${i}`,
-      role: "assistant",
-      content: [
-        {
-          type: "data",
-          name: activityPartName(ACTIVITY.surface),
-          data: {
-            surface: c.key,
-            marker: c.marker,
-            a2ui_operations: [
-              { version: "v0.9.1", createSurface: { surfaceId: c.surfaceId, catalogId: "x" } },
+    block<{ because: string; copies: Item[]; result: string[]; pinned: string | null }[]>("copies");
+  const isCopy = (i: Item): i is Copy => !("person" in i);
+  const transcript = (items: Item[]) =>
+    items.map((c, i) =>
+      isCopy(c)
+        ? {
+            id: `m${i}`,
+            role: "assistant",
+            content: [
+              {
+                type: "data",
+                name: activityPartName(ACTIVITY.surface),
+                data: {
+                  surface: c.key,
+                  marker: c.marker,
+                  a2ui_operations: [
+                    c.deleted
+                      ? { version: "v0.9.1", deleteSurface: { surfaceId: c.surfaceId } }
+                      : {
+                          version: "v0.9.1",
+                          createSurface: { surfaceId: c.surfaceId, catalogId: "x" },
+                        },
+                  ],
+                },
+              },
             ],
-          },
-        },
-      ],
-    }));
+          }
+        : { id: `m${i}`, role: "user", content: [{ type: "text", text: "ok go ahead" }] },
+    );
   const markerOf = (data: unknown) => String((data as Rec).marker);
+  const deletedOf = (data: unknown) =>
+    Boolean(((data as Rec).a2ui_operations as Rec[]).at(-1)?.deleteSurface);
+  const says = (data: unknown, label: string) =>
+    deletedOf(data) ? "gone" : `${label}:${markerOf(data)}`;
 
   it("each copy draws what the page says, and the pinned plan is the one it names", () => {
     for (const c of cases) {
       const messages = transcript(c.copies);
-      const got = c.copies.map((copy, i) => {
+      const got: string[] = [];
+      c.copies.forEach((copy, i) => {
+        if (!isCopy(copy)) return;
         const place = placeOf(messages, `m${i}`, copy.key, copy.surfaceId);
-        if (place === "own") return `draws:${copy.marker}`;
-        if (place === "newest") {
-          return `draws:${markerOf(latestSurface(messages, copy.key)?.data)}`;
-        }
-        return place;
+        if (place === "own") got.push(says(latestSurface(messages, copy.key)?.data, "draws"));
+        else if (place === "older") {
+          got.push(deletedOf(latestSurface(messages, copy.key)?.data) ? "gone" : "older");
+        } else if (place === "newest") {
+          got.push(says(planDataOf(messages, `m${i}`, copy.key, copy.surfaceId), "draws"));
+        } else if (place === "frozen") {
+          got.push(says(planDataOf(messages, `m${i}`, copy.key, copy.surfaceId), "older-plan"));
+        } else got.push(place);
       });
       expect(got, c.because).toEqual(c.result);
       const pinned = latestPlan(messages);
       expect(pinned === undefined ? null : markerOf(pinned.data), c.because).toBe(c.pinned);
     }
     expect(cases.length).toBe(said("copies"));
-    expect(cases.length).toBe(8);
+    expect(cases.length).toBe(17);
+  });
+
+  it("an answered copy and an open one: answered belongs to the copy (answered)", () => {
+    const answered = block<{ because: string; items: string[]; result: string[] }[]>("answered");
+    for (const c of answered) {
+      const messages = c.items.map((it, i) =>
+        it === "person"
+          ? { id: `m${i}`, role: "user", content: [{ type: "text", text: "ok" }] }
+          : {
+              id: `m${i}`,
+              role: "assistant",
+              content: [{ type: "data", name: activityPartName(ACTIVITY.surface), data: {} }],
+            },
+      );
+      const got = c.items.flatMap((it, i) =>
+        it === "person" ? [] : [answeredAfter(messages, `m${i}`) ? "answered" : "open"],
+      );
+      expect(got, c.because).toEqual(c.result);
+    }
+    expect(answered.length).toBe(said("answered"));
+    expect(answered.length).toBe(4);
+  });
+
+  it("the progress of a plan is the sum over its checklists, a dropped item in neither number (plan-progress)", () => {
+    const cases =
+      block<{ because: string; checklists: Rec[][]; progress: [number, number] | null }[]>(
+        "plan-progress",
+      );
+    for (const c of cases) {
+      const ids = c.checklists.map((_, i) => `l${i}`);
+      const components = [
+        { id: "root", component: "Column", children: ids.length ? ids : ["t"] },
+        ...(ids.length ? [] : [{ id: "t", component: "Text", text: "Nothing to count" }]),
+        ...c.checklists.map((items, i) => ({ id: `l${i}`, component: "Checklist", items })),
+      ];
+      const got = prepareSurface(
+        [
+          {
+            version: "v0.9.1",
+            createSurface: { surfaceId: "plan-1", catalogId: OWN_CATALOG.catalogId },
+          },
+          { version: "v0.9.1", updateComponents: { surfaceId: "plan-1", components } },
+        ],
+        { threadVersion: 8 },
+      );
+      expect(got.kind, c.because).toBe("surface");
+      const progress = got.kind === "surface" ? got.progress : undefined;
+      expect(progress ? [progress.done, progress.total] : null, c.because).toEqual(c.progress);
+    }
+    expect(cases.length).toBe(said("plan-progress"));
+    expect(cases.length).toBe(4);
   });
 
   it("the id of a plan is plan- and one more character, in lower case", () => {
@@ -316,6 +409,11 @@ describe("the contract page: a surface sent again, and the plan", () => {
 describe("version 8 is version 7 and additions", () => {
   it("takes the additions away and the digest is the one version 7 shipped", async () => {
     expect(await catalogDigest(asVersion7(OWN_CATALOG.catalog))).toBe(V7_DIGEST);
+  });
+
+  it("the checked-in catalog of version 7 is the released one, and what is left of version 8 is equal to it, descriptions too", async () => {
+    expect(await catalogDigest(VERSION_7)).toBe(V7_DIGEST);
+    expect(asVersion7(OWN_CATALOG.catalog)).toEqual(VERSION_7);
   });
 
   it("a client of version 7 refuses show, a dropped item and a note, at the place of each", () => {

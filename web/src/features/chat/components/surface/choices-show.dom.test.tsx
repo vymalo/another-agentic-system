@@ -216,3 +216,46 @@ describe("what a question may not show", () => {
     m.agent.stop();
   });
 });
+
+describe("the order of what a question shows, for every kind of question", () => {
+  const WORDS = "Which one, exactly?";
+  const kinds: [string, Rec][] = [
+    ["single", { options: [opt("a"), opt("b")] }],
+    ["multiple", { options: [opt("a"), opt("b")] }],
+    ["select", { options: [opt("a"), opt("b")] }],
+    ["text", {}],
+    ["longText", {}],
+    ["confirm", {}],
+    ["number", {}],
+    ["scale", { from: 0, to: 5 }],
+    ["date", {}],
+    ["rank", { options: [opt("a"), opt("b")] }],
+  ];
+
+  for (const [type, extra] of kinds) {
+    it(`${type}: the words of the question, then what it shows, then its control`, async () => {
+      const m = await mountShowing([
+        ...pick([{ id: "q", question: WORDS, help: "A help line.", type, show: ["s"], ...extra }]),
+        text("s", "SHOWN-BLOCK"),
+      ]);
+      const shown = document.querySelector('[data-slot="choices-shown"]') as HTMLElement;
+      expect(shown?.textContent).toContain("SHOWN-BLOCK");
+      const group = shown.closest("fieldset, [data-slot=choices-question]") as HTMLElement;
+      const after = (a: Node, b: Node) =>
+        Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const words = within(group).getByText(WORDS, { exact: false });
+      expect(after(words, shown), "the words come before what is shown").toBe(true);
+      const controls = [
+        ...group.querySelectorAll("input, textarea, select, button, [role=combobox]"),
+      ].filter((el) => !shown.contains(el));
+      expect(controls.length, "the question has a control").toBeGreaterThan(0);
+      for (const control of controls) {
+        expect(
+          after(shown, control),
+          `what is shown comes before <${control.tagName.toLowerCase()}>`,
+        ).toBe(true);
+      }
+      m.agent.stop();
+    });
+  }
+});

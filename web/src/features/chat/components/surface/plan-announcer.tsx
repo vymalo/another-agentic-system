@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useThreadView } from "@/features/chat/components/thread-view";
 import { progressWords } from "@/features/chat/lib/a2ui/status";
 
 /** How long the plan stays quiet after a change before it is announced: a burst of updates is one. */
 export const ANNOUNCE_AFTER_MS = 800;
+/** The longest a change waits for that quiet: a plan updated more often than that is still announced. */
+export const ANNOUNCE_MAX_WAIT_MS = 5000;
 /** How long what the page remembers of a plan outlives the last component that showed it. */
 const FORGET_AFTER_MS = 5000;
 
@@ -17,18 +20,21 @@ type Entry = {
   n: number;
   text: string;
   timer: ReturnType<typeof setTimeout> | undefined;
+  /** When the change now waiting first came (the maximum wait counts from it). */
+  since: number;
   listeners: Set<() => void>;
 };
 
 /**
  * What the page remembers of each plan, outside any component: the message that draws a plan is drawn
  * again when its run ends (the live copy is replaced by the log's), and a timer or a "seen" that lived in
- * the component would be lost with it, and with it the announcement. Keyed by the plan's message, which
- * is only unique in a thread: the memory is dropped when the page moves to another thread
- * ({@link useForgetPlansOnThreadChange}).
+ * the component would be lost with it, and with it the announcement. Keyed by the thread AND the plan's
+ * surface id (docs/api/ui-catalog-v1.md, "The plan"): an activity key is only unique in a thread, and
+ * nothing has to run in some order when the person moves to another thread.
  */
 const entries = new Map<string, Entry>();
-const scope = (key: string) => key;
+const scope = (threadId: string | null | undefined, surfaceId: string) =>
+  `${threadId ?? ""}#${surfaceId}`;
 
 /** Forgets every plan (tests: each starts from a page that has seen nothing). */
 export function forgetPlans(): void {
@@ -46,6 +52,7 @@ function entryOf(id: string): Entry {
       n: 0,
       text: "",
       timer: undefined,
+      since: 0,
       listeners: new Set(),
     };
     entries.set(id, e);
@@ -63,13 +70,16 @@ function track(entry: Entry, signature: string, progress: Progress): void {
   if (entry.seen === signature) return;
   entry.seen = signature;
   entry.progress = progress;
+  const now = Date.now();
+  if (entry.timer === undefined) entry.since = now;
   clearTimeout(entry.timer);
+  const wait = Math.max(0, Math.min(ANNOUNCE_AFTER_MS, entry.since + ANNOUNCE_MAX_WAIT_MS - now));
   entry.timer = setTimeout(() => {
     entry.timer = undefined;
     entry.n += 1;
     entry.text = entry.progress ? `Plan updated: ${progressWords(entry.progress)}` : "Plan updated";
     for (const l of entry.listeners) l();
-  }, ANNOUNCE_AFTER_MS);
+  }, wait);
 }
 
 /**
@@ -77,19 +87,21 @@ function track(entry: Entry, signature: string, progress: Progress): void {
  * a status region that is always in the page, so a change is read without moving the focus. What it
  * reads is the plan's own state, never the agent's words: a reply that streams does not touch it. The
  * first copy of the plan is not announced (the person reads it where it stands), and a burst of
- * updates is announced once, after the plan has been quiet for {@link ANNOUNCE_AFTER_MS} (docs/api/ui-catalog-v1.md,
- * "The plan"). `signature` is the plan as drawn: it changes when the content does; `planKey` names the plan.
+ * updates is announced once, after the plan has been quiet for {@link ANNOUNCE_AFTER_MS} and at the latest
+ * {@link ANNOUNCE_MAX_WAIT_MS} after the burst began (docs/api/ui-catalog-v1.md, "The plan"). `signature` is
+ * the plan as drawn: it changes when the content does; `surfaceId` names the plan.
  */
 export function PlanAnnouncer({
-  planKey,
+  surfaceId,
   signature,
   progress,
 }: {
-  planKey: string;
+  surfaceId: string;
   signature: string;
   progress: Progress;
 }) {
-  const id = scope(planKey);
+  const { threadId } = useThreadView();
+  const id = scope(threadId, surfaceId);
   const entry = entryOf(id);
   const subscribe = useCallback(
     (listener: () => void) => {
@@ -123,17 +135,4 @@ export function PlanAnnouncer({
       {n > 0 ? <p key={n}>{entry.text}</p> : null}
     </div>
   );
-}
-
-let lastThread: string | null = null;
-
-/**
- * Drops what the page remembers of its plans when it moves from one thread to another (or to a new chat),
- * and not when a new chat becomes its thread (`null` to an id): that is the same conversation.
- */
-export function useForgetPlansOnThreadChange(threadId: string | null): void {
-  useEffect(() => {
-    if (lastThread !== null && lastThread !== threadId) forgetPlans();
-    lastThread = threadId;
-  }, [threadId]);
 }

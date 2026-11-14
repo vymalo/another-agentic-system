@@ -10,7 +10,9 @@ import type { ThreadPlan } from "../hooks/use-plan";
 /** What the Plan tab's name says of the plan: `2/5`, from the plan's checklists together. */
 export const planCount = (plan: ThreadPlan | undefined): string | undefined => {
   const p = plan?.prepared;
-  return p?.kind === "surface" && p.progress ? `${p.progress.done}/${p.progress.total}` : undefined;
+  return p?.kind === "surface" && p.progress && p.progress.total > 0
+    ? `${p.progress.done}/${p.progress.total}`
+    : undefined;
 };
 
 /**

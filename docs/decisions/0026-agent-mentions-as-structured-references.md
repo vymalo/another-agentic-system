@@ -395,7 +395,8 @@ show. It does not, and it must not:
 
 - **What it kept before, and keeps now:** `{catalogId: <id>/forms, components: {Choices}}` and nothing else. The `Choices` schema of version 8
   has `show` in it, and the seven components it may name (`Text`, `Image`, `Mermaid`, `Code`, `Cards`, `Callout`, `Chart`) are **not** in the
-  forms catalog, so an asked agent cannot build a surface that shows anything.
+  forms catalog. What an asked agent's surface that names them does today is not tested here: the schema takes `show`, the ids name nothing the
+  forms catalog has, and what the orchestrator does with such a surface is another slice's to say.
 - **Why that is right.** The person cannot see an asked agent's surfaces (the first note of 2026-10-17: they are read for the answer and
   dropped, and a form ends the ask), so nobody would see what a question showed. And the third note of 2026-10-17 narrowed the catalog
   **so that an asked agent can no longer draw a surface that is not a form**, because the fail-closed rule cannot tell surfaces apart: a

@@ -1698,7 +1698,8 @@ The projector does not change: the same `surfaceId` is the same surface, under t
 and each snapshot is the whole surface so far. What the client does with it is the catalog's rule: a `createSurface` for a surface that exists
 starts it over, so the client reads only the operations from the last one (the projector still holds all of them, up to the cap above: a
 plan sent very many times reaches it, and compacting a surface at its `createSurface` is open); a copy in a later run is the live one and the
-earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), which is drawn once, where its first copy stood.
+earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), whose copies are matched by `surfaceId` and drawn once per
+stretch of the thread between two messages of a person, so that a plan the person answered is never rewritten on the page (rule 4 of the catalog's rule).
 
 ```mermaid
 stateDiagram-v2

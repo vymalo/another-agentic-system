@@ -7,7 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { isPlanSurface } from "@/features/chat/lib/a2ui/limits";
 import { prepareSurface } from "@/features/chat/lib/a2ui/prepare";
-import { latestSurface, placeOf, surfaceIdOf } from "@/features/chat/lib/a2ui/surfaces";
+import { latestSurface, placeOf, planDataOf, surfaceIdOf } from "@/features/chat/lib/a2ui/surfaces";
 import { parseSurface, type SurfaceContent } from "@/features/chat/lib/agui/vymalo";
 import { useThreadFilesList } from "../../hooks/use-thread-files";
 import { ActorLabel } from "../actor-label";
@@ -137,12 +137,17 @@ export function SurfaceActivity({ data }: { data: unknown }) {
   // it was updated further down, or, for a plan, the newest copy where the plan first stood and nothing in a
   // later copy
   const place = useAuiState((s) => placeOf(s.thread.messages, messageId, key, surfaceId));
-  const latest = useAuiState((s) => latestSurface(s.thread.messages, key)?.data);
+  const latest = useAuiState((s) =>
+    isPlan
+      ? planDataOf(s.thread.messages, messageId, key, surfaceId)
+      : latestSurface(s.thread.messages, key)?.data,
+  );
   const newer = useMemo(() => {
     const ops = parseSurface(latest)?.a2ui_operations;
     return latest === undefined ? undefined : prepareSurface(ops, options);
   }, [latest, options]);
-  const current = place === "newest" ? (newer ?? prepared) : prepared;
+  const plan = place === "newest" || place === "frozen";
+  const current = plan ? (newer ?? prepared) : prepared;
   const signature = useMemo(
     () => (isPlan && current.kind === "surface" ? JSON.stringify(current.spec) : ""),
     [isPlan, current],
@@ -150,14 +155,13 @@ export function SurfaceActivity({ data }: { data: unknown }) {
   if (!content) return null;
   if (place === "nothing") return null;
 
-  const live = place !== "older";
+  const live = place !== "older" && place !== "frozen";
   const who = content.actor?.name ?? "the agent";
   const label = isPlan ? `Plan from ${who}` : `Interface from ${who}`;
   // what is drawn, and the operations it was made from (a plan's are the newest copy's)
-  const shownOperations =
-    place === "newest" ? (parseSurface(latest)?.a2ui_operations ?? operations) : operations;
+  const shownOperations = plan ? (parseSurface(latest)?.a2ui_operations ?? operations) : operations;
   let body: ReactNode;
-  if (!live) {
+  if (place === "older") {
     // updated (or deleted) in a later run: the newer copy is where the surface is now
     body =
       newer?.kind === "deleted" ? null : (
@@ -193,8 +197,11 @@ export function SurfaceActivity({ data }: { data: unknown }) {
             />
           }
         />
-        {isPlan ? (
-          <PlanAnnouncer planKey={key} signature={signature} progress={current.progress} />
+        {place === "frozen" ? (
+          <p className="text-xs text-muted-foreground">This plan was updated further down.</p>
+        ) : null}
+        {place === "newest" ? (
+          <PlanAnnouncer surfaceId={surfaceId} signature={signature} progress={current.progress} />
         ) : null}
       </ThreadFilesContext.Provider>
     );

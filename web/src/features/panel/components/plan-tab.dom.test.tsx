@@ -87,6 +87,15 @@ describe("the Plan tab", () => {
     expect(tabs()).toEqual(["Activity", "Sources", "Plan1/3"]);
   });
 
+  it("says no progress in its name when every item is dropped: nothing is left to count", () => {
+    plan = planOf([
+      { label: "Port it", state: "dropped" },
+      { label: "Tag it", state: "dropped" },
+    ]);
+    mount();
+    expect(tabs()).toEqual(["Activity", "Sources", "Plan"]);
+  });
+
   it("shows the plan's checklist, its dropped item in words, and its note", async () => {
     plan = planOf([
       { label: "Read the test", state: "done" },

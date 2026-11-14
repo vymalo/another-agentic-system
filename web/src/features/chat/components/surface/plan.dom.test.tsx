@@ -263,3 +263,86 @@ describe("the plan is announced politely, once, and only when it changes", () =>
     m.agent.stop();
   });
 });
+
+describe("a plan never rewrites what the person saw: one drawing per stretch of the thread", () => {
+  const regions = () => screen.queryAllByRole("region", { name: "Plan from plain" });
+  const FRAMES = (a: Rec[], b: Rec[]) => {
+    resetSeq();
+    return [
+      ...surfaceRun([a], { runId: "run-1", messageId: "a2ui-3", end: "success" }),
+      // the person writes (user: true) and the plan is sent again, in a new run, under a new activity key
+      ...surfaceRun([b], { runId: "run-2", messageId: "a2ui-9", end: "success" }),
+    ];
+  };
+
+  it("a plan sent again in a new job is a new drawing; the earlier one stays as it was, under its line", async () => {
+    const m = mount();
+    await feed(
+      m,
+      FRAMES(
+        copy([item("A", "doing"), item("B", "todo")]),
+        copy([item("A", "done"), item("B", "doing")]),
+      ),
+    );
+    await waitFor(() => expect(regions()).toHaveLength(2));
+    const [first, second] = regions();
+    expect(first?.textContent).toContain("0 of 2 done");
+    expect(first?.textContent).toContain("This plan was updated further down.");
+    expect(second?.textContent).toContain("1 of 2 done");
+    expect(second?.textContent).not.toContain("updated further down");
+    // only the live drawing is announced: one status region
+    expect(document.querySelectorAll("[data-slot=plan-status]")).toHaveLength(1);
+    expect(second?.querySelector("[data-slot=plan-status]")).not.toBeNull();
+    m.agent.stop();
+  });
+
+  it("ORIGINAL words the person answered stay above their message after a reload; REWRITTEN is a drawing of its own", async () => {
+    const original = copy([item("ORIGINAL: delete the cache", "todo")]);
+    const rewritten = copy([item("REWRITTEN: delete the database", "todo")]);
+    const first = mount();
+    await feed(first, FRAMES(original, rewritten));
+    await waitFor(() => expect(regions()).toHaveLength(2));
+    first.agent.stop();
+    cleanup();
+    // a reload: the page is drawn again from the same transcript
+    const again = mount();
+    await feed(again, FRAMES(original, rewritten));
+    await waitFor(() => expect(regions()).toHaveLength(2));
+    const [one, two] = regions();
+    expect(one?.textContent).toContain("ORIGINAL: delete the cache");
+    expect(one?.textContent).not.toContain("REWRITTEN");
+    expect(two?.textContent).toContain("REWRITTEN: delete the database");
+    expect(
+      one && two && Boolean(one.compareDocumentPosition(two) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+    again.agent.stop();
+  });
+
+  it("a hundred copies with no message of a person between them are one drawing, and at most one announcement", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const m = mount();
+    const copies = Array.from({ length: 100 }, (_, k) =>
+      copy([item("A", k < 50 ? "doing" : "done", `copy ${k}`), item("B", "todo")]),
+    );
+    await feed(m, surfaceRun(copies, { end: "success" }));
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_AFTER_MS * 2);
+    });
+    expect(regions()).toHaveLength(1);
+    expect(lists()).toHaveLength(1);
+    expect(status()?.querySelectorAll("p").length ?? 0).toBeLessThanOrEqual(1);
+    m.agent.stop();
+  });
+
+  it("a viewer who may not act (read-only, a share link) sees the plan, and nothing in it can send", async () => {
+    const m = mount({ readOnly: "You can read this thread; it is not yours.", canSend: false });
+    await feed(m, FRAMES(copy([item("A", "doing")]), copy([item("A", "done")])));
+    await waitFor(() => expect(regions()).toHaveLength(2));
+    for (const region of regions()) {
+      expect(within(region).queryAllByRole("button")).toHaveLength(0);
+      expect(within(region).queryAllByRole("textbox")).toHaveLength(0);
+    }
+    expect(regions()[1]?.textContent).toContain("1 of 1 done");
+    m.agent.stop();
+  });
+});

@@ -68,7 +68,6 @@ import { HistorySeed } from "./history-seed";
 import { LiveDraftsProvider } from "./live-drafts";
 import { LiveRuns } from "./live-runs";
 import { QuoteProvider } from "./quote";
-import { useForgetPlansOnThreadChange } from "./surface/plan-announcer";
 import { SurfaceHostProvider } from "./surface/surface-host";
 import { ThreadHeader } from "./thread-header";
 import { ThreadViewProvider } from "./thread-view";
@@ -119,8 +118,6 @@ function Chat({ threadId }: { threadId: string | null }) {
   useKeepSessionWarm();
   const { me, status: meStatus } = useMe();
   const meta = useThreadMeta(threadId);
-  // what the page remembers of a plan is one thread's
-  useForgetPlansOnThreadChange(threadId);
   const [threadsKey, setThreadsKey] = useState("");
   const threads = useThreads(threadsKey);
   // the list also names the agent of an open thread and offers the others (the header's menu); only the
@@ -398,6 +395,7 @@ function Chat({ threadId }: { threadId: string | null }) {
       state,
       waiting: snapshot.waiting,
       agentId: thread?.target.agentId ?? target.agentId,
+      threadId,
       catalogVersion: snapshot.uiCatalog?.version,
       forkedFrom: thread?.forkedFrom,
       turnsBefore,
@@ -409,6 +407,7 @@ function Chat({ threadId }: { threadId: string | null }) {
       snapshot.uiCatalog?.version,
       thread?.target.agentId,
       target.agentId,
+      threadId,
       thread?.forkedFrom,
       turnsBefore,
       carriedFiles,

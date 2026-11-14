@@ -10,6 +10,8 @@ export type ThreadView = {
   state: ThreadState | undefined;
   /** The agent asked a question and waits for the answer (an interrupt is open). */
   waiting: boolean;
+  /** The thread's id (null in a new chat): what a page remembers of a plan is keyed by it and by the plan's id. */
+  threadId?: string | null | undefined;
   /** The id of the agent the thread talks to (`adam`), for "Adam is starting…". */
   agentId: string | null;
   /**

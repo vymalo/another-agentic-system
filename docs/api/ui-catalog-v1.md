@@ -92,8 +92,11 @@ v1. Rules for the document:
 - Each schema validates the whole instance `{id, component, …}`: `properties.component.const` equals the component's
   key, and `additionalProperties` is `false`.
 - Values are **literals**. Our components have no data bindings and no function calls.
-- Every schema writes out the common members: `id` (a string of 1 to 256 characters), `component` (the constant) and
-  `weight` (a number, A2UI's layout hint).
+- Every schema writes out `id` (a string of 1 to 256 characters) and `component` (the constant), and, **only in the schemas that list it**,
+  `weight` (a number, A2UI's layout hint): it is in `Text`, `Column`, `Choices`, `Cards`, `Mermaid`, `Image` and `Stack` and in no other component,
+  so a `Checklist`, a `Timeline`, a `Table`... refuse it as they refuse any member nobody has.
+- A length is counted in **Unicode code points**, not in UTF-16 units or bytes (a character outside the Basic Multilingual Plane counts once:
+  `maxLength: 200` takes 200 emoji). The sizes of a surface (64 KiB, 400 components) are those of [section 8](#8-what-the-web-does-with-a-surface).
 
 ### Version 1: Text and Column
 
@@ -2080,7 +2083,8 @@ A question of any `type` may carry one more member:
 | Ids in the `show` of all the questions of one `Choices` | at most 8 |
 
 **What may be shown, a closed list of seven components:** `Text`, `Image`, `Mermaid`, `Code`, `Cards`, `Callout` and `Chart`. Each draws
-something to look at; none sends anything or asks anything; **none holds other components**, so a shown component can never contain the
+something to look at; none takes an answer or sends an action to the agent (a `Cards` link, a `Code` **Copy** button and a `Mermaid` or `Chart`
+disclosure are controls the person may use, and they only open, copy or show); **none holds other components**, so a shown component can never contain the
 question that shows it (this is why no cycle rule is needed). A `Choices` (the question's own or another), a `Column`, a `Stack`,
 `Tabs`, `Accordion` and every other component is refused, and so is anything a person can act on. A later version may lengthen the
 list (a version that does, says so in the schema's own description); a client refuses a name that is not on *its* list (the rules below).
@@ -2107,14 +2111,22 @@ rule name of [section 8](#8-what-the-web-does-with-a-surface), except the first:
 | *pending* | an id of `show` is not a component of the surface **yet**: as a child that has not been sent, the surface is not complete, nothing is drawn and "The interface is not complete yet." is said, until an `updateComponents` brings it. Judged **last**: a surface that is refused for any other reason is refused, whether or not it is also incomplete |
 | `schema` | the `show` of a question names an id twice; **one id is shown by two questions** (of one `Choices` or of two); one `Choices` shows more than 8 in all; the component an id names is **not on the list** above (a `Choices`, its own included, a container, a `Table`, a `Gallery`...); `show` is not a list of 1 to 4 strings |
 | `schema` | the shown component breaks its own schema: **an `Image` with no `alt` is refused**, never drawn as decoration |
-| `expansion` | the shown component is also placed in the surface in another way, that is, reached from `root` by `children`, `child`, the `tabs` or the `items` of another component |
+| `expansion` | the shown component is also placed in the surface in another way: **reached from `root`** by the `children` of a `Column`, a `Stack` or another container, the `child` of a `Button` or a card, the `child` of an entry of the `tabs` of a `Tabs` or of the `items` of an `Accordion`. Only what `root` reaches counts: a container that nothing reaches does not place anything |
 | `artifact` | a shown `Image` names a file the thread does not hold, or one that is not an image: the rule of [`Image`](#version-4-adr-0032-version-3-plus-image) |
 
-When several rules fail, the result is the first of this order: each component against its own schema and its own rules (for a `Choices`
-the `show` rules of one form, for an `Image` its `artifact`), in the order of the surface; then the [plan](#the-plan) rule (`action`);
-then what the forms of the whole surface show (`schema`: a component shown by two forms, or one that is not on the list); then the walk from
-`root`, where a shown component that is also placed is `expansion`; `pending` last. A component that is both (a `Choices` that shows
-itself is on no list *and* is placed) is `schema`. The vectors below each break exactly one rule.
+When several rules fail, the result is that of the first step of this order that fails:
+
+1. each component against its own schema and its own rules, in the order of the surface: for a `Choices` the rules of one form that JSON Schema
+   cannot say (an id twice in one question, one id shown by two questions of one form, **more than 8** in the form: `schema`); for an `Image`
+   its file (`artifact`);
+2. the plan rule (`action`);
+3. what the forms of the whole surface show: an id shown by two forms, an id that names a component **not on the list** (`schema`);
+4. the walk from `root`: a shown component that is also placed (`expansion`);
+5. `pending`, last.
+
+So a plan whose `Choices` shows a `Table` is `action` (step 2 comes before step 3), nine ids shown with one of them not yet in the surface is
+`schema` (step 1 before step 5), and a `Choices` that shows itself is `schema` (step 3 before step 4). The vectors each break one rule, or
+two, as they say.
 
 ##### How a client draws what a question shows
 
@@ -2145,7 +2157,7 @@ for `dropped` and `note` of a `Checklist`.
 | Member | Meaning |
 |---|---|
 | item `state: "dropped"` | the item was **given up**: it is no longer part of the plan. Drawn **struck through**, and in words (**Dropped**) beside its icon: never by the strike or the colour alone |
-| item `note` | up to 200 characters, plain text, drawn under the label (an empty note is no note) |
+| item `note` | up to 200 characters (Unicode code points), plain text, drawn under the label (an empty note is no note) |
 
 The other limits stand: 1 to 50 items, a label of at most 200 characters, a title of at most 120.
 
@@ -2155,7 +2167,7 @@ dropped). A `failed` item is counted in the total and is not done. When every it
 not drawn. The bar is a `progressbar` whose value text is the words. A state is always said in words beside its icon.
 
 Vectors (`checklists`: the `items` of a Checklist, its `progress` as `[done, total]`, or `null` when the schema refuses it, and the
-`words`; the block holds **14 cases**):
+`words`; the block holds **16 cases**):
 
 ```json checklists
 [
@@ -2172,7 +2184,9 @@ Vectors (`checklists`: the `items` of a Checklist, its `progress` as `[done, tot
   {"because": "a member nobody has", "items": [{"label": "A", "state": "todo", "owner": "me"}], "progress": null},
   {"because": "no item", "items": [], "progress": null},
   {"because": "fifty items, one of them dropped", "items": [{"label": "Step 0", "state": "done"}, {"label": "Step 1", "state": "done"}, {"label": "Step 2", "state": "done"}, {"label": "Step 3", "state": "done"}, {"label": "Step 4", "state": "done"}, {"label": "Step 5", "state": "done"}, {"label": "Step 6", "state": "done"}, {"label": "Step 7", "state": "done"}, {"label": "Step 8", "state": "done"}, {"label": "Step 9", "state": "done"}, {"label": "Step 10", "state": "dropped"}, {"label": "Step 11", "state": "todo"}, {"label": "Step 12", "state": "todo"}, {"label": "Step 13", "state": "todo"}, {"label": "Step 14", "state": "todo"}, {"label": "Step 15", "state": "todo"}, {"label": "Step 16", "state": "todo"}, {"label": "Step 17", "state": "todo"}, {"label": "Step 18", "state": "todo"}, {"label": "Step 19", "state": "todo"}, {"label": "Step 20", "state": "todo"}, {"label": "Step 21", "state": "todo"}, {"label": "Step 22", "state": "todo"}, {"label": "Step 23", "state": "todo"}, {"label": "Step 24", "state": "todo"}, {"label": "Step 25", "state": "todo"}, {"label": "Step 26", "state": "todo"}, {"label": "Step 27", "state": "todo"}, {"label": "Step 28", "state": "todo"}, {"label": "Step 29", "state": "todo"}, {"label": "Step 30", "state": "todo"}, {"label": "Step 31", "state": "todo"}, {"label": "Step 32", "state": "todo"}, {"label": "Step 33", "state": "todo"}, {"label": "Step 34", "state": "todo"}, {"label": "Step 35", "state": "todo"}, {"label": "Step 36", "state": "todo"}, {"label": "Step 37", "state": "todo"}, {"label": "Step 38", "state": "todo"}, {"label": "Step 39", "state": "todo"}, {"label": "Step 40", "state": "todo"}, {"label": "Step 41", "state": "todo"}, {"label": "Step 42", "state": "todo"}, {"label": "Step 43", "state": "todo"}, {"label": "Step 44", "state": "todo"}, {"label": "Step 45", "state": "todo"}, {"label": "Step 46", "state": "todo"}, {"label": "Step 47", "state": "todo"}, {"label": "Step 48", "state": "todo"}, {"label": "Step 49", "state": "todo"}], "progress": [10, 49], "words": "10 of 49 done"},
-  {"because": "fifty-one items", "items": [{"label": "Step 0", "state": "todo"}, {"label": "Step 1", "state": "todo"}, {"label": "Step 2", "state": "todo"}, {"label": "Step 3", "state": "todo"}, {"label": "Step 4", "state": "todo"}, {"label": "Step 5", "state": "todo"}, {"label": "Step 6", "state": "todo"}, {"label": "Step 7", "state": "todo"}, {"label": "Step 8", "state": "todo"}, {"label": "Step 9", "state": "todo"}, {"label": "Step 10", "state": "todo"}, {"label": "Step 11", "state": "todo"}, {"label": "Step 12", "state": "todo"}, {"label": "Step 13", "state": "todo"}, {"label": "Step 14", "state": "todo"}, {"label": "Step 15", "state": "todo"}, {"label": "Step 16", "state": "todo"}, {"label": "Step 17", "state": "todo"}, {"label": "Step 18", "state": "todo"}, {"label": "Step 19", "state": "todo"}, {"label": "Step 20", "state": "todo"}, {"label": "Step 21", "state": "todo"}, {"label": "Step 22", "state": "todo"}, {"label": "Step 23", "state": "todo"}, {"label": "Step 24", "state": "todo"}, {"label": "Step 25", "state": "todo"}, {"label": "Step 26", "state": "todo"}, {"label": "Step 27", "state": "todo"}, {"label": "Step 28", "state": "todo"}, {"label": "Step 29", "state": "todo"}, {"label": "Step 30", "state": "todo"}, {"label": "Step 31", "state": "todo"}, {"label": "Step 32", "state": "todo"}, {"label": "Step 33", "state": "todo"}, {"label": "Step 34", "state": "todo"}, {"label": "Step 35", "state": "todo"}, {"label": "Step 36", "state": "todo"}, {"label": "Step 37", "state": "todo"}, {"label": "Step 38", "state": "todo"}, {"label": "Step 39", "state": "todo"}, {"label": "Step 40", "state": "todo"}, {"label": "Step 41", "state": "todo"}, {"label": "Step 42", "state": "todo"}, {"label": "Step 43", "state": "todo"}, {"label": "Step 44", "state": "todo"}, {"label": "Step 45", "state": "todo"}, {"label": "Step 46", "state": "todo"}, {"label": "Step 47", "state": "todo"}, {"label": "Step 48", "state": "todo"}, {"label": "Step 49", "state": "todo"}, {"label": "Step 50", "state": "todo"}], "progress": null}
+  {"because": "fifty-one items", "items": [{"label": "Step 0", "state": "todo"}, {"label": "Step 1", "state": "todo"}, {"label": "Step 2", "state": "todo"}, {"label": "Step 3", "state": "todo"}, {"label": "Step 4", "state": "todo"}, {"label": "Step 5", "state": "todo"}, {"label": "Step 6", "state": "todo"}, {"label": "Step 7", "state": "todo"}, {"label": "Step 8", "state": "todo"}, {"label": "Step 9", "state": "todo"}, {"label": "Step 10", "state": "todo"}, {"label": "Step 11", "state": "todo"}, {"label": "Step 12", "state": "todo"}, {"label": "Step 13", "state": "todo"}, {"label": "Step 14", "state": "todo"}, {"label": "Step 15", "state": "todo"}, {"label": "Step 16", "state": "todo"}, {"label": "Step 17", "state": "todo"}, {"label": "Step 18", "state": "todo"}, {"label": "Step 19", "state": "todo"}, {"label": "Step 20", "state": "todo"}, {"label": "Step 21", "state": "todo"}, {"label": "Step 22", "state": "todo"}, {"label": "Step 23", "state": "todo"}, {"label": "Step 24", "state": "todo"}, {"label": "Step 25", "state": "todo"}, {"label": "Step 26", "state": "todo"}, {"label": "Step 27", "state": "todo"}, {"label": "Step 28", "state": "todo"}, {"label": "Step 29", "state": "todo"}, {"label": "Step 30", "state": "todo"}, {"label": "Step 31", "state": "todo"}, {"label": "Step 32", "state": "todo"}, {"label": "Step 33", "state": "todo"}, {"label": "Step 34", "state": "todo"}, {"label": "Step 35", "state": "todo"}, {"label": "Step 36", "state": "todo"}, {"label": "Step 37", "state": "todo"}, {"label": "Step 38", "state": "todo"}, {"label": "Step 39", "state": "todo"}, {"label": "Step 40", "state": "todo"}, {"label": "Step 41", "state": "todo"}, {"label": "Step 42", "state": "todo"}, {"label": "Step 43", "state": "todo"}, {"label": "Step 44", "state": "todo"}, {"label": "Step 45", "state": "todo"}, {"label": "Step 46", "state": "todo"}, {"label": "Step 47", "state": "todo"}, {"label": "Step 48", "state": "todo"}, {"label": "Step 49", "state": "todo"}, {"label": "Step 50", "state": "todo"}], "progress": null},
+  {"because": "a note of 200 emoji: a length is in code points, 400 UTF-16 units are 200", "items": [{"label": "A", "state": "todo", "note": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"}], "progress": [0, 1], "words": "0 of 1 done"},
+  {"because": "a note of 201 emoji", "items": [{"label": "A", "state": "todo", "note": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"}], "progress": null}
 ]
 ```
 
@@ -2184,24 +2198,32 @@ An agent's plan is one surface that it sends again each time the plan changes. T
    `ACTIVITY_SNAPSHOT` with `replace: true`, and the client replaces the part where it stands ([`agui.md`](agui.md#surfaces-in-the-projection)).
 2. **A `createSurface` for a surface that exists starts it over**: its components and its data model are gone and the ones that follow are
    the surface (A2UI's rule; *verified 2026-11-14* in the reducer the web uses). So **everything before the last `createSurface` of a
-   surface is dead**: a client reads only the operations from the last one, and the size limit of the surface counts only those.
+   surface is dead**: a client reads only the operations from the last one, and the size limit of the surface counts only those (the limit is
+   **64 KiB** of the operations written as JSON, 65,536 bytes of UTF-8, and **400 components**: [ADR 0013](../decisions/0013-a2ui-generative-ui.md)).
    The orchestrator still holds and replays all of them, up to its own cap ([`agui.md`](agui.md#surfaces-in-the-projection)), and the client
-   skips the dead ones: **only operations of the very surface the last `createSurface` names are dropped**; a payload that mixes
-   surfaces is left whole, for the check of its shape to refuse. An `updateComponents` alone does not start anything over: it adds
+   skips the dead ones **only when every operation before that `createSurface` names the same surface as it does**; a payload in which any
+   earlier operation names another surface is not cut at all and is refused whole by the check of its shape (rule `surfaces`). An `updateComponents` alone does not start anything over: it adds
    to the components and replaces those that have the same `id`.
-3. **A copy in a later run.** Each run that sends the surface holds a copy of it in the conversation. For a surface that is **not a
-   plan**, the newest copy is the live one; an older copy draws one line, "This interface was updated further down.", and nothing when
-   the surface was deleted. This is the rule that was always true and it is not changed.
-4. **A [plan](#the-plan) is drawn once**: where its first copy stands, from the newest copy. A later copy draws **nothing** where it
-   arrived. The page holds one checklist however often the plan was sent.
+3. **A copy of a surface that is not a plan.** Each run that sends the surface holds a copy of it in the conversation. The newest copy is
+   the live one; an older copy draws one line, "This interface was updated further down.", and nothing when the newest copy deletes the
+   surface. **"Answered" belongs to the copy** ([Answered forms](#answered-forms)): a copy of a form is answered when the person has acted
+   after the message that holds *that copy*, so a later copy of an answered form is open (an agent that asks again uses a new `surfaceId`).
+4. **A [plan](#the-plan) is matched by its `surfaceId`, and it never rewrites what the person saw.** The copies of a plan are matched by
+   `surfaceId` within the thread, whatever their activity key or their run: a run that starts again gives a copy a new key and it is the same
+   plan, and a `deleteSurface` followed by a `createSurface` under the same id is the same plan sent again. The thread is cut into
+   **stretches** by the messages of a person (a message whose author is a person; a steer is one; the action that answers a form is not).
+   Copies of one plan with no message of a person between them are **one drawing**: it stands where the first of them stands and shows the
+   newest of them. A copy that arrives after a message of a person starts a **new drawing** where it arrives. An earlier drawing **stays as
+   it was when the person wrote** (the newest copy of its stretch), read-only like every plan, under the line "This plan was updated further
+   down." (plain text, not a link). Only the thread's newest drawing is live: it is what the Plan tab pins and what the announcer speaks of.
+   So the page holds at most one drawing of a plan per stretch, never one per copy, and a person is never shown approving words they did
+   not see. Every copy stays in the log and in the export: all of this is presentation.
 5. **A form and a plan never meet.** A surface that holds a `Choices` is not a plan (it is refused if its id says it is, rule `action`),
-   so rule 4 never moves a form. A form sent again under its id follows rule 3 and is an *open* form only through
-   [Answered forms](#answered-forms), which are not weakened: a form is answered as soon as the person has acted after the message that
-   holds it. **A re-ask is a new surface with a new `surfaceId`**, as [version 7](#receiving-an-answer) says; an agent never relies on
-   rules 3 and 5 to ask again.
+   so rule 4 never touches a form. A form sent again under its id follows rule 3. **A re-ask is a new surface with a new `surfaceId`**, as
+   [version 7](#receiving-an-answer) says; an agent never relies on rules 3 and 5 to ask again.
 
 Vectors for rule 2 (`restarts`: the operations of one activity and the index of the first operation that is alive; the block holds
-**5 cases**):
+**6 cases**):
 
 ```json restarts
 [
@@ -2209,14 +2231,17 @@ Vectors for rule 2 (`restarts`: the operations of one activity and the index of 
   {"because": "the surface sent again whole: only the last copy is alive", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "B"}]}}], "from": 2},
   {"because": "three copies", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "B"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "C"}]}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "D"}]}}], "from": 4},
   {"because": "an update alone does not start over", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "B"}]}}], "from": 0},
-  {"because": "a create for another surface is not a restart of this one, and the payload is left whole for the shape check", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "s2", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}], "from": 0}
+  {"because": "a create for another surface is not a restart of this one, and the payload is left whole for the shape check", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "s2", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}], "from": 0},
+  {"because": "an earlier operation names another surface than the last createSurface: nothing is cut, the payload is left whole for the shape check", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "s2", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}], "from": 0}
 ]
 ```
 
-Vectors for rules 3 and 4 (`copies`: the copies of surfaces in the order the transcript holds them, each in a message of its own, `key`
-the activity that is the same for every copy of one surface, `marker` which operations the copy holds; `result`: what each copy draws, `draws:<marker>` the
-named copy's content, `older` the line of rule 3, `nothing`; and `pinned`, the marker of the plan that is pinned, `null` with none;
-the block holds **8 cases**):
+Vectors for rules 3 and 4 (`copies`: the copies of surfaces in the order the transcript holds them, each in a message of its own, and, where an
+item is `{"person": true}`, a message of a person; `key` is the activity key of a copy, `marker` which operations it holds, `deleted` that its
+operations delete the surface; `result` has one entry per copy (not per person): `draws:<marker>` the content of that copy, `older` the line of
+rule 3, `older-plan:<marker>` an earlier drawing of a plan, showing that copy, under its line, `nothing` a later copy of a drawing, `gone`
+that the drawing is of a deleted surface and draws nothing; and `pinned`, the marker of the plan that is pinned, `null` with none. The first
+eight cases are those of before the stretches and are unchanged, for none has a person between its copies; the others are new; the block holds **17 cases**):
 
 ```json copies
 [
@@ -2227,7 +2252,28 @@ the block holds **8 cases**):
   {"because": "two plans: each is drawn once; the pinned one is the plan sent last", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-8", "surfaceId": "plan-2", "marker": "B"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "C"}], "result": ["draws:C", "draws:B", "nothing"], "pinned": "C"},
   {"because": "two plans, the second sent last", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "B"}, {"key": "a2ui-8", "surfaceId": "plan-2", "marker": "C"}], "result": ["draws:B", "nothing", "draws:C"], "pinned": "C"},
   {"because": "a plan beside a form: the form keeps the rule of its own", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-5", "surfaceId": "ask", "marker": "B"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "C"}, {"key": "a2ui-5", "surfaceId": "ask", "marker": "D"}], "result": ["draws:C", "older", "nothing", "draws:D"], "pinned": "C"},
-  {"because": "no plan", "copies": [{"key": "a2ui-5", "surfaceId": "ask", "marker": "A"}], "result": ["draws:A"], "pinned": null}
+  {"because": "no plan", "copies": [{"key": "a2ui-5", "surfaceId": "ask", "marker": "A"}], "result": ["draws:A"], "pinned": null},
+  {"because": "copy, a message of the person, copy: two drawings; the first is what the person saw, the second is live", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"person": true}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "B"}], "result": ["older-plan:A", "draws:B"], "pinned": "B"},
+  {"because": "copies with different keys and one surfaceId, no person between: one drawing, from the newest", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-9", "surfaceId": "plan-1", "marker": "B"}, {"key": "a2ui-12", "surfaceId": "plan-1", "marker": "C"}], "result": ["draws:C", "nothing", "nothing"], "pinned": "C"},
+  {"because": "the plan sent again in a new job, after the person wrote: a new key, a new drawing, the first kept as it was", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"person": true}, {"key": "a2ui-9", "surfaceId": "plan-1", "marker": "B"}], "result": ["older-plan:A", "draws:B"], "pinned": "B"},
+  {"because": "two copies, the person, two copies: the first drawing shows the newest of its stretch", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "B"}, {"person": true}, {"key": "a2ui-9", "surfaceId": "plan-1", "marker": "C"}, {"key": "a2ui-9", "surfaceId": "plan-1", "marker": "D"}], "result": ["older-plan:B", "nothing", "draws:D", "nothing"], "pinned": "D"},
+  {"because": "a delete and a create under the same id in one stretch are one plan sent again", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "B", "deleted": true}, {"key": "a2ui-9", "surfaceId": "plan-1", "marker": "C"}], "result": ["draws:C", "nothing", "nothing"], "pinned": "C"},
+  {"because": "a plan whose newest copy deletes it draws nothing and is not pinned", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "B", "deleted": true}], "result": ["gone", "nothing"], "pinned": null},
+  {"because": "the plan sent last was deleted: the plan before it is pinned", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-8", "surfaceId": "plan-2", "marker": "B"}, {"key": "a2ui-8", "surfaceId": "plan-2", "marker": "C", "deleted": true}], "result": ["draws:A", "gone", "nothing"], "pinned": "A"},
+  {"because": "two plans interleaved across stretches: each has a drawing per stretch; the pinned one is the plan sent last", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-8", "surfaceId": "plan-2", "marker": "B"}, {"person": true}, {"key": "a2ui-12", "surfaceId": "plan-1", "marker": "C"}, {"key": "a2ui-13", "surfaceId": "plan-2", "marker": "D"}], "result": ["older-plan:A", "older-plan:B", "draws:C", "draws:D"], "pinned": "D"},
+  {"because": "a surface that is not a plan whose newest copy deletes it: the older copy draws nothing, and the newest draws nothing", "copies": [{"key": "a2ui-3", "surfaceId": "s1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "s1", "marker": "B", "deleted": true}], "result": ["gone", "gone"], "pinned": null}
+]
+```
+
+Vectors for rule 3 on a form (`answered`: the copies of one form and the messages of the person, in the order the transcript holds them, each copy in a message of its own; `result`: whether each copy is `answered` or `open`; the block holds
+**4 cases**):
+
+```json answered
+[
+  {"because": "a form and the person's message after it: answered", "items": ["A", "person"], "result": ["answered"]},
+  {"because": "a copy of an answered form that came after the person's message is open: it belongs to the copy", "items": ["A", "person", "B"], "result": ["answered", "open"]},
+  {"because": "two copies and then the person: both are answered", "items": ["A", "B", "person"], "result": ["answered", "answered"]},
+  {"because": "a form with nobody after it: open", "items": ["A"], "result": ["open"]}
 ]
 ```
 
@@ -2240,8 +2286,10 @@ orchestrator, the log, the snapshot, the client); no layer has to learn a new me
 page can write it. A client **never** guesses a plan from the type of a component: a `Checklist` is a plan only inside a surface with such
 an id.
 
-A plan is **read, never answered**: nothing in it sends or asks anything. A surface with such an id that holds a `Choices`, an input or a
-button is refused (**rule `action`**, "is a plan, which holds nothing the person can answer or send"). What else it holds is up to the
+A plan is **read, never answered**: nothing in it sends or asks anything. A surface with such an id that holds something the person can answer is refused (**rule `action`**, "is a plan, which holds nothing the person can
+answer or send"). In this catalog that is: a `Choices`; a `TextField` or a `CheckBox` of the basic catalog, an input, **with or without an action**;
+and a basic `Button` whose action is an `event` the agent would receive. A `Button` that only opens a link (`functionCall` `openUrl`) or only puts a
+message in the box (`userMessage`) sends nothing to the agent and is allowed. What else it holds is up to the
 agent; the usual plan is a `Column` of a `Text` and a `Checklist`. The agent sends it **whole** each time it changes, with the same id:
 
 ```json
@@ -2261,15 +2309,20 @@ agent; the usual plan is a `Column` of a `Text` and a `Checklist`. The agent sen
 
 **Where the person finds it.**
 
-- **In the conversation**, once, where its first copy stood: a section named "Plan from <the agent>" that changes in place.
+- **In the conversation**, one drawing per stretch of the thread ([rule 4](#a-surface-sent-again)): a section named "Plan from <the agent>". The
+  newest drawing changes in place as copies arrive; an earlier one stays as it was, under "This plan was updated further down.".
 - **Pinned in the thread's panel**: the **latest plan of the thread** (the plan surface sent last) is the **Plan** tab of the panel
   ([`web/DESIGN.md`](../../web/DESIGN.md#panel)), a third tab beside Activity and Sources that exists only while the thread has a plan, with
-  its progress (`2/5`) after its name. It shows the newest copy, the same one the conversation does. A thread may hold several plans
-  (`plan-a`, then `plan-b`): each is drawn once in the conversation, and the pinned one is the one sent last. A plan the agent deleted
-  (`deleteSurface`) is drawn nowhere and has no tab.
+  its progress (`2/5`) after its name. It shows the newest copy, the same one the newest drawing does. A thread may hold several plans
+  (`plan-a`, then `plan-b`), each with its drawings; **the pinned one is the newest plan that still exists**: when the plan sent last was
+  deleted (`deleteSurface`) the one before it is pinned, and with none there is no tab. A plan the agent deleted draws nothing. The tab says
+  its progress after its name only when there is something to count (a total of 0, say every item dropped, says nothing).
 - **Announced, politely.** The plan in the conversation holds a status region (`role="status"`, polite) that says **"Plan updated: 2 of 5
-  done"** (the words of its checklists together; "Plan updated" when it has none) after the plan has changed and has been **quiet for
-  0.8 s**, so a burst of updates is one announcement and the last state is the one said. It says nothing for the first copy the client draws
+  done"** ("N of M" is the **sum** over every `Checklist` of the surface: the items done, and the items that are not dropped; "Plan updated" when it has
+  none) after the plan has changed and has been **quiet for
+  0.8 s** and at the latest **5 s** after the burst began, so a burst of updates is one announcement and the last state is the one said, and a
+  plan that is updated more often than every 0.8 s is still announced. Only the newest drawing is announced. What the client remembers to
+  tell that the plan changed is keyed by the thread and the plan's `surfaceId`. It says nothing for the first copy the client draws
   (the person reads it where it stands: a thread opened later draws the plan as it is, and so does a client that was not showing the plan
   when the agent sent its first copies), nothing for the words the agent streams (the region reads the plan only), and nothing when a copy
   changes nothing. What the client remembers of a plan, to know that it changed, is the page's and not the component's: the message that
@@ -2289,10 +2342,23 @@ sequenceDiagram
   A->>O: run 1: createSurface plan-7 + updateComponents (3 of 5 done)
   O-->>W: ACTIVITY_SNAPSHOT a2ui-3 (replace): the part is replaced in place
   W->>W: quiet for 0.8 s, then says "Plan updated: 3 of 5 done"
+  Note over A,W: the person writes a message
   A->>O: run 2: createSurface plan-7 + updateComponents (4 of 6 done, one dropped)
-  O-->>W: ACTIVITY_SNAPSHOT a2ui-3 in run 2's message
-  W->>W: the first copy now draws the newest, the copy of run 2 draws nothing
-  W->>P: the latest plan: the Plan tab shows the same copy, "4/6"
+  O-->>W: ACTIVITY_SNAPSHOT a2ui-9 in run 2's message
+  W->>W: a new drawing where it arrives, the first stays as the person saw it (updated further down)
+  W->>P: the newest drawing's plan: the Plan tab shows the same copy, "4/5"
+```
+
+Vectors for the plan's progress (`plan-progress`: the `items` of each `Checklist` of a plan, one list per checklist, and the progress as `[done, total]`, `null` when the plan has no checklist; the block holds
+**4 cases**):
+
+```json plan-progress
+[
+  {"because": "two checklists in one plan: the numbers are the sums, a dropped item in neither", "checklists": [[{"label": "x", "state": "done"}, {"label": "x", "state": "todo"}], [{"label": "x", "state": "done"}, {"label": "x", "state": "dropped"}]], "progress": [2, 3]},
+  {"because": "every item of the only checklist dropped: nothing to count", "checklists": [[{"label": "x", "state": "dropped"}, {"label": "x", "state": "dropped"}]], "progress": [0, 0]},
+  {"because": "one checklist of dropped items beside one of work to do", "checklists": [[{"label": "x", "state": "dropped"}], [{"label": "x", "state": "done"}, {"label": "x", "state": "todo"}]], "progress": [1, 2]},
+  {"because": "a plan with no checklist has no progress", "checklists": [], "progress": null}
+]
 ```
 
 **What an agent sends.** The whole surface each time: a `createSurface` and an `updateComponents` with the changed components (or all of
@@ -2304,8 +2370,9 @@ copies few. (A change of the orchestrator that compacts a surface at its `create
 
 Vectors for what a surface may be and hold (`v8-surfaces`: `files`, the files the thread holds, each with its `sha256` and whether its
 `kind` is an `image`; and `cases`, each a surface with its `components` (the operations are one `createSurface` for the `surfaceId`, `s1`
-unless the case says, and one `updateComponents` with these) and its `result`: `drawn`, `pending`, or `refused:<rule>`; the block holds
-**34 cases**). The catalog is version 8's and the thread's version is 8:
+unless the case says, and one `updateComponents` with these; the case's `catalog` is this catalog when absent and `basic` for the A2UI basic catalog
+`https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json`; its `operationsAfter` are operations that follow) and its `result`: `drawn`,
+`pending`, `deleted` or `refused:<rule>`; the block holds **44 cases**). The catalog is version 8's and the thread's version is 8:
 
 ```json v8-surfaces
 {
@@ -2344,12 +2411,25 @@ unless the case says, and one `updateComponents` with these) and its `result`: `
     {"because": "the id plan- alone is not a plan: its form is drawn", "surfaceId": "plan-", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "drawn"},
     {"because": "the prefix is lower case and has a dash: plan1 is not a plan", "surfaceId": "plan1", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "drawn"},
     {"because": "Plan-1 is not a plan either", "surfaceId": "Plan-1", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "drawn"},
-    {"because": "a surface that is not a plan holds a checklist and a form", "surfaceId": "s2", "components": [{"id": "root", "component": "Column", "children": ["ask", "list"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}, {"id": "list", "component": "Checklist", "items": [{"label": "Read", "state": "todo"}]}], "result": "drawn"}
+    {"because": "a surface that is not a plan holds a checklist and a form", "surfaceId": "s2", "components": [{"id": "root", "component": "Column", "children": ["ask", "list"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}, {"id": "list", "component": "Checklist", "items": [{"label": "Read", "state": "todo"}]}], "result": "drawn"},
+    {"because": "a plan in the basic catalog that holds a TextField with no action: an input is nothing a plan holds", "catalog": "basic", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["f"]}, {"id": "f", "component": "TextField", "label": "Name", "value": ""}], "result": "refused:action"},
+    {"because": "a plan that holds a CheckBox", "catalog": "basic", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["c"]}, {"id": "c", "component": "CheckBox", "label": "Agree", "value": false}], "result": "refused:action"},
+    {"because": "a plan that holds a Button whose action is an event the agent would receive", "catalog": "basic", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["b"]}, {"id": "b", "component": "Button", "child": "t", "action": {"event": {"name": "go"}}}, {"id": "t", "component": "Text", "text": "Go"}], "result": "refused:action"},
+    {"because": "a plan that holds a Button that only opens a link is a plan", "catalog": "basic", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["b"]}, {"id": "b", "component": "Button", "child": "t", "action": {"functionCall": {"call": "openUrl", "args": {"url": "https://example.com/docs"}}}}, {"id": "t", "component": "Text", "text": "Docs"}], "result": "drawn"},
+    {"because": "a plan that holds Cards with a link, an Image and a long Text", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["k", "i", "t"]}, {"id": "k", "component": "Cards", "cards": [{"title": "Docs", "url": "https://example.com/docs"}]}, {"id": "i", "component": "Image", "artifact": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "The screen today"}, {"id": "t", "component": "Text", "text": "A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. A long line of words. "}], "result": "drawn"},
+    {"because": "a shown Text that is also a child of a Column that nothing reaches from root: only placements reachable from root count", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}]}, {"id": "orphan", "component": "Column", "children": ["t1"]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "drawn"},
+    {"because": "nine ids shown in one form and one of them not in the surface yet: the count (schema) comes before pending", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "a", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1", "t2", "t3", "t4"]}, {"id": "b", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t5", "t6", "t7", "t8"]}, {"id": "c", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["gone"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}, {"id": "t2", "component": "Text", "text": "Some words"}, {"id": "t3", "component": "Text", "text": "Some words"}, {"id": "t4", "component": "Text", "text": "Some words"}, {"id": "t5", "component": "Text", "text": "Some words"}, {"id": "t6", "component": "Text", "text": "Some words"}, {"id": "t7", "component": "Text", "text": "Some words"}, {"id": "t8", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "a plan whose Choices shows a Table: the plan rule (action) comes before what the form shows (schema)", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["tb"]}]}, {"id": "tb", "component": "Table", "columns": [{"key": "a", "label": "A"}], "rows": [{"a": "1"}]}], "result": "refused:action"},
+    {"because": "the agent deleted the surface: nothing is drawn", "components": [{"id": "root", "component": "Column", "children": ["t"]}, {"id": "t", "component": "Text", "text": "Some words"}], "operationsAfter": [{"version": "v0.9.1", "deleteSurface": {"surfaceId": "s1"}}], "result": "deleted"},
+    {"because": "a second createSurface for the surface, with another catalogId, starts it over: nothing of the first is alive and the new surface has no components yet", "components": [{"id": "root", "component": "Column", "children": ["t"]}, {"id": "t", "component": "Text", "text": "Some words"}], "operationsAfter": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"}}], "result": "pending"}
   ]
 }
 ```
 
 ##### Tests of the page
+
+The numbers this page states about version 8 are tied to the code by a test that reads the page: 4 ids to a question, 8 to a form, 200 characters
+of a note, the seven components, the 0.8 s and 5 s of the announcer, and which components write `weight`.
 
 The web's tests read this page: its vectors run through the validator of the web (`prepareSurface`) and its own reading of a
 checklist, the transcript model of the `copies` through the functions that place and pin a plan, the page's schemas are compared
@@ -2519,7 +2599,7 @@ nothing else (nobody sees an asked agent's surfaces):
 |---|---|
 | `catalogId` | the thread's `catalogId` with `/forms` appended (a trailing slash is not doubled): an https URL under the screen's own id, never fetched |
 | `version` | the thread's `version`, unchanged: an agent reads from it what a `Choices` may hold (titles, typed questions, [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), and the kinds of [version 7](#version-7-more-kinds-of-question)) |
-| `components` | `{Choices: <the thread's Choices schema, unchanged>}` and nothing else (so, from [version 8](#a-question-shows), `show` is in the schema and the components it may name are **not** in the catalog: an asked agent has nothing to show, and nobody sees its surface anyway, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-11-14-a-question-that-shows-is-for-the-addressed-agent)) |
+| `components` | `{Choices: <the thread's Choices schema, unchanged>}` and nothing else (so, from [version 8](#a-question-shows), `show` is in the schema and the components it may name are **not** in the catalog: the schema takes `show` while its ids can name nothing of this catalog, and what the orchestrator does with such a surface is not specified here; nobody sees an asked agent's surface anyway, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-11-14-a-question-that-shows-is-for-the-addressed-agent)) |
 | `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#2-digest-version-and-the-lock) says |
 
 It is derived from the thread's current catalog at every send and **never recorded**: no `ui_catalog` event, nothing on the

@@ -273,7 +273,10 @@ digest for digest**, which a test of the web proves):
    orchestrator already does); a `createSurface` for a surface that exists starts it over (*verified 2026-11-14* in the reducer the web
    uses), so **a client reads, and counts against the size limit, only the operations from the last `createSurface`**; a copy in a later
    run of a surface that is not a plan keeps the rule it always had (the newest is live, the older says "updated further down"); a
-   **plan** is drawn once, where its first copy stood, from the newest copy.
+   **plan** is matched by its `surfaceId` and **never rewrites what the person saw**: the thread is cut into stretches by the messages of a
+   person, copies of a plan within one stretch are one drawing (where the first stands, from the newest), a copy after a message of a person is a
+   new drawing, and the earlier one stays as it was, under "This plan was updated further down." (amended 2026-11-14 after review: the first
+   build matched copies by activity key, which a new job changes, and drew the plan twice or rewrote the words a person had answered).
 6. **The plan is a surface whose `surfaceId` starts with `plan-`** (and has at least one more character). The hook is the id, not a member
    of `createSurface`, because the id is the one thing every layer already carries and keys on and no layer has to learn anything; a
    client never guesses a plan from a component's type. A plan holds nothing the person can answer (a `Choices`, an input or a button

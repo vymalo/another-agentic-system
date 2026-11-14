@@ -51,61 +51,106 @@ export function surfaceIdOf(operations: unknown): string | undefined {
   return undefined;
 }
 
+/** Whether the newest operation of a copy deletes its surface (the copy says the plan is gone). */
+function isDeletedCopy(operations: unknown): boolean {
+  if (!Array.isArray(operations)) return false;
+  const last = operations.at(-1);
+  return isRecord(last) && isRecord(last.deleteSurface);
+}
+
+type Copy = { messageId: string; key: string; data: unknown; stretch: number };
+
 /**
- * The first message that holds surface `key`: where a plan stands (docs/api/ui-catalog-v1.md, "A surface
- * sent again"). Every later copy of the same surface is drawn there, from the newest operations, and not
- * again where it arrived.
+ * Every copy of the plan `surfaceId` in the transcript, in order, with the stretch it is in. The copies are
+ * matched by the A2UI `surfaceId` and by nothing else: a run that starts again gives a copy a new activity key
+ * (`a2ui-<seq>`), and it is the same plan. The thread is cut into stretches by the messages of a person
+ * (`role: "user"`; a steer is one): docs/api/ui-catalog-v1.md, "A surface sent again", rule 4.
  */
-export function earliestSurface(
-  messages: readonly Message[],
-  key: string,
-): { messageId: string } | undefined {
+function copiesOfPlan(messages: readonly Message[], surfaceId: string): Copy[] {
   const name = activityPartName(ACTIVITY.surface);
+  const out: Copy[] = [];
+  let stretch = 0;
   for (const message of messages) {
+    if (message.role === "user") stretch += 1;
     if (message.role !== "assistant") continue;
     for (const part of message.content) {
-      if (
-        part.type === "data" &&
-        part.name === name &&
-        isRecord(part.data) &&
-        part.data.surface === key
-      ) {
-        return { messageId: message.id };
-      }
+      if (part.type !== "data" || part.name !== name || !isRecord(part.data)) continue;
+      if (surfaceIdOf(part.data.a2ui_operations) !== surfaceId) continue;
+      out.push({
+        messageId: message.id,
+        key: String(part.data.surface),
+        data: part.data,
+        stretch,
+      });
     }
   }
-  return undefined;
+  return out;
+}
+
+/**
+ * What the copy of a plan in message `messageId` (activity `key`) does: `live` it stands first in the
+ * thread's newest drawing and shows the newest copy of that stretch; `frozen` it stands first in an earlier
+ * drawing and shows the newest copy of ITS stretch (what the person saw when they wrote), under a line; `nothing`
+ * it is a later copy of a drawing that is drawn where its first copy stands. The data of the copy to show
+ * is {@link planDataOf}.
+ */
+export function planPlaceOf(
+  messages: readonly Message[],
+  messageId: string,
+  key: string,
+  surfaceId: string,
+): "live" | "frozen" | "nothing" {
+  const copies = copiesOfPlan(messages, surfaceId);
+  const me = copies.find((c) => c.messageId === messageId && c.key === key);
+  if (!me) return "nothing";
+  const first = copies.find((c) => c.stretch === me.stretch);
+  if (first !== me) return "nothing";
+  return me.stretch === copies.at(-1)?.stretch ? "live" : "frozen";
+}
+
+/** The data of the copy that the drawing standing at (`messageId`, `key`) shows: the newest of its stretch. */
+export function planDataOf(
+  messages: readonly Message[],
+  messageId: string,
+  key: string,
+  surfaceId: string,
+): unknown {
+  const copies = copiesOfPlan(messages, surfaceId);
+  const me = copies.find((c) => c.messageId === messageId && c.key === key);
+  return me ? copies.filter((c) => c.stretch === me.stretch).at(-1)?.data : undefined;
 }
 
 /**
  * What the copy of a surface that sits in message `messageId` draws (docs/api/ui-catalog-v1.md, "A
  * surface sent again", rules 3 and 4): `own` its own operations, as the newest copy of a surface that is
- * not a plan does; `older` one line saying the surface was updated further down; `newest` the operations
- * of the newest copy, which is what a plan draws where its first copy stands; `nothing`, which is what
- * every later copy of a plan draws. A primitive on purpose: it is read by a selector of the transcript.
+ * not a plan does; `older` one line saying the surface was updated further down; for a plan `newest`
+ * (the drawing is the live one), `frozen` (an earlier drawing) or `nothing`. A primitive on purpose: it
+ * is read by a selector of the transcript.
  */
 export function placeOf(
   messages: readonly Message[],
   messageId: string,
   key: string,
   surfaceId: string,
-): "own" | "older" | "newest" | "nothing" {
+): "own" | "older" | "newest" | "frozen" | "nothing" {
   if (isPlanSurface(surfaceId)) {
-    const first = earliestSurface(messages, key)?.messageId;
-    return first === undefined || first === messageId ? "newest" : "nothing";
+    const place = planPlaceOf(messages, messageId, key, surfaceId);
+    return place === "live" ? "newest" : place;
   }
   const newest = latestSurface(messages, key);
   return newest === undefined || newest.messageId === messageId ? "own" : "older";
 }
 
 /**
- * The plan of the thread: the surface whose id starts with `plan-` that was sent last, as its newest
- * copy. A thread may hold several plans (`plan-a`, then `plan-b`); the pinned one is the latest sent.
+ * The plan the thread pins: the plan sent last that still exists (its newest copy does not delete it), as its
+ * newest copy. A thread may hold several plans (`plan-a`, then `plan-b`); a plan that was deleted is not
+ * pinned and the one before it is. None, no tab.
  */
 export function latestPlan(
   messages: readonly Message[],
 ): { key: string; surfaceId: string; data: unknown } | undefined {
   const name = activityPartName(ACTIVITY.surface);
+  const seen = new Set<string>();
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message?.role !== "assistant") continue;
@@ -113,11 +158,10 @@ export function latestPlan(
       const part = message.content[j];
       if (part?.type !== "data" || part.name !== name || !isRecord(part.data)) continue;
       const surfaceId = surfaceIdOf(part.data.a2ui_operations);
-      if (
-        surfaceId !== undefined &&
-        isPlanSurface(surfaceId) &&
-        typeof part.data.surface === "string"
-      ) {
+      if (surfaceId === undefined || !isPlanSurface(surfaceId) || seen.has(surfaceId)) continue;
+      seen.add(surfaceId);
+      if (isDeletedCopy(part.data.a2ui_operations)) continue;
+      if (typeof part.data.surface === "string") {
         return { key: part.data.surface, surfaceId, data: part.data };
       }
     }
