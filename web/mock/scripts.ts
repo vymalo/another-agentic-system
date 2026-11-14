@@ -471,6 +471,257 @@ const choicesDeckSurface = (): Step => ({
   },
 });
 
+/**
+ * The surface of the `choices-v8` script (catalog version 8): two questions that SHOW what they ask about. The first
+ * shows a screenshot the agent shared and a diagram of the flow, before its radio buttons; the second, a yes or no,
+ * shows two cards and a chart. What is shown is in the surface (`show` names the ids) and nowhere else.
+ */
+const choicesV8Surface = (): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: UI_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["pick"] },
+            {
+              id: "pick",
+              component: "Choices",
+              title: "Before I build the people screen",
+              description: "I looked at the current screen and at how a request reaches it.",
+              questions: [
+                {
+                  id: "layout",
+                  question: "Which layout should I keep?",
+                  help: "The screenshot is the screen today.",
+                  show: ["shot", "flow"],
+                  options: [
+                    { value: "list", label: "The list", description: "Four rows with an avatar" },
+                    { value: "matches", label: "The matches", recommended: true },
+                  ],
+                },
+                {
+                  id: "ship",
+                  question: "Ship the list behind a flag?",
+                  type: "confirm",
+                  yesLabel: "Behind a flag",
+                  noLabel: "For everyone",
+                  default: "yes",
+                  show: ["choices", "runs"],
+                },
+              ],
+            },
+            {
+              id: "shot",
+              component: "Image",
+              artifact: SHOT_LIST.sha256,
+              alt: "The people screen today: a list of four people with an avatar each",
+              caption: "The people screen today",
+            },
+            {
+              id: "flow",
+              component: "Mermaid",
+              title: "How a request reaches the screen",
+              code: "graph LR\n  Browser --> Orchestrator --> Agent",
+              caption: "The path of one request",
+            },
+            {
+              id: "choices",
+              component: "Cards",
+              title: "The two ways to ship it",
+              cards: [
+                { title: "Behind a flag", body: "Ten percent of people see it first." },
+                { title: "For everyone", body: "One release, no way back." },
+              ],
+            },
+            {
+              id: "runs",
+              component: "Chart",
+              type: "bar",
+              title: "Runs per day",
+              labels: ["Mon", "Tue", "Wed"],
+              series: [{ name: "Passed", values: [30, 42, 38] }],
+              caption: "Last three days",
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+/**
+ * The surfaces of the `choices-v8-bad` script: a question that shows another Choices (rule `schema`, a component
+ * that is not on the list) and one that shows a text that is also placed in the surface (rule `expansion`). The web
+ * refuses each whole, in words, and draws none of its form.
+ */
+const choicesV8BadSurfaces = (): Step[] =>
+  [
+    {
+      id: "bad-list",
+      components: [
+        { id: "root", component: "Column", children: ["ask"] },
+        {
+          id: "ask",
+          component: "Choices",
+          questions: [
+            {
+              id: "a",
+              question: "Shows a form?",
+              options: [
+                { value: "x", label: "X" },
+                { value: "y", label: "Y" },
+              ],
+              show: ["other"],
+            },
+          ],
+        },
+        {
+          id: "other",
+          component: "Choices",
+          questions: [{ id: "b", question: "Hidden?", type: "text" }],
+        },
+      ],
+    },
+    {
+      id: "bad-twice",
+      components: [
+        { id: "root", component: "Column", children: ["ask", "note"] },
+        {
+          id: "ask",
+          component: "Choices",
+          questions: [
+            {
+              id: "a",
+              question: "Shows its note?",
+              options: [
+                { value: "x", label: "X" },
+                { value: "y", label: "Y" },
+              ],
+              show: ["note"],
+            },
+          ],
+        },
+        { id: "note", component: "Text", text: "Placed twice." },
+      ],
+    },
+  ].map(({ id, components }) => ({
+    kind: "ui_surface" as const,
+    data: {
+      operations: [
+        { version: "v0.9.1", createSurface: { surfaceId: id, catalogId: OWN_CATALOG_ID } },
+        { version: "v0.9.1", updateComponents: { surfaceId: id, components } },
+      ],
+    },
+  }));
+
+/** The id of the plan of the `plan` script: it starts with `plan-`, which is what makes a surface a plan. */
+export const PLAN_SURFACE_ID = "plan-run-1";
+
+/** One copy of the plan, the whole surface, as the agent sends it each time the plan changes. */
+const planCopy = (items: { label: string; state: string; note?: string }[]): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      {
+        version: "v0.9.1",
+        createSurface: { surfaceId: PLAN_SURFACE_ID, catalogId: OWN_CATALOG_ID },
+      },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: PLAN_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["steps"] },
+            { id: "steps", component: "Checklist", title: "Fix the parser", items },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+const PLAN_STEPS = {
+  read: "Read the failing test",
+  fix: "Fix the parser",
+  port: "Port it to the CLI",
+  pr: "Open the pull request",
+  log: "Update the changelog",
+  tag: "Tag the release",
+};
+
+/**
+ * The `plan` script: an agent whose plan is ONE surface that it sends again, whole and under the same id, each time
+ * the plan changes. In the first run it creates the plan (four steps, the first in progress), checks the first off and
+ * notes the second; then it asks "Carry on?" and waits. After the person's message, in a second run, it checks the
+ * second off, DROPS the third with a note ("Out of scope: the CLI does not parse"), then adds two. Five copies in all: the
+ * page must hold one checklist, whose count leaves the dropped step out.
+ */
+function planScript(): { start: Step[]; resume: (answer: string) => Step[] } {
+  const s = PLAN_STEPS;
+  const said = (text: string): Step => ({
+    kind: "agent_message",
+    data: { messageId: nextMessageId(), final: false, text },
+  });
+  return {
+    start: [
+      working,
+      said("Here is the plan."),
+      planCopy([
+        { label: s.read, state: "doing" },
+        { label: s.fix, state: "todo" },
+        { label: s.port, state: "todo" },
+        { label: s.pr, state: "todo" },
+      ]),
+      planCopy([
+        { label: s.read, state: "done" },
+        { label: s.fix, state: "doing" },
+        { label: s.port, state: "todo" },
+        { label: s.pr, state: "todo" },
+      ]),
+      planCopy([
+        { label: s.read, state: "done" },
+        { label: s.fix, state: "doing", note: "The second branch of parse_group" },
+        { label: s.port, state: "todo" },
+        { label: s.pr, state: "todo" },
+      ]),
+      { kind: "agent_status", data: { status: "input_required", detail: "Carry on?" } },
+      { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+    ],
+    resume: (answer) => {
+      // the reply is written after the plan, piece by piece: what streams must not touch what the plan says
+      const reply = nextMessageId();
+      const parts = ["The plan ", "is now ", "five steps, ", "one dropped."];
+      return [
+        working,
+        planCopy([
+          { label: s.read, state: "done" },
+          { label: s.fix, state: "done" },
+          { label: s.port, state: "dropped", note: "Out of scope: the CLI does not parse" },
+          { label: s.pr, state: "doing" },
+        ]),
+        planCopy([
+          { label: s.read, state: "done" },
+          { label: s.fix, state: "done" },
+          { label: s.port, state: "dropped", note: "Out of scope: the CLI does not parse" },
+          { label: s.pr, state: "doing" },
+          { label: s.log, state: "todo" },
+          { label: s.tag, state: "todo" },
+        ]),
+        ...livePieces(reply, parts),
+        {
+          kind: "agent_message",
+          data: { messageId: reply, final: true, text: parts.join("") },
+        },
+        ...finish(`answered: ${answer}`),
+      ];
+    },
+  };
+}
+
 /** One surface of the web's own catalog, as the fake agent sends it: `createSurface`, then the components. */
 const ownSurface = (components: Record<string, unknown>[]): Step => ({
   kind: "ui_surface",
@@ -1852,6 +2103,14 @@ export const LONG_FAILURE = [
  * - `choices-v7`: one form of the five kinds of catalog version 7 (a yes or no, a number, a scale, a day, a rank). The agent
  *   validates the answer as a receiver does (mock/receiver.ts): a valid one ends the job as `answered: ui-action answer ship=no
  *   budget=250.5 …`; one that fails is not acted on, the agent names the question and the rule and asks again (a form of its own, `s2`).
+ * - `choices-v8`: the coder shares a screenshot, then asks two questions that SHOW what they ask about (catalog version 8): the
+ *   first a screenshot and a diagram before its radio buttons, the second (a yes or no) two cards and a chart before its
+ *   two choices; the answers resume it to done as `ui-action answer layout=list ship=yes`.
+ * - `choices-v8-bad`: two surfaces the web refuses whole, each by a rule of version 8 (a question that shows another
+ *   Choices, rule `schema`; one whose shown text is also placed, rule `expansion`), then done.
+ * - `plan`: an agent whose plan is ONE surface (`plan-run-1`) that it sends again, whole, each time the plan changes: in the
+ *   first run it creates it (four steps), checks one off and notes another, then asks "Carry on?"; after a message, in a second
+ *   run, it checks the next off, drops the third with a note, adds two, and finishes. Five copies, one checklist.
  * - `choices-deck`: the coder shares two screenshots, then asks with a Choices of an image deck (each option a
  *   picture of a shared file, one recommended) and a searchable list of twelve ways to log in (several, at most
  *   three) and a free box; the answers resume it to done as `ui-action answer layout=matches login=github,passkey`.
@@ -2935,6 +3194,24 @@ export function scriptFor(text: string): {
       };
     case "choices-v7":
       return choicesV7Script();
+    case "choices-v8":
+      return {
+        start: [
+          working,
+          ...sharedFile(1, SHOT_LIST, "shots/list.png"),
+          choicesV8Surface(),
+          { kind: "agent_status", data: { status: "input_required", detail: "Two questions" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [working, ...finish(`answered: ${answer}`)],
+      };
+    case "choices-v8-bad":
+      return {
+        start: [working, ...choicesV8BadSurfaces(), ...finishQuietly],
+        resume: () => [working, ...finishQuietly],
+      };
+    case "plan":
+      return planScript();
     case "choices-deck":
       return {
         start: [

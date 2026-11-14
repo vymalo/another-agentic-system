@@ -1681,6 +1681,103 @@ describe("choices-v7 (mock only): the five kinds of version 7, and a receiver th
   });
 });
 
+describe("choices-v8, choices-v8-bad and plan (mock only): catalog version 8", () => {
+  type F = { event: Record<string, unknown> };
+  type Ops = Record<string, unknown>[];
+  const snapshots = (body: F[]) =>
+    body
+      .filter((f) => f.event.activityType === "a2ui-surface")
+      .map((f) => ({
+        id: String(f.event.messageId),
+        ops: (f.event.content as { a2ui_operations: Ops }).a2ui_operations,
+      }));
+  const componentsOf = (ops: Ops) =>
+    (
+      ops.filter((o) => "updateComponents" in o) as { updateComponents: { components: Ops } }[]
+    ).flatMap((o) => o.updateComponents.components);
+  const say = async (threadId: string, text: string) => {
+    const res = await postRun(base, "reviewer", {
+      threadId,
+      runId: newId(),
+      messages: [{ id: newId(), role: "user", content: text }],
+    });
+    expect(res.status).toBe(200);
+    return (await validated(await frames(res), "run frames")) as F[];
+  };
+
+  it("choices-v8 asks two questions that show an image, a diagram, cards and a chart, all in the surface and all valid", async () => {
+    const { threadId, body } = await startThread("choices-v8 please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    const ops = snapshots(body).at(-1)?.ops ?? [];
+    const components = componentsOf(ops);
+    const byId = new Map(components.map((c) => [String(c.id), c]));
+    for (const c of components) {
+      expect(OWN_COMPILED.check(String(c.component), c), String(c.id)).toBeUndefined();
+    }
+    const choices = components.find((c) => c.component === "Choices") as {
+      questions: { id: string; show: string[] }[];
+    };
+    expect(choices.questions.map((q) => q.show)).toEqual([
+      ["shot", "flow"],
+      ["choices", "runs"],
+    ]);
+    expect(choices.questions.flatMap((q) => q.show).map((id) => byId.get(id)?.component)).toEqual([
+      "Image",
+      "Mermaid",
+      "Cards",
+      "Chart",
+    ]);
+    await waitForState(threadId, ["blocked"]);
+  });
+
+  it("choices-v8-bad sends two surfaces the schema takes and the rules of version 8 refuse", async () => {
+    const { body } = await startThread("choices-v8-bad please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    const surfaces = snapshots(body);
+    expect(surfaces).toHaveLength(2);
+    for (const s of surfaces) {
+      for (const c of componentsOf(s.ops)) {
+        expect(OWN_COMPILED.check(String(c.component), c), String(c.id)).toBeUndefined();
+      }
+    }
+  });
+
+  it("plan sends the same surface five times over two runs: one id, one message id, a checklist that drops a step with a note", async () => {
+    const { threadId, body } = await startThread("plan please", "reviewer", {
+      forwardedProps: { [UI_CATALOG_PROP]: OWN_CATALOG },
+    });
+    await waitForState(threadId, ["blocked"]);
+    const first = snapshots(body);
+    const second = snapshots(await say(threadId, "carry on"));
+    const all = [...first, ...second];
+    expect(first).toHaveLength(3);
+    expect(second).toHaveLength(2);
+    // the orchestrator names a surface's message by the event that made it: the same in every run
+    expect(new Set(all.map((s) => s.id)).size).toBe(1);
+    expect(JSON.stringify(all.at(-1)?.ops.at(0))).toContain('"surfaceId":"plan-run-1"');
+    // each snapshot is the whole surface so far: it grows by one create and one update each time
+    expect(all.map((s) => s.ops.length)).toEqual([2, 4, 6, 8, 10]);
+    const last = componentsOf(all.at(-1)?.ops ?? [])
+      .filter((c) => c.component === "Checklist")
+      .at(-1) as {
+      items: { label: string; state: string; note?: string }[];
+    };
+    expect(OWN_COMPILED.check("Checklist", last)).toBeUndefined();
+    expect(last.items.map((i) => i.state)).toEqual([
+      "done",
+      "done",
+      "dropped",
+      "doing",
+      "todo",
+      "todo",
+    ]);
+    expect(last.items[2]?.note).toBe("Out of scope: the CLI does not parse");
+    await waitForState(threadId, ["done"]);
+  });
+});
+
 describe("cards-mermaid (mock only): text, three cards and a graph in one answer", () => {
   const surfaceOf = (body: { event: Record<string, unknown> }[]) => {
     const surfaces = body.filter((f) => f.event.activityType === "a2ui-surface");

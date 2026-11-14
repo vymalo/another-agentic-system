@@ -279,6 +279,56 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: a question that shows a picture, a diagram, cards and a chart has no serious violations (open, and answered)", async ({
+      page,
+    }) => {
+      await startThread(page, "choices-v8 now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      const group = page.getByRole("radiogroup", { name: "Which layout should I keep?" });
+      await expect(group.getByRole("img", { name: /^The people screen today/ })).toBeVisible();
+      await expect(group.locator('[data-slot="mermaid-image"]')).toBeVisible();
+      await expect(
+        page.getByRole("radiogroup", { name: "Ship the list behind a flag?" }).getByText("Data", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      // answered: the form no longer takes input and what it showed is still there to read
+      await group.getByText("The list", { exact: true }).click();
+      await page.getByRole("button", { name: "Send answers" }).click();
+      await expect(badge(page)).toHaveText("Done", { timeout: 15_000 });
+      await expect(group.getByRole("img", { name: /^The people screen today/ })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a plan (one checklist, a dropped step with its note, the Plan tab) and a surface refused by version 8 have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "plan now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      await expect(page.getByRole("region", { name: "Plan from reviewer" })).toContainText(
+        "1 of 4 done",
+      );
+      expect(await axeViolations(page)).toEqual([]);
+      await page.getByLabel("Message", { exact: true }).fill("carry on");
+      await page.getByRole("button", { name: "Send" }).click();
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      const plan = page.getByRole("region", { name: "Plan from reviewer" });
+      await expect(plan).toContainText("2 of 5 done");
+      await expect(plan.locator('li[data-state="dropped"]')).toContainText("Dropped");
+      expect(await axeViolations(page)).toEqual([]);
+      // the same plan pinned in the panel (a sheet on a phone, docked beside the chat elsewhere)
+      const toggle = page.getByRole("button", { name: "Thread details" });
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+      await page.getByRole("tab", { name: /^Plan/ }).click();
+      await expect(page.getByRole("tabpanel")).toContainText("2 of 5 done");
+      expect(await axeViolations(page)).toEqual([]);
+      await startThread(page, "choices-v8-bad now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator("[data-rule]")).toHaveCount(2);
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: an answer of words, cards and a graph has no serious violations (the graph drawn, its source open)", async ({
       page,
     }) => {
