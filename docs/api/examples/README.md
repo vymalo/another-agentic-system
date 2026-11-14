@@ -65,6 +65,12 @@ message's `messageId` is `<message-id>` and the task id in front of a step's id 
   verifier agent; the web renders their cards since MVP slice 4, and the mock plays the verifier as a subagent) and `ci` (the
   mock plays the CI reports too; the web renders the card since MVP slice 8). The web renders the AG-UI goldens, not these event logs: see the next section.
 
+## Thread as Markdown
+
+[`thread-markdown/`](thread-markdown/) holds the conformance vectors of [`../thread-markdown-v1.md`](../thread-markdown-v1.md): each
+`<name>.export.json` is an export (`exportThread`) and `<name>.md` the file a client must write from it, byte for byte. A client in
+another language reads the pairs and compares; `web/mock/thread-markdown.test.ts` is the web's run of them.
+
 ## AG-UI streams
 
 [`agui/<name>.agui.json`](agui/) is what a **viewer** (an AG-UI connect stream, see

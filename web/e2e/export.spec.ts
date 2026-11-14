@@ -67,7 +67,10 @@ test("a failed export says so and keeps the page usable", async ({ page }) => {
 
 /** The golden files of docs/api/thread-markdown-v1.md: the id and the time of the export are the only things a run changes. */
 const golden = (name: string) =>
-  readFile(path.resolve(import.meta.dirname, `../../docs/api/examples/thread-markdown/${name}.md`), "utf8");
+  readFile(
+    path.resolve(import.meta.dirname, `../../docs/api/examples/thread-markdown/${name}.md`),
+    "utf8",
+  );
 
 async function downloadMarkdown(page: import("@playwright/test").Page) {
   const item = await exportMarkdownItem(page);

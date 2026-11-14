@@ -180,7 +180,7 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   };
 
   return (
-    <div className="aui-code-header-root border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
+    <div className="aui-code-header-root select-none border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>

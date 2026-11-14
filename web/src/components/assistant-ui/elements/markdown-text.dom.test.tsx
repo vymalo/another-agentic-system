@@ -5,7 +5,7 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import katex from "katex";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -367,5 +367,37 @@ describe("MarkdownText", () => {
     expect(time.getAttribute("datetime")).toBe(at.toISOString());
     expect(time.textContent).toBe(at.toLocaleString());
     expect(time.closest(".sr-only")).not.toBeNull();
+  });
+
+  it("a code block's own Copy copies only its code, and says when the browser refuses", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const log = await renderAgentText("before\n\n```rust\nlet a = 1;\n```\n\nafter");
+    const header = await waitFor(() => {
+      const found = log.querySelector(".aui-code-header-root");
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    // its label and button are not selectable text
+    expect(header.className).toContain("select-none");
+    fireEvent.click(within(header).getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("let a = 1;\n"));
+  });
+
+  it("a code block's own Copy says when the browser refuses", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: () => Promise.reject(new Error("denied")) },
+      configurable: true,
+    });
+    const log = await renderAgentText("```rust\nlet a = 1;\n```");
+    const header = await waitFor(() => {
+      const found = log.querySelector(".aui-code-header-root");
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    fireEvent.click(within(header).getByRole("button", { name: "Copy" }));
+    await waitFor(() =>
+      expect(within(header).getByRole("status").textContent).toContain("Could not copy"),
+    );
   });
 });

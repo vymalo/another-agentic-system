@@ -124,6 +124,16 @@ export function utc(iso: string): string {
 
 const scalars = (text: string): number => [...text].length;
 
+/** An `http` or `https` address (either case) with no character below U+0021, no U+007F and no `<` or `>`. */
+function isLinkable(uri: string): boolean {
+  if (!/^https?:\/\/./i.test(uri)) return false;
+  for (const ch of uri) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x21 || code === 0x7f || ch === "<" || ch === ">") return false;
+  }
+  return true;
+}
+
 /** One line for an artifact event: a kept file by its name, anything else by its name, its text when short and its `https` link. */
 function artifactLine(data: Rec): string {
   const file = isRecord(data.file) ? data.file : undefined;
@@ -140,7 +150,7 @@ function artifactLine(data: Rec): string {
   const text = str(data.text)?.trim();
   if (text && !/[\n\r]/.test(text) && scalars(text) <= MAX_ARTIFACT_LINE) parts.push(inline(text));
   const uri = str(data.uri);
-  if (uri && /^https?:\/\/[^\x00-\x20\x7f<>]+$/i.test(uri)) parts.push(`<${uri}>`);
+  if (uri && isLinkable(uri)) parts.push(`<${uri}>`);
   return `- ${parts.join(" — ")}`;
 }
 

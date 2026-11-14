@@ -221,9 +221,16 @@ Quote). The web's implementation:
   The code block's own Copy copies only its code (it already did).
 - **Export Markdown** (`lib/thread-markdown.ts`, pure; `lib/export-thread.ts`; the thread menu). Beside Export JSON: it reads the same
   `GET /api/threads/{id}/export` and writes `thread-<id>.md` with `threadToMarkdown(doc)`. No second request; a share link has no export route,
-  so there is no item there. Golden files `mock/thread-markdown/*.md` (a plain chat with steps, code and math, a form with its answers, a
-  fork made by regenerating, a kept file) are played from the mock and compared exactly by `mock/thread-markdown.test.ts`
-  (`UPDATE_GOLDEN=1` rewrites them) and, for the file the browser downloads, by `e2e/export.spec.ts`; `e2e/quote.spec.ts` drives Quote.
+  so there is no item there. **A message is written as a block quote** (every line behind `> `), so nothing a person or an agent wrote can
+  become a heading, a turn or an open fence in the file; the person's heading is `## *Person*`, which no escaped agent name can equal.
+  The conformance vectors are `docs/api/examples/thread-markdown/<name>.export.json` and `<name>.md` (five played from the mock: a plain
+  chat with steps, code and math, a form with its answers, a fork made by regenerating, a kept file; the rest written for one rule each).
+  `mock/thread-markdown.test.ts` holds the exporter to them, checks that the mock still plays the checked-in inputs, parses every file as
+  CommonMark and checks the quote round trip and that the page quotes the words the code writes (`UPDATE_GOLDEN=1` rewrites the vectors, and
+  is refused when `CI` is set); `e2e/export.spec.ts` compares the file the browser downloads; `e2e/quote.spec.ts` drives Quote.
+  A selection that touches drawn math is quoted from the source of the blocks that cover it (`sourceOfBlocks`, which falls back to the whole
+  message when the rendered blocks and the source's do not line up one for one), a code block's header is `select-none` and clamped out of a
+  selection, a quote is cut at 20,000 characters, and a quote is never put inside a word.
   *Unverified:* the clipboard in browsers other than Chromium, and the desktop app's download.
 
 ### Code and math in answers

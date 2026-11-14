@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QuoteTargetContext } from "@/features/chat/components/quote";
@@ -154,5 +154,61 @@ describe("Copy and Quote under a turn", () => {
     );
     expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
     expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+  });
+});
+
+describe("Copy: what reaches the clipboard and how a refusal is told", () => {
+  const stub = (clipboard: unknown) =>
+    Object.defineProperty(navigator, "clipboard", { value: clipboard, configurable: true });
+  const noteRegions = () =>
+    [...document.querySelectorAll('[role="status"]')].filter((el) =>
+      el.textContent?.includes(COPY_FAILED),
+    );
+
+  afterEach(() => vi.useRealTimers());
+
+  it("writes text/plain through writeText and never the rich clipboard", async () => {
+    const writeText = vi.fn(async () => {});
+    const write = vi.fn(async () => {});
+    stub({ writeText, write });
+    show({ text: "<b>raw</b> **x**" });
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("<b>raw</b> **x**"));
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("tells a refusal once, in one visible status region, and takes it back after its delay", async () => {
+    vi.useFakeTimers();
+    stub({ writeText: () => Promise.reject(new Error("denied")) });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(noteRegions()).toHaveLength(1);
+    expect(noteRegions()[0]?.className).not.toContain("sr-only");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(noteRegions()).toHaveLength(0);
+    expect(document.body.textContent).not.toContain(COPY_FAILED);
+  });
+
+  it("does not throw with no clipboard at all, and says so", async () => {
+    stub(undefined);
+    show();
+    expect(() => fireEvent.click(screen.getByRole("button", { name: "Copy" }))).not.toThrow();
+    await waitFor(() => expect(noteRegions()).toHaveLength(1));
+  });
+
+  it("does not throw when writeText throws at once, and says so", async () => {
+    stub({
+      writeText: () => {
+        throw new Error("blocked");
+      },
+    });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(noteRegions()).toHaveLength(1));
   });
 });

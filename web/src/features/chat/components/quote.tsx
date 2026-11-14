@@ -8,6 +8,7 @@ import {
   type RefObject,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -15,9 +16,11 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
   insertQuote,
+  limitQuote,
   MESSAGE_ROOT,
   pickSelection,
   QUOTE_ACROSS,
+  QUOTE_CUT,
   quoteBlock,
   quoteCode,
 } from "@/features/chat/lib/quote";
@@ -85,19 +88,37 @@ export function QuoteButton({ source, className }: { source: string; className?:
   const target = useQuoteTarget();
   const button = useRef<HTMLButtonElement>(null);
   const [said, setSaid] = useState<string | null>(null);
+  // a note about the last press is not about the next selection
+  useEffect(() => {
+    if (said === null) return;
+    const clear = () => setSaid(null);
+    document.addEventListener("selectionchange", clear);
+    return () => document.removeEventListener("selectionchange", clear);
+  }, [said]);
   if (!target.available || source.trim() === "") return null;
 
   const quote = () => {
     const root = button.current?.closest(MESSAGE_ROOT);
-    const picked = root ? pickSelection(root, window.getSelection()) : { kind: "none" as const };
+    const picked = root
+      ? pickSelection(root, window.getSelection(), source)
+      : { kind: "none" as const };
     if (picked.kind === "across") {
       setSaid(QUOTE_ACROSS);
       return;
     }
-    setSaid(null);
-    if (picked.kind === "text") target.insert(quoteBlock(picked.text));
-    else if (picked.kind === "code") target.insert(quoteCode(picked.code, picked.language));
-    else target.insert(quoteBlock(source));
+    const words =
+      picked.kind === "text"
+        ? picked.text
+        : picked.kind === "code"
+          ? picked.code
+          : picked.kind === "math"
+            ? (picked.source ?? source)
+            : source;
+    const limited = limitQuote(words);
+    setSaid(limited.cut ? QUOTE_CUT : null);
+    target.insert(
+      picked.kind === "code" ? quoteCode(limited.text, picked.language) : quoteBlock(limited.text),
+    );
   };
 
   return (

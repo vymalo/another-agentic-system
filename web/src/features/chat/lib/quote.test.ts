@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { insertQuote, quoteBlock, quoteCode } from "./quote";
+import { insertQuote, limitQuote, MAX_QUOTE, quoteBlock, quoteCode, sourceBlocks } from "./quote";
 
 describe("quoteBlock", () => {
   it("puts > before every line and a bare > on a blank one", () => {
@@ -43,5 +43,47 @@ describe("insertQuote", () => {
   it("clamps a caret that is outside the text", () => {
     expect(insertQuote("ab", 99, q).text).toBe("ab\n\n> hi\n\n");
     expect(insertQuote("ab", -3, q).text).toBe("> hi\n\nab");
+  });
+});
+
+describe("the size of a quote", () => {
+  it("keeps a text that fits", () => {
+    expect(limitQuote("a\nb", 10)).toEqual({ text: "a\nb", cut: false });
+  });
+  it("cuts a longer one at the last whole line that fits, and says it was cut", () => {
+    expect(limitQuote("aaa\nbbb\nccc", 8)).toEqual({ text: "aaa\nbbb", cut: true });
+    expect(limitQuote("aaa\nbbb\nccc", 7)).toEqual({ text: "aaa\nbbb", cut: true });
+    expect(limitQuote("aaa\nbbb\nccc", 6)).toEqual({ text: "aaa", cut: true });
+  });
+  it("cuts the first line itself when it alone is too long", () => {
+    expect(limitQuote("abcdefgh", 4)).toEqual({ text: "abcd", cut: true });
+  });
+  it("is 20,000 characters", () => {
+    expect(MAX_QUOTE).toBe(20_000);
+    expect(limitQuote("x".repeat(20_001)).cut).toBe(true);
+    expect(limitQuote("x".repeat(20_000)).cut).toBe(false);
+  });
+});
+
+describe("where a quote goes in the box", () => {
+  it("never splits a word: a caret inside one moves to its end", () => {
+    expect(insertQuote("hi", 1, "> q").text).toBe("hi\n\n> q\n\n");
+    expect(insertQuote("one two", 5, "> q").text).toBe("one two\n\n> q\n\n");
+    expect(insertQuote("one two", 3, "> q").text).toBe("one\n\n> q\n\n two");
+    expect(insertQuote("one\ntwo", 5, "> q").text).toBe("one\ntwo\n\n> q\n\n");
+  });
+  it("keeps the first quote when a second is added after it", () => {
+    const first = insertQuote("", null, "> one");
+    const second = insertQuote(first.text, first.caret, "> two");
+    expect(second.text).toBe("> one\n\n> two\n\n");
+    expect(second.caret).toBe(second.text.length);
+  });
+});
+
+describe("the blocks a selection is quoted from", () => {
+  it("are the top-level blocks of the source, with their offsets", () => {
+    const source = "# T\n\npara one\nstill\n\n```js\ncode\n```\n\n$$\nx\n$$";
+    const spans = sourceBlocks(source).map((b) => source.slice(b.start, b.end));
+    expect(spans).toEqual(["# T", "para one\nstill", "```js\ncode\n```", "$$\nx\n$$"]);
   });
 });

@@ -217,6 +217,70 @@ test.describe("Quote", () => {
     await expect(page.getByRole("button", { name: "Quote" })).toHaveCount(0);
   });
 
+  test("a selection in drawn math is quoted from the source, once, with only the block it is in", async ({
+    page,
+  }) => {
+    await talk(page, "code-math please");
+    const formula = turn(page).locator(".katex-display").first();
+    await expect(formula).toBeVisible();
+    await formula.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    await quoteOf(turn(page)).click();
+    await expect(box(page)).toHaveValue(
+      "> $$\n> \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}\n> $$\n\n",
+    );
+  });
+
+  test("a selection that starts in a code block's header leaves its label and button out", async ({
+    page,
+  }) => {
+    await talk(page, "code-math please");
+    await page.evaluate(() => {
+      const header = document.querySelector(".aui-code-header-root") as HTMLElement;
+      const code = header.nextElementSibling?.querySelector("code") as HTMLElement;
+      const range = document.createRange();
+      range.setStart(header.querySelector(".aui-code-header-language")?.firstChild as Node, 0);
+      const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+      let last: Text | null = null;
+      for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null)
+        last = n;
+      range.setEnd(last as Text, (last as Text).data.length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    await quoteOf(turn(page)).click();
+    const value = await box(page).inputValue();
+    expect(value.startsWith("> ```rust\n> fn total(prices: &[u32]) -> u32 {\n")).toBe(true);
+    expect(value).not.toMatch(/Copy|\n> rust\n/);
+  });
+
+  test("the note about a selection across messages goes at the next selection", async ({
+    page,
+  }) => {
+    await talk(page);
+    await page.evaluate(() => {
+      const user = document.querySelector('[data-slot="user-message"]') as HTMLElement;
+      const agent = document.querySelector('[data-slot="agent-message"]') as HTMLElement;
+      const range = document.createRange();
+      range.setStart(user.querySelector("p, span, div") as Node, 0);
+      range.setEnd(agent, agent.childNodes.length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    await quoteOf(turn(page)).click();
+    const note = turn(page).locator('[data-slot="quote-note"]');
+    await expect(note).toContainText("Select text inside one message");
+    await select(turn(page).locator('[data-slot="agent-message"]'), 0, 4);
+    await expect(note).toHaveText("");
+  });
+
   test("the quote buttons pass axe", async ({ page }) => {
     await talk(page);
     await mine(page).hover();

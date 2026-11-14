@@ -34,7 +34,6 @@ import { QuoteButton } from "@/features/chat/components/quote";
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { reasoningIdOf, Thinking } from "@/features/chat/components/thinking";
 import { useThreadView } from "@/features/chat/components/thread-view";
-import { surfacePlaceholders } from "@/features/chat/lib/a2ui/placeholder";
 import { drawnDrafts, drawnReasoning } from "@/features/chat/lib/agui/live-drafts";
 import {
   ACTIVITY,
@@ -48,6 +47,7 @@ import {
   parseTools,
 } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
+import { turnSource } from "@/features/chat/lib/turn-source";
 import { type TextRole, textRoles } from "@/features/chat/lib/working";
 import {
   MentionedText,
@@ -620,18 +620,8 @@ export const AssistantMessage: FC = () => {
       p.type === "text" && p.text?.trim() && roles.get(i) !== "working" ? [p.text] : [],
     )
     .join("\n\n");
-  const surfacePart = activityPartName(ACTIVITY.surface);
-  const ownWords = content
-    .flatMap((p, i) => {
-      if (p.type === "text") return p.text?.trim() && roles.get(i) !== "working" ? [p.text] : [];
-      // a surface has no text: one line says what was drawn (docs/api/message-text-v1.md, "Client recipe")
-      if (p.type === "data" && p.name === surfacePart) {
-        const data = p.data as { a2ui_operations?: unknown } | undefined;
-        return surfacePlaceholders(data?.a2ui_operations);
-      }
-      return [];
-    })
-    .join("\n\n");
+  // a surface has no text: one line says what was drawn (docs/api/thread-markdown-v1.md, "Client recipe")
+  const ownWords = turnSource(content, roles);
   const writing = newest
     ? drawnDrafts(
         drafts,
