@@ -10,7 +10,7 @@ Postgres event log. It drives any A2A agent, uses tools over MCP, reacts to
 webhooks, and can be driven the same way. **Status (2026-10-03): the MVP is
 complete against its build order** (`docs/mvp.md`, ADR 0037, proposed): `orchestrator/`
 and `web/` carry every slice and every requirement of `docs/vision.md` that is not
-listed there as post-MVP. **Complete is not accepted:** everything is proven on mocks
+listed there as post-MVP (the plan beyond it, "LibreChat-grade" with every API and the UI client-agnostic, is ADR 0067, proposed). **Complete is not accepted:** everything is proven on mocks
 (`dev/` scenarios, Rust tests, the web's Playwright specs on its own mock server); no
 live model, GitHub.com, platform or live web page was used (the browser agent, ADR 0057,
 reads a local page; the browser in the football example is a mock), and the owner, who judged the first build not ready
