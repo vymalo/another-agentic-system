@@ -67,7 +67,7 @@ test("a failed export says so and keeps the page usable", async ({ page }) => {
 
 /** The golden files of docs/api/thread-markdown-v1.md: the id and the time of the export are the only things a run changes. */
 const golden = (name: string) =>
-  readFile(path.resolve(import.meta.dirname, `../mock/thread-markdown/${name}.md`), "utf8");
+  readFile(path.resolve(import.meta.dirname, `../../docs/api/examples/thread-markdown/${name}.md`), "utf8");
 
 async function downloadMarkdown(page: import("@playwright/test").Page) {
   const item = await exportMarkdownItem(page);
@@ -116,8 +116,8 @@ test("nothing in the Markdown that the JSON export does not hold", async ({ page
   // the same thread, the same words
   expect(markdown).toContain(`thread: "${json.thread.id}"`);
   expect(json.thread.id).toBe(id);
-  expect(markdown).toContain("## Person\n\nsteps go");
-  expect(markdown).toContain("Done.");
+  expect(markdown).toContain("## *Person*\n\n> steps go");
+  expect(markdown).toContain("> Done.");
   // what the JSON has for the steps is there to be read in the JSON; the Markdown counts them and says nothing of them
   const step = json.events.find(
     (e: { kind: string; data: { input?: unknown } }) => e.kind === "agent_step" && e.data.input,

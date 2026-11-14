@@ -1,18 +1,20 @@
 ---
 format: another-agentic-system/thread-markdown
 version: 1
-title: "file make a chart"
-agent: "reviewer"
+title: "Cut"
+agent: "adam"
 thread: "00000000-0000-4000-8000-000000000001"
 exported: 2026-11-14T10:00:00Z
 ---
 
-# file make a chart
+# Cut
 
-## Person
+## *Person*
 
-file make a chart
+> one
 
-## reviewer
+## adam
 
-- File: `chart.png` (image/png, 70 bytes)
+> two
+
+*The chat is longer than this file: it holds the first 2 events.*

@@ -1,0 +1,222 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "someone@example.com",
+    "title": "Surfaces",
+    "target": {
+      "agentId": "adam"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 7
+  },
+  "job": {
+    "number": 1,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "adam",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "show"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "ui_surface",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "operations": [
+          {
+            "createSurface": {
+              "surfaceId": "s1"
+            }
+          },
+          {
+            "updateComponents": {
+              "surfaceId": "s1",
+              "components": [
+                {
+                  "id": "root",
+                  "component": "Column",
+                  "children": [
+                    "a"
+                  ]
+                },
+                {
+                  "id": "a",
+                  "component": "Cards",
+                  "cards": []
+                },
+                {
+                  "id": "b",
+                  "component": "Mermaid"
+                },
+                {
+                  "id": "t",
+                  "component": "Text"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "ui_surface",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "operations": [
+          {
+            "createSurface": {
+              "surfaceId": "s2"
+            }
+          },
+          {
+            "updateComponents": {
+              "surfaceId": "s2",
+              "components": [
+                {
+                  "id": "root",
+                  "component": "Column",
+                  "children": []
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "ui_surface",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "operations": [
+          {
+            "createSurface": {
+              "surfaceId": "s3"
+            }
+          },
+          {
+            "updateComponents": {
+              "surfaceId": "s3",
+              "components": [
+                {
+                  "id": "x",
+                  "component": "Chart"
+                }
+              ]
+            }
+          },
+          {
+            "deleteSurface": {
+              "surfaceId": "s3"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 5,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "again"
+      }
+    },
+    {
+      "seq": 6,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "ui_surface",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "operations": [
+          {
+            "updateComponents": {
+              "surfaceId": "s1",
+              "components": [
+                {
+                  "id": "c",
+                  "component": "Chart"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 7,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "m-970179894",
+        "final": true,
+        "text": "updated"
+      }
+    }
+  ],
+  "eventsTruncated": false,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "adam",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

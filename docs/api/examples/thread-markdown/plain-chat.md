@@ -9,22 +9,22 @@ exported: 2026-11-14T10:00:00Z
 
 # talk
 
-## Person
+## *Person*
 
-talk
+> talk
 
 ## reviewer
 
-Plan: add a test
+> Plan: add a test
 
 - Artifact: result — echo: talk — <https://github.com/acme/demo/pull/1>
 
-## Person
+## *Person*
 
-steps go
+> steps go
 
 ## reviewer
 
 *2 steps, 1 failed.*
 
-Done.
+> Done.

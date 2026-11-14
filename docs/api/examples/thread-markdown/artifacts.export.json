@@ -1,0 +1,150 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "someone@example.com",
+    "title": "Artifacts",
+    "target": {
+      "agentId": "adam"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 7
+  },
+  "job": {
+    "number": 1,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "adam",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "make"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "name": "chart",
+        "mimeType": "image/png",
+        "uri": "https://example.com/private.png",
+        "file": {
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 70,
+          "filename": "chart.png"
+        }
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "name": "short",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "uri": "HTTPS://example.com/a"
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "name": "long",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "uri": "ftp://example.com/a"
+      }
+    },
+    {
+      "seq": 5,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "name": "emoji",
+        "text": "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+      }
+    },
+    {
+      "seq": 6,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "name": "emojis",
+        "text": "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉"
+      }
+    },
+    {
+      "seq": 7,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "name": "multi",
+        "text": "a\nb",
+        "uri": "https://example.com/a b"
+      }
+    }
+  ],
+  "eventsTruncated": false,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "adam",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

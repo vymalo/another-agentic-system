@@ -1,0 +1,72 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "someone@example.com",
+    "title": "Cut",
+    "target": {
+      "agentId": "adam"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 2
+  },
+  "job": {
+    "number": 1,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "adam",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "one"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "m-311188231",
+        "final": true,
+        "text": "two"
+      }
+    }
+  ],
+  "eventsTruncated": true,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "adam",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

@@ -9,9 +9,9 @@ exported: 2026-11-14T10:00:00Z
 
 # choices now
 
-## Person
+## *Person*
 
-choices now
+> choices now
 
 ## reviewer
 
@@ -21,12 +21,21 @@ choices now
 - Which login?
 - Where does it run?
 
-## Person
+## *Person*
 
-- **Which database?** Postgres
-- **Which login?** Keycloak
-- **Note** Use \*our\* realm
+**Which database?**
+
+> Postgres
+
+**Which login?**
+
+> Keycloak
+
+**Note**
+
+> Use *our* realm
+> and the second line
 
 ## reviewer
 
-- Artifact: result — answered: ui-action answer db=pg auth=keycloak note:Use \*our\* realm — <https://github.com/acme/demo/pull/1>
+- Artifact: result — <https://github.com/acme/demo/pull/1>

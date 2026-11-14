@@ -1,0 +1,220 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "dev@example.com",
+    "title": "echo first",
+    "target": {
+      "agentId": "reviewer"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 12,
+    "forkedFrom": {
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "seq": 5,
+      "kind": "edit"
+    }
+  },
+  "job": {
+    "number": 2,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "reviewer",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "dev@example.com"
+      },
+      "data": {
+        "text": "echo first",
+        "messageId": "evt-1",
+        "runId": "run-1"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "working"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "name": "result",
+        "text": "echo: echo first",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "seq": 5,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "done"
+      }
+    },
+    {
+      "seq": 6,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_forked",
+      "actor": {
+        "type": "user",
+        "name": "dev@example.com"
+      },
+      "data": {
+        "from": {
+          "threadId": "00000000-0000-4000-8000-000000000002",
+          "seq": 5
+        },
+        "kind": "edit",
+        "title": "echo first",
+        "target": {
+          "agentId": "reviewer"
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "dev@example.com"
+      },
+      "data": {
+        "text": "echo second",
+        "messageId": "evt-regen"
+      }
+    },
+    {
+      "seq": 8,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "job_started",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "job": 2
+      }
+    },
+    {
+      "seq": 9,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "working"
+      }
+    },
+    {
+      "seq": 10,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "name": "result",
+        "text": "echo: echo second",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "seq": 11,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "seq": 12,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "done"
+      }
+    }
+  ],
+  "eventsTruncated": false,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "reviewer",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

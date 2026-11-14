@@ -1,0 +1,149 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "someone@example.com",
+    "title": "Answer then working",
+    "target": {
+      "agentId": "adam"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 7
+  },
+  "job": {
+    "number": 1,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "adam",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "go"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "a",
+        "final": true,
+        "text": "The answer.",
+        "purpose": "answer"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "w",
+        "final": true,
+        "text": "Working words after it.",
+        "purpose": "working"
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "again"
+      }
+    },
+    {
+      "seq": 5,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "x",
+        "final": true,
+        "text": "Early draft",
+        "purpose": "answer"
+      }
+    },
+    {
+      "seq": 6,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "y",
+        "final": true,
+        "text": "Other words"
+      }
+    },
+    {
+      "seq": 7,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "x",
+        "final": true,
+        "text": "Early draft, rewritten",
+        "purpose": "answer"
+      }
+    }
+  ],
+  "eventsTruncated": false,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "adam",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

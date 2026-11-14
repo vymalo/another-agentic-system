@@ -1,0 +1,283 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "dev@example.com",
+    "title": "choices now",
+    "target": {
+      "agentId": "reviewer"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 10
+  },
+  "job": {
+    "number": 1,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "reviewer",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "dev@example.com"
+      },
+      "data": {
+        "text": "choices now",
+        "messageId": "evt-1",
+        "runId": "run-1"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "working"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "ui_surface",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "operations": [
+          {
+            "version": "v0.9.1",
+            "createSurface": {
+              "surfaceId": "s1",
+              "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"
+            }
+          },
+          {
+            "version": "v0.9.1",
+            "updateComponents": {
+              "surfaceId": "s1",
+              "components": [
+                {
+                  "id": "root",
+                  "component": "Column",
+                  "children": [
+                    "intro",
+                    "pick"
+                  ]
+                },
+                {
+                  "id": "intro",
+                  "component": "Text",
+                  "text": "A few quick choices",
+                  "variant": "h3"
+                },
+                {
+                  "id": "pick",
+                  "component": "Choices",
+                  "questions": [
+                    {
+                      "id": "db",
+                      "question": "Which database?",
+                      "allowOther": true,
+                      "options": [
+                        {
+                          "value": "pg",
+                          "label": "Postgres",
+                          "description": "Relational, the default"
+                        },
+                        {
+                          "value": "sqlite",
+                          "label": "SQLite"
+                        }
+                      ]
+                    },
+                    {
+                      "id": "auth",
+                      "question": "Which login?",
+                      "options": [
+                        {
+                          "value": "keycloak",
+                          "label": "Keycloak"
+                        },
+                        {
+                          "value": "none",
+                          "label": "No login"
+                        }
+                      ]
+                    },
+                    {
+                      "id": "deploy",
+                      "question": "Where does it run?",
+                      "multiple": true,
+                      "required": false,
+                      "allowOther": true,
+                      "options": [
+                        {
+                          "value": "k8s",
+                          "label": "Kubernetes"
+                        },
+                        {
+                          "value": "compose",
+                          "label": "Docker Compose"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "input_required",
+        "detail": "Three questions"
+      }
+    },
+    {
+      "seq": 5,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "blocked"
+      }
+    },
+    {
+      "seq": 6,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "ui_action",
+      "actor": {
+        "type": "user",
+        "name": "dev@example.com"
+      },
+      "data": {
+        "surfaceId": "s1",
+        "name": "answer",
+        "sourceComponentId": "pick",
+        "context": {
+          "answers": [
+            {
+              "id": "db",
+              "values": [
+                "pg"
+              ]
+            },
+            {
+              "id": "auth",
+              "values": [
+                "keycloak"
+              ]
+            }
+          ],
+          "note": "Use *our* realm\nand the second line"
+        },
+        "version": "v0.9.1",
+        "runId": "run-2"
+      }
+    },
+    {
+      "seq": 7,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "working"
+      }
+    },
+    {
+      "seq": 8,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "name": "result",
+        "text": "answered: ui-action answer db=pg auth=keycloak note:Use *our* realm\nand the second line",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "seq": 9,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "seq": 10,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "done"
+      }
+    }
+  ],
+  "eventsTruncated": false,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "reviewer",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

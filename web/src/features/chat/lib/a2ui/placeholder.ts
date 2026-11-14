@@ -7,6 +7,9 @@
  * component replaces an earlier one, and a `createSurface` starts the surface over.
  */
 
+/** The words every placeholder starts with: the page quotes them, a test holds the page to them. */
+export const INTERFACE_WORDS = "[Interface";
+
 type Rec = Record<string, unknown>;
 const isRecord = (v: unknown): v is Rec => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
@@ -57,7 +60,51 @@ export function placeholderOf(types: readonly string[]): string {
   const about = clean.filter((t) => !LAYOUT.has(t) && t !== "Text");
   const rest = clean.filter((t) => !LAYOUT.has(t));
   const named = [...new Set(about.length > 0 ? about : rest.length > 0 ? rest : clean)];
-  return named.length > 0 ? `[Interface: ${named.join(", ")}]` : "[Interface]";
+  return named.length > 0 ? `${INTERFACE_WORDS}: ${named.join(", ")}]` : `${INTERFACE_WORDS}]`;
+}
+
+/** The id of the surface an operation is about, when it names one. */
+function surfaceOf(op: unknown): string | undefined {
+  if (!isRecord(op)) return undefined;
+  for (const key of ["createSurface", "updateComponents", "updateDataModel", "deleteSurface"]) {
+    const body = op[key];
+    const id = isRecord(body) ? str(body.surfaceId) : undefined;
+    if (id !== undefined) return id;
+  }
+  return undefined;
+}
+
+/**
+ * The operations of a thread filed by the surface they are about, in one pass: reading a surface later costs its own
+ * operations and not the whole log (a thread of thousands of turns reads each operation once).
+ */
+export class SurfaceLog {
+  private readonly byId = new Map<string, unknown[]>();
+
+  /** Files the operations; returns the ids of the surfaces they are about, each once, in the order first named. */
+  feed(operations: unknown): string[] {
+    const named: string[] = [];
+    if (!Array.isArray(operations)) return named;
+    for (const op of operations) {
+      const id = surfaceOf(op);
+      if (id === undefined) continue;
+      const list = this.byId.get(id) ?? [];
+      this.byId.set(id, list);
+      list.push(op);
+      if (!named.includes(id)) named.push(id);
+    }
+    return named;
+  }
+
+  /** The operations filed for a surface so far. */
+  operations(id: string): unknown[] {
+    return this.byId.get(id) ?? [];
+  }
+
+  /** The component types of the surface as the operations so far leave it; none for one that was deleted. */
+  types(id: string): string[] {
+    return surfaceComponents(this.operations(id)).get(id) ?? [];
+  }
 }
 
 /** One placeholder for each surface the operations are about, in the order the surfaces were first seen. */
