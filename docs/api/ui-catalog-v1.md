@@ -1541,8 +1541,9 @@ in order, the first rule that fails is the answer's reason:
 
 An answer that fails any rule is **not acted on**. The receiver tells the person, in words, in a message of the same task: the
 question (its `id`, and its words) and the rule, for example `The answer to "budget" was not used (above_max): 1500 is above
-the most, 1000 EUR.` It then **asks again**, with the form (or the questions that failed; the others as `default`s, so
-nothing the person gave is lost). It never repairs an answer: no clamping, no rounding, no sorting, no substituting the
+the most, 1000 EUR.` It then **asks again**, with the same form as a new surface, each question that was valid carrying the person's answer as its
+`default` (so nothing the person gave is lost; a receiver may instead ask only the questions that failed). The form that was sent
+stays answered: a client does not take a second answer to it, even though the thread waits again. It never repairs an answer: no clamping, no rounding, no sorting, no substituting the
 default. A conforming client does not send such an answer, so a refusal means a stale form, another client or a hand-made
 action, and the message is for the person who then reads it.
 

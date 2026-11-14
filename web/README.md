@@ -2107,6 +2107,7 @@ Choices of version 2 to 4 is still drawn and answered as it was.
 | `select` | a searchable list: a combobox (ARIA 1.2) that filters by label and subtitle, chips when several | 2 to 50 |
 | `images` | a deck: a grid of tiles with the picture of a file of the thread, the label, the subtitle | 2 to 16, each with a picture |
 | `text`, `longText` | a text box (500 characters), a text area (2,000) | none |
+| `confirm`, `number`, `scale`, `date`, `rank` | the five kinds of version 7, [below](#the-five-kinds-of-version-7) | `rank`: 2 to 12; none for the rest |
 
 ```mermaid
 sequenceDiagram
@@ -2151,7 +2152,36 @@ stateDiagram-v2
 | The answer | `lib/a2ui/choices.ts` (pure): `answers` in question order, one per question, `values` in the order of the options, only values the question has, `other` trimmed and only when "Other" is on and not empty (at most 500 characters), `text` for a typed question (trimmed, at most 500 or 2,000) and `note` for the free box (at most 2,000), each only when there are words; sent with `name` = the component's `action.event.name` or `answer`, the Choices' id as `sourceComponentId`. A context over 16 KiB is not sent and the message box says so (a form of 8 questions with the old limits could not reach it; 50 long values in a `select` can). State is a `Map`, because a question id may be `__proto__` |
 | The bubble | `components/answer-bubble.tsx`, drawn by `AssistantMessage` **above the agent's mark** for a `vymalo.action` whose `context.answers` has the shape of an answer (`parseAnswers`, `isAnswerPart`); such an action is not a step (`lib/steps.ts`), any other action still is ("Chose go"). Labels are resolved from the newest copy of the surface the action names that precedes it in the transcript (`surfaceOperations`, `choicesOf`); a question or value it does not have, or a surface the transcript no longer holds, shows the id and the raw value. Typed words are shown under their question, the note under the label of the free box. Every string is text. Skipped optional question: "No answer" |
 
-The mock plays it: `choices` (see the table below) and its resume echoes `ui-action answer db=pg auth=none deploy=k8s,compose`;
+#### The five kinds of version 7
+
+Catalog version 7 (ADR 0023, 2026-11-14; contract [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md#version-7-more-kinds-of-question))
+adds five values of a question's `type`, drawn by `components/surface/choices-kinds.tsx` and judged by `lib/a2ui/choices-kinds.ts`
+(pure). Everything about them is in the contract page; this is how the web meets it.
+
+| Kind | Drawn as | The answer's `values` |
+|---|---|---|
+| `confirm` | two native radio buttons in a `radiogroup`, the agent's `yesLabel` and `noLabel`, the safe `default` chosen | `["yes"]` or `["no"]` |
+| `number` | a text box (`inputmode="decimal"`, not a browser number box) with its unit beside it, its bounds and step said under the question | one decimal string, as typed and trimmed |
+| `scale` | native radio buttons for the points, `fromLabel` and `toLabel` under the two ends (their description) | one whole number as a string |
+| `date` | the browser's date control with `min` and `max` (`9999-12-31` when there is no latest day, so a year has four digits) | `["YYYY-MM-DD"]`, the control's own value |
+| `rank` | an ordered list; each item has a **Move up** and a **Move down** button named with the item (`aria-disabled` at an end, so the keyboard keeps its place), the new place said in a polite `status`, **Keep this order** until the person has moved something | every option's value, in the person's order |
+
+The client runs the receiver's check (`checkValues`: the rules `required`, `too_many`, `not_offered`, `grammar`, `below_min`,
+`above_max`, `off_step`, `not_a_permutation`) on what the person has done, says the first failure in words under the control
+(`aria-invalid`, `aria-describedby`, a polite line that is always in the page) and holds Send until every question is valid, so a
+number out of range cannot be sent. Decimals are compared as `bigint` millionths and a date is checked against the calendar,
+never through `Number` or `Date`. The bubble reads the answer back as the person saw it (`Delete it`, `250.5 EUR`, `10 (Certainly)`,
+`15 December 2026`, a rank as a numbered list, `No answer` for a skipped one), and a form that was sent stays answered (and takes no
+input) when the thread waits again, so the form an agent asks again after refusing an answer is the only open one
+(`answeredAfter` in `lib/a2ui/surfaces.ts`). The orchestrator does not read an answer: the agent validates, and the mock's scripted
+agent does (`mock/receiver.ts`, from the contract page alone). A client that does not know a `type` refuses the whole surface
+visibly (rule `schema`) and the person answers in words.
+
+The mock plays it: `choices-v7` asks the five (`e2e/choices-v7.spec.ts`), validates the answer as a receiver, refuses what breaks a
+rule by naming the question and the rule, asks again with the valid answers as defaults, and echoes
+`ui-action answer ship=no budget=250.5 nps=7 when=2026-12-15 order=risk,speed,cost`.
+
+The older scripts: `choices` (see the table below) and its resume echoes `ui-action answer db=pg auth=none deploy=k8s,compose`;
 `choices-v5` is a form with a title, a description, a default, a recommended option, limits, typed answers and a free box
 (`e2e/choices.spec.ts`), and `choices-deck` the coder's two screenshots as an image deck beside a searchable list of twelve
 (`e2e/choices-deck.spec.ts`); their echoes add `text:<words>` and ` note:<words>`.
@@ -2634,6 +2664,7 @@ The first word of the first message picks the script, the same words as the orch
 | `verify-wait` | mock only: the same gate, CI never answers; the thread stays `verifying` (a pending check, no CI report) until it is cancelled |
 | `choices` | working, a surface of our catalog with a Choices of three questions (a database with an "Other", a login, where it runs: several, optional, with an "Other"), the question "Three questions", blocked; the answers (`forwardedProps.a2uiAction`, `context.answers`) resume it to `answered: ui-action answer db=pg auth=none deploy=k8s,compose` (what was chosen, in question order, `other:<words>` for their own) and done |
 | `choices-v5` | working, a Choices of catalog version 5: a title, a description of why it asks, a free box and four questions (radio buttons with a help line, a default, an icon and a recommended option; check boxes with a minimum of 1 and a maximum of 2; a short text; an optional long text), the question "Four questions", blocked; the answers resume it to `answered: ui-action answer db=pg envs=dev,stage name=text:Quokka story=text:… note:…` and done |
+| `choices-v7` | working, one Choices of catalog version 7 with the five kinds (a yes or no with a safe default, a number of euros from 0 to 1000 in steps of 0.5, an optional scale from 0 to 10, a day in December, three options to put in order), "Five questions", blocked; the scripted agent validates the answer as a receiver (`mock/receiver.ts`): a valid one resumes it to `answered: ui-action answer ship=no budget=250.5 nps= when=2026-12-15 order=risk,speed,cost` and done; one that breaks a rule is not acted on, the agent says `The answer to "budget" was not used (above_max): …` and asks again with a second surface `s2` whose questions carry the valid answers as defaults, blocked again |
 | `choices-deck` | working, the coder's two screenshots shared (`share_file`, as in `inline-images`), then a Choices of an image deck (each option the picture of a shared file, a title, a subtitle, one recommended) and a searchable list of twelve ways to log in (several, at most three) and a free box, "Which design?", blocked; the answers resume it to `answered: ui-action answer layout=matches login=passkey,github note:…` and done |
 | `cards-mermaid` | mock only: one answer of the agent's words, a surface of our catalog with three `Cards` (two linked, one not) and a `Mermaid` flowchart, then done (no result artifact) |
 | `cards-bad`, `cards-bad-url` | mock only: a `Cards` that breaks its schema (a card with no title and a `javascript:` link: rule `schema`), and one whose link passes the schema and not the URL rule (user information: rule `url`); the surface is refused and not drawn |

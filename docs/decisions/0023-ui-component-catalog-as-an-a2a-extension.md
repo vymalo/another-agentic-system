@@ -2,6 +2,8 @@
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI and open question 36 are
   decided in the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
+  Amended (2026-11-14): catalog version 7 adds five kinds of question to `Choices`, see the
+  [status note](#status-note-2026-11-14-version-7-adds-five-kinds-of-question-to-choices).
 
 ## Context
 
@@ -174,3 +176,56 @@ Every reference to a file is the file's SHA-256 of the thread, and a video or a 
 [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md#amendment-2026-10-11-media-plays-from-this-origin-and-blob-and-from-nowhere-else).
 Version 6 is not released (it is not on main); its digest is `RELEASED[6]` in `catalog.test.ts`, and version 5 is Choices' (PR #220).
 
+## Status note, 2026-11-14: version 7 adds five kinds of question to `Choices`
+
+The owner asked for more kinds of question, and for the contract to be the product: adam-rs builds its `ask_user` kinds on it next
+(its ADR 0044, slice 11) and a Flutter client will be written from it, so the web is the first implementation and nothing the web
+does rests on knowledge that is not in [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-7-more-kinds-of-question).
+
+**Decided** (version 7, digest `RELEASED[7]` in `catalog.test.ts`; additive, a Choices of versions 2 to 6 is valid and reads and
+answers as it did):
+
+1. **Five more values of a question's `type`:** `confirm` (a yes or no, with `yesLabel`, `noLabel` and the safe answer as
+   `default`), `number` (`minValue`, `maxValue`, `step`, `unit`), `scale` (a whole number from `from`, 0 or 1, to `to`, with the words
+   `fromLabel` and `toLabel` at the two ends), `date` (a calendar day, `minDate`, `maxDate`) and `rank` (the options put in order).
+   Not a new component: a form of several kinds stays one `Choices` with one submit, so that the version 5 machinery (`required`,
+   `default`, the answer bubble, the 16 KiB of context) carries them.
+2. **The answer keeps its shape.** `{id, values}` with `values` an array of **strings** for every kind, and no `other` and no `text`:
+   `["no"]`, `["250.5"]`, `["7"]`, `["2026-12-15"]`, `["c", "a", "b"]` (a `rank`'s order is the person's, the one place where it is
+   not the options'). A number is **a decimal string with a stated grammar, never a JSON number**: an A2A server holds the numbers of
+   a message's metadata as doubles ([`ui-catalog-v1.md` section 5](../api/ui-catalog-v1.md#5-to-the-agent-the-extension)), and a string comes
+   out as it went in; it is compared as an exact decimal (millionths in an integer), never through floating point. A date is a day
+   and not an instant: no time, no zone. The same shape means a version 6 receiver still reads the answer, and the "no answer" of
+   version 5, an empty `values` for a question that is not required, is the only way a question is left unanswered.
+3. **The orchestrator does not read an answer; the agent validates.** The orchestrator checks the envelope, the size and that the
+   thread has the surface ([`agui.md`](../api/agui.md#actions)) and relays the rest, as it did. The receiver is the agent that asked; the
+   contract gives it ten rules (eight about a question's values: `required`, `too_many`, `not_offered`, `grammar`, `below_min`,
+   `above_max`, `off_step`, `not_a_permutation`; two about the shape of the whole answer: `unknown`, `unexpected`) and the cases that exercise them as **conformance vectors in the
+   page itself**, which the web's tests, the mock's receiver and a test of the page all read. An answer that fails is not acted on and
+   never repaired (no clamping, no rounding, no sorting): the agent names the question and the rule in words and asks again with a new
+   surface whose questions carry the valid answers as their defaults. The client validates first with the same check and holds the
+   button with the reason in words, so a refusal means a stale form, another client or a hand-made action.
+4. **Versions and degradation.** An agent learns what the screen can ask from the thread's catalog, in the two ways it already has: the
+   `version` of the `ui-catalog/v1` metadata (7 or more) and the `type` enum of the `Choices` schema it was given (the better test, which
+   also covers a later version). An agent that knows only version 6 never uses a kind it was not told, so nothing changes for it
+   or for a client of version 6. When an agent wants a kind a screen lacks it asks in the nearest version 6 form (`single` with two
+   options, `text` with the grammar in its help, ...) and validates the text itself. A client that meets a kind it does not know
+   refuses the **whole surface** visibly (rule `schema` in a client of version 6, whose reason names the question and the `type`)
+   and never guesses a control; the person answers in words by a message. The one rule on the agent: **the `question` of every question
+   is a sentence a person can answer in a message, and a message sent while the ask is open is the answer.**
+5. **Accessibility is part of the contract**: a yes or no and a scale are `radiogroup`s of native radio buttons; a number is a text
+   box with `inputmode="decimal"` that takes only the grammar (a browser number box reads locales and exponents); a day is the
+   browser's date control with `min` and `max`; a rank is an ordered list with **Move up** and **Move down** buttons named with the item,
+   operable by keyboard with no drag, that says the new place in words and keeps the keyboard's place; an untouched required rank is
+   not an answer (the agent's order is not the person's ranking). Every error is words linked to the control.
+
+**Also changed:** a form that was sent stays **answered** when the thread waits again. Until now only the newest copy of a surface
+was live while the thread was `blocked`, so a form an agent asked again after refusing an answer would have left two open forms.
+
+**Built:** the web (`choices-kinds.tsx`, `lib/a2ui/choices-kinds.ts`), the catalog (version 7), its lock, the mock script
+`choices-v7` (whose scripted agent is a receiver, `mock/receiver.ts`, written from the page alone and run on the same vectors) and
+the tests (`e2e/choices-v7.spec.ts`, axe in both colour schemes, the contract cases of the mock). **Nothing in the orchestrator
+changes:** it treats the catalog as a document and a Choices answer as an action, and the forms catalog sent to an asked agent
+([`ui-catalog-v1.md`](../api/ui-catalog-v1.md#the-forms-catalog-of-an-ask)) already carries the thread's `Choices` schema unchanged.
+**Not built, and not proven:** an adam-rs agent that asks with the kinds and validates the answer (its slice 11); a second client; a
+live model, a real browser other than Chromium, a screen reader.

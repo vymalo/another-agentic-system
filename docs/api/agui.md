@@ -1739,7 +1739,10 @@ in question order (`other` only for a question that allows it, at most 500 chara
 the others, and the `vymalo.action` activity carries the same `context`. A client may show an action whose `context.answers` has
 this shape as **the person's answer** and not as a step: the web draws a right-aligned "Your answers" bubble above the agent's turn,
 with the question and the labels of the options chosen, the words typed and the note, resolved from the surface the action names
-(the question ids and the option values themselves when that surface is not in the transcript).
+(the question ids and the option values themselves when that surface is not in the transcript). The five kinds of question of catalog
+version 7 answer in the same shape (`{"id": "budget", "values": ["250.5"]}`: a yes or no, a decimal string, a whole number, a day
+`YYYY-MM-DD`, or every option of a `rank` in the person's order); the orchestrator does not read them either, the agent that asked
+checks them again ([`ui-catalog-v1.md`](ui-catalog-v1.md#receiving-an-answer)).
 
 ### Threat model
 
