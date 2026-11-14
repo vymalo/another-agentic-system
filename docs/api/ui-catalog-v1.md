@@ -2269,9 +2269,11 @@ agent; the usual plan is a `Column` of a `Text` and a `Checklist`. The agent sen
   (`deleteSurface`) is drawn nowhere and has no tab.
 - **Announced, politely.** The plan in the conversation holds a status region (`role="status"`, polite) that says **"Plan updated: 2 of 5
   done"** (the words of its checklists together; "Plan updated" when it has none) after the plan has changed and has been **quiet for
-  0.8 s**, so a burst of updates is one announcement and the last state is the one said. It says nothing for the first copy (the person
-  reads it where it stands), nothing for the words the agent streams (the region reads the plan only), and nothing when a copy changes
-  nothing.
+  0.8 s**, so a burst of updates is one announcement and the last state is the one said. It says nothing for the first copy the client draws
+  (the person reads it where it stands: a thread opened later draws the plan as it is, and so does a client that was not showing the plan
+  when the agent sent its first copies), nothing for the words the agent streams (the region reads the plan only), and nothing when a copy
+  changes nothing. What the client remembers of a plan, to know that it changed, is the page's and not the component's: the message that
+  draws a plan may be drawn again (when its run ends, say) and the announcement waiting for its quiet must survive it.
 
 ```mermaid
 sequenceDiagram

@@ -472,7 +472,8 @@ chip for each mention and, when the agent that reads the message cannot use them
 
 The right side of a thread was unused (owner, 2026-10-01: "the right side of the page is usually unused … add a
 collapsible right panel to show the sources; the agents (and sub-agents) work better with a cleaner interface").
-The panel is the thread's second surface, `features/panel/`: two tabs, **Activity** and **Sources**.
+The panel is the thread's second surface, `features/panel/`: two tabs, **Activity** and **Sources**, and a third, **Plan**, only while
+the thread has a plan (an agent's surface whose id starts with `plan-`, [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md#the-plan)).
 
 | Docked, on a desktop | A sheet, on a phone |
 |---|---|
@@ -513,6 +514,14 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   weight 500, underlined when it is a link, an arrow after it), a muted line (the kind and a host, a
   provider or a type) and the Turn buttons (28 px, outlined). An empty tab is the panda at 96 px, what the
   tab is for, and why it is empty.
+- **Plan** pins the latest plan of the thread, so that it is findable beside the conversation, where it also stands once, in its first
+  place, and changes in place. It is the existing pattern (a tab of the panel, no new surface) and it only reads: the tab is named
+  "Plan" with its progress in muted text after it (`2/5`: the checklists of the plan together, a dropped step in neither number), it is
+  there only while the thread has a plan, and the panel's remembered tab falls back to Activity in a thread that has none. Its content is
+  the newest copy of the plan, drawn as in the conversation (a checklist with its bar, each state in words beside its icon, a dropped step
+  struck through and said "Dropped", a note under its label); it announces nothing (the plan in the conversation holds the polite
+  status region that says "Plan updated: 2 of 5 done" once it has been quiet for 0.8 s). On a phone the panel is a sheet that is never
+  open by itself, so the plan is found in the conversation first and in the sheet's **Plan** tab second.
 - **Resizing.** The edge between the chat and the panel is a window splitter: a vertical `separator` the
   keyboard can focus (Left widens by 16 px, Right narrows, Home and End go to the limits; its value is the
   width in px) and a pointer can drag (the width does not animate while it is dragged).

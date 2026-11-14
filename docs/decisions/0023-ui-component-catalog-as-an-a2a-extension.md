@@ -240,3 +240,56 @@ new surface; a form is answered once the person acts after it, by an action or a
 unknown `type` is a `schema` refusal, never the "needs a newer version" placeholder; display follows the locale and the wire form
 never does; the whole catalog is one file and a client need not compute its digest. The vectors grew from 64 to 133 cases, with
 blocks for whole answers, invalid questions and surfaces, and a test fails when one is deleted.
+
+## Status note, 2026-11-14 (second): version 8 lets a question show what it asks about, and makes `Checklist` fit for a live plan
+
+The owner, asked which kinds of question an agent should be able to ask: "Images, graphs,... A2UI is enabled by default so we might as
+well use it". Slices 9 and 10 of [ADR 0067](0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md). Version 7 gave the questions
+their kinds; version 8 lets a question **show** components of its surface, and lets an agent's **plan** be one checklist that updates where
+it stands. As for version 7, the page [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-8-a-question-that-shows-what-it-asks-about-and-a-plan)
+is the product (a Flutter client and the agent side in adam-rs are written from it alone) and the web is its first implementation.
+
+**Decided** (version 8, digest `RELEASED[8]` in `catalog.test.ts`; additive, and **taking the additions away gives version 7's digest,
+digest for digest**, which a test of the web proves):
+
+1. **`show`, a member of any question of `Choices`: 1 to 4 ids of components of the same surface** (8 in a form), drawn with the question
+   after its words and before its control. **A closed list of seven components may be shown:** `Text`, `Image`, `Mermaid`, `Code`,
+   `Cards`, `Callout`, `Chart`. Each draws something to look at, none asks anything, and none holds other components, so a shown
+   component can never contain the question that shows it: no cycle rule is needed, and a `Choices` shown by a question is refused for
+   its type. A shown component is drawn where its question is and **nowhere else**: also placing it in the surface is refused (rule
+   `expansion`); an id shown twice, a component not on the list, more than 4 or 8 and an `Image` with no `alt` are `schema` (never drawn
+   as decoration); a shown image of a file the thread does not hold is `artifact`; an id the surface does not hold yet leaves it
+   *pending*, as a child does. The picture of an option of an `images` question is a different thing and stays: it is what is chosen,
+   `show` is what the question is about.
+2. **A client of version 7 refuses a surface that has `show`** (rule `schema`, at `questions.N.show`) and never ignores the member, for a
+   form that hides what it asks about is not the form the agent asked. So an agent never sends `show` to one: it reads the thread's
+   version or whether `show` is in the schema it was given, as for the kinds of version 7.
+3. **Accessibility:** what is shown is **inside the question's group**, after its words and `help` and before its control, so a screen
+   reader meets the question, then what it asks about, then the control; a form that no longer takes input still lets the person read, copy
+   and open what it shows (the group is not the disabled `fieldset`: its controls are in an inner one).
+4. **`Checklist` gains the state `dropped` and an item `note`.** A dropped item is struck through and said in words ("Dropped"), is not
+   counted in "N of M done" (neither in M) and, when every item is dropped, the count reads "0 of 0 done" and the bar is not drawn.
+5. **A surface sent again.** Written once, in one place of the page: the same `surfaceId` is the same surface (as A2UI says and the
+   orchestrator already does); a `createSurface` for a surface that exists starts it over (*verified 2026-11-14* in the reducer the web
+   uses), so **a client reads, and counts against the size limit, only the operations from the last `createSurface`**; a copy in a later
+   run of a surface that is not a plan keeps the rule it always had (the newest is live, the older says "updated further down"); a
+   **plan** is drawn once, where its first copy stood, from the newest copy.
+6. **The plan is a surface whose `surfaceId` starts with `plan-`** (and has at least one more character). The hook is the id, not a member
+   of `createSurface`, because the id is the one thing every layer already carries and keys on and no layer has to learn anything; a
+   client never guesses a plan from a component's type. A plan holds nothing the person can answer (a `Choices`, an input or a button
+   is refused, rule `action`), so it never meets the rules of [Answered forms](../api/ui-catalog-v1.md#answered-forms), which stand as they were
+   (a re-ask is a new surface id). It is **found** in the conversation where it first stood, and **pinned** as a **Plan** tab of the
+   thread's panel (the existing pattern: the panel already holds Activity and Sources), present only while the thread has a plan, with its
+   progress in its name; the latest plan sent is the pinned one. It is **announced politely** ("Plan updated: 2 of 5 done", a status
+   region) after it has been quiet for 0.8 s, so a burst is one announcement; never for the first copy, never for the words the agent streams.
+
+**Built:** the catalog and its lock (version 8), the validator (`prepare.ts`: `show`, the plan rule, the dead operations), the components
+(`choices-shown.tsx`, `checklist.tsx`, `plan-announcer.tsx`, the panel's `plan-tab.tsx`), the mock scripts `choices-v8`, `choices-v8-bad`
+and `plan`, and the tests: the vectors of the page (61 cases in four blocks, each run through the web's validator, through a second implementation
+written from the page alone, `mock/surfaces-v8.ts`, and a test that fails when one is deleted), the DOM tests, `e2e/choices-v8.spec.ts`, `e2e/plan.spec.ts`, axe in both colour schemes.
+
+**Found, and not changed here (the orchestrator is not part of this slice):** the projector keeps every operation of a surface, up to
+256 KiB ([`agui.md`](../api/agui.md#surfaces-in-the-projection)), and does not drop the ones a later `createSurface` made dead, so a plan sent
+very many times reaches the cap (about sixty times for a plan of four kilobytes) and its later updates are not shown. The client's rule 5
+keeps its own size limit out of it; compacting the surface at its `createSurface` in the projector is a change to open. **Not built, and not
+proven:** an adam-rs agent that sends a plan or asks with `show` (the agent side); a second client; a live model; a screen reader.

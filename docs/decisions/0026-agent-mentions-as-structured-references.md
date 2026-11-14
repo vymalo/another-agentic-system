@@ -385,3 +385,23 @@ day ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note of 2026-10-18)
 is its record (*verified 2026-10-18* at `ddef35e`: `crates/adam-a2a-runtime/src/person.rs`, `bin/adam-coder/src/agent.rs`
 `carried_sayings`, `bin/adam-coder/README.md` "When another agent asks"). So #271 and #116 are both in the pin, and the two
 halves of this note meet. What stays a gap is this repository's: a person's **form answers** are not carried (above).
+
+## Status note, 2026-11-14: a question that shows is for the addressed agent
+
+**Checked, and nothing changed** ([ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md#status-note-2026-11-14-second-version-8-lets-a-question-show-what-it-asks-about-and-makes-checklist-fit-for-a-live-plan),
+version 8, which lets a question `show` components of its surface). The question was whether the forms catalog an asked agent is sent
+(`UiCatalogData::forms_only`: `Choices` alone, the thread's `Choices` schema unchanged) must keep the display components a question may
+show. It does not, and it must not:
+
+- **What it kept before, and keeps now:** `{catalogId: <id>/forms, components: {Choices}}` and nothing else. The `Choices` schema of version 8
+  has `show` in it, and the seven components it may name (`Text`, `Image`, `Mermaid`, `Code`, `Cards`, `Callout`, `Chart`) are **not** in the
+  forms catalog, so an asked agent cannot build a surface that shows anything.
+- **Why that is right.** The person cannot see an asked agent's surfaces (the first note of 2026-10-17: they are read for the answer and
+  dropped, and a form ends the ask), so nobody would see what a question showed. And the third note of 2026-10-17 narrowed the catalog
+  **so that an asked agent can no longer draw a surface that is not a form**, because the fail-closed rule cannot tell surfaces apart: a
+  lone `Text`, `Image` or `Chart` followed by a question in words would end the ask again. Keeping the display components would give that
+  back for no gain.
+- **What `show` is for** is the thread's own agent, the addressed one, which is sent the thread's **whole** catalog.
+- **Tested:** `forms_only_keeps_choices_alone_when_its_schema_can_show` in `orchestrator/crates/core/src/ui_catalog.rs` (a screen's catalog of
+  version 8, whose `Choices` has `show` and which has the seven components: the forms catalog holds `Choices` and no other, the same every
+  time, with the thread's version).

@@ -1693,6 +1693,13 @@ late or resumes with a cursor gets the same story. A surface's replayed operatio
 its later updates are not shown. The projector also knows which surfaces the thread has and the version
 each speaks; the inbound side uses that.
 
+**A surface sent again** (an agent's plan: [`ui-catalog-v1.md`](ui-catalog-v1.md#a-surface-sent-again), where the rule is written once).
+The projector does not change: the same `surfaceId` is the same surface, under the `messageId` of the event that created it in every run,
+and each snapshot is the whole surface so far. What the client does with it is the catalog's rule: a `createSurface` for a surface that exists
+starts it over, so the client reads only the operations from the last one (the projector still holds all of them, up to the cap above: a
+plan sent very many times reaches it, and compacting a surface at its `createSurface` is open); a copy in a later run is the live one and the
+earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), which is drawn once, where its first copy stood.
+
 ```mermaid
 stateDiagram-v2
   [*] --> Live: first operation for a surfaceId (a2ui-seq is its message id)
