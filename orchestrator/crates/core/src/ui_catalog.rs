@@ -720,6 +720,54 @@ mod tests {
         assert_eq!(screen(7).forms_only().unwrap().version, 7);
     }
 
+    /// ADR 0026, note of 2026-11-14: a screen of catalog version 8, whose `Choices` can `show` components of its
+    /// surface, still sends an asked agent `Choices` alone. Nobody sees an asked agent's surfaces, and a lone display
+    /// component is exactly the surface that was taken away from it (third note of 2026-10-17).
+    #[test]
+    fn forms_only_keeps_choices_alone_when_its_schema_can_show() {
+        let choices = json!({
+            "type": "object",
+            "properties": {
+                "component": {"const": "Choices"},
+                "questions": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {"type": "object", "properties": {
+                        "show": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"type": "string"}},
+                    }},
+                },
+            },
+            "required": ["component", "questions"],
+        });
+        let mut components = serde_json::Map::new();
+        components.insert("Choices".to_owned(), choices.clone());
+        for name in ["Text", "Image", "Mermaid", "Code", "Cards", "Callout", "Chart", "Checklist"] {
+            components.insert(
+                name.to_owned(),
+                json!({"type": "object", "properties": {"component": {"const": name}}}),
+            );
+        }
+        let catalog = catalog_with(Value::Object(components));
+        let screen = UiCatalogData {
+            catalog_id: ID.to_owned(),
+            version: 8,
+            digest: catalog_digest(&catalog).unwrap(),
+            catalog,
+        };
+        let forms = screen.forms_only().unwrap();
+        assert_eq!(forms.version, 8);
+        assert_eq!(
+            forms.catalog,
+            json!({"catalogId": format!("{ID}/forms"), "components": {"Choices": choices}}),
+            "the schema is the screen's, with its `show`, and the components it may name are not here"
+        );
+        // the same every time, and a catalog the orchestrator would take
+        for _ in 0..3 {
+            assert_eq!(screen.forms_only().unwrap(), forms);
+        }
+        forms.check().unwrap();
+    }
+
     #[test]
     fn no_forms_catalog_without_choices_and_the_id_fits_or_there_is_none() {
         assert_eq!(data(1, "no choices").forms_only(), None);
