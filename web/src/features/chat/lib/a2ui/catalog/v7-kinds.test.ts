@@ -259,7 +259,7 @@ describe("version 7 is version 6 and additions", () => {
     "maxDate",
   ];
   const asVersion6 = () => {
-    const catalog = structuredClone(OWN_CATALOG.catalog) as {
+    const catalog = structuredClone(OWN_CATALOG.catalog) as unknown as {
       components: { Choices: Rec & { description: string; properties: Rec } };
     } & Rec;
     const choices = catalog.components.Choices;
