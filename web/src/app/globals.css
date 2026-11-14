@@ -222,6 +222,32 @@ html[data-panel-dragging] [data-slot="panel"] {
   transition: none;
 }
 
+/*
+ * Highlighted code (src/lib/highlight.ts): a token carries both colours of the two themes as custom properties, and
+ * the scheme of the system picks one (no toggle, no class). The block's own background is ours, never the theme's.
+ */
+.aui-md-pre [data-token] {
+  color: var(--shiki-light);
+  font-style: var(--shiki-light-font-style, inherit);
+  font-weight: var(--shiki-light-font-weight, inherit);
+  text-decoration: var(--shiki-light-text-decoration, inherit);
+}
+@media (prefers-color-scheme: dark) {
+  .aui-md-pre [data-token] {
+    color: var(--shiki-dark);
+    font-style: var(--shiki-dark-font-style, inherit);
+    font-weight: var(--shiki-dark-font-weight, inherit);
+    text-decoration: var(--shiki-dark-text-decoration, inherit);
+  }
+}
+
+/* A display formula wider than the column scrolls inside its own box (it is a tab stop, rehype-math-label.ts). */
+.aui-md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.25rem;
+}
+
 @layer utilities {
   /* A line of text that shimmers while something is on its way ("Adam is starting…"). */
   .text-shimmer {

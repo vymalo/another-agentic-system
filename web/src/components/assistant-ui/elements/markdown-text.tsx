@@ -8,15 +8,29 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import { CheckIcon, CopyIcon, ImageIcon } from "lucide-react";
-import { createContext, type FC, memo, useContext, useMemo, useRef } from "react";
+import "katex/dist/katex.min.css";
+import {
+  type ComponentProps,
+  type ComponentPropsWithoutRef,
+  createContext,
+  type FC,
+  memo,
+  useContext,
+  useMemo,
+  useRef,
+} from "react";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 
+import { SyntaxHighlighter } from "@/components/assistant-ui/elements/syntax-highlighter";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { FileImage } from "@/features/chat/components/cards/kept-file-card";
 import { useSharedImage } from "@/features/chat/hooks/use-inline-images";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { plainName } from "@/features/chat/lib/files";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { rehypeMathLabel } from "@/lib/rehype-math-label";
 import { cn } from "@/lib/utils";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
@@ -37,6 +51,24 @@ const useShallowStable = <T extends Record<string, unknown> | undefined>(value: 
   return ref.current;
 };
 
+/*
+ * Math (web/README.md "Code and math in answers"): `$$...$$`, inline or as a block. A single dollar is NOT math
+ * (`singleDollarTextMath: false`), so "$5 or $10" is a price. KaTeX never throws on a bad formula (it draws the
+ * source in the error colour), trusts nothing (no `\href`, no `\includegraphics`), and cuts a formula that
+ * expands without end at `maxExpand`. Its fonts are bundled, so the CSP's `font-src 'self'` holds.
+ */
+type PrimitiveProps = ComponentProps<typeof MarkdownTextPrimitive>;
+const REMARK_PLUGINS = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as NonNullable<
+  PrimitiveProps["remarkPlugins"]
+>;
+const REHYPE_PLUGINS = [
+  [
+    rehypeKatex,
+    { throwOnError: false, strict: "ignore", trust: false, maxSize: 20, maxExpand: 1000 },
+  ],
+  rehypeMathLabel,
+] as NonNullable<PrimitiveProps["rehypePlugins"]>;
+
 const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
   const stableComponents = useShallowStable(components);
   const markdownComponents = useMemo(() => {
@@ -49,7 +81,8 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
 
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
       className="aui-md"
       components={markdownComponents}
       smooth={false}
@@ -83,7 +116,26 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
 /** Whether a markdown element sits inside a link (an image there must not be a link too). */
 const InLink = createContext(false);
 
-const defaultComponents = memoizeMarkdownComponents({
+/*
+ * The box of a code block. It is NOT memoized with the others: `memoizeMarkdownComponents` compares the hast node and
+ * ignores the children, and the syntax highlighter changes a block's children (plain text, then coloured tokens)
+ * without the node ever changing, so a memoized box would keep showing the first.
+ */
+const CodePre: FC<ComponentPropsWithoutRef<"pre"> & { node?: unknown }> = ({
+  className,
+  node: _node,
+  ...props
+}) => (
+  <pre
+    className={cn(
+      "aui-md-pre border-border bg-muted/40 text-foreground mb-4 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 font-mono text-[13px] leading-relaxed last:mb-0",
+      className,
+    )}
+    {...props}
+  />
+);
+
+const memoizedComponents = memoizeMarkdownComponents({
   h1: ({ className, ...props }) => (
     <h1
       className={cn(
@@ -266,15 +318,6 @@ const defaultComponents = memoizeMarkdownComponents({
   sup: ({ className, ...props }) => (
     <sup className={cn("aui-md-sup [&>a]:text-xs [&>a]:no-underline", className)} {...props} />
   ),
-  pre: ({ className, ...props }) => (
-    <pre
-      className={cn(
-        "aui-md-pre border-border bg-muted/40 text-foreground mb-4 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 font-mono text-[13px] leading-relaxed last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
   code: function Code({ className, ...props }) {
     const isCodeBlock = useIsMarkdownCodeBlock();
     return (
@@ -289,4 +332,7 @@ const defaultComponents = memoizeMarkdownComponents({
     );
   },
   CodeHeader,
+  SyntaxHighlighter,
 });
+
+const defaultComponents = { ...memoizedComponents, pre: CodePre };

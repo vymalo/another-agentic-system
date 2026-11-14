@@ -119,6 +119,63 @@ describe("MarkdownText", () => {
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
   });
 
+  it("a fenced block is highlighted by its language, and says the same text", async () => {
+    const source = 'fn main() {\n    println!("hi");\n}';
+    const log = await renderAgentText(`Here:\n\n\`\`\`rust\n${source}\n\`\`\`\n`);
+    const code = () => log.querySelector("pre code") as HTMLElement;
+    expect(code().textContent).toBe(`${source}\n`);
+    await waitFor(() => expect(code().querySelector("[data-token]")).not.toBeNull(), {
+      timeout: 5000,
+    });
+    expect(code().textContent).toBe(`${source}\n`);
+    expect(log.querySelector(".aui-code-header-language")?.textContent).toBe("rust");
+  });
+
+  it("a fence of an unknown language, and one with none, stay plain text", async () => {
+    const log = await renderAgentText("```brainfuck\n+++[>+<-]\n```\n\n```\nplain words\n```\n");
+    await new Promise((r) => setTimeout(r, 300));
+    const blocks = [...log.querySelectorAll("pre code")];
+    expect(blocks.map((b) => b.textContent)).toEqual(["+++[>+<-]\n", "plain words\n"]);
+    for (const block of blocks) expect(block.querySelector("[data-token]")).toBeNull();
+  });
+
+  it("a fence that is still open (a streaming answer) renders", async () => {
+    const log = await renderAgentText("```rust\nfn main() {");
+    expect(log.querySelector("pre code")?.textContent?.trimEnd()).toBe("fn main() {");
+  });
+
+  it("inline code is not highlighted", async () => {
+    const log = await renderAgentText("call `fn main()` now");
+    await new Promise((r) => setTimeout(r, 300));
+    const code = log.querySelector(".aui-md-inline-code");
+    expect(code?.textContent).toBe("fn main()");
+    expect(code?.querySelector("[data-token]")).toBeNull();
+  });
+
+  it("display math is drawn by KaTeX and has a name a screen reader reads", async () => {
+    const log = await renderAgentText("The energy:\n\n$$\nE = mc^2\n$$\n");
+    const math = await waitFor(() => {
+      const el = log.querySelector<HTMLElement>('.katex-display[role="math"]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(math.getAttribute("aria-label")).toBe("E = mc^2");
+    expect(math.querySelector("math")).not.toBeNull();
+  });
+
+  it("inline math with double dollars is drawn, and a failing formula is shown, not thrown", async () => {
+    const log = await renderAgentText("so $$x^2$$ here, and $$\\frac{$$ there");
+    await waitFor(() => expect(log.querySelectorAll(".katex").length).toBeGreaterThan(0));
+    expect(log.textContent).toContain("here");
+    expect(log.textContent).toContain("there");
+  });
+
+  it("dollar prices are not read as math", async () => {
+    const log = await renderAgentText("It costs $5 or $10, and $20 more later.");
+    expect(log.querySelector(".katex")).toBeNull();
+    expect(log.textContent).toContain("It costs $5 or $10, and $20 more later.");
+  });
+
   it("the time of a turn is text a screen reader reaches, not only a tooltip", async () => {
     const at = new Date("2026-09-30T10:00:00Z");
     render(<Harness text="hello" createdAt={at} />);
