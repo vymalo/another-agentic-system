@@ -946,7 +946,10 @@ export const DESCRIPTION = "The person wants a plan for a test.";
 export const LONG_DESCRIPTION =
   "The person wants a plan for adding a test to the session expiry check, so that a session idle for thirty minutes is refused with a 401. The agent read the repository and proposed one test beside the existing ones. Nothing was changed yet.";
 
-/** The answer of the `code-math` script: two fenced blocks, a display formula and prices. */
+/** A sum of sixty terms: wider than any column, so its box scrolls sideways. */
+const WIDE_FORMULA = Array.from({ length: 60 }, (_, n) => `x_{${n + 1}}`).join(" + ");
+
+/** The answer of the `code-math` script: two fenced blocks, two display formulas (one wider than the column) and prices. */
 export const CODE_MATH_REPLY = [
   "Here is the function and the rule it follows.",
   "",
@@ -968,6 +971,14 @@ export const CODE_MATH_REPLY = [
   "$$",
   "\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}",
   "$$",
+  "",
+  "And a sum that is wider than the column:",
+  "",
+  "$$",
+  WIDE_FORMULA,
+  "$$",
+  "",
+  "In bash, $$ is the process id; print $$ twice.",
   "",
   "The two plans cost $5 and $10 a month, and the extra seat is $20 more.",
 ].join("\n");
@@ -1715,7 +1726,7 @@ export const LONG_FAILURE = [
  * - `components-code`: one answer of text and a surface of the catalog's version 6, group 1: a Code, a Diff, a Terminal whose
  *   output folds, a PullRequest and a FileCard of a kept file (`notes.txt`), then done.
  * - `code-math`: mock only, one answer in Markdown that shows what the web draws in text: a fenced `rust` block, a fenced
- *   block of a language the web does not bundle (`brainfuck`, stays plain), a display formula (`$$ ... $$`) and a sentence with
+ *   block of a language the web does not bundle (`brainfuck`, stays plain), two display formulas (`$$` on lines of its own, one of them wider than the column) and a sentence with
  *   dollar prices that must not be read as math; then done. (The first word is the trigger, as for every script here.)
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
