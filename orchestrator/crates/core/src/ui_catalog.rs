@@ -751,7 +751,8 @@ mod tests {
     /// schema must not invite what the catalog cannot draw.
     #[test]
     fn forms_only_keeps_choices_alone_and_takes_show_out_of_its_schema() {
-        let before = "A form. Only when the thread's catalog is version 7 or more: confirm and rank.";
+        let before =
+            "A form. Only when the thread's catalog is version 7 or more: confirm and rank.";
         let sentence = " Only when the thread's catalog is version 8 or more: a question may carry show, 1 to 4 ids of components of the same surface (Text or Chart), drawn with the question; an image needs its alt.";
         let choices = json!({
             "type": "object",

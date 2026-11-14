@@ -689,8 +689,10 @@ mod replay_property {
     }
 
     fn names(op: &Value, surface: &str) -> bool {
-        op.as_object()
-            .is_some_and(|o| o.values().any(|v| v.get("surfaceId") == Some(&json!(surface))))
+        op.as_object().is_some_and(|o| {
+            o.values()
+                .any(|v| v.get("surfaceId") == Some(&json!(surface)))
+        })
     }
 
     proptest! {
