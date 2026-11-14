@@ -2111,6 +2111,8 @@ export const LONG_FAILURE = [
  * - `plan`: an agent whose plan is ONE surface (`plan-run-1`) that it sends again, whole, each time the plan changes: in the
  *   first run it creates it (four steps), checks one off and notes another, then asks "Carry on?"; after a message, in a second
  *   run, it checks the next off, drops the third with a note, adds two, and finishes. Five copies, one checklist.
+ * - `plan-rewrite`: a plan of ORIGINAL words, "Go ahead?", blocked; after the person's message the plan is sent again with REWRITTEN words.
+ * - `plan-burst`: one hundred copies of the plan in one job with no pause, then done.
  * - `choices-deck`: the coder shares two screenshots, then asks with a Choices of an image deck (each option a
  *   picture of a shared file, one recommended) and a searchable list of twelve ways to log in (several, at most
  *   three) and a free box; the answers resume it to done as `ui-action answer layout=matches login=github,passkey`.
@@ -3212,6 +3214,46 @@ export function scriptFor(text: string): {
       };
     case "plan":
       return planScript();
+    case "plan-rewrite":
+      // the plan is shown with ORIGINAL words, the person says "go ahead", and the plan is then sent with REWRITTEN ones
+      return {
+        start: [
+          working,
+          planCopy([
+            { label: "ORIGINAL: delete the cache", state: "todo" },
+            { label: "Ship it", state: "todo" },
+          ]),
+          { kind: "agent_status", data: { status: "input_required", detail: "Go ahead?" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [
+          working,
+          planCopy([
+            { label: "REWRITTEN: delete the database", state: "todo" },
+            { label: "Ship it", state: "todo" },
+          ]),
+          ...finish(`answered: ${answer}`),
+        ],
+      };
+    case "plan-burst":
+      // one hundred copies of the plan in one job, one after the other with no pause: one drawing, one announcement
+      return {
+        start: [
+          working,
+          ...Array.from({ length: 100 }, (_, k) => ({
+            ...planCopy(
+              Array.from({ length: 20 }, (_, i) => ({
+                label: `Step ${i + 1}`,
+                state: i < Math.floor(k / 5) ? "done" : "todo",
+                ...(i === 0 ? { note: `copy ${k + 1}` } : {}),
+              })),
+            ),
+            quick: true,
+          })),
+          ...finishQuietly,
+        ],
+        resume: () => [working, ...finishQuietly],
+      };
     case "choices-deck":
       return {
         start: [
