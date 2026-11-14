@@ -14,6 +14,7 @@ import {
   createContext,
   type FC,
   memo,
+  type RefObject,
   useContext,
   useEffect,
   useMemo,
@@ -57,8 +58,12 @@ type MathModule = typeof import("@/lib/math");
 const NO_REHYPE: Rehype = [];
 const GFM: Remark = [remarkGfm];
 
-/** Whether a text has a formula in it. A single dollar is a price (src/lib/math.ts), so only `$$` counts. */
-const hasMath = (text: string) => text.includes("$$");
+/**
+ * Whether a text can have display math in it: a line that starts with `$$` (after the marks of a quote or a list item).
+ * `$$` in the middle of a sentence is text (src/lib/remark-display-math.ts), and a single dollar is a price.
+ */
+const DISPLAY_MATH = /^[ \t>*+-]*(?:\d+[.)])?[ \t]*\$\$/m;
+const hasMath = (text: string) => DISPLAY_MATH.test(text);
 
 let loadedMath: MathModule | undefined;
 
@@ -88,6 +93,54 @@ function useMath(text: string): MathModule | undefined {
   return math;
 }
 
+/**
+ * A display formula wider than the column scrolls sideways inside its own box. It is a tab stop (and named, for a screen
+ * reader that lands on it) only while it overflows: a formula that fits has nothing to scroll, and a tab stop with
+ * nothing to do is noise. Its width changes with the column and when KaTeX's fonts arrive, so it is measured again then.
+ */
+const INNER = ".katex-display > .katex";
+
+function useScrollableFormulas(root: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const sync = () => {
+      for (const formula of el.querySelectorAll<HTMLElement>(".katex-display")) {
+        if (formula.scrollWidth > formula.clientWidth) {
+          formula.setAttribute("tabindex", "0");
+          formula.setAttribute("role", "group");
+          formula.setAttribute("aria-label", "Formula");
+        } else {
+          formula.removeAttribute("tabindex");
+          formula.removeAttribute("role");
+          formula.removeAttribute("aria-label");
+        }
+      }
+    };
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
+    const watch = () => {
+      sync();
+      if (resize) for (const inner of el.querySelectorAll(INNER)) resize.observe(inner);
+    };
+    resize?.observe(el);
+    watch();
+    const mutate = new MutationObserver(watch);
+    mutate.observe(el, { childList: true, subtree: true });
+    document.fonts?.ready.then(sync, () => {});
+    return () => {
+      resize?.disconnect();
+      mutate.disconnect();
+    };
+  }, [root]);
+}
+
+/** The box of the markdown (`.aui-md`): a div, which also watches its formulas. */
+const MarkdownContainer: FC<ComponentPropsWithoutRef<"div">> = (props) => {
+  const root = useRef<HTMLDivElement>(null);
+  useScrollableFormulas(root);
+  return <div {...props} ref={root} />;
+};
+
 const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
   const math = useMath(useMessagePartText().text);
   const remarkPlugins = useMemo(
@@ -106,6 +159,7 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
 
   return (
     <MarkdownTextPrimitive
+      containerComponent={MarkdownContainer}
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       className="aui-md"

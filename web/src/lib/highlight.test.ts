@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { highlightCode, languageFor } from "./highlight";
+import {
+  highlightCode,
+  languageFor,
+  MAX_CODE_CHARS,
+  MAX_CODE_LINES,
+  withinLimits,
+} from "./highlight";
 
 describe("languageFor", () => {
   it("names a bundled language, in any case, and its usual aliases", () => {
@@ -8,7 +14,7 @@ describe("languageFor", () => {
     expect(languageFor("rs")).toBe("rust");
     expect(languageFor("ts")).toBe("typescript");
     expect(languageFor("sh")).toBe("bash");
-    expect(languageFor("yml")).toBe("yaml");
+    expect(languageFor("dockerfile")).toBe("dockerfile");
   });
 
   it("is null for a language the web does not bundle, for none and for a made-up name", () => {
@@ -17,6 +23,22 @@ describe("languageFor", () => {
     expect(languageFor("text")).toBeNull();
     expect(languageFor("constructor")).toBeNull();
     expect(languageFor("__proto__")).toBeNull();
+  });
+
+  it("is null for YAML and TOML, whose grammars have no verified licence (third-party-notices.md)", () => {
+    for (const name of ["yaml", "yml", "toml"]) expect(languageFor(name)).toBeNull();
+  });
+});
+
+describe("withinLimits", () => {
+  it("accepts a block up to the limits and refuses one over either", () => {
+    expect(withinLimits("")).toBe(true);
+    expect(withinLimits("x".repeat(MAX_CODE_CHARS))).toBe(true);
+    expect(withinLimits("x".repeat(MAX_CODE_CHARS + 1))).toBe(false);
+    const lines = (n: number) => Array.from({ length: n }, () => "x").join("\n");
+    expect(withinLimits(lines(MAX_CODE_LINES))).toBe(true);
+    expect(withinLimits(`${lines(MAX_CODE_LINES)}\n`)).toBe(true);
+    expect(withinLimits(lines(MAX_CODE_LINES + 1))).toBe(false);
   });
 });
 

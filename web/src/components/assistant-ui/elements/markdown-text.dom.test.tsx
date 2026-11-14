@@ -5,12 +5,18 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import katex from "katex";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as highlight from "@/lib/highlight";
+import { MAX_FORMULA_CHARS } from "@/lib/remark-display-math";
 import { AssistantMessage } from "./thread.aui";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 /** Renders `text` as an agent message through the real message component (no viewport). */
 function Harness({ text, createdAt }: { text: string; createdAt?: Date }) {
@@ -152,26 +158,88 @@ describe("MarkdownText", () => {
     expect(code?.querySelector("[data-token]")).toBeNull();
   });
 
-  it("display math is drawn by KaTeX and has a name a screen reader reads", async () => {
+  it("display math is drawn by KaTeX as MathML for a screen reader and HTML for the eye, with no raw TeX as a label", async () => {
     const log = await renderAgentText("The energy:\n\n$$\nE = mc^2\n$$\n");
     const math = await waitFor(() => {
-      const el = log.querySelector<HTMLElement>('.katex-display[role="math"]');
+      const el = log.querySelector<HTMLElement>(".katex-display");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(math.getAttribute("aria-label")).toBe("E = mc^2");
+    // MathML is exposed, the picture of it is not, and nothing names the formula by its source
     expect(math.querySelector("math")).not.toBeNull();
+    expect(math.querySelector(".katex-html")?.getAttribute("aria-hidden")).toBe("true");
+    expect(math.querySelector(".katex-mathml")?.getAttribute("aria-hidden")).toBeNull();
+    expect(log.querySelector("[aria-label='E = mc^2']")).toBeNull();
+    for (const el of log.querySelectorAll(".katex-display, .katex")) {
+      expect(el.getAttribute("aria-label")).toBeNull();
+      expect(el.getAttribute("role")).toBeNull();
+    }
+    // it fits (jsdom has no layout), so it is not a tab stop
+    expect(math.getAttribute("tabindex")).toBeNull();
   });
 
-  it("inline math with double dollars is drawn, and a failing formula is shown, not thrown", async () => {
-    const log = await renderAgentText("so $$x^2$$ here, and $$\\frac{$$ there");
-    await waitFor(() => expect(log.querySelectorAll(".katex").length).toBeGreaterThan(0));
-    expect(log.textContent).toContain("here");
-    expect(log.textContent).toContain("there");
+  it("a formula that is a paragraph by itself is display math, and a failing one is shown, not thrown", async () => {
+    const log = await renderAgentText("so:\n\n$$x^2$$\n\nand:\n\n$$\\frac{$$\n");
+    await waitFor(() => expect(log.querySelectorAll(".katex-display").length).toBeGreaterThan(0));
     // the formula KaTeX cannot read is its source, in the page's own error colour (not KaTeX's red)
-    const broken = log.querySelector<HTMLElement>(".katex-error");
-    expect(broken?.textContent).toBe("\\frac{");
-    expect(broken?.getAttribute("style")).toContain("var(--destructive)");
+    const broken = await waitFor(() => {
+      const el = log.querySelector<HTMLElement>(".katex-error");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(broken.textContent).toBe("\\frac{");
+    expect(broken.getAttribute("style")).toContain("var(--destructive)");
+  });
+
+  it("`$$` inside a sentence is text, exactly as written, with the math plugins loaded or not", async () => {
+    const pid = "In bash, $$ is the pid; print $$ twice.";
+    const price = "pay $5 $$ or $10 $$ tomorrow";
+    const before = await renderAgentText(`${pid}\n\n${price}`);
+    expect(before.querySelector(".katex, .katex-error")).toBeNull();
+    expect(before.textContent).toContain(pid);
+    expect(before.textContent).toContain(price);
+    cleanup();
+
+    // an answer that also holds a real formula loads KaTeX: the sentences around it stay sentences
+    const after = await renderAgentText(`${pid}\n\n$$\nx^2\n$$\n\n${price}`);
+    await waitFor(() => expect(after.querySelectorAll(".katex-display").length).toBe(1));
+    expect(after.querySelector(".katex-error")).toBeNull();
+    expect(after.querySelectorAll(".katex").length).toBe(1);
+    expect(after.textContent).toContain(pid);
+    expect(after.textContent).toContain(price);
+  });
+
+  it("`$$` in inline code and in a fence stays code", async () => {
+    const log = await renderAgentText(
+      [
+        "Use `$$` for the pid, as in `echo $$ and $$`.",
+        "",
+        "```bash",
+        "echo $$",
+        "$$",
+        "echo $$",
+        "```",
+        "",
+        "And a real one:",
+        "",
+        "$$",
+        "x^2",
+        "$$",
+      ].join("\n"),
+    );
+    await waitFor(() => expect(log.querySelectorAll(".katex-display").length).toBe(1));
+    expect(log.querySelectorAll(".katex").length).toBe(1);
+    expect(log.querySelector(".katex-error")).toBeNull();
+    const inline = [...log.querySelectorAll(".aui-md-inline-code")].map((c) => c.textContent);
+    expect(inline).toEqual(["$$", "echo $$ and $$"]);
+    expect(log.querySelector("pre code")?.textContent).toBe("echo $$\n$$\necho $$\n");
+  });
+
+  it("a `$$` fence that is not closed yet (a streaming answer) is text, not a flash of error", async () => {
+    const log = await renderAgentText("Here:\n\n$$\n\\frac{a}{");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(log.querySelector(".katex, .katex-error")).toBeNull();
+    expect(log.textContent).toContain("\\frac{a}{");
   });
 
   it("dollar prices are not read as math, with the math plugins loaded or not", async () => {
@@ -180,11 +248,112 @@ describe("MarkdownText", () => {
     expect(before.textContent).toContain("It costs $5 or $10, and $20 more later.");
     cleanup();
 
-    // an answer that also holds a real formula loads KaTeX; the prices around it are still prices
-    const after = await renderAgentText("It costs $5 or $10, and $20 more, so $$x^2$$ and $7.");
+    const after = await renderAgentText("It costs $5 or $10, and $20 more.\n\n$$x^2$$\n\nThen $7.");
     await waitFor(() => expect(after.querySelectorAll(".katex").length).toBe(1));
-    expect(after.textContent).toContain("It costs $5 or $10, and $20 more, so ");
-    expect(after.textContent).toContain(" and $7.");
+    expect(after.textContent).toContain("It costs $5 or $10, and $20 more.");
+    expect(after.textContent).toContain("Then $7.");
+  });
+
+  it("KaTeX trusts nothing: no id, link, image or style comes out of a formula, and the commands show as errors", async () => {
+    const log = await renderAgentText(
+      String.raw`$$\htmlId{root}{x}\htmlStyle{color:red}{y}\href{https://e.x}{z}\includegraphics{a.png}$$`,
+    );
+    const formula = await waitFor(() => {
+      const el = log.querySelector<HTMLElement>(".katex-display");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(document.getElementById("root")).toBeNull();
+    expect(log.querySelector("[id='root']")).toBeNull();
+    expect(log.querySelector("a[href], img")).toBeNull();
+    expect(formula.querySelector("a, img")).toBeNull();
+    for (const el of log.querySelectorAll("[style]")) {
+      expect(el.getAttribute("style"), "style attribute").not.toMatch(/red/i);
+    }
+    // each command is refused and drawn as its own name, in the error colour
+    const refused = [
+      ...formula.querySelectorAll<HTMLElement>(".katex-html [style*='destructive']"),
+    ];
+    expect(refused.map((el) => el.textContent)).toEqual(
+      expect.arrayContaining(["\\htmlId", "\\htmlStyle", "\\href", "\\includegraphics"]),
+    );
+  });
+
+  it("a macro bomb is cut: an expansion that never ends, or that is only too long, is an error shown in 2 s", async () => {
+    const started = Date.now();
+    const log = await renderAgentText(
+      [
+        String.raw`$$\def\a{\a\a}\a$$`,
+        // finite, but 1 + 10 + 100 + 1000 expansions, over the bound of 1000
+        String.raw`$$\def\a{\b\b\b\b\b\b\b\b\b\b}\def\b{\c\c\c\c\c\c\c\c\c\c}\def\c{\d\d\d\d\d\d\d\d\d\d}\def\d{x}\a$$`,
+      ].join("\n\n"),
+    );
+    await waitFor(() => expect(log.querySelectorAll(".katex-error").length).toBe(2), {
+      timeout: 2000,
+    });
+    expect(Date.now() - started).toBeLessThan(2500);
+    for (const error of log.querySelectorAll(".katex-error")) {
+      expect(error.getAttribute("title")).toContain("Too many expansions");
+    }
+  });
+
+  it("a formula over the size limit is shown as code, and KaTeX is never asked to draw it", async () => {
+    const spy = vi.spyOn(katex, "renderToString");
+    const big = "x+".repeat(MAX_FORMULA_CHARS / 2 + 1);
+    expect(big.length).toBeGreaterThan(MAX_FORMULA_CHARS);
+    const log = await renderAgentText(`Huge:\n\n$$\n${big}\n$$\n\nand a small one:\n\n$$\ny\n$$\n`);
+    // the small one is drawn, so the plugins are in and the big one has had its chance
+    await waitFor(() => expect(log.querySelectorAll(".katex-display").length).toBe(1));
+    expect(log.querySelector("pre code")?.textContent).toBe(`${big}\n`);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]?.[0]).toBe("y");
+  });
+
+  it("a block of code over the size limit stays plain, and the highlighter is never asked", async () => {
+    const spy = vi.spyOn(highlight, "highlightCode");
+    const big = `let x = ${"1 + ".repeat(highlight.MAX_CODE_CHARS / 4)}1;`;
+    const log = await renderAgentText(`\`\`\`rust\n${big}\n\`\`\`\n`);
+    await new Promise((r) => setTimeout(r, 400));
+    const code = log.querySelector("pre code") as HTMLElement;
+    expect(code.textContent).toBe(`${big}\n`);
+    expect(code.querySelector("[data-token]")).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("a display formula is a tab stop only while it is wider than its column", async () => {
+    const width = { scroll: 400, client: 100 };
+    const scroll = vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(function (
+      this: Element,
+    ) {
+      return this.classList.contains("katex-display") ? width.scroll : 0;
+    });
+    const client = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (
+      this: Element,
+    ) {
+      return this.classList.contains("katex-display") ? width.client : 0;
+    });
+    try {
+      const log = await renderAgentText("$$\nx^2\n$$");
+      const formula = await waitFor(() => {
+        const el = log.querySelector<HTMLElement>(".katex-display");
+        expect(el?.getAttribute("tabindex")).toBe("0");
+        return el as HTMLElement;
+      });
+      expect(formula.getAttribute("role")).toBe("group");
+      expect(formula.getAttribute("aria-label")).toBe("Formula");
+
+      // the column widens: the formula fits, and the tab stop goes (the observers read it again)
+      width.scroll = 100;
+      await act(async () => {
+        log.querySelector(".aui-md")?.appendChild(document.createElement("span"));
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await waitFor(() => expect(formula.getAttribute("tabindex")).toBeNull());
+      expect(formula.getAttribute("role")).toBeNull();
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
   });
 
   it("the time of a turn is text a screen reader reaches, not only a tooltip", async () => {

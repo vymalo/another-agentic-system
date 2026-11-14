@@ -241,7 +241,7 @@ html[data-panel-dragging] [data-slot="panel"] {
   }
 }
 
-/* A display formula wider than the column scrolls inside its own box (it is a tab stop, rehype-math-label.ts). */
+/* A display formula wider than the column scrolls inside its own box (a tab stop only while it overflows: markdown-text.tsx). */
 .aui-md .katex-display {
   overflow-x: auto;
   overflow-y: hidden;
