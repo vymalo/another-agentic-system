@@ -111,6 +111,13 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
     let chat = world.chat(&orch);
     let (id, last) = match name {
         "echo" => (chat.seed_thread("plain", "echo hi", None).await, "done"),
+        // A plan sent again (UI catalog version 8): the same surface made again whole, edited,
+        // deleted and made once more
+        "a2ui-again" => (
+            chat.seed_thread("plain", "ui-again make a plan", None)
+                .await,
+            "done",
+        ),
         "ask" => {
             let id = chat.seed_thread("plain", "ask about branches", None).await;
             chat.wait_state(&id, "blocked").await;
@@ -530,7 +537,7 @@ async fn wait_for_job(chat: &Chat, id: &str, job: u64) {
     .await;
 }
 
-const SCENARIOS: [&str; 32] = [
+const SCENARIOS: [&str; 33] = [
     "echo",
     "file",
     "ask",
@@ -539,6 +546,7 @@ const SCENARIOS: [&str; 32] = [
     "talk",
     "release",
     "a2ui",
+    "a2ui-again",
     "verify-green",
     "verify-red",
     "verify-verifier-green",
@@ -645,7 +653,7 @@ async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
             )
             .await
         }
-        "a2ui" => {
+        "a2ui" | "a2ui-again" => {
             World::with(
                 Backend::Memory,
                 Setup {

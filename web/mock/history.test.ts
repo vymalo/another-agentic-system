@@ -20,6 +20,7 @@ const EXAMPLES = path.resolve(import.meta.dirname, "../../docs/api/examples");
 /** The golden logs the mock's projection reads as they are (golden.test.ts drives the others through its server). */
 const READ_AS_THEY_ARE = [
   "a2ui",
+  "a2ui-again",
   "ask-agent",
   "ask",
   "cancel",

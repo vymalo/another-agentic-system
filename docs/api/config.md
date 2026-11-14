@@ -678,7 +678,7 @@ do not. No other crate of `orchestrator/` reads the environment outside tests an
 GET /api/config
 → 200 application/json
 { "ui": { "showDescriptions": true,
-          "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": true } } }
+          "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 2, "windowed": true } } }
 ```
 
 - The body is exactly `{ "ui": { … } }`: every key of the `ui` section, with its effective value (defaults filled in).

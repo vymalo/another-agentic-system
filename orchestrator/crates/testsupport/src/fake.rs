@@ -47,6 +47,7 @@
 //! | `ui-status` | `working`, then `input-required` whose message holds text and an A2UI part (a form in the question) |
 //! | `ui-bad` | `working`, an artifact whose A2UI part is an object, not an array, then `completed` |
 //! | `ui-big` | `working`, an artifact whose A2UI part is larger than the cap, then `completed` |
+//! | `ui-again` | `working`, five A2UI parts for the plan `plan-1`, each its own artifact: a `createSurface` with an `updateComponents` (`First`), the same again with other content (`Second`, a surface sent again whole), an `updateComponents` (`Second, edited`), a `deleteSurface`, then a `createSurface` with an `updateComponents` (`Third`), `completed` |
 //! | `ui-delete` | `working`, an A2UI part that creates surface `s2`, then one that deletes it, `completed` |
 //! | `file` | `working`, one artifact `chart` whose only part is a file (ADR 0032, an A2A `raw` part: [`PNG`], `image/png`, `chart.png`), `completed` |
 //! | `file-svg` | as `file`, an SVG ([`SVG_WITH_SCRIPT`], `image/svg+xml`, `drawing.svg`) that carries a script and an `onload`: the sanitizer's |
@@ -2244,6 +2245,26 @@ async fn script(
                 ctx.artifact(&id, "form", vec![ui_part(payload)], false, Some(true)),
             )
             .await?;
+            emit(&tx, ctx.status(TaskState::Completed, None)).await?;
+        }
+        "ui-again" => {
+            let create = json!({"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}});
+            let text = |t: &str| json!({"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": t}]}});
+            let delete = json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": "plan-1"}});
+            for ops in [
+                json!([create, text("First")]),
+                json!([create, text("Second")]),
+                json!([text("Second, edited")]),
+                json!([delete]),
+                json!([create, text("Third")]),
+            ] {
+                let id = shared.next_artifact_id();
+                emit(
+                    &tx,
+                    ctx.artifact(&id, "plan", vec![ui_part(ops)], false, Some(true)),
+                )
+                .await?;
+            }
             emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "ui-delete" => {

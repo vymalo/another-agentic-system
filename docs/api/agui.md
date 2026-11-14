@@ -1698,8 +1698,10 @@ each speaks; the inbound side uses that.
 The same `surfaceId` is the same surface, under the `messageId` of the event that created it in every run,
 and each snapshot is the whole surface that is alive. A `createSurface` for a surface that exists starts it over (the catalog's rule), so
 the projector drops the operations before it: the snapshot after it holds the create and what follows, never the dead copies, and a plan sent
-200 times is one copy in the buffer and in every replay to a late or reconnecting viewer. The frames of the live stream keep their kinds, order and ids;
-only the content of a snapshot after a re-create is shorter, and a client that already read from the last `createSurface` draws the same. A payload
+200 times is one copy in the buffer and in every replay to a late or reconnecting viewer. The frames keep their kinds, order and ids, and what a client draws is the same; what changed is the **content of a snapshot after a re-create**, on the live stream and in
+every replay alike: it holds the alive operations and not the dead copies before them. A snapshot a client stored before
+(`PROJECTION_VERSION` 1) is therefore not the one this projection writes for the same log, which is why the version rose to 2
+([`history.md`](history.md) rule 7: a client discards what it stored under another version). A payload
 that names several surfaces is cut per surface, so each snapshot names one surface and the client can skip its dead part. A copy in a later run is the live one and the
 earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), whose copies are matched by `surfaceId` and drawn once per
 stretch of the thread between two messages of a person, so that a plan the person answered is never rewritten on the page (rule 4 of the catalog's rule).

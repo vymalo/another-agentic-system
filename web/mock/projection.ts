@@ -1650,6 +1650,9 @@ export class Projector {
             operations: [],
           };
           this.surfaces.set(info.surfaceId, surface);
+          // a `createSurface` for a surface that exists starts it over: what came before is dead
+          // and is no longer replayed (the orchestrator's projector does the same)
+          if (info.op === "createSurface") surface.operations = [];
           surface.operations.push(op);
           if (!touched.includes(info.surfaceId)) touched.push(info.surfaceId);
           if (info.op === "deleteSurface") {

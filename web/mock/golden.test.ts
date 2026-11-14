@@ -582,6 +582,13 @@ const ASKS = ["ask-agent"];
  */
 const USAGE = ["usage"];
 
+/**
+ * The scenario of a plan sent again (UI catalog version 8): `a2ui-again`, one surface made, made again
+ * whole, edited, deleted and made once more. The mock's scripts do not send it, so its projection
+ * reads the golden event log and must produce the golden stream.
+ */
+const AGAIN = ["a2ui-again"];
+
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
   const raw = JSON.parse(
@@ -596,7 +603,7 @@ function forkLog(name: string): Event[] {
 
 describe("the mock's projection against the AG-UI goldens of a fork, a description, attached servers, mentions and usage", () => {
   // the description's log too: the projection alone, from the events the orchestrator wrote
-  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, ...ASKS, ...USAGE, "description"]) {
+  for (const name of [...FORKS, ...TOOLS, ...MENTIONS, ...ASKS, ...USAGE, ...AGAIN, "description"]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
       const log = forkLog(name);
       // the thread's title is the first message's first line, as the golden test of the real
@@ -628,7 +635,8 @@ describe("the mock server against the AG-UI goldens", () => {
           !TOOLS.includes(f) &&
           !MENTIONS.includes(f) &&
           !ASKS.includes(f) &&
-          !USAGE.includes(f),
+          !USAGE.includes(f) &&
+          !AGAIN.includes(f),
       );
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
