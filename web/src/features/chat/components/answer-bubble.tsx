@@ -43,6 +43,14 @@ export function AnswerBubble({ data }: { data: AnswersContent }) {
             <dd className="m-0 [overflow-wrap:anywhere]">
               {line.chosen.length === 0 && line.other === undefined && line.text === undefined ? (
                 <span className="text-muted-foreground">No answer</span>
+              ) : line.ordered ? (
+                // a rank: the person's order, the best first
+                <ol data-slot="answer-rank" className="m-0 list-decimal pl-5">
+                  {line.chosen.map((label, i) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: the place is the identity of a rank
+                    <li key={i}>{label}</li>
+                  ))}
+                </ol>
               ) : (
                 <span className="whitespace-pre-wrap">
                   {[

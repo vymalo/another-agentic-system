@@ -24,10 +24,12 @@ import {
   type QuestionState,
   readChoices,
 } from "@/features/chat/lib/a2ui/choices";
+import { isKind } from "@/features/chat/lib/a2ui/choices-kinds";
 import { contextTooLarge } from "@/features/chat/lib/a2ui/context";
 import { MAX_CONTEXT_BYTES } from "@/features/chat/lib/a2ui/limits";
 import type { StepIcon } from "@/features/chat/lib/agui/vymalo";
 import { cn } from "@/lib/utils";
+import { KindQuestion } from "./choices-kinds";
 import { useSurfaceHost } from "./surface-host";
 import { useThreadFiles } from "./thread-files";
 import { useView } from "./view-context";
@@ -35,7 +37,8 @@ import { useView } from "./view-context";
 /*
  * The `Choices` component of the UI catalog (docs/api/ui-catalog-v1.md, version 5): a form of up to
  * 8 questions with a title and a description of why the agent asks, and per question a type: radio
- * buttons, check boxes, a searchable list, a deck of pictures, or a typed answer; optionally an
+ * buttons, check boxes, a searchable list, a deck of pictures, or a typed answer (and, from version
+ * 7, a yes or no, a number, a scale, a day or a list to put in order: `choices-kinds.tsx`); optionally an
  * "Other" of the person's own words per question and a free box for the whole form. One submit sends
  * ONE action, and nothing sends but that click (ADR 0013 rule 7): Enter in a text box does nothing,
  * because there is no form.
@@ -495,6 +498,17 @@ function Question({
   const typed = isTyping(question.type);
   const range = rangeHint(question);
   const hasNotes = Boolean(question.help || range);
+  if (isKind(question.type)) {
+    return (
+      <KindQuestion
+        question={question}
+        name={name}
+        state={state}
+        enabled={enabled}
+        onChange={onChange}
+      />
+    );
+  }
   if (typed) {
     return (
       <TypedAnswer
