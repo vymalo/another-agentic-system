@@ -741,7 +741,16 @@ mod tests {
         });
         let mut components = serde_json::Map::new();
         components.insert("Choices".to_owned(), choices.clone());
-        for name in ["Text", "Image", "Mermaid", "Code", "Cards", "Callout", "Chart", "Checklist"] {
+        for name in [
+            "Text",
+            "Image",
+            "Mermaid",
+            "Code",
+            "Cards",
+            "Callout",
+            "Chart",
+            "Checklist",
+        ] {
             components.insert(
                 name.to_owned(),
                 json!({"type": "object", "properties": {"component": {"const": name}}}),
