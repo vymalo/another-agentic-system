@@ -137,7 +137,7 @@ export function QuoteButton({ source, className }: { source: string; className?:
         <QuoteIcon aria-hidden="true" />
       </TooltipIconButton>
       <span
-        role="status"
+        aria-live="polite"
         data-slot="quote-note"
         className={said ? "ms-1 text-xs text-muted-foreground" : "sr-only"}
       >

@@ -185,7 +185,11 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
         {language}
       </span>
       <span className="flex items-center gap-1">
-        <span role="status" className={failed ? "text-xs text-foreground" : "sr-only"}>
+        <span
+          aria-live="polite"
+          data-slot="copy-note"
+          className={failed ? "text-xs text-foreground" : "sr-only"}
+        >
           {failed ? COPY_FAILED : ""}
         </span>
         <TooltipIconButton tooltip={failed ? COPY_FAILED : "Copy"} onClick={onCopy}>

@@ -397,7 +397,9 @@ describe("MarkdownText", () => {
     });
     fireEvent.click(within(header).getByRole("button", { name: "Copy" }));
     await waitFor(() =>
-      expect(within(header).getByRole("status").textContent).toContain("Could not copy"),
+      expect(header.querySelector("[data-slot=copy-note]")?.textContent).toContain(
+        "Could not copy",
+      ),
     );
   });
 });

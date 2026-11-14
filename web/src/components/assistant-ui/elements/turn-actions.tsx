@@ -70,7 +70,7 @@ export const TurnActions: FC<Props> = ({ text, runId, last, began }) => {
               <CopyIcon aria-hidden="true" />
             )}
           </TooltipIconButton>
-          <span role="status" data-slot="copy-note" className={failed ? "text-xs" : "sr-only"}>
+          <span aria-live="polite" data-slot="copy-note" className={failed ? "text-xs" : "sr-only"}>
             {failed ? COPY_FAILED : ""}
           </span>
           <QuoteButton source={text} />

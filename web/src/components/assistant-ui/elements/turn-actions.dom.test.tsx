@@ -161,7 +161,7 @@ describe("Copy: what reaches the clipboard and how a refusal is told", () => {
   const stub = (clipboard: unknown) =>
     Object.defineProperty(navigator, "clipboard", { value: clipboard, configurable: true });
   const noteRegions = () =>
-    [...document.querySelectorAll('[role="status"]')].filter((el) =>
+    [...document.querySelectorAll('[data-slot="copy-note"]')].filter((el) =>
       el.textContent?.includes(COPY_FAILED),
     );
 
