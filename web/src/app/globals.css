@@ -2,8 +2,12 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* Dark mode follows the system setting (no toggle, no `.dark` class). */
-@custom-variant dark (@media (prefers-color-scheme: dark));
+/*
+ * The theme is the page's, not the device's: `<html data-theme="light|dark">`, set before the first paint by the head
+ * script and kept by lib/theme.ts (System follows the device there, and only there). Nothing below asks
+ * `prefers-color-scheme`: web/DESIGN.md "Theme".
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /*
  * web/DESIGN.md is the brief: a warm neutral canvas, ink for the actions, one bamboo green for what
@@ -49,45 +53,45 @@
   --ring: var(--brand);
   --radius: 0.75rem;
   --composer-shadow: 0 1px 2px rgb(26 29 26 / 0.05), 0 6px 24px -4px rgb(26 29 26 / 0.1);
-  color-scheme: light dark;
+  /* native controls, scrollbars and the date input follow the page's theme */
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --brand: #8dc58b;
-    --background: #141614;
-    --foreground: #e8e9e4;
-    --sidebar: #1b1e1b;
-    --sidebar-accent: #2a2e2a;
-    --bubble: #282c28;
-    --card: #1a1d1a;
-    --card-foreground: #e8e9e4;
-    --popover: #222622;
-    --popover-foreground: #e8e9e4;
-    --primary: #f2f1ea;
-    --primary-foreground: #141614;
-    --secondary: #232723;
-    --secondary-foreground: #e8e9e4;
-    --muted: #232723;
-    --muted-foreground: #a6aba3;
-    --accent: #282c28;
-    --accent-foreground: #e8e9e4;
-    --destructive: #f2b8b5;
-    --destructive-soft: #3a2322;
-    --success: #81c995;
-    --warning: #f5c46a;
-    --warning-soft: #352a15;
-    --verifying: #cfb6f7;
-    --chart-1: #8dc58b;
-    --chart-2: #8fb3f0;
-    --chart-3: #f5c46a;
-    --chart-4: #cdb3f5;
-    --chart-5: #f08fa0;
-    --chart-6: #6fd0c9;
-    --border: #2e332e;
-    --input: #3a3f3a;
-    --composer-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 28px -6px rgb(0 0 0 / 0.55);
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --brand: #8dc58b;
+  --background: #141614;
+  --foreground: #e8e9e4;
+  --sidebar: #1b1e1b;
+  --sidebar-accent: #2a2e2a;
+  --bubble: #282c28;
+  --card: #1a1d1a;
+  --card-foreground: #e8e9e4;
+  --popover: #222622;
+  --popover-foreground: #e8e9e4;
+  --primary: #f2f1ea;
+  --primary-foreground: #141614;
+  --secondary: #232723;
+  --secondary-foreground: #e8e9e4;
+  --muted: #232723;
+  --muted-foreground: #a6aba3;
+  --accent: #282c28;
+  --accent-foreground: #e8e9e4;
+  --destructive: #f2b8b5;
+  --destructive-soft: #3a2322;
+  --success: #81c995;
+  --warning: #f5c46a;
+  --warning-soft: #352a15;
+  --verifying: #cfb6f7;
+  --chart-1: #8dc58b;
+  --chart-2: #8fb3f0;
+  --chart-3: #f5c46a;
+  --chart-4: #cdb3f5;
+  --chart-5: #f08fa0;
+  --chart-6: #6fd0c9;
+  --border: #2e332e;
+  --input: #3a3f3a;
+  --composer-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 28px -6px rgb(0 0 0 / 0.55);
 }
 
 @theme inline {
@@ -224,7 +228,7 @@ html[data-panel-dragging] [data-slot="panel"] {
 
 /*
  * Highlighted code (src/lib/highlight.ts): a token carries both colours of the two themes as custom properties, and
- * the scheme of the system picks one (no toggle, no class). The block's own background is ours, never the theme's.
+ * the page's theme (`<html data-theme>`) picks one. The block's own background is ours, never the theme's.
  */
 .aui-md-pre [data-token] {
   color: var(--shiki-light);
@@ -232,13 +236,11 @@ html[data-panel-dragging] [data-slot="panel"] {
   font-weight: var(--shiki-light-font-weight, inherit);
   text-decoration: var(--shiki-light-text-decoration, inherit);
 }
-@media (prefers-color-scheme: dark) {
-  .aui-md-pre [data-token] {
-    color: var(--shiki-dark);
-    font-style: var(--shiki-dark-font-style, inherit);
-    font-weight: var(--shiki-dark-font-weight, inherit);
-    text-decoration: var(--shiki-dark-text-decoration, inherit);
-  }
+:root[data-theme="dark"] .aui-md-pre [data-token] {
+  color: var(--shiki-dark);
+  font-style: var(--shiki-dark-font-style, inherit);
+  font-weight: var(--shiki-dark-font-weight, inherit);
+  text-decoration: var(--shiki-dark-text-decoration, inherit);
 }
 
 /* A display formula wider than the column scrolls inside its own box (a tab stop only while it overflows: markdown-text.tsx). */

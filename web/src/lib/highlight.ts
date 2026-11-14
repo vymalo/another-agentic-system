@@ -17,7 +17,7 @@ import type { HighlighterCore, LanguageInput } from "shiki/core";
  *
  * Two themes at once (GitHub's high-contrast pair, chosen for contrast on the code box in both schemes): a token
  * carries both colours as the custom properties `--shiki-light` and `--shiki-dark`, and the stylesheet picks one
- * by `prefers-color-scheme` (no toggle exists, so there is no class to follow).
+ * by the page's theme (`<html data-theme>`, lib/theme.ts), never the device's.
  */
 
 /** A coloured piece of one line: its text and the custom properties that colour it. */

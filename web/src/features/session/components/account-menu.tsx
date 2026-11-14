@@ -3,6 +3,7 @@
 import { ChartNoAxesColumnIcon, ChevronsUpDownIcon, LogOutIcon, WrenchIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+import { ThemeMenu, ThemeRadioGroup } from "@/components/theme/theme-menu";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -34,8 +35,9 @@ export function useCanSignOut(): boolean {
  * **My tool servers** (the MCP servers they add for themselves, ADR 0046; only for a person whose roles hold `tools.user.add`, as `GET /api/me`
  * says; the page answers for itself when it is opened by its address without it) and **Sign out**. In
  * browser mode it revokes the refresh token, deletes this browser's key and session and ends the
- * issuer's session (ADR 0054, decision 11); with an edge it goes to oauth2-proxy's sign-out. Nothing
- * when there is neither a person to show nor a sign-in to end (a local run without an edge).
+ * issuer's session (ADR 0054, decision 11); with an edge it goes to oauth2-proxy's sign-out. The **Theme** group
+ * (System, Light, Dark; this device's choice, `lib/theme.ts`) is in it. With neither a person to show nor a sign-in to
+ * end (a local run without an edge) the footer holds the theme button alone.
  */
 export function AccountMenu() {
   const me = useMe();
@@ -43,13 +45,22 @@ export function AccountMenu() {
   const [leaving, setLeaving] = useState(false);
   const person = me.status === "ready" ? me.me : null;
   // while `/api/me` is on its way: nothing, rather than a placeholder that turns into the person
-  if (me.status === "loading" || (!person && !signOut)) return null;
+  if (me.status === "loading") return null;
+  // nobody to show and no sign-in to end (a local run): the one thing left to offer is the theme
+  if (!person && !signOut) {
+    return (
+      <div data-slot="theme" className="flex shrink-0 justify-end border-t px-2 py-2">
+        <ThemeMenu />
+      </div>
+    );
+  }
   const email = person?.email ?? person?.user;
   const title = person?.name ?? email ?? "Your account";
   const initial = (title.trim()[0] ?? "?").toUpperCase();
   return (
     <div data-slot="account" className="shrink-0 border-t px-2 py-2">
-      <DropdownMenu>
+      {/* not modal, like the other menus of the app: axe reports the siblings of a modal menu as aria-hidden and focusable (DESIGN.md) */}
+      <DropdownMenu modal={false}>
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
@@ -107,6 +118,9 @@ export function AccountMenu() {
               </Link>
             </DropdownMenuItem>
           ) : null}
+          <DropdownMenuSeparator />
+          <ThemeRadioGroup />
+          {signOut ? <DropdownMenuSeparator /> : null}
           {signOut ? (
             <DropdownMenuItem
               disabled={leaving}

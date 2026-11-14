@@ -1,18 +1,18 @@
 "use client";
 
 import { CircleAlertIcon } from "lucide-react";
-import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   mermaidConfig,
   readMermaid,
   reasonOf,
-  type Scheme,
   type SvgImage,
   svgImage,
   tokensFrom,
 } from "@/features/chat/lib/a2ui/mermaid";
 import { renderMermaid } from "@/features/chat/lib/a2ui/mermaid-render";
+import { usePageTheme } from "@/lib/use-theme";
 
 /*
  * The `Mermaid` component of the UI catalog (docs/api/ui-catalog-v1.md, version 3): an agent's graph,
@@ -25,22 +25,6 @@ import { renderMermaid } from "@/features/chat/lib/a2ui/mermaid-render";
  * text, stays one click away under "Diagram source". A graph that cannot be drawn says so and shows its
  * source in place; it is never half drawn and never fails the surface.
  */
-
-const DARK = "(prefers-color-scheme: dark)";
-const media = () => (typeof window.matchMedia === "function" ? window.matchMedia(DARK) : undefined);
-
-/** The scheme of the page: dark mode follows the system setting (globals.css), no toggle. */
-function useScheme(): Scheme {
-  return useSyncExternalStore(
-    (notify) => {
-      const query = media();
-      query?.addEventListener("change", notify);
-      return () => query?.removeEventListener("change", notify);
-    },
-    () => (media()?.matches ? "dark" : "light"),
-    () => "light",
-  );
-}
 
 /** What was drawn of one graph's source: a result belongs to the `code` it was drawn from. */
 type Drawing =
@@ -63,7 +47,8 @@ function Source({ code }: { code: string }) {
 /** The Mermaid of a surface; the props are those of the lowered component (`prepare.ts`). */
 export function MermaidDiagram(props: Record<string, unknown>): ReactNode {
   const spec = readMermaid(props);
-  const scheme = useScheme();
+  // the PAGE's theme (<html data-theme>, lib/theme.ts), never the device's: a dark graph never sits on a light page
+  const scheme = usePageTheme();
   const code = spec?.code;
   const [result, setDrawing] = useState<Drawing | undefined>(undefined);
 

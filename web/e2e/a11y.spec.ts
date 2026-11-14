@@ -359,6 +359,46 @@ for (const scheme of ["light", "dark"] as const) {
   });
 }
 
+/*
+ * The theme is the person's choice, FORCED (not only emulated through the media feature): "dark chosen on a light device"
+ * and "light chosen on a dark device" must pass axe on the main screens, with the account menu (and its Theme group) open.
+ */
+for (const [device, chosen] of [
+  ["light", "dark"],
+  ["dark", "light"],
+] as const) {
+  test.describe(`accessibility (${chosen} chosen on a ${device} device)`, () => {
+    test.use({ colorScheme: device, contextOptions: { reducedMotion: "reduce" } });
+    test.beforeEach(async ({ page }) => {
+      await page.addInitScript((value) => localStorage.setItem("chat.theme", value), chosen);
+    });
+
+    test("axe: a new thread, a finished thread and the account menu have no serious violations", async ({
+      page,
+      isMobile,
+    }) => {
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", chosen);
+      expect(await axeViolations(page)).toEqual([]);
+
+      await startThread(page, "Implement the thing");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", chosen);
+      expect(await axeViolations(page)).toEqual([]);
+
+      if (isMobile) {
+        await page.getByRole("button", { name: "Threads", exact: true }).click();
+        await expect(page.getByRole("dialog", { name: "Threads" })).toBeVisible();
+      }
+      await page.getByRole("button", { name: /^Account: / }).click();
+      await expect(page.getByRole("group", { name: "Theme" })).toBeVisible();
+      await expect(page.getByRole("menuitemradio", { name: "System" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+  });
+}
+
 /**
  * Lighthouse's accessibility audit of `url` in a browser of the given colour scheme and form factor.
  * `watch` is a selector that must have been on the audited page at some point of the audit.
