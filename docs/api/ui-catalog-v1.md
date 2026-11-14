@@ -4,7 +4,7 @@
 - **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
   the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog, Choices, Cards and
-  Mermaid, Image, and the questions of Choices with a title, typed answers and pictures (versions 1 to 5) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
+  Mermaid, Image, the questions of Choices with a title, typed answers and pictures (versions 1 to 5), the components of version 6 and the five more kinds of question of [version 7](#version-7-more-kinds-of-question) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
   catalog into model tools and refetches) is that repository's slice; see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
@@ -132,8 +132,8 @@ v1. Rules for the document:
 
 Choices asks the person up to 8 questions at once, each with 2 to 8 options (radio buttons, or checkboxes when
 `multiple`). One submit sends **one** action; its answer shape is in [Choices answers](#choices-answers). Its schema
-is written once, in [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), which only adds
-to it: every Choices of version 2 is a Choices of version 5 and reads and answers as it did.
+is written once, in [version 7](#the-choices-schema-as-the-catalog-holds-it), which only adds
+to it: every Choices of version 2 is a Choices of version 7 and reads and answers as it did.
 
 Two rules JSON Schema cannot say are checked by the web's validator and by the agent: question ids are unique in a
 Choices, and option values are unique within a question.
@@ -271,115 +271,8 @@ words.
 | Pictures in an `images` question | 2 to 16 |
 | Options in a `text` or `longText` question | none |
 
-```json
-{
-  "Choices": {
-    "type": "object",
-    "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value…], other?, text?}], note?} in question order.",
-    "properties": {
-      "id": {"type": "string", "minLength": 1, "maxLength": 256},
-      "component": {"const": "Choices"},
-      "weight": {"type": "number"},
-      "title": {"type": "string", "maxLength": 120},
-      "description": {"type": "string", "maxLength": 500},
-      "freeInput": {
-        "type": "object",
-        "properties": {
-          "label": {"type": "string", "minLength": 1, "maxLength": 120},
-          "placeholder": {"type": "string", "maxLength": 200}
-        },
-        "additionalProperties": false
-      },
-      "questions": {
-        "type": "array",
-        "minItems": 1,
-        "maxItems": 8,
-        "items": {
-          "type": "object",
-          "properties": {
-            "id": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"},
-            "question": {"type": "string", "minLength": 1, "maxLength": 300},
-            "help": {"type": "string", "maxLength": 300},
-            "type": {"enum": ["single", "multiple", "select", "images", "text", "longText"]},
-            "options": {
-              "type": "array",
-              "maxItems": 50,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "value": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"},
-                  "label": {"type": "string", "minLength": 1, "maxLength": 120},
-                  "description": {"type": "string", "maxLength": 300},
-                  "image": {
-                    "type": "object",
-                    "properties": {
-                      "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                      "alt": {"type": "string", "minLength": 1, "maxLength": 300}
-                    },
-                    "required": ["sha256", "alt"],
-                    "additionalProperties": false
-                  },
-                  "icon": {
-                    "enum": [
-                      "agent",
-                      "read",
-                      "edit",
-                      "delete",
-                      "move",
-                      "search",
-                      "execute",
-                      "think",
-                      "fetch",
-                      "web",
-                      "git",
-                      "test",
-                      "file",
-                      "tool",
-                      "opencode"
-                    ]
-                  },
-                  "recommended": {"type": "boolean"}
-                },
-                "required": ["value", "label"],
-                "additionalProperties": false
-              }
-            },
-            "multiple": {"type": "boolean"},
-            "allowOther": {"type": "boolean"},
-            "required": {"type": "boolean"},
-            "default": {
-              "anyOf": [
-                {"type": "string", "maxLength": 2000},
-                {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"}}
-              ]
-            },
-            "min": {"type": "integer", "minimum": 0, "maximum": 50},
-            "max": {"type": "integer", "minimum": 1, "maximum": 50}
-          },
-          "required": ["id", "question"],
-          "additionalProperties": false
-        }
-      },
-      "submitLabel": {"type": "string", "minLength": 1, "maxLength": 40},
-      "action": {
-        "type": "object",
-        "properties": {
-          "event": {
-            "type": "object",
-            "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 256}},
-            "required": ["name"],
-            "additionalProperties": false
-          }
-        },
-        "required": ["event"],
-        "additionalProperties": false
-      }
-    },
-    "required": ["id", "component", "questions"],
-    "additionalProperties": false
-  }
-}
-```
+The schema of `Choices` is written once, in [version 7](#the-choices-schema-as-the-catalog-holds-it), which only adds to it:
+every Choices of version 5 is a Choices of version 7 and reads and answers as it did.
 
 Rules JSON Schema cannot say, checked by the web's validator (a refusal of the whole surface, rule `schema`, whose reason
 names the question and says what to change) and by the agent before it asks:
@@ -1531,6 +1424,507 @@ The contract of the four components, as the catalog holds it (`catalog/catalog.j
 }
 ```
 
+### Version 7: more kinds of question
+
+Version 7 changes `Choices` only, and only by adding: a Choices of version 2 to 6 is valid and is drawn and answered as
+before. It adds five **kinds** of question, five more values of a question's `type`: a yes or no (`confirm`), a number
+(`number`), a point on a short scale (`scale`), a calendar day (`date`) and a list to put in order (`rank`). The
+questions of the other six types are not touched. The schema of the whole `Choices`, which this version moves here
+because it is the one that holds every kind, is [at the end of this section](#the-choices-schema-as-the-catalog-holds-it).
+
+An agent asks with these kinds only when the thread's catalog is **version 7 or more**, or, the better test, when the
+`type` it wants is in the `enum` of the `Choices` schema it was given. How it learns that, and what both sides do
+when it is not so, is [Versions and degradation](#versions-and-degradation).
+
+| `type` | The person | Members of the question (the rest of the kind's members are refused) | The answer's `values` |
+|---|---|---|---|
+| `confirm` | answers yes or no, in the agent's two phrases | `yesLabel` and `noLabel` (each 1 to 40 characters; "Yes" and "No" when absent); `default`: `"yes"` or `"no"`, **the safe answer**, chosen before the person touches anything | `["yes"]` or `["no"]`, whatever the labels say |
+| `number` | types a number | `minValue`, `maxValue`, `step` (decimal strings: [the grammar](#the-decimal-and-the-date)); `unit` (1 to 20 characters, shown beside the box); `default` (a decimal string) | one decimal string: `["12.5"]` |
+| `scale` | picks a point from a short run of whole numbers | `from` (0 or 1; 1 when absent), `to` (2 to 10, **required**, above `from`); `fromLabel`, `toLabel` (1 to 60 characters: the words at the two ends); `default` (a whole number as a string) | one whole number as a string: `["4"]` |
+| `date` | picks a day | `minDate`, `maxDate` (`YYYY-MM-DD`); `default` (a date) | one date: `["2026-12-15"]` |
+| `rank` | puts the options in order, the best first | `options`: 2 to 12, each `value`, `label` and optionally `description`, `icon`, `recommended`, **no `image`**; `default`: every option's `value` once, the order the list starts in | **every** option's `value` once, in the person's order: `["c", "a", "b"]` |
+
+Every kind also has the members all questions have: `id`, `question`, `help` and `required` (as in
+[version 5](#version-5-questions-with-a-title-a-description-and-typed-options)). A member belongs to its kind: `yesLabel`
+on a `number`, or `step` on a `date`, is refused. None of the five has `multiple`, `allowOther`, `min` or `max`, and only a
+`rank` has `options`.
+
+#### The decimal and the date
+
+A `number` is **a decimal string, never a JSON number**, in the question (`minValue`, `maxValue`, `step`, `default`) and in
+the answer. The reason is the wire: an A2A server holds a number of a message's metadata as a double
+([section 5](#5-to-the-agent-the-extension)), so `0.1`, `12.50` or a number of sixteen digits would not come out as it went in. A
+string comes out as it went in, and the receiver reads it with its own decimal type.
+
+| | Grammar | Notes |
+|---|---|---|
+| decimal | `-?(0\|[1-9][0-9]{0,14})(\.[0-9]{1,6})?` | ASCII digits only, a minus sign (never a plus), a point (never a comma), no leading zero (`05`), no exponent (`1e3`), no space, no thousands separator, at most 15 digits before the point and 6 after. `-0` and `-0.0` are refused: zero has no sign. `2.50` is allowed and equals `2.5` |
+| whole number (`scale`) | `0\|[1-9][0-9]?` | `7`, never `07` or `7.0` |
+| date | `YYYY-MM-DD` | four digits of year (0001 to 9999), two of month and two of day, **a day that exists** in the proleptic Gregorian calendar (`2028-02-29` yes, `2027-02-29` and `2026-04-31` no) |
+
+Decimals are **compared as exact decimals**, never through floating point: `1000.5` is above `1000`, and `0.1 + 0.2` is `0.3`.
+A value is **on the step** when it is `minValue` (or `0` when the question has none) plus a whole number of `step`s, exactly
+(`step: "0.5"` from `0`: `250.5` yes, `250.25` no). `step` is above zero. A date is a **calendar day, not an instant**: it has no
+time and no zone, it is the same day everywhere, and no client or receiver converts it (a client that builds it from a local
+time and sends the UTC form is wrong). Dates compare as text, which is right because the form is fixed-width.
+
+#### Rules JSON Schema cannot say
+
+Checked by the web's validator (a refusal of the whole surface, rule `schema`, whose reason names the question and says what
+to change) and by the agent before it asks. They hold for a Choices of any version, on top of
+[version 5's](#version-5-questions-with-a-title-a-description-and-typed-options):
+
+- a kind takes no `options` (except `rank`, which takes 2 to 12, none with an `image`), and none of `multiple`, `allowOther`,
+  `min` and `max`; a member of one kind is not on another;
+- `minValue` is at most `maxValue`, `step` is above zero, `minDate` is at most `maxDate` and both are real days, `to` is above
+  `from`, and a `scale` has a `to`;
+- every `default` is an answer the kind accepts under [the rules below](#receiving-an-answer): inside the bounds, on the step, a
+  real day, `yes` or `no`, every option once. A `rank` without a `default` starts in the order of its options.
+
+#### How a client draws them, and what it checks
+
+A client **validates before it sends** and holds the button, with the reason in words next to the control, until every question
+is valid; it sends nothing a receiver would refuse. The receiver checks again ([below](#receiving-an-answer)): a form is only as
+trustworthy as the client that drew it. What a client must do:
+
+| Kind | Control | Must |
+|---|---|---|
+| `confirm` | two radio buttons, the yes first, in a `radiogroup` | name the group with the question; arrows move; the safe answer is chosen when there is a `default`; a state that is never told by colour alone |
+| `number` | a text box (`inputmode="decimal"`, not a browser number box: its locale and exponent forms are not this grammar) with the `unit` beside it | take only the grammar and say it in the error ("Use digits and a point, like 12.5"); say the bound or the step that is broken ("The most is 1000 EUR"); the unit is in the control's name |
+| `scale` | the points as radio buttons in a `radiogroup`, `fromLabel` by the first and `toLabel` by the last | each point has its number as its name, the ends add their words; arrows move; at most 11 points fit a phone's width by wrapping |
+| `date` | a native date control with `min` and `max` (or a text box for `YYYY-MM-DD`, which then says the format) | send the control's own `YYYY-MM-DD` and nothing built from a `Date`; say the bound that is broken |
+| `rank` | an ordered list; each item has a **Move up** and a **Move down** button named with the item ("Move Beta up") | be fully operable by keyboard without drag and drop (drag may exist as an extra); say the new place in words after each move ("Beta, 1 of 3"); a button at the end of the list that cannot move says so and keeps the focus; until the person has moved an item or pressed **Keep this order**, a required rank is not answered (the agent's own order is not their ranking) |
+
+Every control has an accessible name (the question's words, with "(optional)" when it is not required), its `help` is linked as
+its description, an error is words linked to the control and never a colour, and a target is at least 44 CSS pixels. The
+chat shows the answer as the person's own, with the labels they saw: `Delete it` for `yes`, `250.5 EUR`, `7`, the day written
+out, a rank as a numbered list; a question the person skipped says "No answer".
+
+#### The answer
+
+The answer is the [Choices answer](#choices-answers) of version 5, **unchanged in shape**: one entry per question, in question
+order, `{id, values}`. Every kind puts what the person gave in `values`, as strings, and sends no `other` and no `text`:
+
+```json answers
+{"context": {"answers": [
+  {"id": "ship", "values": ["no"]},
+  {"id": "budget", "values": ["250.5"]},
+  {"id": "nps", "values": []},
+  {"id": "when", "values": ["2026-12-15"]},
+  {"id": "order", "values": ["risk", "speed", "cost"]}
+]}}
+```
+
+`values` of a `rank` is the one place where the **order is the person's**; everywhere else it is the order of the options. A
+question that is not required and was left alone has `values: []`, as in version 5: that is how "the person did not answer" looks
+for every kind (there is no separate "declined" member), and a required question is never sent empty.
+
+#### Receiving an answer
+
+**The orchestrator relays an answer and does not read it**: it checks the action's envelope and size and that the thread has the
+surface ([`agui.md`](agui.md#actions)), and nothing of the questions. The receiver is the **agent** that asked, which holds the
+form it sent, and it **must validate every answer again**, whatever the client claims to have checked. For each question of the form,
+in order, the first rule that fails is the answer's reason:
+
+| Rule | A receiver refuses when |
+|---|---|
+| `unknown` | the answers are not exactly the form's questions, once each, in question order |
+| `unexpected` | an entry of one of the five kinds has a member other than `id` and `values` (`other`, `text`) |
+| `required` | `values` is empty and the question is required |
+| `too_many` | `values` has more than one value (a `rank` is judged by `not_a_permutation`) |
+| `not_offered` | `confirm`: a value that is not `yes` or `no`; `rank`: a value that is not one of the options |
+| `grammar` | `number`, `scale`, `date`: the value is not [the grammar](#the-decimal-and-the-date) (a real day included) |
+| `below_min` | `number` is below `minValue`, `scale` below `from`, `date` before `minDate` |
+| `above_max` | `number` is above `maxValue`, `scale` above `to`, `date` after `maxDate` |
+| `off_step` | `number` is not on its `step` |
+| `not_a_permutation` | `rank`: not every option exactly once |
+
+An answer that fails any rule is **not acted on**. The receiver tells the person, in words, in a message of the same task: the
+question (its `id`, and its words) and the rule, for example `The answer to "budget" was not used (above_max): 1500 is above
+the most, 1000 EUR.` It then **asks again**, with the form (or the questions that failed; the others as `default`s, so
+nothing the person gave is lost). It never repairs an answer: no clamping, no rounding, no sorting, no substituting the
+default. A conforming client does not send such an answer, so a refusal means a stale form, another client or a hand-made
+action, and the message is for the person who then reads it.
+
+The cases below are the contract's conformance vectors: each is a question, the `values` of its answer, and the rule a receiver
+answers (`null`: accepted). A receiver and a client's own check both pass them (the web's tests, the mock's receiver and a test
+of this page read this block).
+
+```json vectors
+[
+  {"question": {"id": "ship", "question": "Delete the branch?", "type": "confirm", "yesLabel": "Delete it", "noLabel": "Keep it", "default": "no"},
+   "cases": [[["yes"], null], [["no"], null], [["maybe"], "not_offered"], [["Yes"], "not_offered"], [["yes", "no"], "too_many"], [[], "required"]]},
+  {"question": {"id": "budget", "question": "Budget?", "type": "number", "unit": "EUR", "minValue": "0", "maxValue": "1000", "step": "0.5"},
+   "cases": [[["250"], null], [["250.5"], null], [["0"], null], [["1000"], null], [["250.25"], "off_step"], [["1000.5"], "above_max"],
+             [["-1"], "below_min"], [["1e3"], "grammar"], [["1,5"], "grammar"], [[" 5"], "grammar"], [["05"], "grammar"], [["-0"], "grammar"],
+             [["+5"], "grammar"], [[""], "grammar"], [["250", "300"], "too_many"], [[], "required"]]},
+  {"question": {"id": "ratio", "question": "Ratio?", "type": "number", "required": false},
+   "cases": [[[], null], [["-0.000001"], null], [["123456789012345.123456"], null], [["1234567890123456"], "grammar"], [["0.1234567"], "grammar"]]},
+  {"question": {"id": "nps", "question": "How likely?", "type": "scale", "from": 0, "to": 10, "fromLabel": "Not at all", "toLabel": "Certainly"},
+   "cases": [[["0"], null], [["7"], null], [["10"], null], [["11"], "above_max"], [["-1"], "grammar"], [["3.5"], "grammar"], [["07"], "grammar"], [[], "required"]]},
+  {"question": {"id": "level", "question": "Level?", "type": "scale", "to": 5},
+   "cases": [[["1"], null], [["5"], null], [["0"], "below_min"], [["6"], "above_max"]]},
+  {"question": {"id": "when", "question": "Which day?", "type": "date", "minDate": "2026-12-01", "maxDate": "2026-12-31"},
+   "cases": [[["2026-12-15"], null], [["2026-12-01"], null], [["2026-12-31"], null], [["2026-11-30"], "below_min"], [["2027-01-01"], "above_max"],
+             [["2026-12-1"], "grammar"], [["12/15/2026"], "grammar"], [["2026-12-15T00:00:00Z"], "grammar"], [["2026-13-01"], "grammar"], [[], "required"]]},
+  {"question": {"id": "any", "question": "Any day?", "type": "date"},
+   "cases": [[["2028-02-29"], null], [["2027-02-29"], "grammar"], [["2026-04-31"], "grammar"], [["0000-01-01"], "grammar"], [["9999-12-31"], null]]},
+  {"question": {"id": "order", "question": "Put these in order", "type": "rank", "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}, {"value": "c", "label": "Gamma"}]},
+   "cases": [[["c", "a", "b"], null], [["a", "b", "c"], null], [["a", "b"], "not_a_permutation"], [["a", "a", "b"], "not_a_permutation"],
+             [["a", "b", "c", "c"], "not_a_permutation"], [["a", "b", "d"], "not_offered"], [[], "required"]]},
+  {"question": {"id": "later", "question": "Order these later", "type": "rank", "required": false, "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
+   "cases": [[[], null], [["b", "a"], null], [["a"], "not_a_permutation"]]}
+]
+```
+
+#### Versions and degradation
+
+**How an agent learns what the screen can ask.** From the catalog of the thread, in the two ways [section 5](#5-to-the-agent-the-extension)
+already gives it: the `version` of the `ui-catalog/v1` metadata of every message (or of `get_ui_catalog`), and the catalog itself,
+whose `Choices` schema lists the `type`s it takes. The agent may use a kind when the version is **7 or more**; testing the
+`enum` is the same test and also covers a later version that adds more. A thread with no catalog, or with a version below 7,
+is a screen that does not know them.
+
+**An agent that knows only version 6**, or a thread below version 7, never meets them: it never uses a type it was not told,
+so its forms are valid and are drawn as before. **A client that knows only version 6** is sent the same forms as before, by
+an agent that read its version; it never receives a kind. Neither needs a change.
+
+**When an agent wants a kind the screen does not have**, it asks in the version 6 form that is nearest, and then validates the
+answer itself, by the same rules:
+
+| Kind | In version 6 |
+|---|---|
+| `confirm` | a `single` question with two options, `yes` and `no`, the safe one as the `default` |
+| `number` | a `text` question; its `help` says the unit and the bounds, and the agent reads the text as a decimal |
+| `scale` | a `single` question with one option per point (at most 11), the end points carrying the words |
+| `date` | a `text` question whose `help` says `YYYY-MM-DD` |
+| `rank` | a `text` question whose `help` lists the options with a number each and asks for the numbers in order |
+
+**When a client meets a kind it does not know** (an old client opening a thread that moved on, or a client of version 7 opening
+a later one's), it refuses the **whole surface**, visibly, as [section 8](#8-what-the-web-does-with-a-surface) says: a client
+of version 6 draws the refusal of rule `schema` whose reason names the question and the `type`, with the raw operations. It
+**never guesses** a control (a text box for an unknown kind would send an answer the receiver expects in another shape).
+The person then answers **in words, by a message**. So the one rule on the agent that asks with these kinds is: **the
+`question` of every question is a complete sentence a person can answer in a message** (with its options or bounds in its `help`),
+and **a message sent while the ask is open is the answer**: the agent reads it as the answer to the whole form, as it would
+a version 6 form that could not be drawn.
+
+#### Examples
+
+Each kind as a question, in one form of the five (the web validates this block, which a test reads):
+
+```json questions
+[
+  {"id": "ship", "question": "Delete the old branch?", "help": "It cannot be restored.", "type": "confirm", "yesLabel": "Delete it", "noLabel": "Keep it", "default": "no"},
+  {"id": "budget", "question": "What is the monthly budget?", "type": "number", "unit": "EUR", "minValue": "0", "maxValue": "1000", "step": "0.5", "default": "250"},
+  {"id": "nps", "question": "How likely are you to recommend it?", "type": "scale", "from": 0, "to": 10, "fromLabel": "Not at all", "toLabel": "Certainly", "required": false},
+  {"id": "when", "question": "When should it ship?", "type": "date", "minDate": "2026-12-01", "maxDate": "2026-12-31"},
+  {"id": "order", "question": "Put these in order of importance", "help": "The most important first.", "type": "rank",
+   "options": [{"value": "speed", "label": "Speed", "icon": "execute"}, {"value": "cost", "label": "Cost"}, {"value": "risk", "label": "Risk", "description": "What can go wrong"}]}
+]
+```
+
+The five as the whole surface, in the form an agent sends (one `Choices`, one submit):
+
+```json
+[
+  {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}},
+  {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [
+    {"id": "root", "component": "Column", "children": ["ask"]},
+    {"id": "ask", "component": "Choices", "title": "Before I ship", "questions": [
+      {"id": "ship", "question": "Delete the old branch?", "type": "confirm", "default": "no"},
+      {"id": "when", "question": "When should it ship?", "type": "date", "minDate": "2026-12-01"}
+    ]}
+  ]}}
+]
+```
+
+#### The Choices schema, as the catalog holds it
+
+The schema of the whole `Choices` (`catalog/catalog.json`; a test keeps them equal). Version 5 wrote it first; this is its
+single copy.
+
+```json
+{
+  "Choices": {
+    "type": "object",
+    "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). Only when the thread's catalog is version 7 or more: confirm (yes or no, with yesLabel, noLabel and a safe default), number (a decimal string, with minValue, maxValue, step and unit), scale (a whole number from \"from\" to \"to\", with fromLabel and toLabel), date (a calendar day YYYY-MM-DD, with minDate and maxDate) and rank (the person puts every option in order). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value, or the one yes/no, decimal, whole number or date, or every option value in the person's order for rank…], other?, text?}], note?} in question order. Read the answer again before you act on it: an out-of-range number, a date outside its bounds or a rank that is not every option once is refused.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "component": {
+        "const": "Choices"
+      },
+      "weight": {
+        "type": "number"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "description": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "freeInput": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "placeholder": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      },
+      "questions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 8,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+            },
+            "question": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "help": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "type": {
+              "enum": [
+                "single",
+                "multiple",
+                "select",
+                "images",
+                "text",
+                "longText",
+                "confirm",
+                "number",
+                "scale",
+                "date",
+                "rank"
+              ]
+            },
+            "options": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 300
+                  },
+                  "image": {
+                    "type": "object",
+                    "properties": {
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      "alt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 300
+                      }
+                    },
+                    "required": [
+                      "sha256",
+                      "alt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "icon": {
+                    "enum": [
+                      "agent",
+                      "read",
+                      "edit",
+                      "delete",
+                      "move",
+                      "search",
+                      "execute",
+                      "think",
+                      "fetch",
+                      "web",
+                      "git",
+                      "test",
+                      "file",
+                      "tool",
+                      "opencode"
+                    ]
+                  },
+                  "recommended": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "value",
+                  "label"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "multiple": {
+              "type": "boolean"
+            },
+            "allowOther": {
+              "type": "boolean"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "default": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                {
+                  "type": "array",
+                  "maxItems": 50,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+                  }
+                }
+              ]
+            },
+            "min": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 50
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "yesLabel": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "noLabel": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "minValue": {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$"
+            },
+            "maxValue": {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$"
+            },
+            "step": {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$"
+            },
+            "unit": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20
+            },
+            "from": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "to": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 10
+            },
+            "fromLabel": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60
+            },
+            "toLabel": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60
+            },
+            "minDate": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            },
+            "maxDate": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            }
+          },
+          "required": [
+            "id",
+            "question"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "submitLabel": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "action": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "id",
+      "component",
+      "questions"
+    ],
+    "additionalProperties": false
+  }
+}
+```
+
+
 ## 2. Digest, version and the lock
 
 - `digest = "sha256:" + lowercase hex(SHA-256(UTF-8(canonical(catalog))))`. The canonical form is JSON with object
@@ -1666,12 +2060,12 @@ Choices' id, and
 |---|---|
 | `answers` | One entry per question, **in question order**, whether it was answered or skipped (an empty `values`) |
 | `answers[].id` | The question's `id` |
-| `answers[].values` | The `value`s of the options chosen, in the **order of the options** (never of the clicks); empty for a typed question |
+| `answers[].values` | The `value`s of the options chosen, in the **order of the options** (never of the clicks); empty for a typed question. For the kinds of [version 7](#version-7-more-kinds-of-question): the one yes or no, decimal, whole number or date as a string, or, for a `rank`, **every** option's value in the **person's order** |
 | `answers[].other` | The person's own words, at most 500 characters; only when the question has `allowOther` and "Other" is on |
 | `answers[].text` | The words of a `text` (at most 500) or `longText` (at most 2,000) question; only when there are any |
 | `note` | The words of the form's `freeInput` box (at most 2,000); only when the form has one and it is not empty |
 
-A version 2 to 4 answer (`{id, values, other?}` and no `note`) is the same shape with the new members absent. The words
+A version 2 to 4 answer (`{id, values, other?}` and no `note`) is the same shape with the new members absent, and so is a version 7 answer, which only puts other things in `values` ([what a receiver checks](#receiving-an-answer)). The words
 are trimmed. The chat shows an action of this shape as the person's answer, not as a step: the question and the labels
 chosen, the typed words, and the note under the label of the free box.
 
@@ -1692,7 +2086,7 @@ nothing else (nobody sees an asked agent's surfaces):
 | Member | Value |
 |---|---|
 | `catalogId` | the thread's `catalogId` with `/forms` appended (a trailing slash is not doubled): an https URL under the screen's own id, never fetched |
-| `version` | the thread's `version`, unchanged: an agent reads from it what a `Choices` may hold (titles, typed questions, [version 5](#version-5-questions-with-a-title-a-description-and-typed-options)) |
+| `version` | the thread's `version`, unchanged: an agent reads from it what a `Choices` may hold (titles, typed questions, [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), and the kinds of [version 7](#version-7-more-kinds-of-question)) |
 | `components` | `{Choices: <the thread's Choices schema, unchanged>}` and nothing else |
 | `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#2-digest-version-and-the-lock) says |
 
@@ -1733,7 +2127,7 @@ files the thread holds:
 1. The surface's catalog is the first `createSurface.catalogId` (absent: the basic catalog, as today).
 2. **Ours.** Every component must be a key of the web's catalog; each instance is validated against its schema, the
    uniqueness rules and the URL rule; an `Image`, and the picture of an option of a Choices, must name an image file of this thread, else the surface is
-   refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), the `FileCard` of [version 6](#version-6-code-and-files), the pictures and media of [version 6](#version-6-media)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`). Custom components are lowered to
+   refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), the `FileCard` of [version 6](#version-6-code-and-files), the pictures and media of [version 6](#version-6-media)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`, and [version 7's](#rules-json-schema-cannot-say)). Custom components are lowered to
    `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid`, `vymalo.Image` and the 19 components of version 6 (`vymalo.Code` and the rest) so the converter keeps them.
 3. **Ours, but the component is not known here.** When the thread's version is higher than the web's, the part is
    shown as a visible placeholder, "This part of the answer needs a newer version of the app", with a reload button.

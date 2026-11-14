@@ -15,9 +15,9 @@ const SHA = "a1".repeat(32);
 const text = (n: number) => "x".repeat(n);
 
 describe("version 6: code and files", () => {
-  it("is catalog version 6, and has the five components", () => {
-    expect(OWN_CATALOG.version).toBe(6);
-    expect(lock.version).toBe(6);
+  it("is catalog version 6 or later, and has the five components", () => {
+    expect(OWN_CATALOG.version).toBeGreaterThanOrEqual(6);
+    expect(lock.version).toBeGreaterThanOrEqual(6);
     expect(componentNames(OWN_CATALOG.catalog)).toEqual(
       expect.arrayContaining(["Code", "Diff", "FileCard", "Terminal", "PullRequest"]),
     );

@@ -15,9 +15,9 @@ const text = (n: number) => "x".repeat(n);
 const kids = (n: number) => Array.from({ length: n }, (_, i) => `c${i}`);
 
 describe("version 6: structure and status", () => {
-  it("is catalog version 6, and has the six components", () => {
-    expect(OWN_CATALOG.version).toBe(6);
-    expect(lock.version).toBe(6);
+  it("is catalog version 6 or later, and has the six components", () => {
+    expect(OWN_CATALOG.version).toBeGreaterThanOrEqual(6);
+    expect(lock.version).toBeGreaterThanOrEqual(6);
     expect(componentNames(OWN_CATALOG.catalog)).toEqual(
       expect.arrayContaining(["Stack", "Tabs", "Accordion", "Callout", "Checklist", "Timeline"]),
     );

@@ -1,5 +1,17 @@
+import {
+  checkValues,
+  isKind,
+  kindLimits,
+  longDate,
+  noLabel,
+  scaleFrom,
+  strayMember,
+  yesLabel,
+} from "./choices-kinds";
+
 /**
- * The `Choices` component of the UI catalog (docs/api/ui-catalog-v1.md, version 5): a form of up to
+ * The `Choices` component of the UI catalog (docs/api/ui-catalog-v1.md, version 5, and version 7's
+ * five more kinds of question, which live in `choices-kinds.ts`): a form of up to
  * 8 questions asked at once and answered with one action. A form has a title, a description of why
  * the agent asks and an optional free box; a question has a help line and a type (radio buttons,
  * check boxes, a searchable list, a deck of pictures, or a typed answer); an option has a label, a
@@ -42,11 +54,20 @@ export const QUESTION_TYPES = [
   "images",
   "text",
   "longText",
+  "confirm",
+  "number",
+  "scale",
+  "date",
+  "rank",
 ] as const;
 export type QuestionType = (typeof QUESTION_TYPES)[number];
 
 /** A `text` or `longText` question: the person types the answer, there are no options. */
 export const isTyping = (type: QuestionType): boolean => type === "text" || type === "longText";
+
+/** A question whose answer the person types as one string: the words, a number or a day. */
+export const holdsText = (type: QuestionType): boolean =>
+  isTyping(type) || type === "number" || type === "date";
 
 /** A picture of a file of the thread, by its SHA-256 (never a URL). */
 export type OptionImage = { sha256: string; alt: string };
@@ -84,6 +105,22 @@ export type ChoiceQuestion = {
   max?: number;
   /** What the component said, kept to find the contradictions the schema cannot. */
   declared: { type?: QuestionType; multiple?: boolean };
+  /** `confirm`: the words of the two answers (the answers themselves are `yes` and `no`). */
+  yesLabel?: string;
+  noLabel?: string;
+  /** `number`: decimal strings and the unit shown beside the box. */
+  minValue?: string;
+  maxValue?: string;
+  step?: string;
+  unit?: string;
+  /** `scale`: the first point (0 or 1, 1 when absent), the last, and the words at the two ends. */
+  from?: number;
+  to?: number;
+  fromLabel?: string;
+  toLabel?: string;
+  /** `date`: the earliest and latest day, `YYYY-MM-DD`. */
+  minDate?: string;
+  maxDate?: string;
 };
 
 export type FreeInput = { label: string; placeholder?: string };
@@ -131,6 +168,10 @@ const typeOf = (v: unknown): QuestionType | undefined => QUESTION_TYPES.find((t)
 const count = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isInteger(v) ? v : undefined;
 
+/** The members of `keys` that are text, as they were written. */
+const ownText = (v: Rec, keys: string[]): Rec =>
+  Object.fromEntries(keys.flatMap((k) => (typeof v[k] === "string" ? [[k, v[k]]] : [])));
+
 function readQuestion(v: unknown): ChoiceQuestion | undefined {
   if (!isRecord(v)) return undefined;
   const id = str(v.id);
@@ -160,6 +201,12 @@ function readQuestion(v: unknown): ChoiceQuestion | undefined {
       : [];
   const min = count(v.min);
   const max = count(v.max);
+  const own = {
+    ...ownText(v, ["yesLabel", "noLabel", "minValue", "maxValue", "step", "unit"]),
+    ...ownText(v, ["fromLabel", "toLabel", "minDate", "maxDate"]),
+    ...(typeof v.from === "number" ? { from: v.from } : {}),
+    ...(typeof v.to === "number" ? { to: v.to } : {}),
+  };
   return {
     id,
     question,
@@ -169,14 +216,15 @@ function readQuestion(v: unknown): ChoiceQuestion | undefined {
     multiple,
     allowOther: v.allowOther === true,
     required: v.required !== false,
-    defaults: isTyping(type) ? [] : defaults,
-    ...(isTyping(type) && typeof given === "string" && given !== "" ? { defaultText: given } : {}),
+    defaults: holdsText(type) ? [] : defaults,
+    ...(holdsText(type) && typeof given === "string" && given !== "" ? { defaultText: given } : {}),
     ...(min !== undefined ? { min } : {}),
     ...(max !== undefined ? { max } : {}),
     declared: {
       ...(typeGiven ? { type: typeGiven } : {}),
       ...(multipleGiven !== undefined ? { multiple: multipleGiven } : {}),
     },
+    ...own,
   };
 }
 
@@ -236,7 +284,7 @@ export function duplicateIn(spec: ChoicesSpec): string | undefined {
   return undefined;
 }
 
-const OPTIONS_OF: Record<Exclude<QuestionType, "text" | "longText">, [number, string]> = {
+const OPTIONS_OF: Partial<Record<QuestionType, [number, string]>> = {
   single: [MAX_OPTIONS, 'a radio question takes 2 to 12 options (use type "select" for up to 50)'],
   multiple: [
     MAX_OPTIONS,
@@ -244,6 +292,7 @@ const OPTIONS_OF: Record<Exclude<QuestionType, "text" | "longText">, [number, st
   ],
   select: [MAX_SELECT_OPTIONS, 'a "select" question takes 2 to 50 options'],
   images: [MAX_DECK_IMAGES, 'an "images" question takes 2 to 16 options, each with a picture'],
+  rank: [MAX_OPTIONS, 'a "rank" question takes 2 to 12 options (no pictures)'],
 };
 
 /**
@@ -259,6 +308,8 @@ export function limitsIn(spec: ChoicesSpec): string | undefined {
   }
   for (const q of spec.questions) {
     const at = `the question ${JSON.stringify(q.id)}`;
+    const stray = strayMember(q);
+    if (stray) return stray;
     const { type: declaredType, multiple: declaredMultiple } = q.declared;
     if (declaredType === "single" && declaredMultiple === true) {
       return `${at} is type "single" but has multiple: true`;
@@ -280,7 +331,12 @@ export function limitsIn(spec: ChoicesSpec): string | undefined {
       }
       continue;
     }
-    const [most, hint] = OPTIONS_OF[q.type as keyof typeof OPTIONS_OF];
+    if (isKind(q.type) && q.type !== "rank") {
+      const bad = kindLimits(q);
+      if (bad) return bad;
+      continue;
+    }
+    const [most, hint] = OPTIONS_OF[q.type] ?? [MAX_OPTIONS, ""];
     if (q.options.length < MIN_OPTIONS || q.options.length > most) {
       return `${at} has ${q.options.length} options: ${hint}`;
     }
@@ -291,6 +347,11 @@ export function limitsIn(spec: ChoicesSpec): string | undefined {
       if (q.type !== "images" && o.image) {
         return `the option ${JSON.stringify(o.value)} of ${at} has an image, which only type "images" draws`;
       }
+    }
+    if (q.type === "rank") {
+      const bad = kindLimits(q);
+      if (bad) return bad;
+      continue;
     }
     const values = new Set(q.options.map((o) => o.value));
     const unknown = q.defaults.find((d) => !values.has(d));
@@ -349,10 +410,34 @@ export function initialState(spec: ChoicesSpec): AnswerState {
       continue;
     }
     const known = new Set(q.options.map((o) => o.value));
-    const values = q.defaults.filter((d) => known.has(d)).slice(0, q.multiple ? undefined : 1);
+    // a rank starts in its default order (every option once); a yes or no and a point are as given
+    const values =
+      q.type === "rank"
+        ? q.defaults.length === q.options.length && q.defaults.every((d) => known.has(d))
+          ? q.defaults
+          : []
+        : q.type === "confirm"
+          ? q.defaults.filter((d) => d === "yes" || d === "no").slice(0, 1)
+          : q.type === "scale"
+            ? q.defaults.slice(0, 1)
+            : q.defaults.filter((d) => known.has(d)).slice(0, q.multiple ? undefined : 1);
     if (values.length > 0) state.set(q.id, { ...EMPTY, values });
   }
   return state;
+}
+
+/**
+ * The `values` of an answer to a question of the five kinds, from what the person has done: the
+ * one yes or no and the one point as they were chosen, a number or a day as they typed it (trimmed),
+ * a rank as ordered (empty until they moved an item or kept the order). Anything else: the options chosen.
+ */
+export function valuesOf(q: ChoiceQuestion, s: QuestionState = EMPTY): string[] {
+  if (q.type === "number" || q.type === "date") {
+    const text = s.text.trim();
+    return text === "" ? [] : [text];
+  }
+  if (q.type === "confirm" || q.type === "scale") return s.values.slice(0, 1);
+  return s.values;
 }
 
 /** What the person typed as their own answer, when "Other" is on and it says something. */
@@ -369,11 +454,15 @@ const typedOf = (q: ChoiceQuestion, s: QuestionState): string | undefined => {
 
 /** How many choices a question has: the options chosen and an "Other" with words, or 1 for typed words. */
 export const chosenCount = (q: ChoiceQuestion, s: QuestionState = EMPTY): number =>
-  isTyping(q.type)
-    ? typedOf(q, s) === undefined
-      ? 0
-      : 1
-    : s.values.length + (otherOf(q, s) !== undefined ? 1 : 0);
+  isKind(q.type)
+    ? valuesOf(q, s).length > 0
+      ? 1
+      : 0
+    : isTyping(q.type)
+      ? typedOf(q, s) === undefined
+        ? 0
+        : 1
+      : s.values.length + (otherOf(q, s) !== undefined ? 1 : 0);
 
 /** A question counts as answered when an option is chosen, or "Other" is on and not empty, or words are typed. */
 export const isAnswered = (q: ChoiceQuestion, s: QuestionState = EMPTY): boolean =>
@@ -385,6 +474,8 @@ export const isAnswered = (q: ChoiceQuestion, s: QuestionState = EMPTY): boolean
  * `max`.
  */
 export function isSatisfied(q: ChoiceQuestion, s: QuestionState = EMPTY): boolean {
+  // a kind of version 7 is satisfied when what it holds is an answer the receiver accepts
+  if (isKind(q.type)) return checkValues(q, valuesOf(q, s)) === undefined;
   const n = chosenCount(q, s);
   if (n === 0) return !q.required;
   if (q.min !== undefined && n < q.min) return false;
@@ -402,6 +493,7 @@ export type Answer = { id: string; values: string[]; other?: string; text?: stri
 export function buildAnswers(spec: ChoicesSpec, state: AnswerState): Answer[] {
   return spec.questions.map((q) => {
     const s = state.get(q.id) ?? EMPTY;
+    if (isKind(q.type)) return { id: q.id, values: valuesOf(q, s) };
     if (isTyping(q.type)) {
       const text = typedOf(q, s);
       return { id: q.id, values: [], ...(text !== undefined ? { text } : {}) };
@@ -478,7 +570,43 @@ export type AnswerLine = {
   other?: string;
   /** What they typed, for a `text` or `longText` question. */
   text?: string;
+  /** `chosen` is in the person's order, first the best (a `rank`). */
+  ordered?: true;
 };
+
+/** What the person saw for the value of a question of one of the five kinds, else what was sent. */
+function kindLine(
+  q: ChoiceQuestion,
+  values: readonly string[],
+): { chosen: string[]; ordered?: true } {
+  const value = values[0];
+  switch (q.type) {
+    case "confirm":
+      return {
+        chosen: values.map((v) => (v === "yes" ? yesLabel(q) : v === "no" ? noLabel(q) : v)),
+      };
+    case "number":
+      return { chosen: values.map((v) => (q.unit ? `${v} ${q.unit}` : v)) };
+    case "scale": {
+      const end =
+        value === String(q.to)
+          ? q.toLabel
+          : value === String(scaleFrom(q))
+            ? q.fromLabel
+            : undefined;
+      return { chosen: value !== undefined && end ? [`${value} (${end})`] : [...values] };
+    }
+    case "date":
+      return { chosen: values.map(longDate) };
+    case "rank":
+      return {
+        chosen: values.map((v) => q.options.find((o) => o.value === v)?.label ?? v),
+        ordered: true,
+      };
+    default:
+      return { chosen: [...values] };
+  }
+}
 
 /**
  * The lines of "Your answers": each answer with its question and the option labels, resolved from
@@ -492,6 +620,17 @@ export function answerLines(
   return answers.map((a) => {
     const q = questions?.find((x) => x.id === a.id);
     const label = (value: string) => q?.options.find((o) => o.value === value)?.label ?? value;
+    if (q && isKind(q.type)) {
+      const line = kindLine(q, a.values);
+      return {
+        id: a.id,
+        question: q.question,
+        chosen: line.chosen,
+        ...(line.ordered && line.chosen.length > 0 ? { ordered: true as const } : {}),
+        ...(a.other !== undefined ? { other: a.other } : {}),
+        ...(a.text !== undefined ? { text: a.text } : {}),
+      };
+    }
     return {
       id: a.id,
       question: q?.question ?? a.id,
