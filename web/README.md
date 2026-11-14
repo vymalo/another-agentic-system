@@ -199,6 +199,35 @@ stateDiagram-v2
 - **Thread ids** are UUIDv7 (`src/lib/uuid.ts`): the consumer mints them, and the orchestrator lists
   threads by id, newest first.
 
+### Code and math in answers
+
+*Built 2026-11-14 (owner request: LibreChat-grade answers). Proven on the mock and in jsdom; no live model has written
+either.* The Markdown of an answer (`components/assistant-ui/elements/markdown-text.tsx`) draws fenced code with colours and
+`$$...$$` as a formula. Both are text first and fail to text: nothing here can block or fail an answer.
+
+| | How | Files |
+|---|---|---|
+| **Highlighting** | `@assistant-ui/react-markdown` 0.14.17 has a `components.SyntaxHighlighter` slot (read in its types, `SyntaxHighlighterProps`), so the highlighter plugs in there and no `code` override was needed. It receives the block's `language` and `code` and draws `<pre><code>` of `[data-token]` spans. The code is **plain text at once** and coloured after the highlighter has loaded and the code has been **still for 150 ms**: a streaming answer rewrites the block many times a second and is coloured once, when the fence closes or the model pauses, never flickering; colours of older code are never shown. An unknown language, none, and any failure of the highlighter leave the plain text | `elements/syntax-highlighter.tsx`, `src/lib/highlight.ts` |
+| **Engine** | [Shiki](https://shiki.style) with `createJavaScriptRegexEngine`. The WebAssembly engine is never imported, because the page's policy has no `wasm-unsafe-eval` and must not gain it (`e2e/code-math.spec.ts` fails on a violation and on any `.wasm` request) | `src/lib/highlight.ts` |
+| **Languages** | Rust, TypeScript, TSX, JavaScript, JSX, JSON, Bash, Python, YAML, TOML, SQL, Go, diff, Dockerfile, HTML, CSS: what the coder and the researcher write about this family of projects (Rust services, this web, their config and shell, SQL for the stores, diffs for changes) plus HTML and CSS for the web. Aliases (`rs`, `ts`, `sh`, `yml`, ...) are in `highlight.ts`. Shiki, its engine, the two themes and each grammar are **separate chunks, fetched on the first fenced block and on the first block of each language**: a thread with no code downloads none of them. Markdown and the rest of Shiki's 200 grammars are left out on purpose (each is a chunk; Markdown embeds a dozen more). Adding one is a line in `LANGUAGES` | `src/lib/highlight.ts` |
+| **Colours** | Two themes at once, `github-light-high-contrast` and `github-dark-high-contrast`, chosen for contrast on the code box (`--muted` at 40 % over the page): a token carries both colours as `--shiki-light` and `--shiki-dark`, and `globals.css` picks one by `prefers-color-scheme`, like every colour of the app (no toggle exists, so there is none to follow). axe passes on the answer in both schemes (`e2e/code-math.spec.ts`) | `src/app/globals.css` |
+| **Math** | `remark-math` with `singleDollarTextMath: false` and `rehype-katex`. Only **`$$...$$`** is math, inline or as a block: **a single dollar is a price** ("$5 or $10" stays text). `\(...\)` and `\[...\]` are *not* read: `remark-math` 6 parses `$` and `$$` only (*verified 2026-11-14* in its readme), and an agent that writes them gets text. KaTeX never throws (`throwOnError: false`: a formula it cannot read is drawn as its source in the error colour), trusts nothing (`trust: false`: no `\href`, no `\includegraphics`) and is bounded (`maxExpand`, `maxSize`). The fonts are bundled, so `font-src 'self'` holds | `src/lib/math.ts` |
+| **Math is lazy too** | KaTeX, the plugins and the stylesheet are 77 KB gzipped, and most threads have no formula, so `src/lib/math.ts` is its own chunk, imported when the text of a part first holds `$$`. Until it arrives (a few milliseconds from the page's own origin) and if it never does, the text is shown as it was written | `elements/markdown-text.tsx` |
+| **Accessible name** | KaTeX draws a formula as MathML (read by a screen reader) and as `aria-hidden` HTML (seen). Nothing names the whole, so `rehypeMathLabel` gives each formula `role="math"` and its TeX source as `aria-label`, and a display formula, whose box scrolls sideways when wider than the column, `tabindex="0"` | `src/lib/rehype-math-label.ts` |
+
+The box of a code block (`CodePre` in `markdown-text.tsx`) is **not** memoized with the other components:
+`memoizeMarkdownComponents` compares the hast node and ignores the children, and the highlighter swaps a block's children
+(plain text, then tokens) while its node stays the same, so a memoized box kept the plain text for good.
+
+The `Code` of the UI catalog (a surface, `components/.../surface/code.tsx`) is **not** highlighted: its catalog text says
+"never highlighted", and changing that is a change of the catalog (its description, `pnpm catalog:lock`, the orchestrator
+workflow that reads it), which is for the lead to decide, not for this slice. The highlighter is there for it when it is.
+
+The mock's `code-math` answers with a fenced `rust` block, a block of `brainfuck` (no grammar), a display formula and a
+sentence of dollar prices; `e2e/code-math.spec.ts` plays it, and `src/lib/highlight.test.ts`,
+`elements/syntax-highlighter.dom.test.tsx` and `elements/markdown-text.dom.test.tsx` hold the rest. The licences of what ships
+are in [`third-party-notices.md`](../third-party-notices.md).
+
 ### Dependencies and patches
 
 Pinned exactly. *Verified 2026-09-29* on the npm registry (`npm view`):
@@ -211,6 +240,8 @@ Pinned exactly. *Verified 2026-09-29* on the npm registry (`npm view`):
 | `@cfworker/json-schema` | 4.1.1 (2025-01-31, latest; MIT) | validates each instance of the UI catalog against its component's JSON Schema, draft 2020-12 ([The UI catalog](#the-ui-catalog)). *Verified 2026-10-01* on the npm registry (`npm view`) and by running it: it interprets a schema (no `eval`, no `new Function`), reads `const`, `enum`, `pattern`, `additionalProperties` and `required`, and with `shortCircuit` its error list is the chain from the root to the broken rule |
 | `mermaid` | 12.0.0 (2026-09-10, latest; MIT) | draws the `Mermaid` component of the UI catalog ([Cards and Mermaid](#cards-and-mermaid)), **loaded only when a graph is drawn** (`import()` in `lib/a2ui/mermaid-render.ts`, a test keeps every other file from importing it). *Verified 2026-10-01* on the npm registry (`npm view mermaid`: version, `license` MIT, `dist-tags.latest`, `time.modified`) and in the installed package (`dist/config.type.d.ts` for the options, `dist/chunks/mermaid.core/chunk-O7XYJQB3.mjs` for the default `secure` list `["secure", "securityLevel", "startOnLoad", "maxTextSize", "suppressErrorRendering", "maxEdges"]`), and by running it (`lib/a2ui/mermaid.security.test.ts`): a graph's own `%%{init}%%` directive or front matter cannot change `securityLevel` or `maxTextSize`, and **can** change `htmlLabels` and `theme`, which is why the app adds those, `themeCSS`, `look`, `layout` and more to `secure` |
 | `@tanstack/react-virtual` | 3.14.13 (2026-09-14, latest; MIT) | draws a window of the rows of a very long level of the step tree (more than 50 children of one step: a scroll box, `components/steps/step-node.tsx`); owner decision 5 of plan 03. *Verified 2026-10-01* on the npm registry (`npm view @tanstack/react-virtual`: version, `license` MIT, `dist-tags.latest`, `time.modified`) |
+| `shiki` | 4.6.0 (MIT) | highlights the fenced code of an answer with its JavaScript regex engine ([Code and math in answers](#code-and-math-in-answers)), **loaded only when a block is drawn**, one chunk per language (`import()` in `src/lib/highlight.ts`); never its WebAssembly engine, which the policy forbids. Licences: [`third-party-notices.md`](../third-party-notices.md). *Verified 2026-11-14* in the installed package (`exports`: `shiki/core`, `shiki/engine/javascript`, `shiki/langs/*.mjs`, `shiki/themes/*.mjs`) |
+| `katex`, `rehype-katex`, `remark-math` | 0.19.1, 7.0.1, 6.0.0 (MIT) and `@types/katex` 0.16.8, `@types/hast` 3.0.5 | draw `$$...$$` ([Code and math in answers](#code-and-math-in-answers)); one chunk (`src/lib/math.ts`) imported when an answer first holds `$$`; the KaTeX fonts are bundled, so `font-src 'self'` holds |
 | `rxjs` | 7.8.1 | the version `@ag-ui/client` pins; `ThreadAgent.run` returns an `Observable` |
 
 #### Spike S5: the runtime on `@ag-ui/client` 1.0.0

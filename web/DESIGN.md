@@ -1034,3 +1034,27 @@ quiet as the rest of the page: no colour of their own, nothing that moves, nothi
 - Accessibility: the picture is an `<img>` named by the title (else the caption, else "Diagram"); the source disclosure is its text
   alternative; cards are a list of list items; every link says it opens a new tab; the focus ring is the page's.
 
+## Code and math in an answer
+
+How the Markdown of an answer draws a fenced block and a formula (the build, the engine and the lazy loading are in
+[README.md](README.md#code-and-math-in-answers)).
+
+- **A fenced block** is the page's code box (12 px corners, `--muted` at 40 %, 13 px monospace, scrolls sideways) under a header with
+  the language in lowercase and a **Copy** button. The words are on the screen at once, in `--foreground`; the colours arrive when the
+  highlighter has loaded and the block has been still for 150 ms, so a block being written is plain and turns coloured once, in place,
+  with no change of size. A language the page has no grammar for, and a block with none, stay in `--foreground`: plain is a complete
+  state, not an error.
+- **The colours** are GitHub's high-contrast pair, light in the light scheme and dark in the dark one, following the system like every
+  other colour (no toggle, so no class). They were chosen over the default pair for their contrast on `--muted`: axe (WCAG AA) passes on a
+  highlighted answer in both schemes (`e2e/code-math.spec.ts`). A token is text in a code block, so meaning is never in the colour
+  alone: the colour only helps a reader scan.
+- **A formula** is KaTeX's own type (its fonts are bundled), in the colour of the text around it. A display formula (`$$` on lines of
+  its own) is centred in the column; one wider than the column scrolls inside its own box, which is a tab stop (`tabindex="0"`, so a
+  keyboard reaches what a pointer scrolls). An inline `$$x$$` sits in the line. A formula KaTeX cannot read is shown as its source in
+  `--destructive` (KaTeX's own `#cc0000` is not checked on the dark canvas, the token is), never an error banner and never a thrown
+  error.
+- **Its name**: every formula is `role="math"` named by its TeX source; a screen reader reads that and the MathML beside it, never the
+  `aria-hidden` picture.
+- **Prices**: a single dollar is never math, so "$5 or $10" is a sentence. Only `$$...$$` is a formula.
+- **Not here**: the `Code` of a surface (the UI catalog) is not highlighted, and no theme switch exists.
+
