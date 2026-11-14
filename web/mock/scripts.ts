@@ -946,6 +946,32 @@ export const DESCRIPTION = "The person wants a plan for a test.";
 export const LONG_DESCRIPTION =
   "The person wants a plan for adding a test to the session expiry check, so that a session idle for thirty minutes is refused with a 401. The agent read the repository and proposed one test beside the existing ones. Nothing was changed yet.";
 
+/** The answer of the `code-math` script: two fenced blocks, a display formula and prices. */
+export const CODE_MATH_REPLY = [
+  "Here is the function and the rule it follows.",
+  "",
+  "```rust",
+  "fn total(prices: &[u32]) -> u32 {",
+  '    // sum in cents, so "$5" is 500',
+  "    prices.iter().sum()",
+  "}",
+  "```",
+  "",
+  "And a block of a language the page has no grammar for:",
+  "",
+  "```brainfuck",
+  "++++++++[>++++++++<-]>+.",
+  "```",
+  "",
+  "The Gaussian integral is",
+  "",
+  "$$",
+  "\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}",
+  "$$",
+  "",
+  "The two plans cost $5 and $10 a month, and the extra seat is $20 more.",
+].join("\n");
+
 /** The agent finished, with no artifact: an answer of words and a surface only. */
 const finishQuietly: Step[] = [
   { kind: "agent_status", data: { status: "completed" } },
@@ -1688,6 +1714,9 @@ export const LONG_FAILURE = [
  *   Checklist, a Timeline, Tabs whose children are components of the surface, and an Accordion, then done.
  * - `components-code`: one answer of text and a surface of the catalog's version 6, group 1: a Code, a Diff, a Terminal whose
  *   output folds, a PullRequest and a FileCard of a kept file (`notes.txt`), then done.
+ * - `code-math`: mock only, one answer in Markdown that shows what the web draws in text: a fenced `rust` block, a fenced
+ *   block of a language the web does not bundle (`brainfuck`, stays plain), a display formula (`$$ ... $$`) and a sentence with
+ *   dollar prices that must not be read as math; then done. (The first word is the trigger, as for every script here.)
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
  * - `verify-reviewed`: the gate asks a verifier agent (ADR 0018, requires the `verifier` source, 3
@@ -2965,6 +2994,18 @@ export function scriptFor(text: string): {
             },
           },
           structureSurface(),
+          ...finishQuietly,
+        ],
+      };
+    // code and math in an answer (web/README.md "Code and math in answers"): Markdown only, no surface
+    case "code-math":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: { messageId: nextMessageId(), final: true, text: CODE_MATH_REPLY },
+          },
           ...finishQuietly,
         ],
       };
