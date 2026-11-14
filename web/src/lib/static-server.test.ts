@@ -52,6 +52,8 @@ describe("the static server", () => {
       ["/auth/callback", "/auth/callback"],
       // the usage page is one exported file of its own, `usage.html`: `try_files` finds it, no shell
       ["/usage", "/usage"],
+      // and so is the page of a person's own tool servers, `tools.html`
+      ["/tools", "/tools"],
       ["/_next/static/chunks/a.js", "/_next/static/chunks/a.js"],
       ["/threads/a/b/c", "/threads/a/b/c"],
       ["/threads/../config.json", "/threads/../config.json"],

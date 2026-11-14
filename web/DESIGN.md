@@ -374,6 +374,27 @@ reached from the account menu's **Usage** item (no permission gates it). A page,
 - **Empty is a sentence, not a hero:** a month with nothing is complete at `0.000000`, with "No model usage this month." and "No sandbox time this month." where the tables would be. Loading is the skeleton rows, a failure the destructive line with **Try again**.
 - **Keyboard and screen reader:** the month switch is a `fieldset` named Month, the month is a polite live region (a change is announced), the buttons keep the focus while a month loads, **Next month** is `aria-disabled` (dimmed, still focusable, its handler guarded) on the current month, so that the focus it has when it gets there is not dropped; one line under the switch says months are UTC ones; tables have captions (visually hidden: the headings name them), column headers and row headers.
 
+## My tool servers
+
+*Added 2026-11-14 ([ADR 0046](../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)); slice 4 of the owner's "LibreChat-grade" ask.* A person's own MCP servers, on a page of their own, `/tools`, reached from the account menu's **My tool servers** item (shown only to a person whose roles hold `tools.user.add`) and from the Tools menu of a chat. A page, not a popover: a server has a form, a status and a few things to do.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-tools-page.png">
+  <img src="e2e/__screens__/mobile-light-tools-page.png" alt="The My tool servers page on a phone: Back to chat, the heading, a sentence, Your servers 3 of 8, and the three rows (Notes, Team search, Wiki), each a bordered card with its kind and host, its status in words with an icon, and its buttons." width="320">
+</picture>
+
+*The page on a phone, from the web's mock server.*
+
+- **Same frame as Usage:** one column in the reading column's 768 px (`max-w-3xl`), 16 px gutters on a phone and 24 px from `md`, no sidebar, **Back to chat** above the `h1`, the sections `h2`s.
+- **A row is a card** (`--card`, 12 px radius, a border, no shadow, as the Total card of Usage): the name (`h3`, 16 px, weight 500, it wraps), under it the kind of authentication and **the host only** (12 px, `--muted-foreground`; a server's address can hold a secret in its path, so the path is in the edit form and nowhere else), then **the status** (14 px): an icon and a bold word, then the sentence that says what to do. **Never a colour alone:** `ready` is the check icon and "Ready." in
+  `--success`, `needs_auth` the alert icon and "Needs a key." or "Needs a sign-in." in `--warning`, `unavailable` the ban icon and "Not available." in `--muted-foreground`. Below, the buttons (small, 32 px): the one thing the server needs first as the **solid** button (Connect, or Add key), then Edit and Replace key as **outline**, **Delete** as a ghost button. Every button names its server in its accessible name ("Edit Search").
+- **Forms are the page's own controls,** not a new pattern: a label above each field, the help line under it in 12 px `--muted-foreground` and wired by `aria-describedby`, the select the native one (`NativeSelect`), the **secret a password field**. The fields change with the kind (the header of an API key, the scopes and the client of OAuth). The add form is behind **Add a server** once the list has a server, and open when it is empty; it goes away at the limit and the page says why in a sentence.
+  The change form sits inside the row, on `--muted` at half strength, and says before it is sent what a new address or kind will make the server forget (a `--warning-soft` line).
+- **Connect is a dialog that is about where you are being sent.** It names the host in bold, writes the issuer out in monospace, says the sign-in service was chosen by the server the person added and not by the deployment, and says how long the link works. Its primary button says where it goes ("Continue to login.example"). Nothing opens before it is pressed. After it, the row says "Finish signing in in the other window" with **Check now**, and the list reads itself again when the window regains focus.
+- **A refusal is a destructive line** under what was asked (`role="alert"`), in words from the status and the `code`; a deployment with the feature off, a person without the permission and a list that cannot be read are quiet lines at the top, not a hero.
+- **In the Tools menu** a person's own server carries a small **Yours** badge after its name. One that is not ready is not a checkbox: it is a link item that says what it needs ("Needs a key or a sign-in. Open My tool servers to set it up.") and leads to the page. Links in a menu item are drawn as the item is (the foreground colour, no underline): the global link style (brand colour, underlined) is for links in text.
+- **Keyboard and screen reader:** every row action is a button in tab order after its row's text; the dialogs are `alertdialog`s that trap the focus and return it; the failure is announced; the status is read as text.
+
 ## Mentions
 
 *Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11).* A person who wants

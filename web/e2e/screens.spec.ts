@@ -559,6 +559,81 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "usage-page");
     });
 
+    // the person's own MCP servers (ADR 0046): one ready, one that wants a sign-in, one whose address the deployment now refuses
+    test("my tool servers: the page, Connect and the picker", async ({ page, context }) => {
+      const session = `screens-tools-${uuidv7()}`;
+      const origin = "http://127.0.0.1:3000";
+      const hook = (path: string, body?: unknown) =>
+        fetch(`${MOCK_URL}${path}${path.includes("?") ? "&" : "?"}session=${session}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      expect((await hook("/__mock/config?me=tool-maker")).status).toBe(204);
+      expect(
+        (await hook("/__mock/user-tools", { issuer: "https://login.notion-mcp.example" })).status,
+      ).toBe(204);
+      await context.addCookies([{ name: "mock-registry", value: session, url: origin }]);
+      const add = async (body: unknown) => {
+        const res = await fetch(`${MOCK_URL}/api/user-tool-servers`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: `mock-registry=${session}` },
+          body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(201);
+      };
+      await add({
+        name: "Team search",
+        url: "https://search.example.com/mcp",
+        auth: { kind: "bearer" },
+        secret: "screens-only-token-value",
+      });
+      await add({
+        name: "Notes",
+        url: "https://notes.example.com/mcp",
+        auth: { kind: "oauth2", scopes: ["read"] },
+      });
+      await add({
+        name: "Wiki",
+        url: "https://wiki.example.com/mcp",
+        auth: { kind: "api_key", header: "X-Api-Key" },
+        secret: "screens-only-key-value",
+      });
+      expect((await hook("/__mock/user-tools", { denyHosts: ["wiki.example.com"] })).status).toBe(
+        204,
+      );
+
+      await page.goto("/tools");
+      await expect(page.locator('[data-slot="server-row"]')).toHaveCount(3);
+      await shot(page, "tools-page");
+
+      await page.getByRole("button", { name: "Connect Notes" }).click();
+      await expect(page.getByRole("alertdialog")).toContainText("login.notion-mcp.example");
+      await shot(page, "tools-connect");
+
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await page.getByRole("button", { name: "Tools", exact: true }).click();
+      await expect(page.getByRole("menu")).toContainText("Yours");
+      await shot(page, "tools-picker-own");
+    });
+
+    // the first server: the empty list and the form, with a key's header named and the secret not yet typed
+    test("my tool servers: the form of a first server", async ({ page, context }) => {
+      const session = `screens-tools-form-${uuidv7()}`;
+      await fetch(`${MOCK_URL}/__mock/config?me=tool-maker&session=${session}`, { method: "POST" });
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      await page.goto("/tools");
+      await page.getByLabel("Name", { exact: true }).fill("Docs");
+      await page.getByLabel("Address").fill("https://docs.example.com/mcp");
+      await page.getByLabel("Authentication").selectOption("api_key");
+      await page.getByLabel("Header name").fill("X-Api-Key");
+      await expect(page.getByLabel("API key")).toHaveValue("");
+      await shot(page, "tools-add-form");
+    });
+
     test("sign-in screen, and the same after a sign-in lapsed (browser mode)", async ({ page }) => {
       // the mock is an edge deployment: the page is told it is a browser-mode one, whose issuer is never reached here
       const issuer = "https://auth.example.com/realms/acme";

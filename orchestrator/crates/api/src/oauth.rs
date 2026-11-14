@@ -78,7 +78,7 @@ const DOCUMENT_LIMIT_KEY: &str = "oauth-client-metadata";
 /// The paths the orchestrator serves, or its edge or the web serve at the same origin: the document is
 /// not served under any of them (`orch-config`'s rule reads the same list, and a test of the binary
 /// holds the two together, and holds both to the paths the edges and the web name).
-pub const RESERVED_PATHS: [&str; 26] = [
+pub const RESERVED_PATHS: [&str; 27] = [
     // the orchestrator, and oauth2-proxy's own routes
     "/api",
     "/agui",
@@ -100,6 +100,7 @@ pub const RESERVED_PATHS: [&str; 26] = [
     "/signed-in",
     "/threads",
     "/usage",
+    "/tools",
     "/_next",
     "/_not-found",
     "/brand",

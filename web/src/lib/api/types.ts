@@ -14,6 +14,16 @@ export type ApiUsageSandboxLine = components["schemas"]["UsageSandboxLine"];
 /** How the person's own list shows a thread (`arrangeThread`, ADR 0042): pin, archive, eject or place it. */
 export type ApiArrangement = components["schemas"]["ThreadArrangement"];
 export type ApiToolServer = components["schemas"]["ToolServer"];
+/** One of the person's own MCP servers, as `listUserToolServers` shows it (ADR 0046): no secret, only `hasCredential`. */
+export type ApiUserToolServer = components["schemas"]["UserToolServer"];
+export type ApiUserToolServers = components["schemas"]["UserToolServers"];
+export type ApiUserToolAuth = components["schemas"]["UserToolAuth"];
+export type ApiUserToolAuthorization = components["schemas"]["UserToolAuthorization"];
+export type ApiCreateUserToolServer = components["schemas"]["CreateUserToolServerRequest"];
+export type ApiUpdateUserToolServer = components["schemas"]["UpdateUserToolServerRequest"];
+/** What a person's own server is to them now (`status`), and why it is not `ready` (`reason`). */
+export type ApiUserToolStatus = components["schemas"]["UserToolServerStatus"];
+export type ApiUserToolReason = components["schemas"]["UserToolServerReason"];
 export type ApiActor = components["schemas"]["Actor"];
 /** The share a thread has (`share` of `getThread` and of the list's items): who, and what is served now. */
 export type ApiShare = components["schemas"]["ThreadShare"];

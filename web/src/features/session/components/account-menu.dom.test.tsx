@@ -99,6 +99,23 @@ describe("the account menu", () => {
     expect(usage.getAttribute("href")).toBe("/usage");
   });
 
+  it("links to My tool servers only for a person whose roles hold tools.user.add, as GET /api/me says", async () => {
+    setBrowserAuth(null);
+    const { unmount } = render(<AccountMenu />, { wrapper: TooltipProvider });
+    await openMenu();
+    expect(screen.queryByRole("menuitem", { name: "My tool servers" })).toBeNull();
+    unmount();
+    state.me = {
+      status: "ready",
+      me: { ...ME, permissions: [{ permission: "tools.user.add" }] },
+    };
+    render(<AccountMenu />, { wrapper: TooltipProvider });
+    await openMenu();
+    expect(screen.getByRole("menuitem", { name: "My tool servers" }).getAttribute("href")).toBe(
+      "/tools",
+    );
+  });
+
   it("waits for the deployment's kind before it offers Sign out", () => {
     vi.stubEnv("NEXT_PUBLIC_SIGN_IN_PATH", "/oauth2/start");
     state.me = { status: "unknown", me: null };
