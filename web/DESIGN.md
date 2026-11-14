@@ -1040,21 +1040,24 @@ How the Markdown of an answer draws a fenced block and a formula (the build, the
 [README.md](README.md#code-and-math-in-answers)).
 
 - **A fenced block** is the page's code box (12 px corners, `--muted` at 40 %, 13 px monospace, scrolls sideways) under a header with
-  the language in lowercase and a **Copy** button. The words are on the screen at once, in `--foreground`; the colours arrive when the
-  highlighter has loaded and the block has been still for 150 ms, so a block being written is plain and turns coloured once, in place,
-  with no change of size. A language the page has no grammar for, and a block with none, stay in `--foreground`: plain is a complete
+  the language in lowercase and a **Copy** button. The words are on the screen at once, in `--foreground`; the colours arrive once, when the
+  answer is final and the highlighter has loaded, in place, with no change of size: a block being written stays plain the whole time,
+  so nothing flickers. A block over 20,000 characters or 500 lines stays plain too. A language the page has no grammar for, and a block with none, stay in `--foreground`: plain is a complete
   state, not an error.
 - **The colours** are GitHub's high-contrast pair, light in the light scheme and dark in the dark one, following the system like every
   other colour (no toggle, so no class). They were chosen over the default pair for their contrast on `--muted`: axe (WCAG AA) passes on a
   highlighted answer in both schemes (`e2e/code-math.spec.ts`). A token is text in a code block, so meaning is never in the colour
   alone: the colour only helps a reader scan.
 - **A formula** is KaTeX's own type (its fonts are bundled), in the colour of the text around it. A display formula (`$$` on lines of
-  its own) is centred in the column; one wider than the column scrolls inside its own box, which is a tab stop (`tabindex="0"`, so a
-  keyboard reaches what a pointer scrolls). An inline `$$x$$` sits in the line. A formula KaTeX cannot read is shown as its source in
+  its own, or `$$...$$` as a paragraph by itself) is centred in the column; one wider than the column scrolls inside its own box, and only
+  then is it a tab stop (`tabindex="0"`, so a keyboard reaches what a pointer scrolls). `$$` inside a sentence is text, and `\(...\)`
+  and `\[...\]` are not read. A formula over 5,000 characters is shown as a block of code. A formula KaTeX cannot read is shown as its source in
   `--destructive` (KaTeX's own `#cc0000` is not checked on the dark canvas, the token is), never an error banner and never a thrown
   error.
-- **Its name**: every formula is `role="math"` named by its TeX source; a screen reader reads that and the MathML beside it, never the
-  `aria-hidden` picture.
-- **Prices**: a single dollar is never math, so "$5 or $10" is a sentence. Only `$$...$$` is a formula.
+- **Its name**: a screen reader reads KaTeX's MathML, the formula itself, never the `aria-hidden` picture and never raw TeX; a formula
+  that scrolls is a group named "Formula".
+- **Prices**: a single dollar is never math, so "$5 or $10" is a sentence. Only `$$` on lines of its own is a formula.
+- **Languages**: Rust, TypeScript, TSX, JavaScript, JSX, JSON, Bash, Python, SQL, Go, diff, Dockerfile, HTML and CSS. YAML and TOML stay plain (no
+  verified licence for their grammars).
 - **Not here**: the `Code` of a surface (the UI catalog) is not highlighted, and no theme switch exists.
 
