@@ -33,18 +33,19 @@ export function useMessageMentions(text: string): Mention[] {
  * being drawn (the one a turn answers).
  */
 export function useMentionsAny(id: string | undefined, custom: unknown): boolean {
-  const source = useMentionSource(id ?? "", custom);
+  const source = useMentionSource(id, custom);
   return Array.isArray(source) && source.length > 0;
 }
 
-function useMentionSource(id: string, custom: unknown) {
+function useMentionSource(id: string | undefined, custom: unknown) {
   const { store } = useContext(Context);
   useSyncExternalStore(
     store?.subscribe ?? NO_SUBSCRIBE,
     store?.getVersion ?? ZERO,
     store?.getVersion ?? ZERO,
   );
-  return Array.isArray(custom) ? custom : store?.sentOf(id);
+  if (Array.isArray(custom)) return custom;
+  return id === undefined ? undefined : store?.sentOf(id);
 }
 
 const NO_SUBSCRIBE = () => () => {};

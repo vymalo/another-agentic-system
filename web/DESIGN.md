@@ -675,11 +675,18 @@ words and everything after them stay in the first chat, which is the message's o
   "Regenerate". It is an edit with the same words: `fork({replace: <seq of the message that began the turn>, text,
   messageId})` (`ForkProvider.regenerate`), so the answer is a new version and the picker above goes between the two.
   It sends **no access tier**, so the server keeps the tier of the message it replaces (the contract of `forkThread`
-  says it). It is `aria-disabled` while the turn is going on or a fork is made (tooltip "Regenerate (once the agent
-  has finished this turn)"), and is not drawn on an earlier turn, to a person who may only read, on a shared link
-  (no `ForkProvider`), for a turn that began with a form answer, or for a message that mentioned an agent (the edit
-  route carries no mentions, so the new version would lose them). The message id is kept for a repeat of the same
-  regenerate, as an edit's is. A refusal is the line under the top bar ("Could not regenerate the answer: …").
+  says it). It is `aria-disabled` while the turn is going on (tooltip "Regenerate (once the agent has finished this
+  turn)") or a fork is made (tooltip "Regenerating…"). **What begins a turn** is a message of the person: the
+  transcript message right before the agent's must be the person's, with a known `seq` (`regenerableFrom`,
+  `features/threads/lib/regenerate.ts`). It is therefore not drawn on an earlier turn, to a person who may only read,
+  on a shared link (no `ForkProvider`), for a turn that began with a form answer (an action in the agent's own
+  message: no message of the person precedes it), **while a question waits for its answer** (the edit would drop the
+  question), for a message that mentioned an agent (the edit route carries no mentions, so the new version would lose
+  them), or for a message sent while the agent worked (steer or interrupt, `metadata.delivery`): that turn is more than
+  the one message, the agent's earlier work stays before it, so replacing only it would not be "again" (Edit on that
+  message stays as it is). Each regenerate has a message id of its own: kept for a retry after a refusal, dropped on
+  success, and keyed by thread. A refusal is the line under the top bar ("Could not regenerate the answer: …. You can
+  edit the message instead.").
 
 ## A thread's description
 

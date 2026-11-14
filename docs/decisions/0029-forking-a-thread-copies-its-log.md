@@ -43,9 +43,11 @@
   the person that began the turn), the same `text` and a `messageId`, so the answer is a new version of that message and
   the picker `‹ 2/2 ›` goes between the two. It sends **no `tier`**: an edit that names none is sent under the tier of the
   message it replaces, lowered to what the roles and the agent's live card allow (`chat-api.yaml`, `forkThread`; ADR 0061),
-  so a regenerate never raises the tier. It is not offered when the edit could not say what the turn was: a turn that
-  began with a form answer or an action (no message of the person to replace) or with a mention (the route carries none,
-  so the new version would lose them), to a person who may only read, or on a share link. Decisions 1 to 6 stand; nothing
+  so a regenerate never raises the tier. A turn begins with a message of the person, and Regenerate is not offered when
+  the edit could not say what the turn was: a turn that began with a form answer or an action (no message of the person
+  precedes it), one that waits for the answer to a question (the edit would drop it), a message that mentioned an agent
+  (the route carries none, so the new version would lose them) or that was sent while the agent worked (steer or
+  interrupt: the turn is more than that message), to a person who may only read, or on a share link. Decisions 1 to 6 stand; nothing
   changed on the server. See [`web/DESIGN.md`](../../web/DESIGN.md), "Edit a message, and the versions of it".
 
 ## Context

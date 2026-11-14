@@ -234,3 +234,155 @@ test("it is not offered on a turn that began with a form answer", async ({ page 
   await conversation(page).hover();
   await expect(regenerate(page)).toHaveCount(0);
 });
+
+/** The `/fork` requests the page makes, with their bodies. */
+function forks(page: Page) {
+  const bodies: Record<string, unknown>[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().endsWith("/fork")) bodies.push(r.postDataJSON());
+  });
+  return bodies;
+}
+
+test("regenerate twice: on the new version, and after going back, each is a request of its own", async ({
+  page,
+}) => {
+  await startThread(page, "echo only");
+  await expect(badge(page)).toHaveText("Done");
+  const first = page.url();
+  const bodies = forks(page);
+
+  await regenerate(page).click();
+  await expect(page).not.toHaveURL(first);
+  await expect(badge(page)).toHaveText("Done");
+  await expect(picker(page)).toContainText("2/2");
+
+  // a second regenerate, on the new version
+  const second = page.url();
+  await regenerate(page).click();
+  await expect(page).not.toHaveURL(second);
+  await expect(badge(page)).toHaveText("Done");
+  await expect(picker(page)).toContainText("3/3");
+
+  // and one after going back to the first version
+  await page.goto(first);
+  await expect(badge(page)).toHaveText("Done");
+  await regenerate(page).click();
+  await expect(page).not.toHaveURL(first);
+  await expect(badge(page)).toHaveText("Done");
+  await expect(picker(page)).toContainText("4/4");
+
+  expect(bodies).toHaveLength(3);
+  expect(new Set(bodies.map((b) => b.messageId)).size).toBe(3);
+  expect(new Set(bodies.map((b) => b.id)).size).toBe(3);
+});
+
+test("a retry of a refused regenerate is the same request", async ({ page }) => {
+  await startThread(page, "echo retry");
+  await expect(badge(page)).toHaveText("Done");
+  const bodies = forks(page);
+  let refuse = true;
+  await page.route("**/api/threads/*/fork", async (route) => {
+    if (!refuse) return route.continue();
+    refuse = false;
+    return route.fulfill({
+      status: 503,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ title: "Unavailable", status: 503, detail: "try again" }),
+    });
+  });
+  await regenerate(page).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Could not regenerate the answer" }),
+  ).toBeVisible();
+  await regenerate(page).click();
+  await expect(page).toHaveURL(/#m-\d+$/);
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]?.id).toBe(bodies[0]?.id);
+  expect(bodies[1]?.messageId).toBe(bodies[0]?.messageId);
+});
+
+test("a refused regenerate says so, and what to do instead", async ({ page }) => {
+  await startThread(page, "echo refused");
+  await expect(badge(page)).toHaveText("Done");
+  await page.route("**/api/threads/*/fork", (route) =>
+    route.fulfill({
+      status: 422,
+      contentType: "application/problem+json",
+      body: JSON.stringify({
+        title: "Unprocessable",
+        status: 422,
+        detail: "the tier cannot be kept",
+      }),
+    }),
+  );
+  const here = page.url();
+  await regenerate(page).click();
+  const alert = page.getByRole("alert").filter({ hasText: "Could not regenerate" });
+  await expect(alert).toContainText(
+    "Could not regenerate the answer: the tier cannot be kept. You can edit the message instead.",
+  );
+  await expect(page).toHaveURL(here);
+});
+
+test("regenerate sends no tier, even when the composer has one", async ({ page, context }) => {
+  const name = `e2e-regen-tier-${process.pid}-${Date.now()}`;
+  await context.addCookies([{ name: "mock-registry", value: name, url: ORIGIN }]);
+  const lists = await fetch(`${MOCK_URL}/__mock/tiers?session=${name}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      agent: "adam",
+      params: { tiers: ["plan", "edits", "auto", "bypass"], default: "auto" },
+    }),
+  });
+  expect(lists.ok).toBe(true);
+  const runs: { forwardedProps: Record<string, unknown> }[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && /\/agui\/agents\//.test(r.url())) runs.push(r.postDataJSON());
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Access tier:/ }).click();
+  await page.getByRole("menuitemradio").filter({ hasText: /Edits/ }).click();
+  await page.getByLabel("Message", { exact: true }).fill("echo tiered");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page).toHaveURL(THREAD_URL);
+  await expect(badge(page)).toHaveText("Done");
+  // the composer has a tier, and the first message went out under it
+  expect(runs[0]?.forwardedProps["vymalo.tier"]).toBe("edits");
+  const bodies = forks(page);
+  await regenerate(page).click();
+  await expect(page).toHaveURL(/#m-\d+$/);
+  expect(bodies).toHaveLength(1);
+  expect(bodies[0]).toMatchObject({ text: "echo tiered" });
+  expect(bodies[0]).not.toHaveProperty("tier");
+});
+
+test("it is not offered while a question waits for an answer", async ({ page }) => {
+  await startThread(page, "choices now", "Reviewer");
+  await expect(
+    conversation(page).getByRole("region", { name: "Interface from reviewer" }),
+  ).toBeVisible();
+  await expect(badge(page)).not.toHaveText("Working…");
+  await conversation(page).hover();
+  await expect(regenerate(page)).toHaveCount(0);
+});
+
+test("it is not offered on a turn that answers a message sent while the agent worked", async ({
+  page,
+}) => {
+  await startThread(page, "gate refactor the parser");
+  await expect(badge(page)).toHaveText("Working…");
+  await page.getByLabel("Message", { exact: true }).fill("echo you were wrong");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(conversation(page).locator('[data-slot="delivery-note"]')).toHaveText(
+    "Sent while Adam was working · read at its next step",
+  );
+  const id = threadIdOf(page.url());
+  const released = await fetch(`${MOCK_URL}/__mock/release?thread=${id}`, { method: "POST" });
+  expect(released.status).toBe(204);
+  await expect(conversation(page).getByText("echo: echo you were wrong")).toBeVisible();
+  await expect(badge(page)).toHaveText("Done");
+  await conversation(page).hover();
+  await expect(regenerate(page)).toHaveCount(0);
+});

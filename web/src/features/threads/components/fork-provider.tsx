@@ -138,17 +138,21 @@ export function ForkProvider({
     },
     [fork, tier],
   );
-  // one id for each thing said again, so that a retry of the same regenerate is the same request
+  // one id for each regenerate, kept only until it succeeds: a retry after a refusal is the same request
+  // (the same fork id and message id), and the next regenerate, of this thread or another, is a new one
   const regenerating = useRef<{ key: string; id: string } | null>(null);
   const regenerate = useCallback(
-    (seq: number, text: string) => {
-      const key = `${seq}\n${text}`;
+    async (seq: number, text: string) => {
+      const key = `${threadId}\n${seq}\n${text}`;
       if (regenerating.current?.key !== key) regenerating.current = { key, id: uuidv7() };
+      const attempt = regenerating.current;
       setErrorKind("regenerate");
       // no tier: the server keeps the tier of the message it replaces
-      return fork({ replace: seq, text, messageId: regenerating.current.id });
+      const made = await fork({ replace: seq, text, messageId: attempt.id });
+      if (made && regenerating.current === attempt) regenerating.current = null;
+      return made;
     },
-    [fork],
+    [fork, threadId],
   );
   // `lastSeq` is what makes the answer new: a message's `seq` is known once its group was read
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
@@ -204,7 +208,10 @@ export function ForkError() {
           : errorKind === "regenerate"
             ? "Could not regenerate the answer"
             : "Could not fork the chat"}
-        : {error}
+        :{" "}
+        {errorKind === "regenerate"
+          ? `${error.replace(/[.\s]+$/, "")}. You can edit the message instead.`
+          : error}
       </InlineStatus>
     </div>
   );

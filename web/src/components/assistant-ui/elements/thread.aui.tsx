@@ -55,6 +55,7 @@ import {
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
+import { regenerableFrom } from "@/features/threads/lib/regenerate";
 import { MessageTierBadge } from "@/features/tier/components/tier-badge";
 import { ToolsLine } from "@/features/tools/components/tools-line";
 import type { ApiActor } from "@/lib/api/types";
@@ -544,6 +545,20 @@ function StartingTurn() {
   );
 }
 
+/**
+ * What Regenerate would say again, for the newest turn only (`regenerableFrom`): the person's message
+ * right before it, with its place in the log. The other turns read nothing.
+ */
+function useRegenerable(isLast: boolean, waiting: boolean) {
+  const prior = useAuiState((s) => (isLast ? s.thread.messages[s.message.index - 1] : undefined));
+  const user = prior?.role === "user" ? prior : undefined;
+  const mentioned = useMentionsAny(user?.id, user?.metadata?.custom?.mentions);
+  const { seqOfMessage } = useThreadFork();
+  const custom = user?.metadata?.custom?.seq;
+  const seq = typeof custom === "number" ? custom : user ? seqOfMessage(user.id) : undefined;
+  return regenerableFrom({ prior, seq, mentioned, waiting });
+}
+
 export const AssistantMessage: FC = () => {
   const actor = useRunActor();
   const runId = useRunId();
@@ -555,19 +570,7 @@ export const AssistantMessage: FC = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
   const isLast = useAuiState((s) => s.message.isLast);
   const messageId = useAuiState((s) => s.message.id);
-  // the message of the person that began this turn: what Regenerate says again (ADR 0029)
-  const prior = useAuiState((s) => s.thread.messages[s.message.index - 1]);
-  const priorUser = prior?.role === "user" ? prior : undefined;
-  const priorMentioned = useMentionsAny(priorUser?.id, priorUser?.metadata?.custom?.mentions);
-  const { seqOfMessage } = useThreadFork();
-  const priorSeq = (() => {
-    const custom = priorUser?.metadata?.custom?.seq;
-    if (typeof custom === "number") return custom;
-    return priorUser ? seqOfMessage(priorUser.id) : undefined;
-  })();
-  const priorText = (priorUser?.content ?? [])
-    .flatMap((p) => (p.type === "text" ? [p.text] : []))
-    .join("\n\n");
+  const began = useRegenerable(isLast, waiting);
   // the reply being written belongs to the run's message: the newest one of the agent
   const newest = useAuiState((s) => {
     const all = s.thread.messages;
@@ -604,16 +607,6 @@ export const AssistantMessage: FC = () => {
     return fork ? <ForkDivider fork={fork} /> : null;
   }
   if (lastDrawn < 0 && !running && answers.length === 0 && tools.length === 0) return null;
-  // Regenerate says the person's message again, as an edit: not one that mentions agents (an edit carries
-  // none), and not a turn that began with a form answer
-  const began =
-    isLast &&
-    priorSeq !== undefined &&
-    priorText.trim() !== "" &&
-    !priorMentioned &&
-    answers.length === 0
-      ? { seq: priorSeq, text: priorText }
-      : undefined;
   // the answer and the working text of the turn (ADR 0031); Copy takes the answer
   const roles = textRoles(content, running);
   const ownWords = content

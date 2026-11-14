@@ -65,7 +65,7 @@ export const TurnActions: FC<Props> = ({ text, runId, last, began }) => {
       ) : null}
       {regenerable && began ? (
         <TooltipIconButton
-          tooltip={open ? REGENERATE_WAIT : "Regenerate"}
+          tooltip={open ? REGENERATE_WAIT : fork.busy ? "Regenerating…" : "Regenerate"}
           aria-label="Regenerate"
           data-slot="regenerate"
           aria-disabled={unavailable}
