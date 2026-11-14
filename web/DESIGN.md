@@ -351,6 +351,29 @@ spent counted apart. LibreChat puts its ring by the input, where the next call's
 - **Nothing when there is nothing**: no ring for a thread with no usage, for an agent that does not report it, or where there is no
   composer (a read-only view).
 
+## Usage page
+
+*Added 2026-11-14 ([ADR 0065](../docs/decisions/0065-a-usage-ledger-per-person.md)); the first slice of the owner's "LibreChat-grade" ask.* What a person used in a month, on a page of its own, `/usage`,
+reached from the account menu's **Usage** item (no permission gates it). A page, not a popover: it is read once in a while, and it has tables.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-usage-page.png">
+  <img src="e2e/__screens__/mobile-light-usage-page.png" alt="The Usage page on a phone, November 2026: Back to chat, the heading, a month switch with two arrow buttons, a card with the total, at least 3.391593 EUR, and what it leaves out, three figures (tasks, tokens, sandbox time), then the models and the sandbox as two tables." width="320">
+</picture>
+
+*The page on a phone, from the web's mock server.*
+
+- **One column**, the reading column's 768 px (`max-w-3xl`), 16 px gutters on a phone and 24 px from `md`; no sidebar (it is a page, as "No access" is), with **Back to chat** above the heading. The heading is the page's `h1`; the sections are `h2`s.
+- **Top to bottom:** the month switch (two 36 px outline icon buttons, **Previous month** and **Next month**, the month in words between them, tabular figures); **Total**, a card (`--card`, 12 px radius, a border and no shadow); three figures on
+  `--muted` tiles (Tasks, Tokens, Sandbox time); **Models** and **Sandbox**, two compact tables (14 px, numbers in tabular figures, a row per line, a hairline between rows). A table has two or three columns so that a phone needs no sideways scroll:
+  the name with what qualifies it under it (provider; size), the counts stacked (in, cached, out, reasoning), the cost on the right.
+- **The total is the one big number on the page** (28 px, weight 500). **With `complete: false` it reads "At least" in front, in the body's size**, and a line under it says it is the sum of the priced lines, with a list of what is left out. The words are the meaning;
+  nothing is coloured, so nothing depends on a colour. A line with no price says **Not priced** in `--muted-foreground`; a price of zero is written `0.000000 EUR`, never left blank.
+- **Amounts are drawn as the API wrote them**, six decimals and the currency after: a string is never turned into a number (no rounding, no loss), and a long one wraps (`break-all`) rather than overflow. A deployment with no currency has **no money anywhere**: no cost column, no "Not priced", one line under Total that says so.
+  Tokens and sandbox time are always shown.
+- **Empty is a sentence, not a hero:** a month with nothing is complete at `0.000000`, with "No model usage this month." and "No sandbox time this month." where the tables would be. Loading is the skeleton rows, a failure the destructive line with **Try again**.
+- **Keyboard and screen reader:** the month switch is a `fieldset` named Month, the month is a polite live region (a change is announced), the buttons keep the focus while a month loads, **Next month** is disabled on the current month, tables have captions (visually hidden: the headings name them), column headers and row headers.
+
 ## Mentions
 
 *Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11).* A person who wants

@@ -63,6 +63,7 @@ contract).
 | `POST /api/threads/{id}/cancel` | Cancel (AG-UI has no consumer cancel) |
 | `PATCH /api/threads/{id}` | **Rename** and **Add or Edit description** in the thread's overflow menu. Rename: the title in the top bar becomes a field (Enter or leaving it saves, Escape gives it up, the same title or an empty one is no request); a refused rename says why and keeps the field. The answer is the thread, so the header says the new title at once, and the sidebar's list is fetched again with it. A person's title is final (the orchestrator will never replace it). The description is the same with `{description}`: the line under the top bar becomes a field (limited to 500 characters), an empty text clears it, the same text is no request, and a person's is final too (the orchestrator's model never writes it again; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)); see [A thread's description](#a-threads-description) |
 | `GET /api/me` | who the person is and what their roles let them do ([ADR 0033](../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): `user`, `roles`, `permissions` (each with its `scope` where it has one), the agents `agent.read` and `agent.invoke` cover. Read once per page load (`features/me/hooks/use-me.ts`), and **never a check**: the orchestrator enforces every request, the web only stops offering what would be refused; [Who you are and what you may do](#who-you-are-and-what-you-may-do) |
+| `GET /api/me/usage?month=` | what the person used in a UTC month, priced ([ADR 0065](../docs/decisions/0065-a-usage-ledger-per-person.md)): the **Usage** page, below. Never cached; `month` is `YYYY-MM`, and `owner` or any other key is a 400 |
 | `GET /api/config` | the public configuration, read once per page load ([ADR 0034](../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)): `ui.showDescriptions` (default `true`) says whether a thread's description is drawn at all, and `ui.history` (present only where the orchestrator serves the history route) whether, and how, a thread is opened from its newest turns ([Opening from the history](#opening-from-the-history)). A configuration that cannot be read leaves the defaults; descriptions wait for the answer so that one that is then switched off never flashes (`use-ui-config.ts`) |
 | `GET /api/tool-servers`, `PUT /api/threads/{id}/tools` | the MCP servers a person may attach to a conversation ([ADR 0024](../docs/decisions/0024-mcp-tools-attached-per-conversation.md)): the deployment's list in its own order (name, what it is for, an icon as a `data:` URI, the agents it is offered for), read live each time the chat mounts and the picker opens, and **the whole set** a thread should have, on every toggle. Both take `thread.write`; [MCP servers attached to a conversation](#mcp-servers-attached-to-a-conversation) |
 | `forwardedProps["vymalo.tools"]` on `POST /agui/agents/{agentId}` | the ids a **new chat** attaches, carried by the run that creates the thread and by no other; `GET /agui/agents/{id}/capabilities` is read live for `thread-tools/v1` in `custom`, so an agent that cannot use them is flagged before the person sends |
@@ -883,6 +884,46 @@ agent whose card lists `usage/v1` and once it has reported a call: a thread with
   of the agent, the levels, what does not parse), `lib/agui/thread-agent.test.ts` (the usage of the stream folded across a reconnect and
   never handed to the runtime), `e2e/usage.spec.ts` (desktop and phone: the fill, the details by the keyboard, a reload, red, no window,
   the ring moving while the agent works, no ring without usage, axe), and the screen `usage-ring` of `pnpm screens`.
+
+## The usage page
+
+*Added 2026-11-14 ([ADR 0065](../docs/decisions/0065-a-usage-ledger-per-person.md), the usage ledger of the people). The owner asked for the system to be made "LibreChat-grade"; this is its first slice.* `/usage` shows what the
+person used in a month: the tokens of each model, the time their runs' commands used in a sandbox, what it cost and a total. It reads
+`GET /api/me/usage?month=` (the contract's `MyUsage`) and nothing else.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-usage-page.png">
+  <img src="e2e/__screens__/desktop-light-usage-page.png" alt="The Usage page for November 2026. A card says Total, at least 3.391593 EUR, and that this is the sum of the priced lines: there is no price for zai / glm-5.3-mini. Under it three figures: 12 tasks, 1,617,800 tokens, 1 h 12 min of sandbox time. Then a table of the two models with their input, cached, output tokens and cost, the second one Not priced, and a table of the one sandbox shape, kubernetes with 2 cores and 4 GiB, 41 commands, 1 h 12 min, 0.250000 EUR." width="720">
+</picture>
+
+*A month in which one model has no price, from the web's mock server.*
+
+- **Where it is.** The account menu at the foot of the sidebar has a **Usage** item (`features/session/components/account-menu.tsx`); **no permission gates it**: the route answers for the
+  person who asks and for nobody else, whatever their roles, so a person whose roles grant nothing is answered too (they never see the
+  menu: the no-access screen has no sidebar). The page is `app/usage/page.tsx`, one static page (`usage.html` in the export) behind the
+  sign-in gate; the static server answers `/usage` by its own `try_files {path} {path}.html`, so **neither the `Caddyfile` nor
+  `lib/static-routes.ts` changed** (`static-server.test.ts` holds `/usage` as its own file). **Back to chat** goes home.
+- **The month** is a UTC calendar month, as the ledger's are (`lib/month.ts`, pure: `currentMonth`, `previousMonth`, `nextMonth`, `monthLabel`, `isMonth`). The page
+  starts on the current one; the two buttons beside its name move by one month, and **Next month** stops at the current one (the future has nothing to read).
+  They stay on screen while a month loads, so the focus is never lost. The figure of a month that has ended is not final while a task of it is open (the contract says so):
+  the page reads a month again every time it is asked for, and never caches it (`hooks/use-my-usage.ts`; a read overtaken by another month's is dropped).
+- **Amounts are strings and stay strings.** `price` and `total.amount` carry six decimals and are drawn as written, with the answer's `currency` after them: no `parseFloat`,
+  no `Number`, no `toFixed`, so nothing is rounded or lost, however large (the tests use `123456789012345678.100000`). Token counts are integers and are grouped (`1,250,000`).
+- **Money only with a currency.** With `currency: null` (the deployment configured no prices) the page shows tokens and sandbox time and says "No prices are configured, so no cost is shown."
+  Tokens and sandbox time are always shown.
+- **The total reads "at least" when `complete` is `false`**, says it is the sum of the lines that have a price, and names what it leaves out: each model with no price, the number of sandbox
+  shapes with no price, and the number of tasks that ran commands where the sandbox is not measured (their time is not counted, and is never priced). A line with no price says **Not priced** (words, never a blank
+  or a zero). A month with no usage is complete at `0.000000`, with one line each for models and sandbox saying there is nothing. The price table the answer was priced with (`prices`) is named under the total: a past month is priced as of now.
+- **A failure** is a destructive line with the problem's words and **Try again**; an orchestrator with no such route (404) says "This deployment does not report usage."
+- **Accessibility.** The month switch is a `fieldset` named Month with two named buttons and the month in a polite live region; the tables have captions, column headers and row headers; the
+  total is a labelled `region`; nothing is told by colour alone. axe is run on a complete month, an incomplete one and an empty one, in both schemes, on a desktop and on a phone, and the page never scrolls sideways.
+- **The mock** answers `GET /api/me/usage` (`mock/my-usage.ts`; `mock/usage.ts` is the run accounting of the token ring, another thing): the month asked (the current UTC one by default) from what a test set for its own session with
+  `POST /__mock/my-usage` (`{ "<YYYY-MM>": MyUsage, "*": MyUsage }`, the `*` answering every other month with the month asked), and an empty complete month otherwise; a bad `month`, a month twice and **any other key, `owner`
+  included, are a 400**; `Cache-Control: no-store`; a person whose roles grant nothing is answered, as the contract says. `mock/server.contract.test.ts` validates every answer against `MyUsage`. It prices nothing: a test writes the
+  amounts it wants drawn.
+- **Tests:** `lib/month.test.ts`, `components/usage-page.dom.test.tsx` (the loading line, the lists, amounts as written, "at least" and what is unpriced, no currency, an empty month, the month buttons and their limit, a failed read, no route),
+  the Usage item in `account-menu.dom.test.tsx`, `e2e/usage-page.spec.ts` (lists models, sandbox and total; an incomplete month says at least and names the unpriced lines; an empty month is complete at zero; no prices; moves between months by keyboard;
+  a failed read; the account menu leads to it; axe in both schemes; a phone too), and the screen `usage-page` of `pnpm screens` (the account menu's screen shows the new item).
 
 ## Access tier
 
@@ -2379,7 +2420,8 @@ src/features/sharing/          sharing a thread by a link (ADR 0040): components
                                lib/sharing.ts (pure: the cap, the choices and their reasons, the chip's words, the token's shape, the
                                file routes), lib/resolve.ts (signed in, then public, then sign-in: pure); `src/app/s/[token]/` is the route
 src/features/me/               who the person is (ADR 0033): hooks/use-me.ts (`GET /api/me`, once per page load, `unknown` hides
-                               nothing), lib/access.ts (pure: `threadAccess`, `newChatAccess`, `invokable`, `isAdmin`),
+                               nothing), hooks/use-my-usage.ts (`GET /api/me/usage?month=`, never cached), lib/month.ts (UTC months, pure),
+                               components/usage-page.tsx (`/usage`, ADR 0065), lib/access.ts (pure: `threadAccess`, `newChatAccess`, `invokable`, `isAdmin`),
                                components/read-only-notice.tsx (the line and the chip), components/no-access.tsx
 src/features/agents/           the new chat: greeting, suggestion chips; the agent picker (agent-menu.tsx, a menu
                                button in the top bar: the agents, then the chosen agent's releases; on a thread another

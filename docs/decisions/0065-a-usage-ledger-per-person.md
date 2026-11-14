@@ -14,6 +14,14 @@
   (a port has a testkit). **It amends invariant 3** of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 1) with a
   dated note, as [ADR 0042](0042-the-thread-list-is-the-owners.md) and [ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)
   did before it (decision 3).
+- **Amended 2026-11-14: the screen exists.** The web draws `GET /api/me/usage` as the **Usage** page, `/usage`, reached from the account menu
+  (`web/src/features/me/components/usage-page.tsx`; [`web/README.md`](../../web/README.md#the-usage-page), [`web/DESIGN.md`](../../web/DESIGN.md#usage-page)),
+  the owner having asked on 2026-11-14 for the system to be "LibreChat-grade". No decision above changes; what the page does with them: it shows tokens and
+  sandbox time always and money only when the answer carries a `currency`; it draws every amount as the string the API wrote and never parses it into a
+  number; a total with `complete: false` reads "at least" and names what `unpriced` and `unmeasured` leave out; no permission gates the item, as none gates
+  the route. *Proven on the web's mock server only* (`web/e2e/usage-page.spec.ts`, `web/mock/server.contract.test.ts` against `MyUsage`); no live
+  orchestrator was read, and the page has not been seen by the owner. The "a screen" of *Not done here* below is therefore done for the month view;
+  limits, credits and receipts are not.
 
 ## Context
 
@@ -278,7 +286,7 @@ The design comment left these open or did not see them. Each is the smallest thi
   the ledger folds in what the older one wrote. Run `orchestrator usage backfill` once after the rollout for the threads no one writes to.
 - Harder: the ledger is a second place that holds usage, so a future change to what a total means must change `UsageRow::fold` and re-fold; the backfill
   can do it for threads whose log still exists, and cannot for erased ones.
-- **Not done here:** the chart's `usage` values (the next change of PR 2); a screen; limits and credits (M2's next tickets);
+- **Not done here:** the chart's `usage` values (the next change of PR 2); a screen (done 2026-11-14 for the month view, see the amendment at the top); limits and credits (M2's next tickets);
   receipts (M3); the person's deletion ([issue 294](https://github.com/vymalo/another-agentic-system/issues/294)).
 
 ## Alternatives rejected
