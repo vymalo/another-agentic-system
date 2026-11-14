@@ -21,6 +21,7 @@ import {
 } from "@/features/chat/lib/a2ui/choices-kinds";
 import type { StepIcon } from "@/features/chat/lib/agui/vymalo";
 import { cn } from "@/lib/utils";
+import { Controls, groupDisabled, groupOf, Shown } from "./choices-shown";
 
 /*
  * The five kinds of question of catalog version 7 (docs/api/ui-catalog-v1.md, "Version 7"): a yes or
@@ -44,6 +45,8 @@ type Props = {
   state: QuestionState;
   enabled: boolean;
   onChange: Patch;
+  /** What the question shows (catalog version 8), drawn between its words and its control. */
+  shown?: readonly ReactNode[] | undefined;
 };
 
 const TILE =
@@ -87,6 +90,7 @@ function Group({
   radiogroup,
   children,
   enabled,
+  shown,
   need,
   onClear,
 }: {
@@ -94,6 +98,7 @@ function Group({
   radiogroup: boolean;
   children: ReactNode;
   enabled: boolean;
+  shown?: readonly ReactNode[] | undefined;
   /** What a required question that has no answer yet needs, said next to it and linked to it. */
   need?: string | undefined;
   /** An optional question that has an answer can be cleared. */
@@ -110,7 +115,7 @@ function Group({
       role={radiogroup ? "radiogroup" : undefined}
       aria-labelledby={legend}
       aria-describedby={describedBy || undefined}
-      disabled={!enabled}
+      disabled={groupDisabled(enabled, shown)}
       className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0"
     >
       <legend id={legend} className="mb-1 p-0 text-sm font-medium [overflow-wrap:anywhere]">
@@ -122,7 +127,10 @@ function Group({
           {question.help}
         </p>
       ) : null}
-      {children}
+      <Shown nodes={shown} />
+      <Controls enabled={enabled} nodes={shown}>
+        {children}
+      </Controls>
       {need && enabled ? <Needs id={needId} text={need} /> : null}
       {onClear && enabled ? (
         <div>
@@ -197,7 +205,7 @@ function RadioTile({
   );
 }
 
-function Confirm({ question, name, state, enabled, onChange }: Props) {
+function Confirm({ question, name, state, enabled, onChange, shown }: Props) {
   const chosen = state.values[0];
   const pick = (value: string) => () => onChange({ values: [value] });
   return (
@@ -205,6 +213,7 @@ function Confirm({ question, name, state, enabled, onChange }: Props) {
       question={question}
       radiogroup
       enabled={enabled}
+      shown={shown}
       need={question.required && chosen === undefined ? "Choose yes or no." : undefined}
       onClear={
         !question.required && chosen !== undefined ? () => onChange({ values: [] }) : undefined
@@ -232,7 +241,7 @@ function Confirm({ question, name, state, enabled, onChange }: Props) {
   );
 }
 
-function Scale({ question, name, state, enabled, onChange }: Props) {
+function Scale({ question, name, state, enabled, onChange, shown }: Props) {
   const points = scalePoints(question);
   const first = points[0];
   const last = points.at(-1);
@@ -241,6 +250,7 @@ function Scale({ question, name, state, enabled, onChange }: Props) {
       question={question}
       radiogroup
       enabled={enabled}
+      shown={shown}
       need={
         question.required && state.values.length === 0
           ? `Choose a point from ${first} to ${last}.`
@@ -288,8 +298,9 @@ function numberHint(q: ChoiceQuestion): string | undefined {
 }
 
 /** A question the person types or picks as one string: a number (a text box) or a day (a date control). */
-function Typed({ question, state, enabled, onChange }: Props) {
+function Typed({ question, state, enabled, onChange, shown }: Props) {
   const id = useId();
+  const labelId = `${id}-label`;
   const notes = `${id}-notes`;
   const problem = `${id}-problem`;
   const needId = `${id}-need`;
@@ -304,9 +315,11 @@ function Typed({ question, state, enabled, onChange }: Props) {
     <div
       data-slot="choices-question"
       data-kind={question.type}
+      // a typed question has no group of its own; with something shown it is one, named by its words
+      {...groupOf(shown, labelId)}
       className="flex min-w-0 flex-col gap-1.5"
     >
-      <label htmlFor={id} className="text-sm font-medium [overflow-wrap:anywhere]">
+      <label id={labelId} htmlFor={id} className="text-sm font-medium [overflow-wrap:anywhere]">
         {question.question}
         {question.unit ? (
           <span className="font-normal text-muted-foreground"> (in {question.unit})</span>
@@ -318,6 +331,7 @@ function Typed({ question, state, enabled, onChange }: Props) {
           {help}
         </p>
       ) : null}
+      <Shown nodes={shown} />
       <div className="flex items-center gap-2">
         {number ? (
           <Input
@@ -373,7 +387,7 @@ const orderOf = (q: ChoiceQuestion, s: QuestionState): string[] =>
       ? q.defaults // the order the agent (or the person's earlier answer) starts the list in
       : q.options.map((o) => o.value);
 
-function Rank({ question, state, enabled, onChange }: Props) {
+function Rank({ question, state, enabled, onChange, shown }: Props) {
   const order = orderOf(question, state);
   const touched = state.values.length > 0;
   const [said, setSaid] = useState("");
@@ -417,6 +431,7 @@ function Rank({ question, state, enabled, onChange }: Props) {
       question={question}
       radiogroup={false}
       enabled={enabled}
+      shown={shown}
       need={
         question.required && !touched ? "Move an item, or keep the order, to answer." : undefined
       }

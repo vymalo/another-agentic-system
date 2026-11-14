@@ -6,10 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEarlierControl } from "@/features/chat/components/earlier";
 import { usePanel } from "../hooks/use-panel";
+import { useThreadPlan } from "../hooks/use-plan";
 import { useSources, useTurnsHeld } from "../hooks/use-sources";
 import { parseTab } from "../lib/panel-state";
 import { countSources } from "../lib/sources";
 import { ActivityTab } from "./activity-tab";
+import { PlanTab, planCount } from "./plan-tab";
 import { SourcesView } from "./sources-tab";
 
 /**
@@ -22,11 +24,16 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
   // the transcript of a thread opened at its end holds the newest turns: Sources say so, and can load the rest
   const earlier = useEarlierControl();
   const turnsHeld = useTurnsHeld(panel?.open ?? false);
+  // the plan of the thread, when it has one: a third tab (docs/api/ui-catalog-v1.md, "The plan")
+  const plan = useThreadPlan();
   if (!panel) return null;
   const count = countSources(groups);
+  const planCountText = planCount(plan);
+  // a plan that is gone leaves the tab a person had open on it on the first one
+  const tab = panel.tab === "plan" && !plan ? "activity" : panel.tab;
   return (
     <Tabs
-      value={panel.tab}
+      value={tab}
       onValueChange={(value) => panel.setTab(parseTab(value) ?? "activity")}
       className="min-h-0 flex-1"
     >
@@ -46,6 +53,16 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
               </span>
             ) : null}
           </TabsTrigger>
+          {plan ? (
+            <TabsTrigger value="plan">
+              Plan
+              {planCountText ? (
+                <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                  {planCountText}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          ) : null}
         </TabsList>
         <Hint label="Close details">
           <Button
@@ -79,6 +96,11 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
             : {})}
         />
       </TabsContent>
+      {plan ? (
+        <TabsContent value="plan" className="overflow-y-auto overscroll-contain">
+          <PlanTab plan={plan} />
+        </TabsContent>
+      ) : null}
     </Tabs>
   );
 }

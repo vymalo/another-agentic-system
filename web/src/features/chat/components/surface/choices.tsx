@@ -32,6 +32,7 @@ import { answeredAfter } from "@/features/chat/lib/a2ui/surfaces";
 import type { StepIcon } from "@/features/chat/lib/agui/vymalo";
 import { cn } from "@/lib/utils";
 import { KindQuestion } from "./choices-kinds";
+import { Controls, groupDisabled, groupOf, Shown } from "./choices-shown";
 import { useSurfaceHost } from "./surface-host";
 import { useThreadFiles } from "./thread-files";
 import { useView } from "./view-context";
@@ -435,14 +436,17 @@ function TypedAnswer({
   enabled,
   onChange,
   describedBy,
+  shown,
 }: {
   question: ChoiceQuestion;
   state: QuestionState;
   enabled: boolean;
   onChange: Patch;
   describedBy: string | undefined;
+  shown?: readonly ReactNode[] | undefined;
 }) {
   const id = useId();
+  const labelId = `${id}-label`;
   const long = question.type === "longText";
   const props = {
     id,
@@ -453,8 +457,13 @@ function TypedAnswer({
     onChange: (e: { target: { value: string } }) => onChange({ text: e.target.value }),
   };
   return (
-    <div data-slot="choices-question" className="flex min-w-0 flex-col gap-1.5">
-      <label htmlFor={id} className="text-sm font-medium [overflow-wrap:anywhere]">
+    <div
+      data-slot="choices-question"
+      // a typed question has no group of its own; with something shown it is one, named by its words
+      {...groupOf(shown, labelId)}
+      className="flex min-w-0 flex-col gap-1.5"
+    >
+      <label id={labelId} htmlFor={id} className="text-sm font-medium [overflow-wrap:anywhere]">
         {question.question}
         {question.required ? null : (
           <span className="font-normal text-muted-foreground"> (optional)</span>
@@ -465,6 +474,7 @@ function TypedAnswer({
           {question.help}
         </p>
       ) : null}
+      <Shown nodes={shown} />
       {long ? <textarea {...props} rows={4} className={TEXTAREA} /> : <Input {...props} />}
     </div>
   );
@@ -488,12 +498,15 @@ function Question({
   state,
   enabled,
   onChange,
+  shown,
 }: {
   question: ChoiceQuestion;
   name: string;
   state: QuestionState;
   enabled: boolean;
   onChange: Patch;
+  /** What the question shows (catalog version 8): drawn after its words and before its control. */
+  shown?: readonly ReactNode[];
 }) {
   const legend = useId();
   const notes = useId();
@@ -508,6 +521,7 @@ function Question({
         state={state}
         enabled={enabled}
         onChange={onChange}
+        shown={shown}
       />
     );
   }
@@ -519,6 +533,7 @@ function Question({
         enabled={enabled}
         onChange={onChange}
         describedBy={question.help ? `${notes}-help` : undefined}
+        shown={shown}
       />
     );
   }
@@ -534,7 +549,7 @@ function Question({
       role={radios ? "radiogroup" : undefined}
       aria-labelledby={legend}
       aria-describedby={hasNotes ? notes : undefined}
-      disabled={!enabled}
+      disabled={groupDisabled(enabled, shown)}
       className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0"
     >
       <legend id={legend} className="mb-1 p-0 text-sm font-medium [overflow-wrap:anywhere]">
@@ -553,53 +568,56 @@ function Question({
           {range ? <p className="text-xs text-muted-foreground">{range}</p> : null}
         </div>
       ) : null}
-      {question.type === "select" ? (
-        <SelectBox
-          question={question}
-          state={state}
-          atMax={atMax}
-          labelledBy={legend}
-          describedBy={hasNotes ? notes : undefined}
-          onChange={onChange}
-        />
-      ) : deck ? (
-        <div data-slot="choices-deck" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {question.options.map((option) => (
+      <Shown nodes={shown} />
+      <Controls enabled={enabled} nodes={shown}>
+        {question.type === "select" ? (
+          <SelectBox
+            question={question}
+            state={state}
+            atMax={atMax}
+            labelledBy={legend}
+            describedBy={hasNotes ? notes : undefined}
+            onChange={onChange}
+          />
+        ) : deck ? (
+          <div data-slot="choices-deck" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {question.options.map((option) => (
+              <OptionTile
+                key={option.value}
+                option={option}
+                type={type}
+                name={name}
+                deck
+                checked={state.values.includes(option.value)}
+                disabled={atMax}
+                onChange={() => toggle(option.value)}
+              />
+            ))}
+          </div>
+        ) : (
+          question.options.map((option) => (
             <OptionTile
               key={option.value}
               option={option}
               type={type}
               name={name}
-              deck
               checked={state.values.includes(option.value)}
               disabled={atMax}
               onChange={() => toggle(option.value)}
             />
-          ))}
-        </div>
-      ) : (
-        question.options.map((option) => (
-          <OptionTile
-            key={option.value}
-            option={option}
+          ))
+        )}
+        {question.allowOther ? (
+          <OtherTile
+            question={question}
             type={type}
             name={name}
-            checked={state.values.includes(option.value)}
+            state={state}
             disabled={atMax}
-            onChange={() => toggle(option.value)}
+            onChange={onChange}
           />
-        ))
-      )}
-      {question.allowOther ? (
-        <OtherTile
-          question={question}
-          type={type}
-          name={name}
-          state={state}
-          disabled={atMax}
-          onChange={onChange}
-        />
-      ) : null}
+        ) : null}
+      </Controls>
     </fieldset>
   );
 }
@@ -648,6 +666,20 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
   const [note, setNote] = useState("");
   const answered = useAuiState((s) => answeredAfter(s.thread.messages, s.message.id));
   if (!spec) return null;
+
+  // what the questions show arrives as the component's children, in the order of the questions
+  const shownOf = new Map<string, ReactNode[]>();
+  const children = Array.isArray(props.children)
+    ? (props.children as ReactNode[])
+    : props.children === undefined || props.children === null
+      ? []
+      : [props.children as ReactNode];
+  let at = 0;
+  for (const q of spec.questions) {
+    const n = q.show?.length ?? 0;
+    if (n > 0) shownOf.set(q.id, children.slice(at, at + n));
+    at += n;
+  }
 
   // the answers go to the agent while the thread waits for them, from the newest copy only; once
   // sent (or in a thread that moved on) the choices stay as they were, and stop taking input,
@@ -705,6 +737,7 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
           state={state.get(q.id) ?? EMPTY}
           enabled={enabled}
           onChange={(p) => patch(q.id, p)}
+          shown={shownOf.get(q.id)}
         />
       ))}
       {spec.freeInput ? (
