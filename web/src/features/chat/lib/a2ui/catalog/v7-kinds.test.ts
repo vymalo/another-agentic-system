@@ -6,6 +6,7 @@ import { checkValues } from "../choices-kinds";
 import { prepareSurface } from "../prepare";
 import lock from "./catalog.lock.json";
 import { catalogDigest } from "./digest";
+import { asVersion7 } from "./earlier";
 import { componentNames, OWN_CATALOG } from "./index";
 import { compileCatalog } from "./validate";
 
@@ -323,7 +324,8 @@ describe("version 7 is version 6 and additions", () => {
     "maxDate",
   ];
   const asVersion6 = () => {
-    const catalog = structuredClone(OWN_CATALOG.catalog) as unknown as {
+    // version 8 only added too: take its additions away first, and what is left is version 7
+    const catalog = structuredClone(asVersion7(OWN_CATALOG.catalog)) as unknown as {
       components: { Choices: Rec & { description: string; properties: Rec } };
     } & Rec;
     const choices = catalog.components.Choices;

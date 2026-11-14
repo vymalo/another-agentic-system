@@ -62,7 +62,7 @@
     },
     "Choices": {
       "type": "object",
-      "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). Only when the thread's catalog is version 7 or more: confirm (yes or no, with yesLabel, noLabel and a safe default), number (a decimal string, with minValue, maxValue, step and unit), scale (a whole number from \"from\" to \"to\", with fromLabel and toLabel), date (a calendar day YYYY-MM-DD, with minDate and maxDate) and rank (the person puts every option in order). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value, or the one yes/no, decimal, whole number or date, or every option value in the person's order for rank…], other?, text?}], note?} in question order. Read the answer again before you act on it: an out-of-range number, a date outside its bounds or a rank that is not every option once is refused.",
+      "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). Only when the thread's catalog is version 7 or more: confirm (yes or no, with yesLabel, noLabel and a safe default), number (a decimal string, with minValue, maxValue, step and unit), scale (a whole number from \"from\" to \"to\", with fromLabel and toLabel), date (a calendar day YYYY-MM-DD, with minDate and maxDate) and rank (the person puts every option in order). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value, or the one yes/no, decimal, whole number or date, or every option value in the person's order for rank…], other?, text?}], note?} in question order. Read the answer again before you act on it: an out-of-range number, a date outside its bounds or a rank that is not every option once is refused. Only when the thread's catalog is version 8 or more: a question may carry show, 1 to 4 ids of components of the same surface (Text, Image, Mermaid, Code, Cards, Callout or Chart, each shown by one question only and placed nowhere else in the surface), drawn with the question between its text and its control; an image needs its alt.",
       "properties": {
         "id": {
           "type": "string",
@@ -117,6 +117,16 @@
               "help": {
                 "type": "string",
                 "maxLength": 300
+              },
+              "show": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
               },
               "type": {
                 "enum": [
@@ -782,7 +792,7 @@
     },
     "Checklist": {
       "type": "object",
-      "description": "A checklist of items, each with its state (done, doing, todo or failed), and a progress bar.",
+      "description": "A checklist of items, each with a state and an optional note, and a progress bar. States: done, doing, todo, failed and, only when the thread's catalog is version 8 or more, dropped (struck through, not counted in \"N of M done\"). For a plan, send the whole surface again each time the plan changes, under the same surfaceId, which starts with plan-.",
       "properties": {
         "id": {
           "type": "string",
@@ -809,7 +819,11 @@
                 "maxLength": 200
               },
               "state": {
-                "enum": ["done", "doing", "todo", "failed"]
+                "enum": ["done", "doing", "todo", "failed", "dropped"]
+              },
+              "note": {
+                "type": "string",
+                "maxLength": 200
               }
             },
             "required": ["label", "state"],

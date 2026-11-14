@@ -4,7 +4,7 @@
 - **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
   the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog, Choices, Cards and
-  Mermaid, Image, the questions of Choices with a title, typed answers and pictures (versions 1 to 5), the components of version 6 and the five more kinds of question of [version 7](#version-7-more-kinds-of-question) are built (the web's side of MVP slices 3 and 4); the adam-rs side (an agent that turns the
+  Mermaid, Image, the questions of Choices with a title, typed answers and pictures (versions 1 to 5), the components of version 6, the five more kinds of question of [version 7](#version-7-more-kinds-of-question), and the questions that show what they ask about and the checklist that carries a plan of [version 8](#version-8-a-question-that-shows-what-it-asks-about-and-a-plan) are built (the web's side of MVP slices 3 and 4, and of slices 9 and 10 of [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)); the adam-rs side (an agent that turns the
   catalog into model tools and refetches) is that repository's slice; see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
@@ -573,7 +573,7 @@ A state is always said in words beside its icon.
 | `Tabs` | `tabs` (required): `label` and `child` (a component id) for each | 1 to 8 tabs; label 60 | tabs that the arrow keys move between; only the open tab's child is drawn |
 | `Accordion` | `items` (required): `title` and `child` for each; `multiple` | 1 to 20 items; title 200 | sections, closed until their title is pressed (`aria-expanded`); one open at a time unless `multiple`; a closed section's child is not in the page |
 | `Callout` | `title`, `text` (required); `tone`: `info` (the default), `success`, `warning`, `error` | title 120; text 2,000 | a box with its icon, the tone in words above the title, the title and the text |
-| `Checklist` | `items` (required): `label` and `state` (`done`, `doing`, `todo` or `failed`) for each; `title` | 1 to 50 items; label 200; title 120 | each item's state in words beside an icon, and a progress bar with "N of M done" |
+| `Checklist` | `items` (required): `label` and `state` (`done`, `doing`, `todo` or `failed`; from [version 8](#the-checklist) also `dropped`) for each, and from version 8 a `note`; `title` | 1 to 50 items; label 200; note 200; title 120 | each item's state in words beside an icon, and a progress bar with "N of M done" (a dropped item is in neither number) |
 | `Timeline` | `events` (required): `time` and `title`; `description`; `state` (the default is `done`); `title` | 1 to 50 events; time 40; title 200; description 1,000 | an ordered list: the time and the state in words, the title and the description |
 
 Each child of a `Stack`, a `Tabs` or an `Accordion` is a component of the same surface, and is checked by the same rules as any
@@ -799,7 +799,7 @@ The contract of the six components, as the catalog holds it (`catalog/catalog.js
   },
   "Checklist": {
     "type": "object",
-    "description": "A checklist of items, each with its state (done, doing, todo or failed), and a progress bar.",
+    "description": "A checklist of items, each with a state and an optional note, and a progress bar. States: done, doing, todo, failed and, only when the thread's catalog is version 8 or more, dropped (struck through, not counted in \"N of M done\"). For a plan, send the whole surface again each time the plan changes, under the same surfaceId, which starts with plan-.",
     "properties": {
       "id": {
         "type": "string",
@@ -830,8 +830,13 @@ The contract of the six components, as the catalog holds it (`catalog/catalog.js
                 "done",
                 "doing",
                 "todo",
-                "failed"
+                "failed",
+                "dropped"
               ]
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 200
             }
           },
           "required": [
@@ -1712,7 +1717,7 @@ a version 6 form that could not be drawn.
 
 #### The whole catalog
 
-The page holds the schema of `Choices` and the five components' vocabulary is in the sections above; **the whole catalog is one file**, `web/src/features/chat/lib/a2ui/catalog/catalog.json` of this repository, with its version and digest in `catalog.lock.json` next to it (version 7: `sha256:6df9a37d0ae6fa53b8d22145dc1b5674b6d3f228d1c1b83b2ec640d7b3093d49`). At run time it is delivered to an agent in the message (`inlineCatalogs`) or by `get_ui_catalog` ([section 6](#6-the-refetch)). The digest is computed as [section 2](#2-digest-version-and-the-lock) says; **a client of the catalog does not need to compute it**: the screen that owns the catalog and the orchestrator that records it do, and a reader that wants to know whether its copy is current compares the `digest` it was sent.
+The page holds the schema of `Choices` and the five components' vocabulary is in the sections above; **the whole catalog is one file**, `web/src/features/chat/lib/a2ui/catalog/catalog.json` of this repository, with its version and digest in `catalog.lock.json` next to it (version 8: `sha256:22c333102bed676791dc9d47f21fc0a39be6e5062ef2c52f5a599ecca1b8341d`). At run time it is delivered to an agent in the message (`inlineCatalogs`) or by `get_ui_catalog` ([section 6](#6-the-refetch)). The digest is computed as [section 2](#2-digest-version-and-the-lock) says; **a client of the catalog does not need to compute it**: the screen that owns the catalog and the orchestrator that records it do, and a reader that wants to know whether its copy is current compares the `digest` it was sent.
 
 #### Answered forms
 
@@ -1751,13 +1756,14 @@ The five as the whole surface, in the form an agent sends (one `Choices`, one su
 #### The Choices schema, as the catalog holds it
 
 The schema of the whole `Choices` (`catalog/catalog.json`; a test keeps them equal). Version 5 wrote it first; this is its
-single copy.
+single copy, and it is the schema of **version 8**, which adds the member `show` to a question ([the rules](#a-question-shows)):
+without it and the last sentences of the description, it is version 7's.
 
 ```json
 {
   "Choices": {
     "type": "object",
-    "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). Only when the thread's catalog is version 7 or more: confirm (yes or no, with yesLabel, noLabel and a safe default), number (a decimal string, with minValue, maxValue, step and unit), scale (a whole number from \"from\" to \"to\", with fromLabel and toLabel), date (a calendar day YYYY-MM-DD, with minDate and maxDate) and rank (the person puts every option in order). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value, or the one yes/no, decimal, whole number or date, or every option value in the person's order for rank…], other?, text?}], note?} in question order. Read the answer again before you act on it: an out-of-range number, a date outside its bounds or a rank that is not every option once is refused.",
+    "description": "ask_user only: use it in the question you ask the person, never in a surface you show with show (nothing waits for its answer, so its form is dead). A form of up to 8 questions answered with one submit: a title, a description of why you ask, and per question a help line and a type: single (radio buttons, the default), multiple (checkboxes), select (a searchable list, up to 50 options), images (a deck of picture tiles, up to 16, each option's image an image file shared in this conversation), text or longText (the person types). Only when the thread's catalog is version 7 or more: confirm (yes or no, with yesLabel, noLabel and a safe default), number (a decimal string, with minValue, maxValue, step and unit), scale (a whole number from \"from\" to \"to\", with fromLabel and toLabel), date (a calendar day YYYY-MM-DD, with minDate and maxDate) and rank (the person puts every option in order). An option has a label, a description, an optional image {sha256, alt}, an icon and a recommended badge. freeInput adds an anything-else box. One submit sends one action: name = action.event.name (default \"answer\"), context = {answers:[{id, values:[option value, or the one yes/no, decimal, whole number or date, or every option value in the person's order for rank…], other?, text?}], note?} in question order. Read the answer again before you act on it: an out-of-range number, a date outside its bounds or a rank that is not every option once is refused. Only when the thread's catalog is version 8 or more: a question may carry show, 1 to 4 ids of components of the same surface (Text, Image, Mermaid, Code, Cards, Callout or Chart, each shown by one question only and placed nowhere else in the surface), drawn with the question between its text and its control; an image needs its alt.",
     "properties": {
       "id": {
         "type": "string",
@@ -1812,6 +1818,16 @@ single copy.
             "help": {
               "type": "string",
               "maxLength": 300
+            },
+            "show": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
             },
             "type": {
               "enum": [
@@ -2034,6 +2050,311 @@ single copy.
 ```
 
 
+### Version 8: a question that shows what it asks about, and a plan
+
+*Requested by the owner, 2026-11-14, when asked which kinds of question an agent should be able to ask: "Images, graphs,... A2UI is
+enabled by default so we might as well use it"; [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md),
+slices 9 and 10.* Version 7 gave the questions their kinds; version 8 lets a question **show** things, and makes `Checklist` able to
+carry an agent's **plan**.
+
+Version 8 only adds. It changes two components, `Choices` (a question may `show` components of its surface) and `Checklist` (a state
+`dropped`, an item `note`), and it writes down two rules about a surface that no schema can say: what a client does when [a surface is
+sent again](#a-surface-sent-again), and [what a plan is](#the-plan). A surface of version 7 is valid and is drawn and answered as before:
+take the additions of this section away and the catalog is version 7's, digest for digest (a test of the web does it).
+
+An agent uses these only when the thread's catalog is **version 8 or more**, or, the better test, when what it wants is in the schema it
+was given: `show` among the properties of a question of `Choices`, `dropped` in the `state` of a `Checklist` item. A client that knows
+only version 7 is never sent them ([versions](#what-a-client-of-version-7-does)).
+
+#### A question shows
+
+A question of any `type` may carry one more member:
+
+| Member | Meaning |
+|---|---|
+| `show` | A list of **1 to 4** ids (each a string of 1 to 256 characters) of components **of the same surface**, drawn **with the question**, in the order listed, after its words (`question`, `help`) and before its control |
+
+| Limit | Value |
+|---|---|
+| Ids in the `show` of one question | 1 to 4 |
+| Ids in the `show` of all the questions of one `Choices` | at most 8 |
+
+**What may be shown, a closed list of seven components:** `Text`, `Image`, `Mermaid`, `Code`, `Cards`, `Callout` and `Chart`. Each draws
+something to look at; none sends anything or asks anything; **none holds other components**, so a shown component can never contain the
+question that shows it (this is why no cycle rule is needed). A `Choices` (the question's own or another), a `Column`, a `Stack`,
+`Tabs`, `Accordion` and every other component is refused, and so is anything a person can act on. A later version may lengthen the
+list (a version that does, says so in the schema's own description); a client refuses a name that is not on *its* list (the rules below).
+
+The components keep their own schemas and their own rules: a shown `Image` is an `Image` (`artifact`, `alt` required), a shown `Chart`
+a `Chart`, and so on. A shown `Code`, `Chart` or `Image` is also one of the heavy components of [version 6](#version-6-code-and-files):
+it is drawn once, and that one place is its question.
+
+**A shown component is drawn where its question is and nowhere else.** An id that some `Choices` of the surface shows is not a child of
+anything, a tab or an item: it is reached by `show` only.
+
+**How `show` relates to the picture of an option.** An option of an `images` question has its own picture (`options[].image`, [version
+5](#version-5-questions-with-a-title-a-description-and-typed-options)): it is what is chosen. `show` is what the question is *about*: it is
+for the question as a whole, on any type, and it does not replace or duplicate an option's picture. An `images` question may have both,
+the shown things above the deck.
+
+##### Rules for what a question shows
+
+Checked by the web's validator and by the agent before it asks. Each is a refusal of the **whole surface** (never half drawn), with the
+rule name of [section 8](#8-what-the-web-does-with-a-surface), except the first:
+
+| Result | When |
+|---|---|
+| *pending* | an id of `show` is not a component of the surface **yet**: as a child that has not been sent, the surface is not complete, nothing is drawn and "The interface is not complete yet." is said, until an `updateComponents` brings it. Judged **last**: a surface that is refused for any other reason is refused, whether or not it is also incomplete |
+| `schema` | the `show` of a question names an id twice; **one id is shown by two questions** (of one `Choices` or of two); one `Choices` shows more than 8 in all; the component an id names is **not on the list** above (a `Choices`, its own included, a container, a `Table`, a `Gallery`...); `show` is not a list of 1 to 4 strings |
+| `schema` | the shown component breaks its own schema: **an `Image` with no `alt` is refused**, never drawn as decoration |
+| `expansion` | the shown component is also placed in the surface in another way, that is, reached from `root` by `children`, `child`, the `tabs` or the `items` of another component |
+| `artifact` | a shown `Image` names a file the thread does not hold, or one that is not an image: the rule of [`Image`](#version-4-adr-0032-version-3-plus-image) |
+
+When several rules fail, the result is the first of this order: each component against its own schema and its own rules (for a `Choices`
+the `show` rules of one form, for an `Image` its `artifact`), in the order of the surface; then the [plan](#the-plan) rule (`action`);
+then what the forms of the whole surface show (`schema`: a component shown by two forms, or one that is not on the list); then the walk from
+`root`, where a shown component that is also placed is `expansion`; `pending` last. A component that is both (a `Choices` that shows
+itself is on no list *and* is placed) is `schema`. The vectors below each break exactly one rule.
+
+##### How a client draws what a question shows
+
+| | A client must |
+|---|---|
+| Place | draw the shown components **inside the question's group** (the group that its words name), after its words and its `help` and before its control, in the order of `show`. The order of the DOM is the order a screen reader meets them: the question, what it asks about, then the control |
+| An image | has its `alt` as its name and is never hidden from assistive technology (the schema makes `alt` required, so there is no decorative image); its `caption` is text under it |
+| A diagram, a chart | has the text alternative the component already has: the graph's source one click away, the chart's data behind its **Data** disclosure and its accessible name |
+| A form that has stopped taking input | still lets the person read, copy and open what it shows: [Answered forms](#answered-forms) switch off the controls of the question, not the **Copy** of a shown `Code` or a link of a shown `Cards` |
+| Not part of the answer | nothing shown sends anything or changes the answer: the form's one button, its held state and its answer are what they were |
+| A phone | one column; the page never scrolls sideways; both colour schemes |
+
+##### What a client of version 7 does
+
+A `question` of version 7 has no `show` (its schema refuses every member nobody has), so a client that only knows version 7 meets `show`
+as it meets any member it does not know: **the whole surface is refused, rule `schema`**, whose reason names the place, `questions.0.show`,
+with the raw operations ([section 8](#8-what-the-web-does-with-a-surface)); it **never ignores** the member, for a form that hides what it
+asks about is not the form the agent asked. So **an agent never sends `show` to a client of version 7**: it reads the thread's `version`
+(or whether `show` is in the schema it was given), exactly as it does for the kinds of version 7. When it wants to show something and
+cannot, it puts the words in the question's `help`, and, where it can place components in the surface, puts them **before** the
+`Choices` in the same surface (a `Column`), where a client of version 7 draws them above the form, outside its group. The same holds
+for `dropped` and `note` of a `Checklist`.
+
+#### The checklist
+
+`Checklist` ([version 6](#version-6-structure-and-status)) gains in version 8:
+
+| Member | Meaning |
+|---|---|
+| item `state: "dropped"` | the item was **given up**: it is no longer part of the plan. Drawn **struck through**, and in words (**Dropped**) beside its icon: never by the strike or the colour alone |
+| item `note` | up to 200 characters, plain text, drawn under the label (an empty note is no note) |
+
+The other limits stand: 1 to 50 items, a label of at most 200 characters, a title of at most 120.
+
+**How progress is counted.** A dropped item is **in neither number**: `done` is the count of items whose state is `done`, `total` is the
+count of items whose state is not `dropped`, and the words are `<done> of <total> done` (`2 of 3 done` for two done, one doing and two
+dropped). A `failed` item is counted in the total and is not done. When every item is dropped the words are `0 of 0 done` and the bar is
+not drawn. The bar is a `progressbar` whose value text is the words. A state is always said in words beside its icon.
+
+Vectors (`checklists`: the `items` of a Checklist, its `progress` as `[done, total]`, or `null` when the schema refuses it, and the
+`words`; the block holds **14 cases**):
+
+```json checklists
+[
+  {"because": "the states of version 6", "items": [{"label": "A", "state": "done"}, {"label": "B", "state": "doing"}, {"label": "C", "state": "todo"}, {"label": "D", "state": "failed"}], "progress": [1, 4], "words": "1 of 4 done"},
+  {"because": "a dropped item is in neither number", "items": [{"label": "A", "state": "done"}, {"label": "B", "state": "dropped"}, {"label": "C", "state": "doing"}, {"label": "D", "state": "done"}, {"label": "E", "state": "dropped"}], "progress": [2, 3], "words": "2 of 3 done"},
+  {"because": "only dropped items: nothing is left to do", "items": [{"label": "A", "state": "dropped"}, {"label": "B", "state": "dropped"}], "progress": [0, 0], "words": "0 of 0 done"},
+  {"because": "a failed item is not done and is counted", "items": [{"label": "A", "state": "failed"}, {"label": "B", "state": "done"}], "progress": [1, 2], "words": "1 of 2 done"},
+  {"because": "a note on any state", "items": [{"label": "A", "state": "dropped", "note": "Out of scope: the API does not change"}, {"label": "B", "state": "done", "note": "Merged"}, {"label": "C", "state": "todo", "note": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}], "progress": [1, 2], "words": "1 of 2 done"},
+  {"because": "a note of 201 characters", "items": [{"label": "A", "state": "todo", "note": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}], "progress": null},
+  {"because": "an empty note is allowed and is no note", "items": [{"label": "A", "state": "todo", "note": ""}], "progress": [0, 1], "words": "0 of 1 done"},
+  {"because": "a note that is not text", "items": [{"label": "A", "state": "todo", "note": 5}], "progress": null},
+  {"because": "a state that is not one of the five", "items": [{"label": "A", "state": "skipped"}], "progress": null},
+  {"because": "Dropped is spelled in lower case", "items": [{"label": "A", "state": "Dropped"}], "progress": null},
+  {"because": "a member nobody has", "items": [{"label": "A", "state": "todo", "owner": "me"}], "progress": null},
+  {"because": "no item", "items": [], "progress": null},
+  {"because": "fifty items, one of them dropped", "items": [{"label": "Step 0", "state": "done"}, {"label": "Step 1", "state": "done"}, {"label": "Step 2", "state": "done"}, {"label": "Step 3", "state": "done"}, {"label": "Step 4", "state": "done"}, {"label": "Step 5", "state": "done"}, {"label": "Step 6", "state": "done"}, {"label": "Step 7", "state": "done"}, {"label": "Step 8", "state": "done"}, {"label": "Step 9", "state": "done"}, {"label": "Step 10", "state": "dropped"}, {"label": "Step 11", "state": "todo"}, {"label": "Step 12", "state": "todo"}, {"label": "Step 13", "state": "todo"}, {"label": "Step 14", "state": "todo"}, {"label": "Step 15", "state": "todo"}, {"label": "Step 16", "state": "todo"}, {"label": "Step 17", "state": "todo"}, {"label": "Step 18", "state": "todo"}, {"label": "Step 19", "state": "todo"}, {"label": "Step 20", "state": "todo"}, {"label": "Step 21", "state": "todo"}, {"label": "Step 22", "state": "todo"}, {"label": "Step 23", "state": "todo"}, {"label": "Step 24", "state": "todo"}, {"label": "Step 25", "state": "todo"}, {"label": "Step 26", "state": "todo"}, {"label": "Step 27", "state": "todo"}, {"label": "Step 28", "state": "todo"}, {"label": "Step 29", "state": "todo"}, {"label": "Step 30", "state": "todo"}, {"label": "Step 31", "state": "todo"}, {"label": "Step 32", "state": "todo"}, {"label": "Step 33", "state": "todo"}, {"label": "Step 34", "state": "todo"}, {"label": "Step 35", "state": "todo"}, {"label": "Step 36", "state": "todo"}, {"label": "Step 37", "state": "todo"}, {"label": "Step 38", "state": "todo"}, {"label": "Step 39", "state": "todo"}, {"label": "Step 40", "state": "todo"}, {"label": "Step 41", "state": "todo"}, {"label": "Step 42", "state": "todo"}, {"label": "Step 43", "state": "todo"}, {"label": "Step 44", "state": "todo"}, {"label": "Step 45", "state": "todo"}, {"label": "Step 46", "state": "todo"}, {"label": "Step 47", "state": "todo"}, {"label": "Step 48", "state": "todo"}, {"label": "Step 49", "state": "todo"}], "progress": [10, 49], "words": "10 of 49 done"},
+  {"because": "fifty-one items", "items": [{"label": "Step 0", "state": "todo"}, {"label": "Step 1", "state": "todo"}, {"label": "Step 2", "state": "todo"}, {"label": "Step 3", "state": "todo"}, {"label": "Step 4", "state": "todo"}, {"label": "Step 5", "state": "todo"}, {"label": "Step 6", "state": "todo"}, {"label": "Step 7", "state": "todo"}, {"label": "Step 8", "state": "todo"}, {"label": "Step 9", "state": "todo"}, {"label": "Step 10", "state": "todo"}, {"label": "Step 11", "state": "todo"}, {"label": "Step 12", "state": "todo"}, {"label": "Step 13", "state": "todo"}, {"label": "Step 14", "state": "todo"}, {"label": "Step 15", "state": "todo"}, {"label": "Step 16", "state": "todo"}, {"label": "Step 17", "state": "todo"}, {"label": "Step 18", "state": "todo"}, {"label": "Step 19", "state": "todo"}, {"label": "Step 20", "state": "todo"}, {"label": "Step 21", "state": "todo"}, {"label": "Step 22", "state": "todo"}, {"label": "Step 23", "state": "todo"}, {"label": "Step 24", "state": "todo"}, {"label": "Step 25", "state": "todo"}, {"label": "Step 26", "state": "todo"}, {"label": "Step 27", "state": "todo"}, {"label": "Step 28", "state": "todo"}, {"label": "Step 29", "state": "todo"}, {"label": "Step 30", "state": "todo"}, {"label": "Step 31", "state": "todo"}, {"label": "Step 32", "state": "todo"}, {"label": "Step 33", "state": "todo"}, {"label": "Step 34", "state": "todo"}, {"label": "Step 35", "state": "todo"}, {"label": "Step 36", "state": "todo"}, {"label": "Step 37", "state": "todo"}, {"label": "Step 38", "state": "todo"}, {"label": "Step 39", "state": "todo"}, {"label": "Step 40", "state": "todo"}, {"label": "Step 41", "state": "todo"}, {"label": "Step 42", "state": "todo"}, {"label": "Step 43", "state": "todo"}, {"label": "Step 44", "state": "todo"}, {"label": "Step 45", "state": "todo"}, {"label": "Step 46", "state": "todo"}, {"label": "Step 47", "state": "todo"}, {"label": "Step 48", "state": "todo"}, {"label": "Step 49", "state": "todo"}, {"label": "Step 50", "state": "todo"}], "progress": null}
+]
+```
+
+#### A surface sent again
+
+An agent's plan is one surface that it sends again each time the plan changes. These rules say what that is, in the order they apply.
+
+1. **The same `surfaceId` is the same surface** (A2UI). In one run, the orchestrator sends the whole surface each time as an
+   `ACTIVITY_SNAPSHOT` with `replace: true`, and the client replaces the part where it stands ([`agui.md`](agui.md#surfaces-in-the-projection)).
+2. **A `createSurface` for a surface that exists starts it over**: its components and its data model are gone and the ones that follow are
+   the surface (A2UI's rule; *verified 2026-11-14* in the reducer the web uses). So **everything before the last `createSurface` of a
+   surface is dead**: a client reads only the operations from the last one, and the size limit of the surface counts only those.
+   The orchestrator still holds and replays all of them, up to its own cap ([`agui.md`](agui.md#surfaces-in-the-projection)), and the client
+   skips the dead ones: **only operations of the very surface the last `createSurface` names are dropped**; a payload that mixes
+   surfaces is left whole, for the check of its shape to refuse. An `updateComponents` alone does not start anything over: it adds
+   to the components and replaces those that have the same `id`.
+3. **A copy in a later run.** Each run that sends the surface holds a copy of it in the conversation. For a surface that is **not a
+   plan**, the newest copy is the live one; an older copy draws one line, "This interface was updated further down.", and nothing when
+   the surface was deleted. This is the rule that was always true and it is not changed.
+4. **A [plan](#the-plan) is drawn once**: where its first copy stands, from the newest copy. A later copy draws **nothing** where it
+   arrived. The page holds one checklist however often the plan was sent.
+5. **A form and a plan never meet.** A surface that holds a `Choices` is not a plan (it is refused if its id says it is, rule `action`),
+   so rule 4 never moves a form. A form sent again under its id follows rule 3 and is an *open* form only through
+   [Answered forms](#answered-forms), which are not weakened: a form is answered as soon as the person has acted after the message that
+   holds it. **A re-ask is a new surface with a new `surfaceId`**, as [version 7](#receiving-an-answer) says; an agent never relies on
+   rules 3 and 5 to ask again.
+
+Vectors for rule 2 (`restarts`: the operations of one activity and the index of the first operation that is alive; the block holds
+**5 cases**):
+
+```json restarts
+[
+  {"because": "one create and one update: all alive", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}], "from": 0},
+  {"because": "the surface sent again whole: only the last copy is alive", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "B"}]}}], "from": 2},
+  {"because": "three copies", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "B"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "C"}]}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "D"}]}}], "from": 4},
+  {"because": "an update alone does not start over", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": "B"}]}}], "from": 0},
+  {"because": "a create for another surface is not a restart of this one, and the payload is left whole for the shape check", "operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}, {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": [{"id": "root", "component": "Text", "text": "A"}]}}, {"version": "v0.9.1", "createSurface": {"surfaceId": "s2", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}}], "from": 0}
+]
+```
+
+Vectors for rules 3 and 4 (`copies`: the copies of surfaces in the order the transcript holds them, each in a message of its own, `key`
+the activity that is the same for every copy of one surface, `marker` which operations the copy holds; `result`: what each copy draws, `draws:<marker>` the
+named copy's content, `older` the line of rule 3, `nothing`; and `pinned`, the marker of the plan that is pinned, `null` with none;
+the block holds **8 cases**):
+
+```json copies
+[
+  {"because": "a plan in three runs is drawn once, where it first stood, from the newest copy", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "B"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "C"}], "result": ["draws:C", "nothing", "nothing"], "pinned": "C"},
+  {"because": "a plan with one copy is drawn where it is, and pinned", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}], "result": ["draws:A"], "pinned": "A"},
+  {"because": "a surface that is not a plan: the older copy says it was updated further down", "copies": [{"key": "a2ui-3", "surfaceId": "s1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "s1", "marker": "B"}], "result": ["older", "draws:B"], "pinned": null},
+  {"because": "a form sent again under its id is a surface that is not a plan: the newest copy is live", "copies": [{"key": "a2ui-4", "surfaceId": "ask", "marker": "A"}, {"key": "a2ui-4", "surfaceId": "ask", "marker": "B"}, {"key": "a2ui-4", "surfaceId": "ask", "marker": "C"}], "result": ["older", "older", "draws:C"], "pinned": null},
+  {"because": "two plans: each is drawn once; the pinned one is the plan sent last", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-8", "surfaceId": "plan-2", "marker": "B"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "C"}], "result": ["draws:C", "draws:B", "nothing"], "pinned": "C"},
+  {"because": "two plans, the second sent last", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "B"}, {"key": "a2ui-8", "surfaceId": "plan-2", "marker": "C"}], "result": ["draws:B", "nothing", "draws:C"], "pinned": "C"},
+  {"because": "a plan beside a form: the form keeps the rule of its own", "copies": [{"key": "a2ui-3", "surfaceId": "plan-1", "marker": "A"}, {"key": "a2ui-5", "surfaceId": "ask", "marker": "B"}, {"key": "a2ui-3", "surfaceId": "plan-1", "marker": "C"}, {"key": "a2ui-5", "surfaceId": "ask", "marker": "D"}], "result": ["draws:C", "older", "nothing", "draws:D"], "pinned": "C"},
+  {"because": "no plan", "copies": [{"key": "a2ui-5", "surfaceId": "ask", "marker": "A"}], "result": ["draws:A"], "pinned": null}
+]
+```
+
+#### The plan
+
+A **plan** is a surface whose `surfaceId` **starts with `plan-` and has at least one more character** (case counts: `Plan-1` and `plan1`
+are not plans, and neither is `plan-`). That is the whole hook, and it is the id and not a member of `createSurface` because the id is
+the one thing every layer between the agent and the screen already carries and keys on (the A2A part, the envelope check of the
+orchestrator, the log, the snapshot, the client); no layer has to learn a new member, and an agent that speaks only the A2UI of this
+page can write it. A client **never** guesses a plan from the type of a component: a `Checklist` is a plan only inside a surface with such
+an id.
+
+A plan is **read, never answered**: nothing in it sends or asks anything. A surface with such an id that holds a `Choices`, an input or a
+button is refused (**rule `action`**, "is a plan, which holds nothing the person can answer or send"). What else it holds is up to the
+agent; the usual plan is a `Column` of a `Text` and a `Checklist`. The agent sends it **whole** each time it changes, with the same id:
+
+```json
+[
+  {"version": "v0.9.1", "createSurface": {"surfaceId": "plan-run-7", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}},
+  {"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-run-7", "components": [
+    {"id": "root", "component": "Column", "children": ["steps"]},
+    {"id": "steps", "component": "Checklist", "title": "Plan", "items": [
+      {"label": "Read the failing test", "state": "done"},
+      {"label": "Fix the parser", "state": "doing", "note": "The second branch of `parse_group`"},
+      {"label": "Port it to the CLI", "state": "dropped", "note": "Out of scope: the CLI does not parse"},
+      {"label": "Open the pull request", "state": "todo"}
+    ]}
+  ]}}
+]
+```
+
+**Where the person finds it.**
+
+- **In the conversation**, once, where its first copy stood: a section named "Plan from <the agent>" that changes in place.
+- **Pinned in the thread's panel**: the **latest plan of the thread** (the plan surface sent last) is the **Plan** tab of the panel
+  ([`web/DESIGN.md`](../../web/DESIGN.md#panel)), a third tab beside Activity and Sources that exists only while the thread has a plan, with
+  its progress (`2/5`) after its name. It shows the newest copy, the same one the conversation does. A thread may hold several plans
+  (`plan-a`, then `plan-b`): each is drawn once in the conversation, and the pinned one is the one sent last. A plan the agent deleted
+  (`deleteSurface`) is drawn nowhere and has no tab.
+- **Announced, politely.** The plan in the conversation holds a status region (`role="status"`, polite) that says **"Plan updated: 2 of 5
+  done"** (the words of its checklists together; "Plan updated" when it has none) after the plan has changed and has been **quiet for
+  0.8 s**, so a burst of updates is one announcement and the last state is the one said. It says nothing for the first copy (the person
+  reads it where it stands), nothing for the words the agent streams (the region reads the plan only), and nothing when a copy changes
+  nothing.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent
+  participant O as Orchestrator
+  participant W as Web (conversation)
+  participant P as Web (Plan tab)
+
+  A->>O: run 1: createSurface plan-7 + updateComponents (2 of 5 done)
+  O-->>W: ACTIVITY_SNAPSHOT a2ui-3, the whole surface
+  W->>W: draws the plan where it stands, says nothing
+  A->>O: run 1: createSurface plan-7 + updateComponents (3 of 5 done)
+  O-->>W: ACTIVITY_SNAPSHOT a2ui-3 (replace): the part is replaced in place
+  W->>W: quiet for 0.8 s, then says "Plan updated: 3 of 5 done"
+  A->>O: run 2: createSurface plan-7 + updateComponents (4 of 6 done, one dropped)
+  O-->>W: ACTIVITY_SNAPSHOT a2ui-3 in run 2's message
+  W->>W: the first copy now draws the newest, the copy of run 2 draws nothing
+  W->>P: the latest plan: the Plan tab shows the same copy, "4/6"
+```
+
+**What an agent sends.** The whole surface each time: a `createSurface` and an `updateComponents` with the changed components (or all of
+them), under one id. The size of what the client reads is that of the last copy ([rule 2](#a-surface-sent-again)). The orchestrator's
+replay of a surface is capped at 256 KiB of operations in all ([`agui.md`](agui.md#surfaces-in-the-projection)) and does not drop the
+dead ones, so a plan that is sent very many times reaches the cap and its later updates are not shown: about sixty times for a plan of
+four kilobytes. An agent that updates a long plan sends only the `Checklist` component (an `updateComponents` of its id) and keeps its
+copies few. (A change of the orchestrator that compacts a surface at its `createSurface` is open: it is not part of this contract.)
+
+Vectors for what a surface may be and hold (`v8-surfaces`: `files`, the files the thread holds, each with its `sha256` and whether its
+`kind` is an `image`; and `cases`, each a surface with its `components` (the operations are one `createSurface` for the `surfaceId`, `s1`
+unless the case says, and one `updateComponents` with these) and its `result`: `drawn`, `pending`, or `refused:<rule>`; the block holds
+**34 cases**). The catalog is version 8's and the thread's version is 8:
+
+```json v8-surfaces
+{
+  "files": [{"sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "kind": "image"}, {"sha256": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "kind": "other"}],
+  "cases": [
+    {"because": "a question shows one Text", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "drawn"},
+    {"because": "a question shows an image, a diagram, a code block and words, in that order", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["i1", "g", "c", "t1"]}]}, {"id": "i1", "component": "Image", "artifact": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "A screenshot of the list"}, {"id": "g", "component": "Mermaid", "code": "graph TD; A-->B"}, {"id": "c", "component": "Code", "code": "let x = 1;"}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "drawn"},
+    {"because": "two questions show cards and a callout, a third a chart", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "a", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["k"]}, {"id": "b", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["n"]}, {"id": "c", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["h"]}]}, {"id": "k", "component": "Cards", "cards": [{"title": "Option A"}, {"title": "Option B"}]}, {"id": "n", "component": "Callout", "title": "Heads up", "text": "This cannot be undone."}, {"id": "h", "component": "Chart", "type": "bar", "labels": ["Mon", "Tue"], "series": [{"name": "Runs", "values": [3, 4]}]}], "result": "drawn"},
+    {"because": "a yes or no, a number and a rank show too: any type of question may", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "a", "question": "Which one?", "type": "confirm", "show": ["t1"]}, {"id": "b", "question": "Which one?", "type": "number", "show": ["t2"]}, {"id": "c", "question": "Which one?", "type": "rank", "show": ["t3"], "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}, {"id": "t1", "component": "Text", "text": "Some words"}, {"id": "t2", "component": "Text", "text": "Some words"}, {"id": "t3", "component": "Text", "text": "Some words"}], "result": "drawn"},
+    {"because": "a deck of option pictures and a shown picture are different things: both are drawn", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "images", "show": ["i1"], "options": [{"value": "a", "label": "A", "image": {"sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "Layout A"}}, {"value": "b", "label": "B", "image": {"sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "Layout B"}}]}]}, {"id": "i1", "component": "Image", "artifact": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "A screenshot of the list"}], "result": "drawn"},
+    {"because": "eight shown in one form, four in each of two questions", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "a", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1", "t2", "t3", "t4"]}, {"id": "b", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t5", "t6", "t7", "t8"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}, {"id": "t2", "component": "Text", "text": "Some words"}, {"id": "t3", "component": "Text", "text": "Some words"}, {"id": "t4", "component": "Text", "text": "Some words"}, {"id": "t5", "component": "Text", "text": "Some words"}, {"id": "t6", "component": "Text", "text": "Some words"}, {"id": "t7", "component": "Text", "text": "Some words"}, {"id": "t8", "component": "Text", "text": "Some words"}], "result": "drawn"},
+    {"because": "the id is not a component of the surface yet", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}]}], "result": "pending"},
+    {"because": "one of two ids is not there yet, and what is there is fine", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1", "t2"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "pending"},
+    {"because": "a question shows another Choices", "components": [{"id": "root", "component": "Column", "children": ["ask", "other"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["other"]}]}, {"id": "other", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "refused:schema"},
+    {"because": "a question shows its own Choices", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["ask"]}]}], "result": "refused:schema"},
+    {"because": "a question shows a Column", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["col2"]}]}, {"id": "col2", "component": "Column", "children": ["t1"]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "a question shows a Table, which is not on the list", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["tb"]}]}, {"id": "tb", "component": "Table", "columns": [{"key": "a", "label": "A"}], "rows": [{"a": "1"}]}], "result": "refused:schema"},
+    {"because": "a question shows a Tabs", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["tabs"]}]}, {"id": "tabs", "component": "Tabs", "tabs": [{"label": "One", "child": "t1"}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "a question shows a Stack", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["st"]}]}, {"id": "st", "component": "Stack", "children": ["t1"]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "a question shows a Gallery, which is not on the list", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["ga"]}]}, {"id": "ga", "component": "Gallery", "images": [{"artifact": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "One"}]}], "result": "refused:schema"},
+    {"because": "the same id twice in one question", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1", "t1"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "one id shown by two questions of one form", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "a", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}, {"id": "b", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "one id shown by two forms", "components": [{"id": "root", "component": "Column", "children": ["ask", "ask2"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}]}, {"id": "ask2", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "an empty list", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": []}]}], "result": "refused:schema"},
+    {"because": "five ids in one question", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1", "t2", "t3", "t4", "t5"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}, {"id": "t2", "component": "Text", "text": "Some words"}, {"id": "t3", "component": "Text", "text": "Some words"}, {"id": "t4", "component": "Text", "text": "Some words"}, {"id": "t5", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "nine ids in one form, four, four and one", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "a", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1", "t2", "t3", "t4"]}, {"id": "b", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t5", "t6", "t7", "t8"]}, {"id": "c", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t9"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}, {"id": "t2", "component": "Text", "text": "Some words"}, {"id": "t3", "component": "Text", "text": "Some words"}, {"id": "t4", "component": "Text", "text": "Some words"}, {"id": "t5", "component": "Text", "text": "Some words"}, {"id": "t6", "component": "Text", "text": "Some words"}, {"id": "t7", "component": "Text", "text": "Some words"}, {"id": "t8", "component": "Text", "text": "Some words"}, {"id": "t9", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "show is a string, not a list", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": "t1"}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:schema"},
+    {"because": "show holds a number", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": [7]}]}], "result": "refused:schema"},
+    {"because": "an image with no alt text", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["i1"]}]}, {"id": "i1", "component": "Image", "artifact": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"}], "result": "refused:schema"},
+    {"because": "a shown Text that is also a child of the Column", "components": [{"id": "root", "component": "Column", "children": ["ask", "t1"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["t1"]}]}, {"id": "t1", "component": "Text", "text": "Some words"}], "result": "refused:expansion"},
+    {"because": "a shown Image that is also the child of a tab", "components": [{"id": "root", "component": "Column", "children": ["ask", "tabs"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["i1"]}]}, {"id": "i1", "component": "Image", "artifact": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "alt": "A screenshot of the list"}, {"id": "tabs", "component": "Tabs", "tabs": [{"label": "Look", "child": "i1"}]}], "result": "refused:expansion"},
+    {"because": "a shown image of a file the thread does not hold", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["i1"]}]}, {"id": "i1", "component": "Image", "artifact": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", "alt": "A screenshot of the list"}], "result": "refused:artifact"},
+    {"because": "a shown image of a file that is not an image", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}], "show": ["i1"]}]}, {"id": "i1", "component": "Image", "artifact": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "alt": "A screenshot of the list"}], "result": "refused:artifact"},
+    {"because": "a plan that holds a checklist", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["list"]}, {"id": "list", "component": "Checklist", "title": "Plan", "items": [{"label": "Read the code", "state": "done"}, {"label": "Write the change", "state": "doing"}]}], "result": "drawn"},
+    {"because": "a plan that holds a form", "surfaceId": "plan-1", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "refused:action"},
+    {"because": "the id plan- alone is not a plan: its form is drawn", "surfaceId": "plan-", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "drawn"},
+    {"because": "the prefix is lower case and has a dash: plan1 is not a plan", "surfaceId": "plan1", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "drawn"},
+    {"because": "Plan-1 is not a plan either", "surfaceId": "Plan-1", "components": [{"id": "root", "component": "Column", "children": ["ask"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}], "result": "drawn"},
+    {"because": "a surface that is not a plan holds a checklist and a form", "surfaceId": "s2", "components": [{"id": "root", "component": "Column", "children": ["ask", "list"]}, {"id": "ask", "component": "Choices", "questions": [{"id": "q", "question": "Which one?", "type": "single", "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}]}, {"id": "list", "component": "Checklist", "items": [{"label": "Read", "state": "todo"}]}], "result": "drawn"}
+  ]
+}
+```
+
+##### Tests of the page
+
+The web's tests read this page: its vectors run through the validator of the web (`prepareSurface`) and its own reading of a
+checklist, the transcript model of the `copies` through the functions that place and pin a plan, the page's schemas are compared
+with `catalog.json`, and **a test takes the additions of version 8 away from the catalog and recomputes the digest of version 7**
+(`sha256:6df9a37d0ae6fa53b8d22145dc1b5674b6d3f228d1c1b83b2ec640d7b3093d49`), so that the page cannot say what the code does not, nor
+the code add what the page does not say.
+
 ## 2. Digest, version and the lock
 
 - `digest = "sha256:" + lowercase hex(SHA-256(UTF-8(canonical(catalog))))`. The canonical form is JSON with object
@@ -2196,7 +2517,7 @@ nothing else (nobody sees an asked agent's surfaces):
 |---|---|
 | `catalogId` | the thread's `catalogId` with `/forms` appended (a trailing slash is not doubled): an https URL under the screen's own id, never fetched |
 | `version` | the thread's `version`, unchanged: an agent reads from it what a `Choices` may hold (titles, typed questions, [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), and the kinds of [version 7](#version-7-more-kinds-of-question)) |
-| `components` | `{Choices: <the thread's Choices schema, unchanged>}` and nothing else |
+| `components` | `{Choices: <the thread's Choices schema, unchanged>}` and nothing else (so, from [version 8](#a-question-shows), `show` is in the schema and the components it may name are **not** in the catalog: an asked agent has nothing to show, and nobody sees its surface anyway, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-11-14-a-question-that-shows-is-for-the-addressed-agent)) |
 | `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#2-digest-version-and-the-lock) says |
 
 It is derived from the thread's current catalog at every send and **never recorded**: no `ui_catalog` event, nothing on the
@@ -2236,7 +2557,7 @@ files the thread holds:
 1. The surface's catalog is the first `createSurface.catalogId` (absent: the basic catalog, as today).
 2. **Ours.** Every component must be a key of the web's catalog; each instance is validated against its schema, the
    uniqueness rules and the URL rule; an `Image`, and the picture of an option of a Choices, must name an image file of this thread, else the surface is
-   refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), the `FileCard` of [version 6](#version-6-code-and-files), the pictures and media of [version 6](#version-6-media)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`, and [version 7's](#rules-json-schema-cannot-say)). Custom components are lowered to
+   refused with the rule `artifact` ([version 4](#version-4-adr-0032-version-3-plus-image), [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), the `FileCard` of [version 6](#version-6-code-and-files), the pictures and media of [version 6](#version-6-media)). A Choices is also checked for the rules JSON Schema cannot say (the counts by type, defaults, `min` and `max`, and [version 7's](#rules-json-schema-cannot-say), and [version 8's `show`](#rules-for-what-a-question-shows): the components a question shows are walked with the question, and are refused, rule `schema` or `expansion`, as that section says; a surface that is a [plan](#the-plan) and holds anything the person can answer is refused, rule `action`). **Only the operations from the last `createSurface` of the surface are read** and counted against the size ([a surface sent again](#a-surface-sent-again), rule 2). Custom components are lowered to
    `vymalo.Choices`, `vymalo.Cards`, `vymalo.Mermaid`, `vymalo.Image` and the 19 components of version 6 (`vymalo.Code` and the rest) so the converter keeps them.
 3. **Ours, but the component is not known here** (a component, not a member: an unknown `type` of a `Choices` question is rule 6, `schema`, whatever the thread's version). When the thread's version is higher than the web's, the part is
    shown as a visible placeholder, "This part of the answer needs a newer version of the app", with a reload button.

@@ -1,4 +1,5 @@
 import { ACTIVITY, activityPartName } from "@/features/chat/lib/agui/vymalo";
+import { isPlanSurface } from "./limits";
 
 type Part = { type: string; name?: string; data?: unknown };
 type Message = { id: string; role: string; content: readonly Part[] };
@@ -36,6 +37,93 @@ export function latestSurface(
 }
 
 const OPERATION_KEYS = ["createSurface", "updateComponents", "updateDataModel", "deleteSurface"];
+
+/** The A2UI surface id the operations of a surface activity name (the first operation that names one). */
+export function surfaceIdOf(operations: unknown): string | undefined {
+  if (!Array.isArray(operations)) return undefined;
+  for (const op of operations) {
+    if (!isRecord(op)) continue;
+    for (const k of OPERATION_KEYS) {
+      const body = op[k];
+      if (isRecord(body) && typeof body.surfaceId === "string") return body.surfaceId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The first message that holds surface `key`: where a plan stands (docs/api/ui-catalog-v1.md, "A surface
+ * sent again"). Every later copy of the same surface is drawn there, from the newest operations, and not
+ * again where it arrived.
+ */
+export function earliestSurface(
+  messages: readonly Message[],
+  key: string,
+): { messageId: string } | undefined {
+  const name = activityPartName(ACTIVITY.surface);
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const part of message.content) {
+      if (
+        part.type === "data" &&
+        part.name === name &&
+        isRecord(part.data) &&
+        part.data.surface === key
+      ) {
+        return { messageId: message.id };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * What the copy of a surface that sits in message `messageId` draws (docs/api/ui-catalog-v1.md, "A
+ * surface sent again", rules 3 and 4): `own` its own operations, as the newest copy of a surface that is
+ * not a plan does; `older` one line saying the surface was updated further down; `newest` the operations
+ * of the newest copy, which is what a plan draws where its first copy stands; `nothing`, which is what
+ * every later copy of a plan draws. A primitive on purpose: it is read by a selector of the transcript.
+ */
+export function placeOf(
+  messages: readonly Message[],
+  messageId: string,
+  key: string,
+  surfaceId: string,
+): "own" | "older" | "newest" | "nothing" {
+  if (isPlanSurface(surfaceId)) {
+    const first = earliestSurface(messages, key)?.messageId;
+    return first === undefined || first === messageId ? "newest" : "nothing";
+  }
+  const newest = latestSurface(messages, key);
+  return newest === undefined || newest.messageId === messageId ? "own" : "older";
+}
+
+/**
+ * The plan of the thread: the surface whose id starts with `plan-` that was sent last, as its newest
+ * copy. A thread may hold several plans (`plan-a`, then `plan-b`); the pinned one is the latest sent.
+ */
+export function latestPlan(
+  messages: readonly Message[],
+): { key: string; surfaceId: string; data: unknown } | undefined {
+  const name = activityPartName(ACTIVITY.surface);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== "assistant") continue;
+    for (let j = message.content.length - 1; j >= 0; j--) {
+      const part = message.content[j];
+      if (part?.type !== "data" || part.name !== name || !isRecord(part.data)) continue;
+      const surfaceId = surfaceIdOf(part.data.a2ui_operations);
+      if (
+        surfaceId !== undefined &&
+        isPlanSurface(surfaceId) &&
+        typeof part.data.surface === "string"
+      ) {
+        return { key: part.data.surface, surfaceId, data: part.data };
+      }
+    }
+  }
+  return undefined;
+}
 
 /** Whether these operations are about A2UI surface `surfaceId` (not the activity's message id). */
 function namesSurface(operations: unknown, surfaceId: string): boolean {

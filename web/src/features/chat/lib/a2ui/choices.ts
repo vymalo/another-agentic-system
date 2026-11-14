@@ -42,6 +42,15 @@ export const MAX_QUESTIONS = 8;
 export const MAX_OPTIONS = 12;
 export const MAX_SELECT_OPTIONS = 50;
 export const MAX_DECK_IMAGES = 16;
+/** Catalog version 8: what a question shows (ids of components of the surface), per question and per form. */
+export const MAX_SHOW = 4;
+export const MAX_SHOWN_IN_FORM = 8;
+/**
+ * The components a question may show, a closed list (docs/api/ui-catalog-v1.md, "Version 8"): each draws
+ * something to look at, none sends anything, none holds a control that could hide the question's own, and
+ * none holds other components, so a shown component can never contain the question that shows it.
+ */
+export const SHOWABLE = ["Text", "Image", "Mermaid", "Code", "Cards", "Callout", "Chart"] as const;
 /** The fewest options a question that offers any has. */
 export const MIN_OPTIONS = 2;
 /** What the free box is called when the agent gives it no label. */
@@ -123,6 +132,8 @@ export type ChoiceQuestion = {
   maxDate?: string;
   /** What shape the `default` was written in, to refuse the wrong one for the kind. */
   defaultShape?: "string" | "list";
+  /** Catalog version 8: ids of components of the surface, drawn with the question before its control. */
+  show?: string[];
 };
 
 export type FreeInput = { label: string; placeholder?: string };
@@ -203,6 +214,9 @@ function readQuestion(v: unknown): ChoiceQuestion | undefined {
       : [];
   const min = count(v.min);
   const max = count(v.max);
+  const show = Array.isArray(v.show)
+    ? v.show.filter((s): s is string => typeof s === "string")
+    : [];
   const own = {
     ...ownText(v, ["yesLabel", "noLabel", "minValue", "maxValue", "step", "unit"]),
     ...ownText(v, ["fromLabel", "toLabel", "minDate", "maxDate"]),
@@ -227,6 +241,7 @@ function readQuestion(v: unknown): ChoiceQuestion | undefined {
       ...(multipleGiven !== undefined ? { multiple: multipleGiven } : {}),
     },
     ...own,
+    ...(show.length > 0 ? { show } : {}),
     ...(typeof given === "string" ? { defaultShape: "string" as const } : {}),
     ...(Array.isArray(given) ? { defaultShape: "list" as const } : {}),
   };
@@ -288,6 +303,35 @@ export function duplicateIn(spec: ChoicesSpec): string | undefined {
   return undefined;
 }
 
+/**
+ * What JSON Schema cannot say about `show` (catalog version 8), as a refusal's reason: an id is shown
+ * once in a question, and by one question of the form, and a form shows at most {@link MAX_SHOWN_IN_FORM}
+ * in all. That an id is a component of the surface, and which, is the surface's to say (`prepare.ts`).
+ */
+export function showIn(spec: ChoicesSpec): string | undefined {
+  const by = new Map<string, string>();
+  let total = 0;
+  for (const q of spec.questions) {
+    const at = `the question ${JSON.stringify(q.id)}`;
+    const own = new Set<string>();
+    for (const id of q.show ?? []) {
+      if (own.has(id)) return `${at} shows ${JSON.stringify(id)} twice`;
+      own.add(id);
+      const other = by.get(id);
+      if (other !== undefined) {
+        return `${JSON.stringify(id)} is shown by two questions, ${JSON.stringify(other)} and ${JSON.stringify(q.id)}`;
+      }
+      by.set(id, q.id);
+      total += 1;
+    }
+    if (own.size > MAX_SHOW) return `${at} shows ${own.size} components; the most is ${MAX_SHOW}`;
+  }
+  if (total > MAX_SHOWN_IN_FORM) {
+    return `a form shows at most ${MAX_SHOWN_IN_FORM} components, this shows ${total}`;
+  }
+  return undefined;
+}
+
 const OPTIONS_OF: Partial<Record<QuestionType, [number, string]>> = {
   single: [MAX_OPTIONS, 'a radio question takes 2 to 12 options (use type "select" for up to 50)'],
   multiple: [
@@ -310,6 +354,8 @@ export function limitsIn(spec: ChoicesSpec): string | undefined {
   if (spec.questions.length > MAX_QUESTIONS) {
     return `a form has at most ${MAX_QUESTIONS} questions, this has ${spec.questions.length}`;
   }
+  const shown = showIn(spec);
+  if (shown) return shown;
   for (const q of spec.questions) {
     const at = `the question ${JSON.stringify(q.id)}`;
     const stray = strayMember(q);
