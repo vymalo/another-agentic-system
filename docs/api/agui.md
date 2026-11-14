@@ -1688,16 +1688,19 @@ inside the run that the question ends.
 
 The projector keeps, per surface, the operations received so far. A snapshot carries all of them, so a
 client that holds only the last snapshot of a surface renders it completely, and a viewer that connects
-late or resumes with a cursor gets the same story. A surface's replayed operations are capped at
-256 KiB; past that the viewer gets one `vymalo.error` line, the surface keeps its last good snapshot and
-its later updates are not shown. The projector also knows which surfaces the thread has and the version
+late or resumes with a cursor gets the same story. A surface keeps only the operations that are **alive**: a `createSurface` for a surface the projector holds starts it over,
+so the operations before it are dropped, and a `deleteSurface` ends the surface. The alive operations are capped at
+256 KiB (`MAX_SURFACE_BYTES`, 262,144 bytes); past that the viewer gets one `vymalo.error` line, the surface keeps its last good snapshot and
+its later updates are not shown, until a `createSurface` starts it over (then it is shown again if the new copy fits). The projector also knows which surfaces the thread has and the version
 each speaks; the inbound side uses that.
 
 **A surface sent again** (an agent's plan: [`ui-catalog-v1.md`](ui-catalog-v1.md#a-surface-sent-again), where the rule is written once).
-The projector does not change: the same `surfaceId` is the same surface, under the `messageId` of the event that created it in every run,
-and each snapshot is the whole surface so far. What the client does with it is the catalog's rule: a `createSurface` for a surface that exists
-starts it over, so the client reads only the operations from the last one (the projector still holds all of them, up to the cap above: a
-plan sent very many times reaches it, and compacting a surface at its `createSurface` is open); a copy in a later run is the live one and the
+The same `surfaceId` is the same surface, under the `messageId` of the event that created it in every run,
+and each snapshot is the whole surface that is alive. A `createSurface` for a surface that exists starts it over (the catalog's rule), so
+the projector drops the operations before it: the snapshot after it holds the create and what follows, never the dead copies, and a plan sent
+200 times is one copy in the buffer and in every replay to a late or reconnecting viewer. The frames of the live stream keep their kinds, order and ids;
+only the content of a snapshot after a re-create is shorter, and a client that already read from the last `createSurface` draws the same. A payload
+that names several surfaces is cut per surface, so each snapshot names one surface and the client can skip its dead part. A copy in a later run is the live one and the
 earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), whose copies are matched by `surfaceId` and drawn once per
 stretch of the thread between two messages of a person, so that a plan the person answered is never rewritten on the page (rule 4 of the catalog's rule).
 
@@ -1705,8 +1708,10 @@ stretch of the thread between two messages of a person, so that a plan the perso
 stateDiagram-v2
   [*] --> Live: first operation for a surfaceId (a2ui-seq is its message id)
   Live --> Live: operation, snapshot of the whole surface
-  Live --> Capped: more than 256 KiB of operations
+  Live --> Live: createSurface, the surface starts over (earlier operations dropped)
+  Live --> Capped: more than 256 KiB of alive operations
   Capped --> Capped: later operations are not shown
+  Capped --> Live: createSurface, and the new copy fits
   Live --> Deleted: deleteSurface (its snapshot ends in the delete)
   Capped --> Deleted: deleteSurface
   Deleted --> Live: a later operation, a new surface under a new message id
@@ -1766,7 +1771,7 @@ The orchestrator's part:
 | A forged action carries a huge or hostile `context` | 16 KiB and the string caps, refused before storage; the context is data for the agent, never executed here |
 | The orchestrator is made to fetch a URL | It never does: URLs in a surface are the renderer's to show or refuse (http(s) only, ADR 0013). The only URLs the orchestrator reads are the configured agent cards |
 | A card that stops advertising A2UI keeps receiving capabilities | Nothing is cached; the card is read for every message, and A2UI-specific parts go out only if it lists the extension |
-| An agent floods the log with surfaces | Each part is at most 64 KiB and a surface is replayed at most 256 KiB, but the log itself is as unbounded as an agent's text messages are: a per-turn budget is not built (open) |
+| An agent floods the log with surfaces | Each part is at most 64 KiB and a surface is replayed at most 256 KiB of alive operations, but the log itself is as unbounded as an agent's text messages are: a per-turn budget is not built (open) |
 | A surface arrives late, after the run | It opens a run of its own and closes it, like any late event (open question 17); it is never dropped silently |
 
 What only the renderer can do (vocabulary, template expansion, depth, actions that never auto-send) is in

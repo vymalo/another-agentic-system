@@ -406,3 +406,7 @@ show. It does not, and it must not:
 - **Tested:** `forms_only_keeps_choices_alone_when_its_schema_can_show` in `orchestrator/crates/core/src/ui_catalog.rs` (a screen's catalog of
   version 8, whose `Choices` has `show` and which has the seven components: the forms catalog holds `Choices` and no other, the same every
   time, with the thread's version).
+
+## Status note, 2026-11-14 (third): the forms catalog no longer offers `show`
+
+**Amended**, on the follow-up of the note above (which stands for what it checked). `UiCatalogData::forms_only` no longer sends the thread's `Choices` unchanged: from version 8 it takes `show` out of the question's schema and cuts the sentence of the component's description that offers it, since an asked agent's catalog has none of the seven components `show` may name and nobody sees its surfaces. A `Choices` without `show` (versions 1 to 7) is sent byte for byte as before. The announced `version` is still the thread's, and the `digest` is that of the derived catalog as always; no consumer compares it with the thread's. **No refusal was added:** the orchestrator does not read an asked agent's surface (`Answer::note` records that one was shown and drops it), so a form that names `show` ends the ask as the person's to answer like any form; it does not stay pending. Test: `forms_only_keeps_choices_alone_and_takes_show_out_of_its_schema` (it replaces `forms_only_keeps_choices_alone_when_its_schema_can_show`, which pinned the old behaviour) in `orchestrator/crates/core/src/ui_catalog.rs`.

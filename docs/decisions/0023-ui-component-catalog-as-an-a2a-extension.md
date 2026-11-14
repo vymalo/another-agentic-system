@@ -294,5 +294,9 @@ written from the page alone, `mock/surfaces-v8.ts`, and a test that fails when o
 **Found, and not changed here (the orchestrator is not part of this slice):** the projector keeps every operation of a surface, up to
 256 KiB ([`agui.md`](../api/agui.md#surfaces-in-the-projection)), and does not drop the ones a later `createSurface` made dead, so a plan sent
 very many times reaches the cap (about sixty times for a plan of four kilobytes) and its later updates are not shown. The client's rule 5
-keeps its own size limit out of it; compacting the surface at its `createSurface` in the projector is a change to open. **Not built, and not
+keeps its own size limit out of it; compacting the surface at its `createSurface` in the projector is a change to open (*closed 2026-11-14, third note below*). **Not built, and not
 proven:** an adam-rs agent that sends a plan or asks with `show` (the agent side); a second client; a live model; a screen reader.
+
+## Status note, 2026-11-14 (third): the projection keeps only what is alive
+
+The orchestrator's projector now drops the operations before a `createSurface` for a surface it holds, as rule 2 of the contract says a client does, and a `deleteSurface` ends a surface even when it had passed the replay cap. The 256 KiB cap is on the **alive** operations of a surface, so a plan sent whole 200 times stays shown and is replayed as one copy; one copy over the cap still stops with the same error line, and the next `createSurface` whose copy fits shows it again. What the live stream sends does not change in kind (a snapshot after a re-create holds fewer operations). This closes the finding of the second note. Tests: `orchestrator/crates/agui-projection/tests/a2ui.rs`.

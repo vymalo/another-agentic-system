@@ -2203,11 +2203,12 @@ An agent's plan is one surface that it sends again each time the plan changes. T
    and `MAX_COMPONENTS` and [ADR 0013](../decisions/0013-a2ui-generative-ui.md) decision "Limits, as built", *verified 2026-11-14* in
    `web/src/features/chat/lib/a2ui/limits.ts` and `prepare.ts`). The orchestrator has two limits of its own and neither is this one: a payload
    of at most 64 KiB (`MAX_OPERATIONS_BYTES` in `orchestrator/crates/core/src/ui.rs`, the same figure, so that a payload the client would refuse is never stored;
-   it has no bound on components) and **256 KiB** of accumulated operations that its projection replays (`MAX_SURFACE_BYTES`, *verified 2026-11-14* in the same file),
+   it has no bound on components) and **256 KiB** (262,144 bytes) of the **alive** operations of a surface that its projection replays (`MAX_SURFACE_BYTES`, *verified 2026-11-14* in the same file),
    which is not a limit a client applies.
-   The orchestrator still holds and replays all of them, up to that cap ([`agui.md`](agui.md#surfaces-in-the-projection)), and the client
+   The orchestrator's projection follows the same rule per surface: a `createSurface` for a surface it holds drops that surface's earlier operations
+   (they are neither replayed nor counted), so a surface sent again whole is replayed as one copy ([`agui.md`](agui.md#surfaces-in-the-projection)). The client
    skips the dead ones **only when every operation before that `createSurface` names the same surface as it does**; a payload in which any
-   earlier operation names another surface is not cut at all and is refused whole by the check of its shape (rule `surfaces`). An `updateComponents` for a surface that is not there, because it was deleted by a `deleteSurface` before it or never created, is **refused as a whole** (rule `shape`); a `createSurface` after a `deleteSurface` makes the surface again. An `updateComponents` alone does not start anything over: it adds
+   earlier operation names another surface is not cut at all and is refused whole by the check of its shape (rule `surfaces`). An `updateComponents` for a surface that is not there, because it was deleted by a `deleteSurface` before it or never created, is **refused as a whole** (rule `shape`); a `createSurface` after a `deleteSurface` makes the surface again. (The projection holds a deleted surface's operations no longer: a `deleteSurface` ends it, whatever its size, and a later operation for the id starts a new surface.) An `updateComponents` alone does not start anything over: it adds
    to the components and replaces those that have the same `id`.
 3. **A copy of a surface that is not a plan.** Each run that sends the surface holds a copy of it in the conversation. The newest copy is
    the live one; an older copy draws one line, "This interface was updated further down.", and nothing when the newest copy deletes the
@@ -2368,10 +2369,10 @@ Vectors for the plan's progress (`plan-progress`: the `items` of each `Checklist
 
 **What an agent sends.** The whole surface each time: a `createSurface` and an `updateComponents` with the changed components (or all of
 them), under one id. The size of what the client reads is that of the last copy ([rule 2](#a-surface-sent-again)). The orchestrator's
-replay of a surface is capped at 256 KiB of operations in all ([`agui.md`](agui.md#surfaces-in-the-projection)) and does not drop the
-dead ones, so a plan that is sent very many times reaches the cap and its later updates are not shown: about sixty times for a plan of
-four kilobytes. An agent that updates a long plan sends only the `Checklist` component (an `updateComponents` of its id) and keeps its
-copies few. (A change of the orchestrator that compacts a surface at its `createSurface` is open: it is not part of this contract.)
+replay of a surface is capped at 256 KiB of the operations that are **alive** ([`agui.md`](agui.md#surfaces-in-the-projection)): the copies a
+later `createSurface` made dead are dropped, so a plan that is sent very many times is still replayed as its newest copy. Only one copy that
+itself is over 256 KiB stops, which a payload of at most 64 KiB makes hard to reach without many `updateDataModel` or `updateComponents`
+since the last `createSurface`. A surface that stopped is shown again by the next `createSurface` whose copy fits.
 
 Vectors for what a surface may be and hold (`v8-surfaces`: `files`, the files the thread holds, each with its `sha256` and whether its
 `kind` is an `image`; and `cases`, each a surface with its `components` (the operations are one `createSurface` for the `surfaceId`, `s1`
@@ -2606,8 +2607,8 @@ nothing else (nobody sees an asked agent's surfaces):
 |---|---|
 | `catalogId` | the thread's `catalogId` with `/forms` appended (a trailing slash is not doubled): an https URL under the screen's own id, never fetched |
 | `version` | the thread's `version`, unchanged: an agent reads from it what a `Choices` may hold (titles, typed questions, [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), and the kinds of [version 7](#version-7-more-kinds-of-question)) |
-| `components` | `{Choices: <the thread's Choices schema, unchanged>}` and nothing else (so, from [version 8](#a-question-shows), `show` is in the schema and the components it may name are **not** in the catalog: the schema takes `show` while its ids can name nothing of this catalog, and what the orchestrator does with such a surface is not specified here; nobody sees an asked agent's surface anyway, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-11-14-a-question-that-shows-is-for-the-addressed-agent)) |
-| `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#2-digest-version-and-the-lock) says |
+| `components` | `{Choices: <the thread's Choices schema>}` and nothing else. From [version 8](#a-question-shows) the schema is the thread's **without `show`**: the member is taken out of the question's properties and the sentence of the component's description that offers it is cut (a `Choices` with no `show`, versions 1 to 7, is sent unchanged), because the components `show` may name are not in this catalog and nobody sees an asked agent's surface. A form of an asked agent that names `show` anyway is not refused by the orchestrator, which does not read it: the surface is not drawn, and the ask ends as the person's to answer like any form ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-11-14-third-the-forms-catalog-no-longer-offers-show)) |
+| `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#2-digest-version-and-the-lock) says; it is never the thread's digest, and nothing compares the two |
 
 It is derived from the thread's current catalog at every send and **never recorded**: no `ui_catalog` event, nothing on the
 ledger, the thread's current catalog stays the screen's; the same catalog gives the same forms catalog every time. It
