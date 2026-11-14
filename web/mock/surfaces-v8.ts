@@ -190,7 +190,7 @@ export function placeCopies(items: Item[]): { result: string[]; pinned: string |
     else rows.push({ c: it, stretch });
   }
   const say = (c: Copy, label: string) => (c.deleted ? "gone" : `${label}:${c.marker}`);
-  const result = rows.map((r, i) => {
+  const result = rows.map((r) => {
     if (isPlan(r.c.surfaceId)) {
       const mine = rows.filter((x) => x.c.surfaceId === r.c.surfaceId);
       const inStretch = mine.filter((x) => x.stretch === r.stretch);

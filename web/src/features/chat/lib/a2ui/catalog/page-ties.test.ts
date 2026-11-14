@@ -96,7 +96,7 @@ describe("the numbers of the page are the code's", () => {
 
   it("the components that write `weight` are the ones the page lists, and no others", () => {
     const sentence = grab(
-      /it is in ([^]*?) and in no other component/,
+      /it is in ([\s\S]*?) and in no other component/,
       "which components write weight",
     )[1] as string;
     const listed = [...sentence.matchAll(/`(\w+)`/g)].map((m) => m[1]).sort();

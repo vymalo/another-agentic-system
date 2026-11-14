@@ -306,14 +306,16 @@ for (const scheme of ["light", "dark"] as const) {
     }) => {
       await startThread(page, "plan now", "Reviewer");
       await expect(badge(page)).toHaveText("Your turn");
-      await expect(page.getByRole("region", { name: "Plan from reviewer" })).toContainText(
+      await expect(page.getByRole("region", { name: "Plan from reviewer" }).last()).toContainText(
         "1 of 4 done",
       );
       expect(await axeViolations(page)).toEqual([]);
       await page.getByLabel("Message", { exact: true }).fill("carry on");
       await page.getByRole("button", { name: "Send" }).click();
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
-      const plan = page.getByRole("region", { name: "Plan from reviewer" });
+      // the person wrote in between: two drawings, the first as they saw it, and axe reads both
+      await expect(page.getByRole("region", { name: "Plan from reviewer" })).toHaveCount(2);
+      const plan = page.getByRole("region", { name: "Plan from reviewer" }).last();
       await expect(plan).toContainText("2 of 5 done");
       await expect(plan.locator('li[data-state="dropped"]')).toContainText("Dropped");
       expect(await axeViolations(page)).toEqual([]);

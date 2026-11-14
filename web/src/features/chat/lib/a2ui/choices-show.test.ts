@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SHOW, MAX_SHOWN_IN_FORM, readChoices, showIn } from "./choices";
+import { MAX_SHOW, readChoices, showIn } from "./choices";
 
 /*
  * `showIn` is the check of what a form shows that JSON Schema cannot say, and the schema of `Choices` says the same

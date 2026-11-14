@@ -241,17 +241,17 @@ describe("the order of what a question shows, for every kind of question", () =>
       const shown = document.querySelector('[data-slot="choices-shown"]') as HTMLElement;
       expect(shown?.textContent).toContain("SHOWN-BLOCK");
       const group = shown.closest("fieldset, [data-slot=choices-question]") as HTMLElement;
-      const after = (a: Node, b: Node) =>
+      const follows = (a: Node, b: Node) =>
         Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
       const words = within(group).getByText(WORDS, { exact: false });
-      expect(after(words, shown), "the words come before what is shown").toBe(true);
+      expect(follows(words, shown), "the words come before what is shown").toBe(true);
       const controls = [
         ...group.querySelectorAll("input, textarea, select, button, [role=combobox]"),
       ].filter((el) => !shown.contains(el));
       expect(controls.length, "the question has a control").toBeGreaterThan(0);
       for (const control of controls) {
         expect(
-          after(shown, control),
+          follows(shown, control),
           `what is shown comes before <${control.tagName.toLowerCase()}>`,
         ).toBe(true);
       }
