@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! The vectors of `docs/api/examples/thread-search/` and the page's own numbers.
 
 use proptest::prelude::*;

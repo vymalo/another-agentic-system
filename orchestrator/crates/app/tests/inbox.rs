@@ -1126,6 +1126,17 @@ impl orch_ports::UsageLedger for RacyStore {
     }
 }
 
+/// The search index of a [`ThreadStore`] is the store's own (ADR 0068): this one reads and backfills its
+/// inner store's.
+impl orch_ports::ThreadSearch for RacyStore {
+    delegate! {
+        search_threads(owner: &orch_core::UserId, request: &orch_ports::SearchRequest)
+            -> Result<orch_ports::SearchRows, StoreError>;
+        backfill_search(after: Option<ThreadId>, limit: u32)
+            -> Result<orch_ports::SearchBackfill, StoreError>;
+    }
+}
+
 /// The worker looks for the watch and finds none; before it parks the row, the agent pushes and
 /// the commit that carries the watch lands. The row had not been parked yet, so that commit had
 /// nothing to re-arm: the park itself must see the watch and put the row back.
