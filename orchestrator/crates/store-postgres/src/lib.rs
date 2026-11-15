@@ -19,6 +19,10 @@
 //!   by [`PgStore`] too: it is written in the transaction that appends a `model_usage` or
 //!   `model_usage_total` event, kept when a thread is erased, and read per person and month.
 //!
+//! - The search index of a person's threads ([`ThreadSearch`](orch_ports::ThreadSearch), ADR 0068) is
+//!   implemented by [`PgStore`] too: the folded words of titles, descriptions and messages, written in the
+//!   transaction that appends the event and erased with the thread (migration `0025`).
+//!
 //! Only runtime-checked `sqlx::query` is used, so building needs no database.
 //!
 //! ```no_run
@@ -35,6 +39,7 @@
 mod codec;
 mod error;
 mod pending_authorizations;
+mod search;
 mod store;
 mod usage;
 mod user_tool_servers;

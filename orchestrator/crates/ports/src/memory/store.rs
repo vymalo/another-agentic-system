@@ -6,15 +6,16 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, NONCE_LEN,
     RankError, ThreadId, ThreadRecord, ThreadShare, UsageChange, UsageMonth, UsageMonthTotals,
-    UsageRow, UsageTaskKey, UserId, between, spread, usage_change, usage_counted_through,
+    UsageRow, UsageTaskKey, UserId, between, search, spread, usage_change, usage_counted_through,
 };
 
 use crate::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ClaimOrder, Commit, CommitOutcome,
     ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease, ListOrder,
     NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxStats,
-    OutboxStatus, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
-    ThreadStore, UsageBackfill, UsageLedger,
+    OutboxStatus, Parking, Place, Received, SearchBackfill, SearchPosition, SearchRank,
+    SearchRequest, SearchRow, SearchRows, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
+    ThreadSearch, ThreadStore, UsageBackfill, UsageLedger,
 };
 
 struct StoredEvent {
@@ -30,6 +31,10 @@ struct ThreadEntry {
     /// `usage_through` column of the Postgres store. A fork starts at its cut, because the events it
     /// copied were counted in its parent.
     usage_through: i64,
+    /// The search index has been through every event of the log up to this `seq`, and the title and
+    /// the description (ADR 0068): the `search_through` column of the Postgres store, where `0`
+    /// means nothing of the thread is indexed.
+    search_through: i64,
 }
 
 impl ThreadEntry {
@@ -352,6 +357,7 @@ fn write_commit(
         stored.push(event);
     }
     entry.usage_through = entry.record.last_seq;
+    entry.search_through = entry.record.last_seq;
     entry.record.state = commit.new_state;
     if let Some(job) = commit.job {
         entry.record.job = job;
@@ -616,6 +622,7 @@ fn insert_thread(
             binding,
             // the events a fork copied were counted in its parent
             usage_through: fork.map_or(0, |o| o.cut),
+            search_through: 0,
         },
     );
     let (mut record, events) =
@@ -1724,6 +1731,19 @@ impl MemoryStore {
             entry.usage_through = 0;
         }
     }
+
+    /// Makes the store behave as if the search index had never been written for what is in its log:
+    /// no thread has been gone through, so no title, description or message is found until a commit
+    /// to the thread or [`ThreadSearch::backfill_search`] indexes it, as the Postgres adapter's
+    /// test deletes its rows and zeroes the column.
+    ///
+    /// **Test only**, like [`forget_usage_ledger`](Self::forget_usage_ledger).
+    pub fn forget_search_index(&self) {
+        let mut inner = self.lock();
+        for entry in inner.threads.values_mut() {
+            entry.search_through = 0;
+        }
+    }
 }
 
 impl UsageLedger for MemoryStore {
@@ -1850,4 +1870,119 @@ impl UsageLedger for MemoryStore {
 enum Swept {
     Live(UsageTaskKey),
     Erased(usize),
+}
+
+impl ThreadSearch for MemoryStore {
+    async fn search_threads(
+        &self,
+        owner: &UserId,
+        request: &SearchRequest,
+    ) -> Result<SearchRows, StoreError> {
+        let inner = self.lock();
+        let terms = &request.terms;
+        let mut found: Vec<SearchRow> = Vec::new();
+        if !terms.is_empty() {
+            for entry in inner.threads.values() {
+                let r = &entry.record;
+                if &r.owner != owner
+                    || entry.search_through == 0
+                    || (is_edit(r) && !request.include_edits)
+                    || match request.archived {
+                        ArchivedFilter::Exclude => r.archived_at.is_some(),
+                        ArchivedFilter::Only => r.archived_at.is_none(),
+                        ArchivedFilter::Include => false,
+                    }
+                {
+                    continue;
+                }
+                // events a fork copied from a parent that still exists are the parent's words
+                let copied_through = r
+                    .forked_from
+                    .filter(|f| f.thread_id.is_some())
+                    .map(|f| f.seq);
+                let mut messages: Vec<crate::MatchedMessage> =
+                    search::searched_messages(entry.events.iter().map(|s| &s.event))
+                        .into_iter()
+                        .filter(|m| {
+                            m.seq <= entry.search_through
+                                && copied_through.is_none_or(|cut| m.seq > cut)
+                                && terms.matches(&m.text)
+                        })
+                        .map(|m| crate::MatchedMessage {
+                            seq: m.seq,
+                            role: m.role,
+                            at: m.at,
+                            text: m.text,
+                        })
+                        .collect();
+                messages.sort_by_key(|m| std::cmp::Reverse(m.seq));
+                let rank = if terms.matches(&r.title) {
+                    SearchRank::Title
+                } else if r.description.as_deref().is_some_and(|d| terms.matches(d)) {
+                    SearchRank::Description
+                } else if !messages.is_empty() {
+                    SearchRank::Messages
+                } else {
+                    continue;
+                };
+                let message_hits = u32::try_from(messages.len()).unwrap_or(u32::MAX);
+                messages.truncate(search::MAX_MESSAGE_HITS);
+                found.push(SearchRow {
+                    thread: r.clone(),
+                    rank,
+                    messages,
+                    message_hits,
+                });
+            }
+        }
+        found.sort_by(|a, b| {
+            b.rank
+                .cmp(&a.rank)
+                .then_with(|| b.thread.id.cmp(&a.thread.id))
+        });
+        if let Some(SearchPosition { rank, thread }) = request.after {
+            found.retain(|row| row.rank < rank || (row.rank == rank && row.thread.id < thread));
+        }
+        let limit = request.limit.max(1) as usize;
+        let more = found.len() > limit;
+        found.truncate(limit);
+        Ok(SearchRows { rows: found, more })
+    }
+
+    async fn backfill_search(
+        &self,
+        after: Option<ThreadId>,
+        limit: u32,
+    ) -> Result<SearchBackfill, StoreError> {
+        let limit = limit.max(1) as usize;
+        let mut inner = self.lock();
+        let mut due: Vec<ThreadId> = inner
+            .threads
+            .iter()
+            .filter(|(id, e)| {
+                after.is_none_or(|a| **id > a) && e.search_through < e.record.last_seq
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        due.sort_unstable();
+        due.truncate(limit);
+        let mut page = SearchBackfill {
+            next: (due.len() == limit).then(|| due[limit - 1]),
+            ..SearchBackfill::default()
+        };
+        for id in due {
+            let Some(entry) = inner.threads.get_mut(&id) else {
+                continue;
+            };
+            let from = entry.search_through;
+            let seen = search::searched_messages(entry.events.iter().map(|s| &s.event))
+                .into_iter()
+                .filter(|m| m.seq > from)
+                .count();
+            entry.search_through = entry.record.last_seq;
+            page.threads += 1;
+            page.messages += seen as u64;
+        }
+        Ok(page)
+    }
 }

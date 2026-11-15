@@ -1,7 +1,7 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`UsageLedger`](crate::UsageLedger),
+//! [`SecretStore`](crate::SecretStore), [`UsageLedger`](crate::UsageLedger), [`ThreadSearch`](crate::ThreadSearch),
 //! [`UserToolServerStore`](crate::UserToolServerStore),
 //! [`PendingAuthorizations`](crate::PendingAuthorizations) and
 //! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
@@ -21,6 +21,7 @@ pub mod credential_broker;
 pub mod pending_authorizations;
 pub mod registry;
 pub mod secret_store;
+pub mod thread_search;
 pub mod thread_store;
 pub mod tool_server;
 pub mod usage_ledger;
@@ -558,6 +559,88 @@ macro_rules! usage_ledger_conformance {
             async fn $case() {
                 match $make().await {
                     Some(store) => $crate::testkit::usage_ledger::$case(store).await,
+                    None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `ThreadSearch` conformance case (ADR 0068). `$make` is an
+/// `async fn() -> Option<S>` returning a fresh, isolated store that is both a
+/// [`ThreadStore`](crate::ThreadStore) and a [`ThreadSearch`](crate::ThreadSearch) (`None` skips the
+/// suite): the index is written by the commits of the store it is read from. The calling crate needs
+/// `tokio` (with `macros` and `rt`) as a dev-dependency.
+///
+/// Two cases play a log older than the index, so they need a store that can **forget its index**:
+/// `thread_search_conformance!(make, forget = path)` where `path` is an `async fn(&S)` that deletes
+/// the index and marks no thread as gone through (a Postgres adapter deletes `message_terms` and
+/// clears the columns of `threads`; `MemoryStore` has `forget_search_index`). Without a `forget`
+/// those cases are skipped, and say so.
+#[macro_export]
+macro_rules! thread_search_conformance {
+    ($make:path) => {
+        $crate::thread_search_conformance!(@common $make);
+        #[tokio::test]
+        async fn a_commit_catches_up_with_the_log_the_index_has_not_been_through() {
+            eprintln!("skipped: this adapter supplies no `forget` hook");
+        }
+        #[tokio::test]
+        async fn backfill_indexes_old_events_and_is_idempotent() {
+            eprintln!("skipped: this adapter supplies no `forget` hook");
+        }
+    };
+    ($make:path, forget = $forget:path) => {
+        $crate::thread_search_conformance!(@common $make);
+        #[tokio::test]
+        async fn a_commit_catches_up_with_the_log_the_index_has_not_been_through() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::thread_search::a_commit_catches_up_with_the_log_the_index_has_not_been_through(
+                        store, $forget,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+        #[tokio::test]
+        async fn backfill_indexes_old_events_and_is_idempotent() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::thread_search::backfill_indexes_old_events_and_is_idempotent(
+                        store, $forget,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+    };
+    (@common $make:path) => {
+        $crate::thread_search_conformance!(@cases $make;
+            search_finds_title_description_and_message
+            search_is_the_owners
+            deleted_thread_leaves_no_hit
+            fork_copied_events_do_not_hit_until_parent_deleted
+            a_fork_has_the_message_the_parent_later_replaced
+            edits_only_with_branches
+            archived_filters
+            replaced_final_message_hits_once
+            partial_and_working_messages_never_hit
+            the_newest_three_messages_are_shown_and_all_are_counted
+            a_rename_is_searched_from_its_commit
+            keys_roundtrip_cyrillic_cjk_digits
+            paging_is_stable
+            a_limit_of_zero_is_one_and_no_term_matches_nothing
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::thread_search::$case(store).await,
                     None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
                 }
             }

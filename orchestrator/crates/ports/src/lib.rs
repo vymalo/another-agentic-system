@@ -5,6 +5,8 @@
 //!   must be atomic with the inbox row it applies;
 //! - [`UsageLedger`]: what each person used, per task and UTC month, outliving the threads it came from
 //!   (ADR 0065); written by the `ThreadStore` in the transaction that appends the usage event, read here;
+//! - [`ThreadSearch`]: the index of the words of a person's threads (ADR 0068), a function of the log
+//!   that the `ThreadStore` writes with the event, erases with the thread and answers searches from;
 //! - [`Wakeup`]: notify/listen hints, and the live text of a reply being written (never stored,
 //!   ADR 0027);
 //! - [`AgentClient`]: talking to a delegated agent (send, stream, resubscribe, poll, cancel, card),
@@ -59,6 +61,7 @@ mod model;
 mod pending;
 mod registry;
 mod route;
+mod search;
 mod secrets;
 mod store;
 mod tools;
@@ -112,6 +115,10 @@ pub use registry::{
     RegistryError, STATIC_SOURCE, SourceStatus,
 };
 pub use route::ByTransport;
+pub use search::{
+    MatchedMessage, SearchBackfill, SearchPosition, SearchRank, SearchRequest, SearchRow,
+    SearchRows, ThreadSearch,
+};
 pub use secrets::{
     MAX_SECRET_BYTES, MaterialTooLarge, NoSecrets, SecretError, SecretMaterial, SecretServer,
     SecretStore, SecretVersion,

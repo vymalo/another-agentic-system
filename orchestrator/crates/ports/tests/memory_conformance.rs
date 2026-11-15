@@ -18,5 +18,11 @@ async fn forget_ledger(store: &MemoryStore) {
 }
 
 orch_ports::thread_store_conformance!(make_store);
+/// A log the search index was never written for (ADR 0068): no thread has been gone through.
+async fn forget_index(store: &MemoryStore) {
+    store.forget_search_index();
+}
+
 orch_ports::usage_ledger_conformance!(make_store, forget = forget_ledger);
+orch_ports::thread_search_conformance!(make_store, forget = forget_index);
 orch_ports::wakeup_conformance!(make_wakeup);

@@ -137,7 +137,12 @@ fn every_snippet_of_the_snippet_vectors() {
                     .as_array()
                     .expect("matches")
                     .iter()
-                    .map(|m| (m["start"].as_u64().expect("s"), m["end"].as_u64().expect("e")))
+                    .map(|m| {
+                        (
+                            m["start"].as_u64().expect("s"),
+                            m["end"].as_u64().expect("e"),
+                        )
+                    })
                     .collect();
                 assert_eq!(marks, wanted, "{name}");
             }
@@ -178,7 +183,19 @@ fn the_page_states_the_numbers_the_code_uses() {
 #[test]
 fn a_term_is_letters_and_numbers_and_nothing_else() {
     for bad in [
-        "a:*", "it's", "a b", "a|b", "ab'", "ab)", "x\"", "a&b", "ab!", "a<->", "", "a", "é\u{301}",
+        "a:*",
+        "it's",
+        "a b",
+        "a|b",
+        "ab'",
+        "ab)",
+        "x\"",
+        "a&b",
+        "ab!",
+        "a<->",
+        "",
+        "a",
+        "é\u{301}",
     ] {
         assert!(
             SearchTerms::from_keys(vec![bad.to_owned()]).is_err(),
@@ -224,7 +241,13 @@ fn event(seq: i64, body: crate::EventBody) -> Event {
     }
 }
 
-fn agent_message(seq: i64, id: &str, text: &str, is_final: bool, purpose: Option<MessagePurpose>) -> Event {
+fn agent_message(
+    seq: i64,
+    id: &str,
+    text: &str,
+    is_final: bool,
+    purpose: Option<MessagePurpose>,
+) -> Event {
     event(
         seq,
         crate::EventBody::AgentMessage(crate::AgentMessageData {
@@ -240,13 +263,22 @@ fn agent_message(seq: i64, id: &str, text: &str, is_final: bool, purpose: Option
 #[test]
 fn only_a_persons_messages_and_an_agents_final_answers_are_searched_and_a_later_final_replaces() {
     let log = vec![
-        event(1, crate::EventBody::UserMessage(crate::UserMessageData::new("question"))),
+        event(
+            1,
+            crate::EventBody::UserMessage(crate::UserMessageData::new("question")),
+        ),
         agent_message(2, "a", "partial words", false, None),
         agent_message(3, "b", "working words", true, Some(MessagePurpose::Working)),
         agent_message(4, "c", "first draft", true, Some(MessagePurpose::Answer)),
         agent_message(5, "c", "second draft", true, Some(MessagePurpose::Answer)),
         agent_message(6, "d", "an answer", true, None),
-        agent_message(7, "d", "now only working words", true, Some(MessagePurpose::Working)),
+        agent_message(
+            7,
+            "d",
+            "now only working words",
+            true,
+            Some(MessagePurpose::Working),
+        ),
     ];
     let seen: Vec<(i64, SearchRole, String)> = searched_messages(&log)
         .into_iter()
