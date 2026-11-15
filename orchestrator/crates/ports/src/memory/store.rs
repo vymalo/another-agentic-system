@@ -1885,7 +1885,7 @@ impl ThreadSearch for MemoryStore {
             for entry in inner.threads.values() {
                 let r = &entry.record;
                 if &r.owner != owner
-                    || entry.search_through == 0
+                    || (entry.search_through == 0 && r.last_seq > 0)
                     || (is_edit(r) && !request.include_edits)
                     || match request.archived {
                         ArchivedFilter::Exclude => r.archived_at.is_some(),

@@ -200,7 +200,7 @@ pub(crate) async fn list_threads<P: Ports>(
 /// The thread as the contract's `Thread`, with the `share` of its owner's view when it is shared
 /// (ADR 0040): what it is stored as, what is served now and, when `with_url`, the link. Only the
 /// owner ever gets the link, and these routes are the owner's.
-fn thread_json<P: Ports>(
+pub(crate) fn thread_json<P: Ports>(
     state: &ApiState<P>,
     thread: &ThreadRecord,
     with_url: bool,
@@ -662,10 +662,23 @@ pub(crate) async fn put_thread_tools<P: Ports>(
 /// `GET /api/config`: the public subset of the configuration, exactly `{"ui": {...}}`
 /// ([ADR 0034](../../../docs/decisions/0034-one-yaml-configuration-secrets-by-reference.md)).
 /// Behind the identity layer like every `/api` route. It changes only when the process restarts.
+/// `GET /api/config`: the `ui` section of the configuration, and `search`, the capability of this
+/// build (ADR 0068, ADR 0067 rule 3): the member is there because this process serves `searchThreads`.
+#[derive(Serialize)]
+pub(crate) struct PublicConfigView<'a> {
+    #[serde(flatten)]
+    config: &'a orch_app::PublicConfig,
+    search: crate::search::SearchCapability,
+}
+
 pub(crate) async fn public_config<P: Ports>(
     State(state): State<ApiState<P>>,
-) -> Json<orch_app::PublicConfig> {
-    Json(state.app.public_config().clone())
+) -> Json<serde_json::Value> {
+    let view = PublicConfigView {
+        config: state.app.public_config(),
+        search: crate::search::SearchCapability::default(),
+    };
+    Json(serde_json::to_value(view).unwrap_or(serde_json::Value::Null))
 }
 
 pub(crate) async fn cancel_thread<P: Ports>(

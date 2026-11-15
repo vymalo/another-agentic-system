@@ -31,6 +31,7 @@ mod oauth;
 mod problem;
 mod public_auth;
 mod routes;
+mod search;
 mod shared;
 pub mod sse;
 pub mod trace;
@@ -103,6 +104,9 @@ pub struct ApiConfig {
     /// How often one person may start an OAuth authorization of a server of their own (ADR 0046,
     /// slice 4c): ten a minute by default, per person and per process. See [`AuthorizeLimits`].
     pub authorize_limits: AuthorizeLimits,
+    /// How often one person may search their threads (ADR 0068): a burst of 20 and then two a second
+    /// by default, per person and per process. See [`AuthorizeLimits`] (the same bucket).
+    pub search_limits: AuthorizeLimits,
     /// The Client ID Metadata Document of this orchestrator, served at the path of its client
     /// identifier outside sign-in (ADR 0046, slice 4c): `Some` when `userToolServers.oauth
     /// .clientMetadataUrl` is set and credentials are kept, and no such route is mounted otherwise.
@@ -118,6 +122,10 @@ impl Default for ApiConfig {
             browser_auth: None,
             cors_allowed_origins: Vec::new(),
             authorize_limits: AuthorizeLimits::default(),
+            search_limits: AuthorizeLimits {
+                burst: 20,
+                refill: Duration::from_millis(500),
+            },
             client_metadata: None,
         }
     }
@@ -151,6 +159,8 @@ pub(crate) struct ApiState<P: Ports> {
     pub(crate) app: Arc<App<P>>,
     /// The brake on starting an OAuth authorization (per person, in this process).
     pub(crate) authorize: Arc<AuthorizeLimiter>,
+    /// The brake on searching (per person, in this process).
+    pub(crate) search: Arc<AuthorizeLimiter>,
 }
 
 impl<P: Ports> Clone for ApiState<P> {
@@ -158,6 +168,7 @@ impl<P: Ports> Clone for ApiState<P> {
         ApiState {
             app: Arc::clone(&self.app),
             authorize: Arc::clone(&self.authorize),
+            search: Arc::clone(&self.search),
         }
     }
 }
@@ -264,6 +275,7 @@ pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
     edge_layers(health_routes(ApiState {
         app,
         authorize: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
+        search: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
     }))
 }
 
@@ -286,6 +298,7 @@ pub fn router_with_surfaces<P: Ports>(
     let state = ApiState {
         app,
         authorize: Arc::new(AuthorizeLimiter::new(cfg.authorize_limits)),
+        search: Arc::new(AuthorizeLimiter::new(cfg.search_limits)),
     };
     let state_for_me = state.clone();
     let state_for_public = state.clone();
@@ -297,6 +310,7 @@ pub fn router_with_surfaces<P: Ports>(
         .route("/api/config", get(routes::public_config::<P>))
         .route("/api/tool-servers", get(routes::list_tool_servers::<P>))
         .route("/api/threads", get(routes::list_threads::<P>))
+        .route("/api/search/threads", post(search::search_threads::<P>))
         .route(
             "/api/threads/{thread_id}",
             get(routes::get_thread::<P>)

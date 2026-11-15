@@ -643,7 +643,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 26] = [
+    let auth_ops: [(&str, reqwest::Method, String); 27] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("getMyUsage", reqwest::Method::GET, "/api/me/usage".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
@@ -680,6 +680,11 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "/api/user-tool-servers/u-abcdefghij/authorize".into(),
         ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
+        (
+            "searchThreads",
+            reqwest::Method::POST,
+            "/api/search/threads".into(),
+        ),
         (
             "getThread",
             reqwest::Method::GET,
@@ -850,17 +855,20 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     );
     assert_eq!(r.cache_control, "no-store");
 
-    // getConfig: exactly `{ui}` with every key at its effective value, behind the identity layer
+    // getConfig: `{ui, search}` with every key at its effective value, behind the identity layer
     // like every /api route (the 401 is checked with the others above)
     let r = h.get("/api/config", Some(ALICE)).await;
     assert_eq!(r.status, 200);
     c.check("getConfig", &r);
     assert_eq!(
         r.json(),
-        json!({"ui": {
-            "showDescriptions": true,
-            "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
-        }})
+        json!({
+            "search": {"maxQueryLength": 200, "maxTerms": 8},
+            "ui": {
+                "showDescriptions": true,
+                "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
+            }
+        })
     );
 
     // listToolServers (ADR 0024): the deployment's list, in its order, with no URL, header,
@@ -1152,6 +1160,18 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         .await;
     assert_eq!(r.status, 400);
     c.check("getArtifact", &r);
+
+    // searchThreads (ADR 0068): the person's own threads found by their words, and a refusal
+    let r = h
+        .post("/api/search/threads", Some(ALICE), Some(r#"{"q": "list"}"#))
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("searchThreads", &r);
+    let r = h
+        .post("/api/search/threads", Some(ALICE), Some(r#"{"q": " "}"#))
+        .await;
+    assert_eq!(r.status, 400);
+    c.check("searchThreads", &r);
 
     // listThreads
     for i in 0..3 {

@@ -1401,6 +1401,30 @@ impl<P: Ports> App<P> {
         Ok(self.ports.store().list_threads(who.user(), listing).await?)
     }
 
+    /// Searches the person's own threads (ADR 0068), and nobody else's: a thread is a hit only when its
+    /// title, its description or one of its messages holds every term of `request` as the start of a
+    /// word (`docs/api/thread-search-v1.md`). What it returns is always a subset of
+    /// [`list_threads`](Self::list_threads) for the same archived filter and `include_edits`, for every
+    /// role (an administrator finds their own threads too: ADR 0039).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] when the person's roles do not hold `thread.read`; [`AppError::Store`]
+    /// when the store is down or the search took too long.
+    pub async fn search_threads(
+        &self,
+        who: &impl Requester,
+        request: &orch_ports::SearchRequest,
+    ) -> Result<orch_ports::SearchRows, AppError> {
+        let access = self.access(who);
+        if !access.has(Permission::ThreadRead) {
+            return Err(AppError::missing_permission(Permission::ThreadRead));
+        }
+        Ok(
+            orch_ports::ThreadSearch::search_threads(self.ports.store(), who.user(), request)
+                .await?,
+        )
+    }
+
     /// Pins, archives, moves or ejects one of the person's threads in their list (ADR 0042): a
     /// change of the thread's row in no event of its log, which needs the thread to be the
     /// person's and `thread.read`, not `thread.write`: it changes nothing in the conversation and
