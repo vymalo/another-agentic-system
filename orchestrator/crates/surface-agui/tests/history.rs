@@ -459,6 +459,7 @@ async fn config_says_the_route_exists_only_when_the_application_is_told_to() {
         r.json(),
         json!({
             "search": {"maxQueryLength": 200, "maxTerms": 8},
+            "prompts": {"limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768},
             "ui": {"showDescriptions": true}
         })
     );

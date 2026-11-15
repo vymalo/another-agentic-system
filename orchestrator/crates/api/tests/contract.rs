@@ -643,7 +643,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 27] = [
+    let auth_ops: [(&str, reqwest::Method, String); 33] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("getMyUsage", reqwest::Method::GET, "/api/me/usage".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
@@ -678,6 +678,28 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "authorizeUserToolServer",
             reqwest::Method::POST,
             "/api/user-tool-servers/u-abcdefghij/authorize".into(),
+        ),
+        ("listPrompts", reqwest::Method::GET, "/api/prompts".into()),
+        ("createPrompt", reqwest::Method::POST, "/api/prompts".into()),
+        (
+            "getPrompt",
+            reqwest::Method::GET,
+            "/api/prompts/p-abcdefghijkl".into(),
+        ),
+        (
+            "updatePrompt",
+            reqwest::Method::PATCH,
+            "/api/prompts/p-abcdefghijkl".into(),
+        ),
+        (
+            "deletePrompt",
+            reqwest::Method::DELETE,
+            "/api/prompts/p-abcdefghijkl".into(),
+        ),
+        (
+            "renderPrompt",
+            reqwest::Method::POST,
+            "/api/prompts/p-abcdefghijkl/render".into(),
         ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
@@ -864,6 +886,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         r.json(),
         json!({
             "search": {"maxQueryLength": 200, "maxTerms": 8},
+            "prompts": {"limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768},
             "ui": {
                 "showDescriptions": true,
                 "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
@@ -1172,6 +1195,78 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         .await;
     assert_eq!(r.status, 400);
     c.check("searchThreads", &r);
+
+    // the prompt library (ADR 0070): saved, listed as summaries, read, rendered (nothing written), edited
+    // with the revision, refused, deleted
+    let saved = r#"{"name":"greet","title":"Greet","body":"Hello {{who}}","variables":[{"id":"who","question":"Who?","type":"text"}]}"#;
+    let r = h.post("/api/prompts", Some(ALICE), Some(saved)).await;
+    assert_eq!(r.status, 201);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("createPrompt", &r);
+    let prompt = r.json();
+    let prompt_id = prompt["id"].as_str().unwrap().to_owned();
+    let revision = prompt["revision"].as_str().unwrap().to_owned();
+    assert_eq!(prompt["own"], true);
+    let r = h.post("/api/prompts", Some(ALICE), Some("{}")).await;
+    assert_eq!(r.status, 400);
+    c.check("createPrompt", &r);
+    let r = h.get("/api/prompts", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("listPrompts", &r);
+    let listed = r.json();
+    assert_eq!(listed["held"], 1);
+    assert_eq!(listed["items"][0]["variableCount"], 1);
+    assert!(listed["items"][0].get("body").is_none());
+    let r = h.get("/api/prompts?scope=everything", Some(ALICE)).await;
+    assert_eq!(r.status, 400);
+    c.check("listPrompts", &r);
+    let one = format!("/api/prompts/{prompt_id}");
+    let r = h.get(&one, Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    c.check("getPrompt", &r);
+    let r = h.get("/api/prompts/p-zzzzzzzzzzzz", Some(ALICE)).await;
+    assert_eq!(r.status, 404);
+    c.check("getPrompt", &r);
+    let answers = r#"{"answers":[{"id":"who","values":[],"text":"there"}]}"#;
+    let r = h
+        .post(&format!("{one}/render"), Some(ALICE), Some(answers))
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("renderPrompt", &r);
+    assert_eq!(
+        r.json(),
+        json!({"text": "Hello there", "revision": revision})
+    );
+    let r = h
+        .post(
+            &format!("{one}/render"),
+            Some(ALICE),
+            Some(r#"{"answers":[]}"#),
+        )
+        .await;
+    assert_eq!(r.status, 422);
+    c.check("renderPrompt", &r);
+    assert_eq!(r.json()["rule"], "unknown");
+    let edit = format!(r#"{{"revision":"{revision}","title":"Greeting"}}"#);
+    let r = h.patch(&one, Some(ALICE), Some(&edit)).await;
+    assert_eq!(r.status, 200);
+    c.check("updatePrompt", &r);
+    let r = h.patch(&one, Some(ALICE), Some(&edit)).await;
+    assert_eq!(r.status, 409);
+    c.check("updatePrompt", &r);
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("{one}?revision={revision}"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status, 409);
+    c.check("deletePrompt", &r);
+    let r = h.send(reqwest::Method::DELETE, &one, Some(ALICE)).await;
+    assert_eq!(r.status, 204);
+    c.check("deletePrompt", &r);
 
     // listThreads
     for i in 0..3 {

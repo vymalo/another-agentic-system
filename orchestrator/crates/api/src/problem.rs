@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use orch_app::{AppError, UserToolRefusal};
+use orch_app::{AppError, PromptRefusal, UserToolRefusal};
 use orch_core::{Classify, ErrorClass, ForkError, report};
 use serde::Serialize;
 
@@ -23,6 +23,19 @@ pub struct Problem {
     /// try again when the turn has ended). RFC 9457 allows extension members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    /// Where a save is refused (`createPrompt`, `updatePrompt`, ADR 0070): `name`, `body`,
+    /// `variables.<i>.<member>`, `audience`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The UTF-16 offset in the body of the `{{` concerned (`bad_reference`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+    /// `invalid_answer` (`renderPrompt`): the id of the variable whose answer is refused, or `*`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// `invalid_answer`: the rule that failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
 }
 
 impl Problem {
@@ -34,6 +47,10 @@ impl Problem {
             status: status.as_u16(),
             detail: Some(detail.into()),
             code: None,
+            at: None,
+            offset: None,
+            question: None,
+            rule: None,
         }
     }
 
@@ -41,6 +58,22 @@ impl Problem {
     #[must_use]
     pub fn with_code(mut self, code: &str) -> Self {
         self.code = Some(code.to_owned());
+        self
+    }
+
+    /// The same problem saying where a save is refused, and for a reference the UTF-16 offset.
+    #[must_use]
+    pub fn with_place(mut self, at: &str, offset: Option<u32>) -> Self {
+        self.at = Some(at.to_owned());
+        self.offset = offset;
+        self
+    }
+
+    /// The same problem saying which answer is refused and by which rule.
+    #[must_use]
+    pub fn with_answer(mut self, question: &str, rule: &str) -> Self {
+        self.question = Some(question.to_owned());
+        self.rule = Some(rule.to_owned());
         self
     }
 
@@ -206,6 +239,11 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
     if let AppError::UserTool(refusal) = err {
         return user_tool_problem(refusal);
     }
+    // A person's prompt library (ADR 0070): every refusal has its own code, and names positions and
+    // ids and never a word of a prompt or an answer.
+    if let AppError::Prompt(refusal) = err {
+        return (prompt_problem(refusal), None);
+    }
     // Sharing (ADR 0040): what a client acts on has a code of its own.
     match err {
         AppError::SharingDisabled => {
@@ -282,6 +320,31 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
                 None,
             )
         }
+    }
+}
+
+/// The problem a refusal of the prompt library becomes.
+fn prompt_problem(refusal: &PromptRefusal) -> Problem {
+    let status = match refusal {
+        PromptRefusal::NotFound => StatusCode::NOT_FOUND,
+        PromptRefusal::Invalid(_) => StatusCode::BAD_REQUEST,
+        PromptRefusal::NameTaken | PromptRefusal::TooMany { .. } | PromptRefusal::StaleRevision => {
+            StatusCode::CONFLICT
+        }
+        PromptRefusal::InvalidAnswer(_) | PromptRefusal::RenderedTooLong => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        // a refusal added later: a bug until it is mapped, and not a client's mistake
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let mut problem = Problem::new(status, refusal.to_string());
+    if let Some(code) = refusal.code() {
+        problem = problem.with_code(code);
+    }
+    match refusal {
+        PromptRefusal::Invalid(e) => problem.with_place(&e.at, e.offset),
+        PromptRefusal::InvalidAnswer(a) => problem.with_answer(a.question_text(), a.rule),
+        _ => problem,
     }
 }
 

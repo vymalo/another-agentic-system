@@ -29,6 +29,7 @@ pub mod limiter;
 mod metrics;
 mod oauth;
 mod problem;
+mod prompts;
 mod public_auth;
 mod routes;
 mod search;
@@ -361,6 +362,24 @@ pub fn router_with_surfaces<P: Ports>(
             post(routes::rotate_share::<P>),
         )
         .with_state(state.clone())
+        .merge(
+            // A person's prompt library (ADR 0070): always on, and every answer, the problems
+            // included, is never kept by a cache. The body of none of them is ever logged.
+            Router::new()
+                .route(
+                    "/api/prompts",
+                    get(prompts::list::<P>).post(prompts::create::<P>),
+                )
+                .route(
+                    "/api/prompts/{id}",
+                    get(prompts::get::<P>)
+                        .patch(prompts::edit::<P>)
+                        .delete(prompts::delete::<P>),
+                )
+                .route("/api/prompts/{id}/render", post(prompts::render::<P>))
+                .with_state(state.clone())
+                .layer(axum::middleware::map_response(prompts::no_store_layer)),
+        )
         .merge(
             // People's own MCP servers (ADR 0046): 404 for every route while the feature is off,
             // and the body of none of them is ever logged.
