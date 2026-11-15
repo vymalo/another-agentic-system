@@ -1,0 +1,92 @@
+{
+  "name": "A cursor of another filter",
+  "about": "A cursor is for the filters that made it.",
+  "steps": [
+    {
+      "request": {
+        "q": "zebra",
+        "branches": "include",
+        "limit": 2
+      },
+      "expect": {
+        "terms": [
+          "zebra"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000006",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Zebra stripes (edit)",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 5
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "zebra",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 5
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000005",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Old zebra project",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 4,
+                      "end": 9
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": true
+      }
+    },
+    {
+      "request": {
+        "q": "zebra",
+        "branches": "include",
+        "archived": "exclude",
+        "limit": 2,
+        "cursor": "$previous"
+      },
+      "expect": {
+        "error": "bad_cursor"
+      }
+    }
+  ]
+}

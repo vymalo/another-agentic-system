@@ -1,0 +1,77 @@
+{
+  "name": "Accents and ligatures fold",
+  "about": "`cafe` finds `Café`; `CŒUR` finds `cœur`.",
+  "steps": [
+    {
+      "request": {
+        "q": "cafe"
+      },
+      "expect": {
+        "terms": [
+          "cafe"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000004",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Café menu",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 4
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "CŒUR"
+      },
+      "expect": {
+        "terms": [
+          "coeur"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000004",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "Le cœur de la carte",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 3,
+                      "end": 7
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

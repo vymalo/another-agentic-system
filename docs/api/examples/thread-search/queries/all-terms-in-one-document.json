@@ -1,0 +1,48 @@
+{
+  "name": "Every term in one document",
+  "about": "`tomatoes basil`: a thread whose two messages hold one term each is no hit; one message that has both is.",
+  "steps": [
+    {
+      "request": {
+        "q": "tomatoes basil"
+      },
+      "expect": {
+        "terms": [
+          "tomatoes",
+          "basil"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000001",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 2,
+                "role": "agent",
+                "at": "2026-11-14T10:02:00Z",
+                "snippet": {
+                  "text": "Start with tomatoes and basil.",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 11,
+                      "end": 19
+                    },
+                    {
+                      "start": 24,
+                      "end": 29
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

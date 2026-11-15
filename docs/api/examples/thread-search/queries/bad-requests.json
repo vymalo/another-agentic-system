@@ -1,0 +1,49 @@
+{
+  "name": "What is refused",
+  "about": "The query errors of `query.json` and the limits of the request.",
+  "steps": [
+    {
+      "request": {
+        "q": ""
+      },
+      "expect": {
+        "error": "query_empty"
+      }
+    },
+    {
+      "request": {
+        "q": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expect": {
+        "error": "query_too_long"
+      }
+    },
+    {
+      "request": {
+        "q": "zebra",
+        "limit": 0
+      },
+      "expect": {
+        "error": "bad_request"
+      }
+    },
+    {
+      "request": {
+        "q": "zebra",
+        "limit": 51
+      },
+      "expect": {
+        "error": "bad_request"
+      }
+    },
+    {
+      "request": {
+        "q": "zebra",
+        "archived": "maybe"
+      },
+      "expect": {
+        "error": "bad_request"
+      }
+    }
+  ]
+}

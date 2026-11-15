@@ -1,0 +1,15 @@
+{
+  "name": "A cursor that is not one",
+  "about": "Any text that is not a cursor this server made is `bad_cursor`.",
+  "steps": [
+    {
+      "request": {
+        "q": "zebra",
+        "cursor": "not a cursor"
+      },
+      "expect": {
+        "error": "bad_cursor"
+      }
+    }
+  ]
+}

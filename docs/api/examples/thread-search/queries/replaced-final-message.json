@@ -1,0 +1,55 @@
+{
+  "name": "A later final message replaces the earlier one",
+  "about": "The second draft replaces the first (same `messageId`): `walrus` is gone, `otter` is a hit at seq 3.",
+  "steps": [
+    {
+      "request": {
+        "q": "walrus"
+      },
+      "expect": {
+        "terms": [
+          "walrus"
+        ],
+        "results": [],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "otter"
+      },
+      "expect": {
+        "terms": [
+          "otter"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000009",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 3,
+                "role": "agent",
+                "at": "2026-11-14T10:03:00Z",
+                "snippet": {
+                  "text": "second draft mentions otter",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 22,
+                      "end": 27
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

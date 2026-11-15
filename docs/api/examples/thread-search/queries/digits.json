@@ -1,0 +1,74 @@
+{
+  "name": "Digits are words",
+  "about": "`2026` is a word of a title; `v1` of a description.",
+  "steps": [
+    {
+      "request": {
+        "q": "2026"
+      },
+      "expect": {
+        "terms": [
+          "2026"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000c",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Invoice 2026-11",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 8,
+                      "end": 12
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "v1"
+      },
+      "expect": {
+        "terms": [
+          "v1"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000c",
+            "rank": 1,
+            "hits": [
+              {
+                "field": "description",
+                "snippet": {
+                  "text": "v1.2 release",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 2
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

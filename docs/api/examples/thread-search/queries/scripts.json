@@ -1,0 +1,114 @@
+{
+  "name": "Cyrillic, CJK and emoji",
+  "about": "A Cyrillic prefix; a CJK word that has spaces around it; the snippet's offsets with an emoji in front.",
+  "steps": [
+    {
+      "request": {
+        "q": "прив"
+      },
+      "expect": {
+        "terms": [
+          "прив"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000a",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Привет мир",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 6
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "東京"
+      },
+      "expect": {
+        "terms": [
+          "東京"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000b",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "🎉 release party 東京 today",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 17,
+                      "end": 19
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "party"
+      },
+      "expect": {
+        "terms": [
+          "party"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000b",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "🎉 release party 東京 today",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 11,
+                      "end": 16
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "name": "At most three message hits, newest first, with the count",
+  "about": "Five messages of one thread say `zebra`: the three newest are shown and `messageHits` is 5. A fork's copied messages give none; its own message does; a fork whose parent is gone has its own whole log. Edits and archived threads are out.",
+  "steps": [
+    {
+      "request": {
+        "q": "zebra",
+        "archived": "exclude"
+      },
+      "expect": {
+        "terms": [
+          "zebra"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000008",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "zebra from a deleted parent",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 5
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000007",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 6,
+                "role": "person",
+                "at": "2026-11-14T10:06:00Z",
+                "snippet": {
+                  "text": "a new zebra message",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 6,
+                      "end": 11
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000003",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 5,
+                "role": "person",
+                "at": "2026-11-14T10:05:00Z",
+                "snippet": {
+                  "text": "zebra number 5",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 5
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 4,
+                "role": "person",
+                "at": "2026-11-14T10:04:00Z",
+                "snippet": {
+                  "text": "zebra number 4",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 5
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 3,
+                "role": "person",
+                "at": "2026-11-14T10:03:00Z",
+                "snippet": {
+                  "text": "zebra number 3",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 5
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 5
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

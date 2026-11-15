@@ -1,0 +1,455 @@
+{
+  "about": "docs/api/thread-search-v1.md, 'Words and keys'. `text` is a string, or {repeat, times, suffix?}: `repeat` written `times` times, then `suffix`. `words` lists every word of the text (the first 3000) with its start and end as UTF-16 code unit offsets and its key (null when it has none); a `key` may also be a {repeat, times}. A case with `wordCount` states the number of words and the key of the last.",
+  "cases": [
+    {
+      "name": "plain ASCII",
+      "text": "Hello",
+      "words": [
+        {
+          "start": 0,
+          "end": 5,
+          "key": "hello"
+        }
+      ]
+    },
+    {
+      "name": "punctuation separates words",
+      "text": "Hello, wörld!",
+      "words": [
+        {
+          "start": 0,
+          "end": 5,
+          "key": "hello"
+        },
+        {
+          "start": 7,
+          "end": 12,
+          "key": "world"
+        }
+      ]
+    },
+    {
+      "name": "an accent is dropped (precomposed)",
+      "text": "café",
+      "words": [
+        {
+          "start": 0,
+          "end": 4,
+          "key": "cafe"
+        }
+      ]
+    },
+    {
+      "name": "an accent is dropped (combining mark, part of the word)",
+      "text": "café",
+      "words": [
+        {
+          "start": 0,
+          "end": 5,
+          "key": "cafe"
+        }
+      ]
+    },
+    {
+      "name": "French and German ligatures and sharp s",
+      "text": "Cœur æon STRASSE Straße",
+      "words": [
+        {
+          "start": 0,
+          "end": 4,
+          "key": "coeur"
+        },
+        {
+          "start": 5,
+          "end": 8,
+          "key": "aeon"
+        },
+        {
+          "start": 9,
+          "end": 16,
+          "key": "strasse"
+        },
+        {
+          "start": 17,
+          "end": 23,
+          "key": "strasse"
+        }
+      ]
+    },
+    {
+      "name": "capital sharp s",
+      "text": "ẞ",
+      "words": [
+        {
+          "start": 0,
+          "end": 1,
+          "key": "ss"
+        }
+      ]
+    },
+    {
+      "name": "a compatibility ligature",
+      "text": "ﬁnal",
+      "words": [
+        {
+          "start": 0,
+          "end": 4,
+          "key": "final"
+        }
+      ]
+    },
+    {
+      "name": "several accents",
+      "text": "Ünïcödé",
+      "words": [
+        {
+          "start": 0,
+          "end": 7,
+          "key": "unicode"
+        }
+      ]
+    },
+    {
+      "name": "Vietnamese stacked marks",
+      "text": "Việt Nam",
+      "words": [
+        {
+          "start": 0,
+          "end": 4,
+          "key": "viet"
+        },
+        {
+          "start": 5,
+          "end": 8,
+          "key": "nam"
+        }
+      ]
+    },
+    {
+      "name": "Cyrillic, with a yo",
+      "text": "Привет, МИР! Ёж",
+      "words": [
+        {
+          "start": 0,
+          "end": 6,
+          "key": "привет"
+        },
+        {
+          "start": 8,
+          "end": 11,
+          "key": "мир"
+        },
+        {
+          "start": 13,
+          "end": 15,
+          "key": "еж"
+        }
+      ]
+    },
+    {
+      "name": "Greek final sigma is the same letter",
+      "text": "ΟΔΟΣ οδός",
+      "words": [
+        {
+          "start": 0,
+          "end": 4,
+          "key": "οδοσ"
+        },
+        {
+          "start": 5,
+          "end": 9,
+          "key": "οδοσ"
+        }
+      ]
+    },
+    {
+      "name": "CJK: no spaces, a run is one word",
+      "text": "你好，世界",
+      "words": [
+        {
+          "start": 0,
+          "end": 2,
+          "key": "你好"
+        },
+        {
+          "start": 3,
+          "end": 5,
+          "key": "世界"
+        }
+      ]
+    },
+    {
+      "name": "full-width digits",
+      "text": "２０２６",
+      "words": [
+        {
+          "start": 0,
+          "end": 4,
+          "key": "2026"
+        }
+      ]
+    },
+    {
+      "name": "a vulgar fraction and a superscript",
+      "text": "½ x²",
+      "words": [
+        {
+          "start": 0,
+          "end": 1,
+          "key": "12"
+        },
+        {
+          "start": 2,
+          "end": 4,
+          "key": "x2"
+        }
+      ]
+    },
+    {
+      "name": "circled digits and a roman numeral",
+      "text": "①② Ⅷ",
+      "words": [
+        {
+          "start": 0,
+          "end": 2,
+          "key": "12"
+        },
+        {
+          "start": 3,
+          "end": 4,
+          "key": "viii"
+        }
+      ]
+    },
+    {
+      "name": "a dotted capital I",
+      "text": "İstanbul",
+      "words": [
+        {
+          "start": 0,
+          "end": 8,
+          "key": "istanbul"
+        }
+      ]
+    },
+    {
+      "name": "the Kelvin sign and the micro sign",
+      "text": "K µm",
+      "words": [
+        {
+          "start": 0,
+          "end": 1,
+          "key": "k"
+        },
+        {
+          "start": 2,
+          "end": 4,
+          "key": "μm"
+        }
+      ]
+    },
+    {
+      "name": "apostrophes, hyphens, underscores, dots and plus signs split",
+      "text": "l'été e-mail snake_case v1.2.3 C++",
+      "words": [
+        {
+          "start": 0,
+          "end": 1,
+          "key": "l"
+        },
+        {
+          "start": 2,
+          "end": 5,
+          "key": "ete"
+        },
+        {
+          "start": 6,
+          "end": 7,
+          "key": "e"
+        },
+        {
+          "start": 8,
+          "end": 12,
+          "key": "mail"
+        },
+        {
+          "start": 13,
+          "end": 18,
+          "key": "snake"
+        },
+        {
+          "start": 19,
+          "end": 23,
+          "key": "case"
+        },
+        {
+          "start": 24,
+          "end": 26,
+          "key": "v1"
+        },
+        {
+          "start": 27,
+          "end": 28,
+          "key": "2"
+        },
+        {
+          "start": 29,
+          "end": 30,
+          "key": "3"
+        },
+        {
+          "start": 31,
+          "end": 32,
+          "key": "c"
+        }
+      ]
+    },
+    {
+      "name": "letters and digits together",
+      "text": "ABC123 4x",
+      "words": [
+        {
+          "start": 0,
+          "end": 6,
+          "key": "abc123"
+        },
+        {
+          "start": 7,
+          "end": 9,
+          "key": "4x"
+        }
+      ]
+    },
+    {
+      "name": "no words at all",
+      "text": "!!! — ...",
+      "words": []
+    },
+    {
+      "name": "an emoji is not a word and takes two UTF-16 units",
+      "text": "a🎉b",
+      "words": [
+        {
+          "start": 0,
+          "end": 1,
+          "key": "a"
+        },
+        {
+          "start": 3,
+          "end": 4,
+          "key": "b"
+        }
+      ]
+    },
+    {
+      "name": "two emoji in a row",
+      "text": "x🎉🎉y z",
+      "words": [
+        {
+          "start": 0,
+          "end": 1,
+          "key": "x"
+        },
+        {
+          "start": 5,
+          "end": 6,
+          "key": "y"
+        },
+        {
+          "start": 7,
+          "end": 8,
+          "key": "z"
+        }
+      ]
+    },
+    {
+      "name": "letters outside the BMP: mathematical script",
+      "text": "𝒜𝒷 rest",
+      "words": [
+        {
+          "start": 0,
+          "end": 4,
+          "key": "ab"
+        },
+        {
+          "start": 5,
+          "end": 9,
+          "key": "rest"
+        }
+      ]
+    },
+    {
+      "name": "a CJK extension B letter",
+      "text": "𠀀a",
+      "words": [
+        {
+          "start": 0,
+          "end": 3,
+          "key": "𠀀a"
+        }
+      ]
+    },
+    {
+      "name": "a mark alone is a word with no key",
+      "text": "x ́ y",
+      "words": [
+        {
+          "start": 0,
+          "end": 1,
+          "key": "x"
+        },
+        {
+          "start": 2,
+          "end": 3,
+          "key": null
+        },
+        {
+          "start": 4,
+          "end": 5,
+          "key": "y"
+        }
+      ]
+    },
+    {
+      "name": "a word of 64 code points has a key",
+      "text": {
+        "repeat": "a",
+        "times": 64
+      },
+      "words": [
+        {
+          "start": 0,
+          "end": 64,
+          "key": {
+            "repeat": "a",
+            "times": 64
+          }
+        }
+      ]
+    },
+    {
+      "name": "a word of 65 code points has none",
+      "text": {
+        "repeat": "a",
+        "times": 65
+      },
+      "words": [
+        {
+          "start": 0,
+          "end": 65,
+          "key": null
+        }
+      ]
+    },
+    {
+      "name": "only the first 3000 words are words",
+      "text": {
+        "repeat": "a ",
+        "times": 3000,
+        "suffix": "zebra"
+      },
+      "wordCount": 3000,
+      "lastKey": "a"
+    }
+  ]
+}
