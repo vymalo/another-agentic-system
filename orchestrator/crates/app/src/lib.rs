@@ -12,6 +12,7 @@ mod error;
 mod gate_config;
 mod inbox;
 pub mod mentions;
+mod prompts;
 mod purge;
 pub mod reader;
 mod share_link;
@@ -52,6 +53,7 @@ pub use inbox::{
     InboxConfig, InboxWorker,
 };
 pub use mentions::THREAD_MENTIONS_KEY;
+pub use prompts::{EditPrompt, PromptRefusal, RenderPrompt, RenderedPrompt};
 pub use purge::{DEFAULT_PURGE_LEASE_SECS, DEFAULT_PURGE_POLL_SECS, PurgeConfig, PurgeWorker};
 pub use reader::{
     ReaderAudience, ReaderRules, SharedThreadView, THE_OWNER, inert, reader_event, reader_thread,

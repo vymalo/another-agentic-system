@@ -4,6 +4,7 @@ use orch_core::{AgentId, Classify, ErrorClass, ForkError, NotDeletable, Transiti
 use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
 use crate::authz::Permission;
+use crate::prompts::PromptRefusal;
 use crate::sharing::SharingMode;
 use crate::user_tools::UserToolRefusal;
 
@@ -77,6 +78,11 @@ pub enum AppError {
     /// credentials, a broker that cannot keep one now. See [`UserToolRefusal`].
     #[error(transparent)]
     UserTool(UserToolRefusal),
+    /// A request about a person's prompt library is refused (ADR 0070): a rule of the page, a name
+    /// taken, the limit, a stale revision, no such prompt, an answer that does not fit, a text that
+    /// is too long. See [`PromptRefusal`].
+    #[error(transparent)]
+    Prompt(PromptRefusal),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -216,6 +222,15 @@ impl Classify for AppError {
                 | UserToolRefusal::AuthorizationUnavailable => ErrorClass::Transient,
                 UserToolRefusal::Busy => ErrorClass::Conflict,
             },
+            AppError::Prompt(refusal) => match refusal {
+                PromptRefusal::NotFound => ErrorClass::NotFound,
+                PromptRefusal::Invalid(_) => ErrorClass::Invalid,
+                PromptRefusal::NameTaken
+                | PromptRefusal::TooMany { .. }
+                | PromptRefusal::StaleRevision
+                | PromptRefusal::InvalidAnswer(_)
+                | PromptRefusal::RenderedTooLong => ErrorClass::Rejected,
+            },
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -245,6 +260,7 @@ impl Classify for AppError {
             | AppError::Unprocessable(_)
             | AppError::Arrangement { .. }
             | AppError::UserTool(_)
+            | AppError::Prompt(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
@@ -304,6 +320,11 @@ mod tests {
             }),
             AppError::UserTool(UserToolRefusal::AuthorizationUnavailable),
             AppError::UserTool(UserToolRefusal::Busy),
+            AppError::Prompt(PromptRefusal::NotFound),
+            AppError::Prompt(PromptRefusal::NameTaken),
+            AppError::Prompt(PromptRefusal::TooMany { limit: 100 }),
+            AppError::Prompt(PromptRefusal::StaleRevision),
+            AppError::Prompt(PromptRefusal::RenderedTooLong),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
@@ -348,6 +369,11 @@ mod tests {
                     UserToolRefusal::CredentialsUnavailable
                     | UserToolRefusal::AuthorizationUnavailable => ErrorClass::Transient,
                     UserToolRefusal::Busy => ErrorClass::Conflict,
+                },
+                AppError::Prompt(refusal) => match refusal {
+                    PromptRefusal::NotFound => ErrorClass::NotFound,
+                    PromptRefusal::Invalid(_) => ErrorClass::Invalid,
+                    _ => ErrorClass::Rejected,
                 },
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
