@@ -22,6 +22,7 @@ mod language;
 mod live;
 mod mention;
 mod pricing;
+pub mod prompt;
 mod rank;
 mod reasoning;
 mod redact;
