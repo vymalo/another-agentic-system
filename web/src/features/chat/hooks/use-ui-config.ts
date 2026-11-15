@@ -23,6 +23,11 @@ export type UiConfig = {
    * that does not serve `searchThreads` leaves it out and the web draws no search box. The numbers are what the server enforces.
    */
   search?: { maxQueryLength: number; maxTerms: number };
+  /**
+   * `prompts` of `GET /api/config` (ADR 0070): **its presence is the capability**, so an orchestrator without the prompt library
+   * leaves it out and the web offers none. The numbers are what the server enforces, to bound what the form accepts.
+   */
+  prompts?: { limit: number; maxVariables: number; maxBodyBytes: number; maxRenderedBytes: number };
 };
 
 export const DEFAULT_UI_CONFIG: UiConfig = { showDescriptions: true };
@@ -70,6 +75,21 @@ export function searchOf(value: unknown): UiConfig["search"] | undefined {
   return maxQueryLength && maxTerms ? { maxQueryLength, maxTerms } : undefined;
 }
 
+/** `prompts` of the configuration, if it names its four limits as positive whole numbers; else none (no library). */
+export function promptsOf(value: unknown): UiConfig["prompts"] | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const p = value as Record<string, unknown>;
+  const count = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isInteger(v) && v >= 1 ? v : undefined;
+  const limit = count(p.limit);
+  const maxVariables = count(p.maxVariables);
+  const maxBodyBytes = count(p.maxBodyBytes);
+  const maxRenderedBytes = count(p.maxRenderedBytes);
+  return limit && maxVariables && maxBodyBytes && maxRenderedBytes
+    ? { limit, maxVariables, maxBodyBytes, maxRenderedBytes }
+    : undefined;
+}
+
 function load() {
   if (started) return;
   started = true;
@@ -80,12 +100,14 @@ function load() {
       const shown = data.ui?.showDescriptions;
       const history = historyOf(data.ui?.history);
       const search = searchOf(data.search);
+      const prompts = promptsOf(data.prompts);
       set({
         loaded: true,
         config: {
           showDescriptions: typeof shown === "boolean" ? shown : DEFAULT_UI_CONFIG.showDescriptions,
           ...(history ? { history } : {}),
           ...(search ? { search } : {}),
+          ...(prompts ? { prompts } : {}),
         },
       });
     })
@@ -137,4 +159,9 @@ export function resetUiConfig() {
 /** What the search box needs from the configuration: its limits, or `undefined` while unknown or when the server has no search. */
 export function useSearchConfig(): UiConfig["search"] {
   return useUiConfig().config.search;
+}
+
+/** What the prompt library needs from the configuration: its limits, or `undefined` while unknown or when the server has none. */
+export function usePromptsConfig(): UiConfig["prompts"] {
+  return useUiConfig().config.prompts;
 }

@@ -24,6 +24,19 @@ export type ApiUpdateUserToolServer = components["schemas"]["UpdateUserToolServe
 /** What a person's own server is to them now (`status`), and why it is not `ready` (`reason`). */
 export type ApiUserToolStatus = components["schemas"]["UserToolServerStatus"];
 export type ApiUserToolReason = components["schemas"]["UserToolServerReason"];
+/** A person's prompt library (ADR 0070, docs/api/prompts-v1.md): a prompt, its summary and the list of summaries. */
+export type ApiPrompt = components["schemas"]["Prompt"];
+export type ApiPromptSummary = components["schemas"]["PromptSummary"];
+export type ApiPromptList = components["schemas"]["PromptList"];
+/** A question of the UI catalog's `Choices`, as a prompt's variable. */
+export type ApiChoicesQuestion = components["schemas"]["ChoicesQuestion"];
+/** The generated type of `variables` is `Record<string, never>[]`, which no question fits: the questions are written here. */
+export type ApiCreatePrompt = Omit<components["schemas"]["CreatePromptRequest"], "variables"> & {
+  variables?: ApiChoicesQuestion[];
+};
+export type ApiUpdatePrompt = Omit<components["schemas"]["UpdatePromptRequest"], "variables"> & {
+  variables?: ApiChoicesQuestion[];
+};
 /** `searchThreads` (ADR 0068, docs/api/thread-search-v1.md): a person's own threads found by their words. */
 export type ApiThreadSearchPage = components["schemas"]["ThreadSearchPage"];
 export type ApiThreadHit = components["schemas"]["ThreadHit"];
