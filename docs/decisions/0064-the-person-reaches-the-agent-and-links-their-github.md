@@ -1,8 +1,9 @@
 # ADR 0064 — The person reaches the agent as a signed assertion, links their GitHub account, and the coder checks their access before it touches a repository
 
 - **Status:** **proposed (2026-10-18).** The owner decided, 2026-10-18 (as the task brief recorded it): *people link their GitHub account, and we keep
-  the GitHub App*. The App does the work; the person's own GitHub identity proves they may. The plan behind it: the coder is offered to everyone,
-  10,000 people, starting in Cameroon. **Proposed**, for the owner to confirm: every name, default, status code and shape below, and the
+  the GitHub App*. The App does the work; the person's own GitHub identity proves they may. The plan behind it: the coder is offered to many
+  people at once (*amended 2026-11-15: the market plan this sentence named is the operator's and left the open-source
+  repositories*). **Proposed**, for the owner to confirm: every name, default, status code and shape below, and the
   [decisions at the end](#decisions-for-the-owner-to-confirm). **Nothing is built.** One design across this repository and adam-rs: the
   coder's side (verify, check, refuse) is adam-rs's own ADR, slice B1c. Extends [ADR 0008](0008-platform-integration-via-a2a-extension.md) (an
   optional extension), [ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md) (the sealed secret store, the lease, the

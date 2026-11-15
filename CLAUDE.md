@@ -21,7 +21,7 @@ not: `docs/vision.md`; the build order and the post-MVP list: `docs/mvp.md`.
 
 | Path | What |
 |---|---|
-| `ROADMAP.md`, `CONTRIBUTING.md`, `SECURITY.md` | The public front door of all four repositories: the roadmap to launch (milestones M1 to M5; epics and tickets are GitHub issues, epics in this repo), how to contribute, and how to report a vulnerability. A change to a milestone, an epic or the order updates `ROADMAP.md` in the same PR |
+| `ROADMAP.md`, `CONTRIBUTING.md`, `SECURITY.md` | The public front door of all four repositories: the roadmap to launch (milestones M1, M2, M4 and M5; M3, payments, pricing and any market plan are an operator's own and never written in these repositories; epics and tickets are GitHub issues, epics in this repo), how to contribute, and how to report a vulnerability. A change to a milestone, an epic or the order updates `ROADMAP.md` in the same PR |
 | `docs/vision.md` | What the system is meant to be (the owner's requirements), what exists and what is missing |
 | `docs/architecture.md` | Components, agent hosts, job flow and lifecycle |
 | `docs/orchestrator.md` | Ports & adapters, event/command model, inbox/outbox, core types, data model, crate layout |

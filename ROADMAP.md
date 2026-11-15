@@ -14,10 +14,12 @@ Four repositories make one product. Each name below is short for the repository 
 | **plat** | [another-agentic-platform](https://github.com/vymalo/another-agentic-platform) | The Kubernetes operator and the Platform API that run agents as services. |
 | **img** | [another-agentic-images](https://github.com/vymalo/another-agentic-images) | The toolchain container images that agents work in. |
 
-The goal is to offer the coder to about 10,000 people, starting in Cameroon and then the other FCFA countries of
-Central Africa. That needs five things, and each is a milestone below: isolation between people (M1), a record and a
-limit of what each person uses (M2), payment by mobile money (M3), a platform that holds the load (M4), and data
-protection that fits local law (M5).
+The goal is a coder that an operator can offer to many people at once. In these repositories that needs four things,
+and each is a milestone below: isolation between people (M1), a record and a limit of what each person uses (M2), a
+platform that holds the load (M4), and data protection and trust (M5).
+
+Payments, pricing and the plan for any particular market are the business of whoever runs a service on these building
+blocks. They are not open source, and they left this roadmap on 2026-11-15: M3 keeps its number and nothing else.
 
 ## Where we are, honestly
 
@@ -27,7 +29,7 @@ protection that fits local law (M5).
   [`docs/vision.md`](docs/vision.md) and [`docs/mvp.md`](docs/mvp.md).
 - **The first isolation step is merged:** [adam#117](https://github.com/vymalo/another-adam-rs/pull/117) makes a run pod
   see only its own run (adam ADR 0041). Its known limits are the first tickets of M1.
-- **Nothing has been measured live.** No load test, no cost per person, no payment of any kind, no payment code.
+- **Nothing has been measured live.** No load test, no cost per person.
 - **There is no launch date.** The order below is the order of dependencies, not a schedule.
 
 ## Three quality goals, alongside the milestones
@@ -41,7 +43,7 @@ live model or a real cluster.
 
 | Goal | Plan | Merged | Share | Left |
 |---|---|---|---|---|
-| **adam**: a coder as good as OpenCode, and above | [adam ADR 0044](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0044-paged-tools-a-stable-prompt-prefix-a-plan-skills-commands-and-project-context.md), 16 slices | The loop survives bad model output (1), paged reads (2), command output kept whole and read back by page (3), OpenCode removed (5), a prompt prefix that holds across turns and a cache key (4), a plan every agent has (6), a repository's own instructions shown to the coder (7), skills on by default with a repository's own skills (8), the repeated-call rule, time limits and a cancel that reaches children (10) | 9 of 16, 56 % | Built and in review: commands served by the agent, announced by an A2A extension (12). Planned, not started: compaction (9), more kinds of question (11), references (13), MCP timeouts, instructions and prompts (14), images in and out (15), commands that keep running (16) |
+| **adam**: a coder as good as OpenCode, and above | [adam ADR 0044](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0044-paged-tools-a-stable-prompt-prefix-a-plan-skills-commands-and-project-context.md), 16 slices | The loop survives bad model output (1), paged reads (2), command output kept whole and read back by page (3), OpenCode removed (5), a prompt prefix that holds across turns and a cache key (4), a plan every agent has (6), a repository's own instructions shown to the coder (7), skills on by default with a repository's own skills (8), the repeated-call rule, time limits and a cancel that reaches children (10), commands served by the agent and announced by an A2A extension (12) | 10 of 16, 63 % | Built and in review: compaction (9). Planned, not started: more kinds of question (11), references (13), MCP timeouts, instructions and prompts (14), images in and out (15), commands that keep running (16) |
 | **adam**: a subagent in the background, as a session | [adam ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md), 8 slices | The runtime (1), the five `subagent_*` tools (2) | 2 of 8, 25 % | Not started: reports during a turn (3), limits (4), remote sessions (5), the `child-sessions/v1` extension (6), the coder's own sessions (7), asking from a child (8); then this system's side, child threads in the chat |
 | **sys**: LibreChat-grade, client-agnostic | [ADR 0067](docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), 35 slices | The usage page, highlighted code and math, regenerate, "My tool servers", UI catalog version 7 (more kinds of question), a theme, quote, copy and export as Markdown, questions that show what they ask about and the agent's plan (UI catalog version 8); search, the API and the box in the web ([ADR 0068](docs/decisions/0068-a-person-searches-their-own-threads.md)); the page "My prompts" (P1: list, create, edit, delete, copy a shared prompt) and, not yet counted, the server half of the rest of the prompt library (render, sharing with roles: [ADR 0070](docs/decisions/0070-a-persons-prompt-library.md)) | 11 of 35, 31 %, and the server half of two more (P2, P4): a slice counts when a person can use it in the web | Read aloud and speech; artifact versions, the panel and live previews; the prompt library's remaining web (the form that fills a prompt and the `/` menu of P2, sharing of P4, P3's `/` commands) and MCP prompts (P5); memory; import; `/` commands; attachments; tags; temporary chats; French. The eight API gaps a second client meets are listed in ADR 0067 |
 | **plat**: a kagent-grade minimum | [plat §59c](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/10-control-plane-and-crds.md#59c-operator-increments-kagent-grade-minimum), 16 increments | The plan (K0), the CRDs read what adam-rs's former operator accepted (K1), status on shared objects (K2), metrics (K4), an OpenAPI document and an agent's events (K8), `aapctl validate` and `render` (K9); K9b, `aapctl` over the API, with a pasted token and with its browser sign-in; and traces of the operator and the Platform API (K5) | 8 of 16, 50 % (8 of 15 until gVisor was added on 2026-11-15) | Wait for the owner: tool discovery (K3), several namespaces and two replicas (K6, K7), a tool catalogue (K10), a bring-your-own image (K11), run pods under gVisor (K14). Wait for adam: approvals per tool (K12). On hold with no cluster: the first real agent (K13) |
@@ -50,7 +52,7 @@ live model or a real cluster.
 
 Milestones, then epics, then tickets.
 
-- A **milestone** is a step to launch, M1 to M5. Its label is `launch-m1` to `launch-m5`.
+- A **milestone** is a step to launch: M1, M2, M4 and M5 (M3, payments, is not in these repositories). Its label is `launch-m1` to `launch-m5`.
 - An **epic** is the parent issue of a milestone. All five are in sys, and each holds the live list of its tickets.
 - A **ticket** is one piece of work: a GitHub issue in the repository that owns the code, and a sub-issue of its epic.
   Size is S, M or L, a rough guide to the effort.
@@ -74,20 +76,19 @@ Milestones, then epics, then tickets.
 
 ## How the milestones depend on each other
 
-M1 comes before M2. M2 comes before M3, because plans need usage and limits. M4 and M5 run alongside and can start
-now. Launch needs all five.
+M1 comes before M2. M4 and M5 run alongside and can start now. Launch needs all four. M3, payments, is an operator's
+own and is not in these repositories.
 
 ```mermaid
 flowchart LR
   subgraph chain["In order"]
     M1["M1<br/>A coder safe for many people"] --> M2["M2<br/>Usage and limits"]
-    M2 -->|"plans need usage and limits"| M3["M3<br/>Payments"]
   end
   subgraph alongside["Alongside"]
     M4["M4<br/>Scale and operations"]
     M5["M5<br/>Data protection and trust"]
   end
-  M3 --> L(["Launch"])
+  M2 --> L(["Launch"])
   M4 --> L
   M5 --> L
 ```
@@ -109,7 +110,7 @@ secrets. The coder knows who the person is and checks their GitHub access before
 
 **Epic:** [M1: A coder that is safe for many people](https://github.com/vymalo/another-agentic-system/issues/273).
 Related: [sys#159](https://github.com/vymalo/another-agentic-system/issues/159) (the token's `sub` as the user key).
-Not in this milestone: payments and limits (M2, M3). gVisor, which the owner had left out on 2026-10-17, is back in
+Not in this milestone: limits (M2). gVisor, which the owner had left out on 2026-10-17, is back in
 it by the owner's decision of 2026-11-15: the last ticket below.
 
 **Done already.** [adam#117](https://github.com/vymalo/another-adam-rs/pull/117), merged 2026-10-18: a run pod mounts
@@ -135,7 +136,7 @@ commands in the coder's own container, next to the GitHub App key file.
 ## M2: Usage and limits per person
 
 **Goal.** Know what each person uses, in model tokens and sandbox time, and refuse a run before it starts when the
-person has no credit, no pass, or too many runs at once.
+person is over their limit or has too many runs at once.
 
 **Done when**
 
@@ -169,44 +170,25 @@ Related: [sys#170](https://github.com/vymalo/another-agentic-system/issues/170) 
     [open question 51](docs/open-questions.md), and turning the limit on waits for that check.
   - [sys#284](https://github.com/vymalo/another-agentic-system/issues/284) is closed.
 - **Left:** refusing a run before dispatch ([sys#282](https://github.com/vymalo/another-agentic-system/issues/282)), which
-  waits on the owner's plan decisions. Nothing of M2 has run on the live deployment.
+  waits on the owner's decision on the limits. Nothing of M2 has run on the live deployment.
 
 | Ticket | Repo | Size | Labels | Who and when |
 |---|---|---|---|---|
 | [A usage record per person, priced by model](https://github.com/vymalo/another-agentic-system/issues/281) | sys | L | | Anyone. Design first: the pull request starts with an ADR |
 | [Report sandbox time per run as usage](https://github.com/vymalo/another-adam-rs/issues/126) | adam | M | | Anyone |
-| [Check limits before a run starts](https://github.com/vymalo/another-agentic-system/issues/282) | sys | L | owner-decision | After the usage record and the owner's plan decisions |
+| [Check limits before a run starts](https://github.com/vymalo/another-agentic-system/issues/282) | sys | L | owner-decision | After the usage record and the owner's decision on the limits |
 | [A fair share of the dispatcher for each person](https://github.com/vymalo/another-agentic-system/issues/283) | sys | M | help wanted | Anyone |
 | [A rate limit at the edge, and the client address behind the ingress](https://github.com/vymalo/another-agentic-system/issues/284) | sys | M | security, help wanted | Anyone. The live check of the ingress needs access to a deployment |
 
-## M3: Payments by mobile money, Cameroon first
+## M3: Payments (not in these repositories)
 
-**Goal.** People in Cameroon pay by mobile money (MTN MoMo, Orange Money) in FCFA, often by the day or the week. The
-system needs plans, passes and credits, a payment provider, and receipts with Cameroon VAT (19.25%).
+Payments, plans and pricing belong to the operator of a service, not to the open-source building blocks. This
+milestone left the roadmap on 2026-11-15 and keeps its number so that M4 and M5 keep theirs. What stays here is what
+an operator's payment system needs from these repositories, and that is M2: a usage record per person
+([ADR 0065](docs/decisions/0065-a-usage-ledger-per-person.md)) and a check of a person's limit before a run starts
+([sys#282](https://github.com/vymalo/another-agentic-system/issues/282)).
 
-**Done when**
-
-- A provider is chosen, with each fact sourced and dated.
-- A `Payments` port with a testkit, a mock adapter for development and the first real adapter. Webhooks are verified
-  and a person's balance is credited once.
-- Plans, passes and credits are configuration, and a run spends credit at its actual cost.
-- A receipt per payment and a monthly invoice for teams show the VAT.
-- The owner has settled the billing entity, VAT registration and payments abroad.
-
-**Epic:** [M3: Payments by mobile money, Cameroon first](https://github.com/vymalo/another-agentic-system/issues/275).
-Depends on M2. Not in this milestone: card payments beyond what the chosen provider offers, and other currencies.
-
-**Done already.** Nothing. There is no payment code in the repository.
-
-| Ticket | Repo | Size | Labels | Who and when |
-|---|---|---|---|---|
-| [Spike: choose a mobile-money provider](https://github.com/vymalo/another-agentic-system/issues/285) | sys | S | good first issue, help wanted | Anyone. Local experience is very welcome |
-| [A payments port and the first mobile-money adapter](https://github.com/vymalo/another-agentic-system/issues/286) | sys | L | | Anyone, after the spike |
-| [Plans, passes and credits](https://github.com/vymalo/another-agentic-system/issues/287) | sys | M | owner-decision | Needs the owner's decision on plans, and the M2 limit check |
-| [Receipts and invoices with Cameroon VAT](https://github.com/vymalo/another-agentic-system/issues/288) | sys | M | owner-decision | Needs the owner's decision first |
-| [Owner: billing entity, VAT registration and payments abroad](https://github.com/vymalo/another-agentic-system/issues/289) | sys | S | owner-decision | Owner only |
-
-## M4: Scale and operations for 10k people
+## M4: Scale and operations
 
 **Goal.** The databases, the dispatcher and the run pods hold about 200 runs at once at peak, and someone is told
 before they run out.
@@ -219,7 +201,7 @@ before they run out.
 - A load test on the mocks reports the limits and the first bottleneck.
 - Capacity metrics exist, and the chart ships alert rules as examples.
 
-**Epic:** [M4: Scale and operations for 10k people](https://github.com/vymalo/another-agentic-system/issues/276).
+**Epic:** [M4: Scale and operations](https://github.com/vymalo/another-agentic-system/issues/276).
 Related: [sys#151](https://github.com/vymalo/another-agentic-system/issues/151) (backups),
 [sys#149](https://github.com/vymalo/another-agentic-system/issues/149) (live verification of the deployment),
 [sys#157](https://github.com/vymalo/another-agentic-system/issues/157) (retention).
@@ -237,24 +219,22 @@ is pruned, and nothing has been load-tested.
 |---|---|---|---|---|
 | [CNPG for scale: three instances, resources and a pooler](https://github.com/vymalo/another-agentic-system/issues/290) | sys | M | help wanted | Anyone. CloudNativePG experience helps |
 | [The coder's database for scale, and pruning finished runs](https://github.com/vymalo/another-adam-rs/issues/127) | adam | M | help wanted | Anyone. The default retention needs the owner's agreement |
-| [Load test on the mocks: 10k people, 200 runs at once](https://github.com/vymalo/another-agentic-system/issues/291) | sys | L | help wanted | Anyone |
+| [Load test on the mocks: 200 runs at once](https://github.com/vymalo/another-agentic-system/issues/291) | sys | L | help wanted | Anyone |
 | [Capacity metrics and alerts](https://github.com/vymalo/another-agentic-system/issues/292) | sys | M | help wanted | Anyone. Prometheus experience helps |
 
-## M5: Data protection and trust for Cameroon
+## M5: Data protection and trust
 
-**Goal.** Meet Cameroon's data protection law, let people delete their data, and keep a free tier from being abused.
-Cameroon's Law No. 2024/017 may require approval to send personal data abroad (our servers are in Germany) and sets
-fines up to 1 billion FCFA. *Unverified: we have no legal advice yet, and that is the first ticket.*
+**Goal.** Let people delete their data, and keep a deployment that is open to many people from being abused. Which
+law applies, and what it asks of an operator, depends on where the service runs: legal advice, terms of service and
+a privacy policy are the operator's and are not in these repositories.
 
 **Done when**
 
-- The owner has advice on whether transfers to Germany need approval, or a plan to host user data in the region.
 - A person can delete their account and everything of theirs: threads, their own MCP servers and sealed secrets,
-  their GitHub link and files. Usage is kept only as far as the law requires for invoices.
-- The free tier has abuse controls: a sign-up gate, detection of CPU mining on run pods, and a kill switch per person.
-- Terms of service and a privacy policy for Cameroon are published.
+  their GitHub link and files. Usage records are kept only as long as the operator configures.
+- There are abuse controls: a sign-up gate, detection of CPU mining on run pods, and a kill switch per person.
 
-**Epic:** [M5: Data protection and trust for Cameroon](https://github.com/vymalo/another-agentic-system/issues/277).
+**Epic:** [M5: Data protection and trust](https://github.com/vymalo/another-agentic-system/issues/277).
 Related: [sys#145](https://github.com/vymalo/another-agentic-system/issues/145) (personal data, GDPR),
 [sys#158](https://github.com/vymalo/another-agentic-system/issues/158) (a privacy note for testers).
 
@@ -263,10 +243,8 @@ Nothing deletes a person.
 
 | Ticket | Repo | Size | Labels | Who and when |
 |---|---|---|---|---|
-| [Owner: legal advice on Law 2024/017, or user data hosted in the region](https://github.com/vymalo/another-agentic-system/issues/293) | sys | M | owner-decision | Owner only |
 | [Delete my account](https://github.com/vymalo/another-agentic-system/issues/294) | sys | M | | Anyone |
-| [Free-tier abuse controls](https://github.com/vymalo/another-agentic-system/issues/295) | sys | M | security, help wanted | Anyone. The sign-up gate needs the owner's choice between the options |
-| [Owner: terms of service and privacy policy for Cameroon](https://github.com/vymalo/another-agentic-system/issues/296) | sys | S | owner-decision | Owner only |
+| [Abuse controls](https://github.com/vymalo/another-agentic-system/issues/295) | sys | M | security, help wanted | Anyone. The sign-up gate needs the owner's choice between the options |
 
 ## Good first issues
 
@@ -274,7 +252,6 @@ Small, outside any epic, and explained in the issue. Each also carries `help wan
 
 | Issue | Repo | Size | What it takes |
 |---|---|---|---|
-| [Spike: choose a mobile-money provider](https://github.com/vymalo/another-agentic-system/issues/285) | sys | S | Research. Compare providers, source and date each fact. Local experience helps |
 | [The coder reads a repository's package.json without following links](https://github.com/vymalo/another-adam-rs/issues/128) | adam | S | Rust. Use `safe_fs` and add a test |
 | [Move GitHub Actions off Node 20](https://github.com/vymalo/another-adam-rs/issues/129) | adam | S | Update the `actions/*` majors |
 | [Move GitHub Actions off Node 20](https://github.com/vymalo/another-agentic-system/issues/297) | sys | S | The same, in this repository |
@@ -293,12 +270,7 @@ Anyone may comment on these in the issue or the pull request. The owner decides.
 | [sys#278](https://github.com/vymalo/another-agentic-system/issues/278) | M1 | Agree ADR 0064: the person reaches the agent and links their GitHub |
 | [adam#123](https://github.com/vymalo/another-adam-rs/issues/123) | M1 | The package cache: per person, or read-only in run pods |
 | [plat#54](https://github.com/vymalo/another-agentic-platform/issues/54) | M1 | gVisor for run pods: run pods only at first, required when set, BuildKit and Podman refused with it until proven (plat P-040) |
-| [sys#282](https://github.com/vymalo/another-agentic-system/issues/282) | M2 | The plans that the limit check enforces |
-| [sys#287](https://github.com/vymalo/another-agentic-system/issues/287) | M3 | Plans, passes and credits |
-| [sys#288](https://github.com/vymalo/another-agentic-system/issues/288) | M3 | Receipts and invoices with Cameroon VAT |
-| [sys#289](https://github.com/vymalo/another-agentic-system/issues/289) | M3 | Billing entity, VAT registration and payments abroad |
-| [sys#293](https://github.com/vymalo/another-agentic-system/issues/293) | M5 | Legal advice on Law 2024/017, or hosting in the region |
-| [sys#296](https://github.com/vymalo/another-agentic-system/issues/296) | M5 | Terms of service and privacy policy for Cameroon |
+| [sys#282](https://github.com/vymalo/another-agentic-system/issues/282) | M2 | The limits that the check enforces |
 
 **Proposed decisions.** Their ADRs say *proposed*: the owner has not confirmed them. Status as written in each ADR on
 2026-10-18.
