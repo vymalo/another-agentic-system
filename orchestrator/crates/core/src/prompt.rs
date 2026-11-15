@@ -251,12 +251,8 @@ impl PromptAudience {
     /// `bad_audience` at `audience`.
     pub fn from_values(values: &[String]) -> Result<Self, PromptError> {
         let set: BTreeSet<String> = values.iter().cloned().collect();
-        let value_ok = |v: &String| {
-            (1..=MAX_AUDIENCE_VALUE).contains(&v.len())
-                && v.bytes().all(|b| (0x21..=0x7e).contains(&b))
-        };
         if set.len() > MAX_AUDIENCE
-            || !set.iter().all(value_ok)
+            || !set.iter().all(|v| Self::is_role_value(v))
             || (set.contains("*") && set.len() > 1)
         {
             return Err(fail("bad_audience", "audience"));
@@ -266,6 +262,14 @@ impl PromptAudience {
             _ if set.contains("*") => PromptAudience::Everyone,
             _ => PromptAudience::Roles(set),
         })
+    }
+
+    /// Whether `value` can be a role value of an audience: 1 to [`MAX_AUDIENCE_VALUE`] bytes, every
+    /// byte in `0x21` to `0x7E`. A role of a caller that is not one is in no audience, and is not
+    /// worth asking a store about.
+    pub fn is_role_value(value: &str) -> bool {
+        (1..=MAX_AUDIENCE_VALUE).contains(&value.len())
+            && value.bytes().all(|b| (0x21..=0x7e).contains(&b))
     }
 
     /// The values, sorted by bytes (empty for private).
@@ -662,13 +666,40 @@ fn is_id(s: &str) -> bool {
     (1..=64).contains(&s.len()) && s.chars().all(is_id_char)
 }
 
-fn text_in(v: Option<&Value>, lo: usize, hi: usize) -> bool {
+/// Whether `c` is a bidirectional embedding, override or isolate control, or a line or paragraph
+/// separator: U+202A to U+202E, U+2066 to U+2069, U+2028 and U+2029. (The joiners and the left-to-right
+/// and right-to-left marks stay allowed: scripts and emoji need them.)
+fn is_bidi(c: char) -> bool {
+    matches!(u32::from(c), 0x202a..=0x202e | 0x2066..=0x2069 | 0x2028 | 0x2029)
+}
+
+/// Whether `s` is not a text a person may read as one line of a shared prompt: a control character
+/// other than `allowed`, a bidirectional control or a line or paragraph separator.
+fn is_unsafe_text(s: &str, allowed: &[char]) -> bool {
+    has_control(s, allowed) || s.chars().any(is_bidi)
+}
+
+/// A text of a variable that a person reads (a question, a help, a label, a unit): `lo` to `hi`
+/// scalar values and nothing [`is_unsafe_text`] refuses.
+fn shown_in(v: Option<&Value>, lo: usize, hi: usize) -> bool {
     v.and_then(Value::as_str)
-        .is_some_and(|s| (lo..=hi).contains(&scalars(s)))
+        .is_some_and(|s| (lo..=hi).contains(&scalars(s)) && !is_unsafe_text(s, &[]))
+}
+
+/// The integer a JSON number is, if its value is one in range: `5`, `5.0` and `5e0` are 5 (a client
+/// that writes a whole double as `5.0` is not refused for it); `5.5`, a string, a number out of the
+/// range of `i64` and anything that is not a number are not.
+fn as_int(v: &Value) -> Option<i64> {
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    let f = v.as_f64()?;
+    // every integer of this range is a float exactly: the cast loses nothing
+    (f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0).then_some(f as i64)
 }
 
 fn int_in(v: &Value, lo: i64, hi: i64) -> bool {
-    v.as_i64().is_some_and(|n| (lo..=hi).contains(&n))
+    as_int(v).is_some_and(|n| (lo..=hi).contains(&n))
 }
 
 /// A decimal string as millionths: `-?(0|[1-9][0-9]{0,14})(\.[0-9]{1,6})?`, and zero has no sign.
@@ -788,10 +819,10 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
         }
         _ => return bad(format!("{here}.id")),
     }
-    if !text_in(q.get("question"), 1, 300) {
+    if !shown_in(q.get("question"), 1, 300) {
         return bad(format!("{here}.question"));
     }
-    if q.get("help").is_some() && !text_in(q.get("help"), 0, 300) {
+    if q.get("help").is_some() && !shown_in(q.get("help"), 0, 300) {
         return bad(format!("{here}.help"));
     }
     if q.get("required").is_some_and(|v| !v.is_boolean()) {
@@ -815,10 +846,10 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
             if !o.get("value").and_then(Value::as_str).is_some_and(is_id) {
                 return bad(format!("{at}.value"));
             }
-            if !text_in(o.get("label"), 1, 120) {
+            if !shown_in(o.get("label"), 1, 120) {
                 return bad(format!("{at}.label"));
             }
-            if o.get("description").is_some() && !text_in(o.get("description"), 0, 300) {
+            if o.get("description").is_some() && !shown_in(o.get("description"), 0, 300) {
                 return bad(format!("{at}.description"));
             }
             if o.get("icon")
@@ -849,7 +880,7 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
         return bad(format!("{here}.max"));
     }
     for k in ["yesLabel", "noLabel"] {
-        if q.get(k).is_some() && !text_in(q.get(k), 1, 40) {
+        if q.get(k).is_some() && !shown_in(q.get(k), 1, 40) {
             return bad(format!("{here}.{k}"));
         }
     }
@@ -858,7 +889,7 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
             return bad(format!("{here}.{k}"));
         }
     }
-    if q.get("unit").is_some() && !text_in(q.get("unit"), 1, 20) {
+    if q.get("unit").is_some() && !shown_in(q.get("unit"), 1, 20) {
         return bad(format!("{here}.unit"));
     }
     if q.get("from").is_some_and(|v| !int_in(v, 0, 1)) {
@@ -868,7 +899,7 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
         return bad(format!("{here}.to"));
     }
     for k in ["fromLabel", "toLabel"] {
-        if q.get(k).is_some() && !text_in(q.get(k), 1, 60) {
+        if q.get(k).is_some() && !shown_in(q.get(k), 1, 60) {
             return bad(format!("{here}.{k}"));
         }
     }
@@ -900,8 +931,8 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
         if takes_several(q) {
             let offered = i64::try_from(options.len()).unwrap_or(i64::MAX)
                 + i64::from(q.get("allowOther") == Some(&Value::Bool(true)));
-            let min = q.get("min").and_then(Value::as_i64);
-            let max = q.get("max").and_then(Value::as_i64);
+            let min = q.get("min").and_then(as_int);
+            let max = q.get("max").and_then(as_int);
             if let (Some(min), Some(max)) = (min, max)
                 && min > max
             {
@@ -936,8 +967,8 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
         return bad(format!("{here}.minDate"));
     }
     if kind == "scale" {
-        let from = q.get("from").and_then(Value::as_i64).unwrap_or(1);
-        if q.get("to").and_then(Value::as_i64).unwrap_or(0) <= from {
+        let from = q.get("from").and_then(as_int).unwrap_or(1);
+        if q.get("to").and_then(as_int).unwrap_or(0) <= from {
             return bad(format!("{here}.to"));
         }
     }
@@ -958,7 +989,7 @@ fn default_accepted(q: &Map<String, Value>) -> bool {
     let mut entry = Map::new();
     entry.insert("id".to_owned(), Value::String("d".to_owned()));
     if kind == "text" || kind == "longText" {
-        let Some(text) = d.as_str() else {
+        let Some(text) = d.as_str().filter(|t| !t.chars().any(is_bidi)) else {
             return false;
         };
         entry.insert("values".to_owned(), Value::Array(Vec::new()));
@@ -992,14 +1023,14 @@ pub fn validate(input: &PromptInput) -> Result<(), PromptError> {
     let title = &input.title;
     let edge = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
     if !(1..=MAX_TITLE).contains(&scalars(title))
-        || has_control(title, &[])
+        || is_unsafe_text(title, &[])
         || title.starts_with(edge)
         || title.ends_with(edge)
     {
         return Err(fail("bad_title", "title"));
     }
     if scalars(&input.description) > MAX_DESCRIPTION
-        || has_control(&input.description, &['\t', '\n'])
+        || is_unsafe_text(&input.description, &['\t', '\n'])
     {
         return Err(fail("bad_description", "description"));
     }
@@ -1137,7 +1168,10 @@ fn refusal_of_choice(
         return Some("out_of_order");
     }
     if let Some(other) = other {
-        let Some(other) = other.as_str().filter(|t| !t.is_empty()) else {
+        let Some(other) = other
+            .as_str()
+            .filter(|t| !t.is_empty() && !has_control(t, &['\t']))
+        else {
             return Some("grammar");
         };
         if scalars(other) > 500 {
@@ -1146,16 +1180,10 @@ fn refusal_of_choice(
     }
     if several {
         let count = i64::try_from(count).unwrap_or(i64::MAX);
-        if q.get("max")
-            .and_then(Value::as_i64)
-            .is_some_and(|m| count > m)
-        {
+        if q.get("max").and_then(as_int).is_some_and(|m| count > m) {
             return Some("too_many");
         }
-        if q.get("min")
-            .and_then(Value::as_i64)
-            .is_some_and(|m| count < m)
-        {
+        if q.get("min").and_then(as_int).is_some_and(|m| count < m) {
             return Some("too_few");
         }
     }
@@ -1230,8 +1258,8 @@ fn refusal_of_kind(
                 return Some("grammar");
             }
             let n: i64 = value.parse().ok()?;
-            let from = q.get("from").and_then(Value::as_i64).unwrap_or(1);
-            let to = q.get("to").and_then(Value::as_i64).unwrap_or(from);
+            let from = q.get("from").and_then(as_int).unwrap_or(1);
+            let to = q.get("to").and_then(as_int).unwrap_or(from);
             if n < from {
                 return Some("below_min");
             }

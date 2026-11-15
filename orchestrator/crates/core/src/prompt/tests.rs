@@ -434,6 +434,62 @@ fn an_id_is_made_of_entropy_and_read_back() {
     assert!(PromptId::parse("p-ABCDEFGHIJKL").is_err());
     assert!(PromptId::parse("p-abc").is_err());
     assert!(PromptId::parse("q-abcdefghijkl").is_err());
+    // exactly 12 characters: one more or one fewer is no id
+    assert!(PromptId::parse("p-abcdefghijkl").is_ok());
+    assert!(PromptId::parse("p-abcdefghijklm").is_err());
+    assert!(PromptId::parse("p-abcdefghijk").is_err());
+}
+
+#[test]
+fn an_integer_member_is_a_number_whose_value_is_an_integer_in_range() {
+    let n = |text: &str| -> Option<i64> { as_int(&serde_json::from_str::<Value>(text).unwrap()) };
+    assert_eq!(n("5"), Some(5));
+    assert_eq!(n("5.0"), Some(5));
+    assert_eq!(n("5e0"), Some(5));
+    assert_eq!(n("0.5e1"), Some(5));
+    assert_eq!(n("-3.0"), Some(-3));
+    assert_eq!(n("5.5"), None);
+    assert_eq!(n("1e30"), None);
+    assert_eq!(n("18446744073709551616"), None);
+    assert_eq!(n("\"5\""), None);
+    assert_eq!(n("true"), None);
+    assert_eq!(n("null"), None);
+    assert!(int_in(&json!(5.0), 2, 10));
+    assert!(!int_in(&json!(11.0), 2, 10));
+    assert!(!int_in(&json!(5.5), 2, 10));
+}
+
+#[test]
+fn a_text_a_person_reads_has_no_control_character_bidi_control_or_separator() {
+    for bad in [
+        "a\u{0}b",
+        "a\nb",
+        "a\tb",
+        "a\u{7f}b",
+        "a\u{85}b",
+        "a\u{202a}b",
+        "a\u{202e}b",
+        "a\u{2066}b",
+        "a\u{2069}b",
+        "a\u{2028}b",
+        "a\u{2029}b",
+    ] {
+        assert!(is_unsafe_text(bad, &[]), "{bad:?}");
+        assert!(!shown_in(Some(&json!(bad)), 1, 20), "{bad:?}");
+    }
+    // joiners, direction marks and spaces are text
+    for fine in [
+        "a\u{200d}b",
+        "a\u{200e}b",
+        "a\u{200f}b",
+        "a\u{200b}b",
+        "a\u{a0}b",
+        "é😀",
+    ] {
+        assert!(!is_unsafe_text(fine, &[]), "{fine:?}");
+    }
+    assert!(!is_unsafe_text("a\tb\nc", &['\t', '\n']));
+    assert!(is_unsafe_text("a\u{202e}b", &['\t', '\n']));
 }
 
 #[test]
@@ -456,7 +512,7 @@ fn the_audience_rule_has_no_administrator_exception() {
 proptest! {
     /// A text answer is written as it is, as many times as it is used, and the size is what was added up.
     #[test]
-    fn render_never_panics_and_its_length_is_the_sum(text in "[a-zA-Z0-9 é😀]{1,40}", uses in 1usize..20, literal in "[a-z ]{0,30}") {
+    fn render_never_panics_and_its_length_is_the_sum(text in "[a-zA-Z0-9 é😀]{1,40}", uses in 1usize..20, literal in "[a-z é😀]{0,30}") {
         let q = json!({"id": "t", "question": "T?", "type": "text"});
         let body = format!("{literal}{}", "{{t}}".repeat(uses));
         let definition = PromptDefinition::new(

@@ -468,7 +468,7 @@
       "create": {
         "name": "review",
         "title": "Review",
-        "body": "ab"
+        "body": "a\u007fb"
       },
       "expect": {
         "status": 400,
@@ -481,7 +481,7 @@
       "create": {
         "name": "review",
         "title": "Review",
-        "body": "ab"
+        "body": "a\u0085b"
       },
       "expect": {
         "status": 400,
@@ -2994,6 +2994,764 @@
       "expect": {
         "status": 400,
         "code": "bad_request"
+      }
+    },
+    {
+      "name": "a NUL in a question",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "a\u0000b",
+            "type": "text"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.question"
+      }
+    },
+    {
+      "name": "a line break in a question",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "a\nb",
+            "type": "text"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.question"
+      }
+    },
+    {
+      "name": "a tab in help",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "text",
+            "help": "a\tb"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.help"
+      }
+    },
+    {
+      "name": "a NUL in an option label",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "options": [
+              {
+                "value": "a",
+                "label": "A\u0000"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.options.0.label"
+      }
+    },
+    {
+      "name": "a C1 control in an option description",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B",
+                "description": "x\u0085y"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.options.1.description"
+      }
+    },
+    {
+      "name": "a NUL in yesLabel",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "confirm",
+            "yesLabel": "Y\u0000"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.yesLabel"
+      }
+    },
+    {
+      "name": "a NUL in noLabel",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "confirm",
+            "noLabel": "N\u0000"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.noLabel"
+      }
+    },
+    {
+      "name": "a NUL in a unit",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "number",
+            "unit": "k\u0000g"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.unit"
+      }
+    },
+    {
+      "name": "a NUL in fromLabel",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": 5,
+            "fromLabel": "lo\u0000"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.fromLabel"
+      }
+    },
+    {
+      "name": "a NUL in toLabel",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": 5,
+            "toLabel": "hi\u0000"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.toLabel"
+      }
+    },
+    {
+      "name": "a NUL in a text default",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "text",
+            "default": "a\u0000b"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.default"
+      }
+    },
+    {
+      "name": "a right-to-left override in the title",
+      "create": {
+        "name": "review",
+        "title": "abc\u202edef",
+        "body": "x",
+        "variables": []
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_title",
+        "at": "title"
+      }
+    },
+    {
+      "name": "an isolate in the title",
+      "create": {
+        "name": "review",
+        "title": "abc\u2066def",
+        "body": "x",
+        "variables": []
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_title",
+        "at": "title"
+      }
+    },
+    {
+      "name": "a line separator in the title",
+      "create": {
+        "name": "review",
+        "title": "abc\u2028def",
+        "body": "x",
+        "variables": []
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_title",
+        "at": "title"
+      }
+    },
+    {
+      "name": "a paragraph separator in the description",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "x",
+        "variables": [],
+        "description": "abc\u2029def"
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_description",
+        "at": "description"
+      }
+    },
+    {
+      "name": "an embedding in the description",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "x",
+        "variables": [],
+        "description": "abc\u202adef"
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_description",
+        "at": "description"
+      }
+    },
+    {
+      "name": "a right-to-left override in a question",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "a\u202eb",
+            "type": "text"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.question"
+      }
+    },
+    {
+      "name": "an isolate in help",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "text",
+            "help": "a\u2067b"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.help"
+      }
+    },
+    {
+      "name": "a pop isolate in an option label",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "options": [
+              {
+                "value": "a",
+                "label": "A\u2069"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.options.0.label"
+      }
+    },
+    {
+      "name": "a line separator in an option description",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B",
+                "description": "x\u2028y"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.options.1.description"
+      }
+    },
+    {
+      "name": "a right-to-left override in a text default",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "text",
+            "default": "a\u202eb"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.default"
+      }
+    },
+    {
+      "name": "a right-to-left override in a unit",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "number",
+            "unit": "k\u202eg"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.unit"
+      }
+    },
+    {
+      "name": "joiners and direction marks stay allowed",
+      "create": {
+        "name": "review",
+        "title": "a\u200db\u200e\u200f؜c",
+        "body": "x {{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "a\u200db\u200e\u200fc",
+            "type": "text"
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a scale to written 5.0",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": 5.0
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a scale to written 5e0",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": 5e0
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a scale to of 5.5",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": 5.5
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.to"
+      }
+    },
+    {
+      "name": "a scale to of a string",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": "5"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.to"
+      }
+    },
+    {
+      "name": "a scale to far out of range",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": 1e30
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.to"
+      }
+    },
+    {
+      "name": "a scale to out of the integers and the floats",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "scale",
+            "to": 18446744073709551616
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.to"
+      }
+    },
+    {
+      "name": "a multiple with min written 1.0",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "multiple",
+            "min": 1.0,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a multiple with min of 0.5",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "multiple",
+            "min": 0.5,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.min"
+      }
+    },
+    {
+      "name": "min on a select that takes one choice",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "select",
+            "min": 1,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.min"
+      }
+    },
+    {
+      "name": "a number whose minValue is its maxValue",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "number",
+            "minValue": "1",
+            "maxValue": "1"
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a rank default of none",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "rank",
+            "default": [],
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.default"
+      }
+    },
+    {
+      "name": "a text with max and show: show is the first refusal",
+      "create": {
+        "name": "review",
+        "title": "Review",
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "text",
+            "max": 1,
+            "show": {
+              "a": 1
+            }
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_variable",
+        "at": "variables.0.show"
       }
     }
   ]

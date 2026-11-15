@@ -2576,6 +2576,192 @@
         "question": "*",
         "rule": "unexpected"
       }
+    },
+    {
+      "name": "an optional text with a default, left unanswered, renders empty",
+      "prompt": {
+        "body": "[{{q}}]",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "text",
+            "required": false,
+            "default": "d"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": []
+          }
+        ]
+      },
+      "expect": {
+        "text": "[]"
+      }
+    },
+    {
+      "name": "a note with no answers member: the answers come first",
+      "prompt": {
+        "body": "x",
+        "variables": []
+      },
+      "request": {
+        "note": "x"
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "an other with a control character",
+      "prompt": {
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "other": "a\u0000b"
+          }
+        ]
+      },
+      "expect": {
+        "question": "q",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "an other with a line break",
+      "prompt": {
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "other": "a\nb"
+          }
+        ]
+      },
+      "expect": {
+        "question": "q",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "an other with a tab is allowed",
+      "prompt": {
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "other": "a\tb"
+          }
+        ]
+      },
+      "expect": {
+        "text": "a\tb"
+      }
+    },
+    {
+      "name": "literal text of two-byte characters counts in bytes",
+      "prompt": {
+        "body": {
+          "$concat": [
+            {
+              "$repeat": "é",
+              "times": 8000
+            },
+            {
+              "$repeat": "{{q}}",
+              "times": 9
+            }
+          ]
+        },
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "longText"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "text": {
+              "$repeat": "x",
+              "times": 2000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "code": "rendered_too_long"
+      }
     }
   ]
 }
