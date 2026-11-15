@@ -23,7 +23,17 @@ pub struct Problem {
     /// try again when the turn has ended). RFC 9457 allows extension members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
-    /// Where a save is refused (`createPrompt`, `updatePrompt`, ADR 0070): `name`, `body`,
+    /// The extension members of the prompt library's problems (ADR 0070), boxed so that every
+    /// `Result<_, Problem>` of this crate stays small.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Box<ProblemExt>>,
+}
+
+/// The extension members of a problem of the prompt library (RFC 9457 allows them): where a save is
+/// refused, or which answer and which rule. Names positions and ids, never a word of a prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ProblemExt {
+    /// Where a save is refused (`createPrompt`, `updatePrompt`): `name`, `body`,
     /// `variables.<i>.<member>`, `audience`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
@@ -47,10 +57,7 @@ impl Problem {
             status: status.as_u16(),
             detail: Some(detail.into()),
             code: None,
-            at: None,
-            offset: None,
-            question: None,
-            rule: None,
+            ext: None,
         }
     }
 
@@ -64,16 +71,22 @@ impl Problem {
     /// The same problem saying where a save is refused, and for a reference the UTF-16 offset.
     #[must_use]
     pub fn with_place(mut self, at: &str, offset: Option<u32>) -> Self {
-        self.at = Some(at.to_owned());
-        self.offset = offset;
+        self.ext = Some(Box::new(ProblemExt {
+            at: Some(at.to_owned()),
+            offset,
+            ..ProblemExt::default()
+        }));
         self
     }
 
     /// The same problem saying which answer is refused and by which rule.
     #[must_use]
     pub fn with_answer(mut self, question: &str, rule: &str) -> Self {
-        self.question = Some(question.to_owned());
-        self.rule = Some(rule.to_owned());
+        self.ext = Some(Box::new(ProblemExt {
+            question: Some(question.to_owned()),
+            rule: Some(rule.to_owned()),
+            ..ProblemExt::default()
+        }));
         self
     }
 
