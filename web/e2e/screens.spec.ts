@@ -997,6 +997,37 @@ for (const scheme of ["light", "dark"] as const) {
       await page.getByRole("button", { name: "Cancel" }).click();
     });
 
+    test("search: the hits of a title, a description and messages, and a query with no match", async ({
+      page,
+    }, info) => {
+      const person = await aPerson(page, info, { user: "ada@example.com" });
+      const old = await makeThread(person, "Plan the quarterly dependency upgrade");
+      await makeThread(person, "Review the migration plan for the orders service");
+      // the mock's `Plan …` script: an answer that says "Plan: add a test", and a description a model wrote
+      await makeThread(person, "Plan the session expiry test");
+      await makeThread(person, "Summarize last week's incidents");
+      const archive = await page.request.patch(`${MOCK_URL}/api/threads/${old}/rail`, {
+        data: { archived: true },
+        headers: { Cookie: person.cookie },
+      });
+      expect(archive.ok()).toBe(true);
+
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await openThreadList(page);
+      const box = page.getByRole("combobox", { name: "Search chats" });
+      await box.fill("plan");
+      await expect(page.getByRole("option").first()).toBeVisible();
+      await expect(page.locator("mark").first()).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "search");
+
+      await box.fill("kiwi");
+      await expect(page.getByText("No chats match “kiwi”.").first()).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "search-empty");
+    });
+
     // last: its thread is one more row in the list of the screens after it (none are)
     test("inline images: the pictures in the answer, the placeholder, the file that is left as a card", async ({
       page,

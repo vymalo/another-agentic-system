@@ -1121,18 +1121,44 @@ they did.
   a reload, per thread, the cap and what a capped person's unpicked message runs under, a forgotten pick, a pick sent while the capabilities
   cannot be read, an edit sent under the pick, a 422 and a 503 keeping the text, the keyboard, axe in both schemes).
 
-## Searching threads (the mock only, slice 7a)
+## Searching threads
 
-*Added 2026-11-15 ([ADR 0068](../docs/decisions/0068-a-person-searches-their-own-threads.md), slice 7a of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)).*
-There is **no search box yet** (7b). What exists is the contract, [`docs/api/thread-search-v1.md`](../docs/api/thread-search-v1.md) with its vectors, and the mock
-server's route that a box will be drawn against: `POST /api/search/threads` (`searchThreads`) and `search: {maxQueryLength, maxTerms}` in `GET /api/config`, whose presence is the
-capability a client checks before it offers a box.
+*Added 2026-11-15 ([ADR 0068](../docs/decisions/0068-a-person-searches-their-own-threads.md), slices 7a and 7b of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)).*
+A search box under "New chat" finds the person's **own** chats by the words of their titles, descriptions and messages, and its results take the list's place
+while it holds a query. What it looks like and how it behaves (the keys, the shortcut, the states, the highlighting) is [DESIGN.md "Search"](DESIGN.md#search); this is how
+it is built and proven.
 
-`mock/search.ts` is the **second implementation** of that page (the first is `orch_core::search`, in Rust): it imports nothing of `src/`, so what the page says and not what the web
+The web is **one client of a documented API**: the contract is [`docs/api/thread-search-v1.md`](../docs/api/thread-search-v1.md) with its vectors, and the web needed nothing that the contract does not
+say (no web-only route). The box is drawn only when `GET /api/config` has `search: {maxQueryLength, maxTerms}`, whose presence is the capability; `useSearchConfig` (`features/chat/hooks/use-ui-config.ts`)
+reads it and the box's limits come from it, none is hard-coded here beyond the defaults of the two page sizes (20 threads a page).
+
+```
+src/features/search/
+  components/thread-search.tsx   SearchBox (the combobox, its clear button, the live region) and SearchResults (the listbox and its states)
+  hooks/use-thread-search.ts     the requests: 250 ms debounce, an AbortController each, the stale-answer counter, 429 retried after Retry-After, paging
+  hooks/use-open-hit.ts          opening a hit: router.push, or only the hash when the thread is open
+  lib/runs.ts                    a snippet's text cut at its UTF-16 `matches` into plain and marked runs (pure)
+  lib/latest.ts                  which request is the latest (pure)
+  lib/options.ts                 the hits as the flat list the arrow keys walk, the blank test, the clip to the limit (pure)
+  lib/shortcut.ts                Ctrl or ⌘ with K: one listener in the shell, and the requests for the box
+  lib/text.ts                    every string the search shows or says
+```
+
+`ThreadNav` (`features/threads/components/thread-sidebar.tsx`) draws the box and swaps the rail for the results; `ChatShell` opens a collapsed sidebar for the shortcut and `ThreadsSheet` the phone's sheet.
+`useScrollToMessage` goes, for a `#m-<seq>` that no element has (an agent's answer), to the last person's message at or before it once the transcript has been still for 600 ms, and goes again on `hashchange`.
+
+`mock/search.ts` is the **second implementation** of the contract (the first is `orch_core::search`, in Rust): it imports nothing of `src/`, so what the page says and not what the web
 does is what is held. `mock/search.test.ts` reads every vector of `docs/api/examples/thread-search/` (fold, query, snippet, the corpus with its queries, and `requests.json`: raw bodies and headers with the status and `code` each is answered with, which `readRequest` decides: the media type, the shape, no `null`, no member twice, `limit` an integer literal) and the page's own numbers;
 `mock/server.contract.test.ts` validates the route's answers against `chat-api.yaml`: the shape, only the caller's own threads and a subset of `listThreads`, the refusals and their
-codes, paging, the archived filter, a deleted thread, and the 429 with `Retry-After` (a burst of 20 and then two a second, **per session** in the mock, where a session is a person). The
-box, the highlighting from `matches` (UTF-16 offsets into `snippet.text`, text nodes and never `dangerouslySetInnerHTML`) and opening a hit at its `seq` are 7b.
+codes, paging, the archived filter, a deleted thread, and the 429 with `Retry-After` (a burst of 20 and then two a second, **per session** in the mock, where a session is a person).
+
+Proven by: unit tests of the pure parts (`lib/*.test.ts`: the runs from offsets, with an astral character, a combining mark and a skipped offset; the stale counter; the keys' index), jsdom tests of the hook (the
+debounce, the abort, a late answer dropped, the limit, paging, 429 and 503; `hooks/use-thread-search.dom.test.tsx`), of the box and the results (roles, keys, marks as text nodes, no element made from a
+hit's markup; `components/thread-search.dom.test.tsx`) and of the scroll fallback (`use-scroll-to-message.dom.test.tsx`); `e2e/search.spec.ts` on the mock, on a desktop and on a phone (typing marks the words;
+a word of an agent's answer; the arrows and Enter open a message with its turn focused; Escape; no result; an error with Retry, a 503 and a 429 that waits and sends again; the live region; an archived chat; the
+words in the body of a POST and in no URL or storage; the shortcut from the composer, onto a collapsed sidebar and onto a phone's sheet); axe in both schemes over the results and the empty state (`e2e/a11y.spec.ts`); and the
+screens `search` and `search-empty` of `pnpm screens`. **Not proven:** against a real orchestrator (`dev/search-e2e.sh` is the orchestrator's own and has not run against the stack), in Firefox or WebKit, with a real screen
+reader, or with the browsers' own use of Ctrl+K; and a hit in an older part of an open thread that its transcript has not loaded (the page waits and gives up after ten seconds, as for any `#m-<seq>` it cannot find).
 
 ## A thread's description
 
@@ -2664,6 +2690,9 @@ src/features/threads/          forking (ADR 0029): hooks/use-fork.ts (`POST /for
                                lib/sidebar-state.ts: the remembered open or closed sidebar and the head script that hides a closed one before the first
                                paint. Rows are in the server's order, which activity does not change: an old chat touched today stays where it is.
                                Not built: dragging a row (and its keyboard path) and the fork that is a draft until its first message
+src/features/search/           the search box and its results (ADR 0068, DESIGN.md "Search"): components/thread-search.tsx, hooks/use-thread-search.ts
+                               (debounce, abort, stale answers, 429), hooks/use-open-hit.ts, lib/ (runs from UTF-16 offsets, latest, options, shortcut,
+                               text: every string it shows)
 src/features/tools/            MCP servers attached to a conversation (ADR 0024): components/tools-picker.tsx (the Tools menu, the chips and
                                the warning for an agent that cannot use them), server-icon.tsx (a `data:` image or the generic
                                icon), tools-line.tsx (the `vymalo.tools` line), tool-servers-context.tsx (the list for the steps and

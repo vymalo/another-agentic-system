@@ -160,6 +160,66 @@ only draws it (`features/threads/`, `GET /api/threads?order=rail`).
 
 Not built yet (ADR 0042): dragging a row to move it (and its keyboard path, Move up, Move down and Move to top), and a fork as a draft until its first message.
 
+## Search
+
+*Added 2026-11-15 (slice 7b of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md); the API, the contract and the rules are
+[ADR 0068](../docs/decisions/0068-a-person-searches-their-own-threads.md) and [`docs/api/thread-search-v1.md`](../docs/api/thread-search-v1.md)).* The box is
+under "New chat" in the list (`features/search/`). While it holds a query its results take the rail's place, and Escape gives the rail back. It finds the
+person's **own** chats and nobody else's: the web only asks the API and draws the answer.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-search.png">
+  <img src="e2e/__screens__/desktop-light-search.png" alt="The sidebar with the search box holding “plan”. Under it the results replace the list: the chats that matched, each with its title and its hits, the word “plan” marked in green in every one." width="720">
+</picture>
+
+*The results for “plan”: a title, a description and messages, and an archived chat; from the web's mock server.*
+
+- **The box.** A rounded field with a search icon, the placeholder "Search chats" and, while it is empty, the shortcut (⌘K on an Apple platform, Ctrl K elsewhere); with text in it
+  the shortcut gives way to a Clear button. It is drawn only when `GET /api/config` has `search` (its presence is the capability: an orchestrator without a search shows no
+  box), and its `maxQueryLength` is the field's `maxlength` (UTF-16 units in the field, scalar values on the wire: the web sends at most that many scalar values). When more words
+  are typed than `maxTerms` the box says "Only the first 8 words are used." It is a `<search>` landmark with an `input type="search"` that has `role="combobox"`,
+  `aria-autocomplete="list"`, `aria-expanded`, `aria-controls` the listbox and `aria-keyshortcuts="Control+K Meta+K"`.
+- **Requests.** The query goes in the **body of a POST** (`searchThreads`) and nowhere else: never a URL, never `localStorage` or `sessionStorage`, never a log line. A request goes out
+  250 ms after the last key; each has an `AbortController`, and a counter drops an answer that is not for the latest text (a request that was already answered cannot be taken
+  back). The page is 20 threads; "Show more chats" sends the `next` cursor. A blank box (the contract's four whitespace characters) sends nothing and shows the rail.
+- **The results.** One group per chat that matched, in the server's order: the chat's title (a hit, with its words marked, when the title matched; otherwise a plain heading), then
+  its description hit and up to three message hits (newest first), each with who said it ("You" or "Agent") and the day, then "and 2 more messages" when more match than are shown. An
+  archived chat says "Archived". A snippet is two lines at most, with "…" where the document goes on. The hits are a `listbox` of `option`s; each option is a **link**
+  (`<a role="option">`), so a middle click or "Copy link address" works, and a plain click opens it.
+- **Highlighting.** The snippet's `matches` are offsets in UTF-16 code units into its `text`, which is what a JavaScript string counts (an emoji is two). The web cuts the text there into
+  plain and marked runs and draws each as a **text node**, the marked ones in a `<mark>` (a green wash, `--brand` at 20 %, over the text colour). It **never** uses
+  `dangerouslySetInnerHTML`: a message that holds `<img onerror=…>` is drawn as those characters. An offset that is out of order or inside a surrogate pair is skipped, and the text is
+  still drawn whole.
+- **Keys.** The focus stays in the box. **Down** and **Up** walk the hits (`aria-activedescendant`; they wrap, and Down from nothing is the first); **Enter** opens the one
+  walked to, the first when none is; the **first Escape** clears the box and brings the rail back, the **second** gives the focus back to where it was when the shortcut was pressed
+  (or leaves the box). On a phone the first Escape clears a query and does not close the sheet.
+- **The shortcut.** **Ctrl or ⌘ with K**, from anywhere (the composer included), opens the sidebar when it is collapsed, or the phone's sheet, and focuses the box with its text selected. It
+  does nothing from inside a dialog other than the list's own sheet. On an Apple platform only ⌘ counts, because Ctrl+K is the text field's own "delete to the end of the line". It
+  clashes with no shortcut of the web (the others are Ctrl or ⌘ with Shift and the period, which toggles the panel, and Enter with Ctrl or ⌘). Against the browsers' own it is
+  **unverified**: the tests send the key to the page, so they say nothing of what a browser keeps for itself. *Reported, not checked here:* Firefox on Windows and Linux binds Ctrl+K to its search
+  bar and Chromium browsers on Windows and Linux to a search from the address bar, and a page that calls `preventDefault` on the key takes it from both, as other sites do; Safari's ⌘K has no
+  browser meaning. If a browser keeps the key for itself, the box is one click away.
+- **Opening a hit.** A title or a description hit opens `/threads/<id>`. A message hit opens `/threads/<id>#m-<seq>`, and the page does what it does for any `#m-<seq>` link: waits for
+  the message, scrolls to the middle and puts the focus on it. Only a **person's** message has an element with that id, so for an agent's answer the page waits until the transcript has
+  been still for 600 ms and goes to the last person's message at or before the `seq`, the one that started the turn (`useScrollToMessage`). When the hit is in the open thread, only
+  the hash changes and the page goes again. A phone's sheet closes.
+- **States**, in plain words: while the next answer is fetched the last results are dimmed (`opacity` 60 %, `aria-busy`) and, with none yet, three skeleton rows say "Searching…";
+  "No chats match “zebra”."; "Search needs words of at least two letters or digits." (a query that keeps no term: the server answers 200 with `terms: []`); an error, "Could not search your
+  chats.", with **Retry**; **429**, "You are searching too fast. Trying again in 1 second." (the web waits the `Retry-After`, at most 30 s, and sends the same search again; "Retry now"
+  does it at once); **503**, "Search is busy right now. Try again in a moment." with Retry. Errors are `role="alert"`.
+- **The live region.** A polite `status` in the box's landmark says "3 chats found" (or "20 or more chats found" when another page follows) and the "No chats match" line, and says nothing while a
+  request is in flight; the visible lines are not live regions of their own, except the errors.
+- **Words.** Every string is in `features/search/lib/text.ts`, so that a later slice can translate them. French is not in this slice.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-search-empty.png">
+  <img src="e2e/__screens__/desktop-light-search-empty.png" alt="The sidebar with the search box holding “kiwi”. Under it the line “No chats match “kiwi”.” in muted text, and nothing else." width="720">
+</picture>
+
+*A query with no match; from the web's mock server.*
+
+On a phone the box is at the top of the list's sheet, and the shortcut (a keyboard on a tablet) opens the sheet with the box focused.
+
 ## Agent picker
 
 Choosing the agent is like choosing a model in ChatGPT, not a form field (owner, 2026-10-01: "a little more

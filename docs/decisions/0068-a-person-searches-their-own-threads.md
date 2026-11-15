@@ -147,3 +147,13 @@ plan was read at scale: the plan at scale stays *unverified*); the cost of the i
 
 The web: the box, the results and the highlighting (7b); the screens; the shortcut. Every Postgres claim is proven only where the conformance suite ran
 (see the pull request).
+
+## Amended 2026-11-15: the web's box is built (slice 7b)
+
+The box, the results, the highlighting from the offsets and the shortcut are built in the web (`web/src/features/search/`, [`web/DESIGN.md` "Search"](../../web/DESIGN.md#search)), as **one more
+client of this contract**: it needed nothing that [`thread-search-v1.md`](../api/thread-search-v1.md) does not say, and added no route and no dependency. It reads `search` of `GET /api/config`
+(its presence is the capability, its numbers are the field's limit), sends the query in the body of a POST after a 250 ms debounce with an `AbortController` per request and a counter that drops a stale
+answer, tries a 429 again after its `Retry-After`, tells a 503, draws a snippet as plain and marked text nodes cut at the UTF-16 offsets (never `dangerouslySetInnerHTML`) and opens a message hit at
+`/threads/<id>#m-<seq>`. Two things the contract leaves to a client were decided in the web: an **agent's answer** has no element with the id `m-<seq>` (only a person's message has), so the page goes, once
+the transcript has been still for 600 ms, to the last person's message at or before the `seq`, the one that started the turn; and the shortcut is Ctrl or ⌘ with K (only ⌘ on an Apple platform). Proven on the
+mock in Chromium (unit, jsdom, Playwright on a desktop and a phone, axe in both schemes); *unverified*: against a real orchestrator, in Firefox or WebKit, and the browsers' own use of Ctrl+K.
