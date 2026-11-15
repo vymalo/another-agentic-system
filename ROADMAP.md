@@ -30,6 +30,22 @@ protection that fits local law (M5).
 - **Nothing has been measured live.** No load test, no cost per person, no payment of any kind, no payment code.
 - **There is no launch date.** The order below is the order of dependencies, not a schedule.
 
+## Three quality goals, alongside the milestones
+
+On 2026-11-14 the owner set three goals that run beside M1 to M5 and are not launch milestones: a coder as good as
+OpenCode and above, this system "LibreChat-grade" with every feature usable by a second client (a Flutter app is
+planned), and the platform at a "kagent-grade minimum". Each has a plan of its own, and the plan is where its slices
+and their state live. *Checked 2026-11-15.* The share is the slices merged to `main` against the slices of the plan:
+a count, not a measure of effort. As everywhere in this roadmap, all of it is proven on tests and mocks, none on a
+live model or a real cluster.
+
+| Goal | Plan | Merged | Share | Left |
+|---|---|---|---|---|
+| **adam**: a coder as good as OpenCode, and above | [adam ADR 0044](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0044-paged-tools-a-stable-prompt-prefix-a-plan-skills-commands-and-project-context.md), 16 slices | The loop survives bad model output (1), paged reads (2), OpenCode removed (5), a plan every agent has (6), the repeated-call rule, time limits and a cancel that reaches children (10) | 5 of 16, 31 % | In review: kept command output read back by page (3). Not started: the prompt-prefix test and cache key (4), project instructions (7), skills on by default (8), compaction (9), more kinds of question (11), commands (12), references (13), MCP timeouts, instructions and prompts (14), images in and out (15), commands that keep running (16) |
+| **adam**: a subagent in the background, as a session | [adam ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md), 8 slices | The runtime (1) | 1 of 8, 13 % | Written and reviewed, not merged: the five `subagent_*` tools (2). Not started: reports during a turn (3), limits (4), remote sessions (5), the `child-sessions/v1` extension (6), the coder's own sessions (7), asking from a child (8); then this system's side, child threads in the chat |
+| **sys**: LibreChat-grade, client-agnostic | [ADR 0067](docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), 35 slices | The usage page, highlighted code and math, regenerate, "My tool servers", UI catalog version 7 (more kinds of question), a theme, quote, copy and export as Markdown, questions that show what they ask about and the agent's plan (UI catalog version 8); and the API half of search ([ADR 0068](docs/decisions/0068-a-person-searches-their-own-threads.md)) | 9 of 35, 26 %, and half of search | The search box in the web; read aloud and speech; artifact versions, the panel and live previews; a prompt library; memory; import; `/` commands; attachments; tags; temporary chats; French. The eight API gaps a second client meets are listed in ADR 0067 |
+| **plat**: a kagent-grade minimum | [plat §59c](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/10-control-plane-and-crds.md#59c-operator-increments-kagent-grade-minimum), 15 increments | The plan (K0), the CRDs read what adam-rs's former operator accepted (K1), status on shared objects (K2), metrics (K4), an OpenAPI document and an agent's events (K8), `aapctl validate` and `render` (K9) | 6 of 15, 40 % | Can start: traces (K5), `aapctl` over the API (K9b). Wait for the owner: tool discovery (K3), several namespaces and two replicas (K6, K7), a tool catalogue (K10), a bring-your-own image (K11). Wait for adam: approvals per tool (K12). On hold with no cluster: the first real agent (K13) |
+
 ## How the work is organised
 
 Milestones, then epics, then tickets.
