@@ -24,6 +24,11 @@ export type ApiUpdateUserToolServer = components["schemas"]["UpdateUserToolServe
 /** What a person's own server is to them now (`status`), and why it is not `ready` (`reason`). */
 export type ApiUserToolStatus = components["schemas"]["UserToolServerStatus"];
 export type ApiUserToolReason = components["schemas"]["UserToolServerReason"];
+/** `searchThreads` (ADR 0068, docs/api/thread-search-v1.md): a person's own threads found by their words. */
+export type ApiThreadSearchPage = components["schemas"]["ThreadSearchPage"];
+export type ApiThreadHit = components["schemas"]["ThreadHit"];
+export type ApiSearchHit = components["schemas"]["SearchHit"];
+export type ApiSearchSnippet = components["schemas"]["SearchSnippet"];
 export type ApiActor = components["schemas"]["Actor"];
 /** The share a thread has (`share` of `getThread` and of the list's items): who, and what is served now. */
 export type ApiShare = components["schemas"]["ThreadShare"];

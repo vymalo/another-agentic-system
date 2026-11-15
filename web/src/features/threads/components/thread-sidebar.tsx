@@ -36,6 +36,14 @@ import {
 import { useShowDescriptions } from "@/features/chat/hooks/use-ui-config";
 import { useMe } from "@/features/me/hooks/use-me";
 import { holds } from "@/features/me/lib/access";
+import { SearchBox, SearchResults } from "@/features/search/components/thread-search";
+import { useOpenHit } from "@/features/search/hooks/use-open-hit";
+import { useThreadSearch } from "@/features/search/hooks/use-thread-search";
+import {
+  focusPending,
+  sidebarIsColumn,
+  useSearchFocusRequests,
+} from "@/features/search/lib/shortcut";
 import { AccountMenu } from "@/features/session/components/account-menu";
 import { useThreadBranches } from "@/features/threads/components/branches-provider";
 import { DeleteThreadDialog } from "@/features/threads/components/delete-thread-dialog";
@@ -151,9 +159,10 @@ function ArchivedSection({ view, ...row }: { view: ThreadsView["archived"] } & R
  * "New chat", then the person's own list (ADR 0042): Pinned, Chats and Archived, each in the order the
  * server keeps, a fork nested under its parent, and paging. A row's menu pins, archives, ejects or deletes it;
  * the dialog of a delete is here, beside the list, so that it outlives the menu that opened it. The account
- * menu is under it.
+ * menu is under it. Under "New chat" is the search box (ADR 0068), when the server has a search: while it holds a query its
+ * results take the place of the list.
  */
-function ThreadNav({ threads }: { threads: ThreadsView }) {
+function ThreadNav({ threads, onOpened }: { threads: ThreadsView; onOpened?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
   // the open thread may be an edit, which the list leaves out: its conversation's first thread is the row
@@ -210,16 +219,11 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
     [forget, pathname, root, router],
   );
   const row = { mayDelete, showDescriptions, pathname, root, onArrange, onDelete };
-  return (
-    <nav ref={nav} aria-label="Threads" className="flex flex-col gap-1 px-2 pb-4">
-      <Link
-        ref={newChat}
-        href="/"
-        className="mb-3 flex h-10 items-center gap-2.5 rounded-full px-3 text-sm font-medium text-foreground no-underline transition-colors hover:bg-sidebar-accent/70"
-      >
-        <SquarePenIcon aria-hidden="true" className="size-4 text-muted-foreground" />
-        New chat
-      </Link>
+  const search = useThreadSearch();
+  const openHit = useOpenHit(onOpened);
+  const searching = search.enabled && search.active;
+  const rail = (
+    <>
       {threads.notice ? (
         <div className="px-1">
           <InlineStatus
@@ -268,6 +272,20 @@ function ThreadNav({ threads }: { threads: ThreadsView }) {
         </Button>
       ) : null}
       <ArchivedSection view={threads.archived} {...row} />
+    </>
+  );
+  return (
+    <nav ref={nav} aria-label="Threads" className="flex flex-col gap-1 px-2 pb-4">
+      <Link
+        ref={newChat}
+        href="/"
+        className="mb-3 flex h-10 items-center gap-2.5 rounded-full px-3 text-sm font-medium text-foreground no-underline transition-colors hover:bg-sidebar-accent/70"
+      >
+        <SquarePenIcon aria-hidden="true" className="size-4 text-muted-foreground" />
+        New chat
+      </Link>
+      {search.enabled ? <SearchBox search={search} onOpen={openHit} /> : null}
+      {searching ? <SearchResults search={search} onOpen={openHit} /> : rail}
       {deleting ? (
         <DeleteThreadDialog
           key={deleting.thread.id}
@@ -419,6 +437,11 @@ export function ThreadsSheet({ threads }: { threads: ThreadsView }) {
   const pathname = usePathname();
   // biome-ignore lint/correctness/useExhaustiveDependencies: closing on navigation is the point
   useEffect(() => setOpen(false), [pathname]);
+  // the shortcut for the search box opens the sheet where the list is one (a phone); a desktop's sidebar is the shell's
+  const showForSearch = useCallback(() => {
+    if (!sidebarIsColumn()) setOpen(true);
+  }, []);
+  useSearchFocusRequests(showForSearch);
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -439,6 +462,21 @@ export function ThreadsSheet({ threads }: { threads: ThreadsView }) {
         side="left"
         showCloseButton={false}
         aria-describedby={undefined}
+        data-threads-sheet=""
+        // the box takes the focus when the sheet was opened for it, and Escape clears a query before it closes the sheet
+        onOpenAutoFocus={(event) => {
+          if (focusPending()) event.preventDefault();
+        }}
+        onEscapeKeyDown={(event) => {
+          const el = document.activeElement;
+          if (
+            el instanceof HTMLInputElement &&
+            el.dataset.slot === "search-input" &&
+            el.value !== ""
+          ) {
+            event.preventDefault();
+          }
+        }}
         className="w-[min(18rem,85vw)] gap-0 border-r-0 bg-sidebar p-0 shadow-xl data-[side=left]:w-[min(18rem,85vw)]"
       >
         <SheetHeader className="sr-only">
@@ -462,7 +500,7 @@ export function ThreadsSheet({ threads }: { threads: ThreadsView }) {
           }
         />
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          <ThreadNav threads={threads} />
+          <ThreadNav threads={threads} onOpened={() => setOpen(false)} />
         </div>
         <AccountMenu />
       </SheetContent>

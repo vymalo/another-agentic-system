@@ -20,6 +20,7 @@ import { agentNamed, effectiveSelection, requestedAgent } from "@/features/agent
 import { type Selection, useChatRuntime } from "@/features/chat/hooks/use-chat-runtime";
 import { useCarried, useEarlier } from "@/features/chat/hooks/use-earlier";
 import { useThreadMeta } from "@/features/chat/hooks/use-thread";
+import { useSearchConfig } from "@/features/chat/hooks/use-ui-config";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
 import { STEER_URI } from "@/features/chat/lib/send";
@@ -39,6 +40,11 @@ import { useBoxMentions } from "@/features/mentions/hooks/use-mentions";
 import { MentionsStore } from "@/features/mentions/lib/store";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
 import { PanelProvider } from "@/features/panel/hooks/use-panel";
+import {
+  sidebarIsColumn,
+  useSearchFocusRequests,
+  useSearchShortcut,
+} from "@/features/search/lib/shortcut";
 import { useKeepSessionWarm } from "@/features/session/hooks/use-keep-session-warm";
 import { BranchesProvider } from "@/features/threads/components/branches-provider";
 import { ForkProvider } from "@/features/threads/components/fork-provider";
@@ -291,6 +297,13 @@ function Chat({ threadId }: { threadId: string | null }) {
     });
     return () => cancelAnimationFrame(frame);
   }, [sidebarOpen]);
+  // Ctrl/⌘+K brings the focus to the search box (ADR 0068): a collapsed sidebar opens for it (the focus is the box's, so the
+  // toggle's own focus move is not asked for); a phone's sheet opens itself (`ThreadsSheet`)
+  useSearchShortcut(useSearchConfig() !== undefined);
+  const openForSearch = useCallback(() => {
+    if (sidebarIsColumn() && !sidebarOpen) setSidebarOpen(true);
+  }, [sidebarOpen, setSidebarOpen]);
+  useSearchFocusRequests(openForSearch);
   const collapseSidebar = useCallback(() => {
     focusAfterToggle.current = "open";
     setSidebarOpen(false);

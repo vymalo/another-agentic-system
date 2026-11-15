@@ -8,11 +8,15 @@ import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
   animationsDone,
+  aPerson,
   BASE_URL,
   badge,
   closeAgentMenu,
   conversation,
+  MOCK_URL,
+  makeThread,
   openAgentMenu,
+  openThreadList,
   startThread,
 } from "./helpers";
 
@@ -52,6 +56,33 @@ for (const scheme of ["light", "dark"] as const) {
     test("axe: new thread page has no serious violations", async ({ page }) => {
       await page.goto("/");
       await expect(agentPicker(page)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: the search results (with a hit in each field, an archived thread and a mark) and the empty state have no serious violations", async ({
+      page,
+    }, info) => {
+      const person = await aPerson(page, info);
+      const first = await makeThread(person, "talk lantern alpha");
+      await makeThread(person, "talk lantern bravo");
+      const archive = await fetch(`${MOCK_URL}/api/threads/${first}/rail`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: person.cookie },
+        body: JSON.stringify({ archived: true }),
+      });
+      expect(archive.ok).toBe(true);
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await openThreadList(page);
+      const box = page.getByRole("combobox", { name: "Search chats" });
+      await box.fill("lantern");
+      await expect(page.getByRole("option").first()).toBeVisible();
+      // a hit that is walked to has the selected colours
+      await box.press("ArrowDown");
+      await expect(page.getByRole("option").first()).toHaveAttribute("aria-selected", "true");
+      expect(await axeViolations(page)).toEqual([]);
+      await box.fill("qqqzzzvvv");
+      await expect(page.getByText("No chats match “qqqzzzvvv”.").first()).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
 

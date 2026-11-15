@@ -8,8 +8,11 @@ import { PROFILES } from "../../../../mock/fixtures";
 import { ThreadSidebar } from "./thread-sidebar";
 
 let showDescriptions = true;
+/** What `GET /api/config` says about the search: none leaves the box out (an orchestrator that has no search). */
+let searchConfig: { maxQueryLength: number; maxTerms: number } | undefined;
 vi.mock("@/features/chat/hooks/use-ui-config", () => ({
   useShowDescriptions: () => showDescriptions,
+  useSearchConfig: () => searchConfig,
 }));
 const router = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({
@@ -25,6 +28,7 @@ vi.mock("@/features/me/hooks/use-me", () => ({ useMe: () => me }));
 afterEach(() => {
   cleanup();
   showDescriptions = true;
+  searchConfig = undefined;
   me = { status: "ready", me: PROFILES.user };
   router.push.mockReset();
   router.replace.mockReset();
