@@ -34,7 +34,7 @@ info:
     Authorization ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
     [`config.md`](config.md#roles-and-permissions)): who a person is says what they may do. The
     roles of the credential (the token's roles claim) map, by `auth.roles`, to the permissions
-    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin` and `tools.user.add` (granted to no role by default); a role
+    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`, `tools.user.add` and `prompts.share` (the last two granted to no role by default); a role
     the configuration does not define grants nothing, and a person with no defined role gets
     `auth.defaultRole`. `getMe` says what the caller's roles grant. **Nobody reads another person's
     thread** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): every permission
@@ -72,6 +72,13 @@ info:
     response says only whether a credential is kept (`hasCredential`). These bodies are read without echoing a value, so
     even a malformed one never quotes what it held. The URL of a server is the person's own and is shown back to them (so
     that they can edit it); it can hold a secret in its path, so these answers are never cached.
+
+    A person's prompt library ([ADR 0070](../decisions/0070-a-persons-prompt-library.md), [`prompts-v1.md`](prompts-v1.md)):
+    `listPrompts`, `createPrompt`, `getPrompt`, `updatePrompt`, `deletePrompt` and `renderPrompt`. A prompt is its owner's;
+    **a write that leaves it shared with a role needs `prompts.share`**, which no role holds by default and `admin` does
+    not imply; unsharing and deleting need nothing. Another person's prompt, and a shared prompt the caller's roles are outside
+    of, are a **404**, the answer for an id that never existed; an audience member reads and renders a shared prompt and
+    never learns its author. A prompt is in no thread, fork or export.
 
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
@@ -735,6 +742,200 @@ paths:
         "415": { description: "The media type is not `application/json` (parameters such as `charset` are allowed)", $ref: "#/components/responses/Problem" }
         "429": { description: "`code: rate_limited`: a person searches in bursts of 20 and then twice a second; `Retry-After` says, in seconds, how long to wait", $ref: "#/components/responses/Problem" }
         "503": { description: "`code: search_unavailable`: the store is down, the whole search took more than 2 seconds, or this process is already running 8 searches (for everybody: it refuses at once and does not queue); `Retry-After` says, in seconds, when to try again", $ref: "#/components/responses/Problem" }
+  /api/prompts:
+    get:
+      operationId: listPrompts
+      summary: The caller's own prompts and the prompts shared with them, as summaries
+      description: |
+        A person's prompt library ([ADR 0070](../decisions/0070-a-persons-prompt-library.md),
+        [`prompts-v1.md`](prompts-v1.md)): the prompts the caller owns and the ones **shared with a role of theirs**. It needs
+        no permission of its own. **Summaries only**: no `body` and no `variables` (`variableCount` says how many), so the
+        answer is small; `getPrompt` has the whole. Ordered by `id`, bytewise, **not by name**: a client sorts for display.
+        `scope` is `all` (the default: the caller's own, and the shared ones), `mine` or `shared` (the caller's own are left
+        out). `held` is how many prompts the caller owns, whatever the scope. A page holds at most `limit` (100); `nextCursor`
+        is there when more follow, and is sent back as `cursor` (a position, never a capability: it is the id of the last
+        prompt of the page before). A shared prompt has no `audience`, no owner and no created time: **it never names its
+        author**. Never cached.
+
+        **Client recipe: using a prompt.** (1) If `getConfig` has no `prompts`, offer no library. (2) List, and page with
+        `nextCursor` until it is absent. (3) `getPrompt` for the one chosen. (4) Draw its `variables` as a `Choices` form with
+        the client's own catalog renderer and collect the catalog's answer (`answers`); **a client that cannot draw a kind of
+        question does not offer the prompt**. With no variables send `answers: []`. (5) `renderPrompt` with the `answers` and
+        the `revision`; a 409 `stale_revision` means read the prompt again. (6) Put the `text` in the message box for the
+        person to edit, and send it as an ordinary message: nothing here sends it. Draw a shared prompt's words as plain
+        text, never as Markdown or HTML.
+      parameters:
+        - name: scope
+          in: query
+          description: "`all` (the default), `mine` or `shared`; anything else is 400 `bad_scope`"
+          schema: { type: string, enum: [all, mine, shared], default: all }
+        - name: cursor
+          in: query
+          description: "The `nextCursor` of the page before: a prompt id; anything else is 400 `bad_cursor`"
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of summaries
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PromptList" }
+        "400": { description: "`code: bad_scope` or `bad_cursor`", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createPrompt
+      summary: Save a prompt of one's own
+      description: |
+        Saves a prompt ([`prompts-v1.md`](prompts-v1.md)): `name` (`^[a-z0-9][a-z0-9-]{0,31}$`, unique for the caller),
+        `title`, `description?`, `body` (text with `{{id}}` references; `\{{` writes `{{`), `variables?` (questions of the UI
+        catalog, version 8, without `show` and without the type `images`: every one declared and used) and `audience?` (role
+        values; `"*"` only alone; empty is private). **Sharing needs `prompts.share`** (no role holds it by default, `admin`
+        included): a request whose audience is not empty without it is 403 `forbidden`, before the values are read. The
+        checks run in one order (the vectors of `requests.json` and `prompts.json` hold them): 401, 403 `no_access`, 415, the
+        shape (400 `bad_request`), 403 `forbidden`, the values (400 `bad_name`, `bad_title`, `bad_description`, `bad_body`,
+        `bad_reference`, `bad_variable`, `undeclared_variable`, `unused_variable`, `bad_audience`, each with `at` and, for
+        a reference, `offset` in UTF-16 code units), and last the store (409 `name_taken`, then `too_many_prompts`). The
+        media type is exactly `application/json`, and the body at most 64 KiB. The caller holds at most 100. The text of a
+        body, a title and an answer is in no log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePromptRequest" }
+      responses:
+        "201":
+          description: The prompt as saved
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+        "400": { description: "`code: bad_request` (not one JSON object of these members, a member of the wrong type, `null`, a lone surrogate, a body over 64 KiB) or one of the codes above", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "`code: forbidden` (a non-empty `audience` without `prompts.share`) or `no_access`", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: name_taken` (the caller already has that name) or `too_many_prompts` (the caller holds 100)", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+  /api/prompts/{promptId}:
+    parameters: [ { $ref: "#/components/parameters/PromptId" } ]
+    get:
+      operationId: getPrompt
+      summary: One prompt, with its body and variables
+      description: |
+        The caller's own prompt, or one shared with a role of theirs. **Anything else is 404, the same answer as for an id
+        that never existed**: another person's private prompt, a shared prompt the caller's roles are outside of (an
+        administrator included: `admin` reads no prompt that is not its own), an unshared one. A shared prompt's view has
+        `own: false` and no `audience`. An id that is not `p-` and 12 characters of `[a-z0-9]` is 400 `bad_request`.
+        Never cached.
+      responses:
+        "200":
+          description: The prompt
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+        "400": { description: "`code: bad_request`: the id is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt for the caller (it never existed, was deleted, is private to another person, or is shared with roles the caller does not have)", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    patch:
+      operationId: updatePrompt
+      summary: Change a prompt of one's own, or share it, or take its share back
+      description: |
+        Changes the caller's own prompt. **`revision` is required** (the one the last read gave) and at least one other
+        member must follow: a member given **replaces the whole member** (`variables` is the whole list, `audience` the whole
+        set). The checks run in this order: 401, 403 `no_access`, 415, the shape (400 `bad_request`), **404** (the prompt is
+        not the caller's: another person's, shared with them, or not there), **403 `forbidden`** (the **resulting** audience
+        is not empty and the caller lacks `prompts.share`: a person who lost it can still send `audience: []`, and nothing
+        that leaves a share in place), **409 `stale_revision`** (the prompt changed since the `revision`), then the values of
+        the whole prompt as it would be (the codes of `createPrompt`), and last 409 `name_taken`. A request that changes
+        nothing writes nothing and keeps the revision. A write is one statement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePromptRequest" }
+      responses:
+        "200":
+          description: The prompt as it is now
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+        "400": { description: "`code: bad_request` (as `createPrompt`, and no `revision`, a `revision` that is not `^[1-9][0-9]{0,18}$`, or nothing to change) or a code of the values", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "`code: forbidden` or `no_access`", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt of the caller's", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision` or `name_taken`", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deletePrompt
+      summary: Delete a prompt of one's own
+      description: |
+        Deletes the caller's own prompt. **Needs no `prompts.share`**: a person can always withdraw what they shared. With
+        `?revision=N` (optional) it is 409 `stale_revision` when the prompt changed since. Another person's prompt, a
+        shared one and an absent one are all 404. Nothing of a thread is touched: a prompt is in no thread.
+      parameters:
+        - name: revision
+          in: query
+          description: "The revision the caller last read; when it is there and the prompt has another, 409 `stale_revision`. Not `^[1-9][0-9]{0,18}$` is 400 `bad_request`"
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "400": { description: "`code: bad_request`: the id or the `revision` is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt of the caller's", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+  /api/prompts/{promptId}/render:
+    parameters: [ { $ref: "#/components/parameters/PromptId" } ]
+    post:
+      operationId: renderPrompt
+      summary: Fill a prompt's variables and get the text, without sending anything
+      description: |
+        Substitutes the person's `answers` into the prompt's body and returns the text. **It writes nothing**: no message is
+        sent, no thread is touched, and the answer is in no log. Allowed for the caller's own prompts and for the ones
+        shared with them. `answers` is the [Choices answer](ui-catalog-v1.md#choices-answers) to the prompt's variables:
+        **one entry per variable, once each, in variable order**, `{id, values, other?, text?}`; a prompt has no free box,
+        so a `note` is refused. Every rule is in [`prompts-v1.md`](prompts-v1.md) with vectors: a choice renders as its
+        **label**, several as the labels in option order joined by `", "`, a text verbatim, `confirm` as `yes` or `no`, a
+        number, a scale point and a date as sent, a rank as `1. A; 2. B`; an optional variable left alone renders as the empty
+        string (its default is never used); nothing is trimmed and a value is never read again for references. The text is
+        at most 32,768 bytes (422 `rendered_too_long`, decided before anything is built). With `revision` the prompt must
+        still be at it (409 `stale_revision`: read it again). An answer that does not fit is **422 `invalid_answer`** with
+        the first refusal: `question` (a variable's id, or `*` for the whole answer) and `rule` (`unknown`, `unexpected`,
+        `required`, `too_many`, `too_few`, `not_offered`, `repeated`, `out_of_order`, `too_long`, `grammar`, `below_min`,
+        `above_max`, `off_step`, `not_a_permutation`). The checks run in one order: 401, 403 `no_access`, 415, the shape
+        (400 `bad_request`), 404, 409, 422.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenderPromptRequest" }
+      responses:
+        "200":
+          description: The text
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenderedPrompt" }
+        "400": { description: "`code: bad_request`: not one JSON object of `revision` and `answers` (and `note`), a `revision` of the wrong form, a member of the wrong type, or an id that is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt for the caller (as `getPrompt`)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision`", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: invalid_answer` (with `question` and `rule`) or `rendered_too_long`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
       operationId: listThreads
@@ -1751,6 +1952,12 @@ components:
       required: true
       description: "The id of one of the caller's own servers, `u-` and 10 lowercase letters or digits (`UserToolServer.id`)"
       schema: { type: string, pattern: "^u-[a-z0-9]{10}$" }
+    PromptId:
+      name: promptId
+      in: path
+      required: true
+      description: "The id of a prompt of the caller's or shared with them, `p-` and 12 lowercase letters or digits (`Prompt.id`). Any other string is 400 `bad_request`"
+      schema: { type: string, pattern: "^p-[a-z0-9]{12}$" }
     Sha256:
       name: sha256
       in: path
@@ -1782,9 +1989,13 @@ components:
               title: { type: string }
               status: { type: integer }
               detail: { type: string }
+              at: { type: string, description: "Where a save is refused (`createPrompt`, `updatePrompt`): `name`, `title`, `description`, `body`, `variables`, `variables.<i>`, `variables.<i>.<member>`, `variables.<i>.options.<j>.<member>` or `audience`" }
+              offset: { type: integer, minimum: 0, description: "`bad_reference`, `undeclared_variable`: the UTF-16 code unit offset in `body` of the `{{` concerned" }
+              question: { type: string, description: "`invalid_answer`: the id of the variable whose answer is refused, or `*` for the whole answer" }
+              rule: { type: string, description: "`invalid_answer`: the rule that failed (a closed list, see `renderPrompt`)" }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `searchThreads`: a burst of 20 and then two a second; `Retry-After`); `query_empty`, `query_too_long`, `bad_cursor` (400, `searchThreads`: the query is blank or too long, the cursor is not this request's); `bad_request` (400, `searchThreads`: any other malformed request); `search_unavailable` (503, `searchThreads`: the store is down or the search took too long; `Retry-After`); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `searchThreads`: a burst of 20 and then two a second; `Retry-After`); `query_empty`, `query_too_long`, `bad_cursor` (400, `searchThreads`: the query is blank or too long, the cursor is not this request's); `bad_request` (400, `searchThreads`: any other malformed request); `search_unavailable` (503, `searchThreads`: the store is down or the search took too long; `Retry-After`); `bad_scope`, `bad_cursor` (400, `listPrompts`), `bad_name`, `bad_title`, `bad_description`, `bad_body`, `bad_reference`, `bad_variable`, `undeclared_variable`, `unused_variable`, `bad_audience` (400, `createPrompt`, `updatePrompt`: a save the rules of `prompts-v1.md` refuse; the members `at` and `offset` say where), `name_taken` and `too_many_prompts` (409, `createPrompt`, `updatePrompt`), `stale_revision` (409, also `updatePrompt`, `deletePrompt`, `renderPrompt`: the prompt changed since the revision sent), `invalid_answer` (422, `renderPrompt`: the members `question` and `rule` say which answer and which rule) and `rendered_too_long` (422, `renderPrompt`); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
   schemas:
     BrowserAuth:
       type: object
@@ -1812,7 +2023,7 @@ components:
         permissions:
           type: array
           items: { $ref: "#/components/schemas/Permission" }
-          description: "What the roles grant, in the order `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`, `tools.user.add`. `tools.user.add` is listed for a role that holds it whether or not the deployment has people's own MCP servers on (the routes are then a 404)"
+          description: "What the roles grant, in the order `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`, `tools.user.add`, `prompts.share`. `tools.user.add` is listed for a role that holds it whether or not the deployment has people's own MCP servers on (the routes are then a 404). `prompts.share` is the only thing that lets a person share a prompt (no role holds it by default)"
         agents: { $ref: "#/components/schemas/MeAgents" }
         maxTier:
           type: string
@@ -1899,11 +2110,11 @@ components:
       type: object
       required: [permission]
       properties:
-        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin, tools.user.add] }
+        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin, tools.user.add, prompts.share] }
         scope:
           type: string
           enum: [own]
-          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` and `thread.delete` (which take no scope: they are over one's own thread), `admin` and `tools.user.add` (a person's servers are the person's own)"
+          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` and `thread.delete` (which take no scope: they are over one's own thread), `admin`, `tools.user.add` and `prompts.share` (a person's servers and prompts are the person's own)"
     MeAgents:
       type: object
       required: [read, invoke]
@@ -2052,7 +2263,7 @@ components:
     PublicConfig:
       type: object
       required: [ui]
-      description: "`{ui, search}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`)."
+      description: "`{ui, search, prompts}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`, `prompts`)."
       properties:
         search:
           type: object
@@ -2061,6 +2272,15 @@ components:
           properties:
             maxQueryLength: { type: integer, minimum: 1, description: "The longest `q`, in Unicode scalar values (200)" }
             maxTerms: { type: integer, minimum: 1, description: "The most terms of a query that are used (8)" }
+        prompts:
+          type: object
+          description: "**Its presence is the capability**: this orchestrator serves the prompt library ([ADR 0070](../decisions/0070-a-persons-prompt-library.md), [`prompts-v1.md`](prompts-v1.md)). An older one leaves it out, and a client then offers no library. The numbers are what the server enforces. There is no switch: a build has it or not."
+          required: [limit, maxVariables, maxBodyBytes, maxRenderedBytes]
+          properties:
+            limit: { type: integer, minimum: 1, description: "The most prompts a person holds, and a page of `listPrompts` (100)" }
+            maxVariables: { type: integer, minimum: 1, description: "The most variables of a prompt (8)" }
+            maxBodyBytes: { type: integer, minimum: 1, description: "The longest body in UTF-8 bytes (16384)" }
+            maxRenderedBytes: { type: integer, minimum: 1, description: "The longest rendered text in UTF-8 bytes (32768)" }
         ui:
           type: object
           description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know."
@@ -2135,6 +2355,148 @@ components:
             properties:
               start: { type: integer, minimum: 0, description: "Inclusive" }
               end: { type: integer, minimum: 1, description: "Exclusive" }
+    PromptId:
+      type: string
+      pattern: "^p-[a-z0-9]{12}$"
+      description: "`p-` and 12 lowercase letters or digits. Global: the id alone names a prompt"
+    PromptRevision:
+      type: string
+      pattern: "^[1-9][0-9]{0,18}$"
+      description: "Decimal digits. It grows with every write of every prompt and **is never given twice**; a client compares it for equality and never orders by it"
+    ChoicesQuestion:
+      type: object
+      required: [id, question]
+      additionalProperties: false
+      description: "A question of the UI catalog's `Choices`, version 8 ([`ui-catalog-v1.md`](ui-catalog-v1.md)), as a prompt's variable: the same members and bounds, without the type `images`, without `show` and without an option's `image`, and without `min` and `max` on a question that takes one choice ([`prompts-v1.md`](prompts-v1.md#the-variables)). `required` is true when absent, for every kind."
+      properties:
+        id: { type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$", description: "The name of the reference `{{id}}` in the body; unique among the variables" }
+        question: { type: string, minLength: 1, maxLength: 300 }
+        help: { type: string, maxLength: 300 }
+        type: { type: string, enum: [single, multiple, select, text, longText, confirm, number, scale, date, rank], description: "`single` when absent" }
+        options:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [value, label]
+            additionalProperties: false
+            properties:
+              value: { type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$" }
+              label: { type: string, minLength: 1, maxLength: 120 }
+              description: { type: string, maxLength: 300 }
+              icon: { type: string, enum: [agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool, opencode] }
+              recommended: { type: boolean }
+        multiple: { type: boolean }
+        allowOther: { type: boolean }
+        required: { type: boolean }
+        default:
+          description: "A string, or for several choices and a `rank` a list of option values; never substituted by the server"
+          anyOf:
+            - { type: string, maxLength: 2000 }
+            - { type: array, maxItems: 50, items: { type: string } }
+        min: { type: integer, minimum: 0, maximum: 50 }
+        max: { type: integer, minimum: 1, maximum: 50 }
+        yesLabel: { type: string, minLength: 1, maxLength: 40 }
+        noLabel: { type: string, minLength: 1, maxLength: 40 }
+        minValue: { type: string, pattern: "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }
+        maxValue: { type: string, pattern: "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }
+        step: { type: string, pattern: "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }
+        unit: { type: string, minLength: 1, maxLength: 20 }
+        from: { type: integer, minimum: 0, maximum: 1 }
+        to: { type: integer, minimum: 2, maximum: 10 }
+        fromLabel: { type: string, minLength: 1, maxLength: 60 }
+        toLabel: { type: string, minLength: 1, maxLength: 60 }
+        minDate: { type: string, pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+        maxDate: { type: string, pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+    PromptAudience:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items: { type: string, minLength: 1, maxLength: 64, pattern: "^[!-~]+$" }
+      description: "Role values of the roles claim, byte for byte; `\"*\"` means everybody and is only allowed alone; empty is private. The server returns the set sorted by bytes"
+    Prompt:
+      type: object
+      required: [id, name, title, description, body, variables, own, revision, updatedAt]
+      description: "A prompt ([`prompts-v1.md`](prompts-v1.md)). **A prompt that is not the caller's has `own: false` and no `audience`**: it never names its author, its audience or when it was created."
+      properties:
+        id: { $ref: "#/components/schemas/PromptId" }
+        name: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$", description: "Unique among the owner's prompts: the `/name` of a command menu" }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        body: { type: string, description: "1 to 16,384 UTF-8 bytes of text with `{{id}}` references. Plain text: a client never draws it as Markdown or HTML" }
+        variables: { type: array, maxItems: 8, items: { $ref: "#/components/schemas/ChoicesQuestion" } }
+        own: { type: boolean, description: "Whether the caller owns it" }
+        audience: { $ref: "#/components/schemas/PromptAudience" }
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        updatedAt: { type: string, format: date-time }
+    PromptSummary:
+      type: object
+      required: [id, name, title, description, variableCount, own, revision, updatedAt]
+      description: "A prompt without its `body` and `variables`. `audience` is the caller's own prompts' only."
+      properties:
+        id: { $ref: "#/components/schemas/PromptId" }
+        name: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        variableCount: { type: integer, minimum: 0, maximum: 8 }
+        own: { type: boolean }
+        audience: { $ref: "#/components/schemas/PromptAudience" }
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        updatedAt: { type: string, format: date-time }
+    PromptList:
+      type: object
+      required: [limit, held, items]
+      properties:
+        limit: { type: integer, minimum: 1, description: "The most prompts a page holds (100), and the most a person owns" }
+        held: { type: integer, minimum: 0, description: "How many prompts the caller owns, whatever the scope" }
+        items: { type: array, items: { $ref: "#/components/schemas/PromptSummary" } }
+        nextCursor: { type: string, description: "Send it back as `cursor` for the next page; absent on the last" }
+    CreatePromptRequest:
+      type: object
+      required: [name, title, body]
+      additionalProperties: false
+      properties:
+        name: { type: string, description: "`^[a-z0-9][a-z0-9-]{0,31}$`" }
+        title: { type: string }
+        description: { type: string }
+        body: { type: string }
+        variables: { type: array, items: { type: object } }
+        audience: { type: array, items: { type: string } }
+    UpdatePromptRequest:
+      type: object
+      required: [revision]
+      additionalProperties: false
+      description: "`revision` and at least one other member; a member given replaces the whole member"
+      properties:
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        name: { type: string }
+        title: { type: string }
+        description: { type: string }
+        body: { type: string }
+        variables: { type: array, items: { type: object } }
+        audience: { type: array, items: { type: string } }
+    RenderPromptRequest:
+      type: object
+      additionalProperties: false
+      description: "`answers` is the catalog's Choices answer, one entry per variable in variable order. A missing `answers` and a `note` are 422 (`unknown`, `unexpected` for `*`); any other member is 400"
+      properties:
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        answers:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              values: { type: array }
+              other: { type: string }
+              text: { type: string }
+        note: { type: string, description: "Always refused: a prompt has no free box" }
+    RenderedPrompt:
+      type: object
+      required: [text, revision]
+      properties:
+        text: { type: string, description: "At most 32,768 UTF-8 bytes. Put it in the message box for the person to edit; nothing was sent" }
+        revision: { $ref: "#/components/schemas/PromptRevision" }
     Registry:
       type: object
       required: [sources]
