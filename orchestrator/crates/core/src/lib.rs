@@ -25,6 +25,7 @@ mod pricing;
 mod rank;
 mod reasoning;
 mod redact;
+pub mod search;
 mod share;
 mod step;
 mod task;
