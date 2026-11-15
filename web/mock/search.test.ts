@@ -144,7 +144,10 @@ describe("a person's threads (corpus.json and queries/)", () => {
     edit: t.edit,
     ...(t.copiedThrough !== undefined ? { copiedThrough: t.copiedThrough } : {}),
     messages: searchableMessages(
-      t.events.map((e) => ({ ...e, ...(e.text !== undefined ? { text: expand(e.text) } : {}) })),
+      t.events.map(({ text, ...rest }) => ({
+        ...rest,
+        ...(text !== undefined ? { text: expand(text) } : {}),
+      })),
     ),
   }));
 
