@@ -105,7 +105,7 @@ The plan's twelve questions, answered by their recommendation (the work proceeds
 7. The list carries **summaries, no bodies**; `getPrompt` returns the whole.
 8. **No rate limiter** in this slice: each call is one indexed row, writes are bounded by the 100, and a render is bounded by 32 KiB of output.
 9. The limits: 100 prompts per person, 8 variables, a 16 KiB body, 32 audience values, a 32 KiB rendered text, a 64 KiB request.
-10. The count is **"12 of 35"**: P1 and P4 complete, P2 half (its server).
+10. The count stays **"10 of 35"**, with the server half of P1, P2 and P4: a slice is counted when a person can use it in the web, as search was counted only with its box. (The build first wrote "12 of 35"; corrected before the merge.)
 11. Issue 294 should be told to delete `user_prompts` by owner. Recommended: yes; the comment is the owner's to post.
 12. `required` is `true` when absent **for every kind**, the older ones included (verified: the web's `choices.ts` reads `required: v.required !== false`).
 
