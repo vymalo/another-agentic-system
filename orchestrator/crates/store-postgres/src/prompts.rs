@@ -13,8 +13,14 @@
 //!   that writes it. A replace is one `UPDATE … WHERE id = $1 AND owner = $2 AND revision =
 //!   $expected`: the compare and the swap are one statement.
 //! - **Every write is its own `READ COMMITTED` transaction** with [`LOCK_TIMEOUT`] (2 s).
-//! - **The shared query is one overlap**, `audience && roles_plus_star`, which the partial GIN index
-//!   answers: the roles are passed **with `"*"` added**, never `OR audience = ARRAY['*']`.
+//! - **The shared query is one overlap**, `audience && roles_plus_star`, and **it states the partial
+//!   index's own predicate beside it** (`cardinality(audience) > 0 AND audience && $2`): the planner
+//!   uses `user_prompts_audience` only for a query whose `WHERE` implies the index's, and
+//!   `audience && $2` alone does not (an empty audience overlaps nothing, but the planner does not
+//!   know it). The `all` scope is `owner = $1 OR (<that>)`, a `BitmapOr` of the two indexes. The roles
+//!   are passed **with `"*"` added**, never `OR audience = ARRAY['*']`, and only the ones that can be in
+//!   an audience (a role with a NUL, a space or over 64 bytes matches nothing and is not sent).
+//!   `tests/prompts.rs` runs `EXPLAIN` on it.
 //! - **A row is read back through [`PromptDefinition::from_stored`]**: a row that is not a prompt
 //!   is `Corrupt`, with a message that holds no owner and no word of it. **A listing does not parse
 //!   `variables`** (it reads `jsonb_array_length`), so one corrupt row of another person cannot
@@ -222,7 +228,7 @@ impl PromptStore for PgStore {
     ) -> Result<Option<StoredPrompt>, PromptStoreError> {
         let found: Option<OwnedRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT owner, {COLUMNS} FROM user_prompts \
-             WHERE id = $1 AND (owner = $2 OR audience && $3)"
+             WHERE id = $1 AND (owner = $2 OR (cardinality(audience) > 0 AND audience && $3))"
         )))
         .bind(id.as_str())
         .bind(viewer.user.as_str())
@@ -257,27 +263,15 @@ impl PromptStore for PgStore {
         after: Option<&PromptId>,
         limit: u32,
     ) -> Result<PromptPage, PromptStoreError> {
-        let predicate = match scope {
-            // `$2` is named in every scope: Postgres cannot type a parameter no statement mentions
-            PromptScope::Mine => "owner = $1 AND cardinality($2::text[]) > 0",
-            PromptScope::Shared => "owner <> $1 AND audience && $2",
-            PromptScope::All => "(owner = $1 OR audience && $2)",
-        };
         let limit = i64::from(limit.min(u32::try_from(MAX_PROMPTS).unwrap_or(100)));
-        let rows: Vec<SummaryRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT id, name, title, description, jsonb_array_length(variables), audience, \
-               owner = $1, revision, updated_at \
-             FROM user_prompts \
-             WHERE {predicate} AND ($3::text IS NULL OR id > $3) \
-             ORDER BY id LIMIT $4"
-        )))
-        .bind(viewer.user.as_str())
-        .bind(roles_plus_star(viewer))
-        .bind(after.map(PromptId::as_str))
-        .bind(limit + 1)
-        .fetch_all(self.pool())
-        .await
-        .map_err(db_err)?;
+        let rows: Vec<SummaryRow> = sqlx::query_as(sqlx::AssertSqlSafe(list_sql(scope)))
+            .bind(viewer.user.as_str())
+            .bind(roles_plus_star(viewer))
+            .bind(after.map(PromptId::as_str))
+            .bind(limit + 1)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db_err)?;
         let held: i64 = sqlx::query_scalar("SELECT count(*) FROM user_prompts WHERE owner = $1")
             .bind(viewer.user.as_str())
             .fetch_one(self.pool())
@@ -397,11 +391,37 @@ impl PromptStore for PgStore {
     }
 }
 
+/// The statement of a listing, with its parameters: `$1` the viewer, `$2` their roles with `*`
+/// added, `$3` the cursor (or null) and `$4` the limit plus one. It is a function of its own so
+/// that `tests/prompts.rs` can ask Postgres for the plan of exactly this text.
+pub fn list_sql(scope: PromptScope) -> String {
+    let predicate = match scope {
+        // `$2` is named in every scope: Postgres cannot type a parameter no statement mentions
+        PromptScope::Mine => "owner = $1 AND cardinality($2::text[]) > 0",
+        // `cardinality(audience) > 0` is the predicate of the partial index: without it the planner
+        // cannot use `user_prompts_audience` (and the overlap alone would be a scan of the table)
+        PromptScope::Shared => "owner <> $1 AND cardinality(audience) > 0 AND audience && $2",
+        PromptScope::All => "(owner = $1 OR (cardinality(audience) > 0 AND audience && $2))",
+    };
+    format!(
+        "SELECT id, name, title, description, jsonb_array_length(variables), audience, \
+           owner = $1, revision, updated_at \
+         FROM user_prompts \
+         WHERE {predicate} AND ($3::text IS NULL OR id > $3) \
+         ORDER BY id LIMIT $4"
+    )
+}
+
 /// The roles the viewer has, **with `"*"` added**: the one overlap `audience && $roles` that the
 /// partial GIN index answers, for a prompt shared with a role of theirs and for one shared with
 /// everybody.
 fn roles_plus_star(viewer: &PromptViewer) -> Vec<String> {
-    let mut roles: Vec<String> = viewer.roles.iter().cloned().collect();
+    let mut roles: Vec<String> = viewer
+        .roles
+        .iter()
+        .filter(|r| PromptAudience::is_role_value(r))
+        .cloned()
+        .collect();
     roles.push("*".to_owned());
     roles
 }
@@ -488,9 +508,12 @@ fn summary(row: SummaryRow) -> Result<PromptSummary, PromptStoreError> {
 /// wait for a lock.
 const LOCK_NOT_AVAILABLE: &str = "55P03";
 
-/// A driver error as the port says it: a row that does not decode is `Corrupt`; everything else is
-/// `Unavailable`, with the driver's error as the source. A driver error holds no parameter of the
-/// statement, so no word of a prompt and no owner.
+/// A driver error as the port says it: a row that does not decode is `Corrupt`; a lock that was
+/// waited for too long, the network, the pool and the SQLSTATEs that say "try again later" are
+/// `Unavailable` (a 503 a client may retry); **everything else is `Internal`**, because a retry
+/// repeats it: a value the database cannot hold (22P05, a NUL in a `jsonb` string), a violated
+/// constraint nobody maps, a rejected statement. The driver's error is the source; it holds no
+/// parameter of the statement, so no word of a prompt and no owner.
 fn db_err(err: sqlx::Error) -> PromptStoreError {
     if matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some(LOCK_NOT_AVAILABLE))
     {
@@ -506,6 +529,75 @@ fn db_err(err: sqlx::Error) -> PromptStoreError {
         ErrorClass::Transient => {
             PromptStoreError::unavailable("the database cannot be reached").with_source(err)
         }
-        _ => PromptStoreError::unavailable("the database refused the request").with_source(err),
+        _ => PromptStoreError::internal("the database refused the request").with_source(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::fmt;
+
+    use orch_core::ErrorClass;
+    use orch_ports::PromptStoreError;
+    use sqlx::error::{DatabaseError, ErrorKind};
+
+    use super::db_err;
+
+    /// A database error with a SQLSTATE and no more.
+    #[derive(Debug)]
+    struct Refused(&'static str);
+
+    impl fmt::Display for Refused {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("refused")
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
+    impl DatabaseError for Refused {
+        fn message(&self) -> &str {
+            "refused"
+        }
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.0))
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    fn class_of(code: &'static str) -> ErrorClass {
+        use orch_core::Classify;
+        db_err(sqlx::Error::Database(Box::new(Refused(code)))).class()
+    }
+
+    #[test]
+    fn what_a_retry_repeats_is_not_unavailable() {
+        // 22P05 untranslatable character (a NUL in a jsonb string), 22021 invalid byte sequence,
+        // 22001 value too long, 23502 not null, 23514 check violation, 42601 syntax error
+        for code in [
+            "22P05", "22021", "22001", "22003", "23502", "23514", "42601", "42P01",
+        ] {
+            assert_eq!(class_of(code), ErrorClass::Internal, "{code}");
+        }
+        // the lock wait, a serialization failure, a deadlock, a connection that is gone, a shutdown
+        for code in ["55P03", "40001", "40P01", "08006", "53300", "57P01"] {
+            assert_eq!(class_of(code), ErrorClass::Transient, "{code}");
+        }
+        assert!(matches!(
+            db_err(sqlx::Error::Database(Box::new(Refused("22P05")))),
+            PromptStoreError::Internal { .. }
+        ));
     }
 }

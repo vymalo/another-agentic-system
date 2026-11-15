@@ -813,3 +813,85 @@ pub async fn concurrent_replaces_from_one_revision_have_one_winner<S: PromptStor
     })
     .await;
 }
+
+/// A page is never larger than `PAGE`, whatever limit is asked for, and `more` says the rest is there.
+pub async fn a_page_is_never_larger_than_the_page_size<S: PromptStore>(store: S) {
+    within(async {
+        let a = owner();
+        let b = owner();
+        let team = role();
+        for n in 0..MAX_PROMPTS {
+            save(&store, &a, &named(n), &[]).await;
+        }
+        save(&store, &b, "shared", &[team.as_str()]).await;
+        let who = viewer(&a, &[team.as_str()]);
+        let page = store
+            .list_prompts(&who, PromptScope::All, None, 1000)
+            .await
+            .expect("list");
+        assert_eq!(page.items.len(), orch_core::prompt::PAGE);
+        assert!(page.more, "101 are visible and a page is 100");
+        let last = page.items.last().expect("a page").id.clone();
+        let rest = store
+            .list_prompts(&who, PromptScope::All, Some(&last), 1000)
+            .await
+            .expect("list");
+        assert_eq!(rest.items.len(), 1);
+        assert!(!rest.more);
+        // a page that holds exactly `PAGE` and no more says so
+        let own = store
+            .list_prompts(&who, PromptScope::Mine, None, 1000)
+            .await
+            .expect("list");
+        assert_eq!(own.items.len(), orch_core::prompt::PAGE);
+        assert!(!own.more);
+    })
+    .await;
+}
+
+/// Every text a variable can hold (and the title and the description) comes back as it was saved:
+/// accents, emoji, joiners, direction marks, quotes, backslashes, a tab in a description, and an
+/// integer written as a float.
+pub async fn every_allowed_text_of_a_variable_is_read_back<S: PromptStore>(store: S) {
+    within(async {
+        let a = owner();
+        let words = "é😀 \u{200d}\u{200e} \"quoted\" back\\slash {braces} <b>&amp;</b> 'single'";
+        // the labels and the unit are held to 20 to 60 characters
+        let short = "é😀\u{200d}\u{200e} \"q\" \\ {x}";
+        let variables = vec![
+            json!({"id": "t", "question": words, "help": words, "type": "text", "default": words}),
+            json!({"id": "c", "question": "C?", "options": [
+                {"value": "a", "label": words, "description": words, "icon": "git", "recommended": true},
+                {"value": "b", "label": "B"}]}),
+            json!({"id": "y", "question": "Y?", "type": "confirm", "yesLabel": short, "noLabel": "No"}),
+            json!({"id": "n", "question": "N?", "type": "number", "unit": short, "minValue": "0", "step": "0.5"}),
+            json!({"id": "s", "question": "S?", "type": "scale", "to": 5.0, "fromLabel": short, "toLabel": short}),
+        ];
+        let definition = PromptDefinition::new(
+            fresh_id(),
+            PromptInput {
+                name: "texts".to_owned(),
+                title: words.to_owned(),
+                description: format!("{words}\n\tmore"),
+                body: "{{t}} {{c}} {{y}} {{n}} {{s}}".to_owned(),
+                variables,
+                audience: Vec::new(),
+            },
+        )
+        .expect("every one of these is text a prompt takes");
+        let saved = store
+            .insert_prompt(&a, &definition, at(0))
+            .await
+            .expect("insert");
+        let who = viewer(&a, &[]);
+        let got = store
+            .get_prompt(&who, definition.id())
+            .await
+            .expect("get")
+            .expect("there");
+        assert_eq!(got.prompt(), &definition);
+        assert_eq!(got, saved);
+        assert_eq!(ids(&store, &who, PromptScope::Mine).await.len(), 1);
+    })
+    .await;
+}

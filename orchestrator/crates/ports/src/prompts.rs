@@ -215,6 +215,17 @@ pub enum PromptStoreError {
     /// What the store holds is not a prompt. Alert.
     #[error("the prompt store holds corrupt data: {0}")]
     Corrupt(String),
+    /// The store refused a request that no retry will change (a value the database cannot hold, a
+    /// statement it rejects): a bug to fix, never a reason to wait. [`Unavailable`](Self::Unavailable)
+    /// is the one a caller retries.
+    #[error("the prompt store refused the request: {detail}")]
+    Internal {
+        /// What was attempted, without words of a prompt.
+        detail: String,
+        /// The lower error.
+        #[source]
+        source: Option<BoxError>,
+    },
 }
 
 impl PromptStoreError {
@@ -226,12 +237,24 @@ impl PromptStoreError {
         }
     }
 
-    /// Keeps `source` as the cause of an `Unavailable` error; any other variant is returned
-    /// unchanged.
+    /// The store refused a request that no retry will change.
+    pub fn internal(detail: impl Into<String>) -> Self {
+        PromptStoreError::Internal {
+            detail: detail.into(),
+            source: None,
+        }
+    }
+
+    /// Keeps `source` as the cause of an `Unavailable` or `Internal` error; any other variant is
+    /// returned unchanged.
     #[must_use]
     pub fn with_source(self, source: impl Into<BoxError>) -> Self {
         match self {
             PromptStoreError::Unavailable { detail, .. } => PromptStoreError::Unavailable {
+                detail,
+                source: Some(source.into()),
+            },
+            PromptStoreError::Internal { detail, .. } => PromptStoreError::Internal {
                 detail,
                 source: Some(source.into()),
             },
@@ -255,6 +278,7 @@ impl Classify for PromptStoreError {
             PromptStoreError::Conflict => ErrorClass::Conflict,
             PromptStoreError::Unavailable { .. } => ErrorClass::Transient,
             PromptStoreError::Corrupt(_) => ErrorClass::Corrupt,
+            PromptStoreError::Internal { .. } => ErrorClass::Internal,
         }
     }
 }

@@ -739,6 +739,7 @@ macro_rules! prompt_store_conformance {
             concurrent_inserts_never_pass_the_limit
             concurrent_inserts_of_one_id_have_one_winner
             concurrent_replaces_from_one_revision_have_one_winner
+            a_page_is_never_larger_than_the_page_size every_allowed_text_of_a_variable_is_read_back
         );
     };
     (@cases $make:path; $($case:ident)*) => {

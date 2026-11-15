@@ -23,7 +23,9 @@
 --   body        1 to 16384 BYTES of text with `{{id}}` references (`octet_length`); no U+0000 (Postgres
 --               cannot store it: the rules of `orch_core::prompt` refuse it before it gets here)
 --   variables   a JSON array of 0 to 8 questions of the UI catalog (version 8, without `show` and
---               `images`); validated in Rust: a CHECK cannot read a question
+--               `images`); validated in Rust: a CHECK cannot read a question. `jsonb` cannot hold U+0000 in a
+--               string, so the rules refuse a control character in every text of a variable (a store that
+--               accepted it would fail on the insert, and what fails every time is no 503 a client retries)
 --   audience    0 to 32 role values, each 1 to 64 bytes of 0x21 to 0x7E (checked in Rust: a CHECK cannot
 --               walk the elements of an array without a function); `*` only alone. Empty is private
 --   revision    what the store gives to every write of the row, from one sequence for the whole table: a
@@ -65,5 +67,8 @@ CREATE TABLE user_prompts (
 -- a person's own prompts, in id order
 CREATE INDEX user_prompts_owner_id ON user_prompts (owner, id);
 
--- the prompts shared with a role: `audience && roles_plus_star`, one overlap that this index answers
+-- the prompts shared with a role: `cardinality(audience) > 0 AND audience && roles_plus_star`. A query uses a
+-- partial index only when its WHERE implies the index's predicate, and the overlap alone does not (the
+-- planner does not know an empty audience overlaps nothing), so every listing states both; `tests/prompts.rs`
+-- asks EXPLAIN. The owner's own prompts are the `(owner, id)` index above; `all` is a BitmapOr of the two
 CREATE INDEX user_prompts_audience ON user_prompts USING gin (audience) WHERE cardinality(audience) > 0;

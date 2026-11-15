@@ -129,7 +129,10 @@ impl PromptStore for MemoryStore {
                 PromptScope::Shared => !own,
                 PromptScope::All => true,
             });
-        let take = usize::try_from(limit).unwrap_or(usize::MAX);
+        // a page is at most `PAGE`, whatever the caller asked for (the port's promise)
+        let take = usize::try_from(limit)
+            .unwrap_or(usize::MAX)
+            .min(orch_core::prompt::PAGE);
         let items: Vec<PromptSummary> = visible
             .by_ref()
             .take(take)

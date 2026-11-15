@@ -18,7 +18,7 @@ use orch_ports::{
     MAX_PROMPTS, PromptScope, PromptStore, PromptStoreError, PromptViewer, StoredPrompt,
 };
 use orch_store_postgres::{
-    OWNER_LOCK_CLASS, PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, PgStore,
+    OWNER_LOCK_CLASS, PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, PgStore, prompt_list_sql,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use support::TestDb;
@@ -152,6 +152,11 @@ async fn the_table_refuses_what_the_rules_never_write() {
         (
             "an empty body",
             insert_row(pool, "p-aaaaaaaaaaad", "ok", "", &[]).await,
+        ),
+        (
+            // 8,193 characters, 16,386 bytes: the limit is in bytes
+            "a body of 16386 bytes in 8193 characters",
+            insert_row(pool, "p-aaaaaaaaaaaf", "ok", &"é".repeat(8193), &[]).await,
         ),
     ] {
         let error = result.expect_err(what);
@@ -376,4 +381,83 @@ async fn the_shared_query_matches_everybody_and_the_roles_a_viewer_has() {
         .len(),
         0
     );
+}
+
+/// The plan Postgres chooses for a listing, as text, with sequential scans forbidden.
+///
+/// A table of a few rows is read by a sequential scan whatever the indexes are, so the plan of a
+/// small table says nothing; with `enable_seqscan = off` the planner takes an index when one is
+/// usable at all, and says which, and that is what this asks: *can* the statement use the index. It
+/// is the question that the first version of the shared query got wrong (`audience && $2` does not
+/// imply the partial index's predicate, so the GIN index could not be used however big the table).
+async fn plan_of(store: &PgStore, scope: PromptScope) -> String {
+    let mut tx = store.pool().begin().await.unwrap();
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let sql = format!("EXPLAIN {}", prompt_list_sql(scope));
+    let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind("somebody@example.test")
+        .bind(vec!["team".to_owned(), "*".to_owned()])
+        .bind(None::<String>)
+        .bind(101_i64)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    rows.into_iter()
+        .map(|(line,)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The shared listing can use the partial GIN index, and the other two can use the owner's index:
+/// the statements state the index's own predicate beside the overlap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_listings_can_use_their_indexes() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = db.store().await;
+    let shared = plan_of(&store, PromptScope::Shared).await;
+    assert!(shared.contains("user_prompts_audience"), "{shared}");
+    let all = plan_of(&store, PromptScope::All).await;
+    assert!(all.contains("user_prompts_audience"), "{all}");
+    assert!(all.contains("user_prompts_owner_id"), "{all}");
+    let mine = plan_of(&store, PromptScope::Mine).await;
+    assert!(mine.contains("user_prompts_owner_id"), "{mine}");
+}
+
+/// A role that cannot be in an audience (a NUL, a space, over 64 bytes) is not sent to the
+/// database: Postgres cannot hold the NUL and would refuse the statement. 5,000 roles are one array.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn roles_that_cannot_be_an_audience_are_dropped_before_the_query() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = db.store().await;
+    let author = owner("author");
+    let team = save(&store, &author, &prompt("team", &["team"])).await;
+    let mut roles: Vec<String> = (0..5000).map(|n| format!("role-{n}")).collect();
+    roles.extend([
+        "nul\u{0}role".to_owned(),
+        "with space".to_owned(),
+        "x".repeat(65),
+        "é".to_owned(),
+        String::new(),
+        "team".to_owned(),
+    ]);
+    let who = PromptViewer {
+        user: owner("reader"),
+        roles: roles.into_iter().collect(),
+    };
+    let page = store
+        .list_prompts(&who, PromptScope::All, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(&page.items[0].id, team.prompt().id());
+    let got = store.get_prompt(&who, team.prompt().id()).await.unwrap();
+    assert!(got.is_some());
 }
