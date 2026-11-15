@@ -1121,6 +1121,19 @@ they did.
   a reload, per thread, the cap and what a capped person's unpicked message runs under, a forgotten pick, a pick sent while the capabilities
   cannot be read, an edit sent under the pick, a 422 and a 503 keeping the text, the keyboard, axe in both schemes).
 
+## Searching threads (the mock only, slice 7a)
+
+*Added 2026-11-15 ([ADR 0068](../docs/decisions/0068-a-person-searches-their-own-threads.md), slice 7a of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)).*
+There is **no search box yet** (7b). What exists is the contract, [`docs/api/thread-search-v1.md`](../docs/api/thread-search-v1.md) with its vectors, and the mock
+server's route that a box will be drawn against: `POST /api/search/threads` (`searchThreads`) and `search: {maxQueryLength, maxTerms}` in `GET /api/config`, whose presence is the
+capability a client checks before it offers a box.
+
+`mock/search.ts` is the **second implementation** of that page (the first is `orch_core::search`, in Rust): it imports nothing of `src/`, so what the page says and not what the web
+does is what is held. `mock/search.test.ts` reads every vector of `docs/api/examples/thread-search/` (fold, query, snippet, and the corpus with its queries) and the page's own numbers;
+`mock/server.contract.test.ts` validates the route's answers against `chat-api.yaml`: the shape, only the caller's own threads and a subset of `listThreads`, the refusals and their
+codes, paging, the archived filter, a deleted thread, and the 429 with `Retry-After` (a burst of 20 and then two a second, **per session** in the mock, where a session is a person). The
+box, the highlighting from `matches` (UTF-16 offsets into `snippet.text`, text nodes and never `dangerouslySetInnerHTML`) and opening a hit at its `seq` are 7b.
+
 ## A thread's description
 
 *Added 2026-10-02 (S19; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)).* When a job ends the orchestrator's own

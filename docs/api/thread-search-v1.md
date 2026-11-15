@@ -120,7 +120,7 @@ A **message hit** has the message's `seq` (the number to open the thread at: `ge
 `role` (`person` or `agent`) and its `at`. Every hit has a `snippet`.
 
 **Archived threads** are included unless `archived` says otherwise: `include` (the default), `exclude` (not archived) or `only` (archived
-only). A hit does not say whether its thread is archived: the `thread` does (`archivedAt`).
+only). A hit does not say whether its thread is archived: the `thread` does (`archived: true`).
 
 ## The snippet
 

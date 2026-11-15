@@ -101,6 +101,25 @@ second client (the Flutter app) must be able to search from the contract, and tw
 7. **A limit of 3,000 words a document**, because a `tsvector` is limited to a megabyte and an unbounded one would fail a commit.
 8. **The query is cut, not refused, where it is long:** a term over 64 code points is cut to them (a refusal would make a pasted URL an error).
 
+## Facts, and how far each is proven
+
+*Verified 2026-11-15 on a local PostgreSQL 16.15 (the version of `compose.yaml`) by `psql` and by the conformance suite of `orch-ports` run against `PgStore`
+(`ORCH_TEST_DATABASE_URL`, 186 cases, 14 of them this ADR's, plus `tests/thread_search.rs` and the binary's `tests/search.rs`):*
+
+- `array_to_tsvector(text[])` keeps lexemes exactly as given (no stop word dropped, no stemming, no case folding), sorts and deduplicates them; Cyrillic, CJK,
+  accented and digit lexemes round-trip.
+- `'key':* & 'key2':*` cast from text to `tsquery` is a prefix match of every key, in one `tsvector` (never across two): `'прив':*` finds `привет`, `'ab':*` finds
+  `abc` and `'bc':*` does not.
+- A fork's copied range indexed from the fork's own log, a message the parent later replaced included, and the cascade of `events` leaving no row of an erased thread.
+- A search that waits on a lock held on `message_terms` ends in `57014` after the 2 s `statement_timeout`, which the store maps to `Unavailable` (the API's 503).
+- Removing the fork predicate from the query makes the fork cases fail (the suite bites), as does removing the delete of a replaced message.
+
+*Verified by running both implementations on the same vectors:* `orch_core::search` (the regex crate's Unicode tables, `unicode-normalization` 0.1.25) and `web/mock/search.ts`
+(Node 22's ICU) agree on every vector, which use only characters of Unicode 13 and earlier; whether they agree beyond that is *unverified*.
+
+*Unverified:* that the planner combines the GIN index on `terms` with the btree on `owner` (BitmapAnd) at the size of a real deployment (the query is written so that it can; no
+plan was read at scale); the cost of the index at a million messages; `dev/search-e2e.sh` (it has not run against the stack: no Docker where it was written); and the web (7b).
+
 ## Not done here
 
 The web: the box, the results and the highlighting (7b); the screens; the shortcut. Every Postgres claim is proven only where the conformance suite ran
