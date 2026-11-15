@@ -207,7 +207,7 @@ expect "the marked word of the snippet is the word searched for" \
 expect "the rank is 0: only a message matches" "$(printf '%s' "$hit" | jq -r .rank)" "0"
 expect "messageHits says how many messages match" "$(printf '%s' "$hit" | jq -r .messageHits)" "1"
 expect "a prefix finds it" "$(ids_of "$(lookup "$(jq -n --arg q "$(printf %s "${run}on")" '{q: $q}')")")" "$t1"
-expect "capitals find it" "$(ids_of "$(lookup "$(jq -n --arg q "$(printf %s "${run}ONE" | tr 'a-z' 'A-Z')" '{q: $q}')")")" "$t1"
+expect "capitals find it" "$(ids_of "$(lookup "$(jq -n --arg q "$(printf %s "${run}ONE" | tr '[:lower:]' '[:upper:]')" '{q: $q}')")")" "$t1"
 expect "cafe finds Café" "$(ids_of "$(lookup "$(jq -n --arg q "${run}one cafe" '{q: $q}')")")" "$t1"
 expect "COEUR finds cœur" "$(ids_of "$(lookup "$(jq -n --arg q "${run}one COEUR" '{q: $q}')")")" "$t1"
 expect "strasse finds Straße" "$(ids_of "$(lookup "$(jq -n --arg q "${run}one strasse" '{q: $q}')")")" "$t1"
@@ -331,7 +331,9 @@ echo "== the log"
 if command -v docker >/dev/null 2>&1 && docker compose ps -q "$service" >/dev/null 2>&1 && [ -n "$(docker compose ps -q "$service" 2>/dev/null)" ]; then
   docker compose logs --no-color "$service" >"$tmp/log" 2>&1 || true
   if [ -s "$tmp/log" ]; then
-    expect "the log has the requests" "$(grep -c '/api/search/threads' "$tmp/log" | sed 's/^0$/none/;s/^[1-9][0-9]*$/some/')" "some"
+    # The log read is the orchestrator's own (it holds its start-up lines): at the stack's level a request
+    # is not a line, so the words are looked for in everything the service wrote.
+    expect "the log is the orchestrator's" "$(grep -c 'orchestrator::boot' "$tmp/log" | sed 's/^0$/none/;s/^[1-9][0-9]*$/some/')" "some"
     for word in "$run" "$common" "DROP TABLE" "1=1"; do
       if grep -q -F -- "$word" "$tmp/log"; then bad "'$word' is in the orchestrator's log"; else ok "'$word' is in no line of the log"; fi
     done
