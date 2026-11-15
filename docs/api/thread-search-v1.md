@@ -3,7 +3,8 @@
 - **Status:** contract written 2026-11-15 for the owner's "LibreChat-grade, client-agnostic" plan
   ([ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), wave 1, slice 7), decided by
   [ADR 0068](../decisions/0068-a-person-searches-their-own-threads.md). It describes what the orchestrator does and what the web's mock
-  server does; no client has drawn it yet (the web's box is slice 7b), so it is *unverified* by a client of ours.
+  server does, and the web's search box (slice 7b, 2026-11-15) draws it from this page and the mock. It is *unverified* against a real
+  orchestrator and by a client other than the web.
 - **What it covers:** the one route, [`searchThreads`](chat-api.yaml) (`POST /api/search/threads`), and the rules a server follows so that
   **every server and every client agree on the same threads, the same snippets, the same offsets and the same order**: what a word is,
   how a word is folded, how a query is read, when a document matches, how the snippet is cut and how the hits are ranked. Nothing here
@@ -131,6 +132,13 @@ same word). Terms are never split between documents: `tomatoes basil` finds a me
 A **message hit** has the message's `seq` (the number to open the thread at: `getThreadHistory?since=<seq>` as for a `#m-<seq>` link), its
 `role` (`person` or `agent`) and its `at`. Every hit has a `snippet`.
 
+**What `seq` names, and where a client goes.** The `seq` of a message hit is the log position of **that message**: the person's own `user_message`
+when `role` is `person`, the agent's final `agent_message` when `role` is `agent`. A title or a description hit has no `seq` and opens the thread
+as usual. A client that can anchor any message by `seq` goes there. A client that can anchor only the person's messages (the web draws an
+element with the id `m-<seq>` for those alone) goes, for an agent's answer, to **the last person's message whose `seq` is at or before the
+hit's `seq`**: the message that started the turn the answer belongs to. It SHOULD wait for the transcript to be drawn before it decides that
+no message has the exact `seq`.
+
 **Archived threads** are included unless `archived` says otherwise: `include` (the default), `exclude` (not archived) or `only` (archived
 only). A hit does not say whether its thread is archived: the `thread` does (`archived: true`). `archived` and `branches` are two filters
 that combine: with `archived: only` and `branches: include`, the archived threads, branches included, and a branch that is not archived is not one.
@@ -247,5 +255,6 @@ The recipe is in the description of [`searchThreads`](chat-api.yaml) too:
 
 ## API gaps found
 
-None new. A message hit's `seq` closes part of the first gap of [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md#the-rule):
+None new in the API. The web's box (slice 7b) found one thing the page did not say, now said ("What `seq` names, and where a client goes"): where a
+client that can anchor only a person's messages goes for a hit in an agent's answer. A message hit's `seq` closes part of the first gap of [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md#the-rule):
 a message's `seq` is now a field of a search hit; it is still not a field of the other messages of the API.

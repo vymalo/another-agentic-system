@@ -267,6 +267,50 @@ describe("the states", () => {
       response: { status: 429, headers: new Headers({ "Retry-After": "3" }) },
     });
     await type("login p");
-    expect(screen.getByText(/searching too fast\. Trying again in 3 seconds/)).toBeTruthy();
+    expect(screen.getByText(/searching too fast\. Trying again shortly/)).toBeTruthy();
+  });
+});
+
+describe("the box, as the review found it", () => {
+  it("is inert when the answer is no match: aria-expanded is false and nothing controls a list", async () => {
+    answer = async () => ok([]);
+    render(<Harness />);
+    await type("zebra");
+    expect(box().getAttribute("aria-expanded")).toBe("false");
+    expect(box().getAttribute("aria-controls")).toBeNull();
+  });
+
+  it("is inert after an error and within the debounce of a new text: Enter opens nothing", async () => {
+    render(<Harness />);
+    await type("login");
+    fireEvent.keyDown(box(), { key: "ArrowDown" });
+    answer = async () => ({ response: { status: 500, headers: new Headers() } });
+    await type("login x");
+    expect(box().getAttribute("aria-expanded")).toBe("false");
+    expect(box().getAttribute("aria-activedescendant")).toBeNull();
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(opened).toHaveLength(0);
+  });
+
+  it("keeps the hits and puts the alert under them when Show more fails", async () => {
+    answer = async () => ({ ...ok(hits), data: { ...ok(hits).data, next: "CUR" } });
+    render(<Harness />);
+    await type("login");
+    answer = async () => ({ response: { status: 500, headers: new Headers() } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Show more chats" })));
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+    expect(screen.getByRole("alert").textContent).toContain("Could not search your chats.");
+  });
+
+  it("does nothing on Enter or the arrows while an IME composes, and prevents the default when it acts", async () => {
+    render(<Harness />);
+    await type("login");
+    fireEvent.keyDown(box(), { key: "Enter", isComposing: true });
+    fireEvent.keyDown(box(), { key: "ArrowDown", isComposing: true });
+    expect(opened).toHaveLength(0);
+    expect(box().getAttribute("aria-activedescendant")).toBeNull();
+    expect(fireEvent.keyDown(box(), { key: "ArrowDown" })).toBe(false);
+    expect(fireEvent.keyDown(box(), { key: "Enter" })).toBe(false);
+    expect(opened).toHaveLength(1);
   });
 });

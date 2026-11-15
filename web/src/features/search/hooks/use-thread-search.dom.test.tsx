@@ -21,13 +21,17 @@ let calls: Call[] = [];
 vi.mock("@/lib/api/client", () => ({
   api: {
     POST: (path: string, init: { body: Call["body"]; signal: AbortSignal }) =>
-      new Promise((resolve) => {
+      new Promise((resolve, reject) => {
         calls.push({
           path,
           body: init.body,
           signal: init.signal,
           resolve: resolve as Call["resolve"],
         });
+        // a real fetch rejects when its signal aborts
+        init.signal.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError")),
+        );
       }),
   },
 }));
@@ -195,5 +199,173 @@ describe("useThreadSearch", () => {
       }),
     );
     expect(result.current.truncated).toBe(2);
+  });
+
+  it("never shows an aborted request as an error (9)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "lo");
+    await wait(DEBOUNCE_MS);
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    expect(calls[0]?.signal.aborted).toBe(true);
+    expect(result.current.status).toBe("searching");
+  });
+
+  it("replaces the results for a new query, with no cursor, and Show more sends the page's own query (10)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(page(["a"], "CUR")));
+    type(result, "logout");
+    await wait(DEBOUNCE_MS);
+    expect(calls[1]?.body).toEqual({ q: "logout", limit: 20, archived: "include" });
+    await act(async () => calls[1]?.resolve(page(["b"], "CUR2")));
+    expect(result.current.page?.results.map((r) => r.thread.id)).toEqual(["b"]);
+    act(() => result.current.more());
+    expect(calls[2]?.body).toMatchObject({ q: "logout", cursor: "CUR2" });
+  });
+
+  it("a cleared box drops the answer that was on its way (11)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "pla");
+    await wait(DEBOUNCE_MS);
+    type(result, "");
+    await act(async () => calls[0]?.resolve(page(["late"])));
+    expect(result.current.page).toBeNull();
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("Show more during the debounce of a newer text does not cancel that text's search (1)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "pla");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(page(["a"], "CUR")));
+    type(result, "plan");
+    expect(result.current.canMore).toBe(false);
+    act(() => result.current.more());
+    expect(calls).toHaveLength(1);
+    await wait(DEBOUNCE_MS);
+    expect(calls[1]?.body.q).toBe("plan");
+    expect(calls[1]?.body.cursor).toBeUndefined();
+  });
+
+  it("an answer for the text that was replaced is dropped at once, not drawn during the debounce (2)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "pla");
+    await wait(DEBOUNCE_MS);
+    type(result, "plan");
+    expect(calls[0]?.signal.aborted).toBe(true);
+    await act(async () => calls[0]?.resolve(page(["old"])));
+    expect(result.current.page).toBeNull();
+    expect(result.current.status).toBe("searching");
+  });
+
+  it("only a settled page for the text in the box drives the list: errors, a new text and no match leave it inert (3)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(page(["a"])));
+    expect(result.current.listed).toBe(true);
+    act(() => result.current.move(1));
+    expect(result.current.activeId).toBeDefined();
+    type(result, "login x");
+    expect(result.current.listed).toBe(false);
+    expect(result.current.activeId).toBeUndefined();
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[1]?.resolve(failure(500)));
+    expect(result.current.listed).toBe(false);
+    act(() => result.current.move(1));
+    expect(result.current.activeId).toBeUndefined();
+    act(() => result.current.retry());
+    await act(async () =>
+      calls[2]?.resolve({
+        data: { query: { terms: ["login"] }, results: [] },
+        response: { status: 200, headers: new Headers() },
+      }),
+    );
+    expect(result.current.listed).toBe(false);
+  });
+
+  it("a failed Show more keeps the hits, and Retry sends the same page again (4)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "pla");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(page(["a"], "CUR")));
+    act(() => result.current.more());
+    await act(async () => calls[1]?.resolve(failure(500)));
+    expect(result.current.status).toBe("error");
+    expect(result.current.failedMore).toBe(true);
+    expect(result.current.listed).toBe(true);
+    expect(result.current.page?.results).toHaveLength(1);
+    act(() => result.current.retry());
+    expect(calls[2]?.body).toMatchObject({ q: "pla", cursor: "CUR" });
+    await act(async () => calls[2]?.resolve(page(["b"])));
+    expect(result.current.page?.results.map((r) => r.thread.id)).toEqual(["a", "b"]);
+  });
+
+  it("caps a Retry-After at 30 s, and reads an HTTP date (5)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(failure(429, { "Retry-After": "3600" })));
+    expect(result.current.seconds).toBe(30);
+  });
+
+  it("tries a 429 three times by itself and then waits for the person (5)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    for (let i = 0; i < 4; i++) {
+      await act(async () => calls[i]?.resolve(failure(429, { "Retry-After": "1" })));
+      await wait(1_000);
+    }
+    expect(calls).toHaveLength(4);
+    expect(result.current.exhausted).toBe(true);
+    await wait(60_000);
+    expect(calls).toHaveLength(4);
+    act(() => result.current.retry());
+    expect(calls).toHaveLength(5);
+  });
+
+  it("forgets a pending 429 retry when the text changes or the box is cleared (5)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(failure(429, { "Retry-After": "2" })));
+    type(result, "");
+    await wait(5_000);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never retries a 503 by itself (5)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(failure(503, { "Retry-After": "1" })));
+    await wait(5_000);
+    expect(calls).toHaveLength(1);
+    expect(result.current.status).toBe("busy");
+  });
+
+  it("treats an answer of the wrong shape as an error instead of throwing (6)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    const bad = page(["a"]);
+    const first = bad.data.results[0];
+    if (first) first.hits = [{ field: "title", snippet: { ...snippet, matches: null } }] as never;
+    await act(async () => calls[0]?.resolve(bad));
+    expect(result.current.status).toBe("error");
+    expect(result.current.page).toBeNull();
+  });
+
+  it("keeps a thread once when two pages both have it (6)", async () => {
+    const { result } = renderHook(() => useThreadSearch());
+    type(result, "login");
+    await wait(DEBOUNCE_MS);
+    await act(async () => calls[0]?.resolve(page(["a", "b"], "CUR")));
+    act(() => result.current.more());
+    await act(async () => calls[1]?.resolve(page(["b", "c"])));
+    expect(result.current.page?.results.map((r) => r.thread.id)).toEqual(["a", "b", "c"]);
   });
 });

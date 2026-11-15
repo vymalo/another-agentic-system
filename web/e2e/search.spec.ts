@@ -27,6 +27,9 @@ const word = (info: { workerIndex: number }) =>
 
 const box = (page: Page) => page.getByRole("combobox", { name: "Search chats" });
 const options = (page: Page) => page.getByRole("option");
+/** The first hit that is a message, chosen by what it is (not by its place in the list). */
+const messageHit = (page: Page) =>
+  page.locator('[data-slot="search-hit"][data-field="message"]:visible').first();
 const live = (page: Page) => page.locator('[role="status"][aria-live="polite"]:visible');
 
 /** The home page with the list open (a sheet on a phone) and the box found. */
@@ -128,9 +131,7 @@ test("an agent's answer opens at the turn that has it: the person's message that
   await expect(message).toBeFocused({ timeout: 8_000 });
 });
 
-test("a hit of the open thread goes to its message again, and the sheet of a phone closes", async ({
-  page,
-}, info) => {
+test("a hit of the open thread goes to its message again", async ({ page }, info) => {
   const person = await aPerson(page, info);
   const w = word(info);
   const a = await makeThread(person, `talk ${w}`);
@@ -138,23 +139,24 @@ test("a hit of the open thread goes to its message again, and the sheet of a pho
   await expect(page.locator('[data-slot="user-message"]')).toBeVisible();
   await openThreadList(page);
   await box(page).fill(w);
-  await options(page).nth(1).click();
+  await messageHit(page).click();
   await expect(page).toHaveURL(new RegExp(`/threads/${a}#m-\\d+$`));
   await expect(page.locator('[data-slot="user-message"]')).toBeFocused({ timeout: 8_000 });
-  // a phone's sheet is gone; a desktop's sidebar stays
-  if (await page.getByRole("button", { name: "Threads", exact: true }).isVisible()) {
-    await expect(box(page)).toBeHidden();
-  }
 });
 
-test("Escape clears the box and brings the rail back; the second gives the focus back", async ({
+test("Escape clears the box and brings the rail back; the second gives the focus back to where it was", async ({
   page,
 }, info) => {
   const person = await aPerson(page, info);
   const w = word(info);
   await twoThreads(person, w);
-  await open(page);
-  await box(page).fill(w);
+  await page.goto("/");
+  await expect(agentPicker(page)).toBeVisible();
+  const composer = page.getByLabel("Message", { exact: true });
+  await composer.focus();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(box(page)).toBeFocused();
+  await page.keyboard.type(w);
   await expect(options(page).first()).toBeVisible();
   await box(page).press("Escape");
   await expect(box(page)).toHaveValue("");
@@ -162,7 +164,36 @@ test("Escape clears the box and brings the rail back; the second gives the focus
   await expect(threadList(page).getByRole("heading", { name: "Chats", exact: true })).toBeVisible();
   await expect(box(page)).toBeFocused();
   await box(page).press("Escape");
-  await expect(box(page)).not.toBeFocused();
+  await expect(composer).toBeFocused();
+});
+
+test("with no `search` in the configuration there is no box and the shortcut does nothing", async ({
+  page,
+}, info) => {
+  await aPerson(page, info);
+  await page.route("**/api/config", async (route) => {
+    const res = await route.fetch();
+    const body = (await res.json()) as Record<string, unknown>;
+    delete body.search;
+    await route.fulfill({ response: res, json: body });
+  });
+  // the page records whether anything took the key's default, once every listener has run
+  await page.addInitScript(() => {
+    const w = window as unknown as { keyTaken: boolean[] };
+    w.keyTaken = [];
+    window.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "k") setTimeout(() => w.keyTaken.push(e.defaultPrevented), 0);
+    });
+  });
+  await page.goto("/");
+  await expect(agentPicker(page)).toBeVisible();
+  await openThreadList(page);
+  await expect(threadList(page).getByRole("link", { name: "New chat" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Search chats" })).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { keyTaken: boolean[] }).keyTaken))
+    .toEqual([false]);
 });
 
 test("a query with no match says so, with the words searched for", async ({ page }, info) => {
@@ -341,6 +372,19 @@ test.describe("a phone", () => {
     await expectNoHorizontalScroll(page);
     await options(page).first().click();
     await expect(page).toHaveURL(new RegExp(`/threads/${a}$`));
+    await expect(box(page)).toBeHidden();
+  });
+
+  test("a hit of the open thread closes the sheet", async ({ page }, info) => {
+    const person = await aPerson(page, info);
+    const w = word(info);
+    const a = await makeThread(person, `talk ${w}`);
+    await page.goto(`/threads/${a}`);
+    await expect(page.locator('[data-slot="user-message"]')).toBeVisible();
+    await openThreadList(page);
+    await box(page).fill(w);
+    await messageHit(page).click();
+    await expect(page).toHaveURL(new RegExp(`/threads/${a}#m-\\d+$`));
     await expect(box(page)).toBeHidden();
   });
 

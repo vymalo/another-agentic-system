@@ -13,13 +13,22 @@ const PIN_MS = 2_000;
 /**
  * How long the transcript has to be still before the page settles for the nearest earlier person's message: an agent's answer
  * (a search hit, ADR 0068) has no element of its own, and the messages are drawn one after another, so the exact one is waited for.
+ * Every piece drawn starts the wait again.
  */
 const SETTLE_MS = 600;
 
-/** The element a link to `seq` goes to: that message's own, or, once `settled`, the last person's message at or before it. */
-function target(seq: number, settled: boolean): HTMLElement | null {
-  const exact = document.getElementById(`m-${seq}`);
-  if (exact || !settled) return exact;
+/** The person is typing in a field that is not the search box. */
+function typingElsewhere(): boolean {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.dataset.slot === "search-input") return false;
+  return (
+    el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable
+  );
+}
+
+/** The last person's message at or before `seq` (their elements carry `data-seq`), if one is drawn. */
+function nearest(seq: number): HTMLElement | null {
   let best: HTMLElement | null = null;
   let bestSeq = 0;
   for (const el of document.querySelectorAll<HTMLElement>("[data-seq]")) {
@@ -37,14 +46,16 @@ function target(seq: number, settled: boolean): HTMLElement | null {
  * just sent): the messages are drawn a moment after the page opens, from the replay of the log, so
  * the browser's own jump to the id finds nothing. This waits for `#m-<seq>` (the user bubbles carry
  * that id), scrolls it into the middle of the view, once, and puts the focus on it, so that a
- * screen reader reads where it was taken and Tab goes on from there. A message that never comes
- * (a link to an event that is not a message) is given up after a few seconds, and the page stays
- * as it is. Nothing happens without the hash, and a person who has scrolled away is not pulled back.
+ * screen reader reads where it was taken and Tab goes on from there. A link whose message never comes (and that has no
+ * earlier person's message to stand for it) is given up after ten seconds, and the page stays as it is. Nothing happens
+ * without the hash, and a person who has scrolled away is not pulled back.
  *
- * Only a person's message has an element with that id. A link to another event (a search hit in an agent's answer, ADR 0068,
- * names the answer's `seq`) goes, once the transcript has been still for a moment, to the last person's message at or before
- * it: the one that started the turn the event belongs to. The hash changing on the open page (a hit of this thread chosen
- * in the search) goes again.
+ * Only a person's message has an element with that id. For any other `#m-<seq>` (a search hit in an agent's answer, ADR 0068; a
+ * shared link; a link to an edited or deleted message) the page goes, once the transcript has been still for 600 ms (every drawn
+ * piece starts the wait again), to the last person's message at or before it: the one that started the turn the event belongs to.
+ * It keeps watching until the give-up, and moves to the exact message if it is drawn later. The focus is taken only when the person
+ * is not typing in another field (the search box is not "another field": a hit chosen there is meant to take it). The hash changing
+ * on the open page (a hit of this thread chosen in the search) goes again.
  *
  * Returns whether the viewport is being kept where the message put it (`Thread`'s `pinned`).
  */
@@ -66,6 +77,7 @@ export function useScrollToMessage(threadId: string | null, loaded: boolean): bo
     let timer: ReturnType<typeof setTimeout> | undefined;
     let settle: ReturnType<typeof setTimeout> | undefined;
     let release: ReturnType<typeof setTimeout> | undefined;
+    let landed: HTMLElement | null = null;
     const stop = () => {
       cancelAnimationFrame(frame);
       observer?.disconnect();
@@ -76,9 +88,10 @@ export function useScrollToMessage(threadId: string | null, loaded: boolean): bo
       window.removeEventListener("wheel", stop);
       window.removeEventListener("touchmove", stop);
     };
-    const look = (settled = false): boolean => {
-      const el = target(seq, settled);
-      if (!el) return false;
+    const go = (el: HTMLElement) => {
+      landed = el;
+      cancelAnimationFrame(frame);
+      clearTimeout(release);
       // two frames later: the transcript has been laid out, and so has the viewport's own pull to the end, which runs when
       // the size of what it holds changes and would take a scroll made before it back to the end. Instant: the person
       // arrives at the message, they do not watch the page travel to it.
@@ -86,26 +99,38 @@ export function useScrollToMessage(threadId: string | null, loaded: boolean): bo
       frame = requestAnimationFrame(() => {
         frame = requestAnimationFrame(() => {
           el.scrollIntoView({ block: "center", behavior: "instant" });
-          el.focus({ preventScroll: true });
+          // a person who is typing somewhere else keeps the focus (the search box does not count: it chose this hit)
+          if (!typingElsewhere()) el.focus({ preventScroll: true });
           release = setTimeout(() => setPinned(false), PIN_MS);
         });
       });
-      return true;
     };
-    if (look()) return stop;
+    /** The exact message: done. Otherwise, once settled, the nearest earlier one, and the watch goes on for the exact one. */
+    const look = (settled: boolean): boolean => {
+      const exact = document.getElementById(`m-${seq}`);
+      if (exact) {
+        if (landed !== exact) go(exact);
+        return true;
+      }
+      if (settled && landed === null) {
+        const near = nearest(seq);
+        if (near) go(near);
+      }
+      return false;
+    };
     const found = () => {
       observer?.disconnect();
       clearTimeout(timer);
       clearTimeout(settle);
     };
+    if (look(false)) return stop;
     const wait = () => {
       clearTimeout(settle);
-      settle = setTimeout(() => {
-        if (look(true)) found();
-      }, SETTLE_MS);
+      if (landed !== null) return;
+      settle = setTimeout(() => look(true), SETTLE_MS);
     };
     observer = new MutationObserver(() => {
-      if (look()) found();
+      if (look(false)) found();
       else wait();
     });
     observer.observe(document.body, { childList: true, subtree: true });

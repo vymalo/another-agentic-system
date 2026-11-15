@@ -178,10 +178,13 @@ person's **own** chats and nobody else's: the web only asks the API and draws th
   the shortcut gives way to a Clear button. It is drawn only when `GET /api/config` has `search` (its presence is the capability: an orchestrator without a search shows no
   box), and its `maxQueryLength` is the field's `maxlength` (UTF-16 units in the field, scalar values on the wire: the web sends at most that many scalar values). When more words
   are typed than `maxTerms` the box says "Only the first 8 words are used." It is a `<search>` landmark with an `input type="search"` that has `role="combobox"`,
-  `aria-autocomplete="list"`, `aria-expanded`, `aria-controls` the listbox and `aria-keyshortcuts="Control+K Meta+K"`.
+  `aria-autocomplete="list"`, `aria-expanded`, `aria-controls` the listbox and `aria-keyshortcuts="Control+K Meta+K"` (`Meta+K` alone on an Apple platform). The list is wired to the keys only while it is drawn for the text in the box
+  and holds hits: after an error, within the 250 ms of a new text and on "no match" `aria-expanded` is false and the arrows and Enter do nothing. On a desktop the sidebar's box and the phone sheet's box are two boxes
+  with **separate queries**.
 - **Requests.** The query goes in the **body of a POST** (`searchThreads`) and nowhere else: never a URL, never `localStorage` or `sessionStorage`, never a log line. A request goes out
   250 ms after the last key; each has an `AbortController`, and a counter drops an answer that is not for the latest text (a request that was already answered cannot be taken
-  back). The page is 20 threads; "Show more chats" sends the `next` cursor. A blank box (the contract's four whitespace characters) sends nothing and shows the rail.
+  back). The page is 20 threads; "Show more chats" sends the `next` cursor, and is offered only while the page drawn is for the text in the box and nothing is pending. A text change aborts the request in flight at once.
+  An answer that is not the contract's shape is an error, and a thread that comes on two pages is drawn once. A blank box (the contract's four whitespace characters) sends nothing and shows the rail.
 - **The results.** One group per chat that matched, in the server's order: the chat's title (a hit, with its words marked, when the title matched; otherwise a plain heading), then
   its description hit and up to three message hits (newest first), each with who said it ("You" or "Agent") and the day, then "and 2 more messages" when more match than are shown. An
   archived chat says "Archived". A snippet is two lines at most, with "…" where the document goes on. The hits are a `listbox` of `option`s; each option is a **link**
@@ -200,13 +203,13 @@ person's **own** chats and nobody else's: the web only asks the API and draws th
   bar and Chromium browsers on Windows and Linux to a search from the address bar, and a page that calls `preventDefault` on the key takes it from both, as other sites do; Safari's ⌘K has no
   browser meaning. If a browser keeps the key for itself, the box is one click away.
 - **Opening a hit.** A title or a description hit opens `/threads/<id>`. A message hit opens `/threads/<id>#m-<seq>`, and the page does what it does for any `#m-<seq>` link: waits for
-  the message, scrolls to the middle and puts the focus on it. Only a **person's** message has an element with that id, so for an agent's answer the page waits until the transcript has
+  the message, scrolls to the middle and puts the focus on it. Only a **person's** message has an element with that id, so for an agent's answer (and, the same code, for **any** `#m-<seq>` with no element: a shared link, a link to an edited or deleted message) the page waits until the transcript has
   been still for 600 ms and goes to the last person's message at or before the `seq`, the one that started the turn (`useScrollToMessage`). When the hit is in the open thread, only
   the hash changes and the page goes again. A phone's sheet closes.
 - **States**, in plain words: while the next answer is fetched the last results are dimmed (`opacity` 60 %, `aria-busy`) and, with none yet, three skeleton rows say "Searching…";
   "No chats match “zebra”."; "Search needs words of at least two letters or digits." (a query that keeps no term: the server answers 200 with `terms: []`); an error, "Could not search your
-  chats.", with **Retry**; **429**, "You are searching too fast. Trying again in 1 second." (the web waits the `Retry-After`, at most 30 s, and sends the same search again; "Retry now"
-  does it at once); **503**, "Search is busy right now. Try again in a moment." with Retry. Errors are `role="alert"`.
+  chats.", with **Retry**; **429**, "You are searching too fast. Trying again shortly." (the web waits the `Retry-After`, in seconds or as an HTTP date, at most 30 s, and sends the same request again, at most three times in a row;
+  then "Search is still limited. Try again in a moment." with Retry; "Retry now" does it at once; no number is shown, so none has to count down); **503**, "Search is busy right now. Try again in a moment." with Retry, which is never tried by itself. A **failed "Show more"** keeps the hits already shown and puts the alert under them; Retry sends the same page again (the same text and cursor). Errors are `role="alert"`.
 - **The live region.** A polite `status` in the box's landmark says "3 chats found" (or "20 or more chats found" when another page follows) and the "No chats match" line, and says nothing while a
   request is in flight; the visible lines are not live regions of their own, except the errors.
 - **Words.** Every string is in `features/search/lib/text.ts`, so that a later slice can translate them. French is not in this slice.

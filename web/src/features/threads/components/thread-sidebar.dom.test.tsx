@@ -466,3 +466,22 @@ describe("Delete opens the dialog that says what is erased", () => {
     await waitFor(() => expect(document.activeElement).toBe(button));
   });
 });
+
+describe("the search box (ADR 0068)", () => {
+  it("is not drawn, and has no landmark, when the orchestrator does not serve a search", () => {
+    sidebar([thread("c-1", "Chat one")]);
+    expect(screen.queryByRole("combobox", { name: "Search chats" })).toBeNull();
+    expect(document.querySelector("search")).toBeNull();
+    expect(screen.getByRole("link", { name: "Chat one" })).toBeTruthy();
+  });
+
+  it("is drawn under New chat when it does, with the list still in its place", () => {
+    searchConfig = { maxQueryLength: 200, maxTerms: 8 };
+    sidebar([thread("c-1", "Chat one")]);
+    const box = screen.getByRole("combobox", { name: "Search chats" });
+    expect(box.getAttribute("aria-keyshortcuts")).toBe("Control+K Meta+K");
+    expect(box.getAttribute("maxlength")).toBe("200");
+    expect(document.querySelector("search")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "Chat one" })).toBeTruthy();
+  });
+});

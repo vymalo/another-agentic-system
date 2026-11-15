@@ -18,8 +18,8 @@ export const ERROR = "Could not search your chats.";
 export const BUSY = "Search is busy right now. Try again in a moment.";
 export const NO_TERMS = "Search needs words of at least two letters or digits.";
 
-export const rateLimited = (seconds: number) =>
-  `You are searching too fast. Trying again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+export const RATE_LIMITED = "You are searching too fast. Trying again shortly.";
+export const STILL_LIMITED = "Search is still limited. Try again in a moment.";
 
 export const noMatch = (query: string) => `No chats match “${query}”.`;
 
@@ -39,3 +39,5 @@ export const FIELD = { title: "Title", description: "Description" } as const;
 export const SHORTCUT_APPLE = "⌘K";
 export const SHORTCUT_OTHER = "Ctrl K";
 export const KEYSHORTCUTS = "Control+K Meta+K";
+/** On an Apple platform only ⌘ counts (Ctrl+K is the text field's own). */
+export const KEYSHORTCUTS_APPLE = "Meta+K";

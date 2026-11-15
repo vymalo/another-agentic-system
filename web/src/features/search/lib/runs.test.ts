@@ -18,6 +18,13 @@ describe("runsOf", () => {
     expect(runs.map((r) => r.text).join("")).toBe(text);
   });
 
+  it("marks a word that ends exactly at the end of the snippet, with no plain run after it", () => {
+    expect(strings(runsOf({ text: "fix login", matches: [{ start: 4, end: 9 }] }))).toEqual([
+      "fix ",
+      "[login]",
+    ]);
+  });
+
   it("is the whole text as one plain run when nothing matched", () => {
     expect(strings(runsOf({ text: "plain", matches: [] }))).toEqual(["plain"]);
   });

@@ -1130,7 +1130,7 @@ it is built and proven.
 
 The web is **one client of a documented API**: the contract is [`docs/api/thread-search-v1.md`](../docs/api/thread-search-v1.md) with its vectors, and the web needed nothing that the contract does not
 say (no web-only route). The box is drawn only when `GET /api/config` has `search: {maxQueryLength, maxTerms}`, whose presence is the capability; `useSearchConfig` (`features/chat/hooks/use-ui-config.ts`)
-reads it and the box's limits come from it, none is hard-coded here beyond the defaults of the two page sizes (20 threads a page).
+reads it and the box's limits come from it, the web hard-codes three numbers: a page of 20 threads, and 200 characters and 8 words as fallbacks that can never send a request (without `search` in the configuration there is no box).
 
 ```
 src/features/search/
@@ -1145,7 +1145,7 @@ src/features/search/
 ```
 
 `ThreadNav` (`features/threads/components/thread-sidebar.tsx`) draws the box and swaps the rail for the results; `ChatShell` opens a collapsed sidebar for the shortcut and `ThreadsSheet` the phone's sheet.
-`useScrollToMessage` goes, for a `#m-<seq>` that no element has (an agent's answer), to the last person's message at or before it once the transcript has been still for 600 ms, and goes again on `hashchange`.
+`useScrollToMessage` goes, for **any** `#m-<seq>` that no element has (an agent's answer in a search hit, but also a shared link, or a link to an edited or deleted message: before this slice such a link was given up), to the last person's message at or before it once the transcript has been still for 600 ms (each piece drawn starts the wait again), keeps watching for ten seconds and moves to the exact message if it is drawn later, takes the focus unless the person is typing in another field, and goes again on `hashchange`.
 
 `mock/search.ts` is the **second implementation** of the contract (the first is `orch_core::search`, in Rust): it imports nothing of `src/`, so what the page says and not what the web
 does is what is held. `mock/search.test.ts` reads every vector of `docs/api/examples/thread-search/` (fold, query, snippet, the corpus with its queries, and `requests.json`: raw bodies and headers with the status and `code` each is answered with, which `readRequest` decides: the media type, the shape, no `null`, no member twice, `limit` an integer literal) and the page's own numbers;

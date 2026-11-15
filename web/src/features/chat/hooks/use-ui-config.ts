@@ -60,7 +60,7 @@ function historyOf(value: unknown): UiConfig["history"] | undefined {
 }
 
 /** `search` of the configuration, if it names both limits as positive whole numbers; else none (no box). */
-function searchOf(value: unknown): UiConfig["search"] | undefined {
+export function searchOf(value: unknown): UiConfig["search"] | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const s = value as Record<string, unknown>;
   const count = (v: unknown): number | undefined =>

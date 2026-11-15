@@ -1,7 +1,7 @@
 # ADR 0068 — A person searches their own threads: whole words by their start, the rules in the contract, a derived index in the commit of the event
 
 - **Status:** **proposed (2026-11-15)**, the design of slice 7 of [ADR 0067](0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)
-  (wave 1), built in this change as **7a: the API, the store, the contract and the mock server; no web UI** (7b, the box, is later).
+  (wave 1), built in this change as **7a: the API, the store, the contract and the mock server; no web UI** (7b, the box, is later; *built 2026-11-15*, see [the amendment](#amended-2026-11-15-the-webs-box-is-built-slice-7b)).
   **Proposed**, for the owner to confirm: every name, default and shape below, and the [decisions the build settled](#what-the-build-settled-for-the-owner-to-confirm).
   Builds on [ADR 0039](0039-nobody-reads-another-persons-thread.md) (a person reads their own threads),
   [ADR 0043](0043-deleting-a-thread-erases-it.md) (what an erase leaves) and [ADR 0065](0065-a-usage-ledger-per-person.md) (durable state written in the commit
@@ -94,7 +94,7 @@ second client (the Flutter app) must be able to search from the contract, and tw
   Unicode 13 and earlier and a change of the fold raises `FOLD_VERSION` and needs a backfill (decision 6, amended).
 - **Required elsewhere:** the `ThreadSearch` port is a supertrait of `ThreadStore`: **every implementer of `ThreadStore` must implement it** (a breaking change
   for those who implement the store: the in-memory and Postgres stores do); `GET /api/config` has the member `search`; the web's mock server has the route;
-  7b draws the box.
+  7b draws the box (*built 2026-11-15*).
 - **A limit, stated:** no stemming, no typo tolerance, no phrase query, no segmentation of Chinese, Japanese or Thai, only the first 3,000 words of a document.
 
 ## Alternatives rejected
@@ -141,19 +141,19 @@ are upserted, never doubled) and a message replaced beyond the part caught up is
 a later commit rewrites no old row (`xmin`); the backfill's message count is exact. Each of these was made to fail by the mutation that undoes it.
 
 *Unverified:* the cost of a prefix term over a very large shared index (above: **not bounded**), and that the planner combines the GIN index on `terms` with the btree on `owner` (BitmapAnd) at the size of a real deployment (the query is written so that it can; no
-plan was read at scale: the plan at scale stays *unverified*); the cost of the index at a million messages; `dev/search-e2e.sh` (it has not run against the stack: no Docker where it was written); and the web (7b).
+plan was read at scale: the plan at scale stays *unverified*); the cost of the index at a million messages; `dev/search-e2e.sh` (it has not run against the stack: no Docker where it was written); and the web (7b; *built 2026-11-15*, see the amendment).
 
 ## Not done here
 
-The web: the box, the results and the highlighting (7b); the screens; the shortcut. Every Postgres claim is proven only where the conformance suite ran
+The web: the box, the results and the highlighting (7b; *built 2026-11-15*, see the amendment); the screens; the shortcut. Every Postgres claim is proven only where the conformance suite ran
 (see the pull request).
 
 ## Amended 2026-11-15: the web's box is built (slice 7b)
 
 The box, the results, the highlighting from the offsets and the shortcut are built in the web (`web/src/features/search/`, [`web/DESIGN.md` "Search"](../../web/DESIGN.md#search)), as **one more
-client of this contract**: it needed nothing that [`thread-search-v1.md`](../api/thread-search-v1.md) does not say, and added no route and no dependency. It reads `search` of `GET /api/config`
+client of this contract**: it needed **one thing** that [`thread-search-v1.md`](../api/thread-search-v1.md) did not say, now added to the contract (what a hit's `seq` names and where a client that can anchor only a person's messages goes for an agent's answer), and it added no route and no dependency. It reads `search` of `GET /api/config`
 (its presence is the capability, its numbers are the field's limit), sends the query in the body of a POST after a 250 ms debounce with an `AbortController` per request and a counter that drops a stale
 answer, tries a 429 again after its `Retry-After`, tells a 503, draws a snippet as plain and marked text nodes cut at the UTF-16 offsets (never `dangerouslySetInnerHTML`) and opens a message hit at
-`/threads/<id>#m-<seq>`. Two things the contract leaves to a client were decided in the web: an **agent's answer** has no element with the id `m-<seq>` (only a person's message has), so the page goes, once
-the transcript has been still for 600 ms, to the last person's message at or before the `seq`, the one that started the turn; and the shortcut is Ctrl or ⌘ with K (only ⌘ on an Apple platform). Proven on the
+`/threads/<id>#m-<seq>`. Two things the contract left to a client were decided in the web, and the first is now in the contract: an **agent's answer** has no element with the id `m-<seq>` (only a person's message has), so the page goes, once
+the transcript has been still for 600 ms, to the last person's message at or before the `seq`, the one that started the turn; and the shortcut is Ctrl or ⌘ with K (only ⌘ on an Apple platform). **Added 2026-11-15 after review:** a failed "Show more" keeps its hits, a 429 is tried again three times and then waits for the person, an answer of the wrong shape is an error, and a link to a message with no element of its own (any `#m-<seq>`, not only a search hit) goes to the last person's message before it. Proven on the
 mock in Chromium (unit, jsdom, Playwright on a desktop and a phone, axe in both schemes); *unverified*: against a real orchestrator, in Firefox or WebKit, and the browsers' own use of Ctrl+K.

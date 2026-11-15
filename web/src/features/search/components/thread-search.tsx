@@ -79,8 +79,9 @@ export function SearchBox({
   }, [focusIt]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.nativeEvent.isComposing) return;
-    const listed = search.active && search.options.length > 0;
+    // Safari ends a composition with a keydown that still says it is composing (keyCode 229)
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const { listed } = search;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       if (!listed) return;
       e.preventDefault();
@@ -115,10 +116,10 @@ export function SearchBox({
         data-slot="search-input"
         aria-label={text.SEARCH_LABEL}
         aria-autocomplete="list"
-        aria-expanded={search.active && search.options.length > 0}
-        aria-controls={search.active && search.options.length > 0 ? search.listId : undefined}
-        aria-activedescendant={search.active ? search.activeId : undefined}
-        aria-keyshortcuts={text.KEYSHORTCUTS}
+        aria-expanded={search.listed}
+        aria-controls={search.listed ? search.listId : undefined}
+        aria-activedescendant={search.activeId}
+        aria-keyshortcuts={apple ? text.KEYSHORTCUTS_APPLE : text.KEYSHORTCUTS}
         autoComplete="off"
         autoCapitalize="off"
         spellCheck={false}
@@ -220,7 +221,7 @@ function HitOption({
   if (hit.field === "title") {
     body = (
       <span className="flex min-w-0 items-baseline gap-2">
-        <span className="min-w-0 flex-1 text-sm font-medium break-words">
+        <span className="line-clamp-2 min-w-0 flex-1 text-sm font-medium break-words">
           <Snippet snippet={hit.snippet} />
         </span>
         {archived ? (
@@ -337,9 +338,9 @@ export function SearchResults({
     if (activeId) document.getElementById(activeId)?.scrollIntoView({ block: "nearest" });
   }, [activeId]);
 
-  let body: ReactNode;
-  if (status === "error" || status === "busy") {
-    body = (
+  // a failed "Show more": the hits already shown stay, and the alert is under them
+  const alert =
+    status === "error" || status === "busy" ? (
       <InlineStatus
         tone="error"
         role="alert"
@@ -347,17 +348,29 @@ export function SearchResults({
       >
         {status === "busy" ? text.BUSY : text.ERROR}
       </InlineStatus>
-    );
-  } else if (status === "limited") {
-    body = (
-      <InlineStatus
-        tone="warning"
-        role="status"
-        action={{ label: text.RETRY_NOW, onClick: search.retry }}
-      >
-        {text.rateLimited(search.seconds)}
-      </InlineStatus>
-    );
+    ) : status === "limited" ? (
+      search.exhausted ? (
+        <InlineStatus
+          tone="error"
+          role="alert"
+          action={{ label: text.RETRY, icon: RotateCcwIcon, onClick: search.retry }}
+        >
+          {text.STILL_LIMITED}
+        </InlineStatus>
+      ) : (
+        <InlineStatus
+          tone="warning"
+          role="status"
+          action={{ label: text.RETRY_NOW, onClick: search.retry }}
+        >
+          {text.RATE_LIMITED}
+        </InlineStatus>
+      )
+    ) : null;
+
+  let body: ReactNode;
+  if (alert && !search.failedMore) {
+    body = alert;
   } else if (!page) {
     body = <LoadingStatus rows={3}>{text.SEARCHING}</LoadingStatus>;
   } else if (page.terms.length === 0) {
@@ -392,7 +405,8 @@ export function SearchResults({
             );
           })}
         </div>
-        {page.next !== undefined ? (
+        {search.failedMore ? alert : null}
+        {search.canMore || search.loadingMore ? (
           <Button
             type="button"
             variant="ghost"
