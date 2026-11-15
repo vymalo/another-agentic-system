@@ -138,7 +138,8 @@ describe("a person's threads (corpus.json and queries/)", () => {
   const threads: Searchable[] = corpus.threads.map((t) => ({
     id: t.id,
     title: expand(t.title),
-    description: t.description === undefined || t.description === null ? null : expand(t.description),
+    description:
+      t.description === undefined || t.description === null ? null : expand(t.description),
     archived: t.archived,
     edit: t.edit,
     ...(t.copiedThrough !== undefined ? { copiedThrough: t.copiedThrough } : {}),
