@@ -269,11 +269,18 @@ for s in "$@"; do
           *) echo "scenario rbac needs the agents adam, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml, and the roles of dev/orchestrator.yaml?" >&2; exit 2 ;;
         esac
       done ;;
-    fork | rail | search)
+    fork | rail)
       case " $agents " in
         *" mock-coder "*) ;;
         *) echo "scenario $s needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
+    search)
+      for a in mock-coder chat; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario search needs the agents mock-coder and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     artifact | delete)
       for a in coder-share chat; do
         case " $agents " in
