@@ -1175,7 +1175,7 @@ client can be built and tested before the orchestrator is deployed.
 | Somebody else's prompts | `POST /__mock/prompts/shared?session=` with a list of `{name, title, description?, body, variables?, audience}` puts prompts "of somebody else" in the session's library: the session's roles decide which it sees (`*`, or one of its roles, byte for byte; no administrator exception), and a shared one never names its author |
 | The tests | `mock/prompts.test.ts` reads every vector (`references.json`, `prompts.json`, `render.json`, `requests.json`) and the three answer blocks of the UI catalog page (`vectors`, `whole-answers`, `invalid-questions`), twice: through the route function and through HTTP against the mock server; and holds the page's constants to the code. `mock/server.contract.test.ts` validates every answer against `docs/api/chat-api.yaml` and states the profile's permission |
 
-One difference from the orchestrator, written in the file's header: `JSON.parse` cannot tell `2.0` from `2`, so an integer member written `2.0` (`to`, `min`...) is accepted by the mock and refused by the orchestrator.
+An integer member (`to`, `min`...) is any JSON number whose value is an integer in range, so `5.0` and `5e0` are 5 in the mock and in the orchestrator (ADR 0070, after review). A key twice in any object of a request, a variable's included, is a 400 in both.
 
 ## A thread's description
 

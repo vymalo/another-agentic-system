@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  addShared,
   audienceSet,
   handlePrompts,
   MAX_AUDIENCE,
@@ -401,5 +402,94 @@ describe.each([direct, http])("the vectors through $name", (driver) => {
         if (c.expect.revision) expect(res.body?.revision).toBe(fill(c.expect.revision));
       });
     }
+  });
+});
+
+// ---- the rules the vectors cannot say: who sees what, which error wins, the size of a page ----------------
+
+describe("the route function keeps the library private (hand-written cases)", () => {
+  const J = { "content-type": "application/json" };
+  const NOW = new Date("2026-11-15T00:00:00Z");
+  type Roles = { roles: string[]; canShare: boolean };
+  const call = (
+    shelf: Shelf,
+    caller: Roles,
+    method: string,
+    rest: string,
+    body?: unknown,
+    search = "",
+  ) =>
+    handlePrompts(
+      shelf,
+      caller,
+      {
+        method,
+        rest,
+        search: new URLSearchParams(search),
+        contentType: J["content-type"],
+        body: body === undefined ? "" : JSON.stringify(body),
+      },
+      NOW,
+    ) as { status: number; body?: Rec };
+  const sharer: Roles = { roles: ["user"], canShare: true };
+  const plain: Roles = { roles: ["user"], canShare: false };
+
+  it("get and render of a prompt shared with a role the caller lacks are a 404, as for an id that never existed", () => {
+    const shelf = newShelf();
+    expect(
+      addShared(shelf, [{ name: "t", title: "T", body: "x", audience: ["team"] }], NOW),
+    ).toBeUndefined();
+    const [id] = [...shelf.others.keys()] as [string];
+    const missing = call(shelf, plain, "GET", "/p-zzzzzzzzzzzz");
+    for (const answered of [
+      call(shelf, plain, "GET", `/${id}`),
+      call(shelf, plain, "POST", `/${id}/render`, { answers: [] }),
+    ]) {
+      expect(answered.status).toBe(404);
+      expect(answered.body).toEqual(missing.body);
+    }
+    // a caller who has the role reads it
+    expect(call(shelf, { roles: ["team"], canShare: false }, "GET", `/${id}`).status).toBe(200);
+    // roles are compared byte for byte
+    expect(call(shelf, { roles: ["Team"], canShare: false }, "GET", `/${id}`).status).toBe(404);
+  });
+
+  it("a person who lost `prompts.share` and holds a stale revision is told 403 before 409", () => {
+    const shelf = newShelf();
+    const made = call(shelf, sharer, "POST", "", {
+      name: "s",
+      title: "T",
+      body: "x",
+      audience: ["team"],
+    });
+    expect(made.status).toBe(201);
+    const { id, revision } = made.body as { id: string; revision: string };
+    const stale = String(Number(revision) + 99);
+    const answered = call(shelf, plain, "PATCH", `/${id}`, { revision: stale, title: "New" });
+    expect(answered.status).toBe(403);
+    expect(answered.body?.code).toBe("forbidden");
+    // with the permission the same request is the stale revision
+    expect(call(shelf, sharer, "PATCH", `/${id}`, { revision: stale, title: "New" }).status).toBe(
+      409,
+    );
+  });
+
+  it("a page of exactly 100 has no nextCursor, and a 101st visible prompt gives one", () => {
+    const shelf = newShelf();
+    for (let i = 0; i < 100; i++) {
+      expect(call(shelf, plain, "POST", "", { name: `p${i}`, title: "T", body: "x" }).status).toBe(
+        201,
+      );
+    }
+    const full = call(shelf, plain, "GET", "").body as { items: { id: string }[] };
+    expect(full.items.length).toBe(100);
+    expect(full).not.toHaveProperty("nextCursor");
+    addShared(shelf, [{ name: "s", title: "S", body: "x", audience: ["*"] }], NOW);
+    const over = call(shelf, plain, "GET", "").body as {
+      items: { id: string }[];
+      nextCursor?: string;
+    };
+    expect(over.items.length).toBe(100);
+    expect(over.nextCursor).toBe(over.items[99]?.id);
   });
 });

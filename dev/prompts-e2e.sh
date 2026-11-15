@@ -51,8 +51,8 @@
 #   ADMIN_EMAIL     admin@example.com
 #   ORCH_SERVICE    orchestrator, the compose service whose log is read
 #
-# Needs curl and jq. Not run against the stack where it was written (no Docker there): verified by CI only, in
-# .github/workflows/coder-e2e.yml.
+# Needs curl and jq. Run by CI in .github/workflows/coder-e2e.yml (no Docker where it was written). Its first CI run (43731759281) passed
+# every step but one, `not as theirs`, where `field` read `false` as absent: `field` now drops only `null` and `bool_field` says `true` or `false`.
 # shellcheck disable=SC2016 # the single-quoted jq programs hold jq variables ($id, $rev), never the shell's
 set -eu
 
@@ -109,8 +109,12 @@ expect() { # expect DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi
 }
 
-field() { # field JQ-FILTER: a value of the last body, or nothing
-  jq -r "$1 // empty" "$tmp/body"
+field() { # field JQ-FILTER: a value of the last body, or nothing when it is absent or null (`false` and `0` are values: `// empty` would drop `false`)
+  jq -r "($1) | select(. != null)" "$tmp/body"
+}
+
+bool_field() { # bool_field JQ-FILTER: `true` or `false`; anything else (absent, null, a string) is `not-a-boolean`, which no check expects
+  jq -r "($1) | if type == \"boolean\" then tostring else \"not-a-boolean\" end" "$tmp/body"
 }
 
 # a letters-only id for this run, so that no word of it is a word of anything else
@@ -139,7 +143,7 @@ expect "create is 201" "$(call "$owner" POST /api/prompts "$review")" 201
 id=$(field .id)
 rev1=$(field .revision)
 expect "the id is p- and 12 characters" "$(printf '%s' "$id" | grep -c '^p-[a-z0-9]\{12\}$')" 1
-expect "the caller owns it" "$(field .own)" true
+expect "the caller owns it" "$(bool_field .own)" true
 expect "the list is 200" "$(call "$owner" GET '/api/prompts?scope=mine')" 200
 expect "the list has it as a summary with two variables" \
   "$(jq -r --arg id "$id" '.items[] | select(.id == $id) | .variableCount' "$tmp/body")" 2
@@ -210,7 +214,7 @@ expect "it is there" "$(jq -r --arg id "$id" '[.items[] | select(.id == $id)] | 
 expect "as not their own" "$(jq -r --arg id "$id" '.items[] | select(.id == $id) | .own' "$tmp/body")" false
 expect "with no audience" "$(jq -r --arg id "$id" '.items[] | select(.id == $id) | has("audience")' "$tmp/body")" false
 expect "the team reads it: 200" "$(team_call GET "/api/prompts/$id")" 200
-expect "not as theirs" "$(field .own)" false
+expect "not as theirs" "$(bool_field .own)" false
 expect "with no audience" "$(jq -r 'has("audience")' "$tmp/body")" false
 answers3=$(jq -n --arg rev "$rev3" '{revision: $rev, answers: [{id: "focus", values: ["security"]}, {id: "depth", values: ["4"]}]}')
 expect "the team renders it: 200" "$(team_call POST "/api/prompts/$id/render" "$answers3")" 200

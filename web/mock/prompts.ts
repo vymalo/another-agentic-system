@@ -8,8 +8,8 @@
  * with no I/O of its own (`server.ts` reads the body and writes the answer): a person is one session of the mock, as for every
  * other route; the prompts "of somebody else" a test puts there with `POST /__mock/prompts/shared` are the shared ones.
  *
- * Known difference from the orchestrator: JSON.parse cannot tell `2.0` from `2`, so an integer member written `2.0` is accepted here
- * and refused there.
+ * An integer member is any JSON number whose value is an integer in range (`5`, `5.0` and `5e0` are 5), which is what
+ * `Number.isInteger` after `JSON.parse` says and what the orchestrator reads (ADR 0070, after review).
  */
 import { randomBytes } from "node:crypto";
 
@@ -177,6 +177,9 @@ const intIn = (v: Json, lo: number, hi: number): v is number =>
   typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
 const textIn = (v: Json, lo: number, hi: number): v is string =>
   typeof v === "string" && scalars(v) >= lo && scalars(v) <= hi;
+/** {@link textIn} for a text of a variable that a person reads: and nothing {@link unsafeText} refuses. */
+const shownIn = (v: Json, lo: number, hi: number): v is string =>
+  textIn(v, lo, hi) && !unsafeText(v);
 /** Whether `s` has a control character (U+0000 to U+001F, U+007F to U+009F) other than the `allowed` ones. */
 function hasControl(s: string, allowed = ""): boolean {
   for (const ch of s) {
@@ -184,6 +187,13 @@ function hasControl(s: string, allowed = ""): boolean {
     if ((c <= 0x1f || (c >= 0x7f && c <= 0x9f)) && !allowed.includes(ch)) return true;
   }
   return false;
+}
+/** Whether `c` is a bidirectional embedding, override or isolate control, or a line or paragraph separator (U+202A to U+202E, U+2066 to U+2069, U+2028, U+2029). */
+const isBidi = (c: number): boolean =>
+  (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069) || c === 0x2028 || c === 0x2029;
+/** A text a person reads (a title, a description, a question, a label): no control character but the `allowed` ones, and no bidirectional control or separator. */
+function unsafeText(s: string, allowed = ""): boolean {
+  return hasControl(s, allowed) || Array.from(s).some((ch) => isBidi(ch.codePointAt(0) ?? 0));
 }
 
 const optionsOf = (q: Rec): Rec[] => (Array.isArray(q.options) ? (q.options as Rec[]) : []);
@@ -219,8 +229,8 @@ function checkVariable(i: number, q: Json, seen: Set<string>): SaveError | undef
     return fail("bad_variable", `${here}.id`);
   }
   seen.add(q.id);
-  if (!textIn(q.question, 1, 300)) return fail("bad_variable", `${here}.question`);
-  if (q.help !== undefined && !textIn(q.help, 0, 300)) return fail("bad_variable", `${here}.help`);
+  if (!shownIn(q.question, 1, 300)) return fail("bad_variable", `${here}.question`);
+  if (q.help !== undefined && !shownIn(q.help, 0, 300)) return fail("bad_variable", `${here}.help`);
   if (q.required !== undefined && typeof q.required !== "boolean") {
     return fail("bad_variable", `${here}.required`);
   }
@@ -236,8 +246,8 @@ function checkVariable(i: number, q: Json, seen: Set<string>): SaveError | undef
       if (typeof o.value !== "string" || !ID.test(o.value)) {
         return fail("bad_variable", `${at}.value`);
       }
-      if (!textIn(o.label, 1, 120)) return fail("bad_variable", `${at}.label`);
-      if (o.description !== undefined && !textIn(o.description, 0, 300)) {
+      if (!shownIn(o.label, 1, 120)) return fail("bad_variable", `${at}.label`);
+      if (o.description !== undefined && !shownIn(o.description, 0, 300)) {
         return fail("bad_variable", `${at}.description`);
       }
       if (o.icon !== undefined && !(typeof o.icon === "string" && ICONS.has(o.icon))) {
@@ -264,17 +274,17 @@ function checkVariable(i: number, q: Json, seen: Set<string>): SaveError | undef
   if (q.min !== undefined && !intIn(q.min, 0, 50)) return fail("bad_variable", `${here}.min`);
   if (q.max !== undefined && !intIn(q.max, 1, 50)) return fail("bad_variable", `${here}.max`);
   for (const k of ["yesLabel", "noLabel"]) {
-    if (q[k] !== undefined && !textIn(q[k], 1, 40)) return fail("bad_variable", `${here}.${k}`);
+    if (q[k] !== undefined && !shownIn(q[k], 1, 40)) return fail("bad_variable", `${here}.${k}`);
   }
   for (const k of ["minValue", "maxValue", "step"]) {
     if (q[k] !== undefined && decimal(q[k]) === undefined)
       return fail("bad_variable", `${here}.${k}`);
   }
-  if (q.unit !== undefined && !textIn(q.unit, 1, 20)) return fail("bad_variable", `${here}.unit`);
+  if (q.unit !== undefined && !shownIn(q.unit, 1, 20)) return fail("bad_variable", `${here}.unit`);
   if (q.from !== undefined && !intIn(q.from, 0, 1)) return fail("bad_variable", `${here}.from`);
   if (kind === "scale" && !intIn(q.to, 2, 10)) return fail("bad_variable", `${here}.to`);
   for (const k of ["fromLabel", "toLabel"]) {
-    if (q[k] !== undefined && !textIn(q[k], 1, 60)) return fail("bad_variable", `${here}.${k}`);
+    if (q[k] !== undefined && !shownIn(q[k], 1, 60)) return fail("bad_variable", `${here}.${k}`);
   }
   for (const k of ["minDate", "maxDate"]) {
     if (q[k] !== undefined && !(typeof q[k] === "string" && realDay(q[k] as string))) {
@@ -328,7 +338,9 @@ function defaultAccepted(q: Rec): boolean {
   const loose = { ...q, required: false };
   if (kind === "text" || kind === "longText") {
     return (
-      typeof d === "string" && refusalOfEntry(loose, { id: "d", values: [], text: d }) === undefined
+      typeof d === "string" &&
+      !Array.from(d).some((ch) => isBidi(ch.codePointAt(0) ?? 0)) &&
+      refusalOfEntry(loose, { id: "d", values: [], text: d }) === undefined
     );
   }
   const values = Array.isArray(d) ? d : [d];
@@ -360,12 +372,12 @@ export function validateSave(s: Save): SaveError | undefined {
   if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(s.name)) return fail("bad_name", "name");
   if (
     !textIn(s.title, 1, MAX_TITLE) ||
-    hasControl(s.title) ||
+    unsafeText(s.title) ||
     /^[ \t\n\r]|[ \t\n\r]$/.test(s.title)
   ) {
     return fail("bad_title", "title");
   }
-  if (scalars(s.description) > MAX_DESCRIPTION || hasControl(s.description, "\t\n")) {
+  if (scalars(s.description) > MAX_DESCRIPTION || unsafeText(s.description, "\t\n")) {
     return fail("bad_description", "description");
   }
   if (
@@ -473,7 +485,9 @@ function refusalOfChoice(
   if (places.some((p, i) => i > 0 && p < (places[i - 1] as number)))
     return { rule: "out_of_order" };
   if (other !== undefined) {
-    if (typeof other !== "string" || other === "") return { rule: "grammar" };
+    if (typeof other !== "string" || other === "" || hasControl(other, "\t")) {
+      return { rule: "grammar" };
+    }
     if (scalars(other) > 500) return { rule: "too_long" };
   }
   if (several) {
@@ -711,7 +725,7 @@ const summary = (s: Stored, own: boolean) => ({
   updatedAt: s.updatedAt,
 });
 
-/** The members of a body that is one JSON object: each key once, strings well formed, nothing `null`. */
+/** The members of a body that is one JSON object: each key once (in every object inside it too), strings well formed, nothing `null`. */
 function readObject(body: string, members: readonly string[]): Rec | undefined {
   let value: Json;
   try {
@@ -720,8 +734,7 @@ function readObject(body: string, members: readonly string[]): Rec | undefined {
     return undefined;
   }
   if (!isRec(value)) return undefined;
-  const keys = topLevelKeys(body);
-  if (new Set(keys).size !== keys.length) return undefined;
+  if (hasDuplicateKey(body)) return undefined;
   if (Object.keys(value).some((k) => !members.includes(k))) return undefined;
   if (!wellFormed(value)) return undefined;
   return value;
@@ -740,25 +753,36 @@ function nullFree(o: Rec): boolean {
   return Object.values(o).every((v) => v !== null);
 }
 
-/** The keys of the top-level object of a JSON text that has parsed, in the order written (so a key twice shows). */
-function topLevelKeys(text: string): string[] {
-  const keys: string[] = [];
-  let depth = 0;
+/**
+ * Whether any object of a JSON text that has parsed, at any depth (the request's own, a variable, an option, an answer), has a key twice.
+ * `JSON.parse` keeps the last of two, which is not what the person wrote.
+ */
+function hasDuplicateKey(text: string): boolean {
+  // one entry per open container: the keys of an object, or undefined for an array
+  const stack: (Set<string> | undefined)[] = [];
   let expectKey = false;
   for (const m of text.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\],:]|[^\s{}[\],:"]+/g)) {
     const token = m[0];
-    if (token === "{" || token === "[") {
-      depth++;
-      expectKey = depth === 1 && token === "{";
-    } else if (token === "}" || token === "]") depth--;
-    else if (token === ",") expectKey = depth === 1;
+    if (token === "{") {
+      stack.push(new Set());
+      expectKey = true;
+    } else if (token === "[") {
+      stack.push(undefined);
+      expectKey = false;
+    } else if (token === "}" || token === "]") {
+      stack.pop();
+      expectKey = false;
+    } else if (token === ",") expectKey = stack.at(-1) !== undefined;
     else if (token === ":") expectKey = false;
-    else if (depth === 1 && expectKey && token.startsWith('"')) {
-      keys.push(JSON.parse(token) as string);
+    else if (expectKey && token.startsWith('"')) {
+      const keys = stack.at(-1) as Set<string>;
+      const key = JSON.parse(token) as string;
+      if (keys.has(key)) return true;
+      keys.add(key);
       expectKey = false;
     }
   }
-  return keys;
+  return false;
 }
 
 const JSON_TYPE = (contentType: string | undefined): boolean =>
