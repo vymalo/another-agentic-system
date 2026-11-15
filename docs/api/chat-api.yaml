@@ -813,7 +813,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Prompt" }
-        "400": { description: "`code: bad_request` (not one JSON object of these members, a member of the wrong type, `null`, a lone surrogate, a body over 64 KiB) or one of the codes above", $ref: "#/components/responses/Problem" }
+        "400": { description: "`code: bad_request` (not one JSON object of these members, a member twice in any object of it, a member of the wrong type, `null`, a lone surrogate, a body over 64 KiB) or one of the codes above", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "`code: forbidden` (a non-empty `audience` without `prompts.share`) or `no_access`", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: name_taken` (the caller already has that name) or `too_many_prompts` (the caller holds 100)", $ref: "#/components/responses/Problem" }
@@ -2277,7 +2277,7 @@ components:
           description: "**Its presence is the capability**: this orchestrator serves the prompt library ([ADR 0070](../decisions/0070-a-persons-prompt-library.md), [`prompts-v1.md`](prompts-v1.md)). An older one leaves it out, and a client then offers no library. The numbers are what the server enforces. There is no switch: a build has it or not."
           required: [limit, maxVariables, maxBodyBytes, maxRenderedBytes]
           properties:
-            limit: { type: integer, minimum: 1, description: "The most prompts a person holds, and a page of `listPrompts` (100)" }
+            limit: { type: integer, minimum: 1, description: "The most prompts a person holds (100). It is not the page size of `listPrompts`, which is `limit` of that answer: two numbers that are equal today and are not promised to stay so" }
             maxVariables: { type: integer, minimum: 1, description: "The most variables of a prompt (8)" }
             maxBodyBytes: { type: integer, minimum: 1, description: "The longest body in UTF-8 bytes (16384)" }
             maxRenderedBytes: { type: integer, minimum: 1, description: "The longest rendered text in UTF-8 bytes (32768)" }
@@ -2447,7 +2447,7 @@ components:
       type: object
       required: [limit, held, items]
       properties:
-        limit: { type: integer, minimum: 1, description: "The most prompts a page holds (100), and the most a person owns" }
+        limit: { type: integer, minimum: 1, description: "The page size: the most prompts one answer of `listPrompts` holds (100). It is not the cap on what a person owns, which is `prompts.limit` of `getConfig`: two numbers that are equal today and are not promised to stay so" }
         held: { type: integer, minimum: 0, description: "How many prompts the caller owns, whatever the scope" }
         items: { type: array, items: { $ref: "#/components/schemas/PromptSummary" } }
         nextCursor: { type: string, description: "Send it back as `cursor` for the next page; absent on the last" }
@@ -2490,7 +2490,7 @@ components:
               values: { type: array }
               other: { type: string }
               text: { type: string }
-        note: { type: string, description: "Always refused: a prompt has no free box" }
+        note: { description: "Always refused, whatever its type except `null`: a prompt has no free box, so a request with a `note` is 422 (`unexpected`, `question: \"*\"`). `null` is the wrong type for any member (400)" }
     RenderedPrompt:
       type: object
       required: [text, revision]
