@@ -97,6 +97,15 @@
 #                     is left out and brought back where it was, a fork is nested under
 #                     its parent and ejected on request; none of it is in the log, and
 #                     another person's request is a 404
+#   search            a person searches their own threads (ADR 0068): `POST              search-e2e.sh
+#                     /api/search/threads` finds a thread by a word of its title, its
+#                     description or a message, by a prefix, with accents folded and the
+#                     agent's final answer included; every term in one document; a
+#                     title ranks first; archived threads are in by default and out when
+#                     asked; a fork's copied messages are its parent's; another person
+#                     (the administrator) finds none of it; text that looks like SQL is
+#                     words; the refusals carry their codes; a deleted thread is gone at
+#                     once; no word of a query is in the orchestrator's log
 #   delete            deleting a thread erases it (ADR 0043): a thread that works is   delete-e2e.sh
 #                     refused (409 thread_active), a cancelled one is deleted (204);
 #                     another person's delete is a 404 that changes nothing; the owner's
@@ -214,7 +223,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier title description fork rail delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier title description fork rail search delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -260,7 +269,7 @@ for s in "$@"; do
           *) echo "scenario rbac needs the agents adam, chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml, and the roles of dev/orchestrator.yaml?" >&2; exit 2 ;;
         esac
       done ;;
-    fork | rail)
+    fork | rail | search)
       case " $agents " in
         *" mock-coder "*) ;;
         *) echo "scenario $s needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
@@ -403,6 +412,7 @@ for s in "$@"; do
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;
     rail) run rail sh "$here/rail-e2e.sh" ;;
+    search) run search sh "$here/search-e2e.sh" ;;
     delete) run delete sh "$here/delete-e2e.sh" ;;
     share) run share sh "$here/share-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;

@@ -48,6 +48,12 @@
         "tool-maker"
       ]
     },
+    "search@example.com": {
+      "name": "Search E2E",
+      "roles": [
+        "user"
+      ]
+    },
     "usage-ledger@example.com": {
       "name": "Usage Ledger",
       "roles": [
