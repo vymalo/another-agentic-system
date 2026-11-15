@@ -1138,6 +1138,37 @@ impl orch_ports::ThreadSearch for RacyStore {
     }
 }
 
+/// The prompt library of a [`ThreadStore`] is the store's own (ADR 0070): this one delegates to its inner
+/// store's.
+impl orch_ports::PromptStore for RacyStore {
+    delegate! {
+        insert_prompt(
+            owner: &orch_core::UserId,
+            prompt: &orch_core::prompt::PromptDefinition,
+            at: Timestamp
+        ) -> Result<orch_ports::StoredPrompt, orch_ports::PromptStoreError>;
+        get_prompt(viewer: &orch_ports::PromptViewer, id: &orch_core::prompt::PromptId)
+            -> Result<Option<orch_ports::StoredPrompt>, orch_ports::PromptStoreError>;
+        list_prompts(
+            viewer: &orch_ports::PromptViewer,
+            scope: orch_ports::PromptScope,
+            after: Option<&orch_core::prompt::PromptId>,
+            limit: u32
+        ) -> Result<orch_ports::PromptPage, orch_ports::PromptStoreError>;
+        replace_prompt(
+            owner: &orch_core::UserId,
+            prompt: &orch_core::prompt::PromptDefinition,
+            expected: orch_ports::PromptRevision,
+            at: Timestamp
+        ) -> Result<orch_ports::StoredPrompt, orch_ports::PromptStoreError>;
+        delete_prompt(
+            owner: &orch_core::UserId,
+            id: &orch_core::prompt::PromptId,
+            expected: Option<orch_ports::PromptRevision>
+        ) -> Result<(), orch_ports::PromptStoreError>;
+    }
+}
+
 /// The worker looks for the watch and finds none; before it parks the row, the agent pushes and
 /// the commit that carries the watch lands. The row had not been parked yet, so that commit had
 /// nothing to re-arm: the park itself must see the watch and put the row back.

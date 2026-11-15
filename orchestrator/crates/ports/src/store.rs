@@ -851,7 +851,13 @@ impl Classify for StoreError {
 /// same way, and so does `commit` for its `inbox` field. The inbox is part of this trait and
 /// not a port of its own because a commit must be atomic across the thread and the inbox row
 /// it applies (ADR 0016).
-pub trait ThreadStore: crate::UsageLedger + crate::ThreadSearch + Send + Sync + 'static {
+///
+/// **It is also the store of a person's prompt library** ([`PromptStore`](crate::PromptStore), ADR 0070), as it is
+/// of their usage ledger and their search index: every `ThreadStore` is one, and an adapter for another database
+/// implements it beside its threads.
+pub trait ThreadStore:
+    crate::UsageLedger + crate::ThreadSearch + crate::PromptStore + Send + Sync + 'static
+{
     /// Cheap reachability check (readiness).
     fn ping(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
 

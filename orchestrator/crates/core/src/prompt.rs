@@ -767,10 +767,10 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
         }
     }
     // (3) the type
-    if let Some(t) = q.get("type") {
-        if !t.as_str().is_some_and(|t| KINDS.contains(&t)) {
-            return bad(format!("{here}.type"));
-        }
+    if let Some(t) = q.get("type")
+        && !t.as_str().is_some_and(|t| KINDS.contains(&t))
+    {
+        return bad(format!("{here}.type"));
     }
     let kind = kind_of(q);
     // (4) members this kind does not take
@@ -902,10 +902,10 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
                 + i64::from(q.get("allowOther") == Some(&Value::Bool(true)));
             let min = q.get("min").and_then(Value::as_i64);
             let max = q.get("max").and_then(Value::as_i64);
-            if let (Some(min), Some(max)) = (min, max) {
-                if min > max {
-                    return bad(format!("{here}.min"));
-                }
+            if let (Some(min), Some(max)) = (min, max)
+                && min > max
+            {
+                return bad(format!("{here}.min"));
             }
             if min.is_some_and(|m| m > offered) {
                 return bad(format!("{here}.min"));
@@ -920,10 +920,10 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
         decimal(q.get("maxValue")),
         decimal(q.get("step")),
     );
-    if let (Some(a), Some(b)) = (min_v, max_v) {
-        if a > b {
-            return bad(format!("{here}.minValue"));
-        }
+    if let (Some(a), Some(b)) = (min_v, max_v)
+        && a > b
+    {
+        return bad(format!("{here}.minValue"));
     }
     if step.is_some_and(|s| s <= 0) {
         return bad(format!("{here}.step"));
@@ -931,10 +931,9 @@ fn check_variable(i: usize, value: &Value, seen: &mut BTreeSet<String>) -> Optio
     if let (Some(a), Some(b)) = (
         q.get("minDate").and_then(Value::as_str),
         q.get("maxDate").and_then(Value::as_str),
-    ) {
-        if a > b {
-            return bad(format!("{here}.minDate"));
-        }
+    ) && a > b
+    {
+        return bad(format!("{here}.minDate"));
     }
     if kind == "scale" {
         let from = q.get("from").and_then(Value::as_i64).unwrap_or(1);

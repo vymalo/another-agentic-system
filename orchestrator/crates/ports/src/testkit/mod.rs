@@ -19,6 +19,7 @@ pub mod bearer;
 pub mod chat_model;
 pub mod credential_broker;
 pub mod pending_authorizations;
+pub mod prompt_store;
 pub mod registry;
 pub mod secret_store;
 pub mod thread_search;
@@ -709,6 +710,44 @@ macro_rules! user_tool_server_store_conformance {
                 match $make().await {
                     Some(store) => $crate::testkit::user_tool_server_store::$case(store).await,
                     None => eprintln!("skipped: no user tool server store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `PromptStore` conformance case (ADR 0070): what the API relies on from any store of
+/// people's prompt libraries. `$make` is an `async fn() -> Option<S>` returning a fresh store (`None` skips the suite).
+/// Each case uses owners of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! prompt_store_conformance {
+    ($make:path) => {
+        $crate::prompt_store_conformance!(@cases $make;
+            insert_then_get_round_trips a_missing_prompt_is_none
+            a_private_prompt_is_nobody_elses ids_are_global names_are_unique_per_owner
+            a_rename_to_a_taken_name_is_name_taken_and_changes_nothing
+            mine_lists_only_own_ordered_by_id pages_follow_the_id
+            a_shared_prompt_is_seen_by_its_audience_only everyone_is_everyone
+            roles_match_byte_for_byte own_shared_prompts_are_not_in_shared
+            nothing_of_the_author_reaches_another_viewer unsharing_hides_at_once
+            replace_with_the_current_revision_replaces_whole
+            a_stale_replace_is_a_conflict_and_changes_nothing
+            a_write_after_a_delete_is_not_found_and_brings_nothing_back
+            a_stale_delete_is_a_conflict revisions_are_never_given_twice
+            at_most_a_hundred_per_owner the_order_of_refusals
+            concurrent_inserts_never_pass_the_limit
+            concurrent_inserts_of_one_id_have_one_winner
+            concurrent_replaces_from_one_revision_have_one_winner
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::prompt_store::$case(store).await,
+                    None => eprintln!("skipped: no prompt store available"),
                 }
             }
         )*

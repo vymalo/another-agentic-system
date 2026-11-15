@@ -7,6 +7,7 @@ mod auth;
 mod fixtures;
 mod model;
 mod pending;
+mod prompts;
 mod registry;
 mod secrets;
 mod store;

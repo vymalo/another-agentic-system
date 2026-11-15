@@ -39,6 +39,7 @@
 mod codec;
 mod error;
 mod pending_authorizations;
+mod prompts;
 mod search;
 mod store;
 mod usage;
@@ -46,6 +47,7 @@ mod user_tool_servers;
 mod wakeup;
 
 pub use pending_authorizations::{PENDING_LOCK_TIMEOUT, PgPendingAuthorizations};
+pub use prompts::{LOCK_TIMEOUT as PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS};
 pub use store::PgStore;
 pub use user_tool_servers::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgUserToolServers};
 pub use wakeup::PgWakeup;

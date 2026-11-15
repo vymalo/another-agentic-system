@@ -366,10 +366,8 @@ fn the_page_and_the_code_agree() {
             .map(|c| c.trim_matches('`'))
             .unwrap_or_default();
         let constant = !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_');
-        if constant {
-            if let Ok(n) = cells[2].parse::<usize>() {
-                rows.insert(name.to_owned(), n);
-            }
+        if constant && let Ok(n) = cells[2].parse::<usize>() {
+            rows.insert(name.to_owned(), n);
         }
     }
     let code: std::collections::BTreeMap<String, usize> = [

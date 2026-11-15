@@ -30,4 +30,5 @@ async fn age_index(store: &MemoryStore) {
 }
 
 orch_ports::thread_search_conformance!(make_store, forget = forget_index, age = age_index);
+orch_ports::prompt_store_conformance!(make_store);
 orch_ports::wakeup_conformance!(make_wakeup);

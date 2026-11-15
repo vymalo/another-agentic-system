@@ -131,6 +131,8 @@ struct Purge {
 pub struct MemoryStore {
     inner: Arc<Mutex<Inner>>,
     search_control: Arc<SearchControl>,
+    /// The prompt library (ADR 0070): every person's prompts and what is shared with whom.
+    pub(super) prompts: Arc<Mutex<super::prompts::PromptShelf>>,
 }
 
 /// Test hooks of [`ThreadSearch::search_threads`]: a search can be made to fail as an unreachable store

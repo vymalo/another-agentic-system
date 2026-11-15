@@ -59,6 +59,7 @@ mod inbox;
 mod lookup;
 mod model;
 mod pending;
+mod prompts;
 mod registry;
 mod route;
 mod search;
@@ -108,6 +109,10 @@ pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
 pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,
+};
+pub use prompts::{
+    MAX_PROMPTS, PROMPT_PAGE, PromptPage, PromptRevision, PromptScope, PromptStore,
+    PromptStoreError, PromptSummary, PromptViewer, StoredPrompt,
 };
 pub use registry::{
     AUDIENCE_EVERYONE, AgentAudience, AgentListing, AgentRegistry, AudienceRoles,
