@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import type { AddressInfo } from "node:net";
 import {
+  act,
   cleanup,
   configure,
   fireEvent,
@@ -38,6 +39,8 @@ const RealRequest = globalThis.Request;
 let calls: string[] = [];
 /** Answer `GET /api/config` with this instead of the mock's. */
 let configOverride: object | undefined;
+/** Holds a request until its promise is settled (the path of the request decides). */
+let hold: ((method: string, pathname: string) => Promise<void> | undefined) | undefined;
 
 beforeAll(async () => {
   configure({ asyncUtilTimeout: 10_000 });
@@ -68,6 +71,8 @@ beforeAll(async () => {
         headers: { "content-type": "application/json" },
       });
     }
+    const gate = hold?.(method, url.pathname);
+    if (gate) await gate;
     return realFetch(abs(input) as RequestInfo, init);
   }) as typeof fetch;
   ({ MyPromptsPage } = await import("./my-prompts-page"));
@@ -90,6 +95,7 @@ const api = async (method: string, path: string, body?: unknown) =>
 beforeEach(async () => {
   calls = [];
   configOverride = undefined;
+  hold = undefined;
   resetUiConfig();
   // the mock keeps one library for this file: empty what the person owns (what others shared stays, and tests find it by name)
   const list = (await (await api("GET", "/api/prompts")).json()) as {
@@ -175,6 +181,41 @@ describe("My prompts, against the mock's own rules", () => {
     // (a modal dialog hides the page from the accessibility tree while it is open, so the page is read by its text)
     await screen.findByText("You have no prompts yet.");
     expect(calls).toContain(`DELETE /api/prompts/${only?.id}`);
+  });
+
+  it("opening two prompts in quick succession shows the last one, whichever answer comes first", async () => {
+    for (const [name, title] of [
+      ["first", "First prompt"],
+      ["second", "Second prompt"],
+    ] as const) {
+      const made = await api("POST", "/api/prompts", { name, title, body: "Text" });
+      expect(made.status).toBe(201);
+    }
+    const list = (await (await api("GET", "/api/prompts")).json()) as {
+      items: { id: string; title: string }[];
+    };
+    const idOf = (title: string) => list.items.find((p) => p.title === title)?.id;
+    const gates = new Map<string, () => void>();
+    hold = (method, pathname) => {
+      if (method !== "GET" || !pathname.startsWith("/api/prompts/")) return undefined;
+      return new Promise<void>((resolve) => gates.set(pathname, resolve));
+    };
+    await open();
+    // both buttons are pressed before the page has drawn the first answer's wait
+    const first = screen.getByRole("button", { name: "Edit “First prompt”" });
+    const second = screen.getByRole("button", { name: "Edit “Second prompt”" });
+    act(() => {
+      first.click();
+      second.click();
+    });
+    await waitFor(() => expect(gates.size).toBe(2));
+    // the later opening answers first, then the earlier one
+    gates.get(`/api/prompts/${idOf("Second prompt")}`)?.();
+    await screen.findByRole("heading", { name: "Edit “Second prompt”" });
+    gates.get(`/api/prompts/${idOf("First prompt")}`)?.();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByRole("heading", { name: "Edit “First prompt”" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Edit “Second prompt”" })).toBeTruthy();
   });
 
   it("a refused save puts the words at the field and the focus there", async () => {

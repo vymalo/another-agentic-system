@@ -87,6 +87,8 @@ function Library({ config }: { config: Limits }) {
   const [deleting, setDeleting] = useState<ApiPromptSummary | null>(null);
   const opener = useRef<string | null>(null);
   const tokens = useRef(0);
+  // the opening that is current: an answer for an earlier one is ignored
+  const opening = useRef(0);
 
   // when the list is back, the focus returns to the button that opened what was closed (or the list, if that is gone)
   const listing = view.kind === "list";
@@ -102,6 +104,7 @@ function Library({ config }: { config: Limits }) {
   }, [listing, state.status]);
 
   const close = (text?: string) => {
+    opening.current++;
     setNotice(text ? { text, tone: "muted" } : null);
     setView({ kind: "list" });
   };
@@ -115,9 +118,11 @@ function Library({ config }: { config: Limits }) {
 
   async function open(summary: ApiPromptSummary, key: string, then: (p: ApiPrompt) => View) {
     opener.current = key;
+    const mine = ++opening.current;
     setNotice(null);
     setView({ kind: "opening" });
     const result = await lib.get(summary.id);
+    if (mine !== opening.current) return;
     if (result.ok) setView(then(result.value));
     else refused(result.failure.message, result.failure.reread);
   }
@@ -147,6 +152,7 @@ function Library({ config }: { config: Limits }) {
 
   function create() {
     opener.current = "new";
+    opening.current++;
     setNotice(null);
     setView({
       kind: "form",

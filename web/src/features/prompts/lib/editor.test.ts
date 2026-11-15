@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   blankQuestion,
+  dropsHiddenMembers,
   type EditableQuestion,
   fromForm,
   hasHiddenMembers,
@@ -283,5 +284,96 @@ describe("ids from words", () => {
     expect(idFromWords("???", [], 1)).toBe("answer-1");
     expect(idFromWords("a".repeat(100), []).length).toBeLessThanOrEqual(32);
     expect(idFromWords("Café au lait", [])).toMatch(/^[A-Za-z0-9_.:-]{1,64}$/);
+  });
+});
+
+describe("the older spelling of several choices, and a change of kind", () => {
+  const legacy = {
+    id: "q",
+    question: "Which?",
+    multiple: true,
+    options: [
+      { value: "a", label: "A" },
+      { value: "b", label: "B" },
+    ],
+  };
+
+  it("a question with multiple: true and no type is shown as several choices", () => {
+    expect(editable(toForm([legacy])[0]).fields.kind).toBe("multiple");
+  });
+
+  it("untouched, it is sent back exactly as read", () => {
+    const back = fromForm(toForm([legacy]));
+    expect(back).toStrictEqual([legacy]);
+    expect(JSON.stringify(back)).toBe(JSON.stringify([legacy]));
+  });
+
+  it("deliberately made one choice, it gets a type and loses multiple", () => {
+    const form = toForm([legacy]);
+    editable(form[0]).fields.kind = "single";
+    const [out] = fromForm(form) as Record<string, unknown>[];
+    expect(out?.type).toBe("single");
+    expect("multiple" in (out ?? {})).toBe(false);
+    expect(out?.options).toStrictEqual(legacy.options);
+  });
+
+  it("a short text with a starting answer keeps it as a long text", () => {
+    const form = toForm([{ id: "a", question: "Q", type: "text", default: "x" }]);
+    editable(form[0]).fields.kind = "longText";
+    const [out] = fromForm(form) as Record<string, unknown>[];
+    expect(out?.type).toBe("longText");
+    expect(out?.default).toBe("x");
+  });
+
+  it("one choice to several keeps the options, with their own members, and the other choice", () => {
+    const opts = [
+      { value: "a", label: "A", description: "first" },
+      { value: "b", label: "B" },
+    ];
+    const form = toForm([
+      { id: "a", question: "Q", type: "single", options: opts, allowOther: true, default: "a" },
+    ]);
+    editable(form[0]).fields.kind = "multiple";
+    const [out] = fromForm(form) as Record<string, unknown>[];
+    expect(out?.type).toBe("multiple");
+    expect(out?.options).toStrictEqual(opts);
+    expect(out?.allowOther).toBe(true);
+    // a member only the old kind knows is dropped
+    expect("default" in (out ?? {})).toBe(false);
+  });
+
+  it("an option the person did not edit is sent back as read when a sibling changes", () => {
+    const opts = [
+      { value: "a", label: "A  ", description: "kept" },
+      { value: "b", label: "B" },
+    ];
+    const form = toForm([{ id: "a", question: "Q", type: "single", options: opts }]);
+    const q = editable(form[0]);
+    q.fields.options = q.fields.options.map((o, k) => (k === 1 ? { ...o, label: " B2 " } : o));
+    const [out] = fromForm(form) as { options: unknown[] }[];
+    expect(out?.options[0]).toBe(opts[0]);
+    expect(out?.options[1]).toStrictEqual({ value: "b", label: "B2" });
+  });
+
+  it("says a change of kind removes what the page does not show, only for a question that has such members", () => {
+    const hidden = editable(
+      toForm([{ id: "a", question: "Q", type: "number", default: 3, minValue: "1" }])[0],
+    );
+    expect(dropsHiddenMembers(hidden)).toBe(false);
+    hidden.fields.kind = "date";
+    expect(hasHiddenMembers(hidden)).toBe(false);
+    expect(dropsHiddenMembers(hidden)).toBe(true);
+    const plain = editable(toForm([{ id: "a", question: "Q", type: "text" }])[0]);
+    plain.fields.kind = "longText";
+    expect(dropsHiddenMembers(plain)).toBe(false);
+  });
+
+  it("names images, and says a type it does not know", () => {
+    const [images, odd] = toForm([
+      { id: "a", question: "Q", type: "images" },
+      { id: "b", question: "Q", type: "hologram" },
+    ]) as KeptQuestion[];
+    expect(images?.phrase).toBe("an image question");
+    expect(odd?.phrase).toBe("a kind of question this page does not know");
   });
 });

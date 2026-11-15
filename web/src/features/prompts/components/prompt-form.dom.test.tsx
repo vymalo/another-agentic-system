@@ -239,6 +239,154 @@ describe("the questions", () => {
     expect(screen.getAllByRole("heading", { name: /^Question \d$/ })).toHaveLength(1);
   });
 
+  it("after a move the focus stays on the same control, or on the other direction's when that one is now disabled, and the new position is said", () => {
+    mount(
+      { ok: true },
+      {
+        initial: {
+          ...base,
+          questions: toForm([
+            { id: "a", question: "Alpha?", type: "text" },
+            { id: "b", question: "Beta?", type: "text" },
+            { id: "c", question: "Gamma?", type: "text" },
+          ]),
+        },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Move question 2 down" }));
+    // Beta is last now: its Down is disabled, so the focus is on its Up
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Move question 3 up" }));
+    expect(screen.getByText("Question moved to position 3 of 3").getAttribute("role")).toBe(
+      "status",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Move question 3 up" }));
+    // Beta is second: Up is still enabled and keeps the focus
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Move question 2 up" }));
+    expect(screen.getByText("Question moved to position 2 of 3")).toBeTruthy();
+  });
+
+  it("an option moved keeps the focus on its control and says where it went", () => {
+    mount(
+      { ok: true },
+      {
+        initial: {
+          ...base,
+          questions: toForm([
+            {
+              id: "a",
+              question: "Alpha?",
+              type: "single",
+              options: [
+                { value: "x", label: "X" },
+                { value: "y", label: "Y" },
+              ],
+            },
+          ]),
+        },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Move option 1 of question 1 down" }));
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Move option 2 of question 1 up" }),
+    );
+    expect(screen.getByText("Option moved to position 2 of 2")).toBeTruthy();
+  });
+
+  it("the move and remove buttons are disabled while a save is pending", async () => {
+    let finish: (o: FormOutcome) => void = () => {};
+    const onSubmit = vi.fn(() => new Promise<FormOutcome>((r) => (finish = r)));
+    render(
+      <PromptForm
+        heading="Edit"
+        mode="edit"
+        initial={{
+          ...base,
+          questions: toForm([
+            { id: "a", question: "Alpha?", type: "text" },
+            { id: "b", question: "Beta?", type: "text" },
+          ]),
+        }}
+        limits={LIMITS}
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+    save();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Saving…" })).toBeTruthy());
+    for (const name of ["Move question 1 down", "Move question 2 up", "Remove question 1"]) {
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(true);
+    }
+    finish({ ok: true });
+  });
+
+  it("a double submit calls onSubmit once", async () => {
+    let finish: (o: FormOutcome) => void = () => {};
+    const onSubmit = vi.fn(() => new Promise<FormOutcome>((r) => (finish = r)));
+    render(
+      <PromptForm
+        heading="Edit"
+        mode="edit"
+        initial={base}
+        limits={LIMITS}
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />,
+    );
+    const form = document.querySelector("form") as HTMLFormElement;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Saving…" })).toBeTruthy());
+    fireEvent.submit(form);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    finish({ ok: true });
+  });
+
+  it("a question has at most 12 options: at 12 Add option is gone, with its sentence", () => {
+    mount(
+      { ok: true },
+      {
+        initial: {
+          ...base,
+          questions: toForm([
+            {
+              id: "a",
+              question: "Alpha?",
+              type: "single",
+              options: Array.from({ length: 11 }, (_, k) => ({ value: `v${k}`, label: `L${k}` })),
+            },
+          ]),
+        },
+      },
+    );
+    expect(screen.queryByText("A question has at most 12 options.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add an option to question 1" }));
+    expect(screen.getAllByLabelText(/^Option \d+ of question 1$/)).toHaveLength(12);
+    expect(screen.queryByRole("button", { name: "Add an option to question 1" })).toBeNull();
+    expect(screen.getByText("A question has at most 12 options.")).toBeTruthy();
+  });
+
+  it("changing the kind of a question with settings the page does not show says they are removed", () => {
+    mount(
+      { ok: true },
+      {
+        initial: {
+          ...base,
+          questions: toForm([
+            { id: "a", question: "Alpha?", type: "number", default: 3 },
+            { id: "b", question: "Beta?", type: "text" },
+          ]),
+        },
+      },
+    );
+    const kinds = screen.getAllByLabelText("Kind");
+    const note = "Changing the kind removes the settings this page does not show.";
+    expect(screen.queryByText(note)).toBeNull();
+    fireEvent.change(kinds[1] as HTMLElement, { target: { value: "longText" } });
+    expect(screen.queryByText(note)).toBeNull();
+    fireEvent.change(kinds[0] as HTMLElement, { target: { value: "date" } });
+    expect(screen.getByText(note)).toBeTruthy();
+  });
+
   it("shows the size of the text in bytes against the configuration's limit", () => {
     mount({ ok: true }, { initial: { ...base, body: "é{{focus}}" } });
     expect(screen.getByText("11 of 16,384 bytes")).toBeTruthy();

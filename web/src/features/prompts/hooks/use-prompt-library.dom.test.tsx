@@ -109,9 +109,14 @@ describe("reading the list", () => {
   });
 
   it("does not follow a cursor that repeats", async () => {
-    client.GET.mockReset().mockResolvedValue(page([summary({ id: "p-1" })], "p-1"));
+    // a server that never stops naming the same cursor: after 20 reads the mock ends it, so a loop fails the count and does not hang
+    client.GET.mockReset().mockImplementation(async () =>
+      client.GET.mock.calls.length > 20
+        ? page([summary({ id: "p-1" })])
+        : page([summary({ id: "p-1" })], "p-1"),
+    );
     const hook = await ready();
-    expect(client.GET.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(client.GET.mock.calls.length).toBe(2);
     expect(prompts(hook)).toHaveLength(1);
   });
 

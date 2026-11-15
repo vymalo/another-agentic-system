@@ -73,8 +73,8 @@ export type KeptQuestion = {
   raw: unknown;
   id: string;
   question: string;
-  /** What to call its kind in a sentence ("scale", "ranking"). */
-  kindName: string;
+  /** What it is, in a sentence ("a scale question", "an image question"). */
+  phrase: string;
 };
 
 export type FormQuestion = EditableQuestion | KeptQuestion;
@@ -96,6 +96,14 @@ const KEPT_NAMES: Record<string, string> = {
   select: "long-list",
   scale: "scale",
   rank: "ranking",
+  images: "image",
+};
+
+const UNKNOWN_KIND = "a kind of question this page does not know";
+const phraseOf = (type: unknown): string => {
+  const name = typeof type === "string" ? KEPT_NAMES[type] : undefined;
+  if (name === undefined) return UNKNOWN_KIND;
+  return `${/^[aeiou]/.test(name) ? "an" : "a"} ${name} question`;
 };
 
 const isRec = (v: unknown): v is Raw => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -156,7 +164,8 @@ function readFields(raw: Raw, kind: EditKind): Fields {
 export function toForm(variables: readonly unknown[]): FormQuestion[] {
   return variables.map((v, i): FormQuestion => {
     if (isRec(v)) {
-      const type = v.type === undefined ? "single" : v.type;
+      // the older spelling of several choices: no type and `multiple: true` (docs/api/ui-catalog-v1.md)
+      const type = v.type === undefined ? (v.multiple === true ? "multiple" : "single") : v.type;
       if (isEditKind(type)) {
         const fields = readFields(v, type);
         return {
@@ -174,7 +183,7 @@ export function toForm(variables: readonly unknown[]): FormQuestion[] {
         raw: v,
         id: str(v.id),
         question: str(v.question),
-        kindName: typeof type === "string" ? (KEPT_NAMES[type] ?? type) : "different",
+        phrase: phraseOf(type),
       };
     }
     return {
@@ -183,7 +192,7 @@ export function toForm(variables: readonly unknown[]): FormQuestion[] {
       raw: v,
       id: "",
       question: `variable ${i + 1}`,
-      kindName: "different",
+      phrase: UNKNOWN_KIND,
     };
   });
 }
@@ -207,7 +216,16 @@ export function blankQuestion(_existing: readonly FormQuestion[]): EditableQuest
 
 /** Whether a question holds members its card does not show (they are kept when it is saved). */
 export function hasHiddenMembers(q: EditableQuestion): boolean {
-  if (q.raw === null || q.fields.kind !== q.was.kind) return false;
+  return q.fields.kind === q.was.kind && holdsHidden(q);
+}
+
+/** Whether the person has changed the kind of a question that holds members its card does not show: they will be removed. */
+export function dropsHiddenMembers(q: EditableQuestion): boolean {
+  return q.fields.kind !== q.was.kind && holdsHidden(q);
+}
+
+function holdsHidden(q: EditableQuestion): boolean {
+  if (q.raw === null) return false;
   const shown = new Set<string>([...COMMON, ...SHOWN[q.was.kind]]);
   if (Object.keys(q.raw).some((k) => !shown.has(k))) return true;
   return q.raw.options !== undefined && Array.isArray(q.raw.options)
@@ -294,6 +312,8 @@ function write(q: EditableQuestion): Raw {
       out.options = f.options.map((o) => {
         const value = o.raw === null ? valueFromLabel(o.label, taken) : o.value;
         if (o.raw === null) taken.push(value);
+        // an option nobody edited is the object that was read
+        if (o.raw !== null && o.label === str(o.raw.label)) return o.raw;
         return { ...(o.raw ?? {}), value, label: o.label.trim() };
       });
     }

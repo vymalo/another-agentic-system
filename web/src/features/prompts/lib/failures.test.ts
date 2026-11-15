@@ -174,6 +174,35 @@ describe("failureOf: the words for a refused save", () => {
   });
 });
 
+describe("failureOf: each code goes to its own field", () => {
+  it.each([
+    ["bad_name", { field: "name" }],
+    ["name_taken", { field: "name" }],
+    ["bad_title", { field: "title" }],
+    ["bad_description", { field: "description" }],
+    ["bad_body", { field: "body" }],
+    ["bad_reference", { field: "body" }],
+    // this page has no audience field (a prompt is only ever private from here): the page shows it with the form's words
+    ["bad_audience", { field: "audience" }],
+  ] as const)("%s", (code, target) => {
+    const f = failureOf({ status: code === "name_taken" ? 409 : 400, code, at: "form" }, ctx);
+    expect(f.target).toEqual(target);
+  });
+
+  it("a refusal with no code says what the status says", () => {
+    expect(failureOf({ status: 401 }, ctx).message).toBe("Your session has ended. Sign in again.");
+    expect(failureOf({ status: 403 }, ctx).message).toBe("Your roles do not allow this.");
+    expect(failureOf({ status: 429 }, ctx).message).toBe(
+      "Too many requests. Try again in a moment.",
+    );
+    expect(failureOf({ status: 409 }, ctx).message).toMatch(/did not accept it/);
+    expect(deleteFailureOf({ status: 401 }).message).toBe("Your session has ended. Sign in again.");
+    expect(deleteFailureOf({ status: 429 }).message).toBe(
+      "Too many requests. Try again in a moment.",
+    );
+  });
+});
+
 describe("deleteFailureOf", () => {
   it("a stale delete says the list was read again", () => {
     const f = deleteFailureOf({ status: 409, code: "stale_revision" });

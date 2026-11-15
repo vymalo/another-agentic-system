@@ -208,8 +208,15 @@ export function failureOf(problem: Problem, ctx: Context): Failure {
     });
   }
   if (status === 0 || status >= 500) return say(LOST, { target: FORM, reread: true });
+  if (status === 401) return say(SIGNED_OUT, { target: FORM });
+  if (status === 403) return say(NOT_ALLOWED, { target: FORM });
+  if (status === 429) return say(TOO_MANY, { target: FORM });
   return say("Your prompt could not be saved: the server did not accept it.", { target: FORM });
 }
+
+const SIGNED_OUT = "Your session has ended. Sign in again.";
+const NOT_ALLOWED = "Your roles do not allow this.";
+const TOO_MANY = "Too many requests. Try again in a moment.";
 
 export type DeleteFailure = { message: string; reread: boolean; gone: boolean };
 
@@ -236,6 +243,8 @@ export function deleteFailureOf(problem: Pick<Problem, "status" | "code">): Dele
   if (status === 403) {
     return { message: "Your roles grant no access to this app.", reread: false, gone: false };
   }
+  if (status === 401) return { message: SIGNED_OUT, reread: false, gone: false };
+  if (status === 429) return { message: TOO_MANY, reread: false, gone: false };
   return {
     message: "Your prompt could not be deleted: the server did not accept it.",
     reread: false,

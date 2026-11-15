@@ -15,7 +15,7 @@
 > any other question and any member the page does not show are **kept** and sent back byte for byte, and `variables` is sent only when it differs from what was read
 > (all 35 `ok` vectors of `prompts.json` round-trip). A refusal is drawn from the problem's `code`, `at` and `offset` at the field it names. **A stale edit keeps the
 > typed text and offers "Load the current version"; it never overwrites.** The page sends no `audience` (sharing is P4's control), keeps nothing on the device, and
-> needed no change to the API. Proven on the web's mock in Chromium and a phone emulation with axe in both schemes; not against a real orchestrator.
+> needed no change to the API. Proven on the web's mock in Chromium and a phone emulation with axe in both schemes; not against a real orchestrator. After review (2026-11-15): a question with `multiple: true` and no `type` (the older spelling) is shown as several choices and sent back as read; changing a question's kind keeps the members both kinds show and says the rest are removed; an option nobody edited is sent back as read; a move keeps the focus and says the new position; a read of a prompt overtaken by a later one is ignored; a refusal with no code gets words for 401, 403 and 429.
 
 ## Context
 

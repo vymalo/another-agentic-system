@@ -1,11 +1,13 @@
 "use client";
 
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
+  dropsHiddenMembers,
   EDIT_KINDS,
   type EditableQuestion,
   type EditKind,
@@ -64,6 +66,8 @@ type Props = {
   count: number;
   /** `<form id>-<question key>`: the ids of the card's controls start with it. */
   baseId: string;
+  /** A save is pending: the cards are not rearranged under it. */
+  busy: boolean;
   /** The ids of the other questions, so an id made from the words is not one of them. */
   otherIds: readonly string[];
   /** What the server refused about this question, and the control it is about (`controlSuffix`). */
@@ -90,6 +94,7 @@ export function QuestionEditor({
   index,
   count,
   baseId,
+  busy,
   otherIds,
   refusal,
   onChange,
@@ -116,11 +121,27 @@ export function QuestionEditor({
 
   const setOption = (j: number, label: string) =>
     set({ options: f.options.map((o, k) => (k === j ? { ...o, label } : o)) });
+  // after a move the focus stays on the same control of the moved option, or on the other direction's when that one is now disabled
+  const [moved, setMoved] = useState<{ at: number; dir: -1 | 1; text: string } | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `moved` is a new object for every move
+  useEffect(() => {
+    if (!moved) return;
+    const base = `${baseId}-opt-${moved.at}`;
+    const same = document.getElementById(`${base}-${moved.dir < 0 ? "up" : "down"}`);
+    const other = document.getElementById(`${base}-${moved.dir < 0 ? "down" : "up"}`);
+    const pick = same instanceof HTMLButtonElement && !same.disabled ? same : other;
+    if (pick instanceof HTMLElement) pick.focus();
+  }, [moved]);
   const moveOption = (j: number, delta: -1 | 1) => {
     const options = [...f.options];
-    const [moved] = options.splice(j, 1);
-    if (moved) options.splice(j + delta, 0, moved);
+    const [item] = options.splice(j, 1);
+    if (item) options.splice(j + delta, 0, item);
     set({ options });
+    setMoved({
+      at: j + delta,
+      dir: delta,
+      text: `Option moved to position ${j + delta + 1} of ${options.length}`,
+    });
   };
 
   const textField = (
@@ -170,8 +191,9 @@ export function QuestionEditor({
             type="button"
             variant="ghost"
             size="icon-sm"
+            id={`${baseId}-up`}
             aria-label={`Move question ${n} up`}
-            disabled={index === 0}
+            disabled={busy || index === 0}
             onClick={() => onMove(-1)}
           >
             <ArrowUpIcon aria-hidden="true" />
@@ -180,8 +202,9 @@ export function QuestionEditor({
             type="button"
             variant="ghost"
             size="icon-sm"
+            id={`${baseId}-down`}
             aria-label={`Move question ${n} down`}
-            disabled={index === count - 1}
+            disabled={busy || index === count - 1}
             onClick={() => onMove(1)}
           >
             <ArrowDownIcon aria-hidden="true" />
@@ -191,6 +214,7 @@ export function QuestionEditor({
             variant="ghost"
             size="icon-sm"
             aria-label={`Remove question ${n}`}
+            disabled={busy}
             onClick={onRemove}
           >
             <Trash2Icon aria-hidden="true" />
@@ -279,8 +303,9 @@ export function QuestionEditor({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
+                  id={`${baseId}-opt-${j}-up`}
                   aria-label={`Move option ${j + 1} of question ${n} up`}
-                  disabled={j === 0}
+                  disabled={busy || j === 0}
                   onClick={() => moveOption(j, -1)}
                 >
                   <ArrowUpIcon aria-hidden="true" />
@@ -289,8 +314,9 @@ export function QuestionEditor({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
+                  id={`${baseId}-opt-${j}-down`}
                   aria-label={`Move option ${j + 1} of question ${n} down`}
-                  disabled={j === f.options.length - 1}
+                  disabled={busy || j === f.options.length - 1}
                   onClick={() => moveOption(j, 1)}
                 >
                   <ArrowDownIcon aria-hidden="true" />
@@ -300,6 +326,7 @@ export function QuestionEditor({
                   variant="ghost"
                   size="icon-sm"
                   aria-label={`Remove option ${j + 1} of question ${n}`}
+                  disabled={busy}
                   onClick={() => set({ options: f.options.filter((_, k) => k !== j) })}
                 >
                   <Trash2Icon aria-hidden="true" />
@@ -307,6 +334,9 @@ export function QuestionEditor({
               </li>
             ))}
           </ol>
+          <p role="status" aria-live="polite" className="sr-only">
+            {moved?.text ?? ""}
+          </p>
           {f.options.length >= MAX_OPTIONS ? (
             <p className="text-xs text-muted-foreground">
               A question has at most {MAX_OPTIONS} options.
@@ -394,6 +424,11 @@ export function QuestionEditor({
       {hasHiddenMembers(q) ? (
         <p className="text-xs text-muted-foreground">
           This question has settings this page does not show. They are kept.
+        </p>
+      ) : null}
+      {dropsHiddenMembers(q) ? (
+        <p className="text-xs text-muted-foreground">
+          Changing the kind removes the settings this page does not show.
         </p>
       ) : null}
       {refusal ? (

@@ -65,6 +65,7 @@ export function PromptForm({
   const [failure, setFailure] = useState<Failure | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [focusNew, setFocusNew] = useState<string | null>(null);
+  const [moved, setMoved] = useState<{ key: string; dir: -1 | 1; text: string } | null>(null);
 
   // the form opens with the focus on its heading, which names what is being done
   useEffect(() => {
@@ -75,6 +76,17 @@ export function PromptForm({
   useEffect(() => {
     if (focusNew) document.getElementById(`${id}-${focusNew}-question`)?.focus();
   }, [focusNew, id]);
+
+  // after a move the focus stays on the same control of the moved card, or on the other direction's when that one is now disabled
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `moved` is a new object for every move
+  useEffect(() => {
+    if (!moved) return;
+    const base = `${id}-${moved.key}`;
+    const same = document.getElementById(`${base}-${moved.dir < 0 ? "up" : "down"}`);
+    const other = document.getElementById(`${base}-${moved.dir < 0 ? "down" : "up"}`);
+    const pick = same instanceof HTMLButtonElement && !same.disabled ? same : other;
+    if (pick instanceof HTMLElement) pick.focus();
+  }, [moved]);
 
   // a refusal moves the focus to what it is about (a new refusal about the same field moves it again)
   // biome-ignore lint/correctness/useExhaustiveDependencies: `failure` is a new object for every refusal
@@ -142,13 +154,18 @@ export function PromptForm({
 
   const setQuestion = (i: number, next: FormQuestion) =>
     setQuestions((list) => list.map((q, k) => (k === i ? next : q)));
-  const moveQuestion = (i: number, delta: -1 | 1) =>
-    setQuestions((list) => {
-      const out = [...list];
-      const [moved] = out.splice(i, 1);
-      if (moved) out.splice(i + delta, 0, moved);
-      return out;
+  const moveQuestion = (i: number, delta: -1 | 1) => {
+    const out = [...questions];
+    const [item] = out.splice(i, 1);
+    if (!item) return;
+    out.splice(i + delta, 0, item);
+    setQuestions(out);
+    setMoved({
+      key: item.key,
+      dir: delta,
+      text: `Question moved to position ${i + delta + 1} of ${out.length}`,
     });
+  };
   const addQuestion = () => {
     const added = blankQuestion(questions);
     setQuestions((list) => [...list, added]);
@@ -339,6 +356,9 @@ export function PromptForm({
             {questionsError}
           </p>
         ) : null}
+        <p role="status" aria-live="polite" className="sr-only">
+          {moved?.text ?? ""}
+        </p>
         {questions.length > 0 ? (
           <ol aria-label="Questions" className="flex flex-col gap-3">
             {questions.map((q, i) => {
@@ -357,6 +377,7 @@ export function PromptForm({
                   index={i}
                   count={questions.length}
                   baseId={base}
+                  busy={pending}
                   refusal={refusal}
                   onMove={(d) => moveQuestion(i, d)}
                   onRemove={() => setQuestions((list) => list.filter((_, k) => k !== i))}
@@ -368,6 +389,7 @@ export function PromptForm({
                   index={i}
                   count={questions.length}
                   baseId={base}
+                  busy={pending}
                   otherIds={idsOf(questions.filter((_, k) => k !== i))}
                   refusal={refusal}
                   onChange={(next: EditableQuestion) => setQuestion(i, next)}

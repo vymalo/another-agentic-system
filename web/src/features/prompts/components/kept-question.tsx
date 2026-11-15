@@ -9,6 +9,7 @@ type Props = {
   index: number;
   count: number;
   baseId: string;
+  busy: boolean;
   /** What the server refused about this question; the card cannot be edited, so only its words are shown. */
   refusal: { message: string } | null;
   onMove: (delta: -1 | 1) => void;
@@ -19,7 +20,16 @@ type Props = {
  * A question of a kind this page cannot edit (a long list, a scale, a ranking, or a kind a later catalog adds). It is written
  * back as the very object that was read, so saving the prompt never changes it. It can still be moved and removed.
  */
-export function KeptQuestionCard({ q, index, count, baseId, refusal, onMove, onRemove }: Props) {
+export function KeptQuestionCard({
+  q,
+  index,
+  count,
+  baseId,
+  busy,
+  refusal,
+  onMove,
+  onRemove,
+}: Props) {
   const n = index + 1;
   const errorId = `${baseId}-error`;
   const name = q.question || q.id || `question ${n}`;
@@ -43,8 +53,9 @@ export function KeptQuestionCard({ q, index, count, baseId, refusal, onMove, onR
             type="button"
             variant="ghost"
             size="icon-sm"
+            id={`${baseId}-up`}
             aria-label={`Move question ${n} up`}
-            disabled={index === 0}
+            disabled={busy || index === 0}
             onClick={() => onMove(-1)}
           >
             <ArrowUpIcon aria-hidden="true" />
@@ -53,8 +64,9 @@ export function KeptQuestionCard({ q, index, count, baseId, refusal, onMove, onR
             type="button"
             variant="ghost"
             size="icon-sm"
+            id={`${baseId}-down`}
             aria-label={`Move question ${n} down`}
-            disabled={index === count - 1}
+            disabled={busy || index === count - 1}
             onClick={() => onMove(1)}
           >
             <ArrowDownIcon aria-hidden="true" />
@@ -64,6 +76,7 @@ export function KeptQuestionCard({ q, index, count, baseId, refusal, onMove, onR
             variant="ghost"
             size="icon-sm"
             aria-label={`Remove question ${n}`}
+            disabled={busy}
             onClick={onRemove}
           >
             <Trash2Icon aria-hidden="true" />
@@ -71,8 +84,8 @@ export function KeptQuestionCard({ q, index, count, baseId, refusal, onMove, onR
         </div>
       </div>
       <p className="text-sm text-muted-foreground">
-        <span className="font-medium break-words text-foreground">“{name}”</span> is a {q.kindName}{" "}
-        question. This page cannot edit it yet; it is kept as it is.
+        <span className="font-medium break-words text-foreground">“{name}”</span> is {q.phrase}.
+        This page cannot edit it yet; it is kept as it is.
       </p>
       {refusal ? (
         <p id={errorId} role="alert" className="text-sm text-destructive">
