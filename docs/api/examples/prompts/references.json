@@ -1,0 +1,364 @@
+{
+  "name": "References in a body",
+  "about": "A body to its segments, or to the error with the UTF-16 offset of the {{ that is not a reference. A segment is a string (literal text, escapes resolved; adjacent literals are one) or {\"ref\": id}. See docs/api/prompts-v1.md, References.",
+  "cases": [
+    {
+      "name": "plain text, no reference",
+      "body": "plain text",
+      "expect": {
+        "segments": [
+          "plain text"
+        ]
+      }
+    },
+    {
+      "name": "a lone reference",
+      "body": "{{x}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a reference in text",
+      "body": "a {{x}} b",
+      "expect": {
+        "segments": [
+          "a ",
+          {
+            "ref": "x"
+          },
+          " b"
+        ]
+      }
+    },
+    {
+      "name": "two references side by side",
+      "body": "{{x}}{{y}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "x"
+          },
+          {
+            "ref": "y"
+          }
+        ]
+      }
+    },
+    {
+      "name": "one id used three times",
+      "body": "{{x}} and {{x}} and {{x}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "x"
+          },
+          " and ",
+          {
+            "ref": "x"
+          },
+          " and ",
+          {
+            "ref": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an escape writes {{ and x is not a reference",
+      "body": "\\{{x}}",
+      "expect": {
+        "segments": [
+          "{{x}}"
+        ]
+      }
+    },
+    {
+      "name": "a backslash then an escape: a literal backslash, then {{, and x is not a reference",
+      "body": "\\\\{{x}}",
+      "expect": {
+        "segments": [
+          "\\{{x}}"
+        ]
+      }
+    },
+    {
+      "name": "three backslashes: two literal, then the escape",
+      "body": "\\\\\\{{x}}",
+      "expect": {
+        "segments": [
+          "\\\\{{x}}"
+        ]
+      }
+    },
+    {
+      "name": "an escaped and a real reference",
+      "body": "\\{{x}} {{x}}",
+      "expect": {
+        "segments": [
+          "{{x}} ",
+          {
+            "ref": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a backslash that escapes nothing is itself",
+      "body": "a\\b",
+      "expect": {
+        "segments": [
+          "a\\b"
+        ]
+      }
+    },
+    {
+      "name": "a trailing backslash is itself",
+      "body": "trailing \\",
+      "expect": {
+        "segments": [
+          "trailing \\"
+        ]
+      }
+    },
+    {
+      "name": "an escape at the very end",
+      "body": "\\{{",
+      "expect": {
+        "segments": [
+          "{{"
+        ]
+      }
+    },
+    {
+      "name": "an escape and then a malformed reference: the offset is of the second {{",
+      "body": "\\{{ {{ x }}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 4
+      }
+    },
+    {
+      "name": "a reference and then a lone backslash",
+      "body": "{{x}}\\",
+      "expect": {
+        "segments": [
+          {
+            "ref": "x"
+          },
+          "\\"
+        ]
+      }
+    },
+    {
+      "name": "white space inside is refused",
+      "body": "{{ x }}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "white space inside, after text",
+      "body": "ab {{ x }}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 3
+      }
+    },
+    {
+      "name": "an empty reference",
+      "body": "{{}}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "a reference closed by one brace",
+      "body": "{{x}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "a reference never closed",
+      "body": "{{x",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "three opening braces: the first {{ is followed by {",
+      "body": "{{{x}}}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "nested references",
+      "body": "{{a{{b}}}}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "a lone {{",
+      "body": "{{",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "a reference and then a {{ with nothing after",
+      "body": "{{x}}{{",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 5
+      }
+    },
+    {
+      "name": "a reference followed by }} is literal text after it",
+      "body": "{{x}}}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "x"
+          },
+          "}}"
+        ]
+      }
+    },
+    {
+      "name": "lone braces are literal text",
+      "body": "}} {x} {",
+      "expect": {
+        "segments": [
+          "}} {x} {"
+        ]
+      }
+    },
+    {
+      "name": "an id may hold . : - _",
+      "body": "{{a.b:c-d_e}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "a.b:c-d_e"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an id of 64 characters",
+      "body": "{{aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an id of 65 characters",
+      "body": "{{aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "an id with a letter outside the set",
+      "body": "{{café}}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 0
+      }
+    },
+    {
+      "name": "ids are case-sensitive: X is a reference named X",
+      "body": "{{X}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "X"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an id of digits",
+      "body": "{{1}}",
+      "expect": {
+        "segments": [
+          {
+            "ref": "1"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an emoji before the error counts two units",
+      "body": "😀{{ x }}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 2
+      }
+    },
+    {
+      "name": "two emoji, a good reference, then a bad one",
+      "body": "😀😀 {{x}} {{ y}}",
+      "expect": {
+        "code": "bad_reference",
+        "offset": 11
+      }
+    },
+    {
+      "name": "a letter outside the BMP inside text",
+      "body": "𝒳{{x}}",
+      "expect": {
+        "segments": [
+          "𝒳",
+          {
+            "ref": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "line breaks are text",
+      "body": "line1\n{{x}}\nline2",
+      "expect": {
+        "segments": [
+          "line1\n",
+          {
+            "ref": "x"
+          },
+          "\nline2"
+        ]
+      }
+    },
+    {
+      "name": "an accented letter before a reference",
+      "body": "é{{x}}",
+      "expect": {
+        "segments": [
+          "é",
+          {
+            "ref": "x"
+          }
+        ]
+      }
+    }
+  ]
+}

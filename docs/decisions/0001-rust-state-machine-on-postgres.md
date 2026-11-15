@@ -29,6 +29,7 @@
   the folded words (keys) of their titles, descriptions and messages, written in the transaction that appends the event, erased in the transaction that erases the
   thread and rebuilt from the log by `orchestrator search backfill`. It is a function of the log and holds content, so it is the owner's alone and never read
   across people. The decision stands.
+  Status note (2026-11-15): [ADR 0070](0070-a-persons-prompt-library.md) (proposed) adds that Postgres also keeps a person's **prompt library**: their saved prompts (a name, a title, a body with `{{variables}}`, the variables as questions of the UI catalog) and the roles each is shared with, in `user_prompts`. It is not the log and no event records it: it is read and changed only through the API, never folded by the core, never copied into a thread, a fork or an export, and nothing of it is erased with a thread; it is the person's and goes with their account. The decision stands.
 
 ## Context
 

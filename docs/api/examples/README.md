@@ -72,6 +72,13 @@ message's `messageId` is `<message-id>` and the task id in front of a step's id 
 `<name>.export.json` is an export (`exportThread`) and `<name>.md` the file a client must write from it, byte for byte. A client in
 another language reads the pairs and compares; `web/mock/thread-markdown.test.ts` is the web's run of them.
 
+## A person's prompt library
+
+[`prompts/`](prompts/) holds the conformance vectors of [`../prompts-v1.md`](../prompts-v1.md): `references.json` (a body to its segments or its
+error), `prompts.json` (a whole save), `render.json` (a prompt, an answer and the text, or the refusal) and `requests.json` (raw requests and the
+status and `code` of each). `orch_core::prompt` and `orch-api`'s tests read them in Rust, `web/mock/prompts.test.ts` is the web's run of them. A string
+written as `{"$concat": [piece, ...]}` is the pieces joined (a piece is a string or `{"$repeat": text, "times": n}`): a reader expands it first.
+
 ## AG-UI streams
 
 [`agui/<name>.agui.json`](agui/) is what a **viewer** (an AG-UI connect stream, see
