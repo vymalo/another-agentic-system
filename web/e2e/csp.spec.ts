@@ -24,6 +24,7 @@ test("every page has the header half and a meta of its own scripts' hashes, and 
     "/auth/callback",
     "/auth/sign-out",
     "/signed-in",
+    "/prompts",
     "/no-such-page",
   ]) {
     const answer = await request.get(address);

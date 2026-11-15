@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { type BrowserContext, expect, type Page, test } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
@@ -39,7 +39,7 @@ async function resetMock() {
   await fetch(`${MOCK_URL}/__mock/reset`, { method: "POST" });
 }
 
-async function shot(page: Page, name: string, { hovering = false } = {}) {
+async function shot(page: Page, name: string, { hovering = false, full = false } = {}) {
   const device = test.info().project.name;
   const dark = await page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches);
   const scheme = dark ? "dark" : "light";
@@ -52,6 +52,7 @@ async function shot(page: Page, name: string, { hovering = false } = {}) {
   await page.screenshot({
     path: `${DIR}/${device}-${scheme}-${name}.png`,
     animations: "disabled",
+    fullPage: full,
     caret: "hide",
     // one pixel per CSS pixel keeps the files small; the phone renders at 2x and is scaled down
     scale: "css",
@@ -632,6 +633,153 @@ for (const scheme of ["light", "dark"] as const) {
       await page.getByLabel("Header name").fill("X-Api-Key");
       await expect(page.getByLabel("API key")).toHaveValue("");
       await shot(page, "tools-add-form");
+    });
+
+    // a person's prompt library (ADR 0070): a session of its own, as the people's own tool servers have
+    async function promptsSession(context: BrowserContext, me: string) {
+      const session = `screens-prompts-${uuidv7()}`;
+      const hook = (path: string, body?: unknown) =>
+        fetch(`${MOCK_URL}${path}${path.includes("?") ? "&" : "?"}session=${session}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      expect((await hook(`/__mock/config?me=${me}`)).status).toBe(204);
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      const make = async (body: unknown) => {
+        const res = await fetch(`${MOCK_URL}/api/prompts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: `mock-registry=${session}` },
+          body: JSON.stringify(body),
+        });
+        expect(res.status, await res.clone().text()).toBe(201);
+      };
+      const share = async (prompts: unknown[]) =>
+        expect((await hook("/__mock/prompts/shared", prompts)).status).toBe(204);
+      return { hook, make, share };
+    }
+
+    test("my prompts: the page, the empty page and the shared prompt", async ({
+      page,
+      context,
+    }) => {
+      await promptsSession(context, "user");
+      await page.goto("/prompts");
+      await expect(page.getByText("You have no prompts yet.")).toBeVisible();
+      await shot(page, "prompts-empty");
+
+      // a prompt shared by its owner (who holds `prompts.share`), then the person is a plain user: the shelf is the session's
+      const lib = await promptsSession(context, "prompt-sharer");
+      await lib.make({
+        name: "review",
+        title: "Review a change",
+        description: "Reviews a change for one concern, at the depth you pick.",
+        body: "Review this change for {{focus}} at depth {{depth}}.",
+        variables: [
+          {
+            id: "focus",
+            question: "What should the review focus on?",
+            options: [
+              { value: "security", label: "Security" },
+              { value: "speed", label: "Speed" },
+            ],
+          },
+          { id: "depth", question: "How deep?", type: "number", unit: "levels" },
+        ],
+      });
+      await lib.make({
+        name: "standup",
+        title: "Write my standup",
+        description: "A short note of what I did, what is next and what blocks me.",
+        body: "Write my standup from {{notes}}.",
+        variables: [{ id: "notes", question: "Your notes", type: "longText" }],
+        audience: ["user"],
+      });
+      await lib.make({
+        name: "translate",
+        title: "Translate to French",
+        body: "Translate what follows into French, keeping its tone.",
+      });
+      await lib.share([
+        {
+          name: "release-notes",
+          title: "Release notes",
+          description: "Turns merged pull requests into release notes.",
+          body: "Write release notes for {{version}}.",
+          variables: [{ id: "version", question: "Which version?", type: "text" }],
+          audience: ["*"],
+        },
+        {
+          name: "incident",
+          title: "Incident summary",
+          description: "A blameless summary of an incident for the team.",
+          body: "Summarise the incident described below without blaming anyone.",
+          audience: ["*"],
+        },
+      ]);
+      await lib.hook("/__mock/config?me=user");
+      await page.goto("/prompts");
+      await expect(page.locator('[data-slot="prompt-row"]')).toHaveCount(5);
+      await shot(page, "prompts-page");
+
+      await page.getByRole("button", { name: "View “Release notes”" }).click();
+      await expect(page.getByRole("heading", { name: "Release notes", level: 2 })).toBeVisible();
+      await shot(page, "prompts-shared-view");
+    });
+
+    test("my prompts: the form, and a refusal in the text", async ({ page, context }) => {
+      const lib = await promptsSession(context, "user");
+      await lib.make({
+        name: "trip",
+        title: "Plan a trip",
+        description: "Plans a short trip for a team.",
+        body: "Plan a {{budget}} trip to {{place}} for {{people}} people, starting on {{day}}.",
+        variables: [
+          {
+            id: "place",
+            question: "Where to?",
+            options: [
+              { value: "lisbon", label: "Lisbon" },
+              { value: "prague", label: "Prague" },
+            ],
+          },
+          {
+            id: "people",
+            question: "How many people?",
+            type: "number",
+            minValue: "1",
+            maxValue: "40",
+            unit: "people",
+          },
+          { id: "day", question: "Which day do you start?", type: "date" },
+          // a kind the page keeps and does not edit
+          {
+            id: "budget",
+            question: "How big a budget?",
+            type: "scale",
+            to: 5,
+            fromLabel: "Small",
+            toLabel: "Large",
+          },
+        ],
+      });
+      await page.goto("/prompts");
+      await page.getByRole("button", { name: "Edit “Plan a trip”" }).click();
+      await expect(page.locator('[data-slot="question-editor"]')).toHaveCount(3);
+      await expect(page.locator('[data-slot="kept-question"]')).toHaveCount(1);
+      await shot(page, "prompts-form", { full: true });
+
+      // the text is refused at the braces that do not start a blank, which are selected
+      await page
+        .getByLabel("Text", { exact: true })
+        .fill("Plan a {{budget}} trip to {{place}} for {{ people }} people, starting on {{day}}.");
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await expect(page.getByText(/These braces do not start a blank/)).toBeVisible();
+      await page.getByLabel("Text", { exact: true }).scrollIntoViewIfNeeded();
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shot(page, "prompts-form-refused");
     });
 
     test("sign-in screen, and the same after a sign-in lapsed (browser mode)", async ({ page }) => {
