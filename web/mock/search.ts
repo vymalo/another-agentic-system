@@ -254,8 +254,16 @@ export type SearchOutcome =
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
+/** The longest cursor accepted: a longer one cannot be one a server made. */
+const MAX_CURSOR_LENGTH = 512;
+/** A thread id: a lower-case hyphenated UUID, the form the ids are ordered in. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** The cursor is this server's own business; this one is a base64url JSON of where the page ended and what it was asked. */
+/**
+ * The cursor is this server's own business; this one is a base64url JSON of where the page ended and what it was asked. It is a
+ * position (rank, thread id) checked against the terms and the filters of the request, and carries no authority: a position that is
+ * not valid (a rank that is not 0, 1 or 2, an id that is not a lower-case hyphenated UUID) is `bad_cursor`.
+ */
 function fingerprint(terms: string[], archived: string, branches: boolean): string {
   return JSON.stringify([terms, archived, branches]);
 }
@@ -270,8 +278,9 @@ function decodeCursor(cursor: string, fp: string): { rank: number; id: string } 
     if (
       Array.isArray(v) &&
       v.length === 3 &&
-      typeof v[0] === "number" &&
+      (v[0] === 0 || v[0] === 1 || v[0] === 2) &&
       typeof v[1] === "string" &&
+      UUID.test(v[1]) &&
       v[2] === fp
     ) {
       return { rank: v[0], id: v[1] };
@@ -291,12 +300,14 @@ export function searchThreads(threads: Searchable[], req: SearchRequest): Search
   const archived = req.archived ?? "include";
   if (archived !== "exclude" && archived !== "only" && archived !== "include")
     return { ok: false, code: "bad_request" };
+  if (req.branches !== undefined && req.branches !== "include")
+    return { ok: false, code: "bad_request" };
   const branches = req.branches === "include";
   const { terms } = parsed;
   const fp = fingerprint(terms, archived, branches);
   let after: { rank: number; id: string } | null = null;
   if (req.cursor !== undefined) {
-    after = decodeCursor(req.cursor, fp);
+    after = req.cursor.length > MAX_CURSOR_LENGTH ? null : decodeCursor(req.cursor, fp);
     if (after === null) return { ok: false, code: "bad_cursor" };
   }
   const found: ThreadHit[] = [];
@@ -343,4 +354,84 @@ export function searchThreads(threads: Searchable[], req: SearchRequest): Search
   if (rest.length > limit && lastOfPage)
     page.next = encodeCursor(lastOfPage.rank, lastOfPage.id, fp);
   return { ok: true, page };
+}
+
+/** What reading a request can answer before any search: 415 for the media type, 400 `bad_request` for the shape. */
+export type RequestOutcome =
+  | { ok: true; request: SearchRequest }
+  | { ok: false; status: 400 | 415; code?: "bad_request" };
+
+const MEMBERS = ["q", "limit", "cursor", "archived", "branches"];
+/** A JSON integer literal: no fraction, no exponent. */
+const INTEGER_LITERAL = /^-?(0|[1-9][0-9]*)$/;
+
+/**
+ * The members of the top-level object of a JSON text that has already parsed: each key in the order written (so a key twice shows),
+ * and the source of each member whose value is a number or another bare literal (so `20.0` can be told from `20`). A tokenizer,
+ * not a parser: it relies on the text being valid.
+ */
+function scanMembers(text: string): { keys: string[]; literals: Map<string, string> } {
+  const keys: string[] = [];
+  const literals = new Map<string, string>();
+  let depth = 0;
+  let expectKey = false;
+  let key: string | undefined;
+  let afterColon = false;
+  for (const m of text.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\],:]|[^\s{}[\],:"]+/g)) {
+    const token = m[0];
+    if (token === "{" || token === "[") {
+      depth++;
+      expectKey = depth === 1 && token === "{";
+      afterColon = false;
+    } else if (token === "}" || token === "]") {
+      depth--;
+      afterColon = false;
+    } else if (token === ",") {
+      expectKey = depth === 1;
+      afterColon = false;
+    } else if (token === ":") {
+      afterColon = depth === 1;
+    } else if (depth === 1 && expectKey && token.startsWith('"')) {
+      key = JSON.parse(token) as string;
+      keys.push(key);
+      expectKey = false;
+    } else if (depth === 1 && afterColon && key !== undefined) {
+      if (!token.startsWith('"')) literals.set(key, token);
+      afterColon = false;
+    }
+  }
+  return { keys, literals };
+}
+
+/**
+ * Reads a request as docs/api/thread-search-v1.md says: the media type is exactly `application/json` (parameters such as `charset`
+ * allowed, case ignored), the body is one JSON object with only `q` (a string, required), `limit` (a JSON integer literal),
+ * `cursor`, `archived` and `branches` (strings), no member twice, no `null`, no lone surrogate in any string. What it refuses is
+ * 415 or 400 `bad_request`; the query, the range of `limit`, the filters and the cursor are judged by {@link searchThreads}.
+ */
+export function readRequest(contentType: string | undefined, body: string): RequestOutcome {
+  const bad: RequestOutcome = { ok: false, status: 400, code: "bad_request" };
+  const media = (contentType ?? "").split(";")[0]?.trim().toLowerCase();
+  if (media !== "application/json") return { ok: false, status: 415 };
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return bad;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return bad;
+  const { keys, literals } = scanMembers(body);
+  if (new Set(keys).size !== keys.length) return bad;
+  if (keys.some((k) => !MEMBERS.includes(k) || !k.isWellFormed())) return bad;
+  const r = value as Record<string, unknown>;
+  if (typeof r.q !== "string" || !r.q.isWellFormed()) return bad;
+  for (const name of ["cursor", "archived", "branches"] as const) {
+    const v = r[name];
+    if (v !== undefined && (typeof v !== "string" || !v.isWellFormed())) return bad;
+  }
+  if (r.limit !== undefined) {
+    if (typeof r.limit !== "number") return bad;
+    if (!INTEGER_LITERAL.test(literals.get("limit") ?? "")) return bad;
+  }
+  return { ok: true, request: r as unknown as SearchRequest };
 }

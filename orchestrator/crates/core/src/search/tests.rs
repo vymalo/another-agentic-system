@@ -371,3 +371,47 @@ proptest! {
         prop_assert!(SearchTerms::from_keys(terms.as_slice().to_vec()).is_ok());
     }
 }
+
+/// Inputs chosen to move when a table behind the fold moves: letters added to Unicode in versions 8 to 14
+/// (their lower-case mappings come from Rust's `to_lowercase`), the title-case digraphs, compatibility
+/// decompositions (`unicode-normalization`), letters that only NFKD makes of a symbol, and the final sigma.
+/// The expected keys are what `FOLD_VERSION` 1 makes of them.
+const PINNED_FOLDS: &[(&str, &str)] = &[
+    ("İstanbul", "istanbul"),
+    ("ΌΣΟΣ", "οσοσ"),
+    ("ΑΣ", "ασ"),
+    ("Ა", "ა"),
+    ("𐕰", "𐖗"),
+    ("Ꟑ", "ꟑ"),
+    ("ǅ", "dz"),
+    ("ǈ", "lj"),
+    ("ﬃ", "ffi"),
+    ("½", "12"),
+    ("ﷺ", "صلىاللهعليهوسلم"),
+    ("K", "k"),
+    ("Å", "a"),
+    ("ẞ", "ss"),
+    ("𞤀", "𞤢"),
+    ("Ꭰ", "ꭰ"),
+    ("ǰ", "j"),
+    ("ᾈ", "α"),
+    ("ꟻ", "ꟻ"),
+];
+
+#[test]
+fn the_fold_is_pinned_raise_fold_version_when_it_moves() {
+    assert_eq!(
+        FOLD_VERSION, 1,
+        "FOLD_VERSION changed: update PINNED_FOLDS to what the new version makes, in the same change"
+    );
+    for (word, key) in PINNED_FOLDS {
+        assert_eq!(
+            fold(word),
+            *key,
+            "the key of {word:?} moved: the folding rules or a Unicode table behind them changed \
+             (a dependency bump?). Every key stored in the search index is now different from the \
+             key a query makes. RAISE `orch_core::search::FOLD_VERSION` (and set PINNED_FOLDS to the \
+             new keys), then run `orchestrator search backfill` on every deployment"
+        );
+    }
+}

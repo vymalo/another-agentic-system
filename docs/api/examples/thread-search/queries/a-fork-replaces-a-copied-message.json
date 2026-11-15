@@ -1,0 +1,122 @@
+{
+  "name": "A fork's own final message replaces a copied one with its `messageId`",
+  "about": "A fork's own final message replaces a copied one with its `messageId`: `gnuone` is the parent's (seq 2 of `Gnu draft`) and the fork, whose copy of it is the parent's and is replaced anyway, has no hit; `gnutwo` is the fork's own at seq 3. A message copied while the parent exists (`question`) is a hit of the parent alone.",
+  "steps": [
+    {
+      "request": {
+        "q": "gnuone"
+      },
+      "expect": {
+        "terms": [
+          "gnuone"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000014",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 2,
+                "role": "agent",
+                "at": "2026-11-14T10:02:00Z",
+                "snippet": {
+                  "text": "first draft mentions gnuone",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 21,
+                      "end": 27
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "gnutwo"
+      },
+      "expect": {
+        "terms": [
+          "gnutwo"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000015",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 3,
+                "role": "agent",
+                "at": "2026-11-14T10:03:00Z",
+                "snippet": {
+                  "text": "second draft mentions gnutwo",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 22,
+                      "end": 28
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "question gnus"
+      },
+      "expect": {
+        "terms": [
+          "question",
+          "gnus"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000014",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "a question about gnus",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 2,
+                      "end": 10
+                    },
+                    {
+                      "start": 17,
+                      "end": 21
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

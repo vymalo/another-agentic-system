@@ -674,7 +674,9 @@ pub async fn paging_is_stable<S: LogAndIndex>(store: S) {
     let want = [6, 3, 7, 5, 4, 2, 1].map(thread_id);
     let mut seen = Vec::new();
     let mut after = None;
-    loop {
+    // a store that repeats a page would loop for ever: the pages are bounded, and failing is the answer
+    let mut finished = false;
+    for _ in 0..want.len() {
         let page = store
             .search_threads(
                 &alice(),
@@ -689,6 +691,7 @@ pub async fn paging_is_stable<S: LogAndIndex>(store: S) {
         assert!(page.rows.len() <= 3);
         seen.extend(ids(&page));
         if !page.more {
+            finished = true;
             break;
         }
         let last = page.rows.last().unwrap();
@@ -697,6 +700,7 @@ pub async fn paging_is_stable<S: LogAndIndex>(store: S) {
             thread: last.thread.id,
         });
     }
+    assert!(finished, "the pages never ended: {seen:?}");
     assert_eq!(seen, want);
 }
 
@@ -769,23 +773,38 @@ pub async fn backfill_indexes_old_events_and_is_idempotent<S: LogAndIndex>(
     forget(&store).await;
     assert!(find(&store, &alice(), "otter").await.rows.is_empty());
     assert!(find(&store, &alice(), "walrus").await.rows.is_empty());
+    assert_eq!(store.search_backlog(100).await.unwrap(), 4);
+    assert_eq!(
+        store.search_backlog(3).await.unwrap(),
+        3,
+        "counted up to the cap"
+    );
 
-    let first = store.backfill_search(None, 2).await.unwrap();
+    let first = store.backfill_search(None, 2, false).await.unwrap();
     assert_eq!((first.threads, first.skipped), (2, 0));
     assert!(first.next.is_some());
     let mut threads = first.threads;
+    let mut messages = first.messages;
     let mut next = first.next;
-    while next.is_some() {
-        let page = store.backfill_search(next, 2).await.unwrap();
+    for _ in 0..4 {
+        if next.is_none() {
+            break;
+        }
+        let page = store.backfill_search(next, 2, false).await.unwrap();
         threads += page.threads;
+        messages += page.messages;
         next = page.next;
     }
+    assert_eq!(next, None);
     assert_eq!(threads, 4);
+    // three threads of two messages, and the fork's two copied ones and its own
+    assert_eq!(messages, 9, "the number of messages indexed is exact");
+    assert_eq!(store.search_backlog(100).await.unwrap(), 0);
     assert_eq!(find(&store, &alice(), "otter").await, before_otter);
     assert_eq!(find(&store, &alice(), "walrus").await, before_walrus);
 
     // again: nothing to do, nothing changes
-    let again = store.backfill_search(None, 50).await.unwrap();
+    let again = store.backfill_search(None, 50, false).await.unwrap();
     assert_eq!(
         (again.threads, again.messages, again.skipped, again.next),
         (0, 0, 0, None)
@@ -836,4 +855,262 @@ pub async fn a_limit_of_zero_is_one_and_no_term_matches_nothing<S: LogAndIndex>(
             .rows
             .is_empty()
     );
+}
+
+/// Three threads and a page of three: no `more`, and no cursor to send for a page that holds all.
+pub async fn a_page_that_holds_every_result_has_no_more<S: LogAndIndex>(store: S) {
+    for n in 1..=3 {
+        open(
+            &store,
+            &alice(),
+            n,
+            "Zebra",
+            None,
+            vec![say(&alice(), "hello")],
+        )
+        .await;
+    }
+    for limit in [3, 4, 50] {
+        let page = store
+            .search_threads(
+                &alice(),
+                &SearchRequest {
+                    limit,
+                    ..request("zebra")
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!((page.rows.len(), page.more), (3, false), "limit {limit}");
+    }
+    let page = store
+        .search_threads(
+            &alice(),
+            &SearchRequest {
+                limit: 2,
+                ..request("zebra")
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!((page.rows.len(), page.more), (2, true));
+}
+
+/// A person's second message does not replace the first: both are searched.
+pub async fn a_persons_second_message_does_not_erase_the_first<S: LogAndIndex>(store: S) {
+    open(
+        &store,
+        &alice(),
+        1,
+        "Notes",
+        None,
+        vec![say(&alice(), "walrus first"), say(&alice(), "otter second")],
+    )
+    .await;
+    let rows = find(&store, &alice(), "walrus").await;
+    assert_eq!(
+        rows.rows[0]
+            .messages
+            .iter()
+            .map(|m| m.seq)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    let rows = find(&store, &alice(), "otter").await;
+    assert_eq!(
+        rows.rows[0]
+            .messages
+            .iter()
+            .map(|m| m.seq)
+            .collect::<Vec<_>>(),
+        [2]
+    );
+}
+
+/// A document matches only when it holds every term: a title with only some of them is no title hit (the
+/// thread is found by its message, at rank 0).
+pub async fn a_title_that_matches_only_some_terms_is_not_a_title_hit<S: LogAndIndex>(store: S) {
+    open(
+        &store,
+        &alice(),
+        1,
+        "zebra notes",
+        Some("lion things"),
+        vec![say(&alice(), "zebra and lion")],
+    )
+    .await;
+    let rows = find(&store, &alice(), "zebra lion").await;
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0].rank, SearchRank::Messages);
+    assert_eq!(rows.rows[0].message_hits, 1);
+    // and with only the title's term it is rank 2
+    assert_eq!(
+        find(&store, &alice(), "zebra notes").await.rows[0].rank,
+        SearchRank::Title
+    );
+}
+
+/// What the old-log cases play: `OLD_EVENTS` messages of one thread, three of them with `zebra` at seqs
+/// 10, 700 and 1500.
+const OLD_EVENTS: i64 = 2000;
+
+async fn open_an_old_log<S: LogAndIndex>(store: &S, n: u128) -> i64 {
+    let events: Vec<NewEvent> = (1..=OLD_EVENTS)
+        .map(|seq| match seq {
+            10 => say(&alice(), "zebra early"),
+            700 => say(&alice(), "zebra middle"),
+            1500 => say(&alice(), "zebra late"),
+            _ => say(&alice(), &format!("filler {seq}")),
+        })
+        .collect();
+    open(store, &alice(), n, "Old thread", None, events).await
+}
+
+async fn zebra_seqs<S: LogAndIndex>(store: &S) -> Vec<i64> {
+    let rows = find(store, &alice(), "zebra").await;
+    assert!(rows.rows.len() <= 1);
+    rows.rows
+        .first()
+        .map(|r| r.messages.iter().map(|m| m.seq).collect())
+        .unwrap_or_default()
+}
+
+/// A thread with 2,000 old events the index has not been through, and one new commit: the commit's own
+/// message is searchable at once, the commit did bounded work (it indexed 500 of the old events: the
+/// watermark moves by that much and not past it), each later commit does the next 500, nothing is skipped
+/// or counted twice, and the backfill completes it.
+pub async fn a_commit_catches_an_old_log_up_in_bounded_steps<S: LogAndIndex>(
+    store: S,
+    forget: impl AsyncFnOnce(&S),
+) {
+    let mut v = open_an_old_log(&store, 1).await;
+    forget(&store).await;
+    assert!(zebra_seqs(&store).await.is_empty(), "nothing is indexed");
+    assert_eq!(store.search_backlog(10).await.unwrap(), 1);
+
+    // the first commit: its own message at once, 500 of the old events, not the rest
+    v = append(&store, 1, v, vec![say(&alice(), "walrus own one")]).await;
+    assert_eq!(find(&store, &alice(), "walrus").await.rows.len(), 1);
+    assert_eq!(zebra_seqs(&store).await, [10], "events 1..=500 only");
+    assert_eq!(store.search_backlog(10).await.unwrap(), 1, "still behind");
+
+    // the second: events 501..=1000, so the middle one, and still not the late one
+    v = append(&store, 1, v, vec![say(&alice(), "walrus own two")]).await;
+    assert_eq!(zebra_seqs(&store).await, [700, 10]);
+    assert_eq!(
+        find(&store, &alice(), "walrus").await.rows[0].message_hits,
+        2
+    );
+
+    // the backfill finishes it, over the rows the commits wrote beyond the watermark
+    let page = store.backfill_search(None, 10, false).await.unwrap();
+    assert_eq!((page.threads, page.skipped, page.next), (1, 0, None));
+    assert_eq!(zebra_seqs(&store).await, [1500, 700, 10]);
+    assert_eq!(
+        find(&store, &alice(), "walrus").await.rows[0].message_hits,
+        2
+    );
+    assert_eq!(store.search_backlog(10).await.unwrap(), 0);
+
+    // and once through, a commit adds its own events only
+    append(&store, 1, v, vec![say(&alice(), "walrus own three")]).await;
+    assert_eq!(
+        find(&store, &alice(), "walrus").await.rows[0].message_hits,
+        3
+    );
+    assert_eq!(zebra_seqs(&store).await, [1500, 700, 10]);
+}
+
+/// A later final message that replaces an older one beyond the part a commit caught up is not undone by
+/// the catch-up: the older one is never searched.
+pub async fn a_catch_up_does_not_index_a_message_a_later_one_replaced<S: LogAndIndex>(
+    store: S,
+    forget: impl AsyncFnOnce(&S),
+) {
+    let mut events: Vec<NewEvent> = (1..=OLD_EVENTS)
+        .map(|seq| say(&alice(), &format!("filler {seq}")))
+        .collect();
+    events[9] = reply("m1", "walrus draft", true, None);
+    events[1500] = reply("m1", "otter final", true, None);
+    events[1600] = reply("m2", "badger one", true, None);
+    events[1700] = reply("m2", "plain working", true, Some(MessagePurpose::Working));
+    let v = open(&store, &alice(), 1, "Old thread", None, events).await;
+    assert!(find(&store, &alice(), "walrus").await.rows.is_empty());
+    forget(&store).await;
+    // one commit: events 1..=500 are caught up, the draft among them, replaced at seq 1501
+    append(&store, 1, v, vec![say(&alice(), "own words")]).await;
+    assert!(
+        find(&store, &alice(), "walrus").await.rows.is_empty(),
+        "a message a later one replaces is not indexed"
+    );
+    let page = store.backfill_search(None, 10, false).await.unwrap();
+    assert_eq!(page.threads, 1);
+    assert!(find(&store, &alice(), "walrus").await.rows.is_empty());
+    assert_eq!(find(&store, &alice(), "otter").await.rows.len(), 1);
+    // replaced by working text: nothing of m2 is searched
+    assert!(find(&store, &alice(), "badger").await.rows.is_empty());
+    assert!(find(&store, &alice(), "plain").await.rows.is_empty());
+}
+
+/// A thread indexed under an older fold version is unindexed: it is **not found** (never found by the keys
+/// of the old rules) until a commit to it, or the backfill, indexes it again from the start; the backfill
+/// counts it as behind, and `rebuild` goes through every thread whatever it holds.
+pub async fn a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again<
+    S: LogAndIndex,
+>(
+    store: S,
+    age: impl AsyncFnOnce(&S),
+) {
+    let v1 = open(
+        &store,
+        &alice(),
+        1,
+        "Walrus",
+        Some("walrus notes"),
+        vec![say(&alice(), "walrus one")],
+    )
+    .await;
+    open(
+        &store,
+        &alice(),
+        2,
+        "Otter",
+        None,
+        vec![say(&alice(), "walrus two")],
+    )
+    .await;
+    assert_eq!(find(&store, &alice(), "walrus").await.rows.len(), 2);
+    assert_eq!(store.search_backlog(10).await.unwrap(), 0);
+    age(&store).await;
+    // never found with keys of the old rules, whatever they hold
+    assert!(find(&store, &alice(), "walrus").await.rows.is_empty());
+    assert!(find(&store, &alice(), "zzzold").await.rows.is_empty());
+    assert_eq!(store.search_backlog(10).await.unwrap(), 2);
+    assert_eq!(
+        store.search_backlog(1).await.unwrap(),
+        1,
+        "counted up to the cap"
+    );
+
+    // a commit indexes the thread again, from the start
+    append(&store, 1, v1, vec![say(&alice(), "walrus three")]).await;
+    let rows = find(&store, &alice(), "walrus").await;
+    assert_eq!(ids(&rows), [thread_id(1)]);
+    assert_eq!(rows.rows[0].message_hits, 2);
+    assert_eq!(rows.rows[0].rank, SearchRank::Title);
+    assert_eq!(store.search_backlog(10).await.unwrap(), 1);
+
+    // the backfill does the other
+    let page = store.backfill_search(None, 10, false).await.unwrap();
+    assert_eq!((page.threads, page.messages), (1, 1));
+    assert_eq!(find(&store, &alice(), "walrus").await.rows.len(), 2);
+    assert_eq!(store.search_backlog(10).await.unwrap(), 0);
+    let none = store.backfill_search(None, 10, false).await.unwrap();
+    assert_eq!((none.threads, none.messages), (0, 0));
+
+    // a rebuild goes through everything, and changes nothing
+    let before = find(&store, &alice(), "walrus").await;
+    let all = store.backfill_search(None, 10, true).await.unwrap();
+    assert_eq!((all.threads, all.messages), (2, 3));
+    assert_eq!(find(&store, &alice(), "walrus").await, before);
 }

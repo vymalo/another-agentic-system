@@ -110,7 +110,9 @@ pub struct SearchRows {
 pub struct SearchBackfill {
     /// Threads whose log (or title) the index had not been through, and which it went through.
     pub threads: u32,
-    /// Messages indexed.
+    /// Messages in the index for the threads it went through, from the point it started at: the exact
+    /// number of rows it wrote that are there when it is done (a message a later one replaced is not
+    /// counted).
     pub messages: u64,
     /// Threads left alone because somebody held their lock for longer than the page waited for it:
     /// run the backfill again (the commit that held the lock, or the next one, catches the thread up
@@ -139,7 +141,11 @@ pub trait ThreadSearch: Send + Sync + 'static {
     /// owner's threads and the owner's words** are searched: another person's are never in the
     /// answer, by title or by content, and the answer is always a subset of
     /// [`ThreadStore::list_threads`](crate::ThreadStore::list_threads) for the same `archived` and
-    /// `include_edits`. A thread deleted is not in it from the moment the delete committed.
+    /// `include_edits`. A thread deleted is not in it from the moment the delete committed. **A thread whose
+    /// index is behind is found only for what is indexed**: a thread stored under another
+    /// [`FOLD_VERSION`](orch_core::search::FOLD_VERSION) is not found at all until a commit or the backfill
+    /// has indexed it again (never by keys made by the old rules), and one a commit has caught up only in
+    /// part is found by its title, its description and the messages indexed so far.
     ///
     /// # Errors
     /// [`StoreError::Unavailable`] when the store is down or the search took too long.
@@ -150,14 +156,26 @@ pub trait ThreadSearch: Send + Sync + 'static {
     ) -> impl Future<Output = Result<SearchRows, StoreError>> + Send;
 
     /// Indexes the titles and messages that threads logged before the index existed, or while a
-    /// build without it wrote to the log, for at most `limit` threads with an id above `after`
-    /// (`None`: from the start), in id order. One thread is one transaction, under the lock of the
-    /// thread, so it can run while the service does; **running it again changes nothing**.
+    /// build without it wrote to the log, or under an older [`FOLD_VERSION`](orch_core::search::FOLD_VERSION),
+    /// or that a commit left behind (a commit catches an old log up only
+    /// [`COMMIT_CATCH_UP_EVENTS`](orch_core::search::COMMIT_CATCH_UP_EVENTS) events at a time), for at
+    /// most `limit` threads with an id above `after` (`None`: from the start), in id order. One thread
+    /// is one transaction, under the lock of the thread, so it can run while the service does;
+    /// **running it again changes nothing**.
+    ///
+    /// A thread whose stored fold version is not the current one is indexed **from the start,
+    /// replacing its rows**. With `rebuild` every thread is, whatever it has stored.
     ///
     /// Call it with the `next` of the page before until `next` is `None`.
     fn backfill_search(
         &self,
         after: Option<ThreadId>,
         limit: u32,
+        rebuild: bool,
     ) -> impl Future<Output = Result<SearchBackfill, StoreError>> + Send;
+
+    /// How many threads the index has not been through (a log or a fold version it is behind), **counted
+    /// up to `cap`**: the answer is `min(threads, cap)`. For the startup warning and for what
+    /// `search backfill` says remains; it stops reading at `cap`.
+    fn search_backlog(&self, cap: u32) -> impl Future<Output = Result<u32, StoreError>> + Send;
 }

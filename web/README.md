@@ -1129,7 +1129,7 @@ server's route that a box will be drawn against: `POST /api/search/threads` (`se
 capability a client checks before it offers a box.
 
 `mock/search.ts` is the **second implementation** of that page (the first is `orch_core::search`, in Rust): it imports nothing of `src/`, so what the page says and not what the web
-does is what is held. `mock/search.test.ts` reads every vector of `docs/api/examples/thread-search/` (fold, query, snippet, and the corpus with its queries) and the page's own numbers;
+does is what is held. `mock/search.test.ts` reads every vector of `docs/api/examples/thread-search/` (fold, query, snippet, the corpus with its queries, and `requests.json`: raw bodies and headers with the status and `code` each is answered with, which `readRequest` decides: the media type, the shape, no `null`, no member twice, `limit` an integer literal) and the page's own numbers;
 `mock/server.contract.test.ts` validates the route's answers against `chat-api.yaml`: the shape, only the caller's own threads and a subset of `listThreads`, the refusals and their
 codes, paging, the archived filter, a deleted thread, and the 429 with `Retry-After` (a burst of 20 and then two a second, **per session** in the mock, where a session is a person). The
 box, the highlighting from `matches` (UTF-16 offsets into `snippet.text`, text nodes and never `dangerouslySetInnerHTML`) and opening a hit at its `seq` are 7b.

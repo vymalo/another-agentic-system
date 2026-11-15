@@ -58,6 +58,7 @@ import {
   type LogEvent,
   MAX_QUERY_LENGTH,
   MAX_TERMS,
+  readRequest,
   type Searchable,
   searchableMessages,
   searchThreads,
@@ -574,6 +575,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const readBody = (req: http.IncomingMessage): Promise<unknown> =>
     readJson(req).catch(() => undefined);
 
+  const readBytes = (req: http.IncomingMessage): Promise<Buffer> =>
+    new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => resolve(Buffer.concat(chunks)));
+      req.on("error", reject);
+    });
   const readJson = (req: http.IncomingMessage): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
@@ -2032,39 +2040,21 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     bucket.tokens -= 1;
     if (!holds(me, "thread.read")) return forbid(res, "thread.read");
-    if (!/^application\/json\b/i.test(req.headers["content-type"] ?? "")) {
-      return problem(res, 415, "Unsupported Media Type", "the body is application/json");
-    }
-    let body: unknown;
+    // the request as docs/api/thread-search-v1.md reads it: media type, shape, then (in `searchThreads`) the query, the limit, the
+    // filters and the cursor, in that order
+    const bytes = await readBytes(req);
+    let raw: string;
     try {
-      body = await readJson(req);
+      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     } catch {
-      return problem(res, 400, "Bad Request", "the body is not JSON", "bad_request");
+      raw = "\u0000"; // not UTF-8: not JSON, but the media type is judged first
     }
-    const bad = (detail: string) => problem(res, 400, "Bad Request", detail, "bad_request");
-    if (typeof body !== "object" || body === null || Array.isArray(body))
-      return bad("the body is an object");
-    const known = ["q", "limit", "cursor", "archived", "branches"];
-    for (const key of Object.keys(body)) {
-      if (!known.includes(key))
-        return bad(`\`${key}\` is not a member of the request (there is no owner: ADR 0039)`);
+    const read = readRequest(req.headers["content-type"], raw);
+    if (!read.ok) {
+      return read.status === 415
+        ? problem(res, 415, "Unsupported Media Type", "the body is application/json")
+        : problem(res, 400, "Bad Request", "the body is not a search request", "bad_request");
     }
-    const r = body as Record<string, unknown>;
-    if (typeof r.q !== "string") return bad("`q` is a string");
-    if (r.limit !== undefined && (typeof r.limit !== "number" || !Number.isInteger(r.limit)))
-      return bad("`limit` is an integer");
-    if (r.cursor !== undefined && typeof r.cursor !== "string") return bad("`cursor` is a string");
-    if (r.cursor !== undefined && r.cursor.length > 512)
-      return problem(res, 400, "Bad Request", "not a cursor", "bad_cursor");
-    if (
-      r.archived !== undefined &&
-      r.archived !== "exclude" &&
-      r.archived !== "only" &&
-      r.archived !== "include"
-    ) {
-      return bad("`archived` is `exclude`, `only` or `include`");
-    }
-    if (r.branches !== undefined && r.branches !== "include") return bad("`branches` is `include`");
     const mine: Searchable[] = [...threads.values()]
       .filter((t) => t.owner === me.user)
       .map((t) => ({
@@ -2092,15 +2082,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           }),
         ),
       }));
-    const found = searchThreads(mine, {
-      q: r.q,
-      ...(r.limit !== undefined ? { limit: r.limit as number } : {}),
-      ...(r.cursor !== undefined ? { cursor: r.cursor as string } : {}),
-      ...(r.archived !== undefined
-        ? { archived: r.archived as "exclude" | "only" | "include" }
-        : {}),
-      ...(r.branches !== undefined ? { branches: "include" as const } : {}),
-    });
+    const found = searchThreads(mine, read.request);
     if (!found.ok) {
       const detail =
         found.code === "query_empty"

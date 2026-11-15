@@ -270,23 +270,32 @@ impl PgStore {
         // the search index, in the same transaction (ADR 0068): what a fork copied is indexed from the
         // fork's own log (the parent's rows may no longer hold a message it replaced), then the events
         // of its own
-        if cut > 0 {
-            search::catch_up(&mut tx, new.id, &new.owner, 0, cut).await?;
-        }
+        let search_reached = if cut > 0 {
+            search::catch_up_before_commit(&mut tx, new.id, &new.owner, 0, cut).await?
+        } else {
+            0
+        };
         search::index_events(&mut tx, new.id, &new.owner, &events).await?;
         insert_outbox(&mut tx, new.id, first.outbox, first.now).await?;
         let rearmed =
             insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
                 .await?;
         let last_seq = cut + i64::try_from(events.len()).unwrap_or(i64::MAX - cut);
+        let search_through = if search_reached >= cut {
+            last_seq
+        } else {
+            search_reached
+        };
         let row = sqlx::query(concat!(
-            "UPDATE threads SET last_seq = $2, usage_through = $2, search_through = $2, \
+            "UPDATE threads SET last_seq = $2, usage_through = $2, search_through = $4, search_fold = $5, \
              updated_at = $3 WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(new.id.0)
         .bind(last_seq)
         .bind(to_db(first.now))
+        .bind(search_through)
+        .bind(orch_core::search::FOLD_VERSION)
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -1614,7 +1623,7 @@ impl ThreadStore for PgStore {
         // be raced, so seq has no gaps and no duplicates (READ COMMITTED is enough).
         let locked = sqlx::query(
             "SELECT version, last_seq, state, owner, usage_through, forked_at, search_through, \
-                 title, description FROM threads WHERE id = $1 FOR UPDATE",
+                 search_fold, title, description FROM threads WHERE id = $1 FOR UPDATE",
         )
         .bind(thread.0)
         .fetch_optional(&mut *tx)
@@ -1731,14 +1740,24 @@ impl ThreadStore for PgStore {
         if behind < last_seq {
             usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
         }
-        // The search index (ADR 0068), the same way: what it has not been through first, with the title
-        // and description of the row (the thread has none of its words indexed until then), then this
-        // commit's events.
-        let search_through: i64 = locked.try_get("search_through").map_err(store_err)?;
-        let search_behind = search_through < last_seq;
+        // The search index (ADR 0068), the same way, but **bounded**: some of what it has not been through
+        // first (at most COMMIT_CATCH_UP_EVENTS events, the watermark advancing only as far as it got), with
+        // the title and description of the row, then this commit's events, always. A thread stored under
+        // another fold version starts again from nothing.
+        let mut search_through: i64 = locked.try_get("search_through").map_err(store_err)?;
+        let search_fold: i32 = locked.try_get("search_fold").map_err(store_err)?;
+        if search_fold != orch_core::search::FOLD_VERSION {
+            search::delete_index(&mut tx, thread).await?;
+            search_through = 0;
+        }
+        let search_behind =
+            search_through < last_seq || search_fold != orch_core::search::FOLD_VERSION;
         let (mut title_keys, mut description_keys) = (None, None);
+        let mut search_reached = last_seq;
         if search_behind {
-            search::catch_up(&mut tx, thread, &owner, search_through, last_seq).await?;
+            search_reached =
+                search::catch_up_before_commit(&mut tx, thread, &owner, search_through, last_seq)
+                    .await?;
             let title: String = locked.try_get("title").map_err(store_err)?;
             let description: Option<String> = locked.try_get("description").map_err(store_err)?;
             title_keys = Some(search::keys_of(Some(&title)));
@@ -1755,6 +1774,12 @@ impl ThreadStore for PgStore {
             description_keys = Some(search::keys_of(Some(description)));
         }
         let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
+        // the index is through the whole log only if the old part was finished; else exactly where it stopped
+        let search_through_after = if search_reached >= last_seq {
+            new_last_seq
+        } else {
+            search_reached
+        };
         // The job is written with the state, under the same lock and version check; a commit
         // without one leaves the stored job alone.
         let job = commit.job.as_ref().map(job_json).transpose()?;
@@ -1767,7 +1792,8 @@ impl ThreadStore for PgStore {
                  ELSE share_nonce END, \
              shared_at = CASE $8::text WHEN 'set' THEN $4 WHEN 'clear' THEN NULL \
                  ELSE shared_at END, \
-             version = version + 1, last_seq = $3, usage_through = $3, search_through = $3, \
+             version = version + 1, last_seq = $3, usage_through = $3, search_through = $13, \
+             search_fold = $14, \
              title_terms = CASE WHEN $11::text[] IS NULL THEN title_terms \
                  ELSE array_to_tsvector($11) END, \
              description_terms = CASE WHEN $12::text[] IS NULL THEN description_terms \
@@ -1788,6 +1814,8 @@ impl ThreadStore for PgStore {
         .bind(sharing_nonce(commit.sharing))
         .bind(title_keys)
         .bind(description_keys)
+        .bind(search_through_after)
+        .bind(orch_core::search::FOLD_VERSION)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {

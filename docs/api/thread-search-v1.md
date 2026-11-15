@@ -11,8 +11,9 @@
   [`web/mock/search.ts`](../../web/mock/search.ts) (TypeScript) are two implementations of this page, and a third reads it the same way.
 - **Conformance vectors:** [`examples/thread-search/`](examples/thread-search/): `fold.json` (text to words and keys), `query.json` (a
   query to its terms, or its error), `snippet.json` (a text and terms to the snippet), `corpus.json` with `queries/*.json` (a person's
-  threads, and what each request of them answers). The Rust core reads the first three and the mock's tests read all of them; a test of
-  each holds this page's numbers to the code.
+  threads, and what each request of them answers), and `requests.json` (raw bodies and headers, and the status and `code` each is
+  answered with: the media type, the shape of the body, and which error wins). The Rust core reads the first three, the Rust API
+  reads the last three, and the mock's tests read all of them; a test of each holds this page's numbers to the code.
 - **Words:** MUST, SHOULD and MAY are used as in RFC 2119.
 
 A person searches **their own threads and nobody else's** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): the
@@ -40,7 +41,8 @@ route needs `thread.read`, which every role has for its own threads, and no role
 
 A **word** is a maximal run of code points of the Unicode general categories L (letter), M (mark) and N (number): `[\p{L}\p{M}\p{N}]+`.
 Everything else (space, punctuation, symbols, emoji, `@`, `'`, `-`, `_`, `.`) separates words and is in none. A text has **at most
-`MAX_WORDS` words**: the 3,001st and every later one is not a word, so it is searched and marked by nobody. A word has a start and an end,
+`MAX_WORDS` words**: the 3,001st and every later one is not a word, so it is searched and marked by nobody. The cap is the same for a
+title, a description and a message. A word has a start and an end,
 **UTF-16 code unit offsets** into the text it is in (`end` is the offset after its last unit), so an emoji or a letter outside the Basic
 Multilingual Plane counts two.
 
@@ -74,11 +76,17 @@ on the key and not the word because NFKD can make a letter into many (`ﷺ` is e
 
 A final `agent_message` **replaces** the earlier ones of the same thread with the same `messageId`: only the last is searched (and not at all
 when the last is working text). It is the rule that [`thread-markdown-v1.md`](thread-markdown-v1.md) uses to find an agent's answer. A
-person's message is never replaced.
+person's message is never replaced: two `user_message`s are two messages. **A message with `final: false` is ignored: it is not searched
+and it replaces nothing**, whatever its `messageId` and `purpose` (a later partial never takes away an earlier final answer). An **empty
+description is no description**: it matches nothing and has no hit.
 
 **Forks.** A fork's log starts with its parent's events up to the cut ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md)).
 **While the parent exists** (the thread's `forkedFrom.threadId` is set) the copied events give **no message hit**: the parent shows them. Once the
 parent is deleted the fork stands alone, and its copied events are its own words. A fork's own title, description and events always count.
+The events a fork **copied** are those with `seq` up to its cut (`copiedThrough`), and the rest are its own. **A replacement across the cut
+is the fork's own**: when a fork's own final message has the `messageId` of a copied one, it replaces it as in any log, so the copied message
+is searched by nobody (not in the fork, whether the parent exists or not, and not as a message of the parent, which keeps it), and the
+replacement is a message of the fork like any other.
 A thread made by an edit of a message is a **branch**, searched only when the request says `branches: include`, as in `listThreads`.
 
 ## The query
@@ -93,6 +101,9 @@ A thread made by an edit of a message is a **branch**, searched only when the re
 3. Read the words of `q` and take the key of each (no limit on the number of words; there are at most 200 characters).
 4. Cut every key to its first `MAX_KEY` code points, drop the keys of fewer than `MIN_TERM` code points, drop a key that an earlier one
    equals, and keep the first `MAX_TERMS`. These are the **terms**.
+
+A query with a **lone surrogate** (`"\ud800"` in the JSON) is not text: the body is a 400 `bad_request`, as for any string. A vulgar
+fraction is folded like any letter: `½` is the term `12`, so `1/2` (two words of one digit each, both dropped) does not find it.
 
 A query with **no term** (`a`, `!!`) is not an error: **200 with `terms: []` and no result**. Quotes, `OR`, `-`, `*`, `:`, `|`, `&`, `!`,
 parentheses and SQL are punctuation or words like any others: **there is no query syntax**. A server MUST NOT put `q` or any text of it into
@@ -111,16 +122,18 @@ same word). Terms are never split between documents: `tomatoes basil` finds a me
 | Member | |
 |---|---|
 | `rank` | **2** when the title matches, else **1** when the description matches, else **0** (only messages) |
-| order | `rank` descending, then the thread's `id` descending (ids are UUIDv7, so the newest created first). A page that is read later may differ from an earlier one only because a thread was renamed, deleted or written to in between |
+| order | `rank` descending, then the thread's `id` descending, ids compared as **lower-case hyphenated UUID strings** (they are UUIDv7, so the newest created first). A page that is read later may differ from an earlier one only because a thread was renamed, deleted or written to in between |
+| `next` | the `cursor` of the next page, **present only if at least one more thread follows the last of this page**: a page of exactly the results left has none (no empty last page) |
 | `hits` | the **title** hit, if it matches; the **description** hit, if it matches; then **at most `MAX_MESSAGE_HITS`** message hits, **newest first** (by `seq`, descending) |
-| `messageHits` | the **exact** number of matching messages, so a client can say "and 2 more messages" |
+| `messageHits` | the **exact** number of matching messages, so a client can say "and 2 more messages". It is `0` for a thread found by its title or its description alone: a thread is a hit when any of the three matches, and a result with `messageHits: 0` is not an error |
 | `query.terms` | the terms used, so a client can say what was searched for |
 
 A **message hit** has the message's `seq` (the number to open the thread at: `getThreadHistory?since=<seq>` as for a `#m-<seq>` link), its
 `role` (`person` or `agent`) and its `at`. Every hit has a `snippet`.
 
 **Archived threads** are included unless `archived` says otherwise: `include` (the default), `exclude` (not archived) or `only` (archived
-only). A hit does not say whether its thread is archived: the `thread` does (`archived: true`).
+only). A hit does not say whether its thread is archived: the `thread` does (`archived: true`). `archived` and `branches` are two filters
+that combine: with `archived: only` and `branches: include`, the archived threads, branches included, and a branch that is not archived is not one.
 
 ## The snippet
 
@@ -143,6 +156,12 @@ ones itself and MUST NOT interpret anything of the text as markup.
    inside the window whose key starts with a term, as `{start, end}` **relative to `text`**, in order. A window never starts or ends inside a
    surrogate pair: its edges are word edges, 0 or the length.
 
+Every comparison above is **inclusive**: a context word that starts exactly `CONTEXT_UNITS` before the first match is in, a word that ends
+exactly `WINDOW_UNITS` after the start is in, and text left over exactly `EDGE_UNITS` long is kept (the vectors have the boundary on both
+sides of each: 100 and 101, 200 and 201, 20 and 21). Only U+0020, U+0009, U+000A and U+000D are whitespace to the snippet: a no-break space
+(U+00A0) or a line separator (U+2028) is a character of the text and stays. The `MAX_WORDS`-th word can end a window, and the text's end is kept
+after it only when no word follows, not even one beyond `MAX_WORDS`.
+
 A client writes "…" in front when `cutStart` and after when `cutEnd`; it MAY use its own length for what it shows, the offsets always stay
 in UTF-16 units of `text`.
 
@@ -157,14 +176,21 @@ branch, accents, Cyrillic, CJK, digits, hostile text, no terms, paging and the r
 
 | | |
 |---|---|
-| `limit` | threads per page, 1 to 50, default 20; out of range is 400 `bad_request` |
-| `cursor` | the `next` of the page before, **sent back unchanged with the same `q`, `archived` and `branches`**; anything else, another request's cursor included, is 400 `bad_cursor`. What is in a cursor is each server's own |
+| the body | **one JSON object**, with only `q` (a string, required), `limit`, `cursor`, `archived` and `branches`: any other member (**there is no `owner`**: a person's threads are the only ones there are to search), a member twice, a body that is not an object, or a lone surrogate in any string is 400 `bad_request`. **`null` is a value like any other and not an absent member**: `"limit": null` is the wrong type, 400 `bad_request`, for every member |
+| `limit` | threads per page, **a JSON integer literal** from 1 to 50, **default 20**: `20.0` and `2e1` are not integers and are 400 `bad_request`, and so is a number out of range |
+| `cursor` | **a position, not a capability**: the `next` of the page before, a rank and a thread id, checked against the **terms** and the `archived` and `branches` of the request (not the text of `q`: `zebra` and `ZEBRA!!` have the same terms, so a cursor of one is the cursor of the other). It carries no authority: the owner filter applies to whoever sends it, so another person's cursor gives them only their own threads. **A cursor that does not decode to a valid position, or whose terms and filters are not the request's, is 400 `bad_cursor`**, even when the query keeps no term. What is in a cursor is each server's own, and a server SHOULD refuse a rank outside 0 to 2 and an id that is not a lower-case hyphenated UUID |
 | `archived`, `branches` | `exclude`, `only`, `include` and `include`; anything else is 400 `bad_request`. `branches` is absent or `include` |
-| any other member | 400 `bad_request`. **There is no `owner`**: a person's threads are the only ones there are to search |
 | 401, 403 | no sign-in; no `thread.read` |
-| 415 | the body is not `application/json` |
-| 429 `rate_limited` | a person searches in bursts and then a few times a second; `Retry-After` says how long to wait |
-| 503 `search_unavailable` | the store is down or the search took too long; `Retry-After` says when to try again |
+| 415 | the media type is not **exactly `application/json`**: parameters such as `charset=utf-8` are allowed and the case is ignored, but `application/problem+json`, `application/json-seq` and a missing `Content-Type` are 415 |
+| 429 `rate_limited` | a person searches in bursts and then a few times a second; `Retry-After` says, **in seconds**, how long to wait |
+| 503 `search_unavailable` | the store is down, the whole search took more than 2 seconds (one budget for all its statements), or this process already runs as many searches as it runs at once (8, for everybody: it answers at once and does not queue); `Retry-After` says, **in seconds**, when to try again |
+
+**When two errors apply, the first of these wins:** 401, then 429, then 403, then 415, then the shape of the body (400 `bad_request`: not an
+object, a member that is not allowed or twice, a wrong type, `null`, a lone surrogate, a `limit` that is not an integer literal), then `q`
+(400 `query_empty`, then `query_too_long`), then the range of `limit`, then `archived`, then `branches` (400 `bad_request`), then the
+cursor (400 `bad_cursor`), and last the store (503). So `{"q": "", "limit": "x"}` is `bad_request` (the shape is read first), `{"q": " ",
+"limit": 0}` is `query_empty`, and `{"q": "a", "cursor": "x"}` is `bad_cursor` (a query that keeps no term is checked against the cursor
+too). `requests.json` holds every one of these.
 
 The query is **never in a URL** (the route is a `POST`, a safe read: it writes nothing) and a server's log lines hold the number of terms and
 nothing of the words.
@@ -178,6 +204,33 @@ nothing of the words.
   under `/api/shared` or `/api/public`.
 - **File names, step input and output and reasoning are not searched** on purpose (the words of the agent are its final answers).
 - **Unicode.** The vectors use only characters of Unicode 13 and earlier; whether another runtime's tables agree beyond that is *unverified*.
+- **A fraction is its digits.** `½` is `12`; `1/2` is two one-digit words and finds nothing (see "The query").
+
+## Operating a server (the orchestrator)
+
+What a person can find is what the index holds, and the index is a function of the log that a server writes with every event. Three
+situations leave a thread unindexed, and each is told and cured:
+
+- **Threads from before the index existed** (migration `0025`), and threads a build without the index wrote to, are **not found** until a
+  new message, or `orchestrator search backfill`, indexes them. At startup the orchestrator logs **one WARN line** when any thread is
+  unindexed: the count (capped at 100,000) and the command to run. The count is one `SELECT count(*) ... LIMIT`: it stops at the cap, but
+  reads the whole `threads` table once when almost every thread is indexed, once per process start and never on a request. `search
+  backfill` goes through the threads in pages, one transaction each, and prints in its one-line JSON report how many `remaining`.
+- **A change to the folding rules** (a change to the fold, or a bump of a dependency whose Unicode tables it reads) raises
+  `orch_core::search::FOLD_VERSION`. A thread stored under another version is **unindexed**: it is **not found at all** (never found by
+  keys made by the old rules for a query made by the new ones), its next commit or `search backfill` indexes it again from the start,
+  replacing its rows, and `search backfill --rebuild` does it for every thread. A failing `fold.json` vector after a dependency bump means:
+  raise the version.
+- **A long old log.** A commit to a thread the index is behind catches up **at most 500 older events** besides its own, and moves the
+  watermark only as far as it got (never past a gap); the rest is for the next commits and the backfill. **Until it is caught up, a thread
+  is found only for what is indexed**: its title, its description, the messages of the part caught up and the messages of the commits since;
+  an older message of the part not yet reached is not a hit, and it is never a wrong one (a message that a later final message replaces is
+  not indexed).
+
+Cost: each search is one transaction with **one 2-second budget for all its statements** (each gets what the ones before left), and a
+process runs at most 8 searches at once, for everybody (a ninth is a 503 at once). What is **not** bounded is the cost of a prefix term over
+a very large shared index (one index spans every person; a person's threads are found by the owner filter, not by a smaller index): see
+[ADR 0068](../decisions/0068-a-person-searches-their-own-threads.md) for what follows if that is ever too slow.
 
 ## Client recipe
 

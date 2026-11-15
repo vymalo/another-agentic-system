@@ -42,104 +42,28 @@ type Stack = PortSet<
 >;
 
 const CORPUS: &str = include_str!("../../../../docs/api/examples/thread-search/corpus.json");
-const QUERIES: &[(&str, &str)] = &[
-    (
-        "title-description-message",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/title-description-message.json"
-        ),
-    ),
-    (
-        "rank-and-order",
-        include_str!("../../../../docs/api/examples/thread-search/queries/rank-and-order.json"),
-    ),
-    (
-        "all-terms-in-one-document",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/all-terms-in-one-document.json"
-        ),
-    ),
-    (
-        "newest-messages-first",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/newest-messages-first.json"
-        ),
-    ),
-    (
-        "archived-by-default",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/archived-by-default.json"
-        ),
-    ),
-    (
-        "branches",
-        include_str!("../../../../docs/api/examples/thread-search/queries/branches.json"),
-    ),
-    (
-        "replaced-final-message",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/replaced-final-message.json"
-        ),
-    ),
-    (
-        "partial-and-working-words",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/partial-and-working-words.json"
-        ),
-    ),
-    (
-        "accents-and-ligatures",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/accents-and-ligatures.json"
-        ),
-    ),
-    (
-        "scripts",
-        include_str!("../../../../docs/api/examples/thread-search/queries/scripts.json"),
-    ),
-    (
-        "digits",
-        include_str!("../../../../docs/api/examples/thread-search/queries/digits.json"),
-    ),
-    (
-        "hostile-queries",
-        include_str!("../../../../docs/api/examples/thread-search/queries/hostile-queries.json"),
-    ),
-    (
-        "no-terms",
-        include_str!("../../../../docs/api/examples/thread-search/queries/no-terms.json"),
-    ),
-    (
-        "paging",
-        include_str!("../../../../docs/api/examples/thread-search/queries/paging.json"),
-    ),
-    (
-        "paging-with-another-query",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/paging-with-another-query.json"
-        ),
-    ),
-    (
-        "paging-with-another-filter",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/paging-with-another-filter.json"
-        ),
-    ),
-    (
-        "a-cursor-that-is-not-one",
-        include_str!(
-            "../../../../docs/api/examples/thread-search/queries/a-cursor-that-is-not-one.json"
-        ),
-    ),
-    (
-        "bad-requests",
-        include_str!("../../../../docs/api/examples/thread-search/queries/bad-requests.json"),
-    ),
-    (
-        "limit-bounds",
-        include_str!("../../../../docs/api/examples/thread-search/queries/limit-bounds.json"),
-    ),
-];
+const REQUESTS: &str = include_str!("../../../../docs/api/examples/thread-search/requests.json");
+/// Every file of `queries/`, read from the directory (the web's mock reads the directory too, so a new file
+/// can never be asked of one and not of the other).
+fn queries() -> Vec<(String, String)> {
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../docs/api/examples/thread-search/queries"
+    );
+    let mut files: Vec<(String, String)> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                std::fs::read_to_string(&path).unwrap(),
+            )
+        })
+        .filter(|(name, _)| name.ends_with(".json"))
+        .collect();
+    files.sort();
+    files
+}
 
 // ---- the contract ---------------------------------------------------------------------------
 
@@ -443,8 +367,13 @@ async fn play_corpus(h: &Harness) {
     let threads = corpus["threads"].as_array().unwrap();
     for t in threads {
         let id: ThreadId = t["id"].as_str().unwrap().parse().unwrap();
-        let title = t["title"].as_str().unwrap();
-        let description = t["description"].as_str();
+        let title = &text_of(&t["title"]);
+        let description = (!t["description"].is_null()).then(|| text_of(&t["description"]));
+        let parent: ThreadId = t["parent"]
+            .as_str()
+            .unwrap_or("0190aaaa-0000-7000-8000-000000000003")
+            .parse()
+            .unwrap();
         let events: Vec<&Value> = t["events"].as_array().unwrap().iter().collect();
         let own = |from: i64| -> Vec<NewEvent> {
             let mut out = Vec::new();
@@ -453,10 +382,10 @@ async fn play_corpus(h: &Harness) {
                 let at: Timestamp = e["at"].as_str().unwrap().parse().unwrap();
                 let body = match e["kind"].as_str().unwrap() {
                     "user_message" => {
-                        EventBody::UserMessage(UserMessageData::new(e["text"].as_str().unwrap()))
+                        EventBody::UserMessage(UserMessageData::new(text_of(&e["text"])))
                     }
                     "agent_message" => EventBody::AgentMessage(AgentMessageData {
-                        text: e["text"].as_str().unwrap().to_owned(),
+                        text: text_of(&e["text"]),
                         message_id: e["messageId"].as_str().unwrap().to_owned(),
                         is_final: e["final"].as_bool().unwrap(),
                         purpose: match e["purpose"].as_str() {
@@ -484,14 +413,14 @@ async fn play_corpus(h: &Harness) {
             }
             out
         };
-        let record = new_thread(id, ALICE, title, description);
+        let record = new_thread(id, ALICE, title, description.as_deref());
         if t["edit"].as_bool().unwrap() {
             // a branch of the first thread cut at nothing: its log is its own
             h.store()
                 .fork_thread(
                     record,
                     ForkOrigin {
-                        parent: "0190aaaa-0000-7000-8000-000000000003".parse().unwrap(),
+                        parent,
                         cut: 0,
                         kind: ForkKind::Edit,
                     },
@@ -504,7 +433,7 @@ async fn play_corpus(h: &Harness) {
                 .fork_thread(
                     record,
                     ForkOrigin {
-                        parent: "0190aaaa-0000-7000-8000-000000000003".parse().unwrap(),
+                        parent,
                         cut,
                         kind: ForkKind::Fork,
                     },
@@ -532,6 +461,14 @@ async fn play_corpus(h: &Harness) {
                 .await
                 .unwrap();
         }
+    }
+}
+
+/// A text of the corpus: a string, or `{repeat, times, suffix?}`.
+fn text_of(v: &Value) -> String {
+    match expand(v) {
+        Value::String(s) => s,
+        other => panic!("not a text: {other}"),
     }
 }
 
@@ -565,8 +502,9 @@ async fn the_corpus_answers_every_vector() {
     )
     .await;
     play_corpus(&h).await;
-    assert!(QUERIES.len() >= 19);
-    for (file, text) in QUERIES {
+    let files = queries();
+    assert!(files.len() >= 25, "{} query files", files.len());
+    for (file, text) in &files {
         let query: Value = serde_json::from_str(text).unwrap();
         let mut cursor: Option<String> = None;
         for (n, step) in query["steps"].as_array().unwrap().iter().enumerate() {
@@ -612,6 +550,54 @@ async fn the_corpus_answers_every_vector() {
             cursor = page["next"].as_str().map(str::to_owned);
         }
     }
+}
+
+/// Every raw request of `requests.json` is answered with the status and code it says (the web's mock server
+/// is held to the same file): the media type, the shape of the body, the query, and which error wins.
+#[tokio::test]
+async fn every_request_vector_is_answered_as_it_says() {
+    let h = Harness::with(
+        ApiConfig {
+            search_limits: AuthorizeLimits {
+                burst: 10_000,
+                refill: Duration::from_millis(1),
+            },
+            ..ApiConfig::default()
+        },
+        Policy::default(),
+    )
+    .await;
+    let file: Value = serde_json::from_str(REQUESTS).unwrap();
+    let cases = file["cases"].as_array().unwrap();
+    assert!(cases.len() >= 60, "{}", cases.len());
+    let mut failures = Vec::new();
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let content_type = match case.get("headers") {
+            None => Some("application/json".to_owned()),
+            Some(headers) => headers["content-type"].as_str().map(str::to_owned),
+        };
+        let body = case["body"].as_str().unwrap().as_bytes().to_vec();
+        let r = h.post_raw("alice", content_type.as_deref(), body).await;
+        let want = &case["expect"];
+        let want_status = u16::try_from(want["status"].as_u64().unwrap()).unwrap();
+        let want_code = want["code"].as_str().map(str::to_owned);
+        if r.status != want_status || r.code() != want_code {
+            failures.push(format!(
+                "{name}: wanted {want_status} {want_code:?}, got {} {:?}",
+                r.status,
+                r.code()
+            ));
+            continue;
+        }
+        if want_status == 200 {
+            h.contract.page(&r.json());
+            assert_eq!(r.json()["query"]["terms"], want["terms"], "{name}");
+        } else {
+            h.contract.problem(want_status, &r.json());
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // ---- the rules --------------------------------------------------------------------------------
@@ -839,6 +825,129 @@ async fn a_cursor_is_for_its_own_request() {
     }
 }
 
+/// A cursor is a position (rank, thread id) checked against the request's terms and filters: it carries no
+/// authority. The same terms and filters accept it whoever sends it and however the query is spelled; a
+/// position that is not valid, or not in the one form this server writes, is `bad_cursor`.
+#[tokio::test]
+async fn a_cursor_is_a_position_that_carries_no_authority() {
+    let h = Harness::start().await;
+    for n in 1..=3 {
+        h.thread(ALICE, n, "Zebra", &["zebra"]).await;
+    }
+    h.thread(BOB, 4, "Zebra", &["zebra"]).await;
+    let first = h.found("alice", &json!({"q": "zebra", "limit": 2})).await;
+    let next = first["next"].as_str().unwrap().to_owned();
+    let parts: Vec<&str> = next.splitn(3, '-').collect();
+    assert_eq!(parts[0], "v1");
+    // the same terms read from another spelling of the query, and another person: accepted, and only the
+    // sender's own threads are in the answer
+    let spelled = h
+        .found(
+            "alice",
+            &json!({"q": "  ZEBRA!! ", "limit": 2, "cursor": next}),
+        )
+        .await;
+    assert_eq!(result_ids(&spelled).len(), 1);
+    let bobs = h
+        .found("bob", &json!({"q": "zebra", "limit": 2, "cursor": next}))
+        .await;
+    assert!(result_ids(&bobs).iter().all(|id| id.ends_with("0004")));
+    // a position that is not one
+    let rest = parts[2];
+    let (id_text, print) = rest.rsplit_once('-').unwrap();
+    for tampered in [
+        format!("v1-7-{rest}"),
+        format!("v1-3-{rest}"),
+        format!("v1-00-{rest}"),
+        format!("v1-+0-{rest}"),
+        format!("v1-0-{}-{print}", id_text.to_ascii_uppercase()),
+        format!("v1-0-0190aaaa-0000-7000-8000-00000000000g-{print}"),
+        format!("v1-0--{print}"),
+    ] {
+        let r = h
+            .search(
+                "alice",
+                &json!({"q": "zebra", "limit": 2, "cursor": tampered}),
+            )
+            .await;
+        h.refused(r, 400, Some("bad_cursor")).await;
+    }
+}
+
+/// A store that cannot answer is 503 `search_unavailable` with `Retry-After`, and what was asked is in
+/// no log line of that path (the log test of this crate holds the words).
+#[tokio::test]
+async fn a_store_that_cannot_answer_is_503_with_retry_after() {
+    let h = Harness::start().await;
+    h.thread(ALICE, 1, "Zebra", &["zebra"]).await;
+    h.store().set_search_down(true);
+    let r = h.search("alice", &json!({"q": "zebra"})).await;
+    assert_eq!(r.headers["retry-after"], "5");
+    assert_eq!(r.headers["cache-control"], "no-store");
+    h.refused(r, 503, Some("search_unavailable")).await;
+    h.store().set_search_down(false);
+    assert_eq!(
+        result_ids(&h.found("alice", &json!({"q": "zebra"})).await).len(),
+        1
+    );
+}
+
+/// At most eight searches run at once in a process, for everybody: the ninth is answered at once with 503
+/// `search_unavailable` and `Retry-After: 1`, the eight finish, and the next search is served.
+#[tokio::test]
+async fn at_most_eight_searches_run_at_once_and_the_ninth_is_503() {
+    let h = Harness::with(
+        ApiConfig {
+            search_limits: AuthorizeLimits {
+                burst: 1000,
+                refill: Duration::from_millis(1),
+            },
+            ..ApiConfig::default()
+        },
+        Policy::default(),
+    )
+    .await;
+    h.thread(ALICE, 1, "Zebra", &["zebra"]).await;
+    h.store().hold_searches();
+    let mut running = Vec::new();
+    for _ in 0..8 {
+        let (client, url) = (h.client.clone(), format!("{}/api/search/threads", h.base));
+        running.push(tokio::spawn(async move {
+            client
+                .post(url)
+                .bearer_auth("alice")
+                .header("Content-Type", "application/json")
+                .body(r#"{"q":"zebra"}"#)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }));
+    }
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        h.store().wait_until_searches_held(8),
+    )
+    .await
+    .expect("eight searches reach the store");
+    let ninth = h.search("bob", &json!({"q": "zebra"})).await;
+    assert_eq!(ninth.headers["retry-after"], "1");
+    h.refused(ninth, 503, Some("search_unavailable")).await;
+    h.store().release_searches();
+    for task in running {
+        assert_eq!(task.await.unwrap(), 200);
+    }
+    assert_eq!(
+        result_ids(&h.found("bob", &json!({"q": "zebra"})).await).len(),
+        0
+    );
+    assert_eq!(
+        result_ids(&h.found("alice", &json!({"q": "zebra"})).await).len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn a_search_is_rate_limited_with_retry_after() {
     let h = Harness::with(
@@ -887,6 +996,11 @@ async fn without_thread_read_it_is_403_and_without_json_it_is_415() {
     );
     let h = Harness::with(ApiConfig::default(), policy.unwrap()).await;
     let r = h.search("nobody", &json!({"q": "zebra"})).await;
+    h.refused(r, 403, Some("forbidden")).await;
+    // who may search is decided before the request is read: a body that is no search is still 403
+    let r = h
+        .post_raw("nobody", Some("text/plain"), b"not json".to_vec())
+        .await;
     h.refused(r, 403, Some("forbidden")).await;
     let r = h
         .post_raw("alice", Some("text/plain"), b"q=zebra".to_vec())

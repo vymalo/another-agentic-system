@@ -475,6 +475,248 @@
           }
         ]
       }
+    },
+    {
+      "name": "only four characters are whitespace: a no-break space and a line separator stay",
+      "text": "fix\u00a0\u00a0login\u2028\u3000now",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "fix\u00a0\u00a0login\u2028\u3000now",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 5,
+            "end": 10
+          }
+        ]
+      }
+    },
+    {
+      "name": "runs of the four whitespace characters collapse, others in the run stay",
+      "text": "login \t\r\n \u00a0 \n bug",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "login \u00a0 bug",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "exactly 20 units left after the last word are kept",
+      "text": "zebra!!!!!!!!!!!!!!!!!!!!",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra!!!!!!!!!!!!!!!!!!!!",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "21 units left after the last word are not",
+      "text": "zebra!!!!!!!!!!!!!!!!!!!!!",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "exactly 20 units in front of the first word are kept",
+      "text": "!!!!!!!!!!!!!!!!!!!!zebra",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "!!!!!!!!!!!!!!!!!!!!zebra",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 20,
+            "end": 25
+          }
+        ]
+      }
+    },
+    {
+      "name": "21 units in front of the first word are not",
+      "text": "!!!!!!!!!!!!!!!!!!!!!zebra",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word exactly 100 units before the match is in the context",
+      "text": "start aa--------------------------------------------------------------------------------------------------zebra tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "aa--------------------------------------------------------------------------------------------------zebra tail",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 100,
+            "end": 105
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word 101 units before the match is not",
+      "text": "start aa---------------------------------------------------------------------------------------------------zebra tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra tail",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word that ends exactly 200 units after the start is in the window",
+      "text": "zebra------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------abc tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------abc",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word that ends 201 units after the start is not",
+      "text": "zebra-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------abc tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "the window reaches the 3000th word of a text of 3000 words: the text's end is kept",
+      "text": {
+        "repeat": "w ",
+        "times": 2999,
+        "suffix": "zebra"
+      },
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "w w w w w w zebra",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 12,
+            "end": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "the window reaches the 3000th word of a longer text: a word beyond is not a word, and the end is not the text's",
+      "text": {
+        "repeat": "w ",
+        "times": 2999,
+        "suffix": "zebra x"
+      },
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "w w w w w w zebra",
+        "cutStart": true,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 12,
+            "end": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "the window never ends before the end of the first match, a word of 120 units that starts 100 after the window",
+      "text": "aa--------------------------------------------------------------------------------------------------𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜 tail",
+      "terms": [
+        "aaaaa"
+      ],
+      "expect": {
+        "text": "aa--------------------------------------------------------------------------------------------------𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 100,
+            "end": 220
+          }
+        ]
+      }
     }
   ]
 }

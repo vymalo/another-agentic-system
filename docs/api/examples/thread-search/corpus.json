@@ -1,5 +1,5 @@
 {
-  "about": "docs/api/thread-search-v1.md, 'The vectors of the corpus'. One person's threads, in the order of their ids (a newer thread has a greater id). `events` are the events of the log that matter to search: `user_message` and `agent_message` (`text`, `messageId`, `final`, `purpose`); the others carry nothing searched. `archived` is whether the person archived the thread, `edit` whether it was made by an edit of a message (a branch), `copiedThrough` is the seq of the last event copied from a parent that still exists (absent: the thread has no parent, or its parent is gone). `queries/*.json` ask this corpus.",
+  "about": "docs/api/thread-search-v1.md, 'The vectors of the corpus'. One person's threads, in the order of their ids (a newer thread has a greater id). `events` are the events of the log that matter to search: `user_message` and `agent_message` (`text`, `messageId`, `final`, `purpose`); the others carry nothing searched. `archived` is whether the person archived the thread, `edit` whether it was made by an edit of a message (a branch), `copiedThrough` is the seq of the last event copied from a parent that still exists (absent: the thread has no parent, or its parent is gone); `parent` names that parent (absent: the thread of id ...0003), whose first `copiedThrough` events are the fork's. A text is a string or `{repeat, times, suffix?}`. `queries/*.json` ask this corpus.",
   "threads": [
     {
       "id": "0190aaaa-0000-7000-8000-000000000001",
@@ -375,6 +375,165 @@
           "at": "2026-11-14T10:01:00Z",
           "kind": "user_message",
           "text": "buy tomatoes today"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000012",
+      "title": "quokka notes",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "quokka and wombat"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000013",
+      "title": "Answers",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "a question"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "the final answer says ocelot",
+          "messageId": "m1",
+          "final": true,
+          "purpose": "answer"
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "agent_message",
+          "text": "a later partial says lynx",
+          "messageId": "m1",
+          "final": false,
+          "purpose": "working"
+        },
+        {
+          "seq": 4,
+          "at": "2026-11-14T10:04:00Z",
+          "kind": "agent_message",
+          "text": "a later partial of another id says puma",
+          "messageId": "m2",
+          "final": false
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000014",
+      "title": "Gnu draft",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "a question about gnus"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "first draft mentions gnuone",
+          "messageId": "m1",
+          "final": true
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000015",
+      "title": "Gnu draft (copy)",
+      "archived": false,
+      "edit": false,
+      "parent": "0190aaaa-0000-7000-8000-000000000014",
+      "copiedThrough": 2,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "a question about gnus"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "first draft mentions gnuone",
+          "messageId": "m1",
+          "final": true
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "agent_message",
+          "text": "second draft mentions gnutwo",
+          "messageId": "m1",
+          "final": true
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000016",
+      "title": "Capped message",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": {
+            "repeat": "w ",
+            "times": 3000,
+            "suffix": "tailword"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000017",
+      "title": "Just inside",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": {
+            "repeat": "w ",
+            "times": 2999,
+            "suffix": "tailword"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000018",
+      "title": "No description",
+      "archived": false,
+      "edit": false,
+      "description": "",
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "nothing here"
         }
       ]
     }

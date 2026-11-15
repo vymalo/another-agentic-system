@@ -218,6 +218,28 @@
           "times": 64
         }
       ]
+    },
+    {
+      "name": "a vulgar fraction folds to its digits: the query ½ is the term 12",
+      "q": "½",
+      "terms": [
+        "12"
+      ]
+    },
+    {
+      "name": "and so 1/2 is not ½: both digits are one letter long, no term",
+      "q": "1/2",
+      "terms": []
+    },
+    {
+      "name": "two long words that share their first 64 code points are one term",
+      "q": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb",
+      "terms": [
+        {
+          "repeat": "x",
+          "times": 64
+        }
+      ]
     }
   ]
 }

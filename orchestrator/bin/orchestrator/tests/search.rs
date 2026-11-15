@@ -268,6 +268,62 @@ async fn it_indexes_the_logs_the_index_has_not_been_through_and_a_second_run_fin
         (json["threads"].as_u64(), json["messages"].as_u64()),
         (Some(0), Some(0))
     );
+    assert_eq!(json["remaining"], 0);
+    assert_eq!(report(&first)["remaining"], 0);
+
+    // a thread indexed under other folding rules waits for the backfill, which says how many remain
+    sqlx::query("UPDATE threads SET search_fold = 0 WHERE title = 'Walrus 1'")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(store.search_backlog(100).await.unwrap(), 1);
+    assert_eq!(
+        store
+            .search_threads(&alice, &ask("walrus"))
+            .await
+            .unwrap()
+            .rows
+            .len(),
+        2,
+        "the thread under other rules is not found"
+    );
+    let third = run(&["--config", path_str(&config), "search", "backfill"], &env);
+    assert_eq!(code(&third), 0, "stderr: {}", text(&third.stderr));
+    let json = report(&third);
+    assert_eq!(
+        (
+            json["threads"].as_u64(),
+            json["messages"].as_u64(),
+            json["remaining"].as_u64()
+        ),
+        (Some(1), Some(1), Some(0))
+    );
+    assert_eq!(
+        store.search_threads(&alice, &ask("walrus")).await.unwrap(),
+        wanted_title
+    );
+
+    // --rebuild goes through every thread again and changes nothing
+    let rebuilt = run(
+        &[
+            "--config",
+            path_str(&config),
+            "search",
+            "backfill",
+            "--rebuild",
+        ],
+        &env,
+    );
+    assert_eq!(code(&rebuilt), 0, "stderr: {}", text(&rebuilt.stderr));
+    let json = report(&rebuilt);
+    assert_eq!(
+        (json["threads"].as_u64(), json["messages"].as_u64()),
+        (Some(3), Some(3))
+    );
+    assert_eq!(
+        store.search_threads(&alice, &ask("otter")).await.unwrap(),
+        wanted_message
+    );
     // no word a person wrote is in a stream, and neither is the database's password
     for stream in [&out, &err, &text(&second.stdout), &text(&second.stderr)] {
         assert!(

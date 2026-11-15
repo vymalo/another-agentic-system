@@ -40,6 +40,22 @@ pub const WINDOW_UNITS: usize = 200;
 /// Text left over at the very start or end of a document is kept up to this much, in UTF-16 units.
 pub const EDGE_UNITS: usize = 20;
 
+/// The version of the folding rules, stored with what a thread has indexed (`threads.search_fold`).
+///
+/// **Raise it whenever the key of any word could change**: a change to [`fold`], to [`WORD`]'s
+/// pattern, to [`MAX_KEY`] or [`MAX_WORDS`], or a bump of a dependency whose tables the fold reads
+/// (Rust's `to_lowercase`, `regex-syntax`'s `\p{L}`, `\p{M}`, `\p{N}`, and `unicode-normalization`'s
+/// NFKD). A stored key made by the old rules and a query key made by the new ones would otherwise
+/// differ without any error. **A failing vector of `fold.json` (or the unit test
+/// `the_fold_is_pinned_raise_fold_version_when_it_moves`) after a dependency bump means: raise this
+/// number**, then run `orchestrator search backfill` (a thread whose stored version is not this one is
+/// unindexed: it is not found, and its next commit or the backfill indexes it again from the start).
+pub const FOLD_VERSION: i32 = 1;
+/// How many events of a log, at most, one commit catches the index up with besides its own: the rest of
+/// an old log is left to the next commits and to `orchestrator search backfill`, so the first commit to
+/// a long thread is not the one that indexes all of it under the thread's lock.
+pub const COMMIT_CATCH_UP_EVENTS: i64 = 500;
+
 /// `[\p{L}\p{M}\p{N}]+`: a word.
 #[allow(clippy::expect_used)] // a constant pattern, proven by every test of this module
 static WORD: LazyLock<Regex> =

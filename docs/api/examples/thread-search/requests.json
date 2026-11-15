@@ -1,0 +1,624 @@
+{
+  "name": "What a request must look like",
+  "about": "Raw request bodies and headers with the status and `code` they are answered with, by every server of this contract: the media type, the shape of the body (five members, each of its type, no `null`, none twice, `limit` an integer literal), the query, and which error wins when two apply: shape, then `q`, then the range of `limit`, then `archived`, then `branches`, then the cursor. A request with no `headers` member is sent with `content-type: application/json`; `headers: {}` sends none. `expect.terms` is checked on a 200.",
+  "cases": [
+    {
+      "name": "the smallest request",
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "every member",
+      "body": "{\"q\":\"zebra\",\"limit\":50,\"archived\":\"only\",\"branches\":\"include\"}",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "limit 1",
+      "body": "{\"q\":\"zebra\",\"limit\":1}",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "limit written as an integer with whitespace around",
+      "body": "{\"q\":\"zebra\",\"limit\" : 20 }",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "archived exclude",
+      "body": "{\"q\":\"zebra\",\"archived\":\"exclude\"}",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "a query that keeps no term is not an error",
+      "body": "{\"q\":\"a\"}",
+      "expect": {
+        "status": 200,
+        "terms": []
+      }
+    },
+    {
+      "name": "a parameter of the media type",
+      "headers": {
+        "content-type": "application/json; charset=utf-8"
+      },
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "the media type is not case sensitive",
+      "headers": {
+        "content-type": "Application/JSON"
+      },
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "a string escaped in JSON is the string",
+      "body": "{\"q\":\"\\u007aebra\"}",
+      "expect": {
+        "status": 200,
+        "terms": [
+          "zebra"
+        ]
+      }
+    },
+    {
+      "name": "no content type",
+      "headers": {},
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "text/plain",
+      "headers": {
+        "content-type": "text/plain"
+      },
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "a form",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      "body": "q=zebra",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "a +json type is not application/json",
+      "headers": {
+        "content-type": "application/problem+json"
+      },
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "a sequence of JSON texts is not application/json",
+      "headers": {
+        "content-type": "application/json-seq"
+      },
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "a longer subtype is not application/json",
+      "headers": {
+        "content-type": "application/jsonx"
+      },
+      "body": "{\"q\":\"zebra\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "the media type is judged before the body",
+      "headers": {
+        "content-type": "text/plain"
+      },
+      "body": "not json",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "not JSON",
+      "body": "not json",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an empty body",
+      "body": "",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a truncated body",
+      "body": "{\"q\":\"zebra\"",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "text after the object",
+      "body": "{\"q\":\"zebra\"} x",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an array",
+      "body": "[]",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a string",
+      "body": "\"zebra\"",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "null",
+      "body": "null",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a number",
+      "body": "1",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "no q",
+      "body": "{}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "no q but a limit",
+      "body": "{\"limit\":5}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "q is a number",
+      "body": "{\"q\":1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "q is null",
+      "body": "{\"q\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "q is an array",
+      "body": "{\"q\":[\"zebra\"]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an unknown member",
+      "body": "{\"q\":\"zebra\",\"extra\":1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "there is no owner",
+      "body": "{\"q\":\"zebra\",\"owner\":\"alice@example.com\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice",
+      "body": "{\"q\":\"zebra\",\"q\":\"lion\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice, the second a valid limit",
+      "body": "{\"q\":\"zebra\",\"limit\":5,\"limit\":6}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit is null",
+      "body": "{\"q\":\"zebra\",\"limit\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit written with a fraction",
+      "body": "{\"q\":\"zebra\",\"limit\":20.0}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit written with an exponent",
+      "body": "{\"q\":\"zebra\",\"limit\":2e1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit is a string",
+      "body": "{\"q\":\"zebra\",\"limit\":\"20\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit is a boolean",
+      "body": "{\"q\":\"zebra\",\"limit\":true}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit is an object",
+      "body": "{\"q\":\"zebra\",\"limit\":{\"a\":1}}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit 0",
+      "body": "{\"q\":\"zebra\",\"limit\":0}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit 51",
+      "body": "{\"q\":\"zebra\",\"limit\":51}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit negative",
+      "body": "{\"q\":\"zebra\",\"limit\":-1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit 1.5",
+      "body": "{\"q\":\"zebra\",\"limit\":1.5}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "limit beyond any integer",
+      "body": "{\"q\":\"zebra\",\"limit\":99999999999999999999}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "cursor is null",
+      "body": "{\"q\":\"zebra\",\"cursor\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "cursor is a number",
+      "body": "{\"q\":\"zebra\",\"cursor\":1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "archived is null",
+      "body": "{\"q\":\"zebra\",\"archived\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "archived is a number",
+      "body": "{\"q\":\"zebra\",\"archived\":1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "archived is not a value",
+      "body": "{\"q\":\"zebra\",\"archived\":\"maybe\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "archived is case sensitive",
+      "body": "{\"q\":\"zebra\",\"archived\":\"Include\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "branches is null",
+      "body": "{\"q\":\"zebra\",\"branches\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "branches exclude",
+      "body": "{\"q\":\"zebra\",\"branches\":\"exclude\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "branches only",
+      "body": "{\"q\":\"zebra\",\"branches\":\"only\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "branches is a boolean",
+      "body": "{\"q\":\"zebra\",\"branches\":true}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "branches is empty",
+      "body": "{\"q\":\"zebra\",\"branches\":\"\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a lone surrogate in q",
+      "body": "{\"q\":\"\\ud800 zebra\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a lone low surrogate in q",
+      "body": "{\"q\":\"zebra \\udc00\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a blank query",
+      "body": "{\"q\":\"  \\t\\n \"}",
+      "expect": {
+        "status": 400,
+        "code": "query_empty"
+      }
+    },
+    {
+      "name": "an empty query",
+      "body": "{\"q\":\"\"}",
+      "expect": {
+        "status": 400,
+        "code": "query_empty"
+      }
+    },
+    {
+      "name": "a query of 201 characters",
+      "body": "{\"q\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}",
+      "expect": {
+        "status": 400,
+        "code": "query_too_long"
+      }
+    },
+    {
+      "name": "a cursor that is not one",
+      "body": "{\"q\":\"zebra\",\"cursor\":\"nope\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_cursor"
+      }
+    },
+    {
+      "name": "an empty cursor",
+      "body": "{\"q\":\"zebra\",\"cursor\":\"\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_cursor"
+      }
+    },
+    {
+      "name": "a cursor too long to be one",
+      "body": "{\"q\": \"zebra\", \"cursor\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_cursor"
+      }
+    },
+    {
+      "name": "a cursor is checked even when the query keeps no term",
+      "body": "{\"q\":\"a\",\"cursor\":\"nope\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_cursor"
+      }
+    },
+    {
+      "name": "shape before the query",
+      "body": "{\"q\":\"\",\"limit\":\"x\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "shape before the query: a missing q and a bad limit",
+      "body": "{\"limit\":0}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "the query before the limit's range",
+      "body": "{\"q\":\"  \",\"limit\":0}",
+      "expect": {
+        "status": 400,
+        "code": "query_empty"
+      }
+    },
+    {
+      "name": "a query too long before the limit's range",
+      "body": "{\"q\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\", \"limit\": 0}",
+      "expect": {
+        "status": 400,
+        "code": "query_too_long"
+      }
+    },
+    {
+      "name": "the query before the cursor",
+      "body": "{\"q\":\"\",\"cursor\":\"nope\"}",
+      "expect": {
+        "status": 400,
+        "code": "query_empty"
+      }
+    },
+    {
+      "name": "the limit before archived",
+      "body": "{\"q\":\"zebra\",\"limit\":0,\"archived\":\"maybe\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "the limit before the cursor",
+      "body": "{\"q\":\"zebra\",\"cursor\":\"nope\",\"limit\":0}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "archived before the cursor",
+      "body": "{\"q\":\"zebra\",\"cursor\":\"nope\",\"archived\":\"maybe\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "branches before the cursor",
+      "body": "{\"q\":\"zebra\",\"cursor\":\"nope\",\"branches\":\"exclude\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    }
+  ]
+}

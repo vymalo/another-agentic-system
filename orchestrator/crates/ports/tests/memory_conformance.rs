@@ -24,5 +24,10 @@ async fn forget_index(store: &MemoryStore) {
 }
 
 orch_ports::usage_ledger_conformance!(make_store, forget = forget_ledger);
-orch_ports::thread_search_conformance!(make_store, forget = forget_index);
+/// An index made under an older fold version (ADR 0068): no thread is indexed under the current one.
+async fn age_index(store: &MemoryStore) {
+    store.age_search_index();
+}
+
+orch_ports::thread_search_conformance!(make_store, forget = forget_index, age = age_index);
 orch_ports::wakeup_conformance!(make_wakeup);

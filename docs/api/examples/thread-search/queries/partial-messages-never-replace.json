@@ -1,0 +1,67 @@
+{
+  "name": "A final answer is not replaced by a later partial (`final",
+  "about": "A final answer is not replaced by a later partial (`final: false`) of its id, working or not: `ocelot` is a hit at seq 2; `lynx` and `puma` are partials and hit nothing.",
+  "steps": [
+    {
+      "request": {
+        "q": "ocelot"
+      },
+      "expect": {
+        "terms": [
+          "ocelot"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000013",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 2,
+                "role": "agent",
+                "at": "2026-11-14T10:02:00Z",
+                "snippet": {
+                  "text": "the final answer says ocelot",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 22,
+                      "end": 28
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "lynx"
+      },
+      "expect": {
+        "terms": [
+          "lynx"
+        ],
+        "results": [],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "puma"
+      },
+      "expect": {
+        "terms": [
+          "puma"
+        ],
+        "results": [],
+        "hasNext": false
+      }
+    }
+  ]
+}

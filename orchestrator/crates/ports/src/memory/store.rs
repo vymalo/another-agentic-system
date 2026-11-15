@@ -35,6 +35,12 @@ struct ThreadEntry {
     /// the description (ADR 0068): the `search_through` column of the Postgres store, where `0`
     /// means nothing of the thread is indexed.
     search_through: i64,
+    /// The `search_fold` column: the [`search::FOLD_VERSION`] the thread was indexed under (`0`: none).
+    /// A thread under another version is unindexed.
+    search_fold: i32,
+    /// Seqs above `search_through` that a commit indexed (its own events, while it caught the old log up
+    /// only in part): the rows beyond the watermark of the Postgres store.
+    search_ahead: std::collections::BTreeSet<i64>,
 }
 
 impl ThreadEntry {
@@ -124,6 +130,27 @@ struct Purge {
 #[derive(Clone, Default)]
 pub struct MemoryStore {
     inner: Arc<Mutex<Inner>>,
+    search_control: Arc<SearchControl>,
+}
+
+/// Test hooks of [`ThreadSearch::search_threads`]: a search can be made to fail as an unreachable store
+/// does, or to wait (and be counted) until it is let go.
+struct SearchControl {
+    down: std::sync::atomic::AtomicBool,
+    /// `true` lets searches through.
+    gate: tokio::sync::watch::Sender<bool>,
+    /// One permit per search that is waiting at the gate.
+    waiting: tokio::sync::Semaphore,
+}
+
+impl Default for SearchControl {
+    fn default() -> Self {
+        SearchControl {
+            down: std::sync::atomic::AtomicBool::new(false),
+            gate: tokio::sync::watch::channel(true).0,
+            waiting: tokio::sync::Semaphore::new(0),
+        }
+    }
 }
 
 impl std::fmt::Debug for MemoryStore {
@@ -357,7 +384,26 @@ fn write_commit(
         stored.push(event);
     }
     entry.usage_through = entry.record.last_seq;
-    entry.search_through = entry.record.last_seq;
+    // The search index: what it is behind is caught up at most COMMIT_CATCH_UP_EVENTS events at a time,
+    // the commit's own events are always indexed, and the watermark never skips a range.
+    if entry.search_fold != search::FOLD_VERSION {
+        entry.search_fold = search::FOLD_VERSION;
+        entry.search_through = 0;
+        entry.search_ahead.clear();
+    }
+    let before = entry.record.last_seq - i64::try_from(stored.len()).unwrap_or(0);
+    let reached = before.min(entry.search_through + search::COMMIT_CATCH_UP_EVENTS);
+    let reached = reached.max(entry.search_through);
+    if reached >= before {
+        entry.search_through = entry.record.last_seq;
+        entry.search_ahead.clear();
+    } else {
+        entry.search_through = reached;
+        entry.search_ahead.retain(|seq| *seq > reached);
+        entry
+            .search_ahead
+            .extend(before + 1..=entry.record.last_seq);
+    }
     entry.record.state = commit.new_state;
     if let Some(job) = commit.job {
         entry.record.job = job;
@@ -623,6 +669,8 @@ fn insert_thread(
             // the events a fork copied were counted in its parent
             usage_through: fork.map_or(0, |o| o.cut),
             search_through: 0,
+            search_fold: search::FOLD_VERSION,
+            search_ahead: std::collections::BTreeSet::new(),
         },
     );
     let (mut record, events) =
@@ -1742,6 +1790,55 @@ impl MemoryStore {
         let mut inner = self.lock();
         for entry in inner.threads.values_mut() {
             entry.search_through = 0;
+            entry.search_ahead.clear();
+        }
+    }
+
+    /// Makes the store behave as if every thread had been indexed under an **older fold version**, as a
+    /// build whose [`search::FOLD_VERSION`] was lower left it: such a thread is unindexed (not found)
+    /// until a commit to it or [`ThreadSearch::backfill_search`] indexes it again.
+    ///
+    /// **Test only**, like [`forget_search_index`](Self::forget_search_index).
+    pub fn age_search_index(&self) {
+        let mut inner = self.lock();
+        for entry in inner.threads.values_mut() {
+            entry.search_fold = search::FOLD_VERSION - 1;
+        }
+    }
+}
+
+impl MemoryStore {
+    /// While `down`, every search fails with [`StoreError::Unavailable`], as a store that is unreachable or
+    /// too slow does (the API answers 503).
+    ///
+    /// **Test only.**
+    pub fn set_search_down(&self, down: bool) {
+        self.search_control
+            .down
+            .store(down, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Makes every search that starts from now on wait until [`release_searches`](Self::release_searches),
+    /// and count itself for [`wait_until_searches_held`](Self::wait_until_searches_held).
+    ///
+    /// **Test only.**
+    pub fn hold_searches(&self) {
+        self.search_control.gate.send_replace(false);
+    }
+
+    /// Lets the searches that wait, and every later one, through.
+    ///
+    /// **Test only.**
+    pub fn release_searches(&self) {
+        self.search_control.gate.send_replace(true);
+    }
+
+    /// Returns when `n` more searches are waiting at the gate of [`hold_searches`](Self::hold_searches).
+    ///
+    /// **Test only.**
+    pub async fn wait_until_searches_held(&self, n: u32) {
+        if let Ok(permits) = self.search_control.waiting.acquire_many(n).await {
+            permits.forget();
         }
     }
 }
@@ -1878,6 +1975,21 @@ impl ThreadSearch for MemoryStore {
         owner: &UserId,
         request: &SearchRequest,
     ) -> Result<SearchRows, StoreError> {
+        let control = &self.search_control;
+        if control.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(StoreError::unavailable(std::io::Error::other(
+                "the search is down (a test made it so)",
+            )));
+        }
+        let mut open = control.gate.subscribe();
+        if !*open.borrow_and_update() {
+            control.waiting.add_permits(1);
+            while !*open.borrow_and_update() {
+                if open.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
         let inner = self.lock();
         let terms = &request.terms;
         let mut found: Vec<SearchRow> = Vec::new();
@@ -1885,6 +1997,7 @@ impl ThreadSearch for MemoryStore {
             for entry in inner.threads.values() {
                 let r = &entry.record;
                 if &r.owner != owner
+                    || entry.search_fold != search::FOLD_VERSION
                     || (entry.search_through == 0 && r.last_seq > 0)
                     || (is_edit(r) && !request.include_edits)
                     || match request.archived {
@@ -1904,7 +2017,7 @@ impl ThreadSearch for MemoryStore {
                     search::searched_messages(entry.events.iter().map(|s| &s.event))
                         .into_iter()
                         .filter(|m| {
-                            m.seq <= entry.search_through
+                            (m.seq <= entry.search_through || entry.search_ahead.contains(&m.seq))
                                 && copied_through.is_none_or(|cut| m.seq > cut)
                                 && terms.matches(&m.text)
                         })
@@ -1953,6 +2066,7 @@ impl ThreadSearch for MemoryStore {
         &self,
         after: Option<ThreadId>,
         limit: u32,
+        rebuild: bool,
     ) -> Result<SearchBackfill, StoreError> {
         let limit = limit.max(1) as usize;
         let mut inner = self.lock();
@@ -1960,7 +2074,10 @@ impl ThreadSearch for MemoryStore {
             .threads
             .iter()
             .filter(|(id, e)| {
-                after.is_none_or(|a| **id > a) && e.search_through < e.record.last_seq
+                after.is_none_or(|a| **id > a)
+                    && (rebuild
+                        || e.search_through < e.record.last_seq
+                        || e.search_fold != search::FOLD_VERSION)
             })
             .map(|(id, _)| *id)
             .collect();
@@ -1974,15 +2091,34 @@ impl ThreadSearch for MemoryStore {
             let Some(entry) = inner.threads.get_mut(&id) else {
                 continue;
             };
-            let from = entry.search_through;
+            let from = if rebuild || entry.search_fold != search::FOLD_VERSION {
+                0
+            } else {
+                entry.search_through
+            };
             let seen = search::searched_messages(entry.events.iter().map(|s| &s.event))
                 .into_iter()
                 .filter(|m| m.seq > from)
                 .count();
             entry.search_through = entry.record.last_seq;
+            entry.search_fold = search::FOLD_VERSION;
+            entry.search_ahead.clear();
             page.threads += 1;
             page.messages += seen as u64;
         }
         Ok(page)
+    }
+
+    async fn search_backlog(&self, cap: u32) -> Result<u32, StoreError> {
+        let inner = self.lock();
+        let behind = inner
+            .threads
+            .values()
+            .filter(|e| {
+                e.search_through < e.record.last_seq || e.search_fold != search::FOLD_VERSION
+            })
+            .take(cap as usize)
+            .count();
+        Ok(u32::try_from(behind).unwrap_or(u32::MAX))
     }
 }

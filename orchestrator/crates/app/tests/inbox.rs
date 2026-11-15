@@ -1132,8 +1132,9 @@ impl orch_ports::ThreadSearch for RacyStore {
     delegate! {
         search_threads(owner: &orch_core::UserId, request: &orch_ports::SearchRequest)
             -> Result<orch_ports::SearchRows, StoreError>;
-        backfill_search(after: Option<ThreadId>, limit: u32)
+        backfill_search(after: Option<ThreadId>, limit: u32, rebuild: bool)
             -> Result<orch_ports::SearchBackfill, StoreError>;
+        search_backlog(cap: u32) -> Result<u32, StoreError>;
     }
 }
 

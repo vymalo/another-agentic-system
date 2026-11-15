@@ -14,7 +14,7 @@ use axum::extract::{Extension, Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use orch_app::AppError;
+use orch_app::{AppError, Permission};
 use orch_core::ThreadId;
 use orch_core::search::{
     MAX_QUERY_LENGTH, MAX_TERMS, QueryError, SearchRole, SearchTerms, Snippet, snippet,
@@ -39,8 +39,15 @@ const DEFAULT_LIMIT: u32 = 20;
 const MAX_CURSOR_BYTES: usize = 512;
 /// The largest body: a query is at most 200 characters.
 const MAX_BODY_BYTES: usize = 16 * 1024;
-/// What a client is told to wait when the store could not answer.
+/// What a client is told to wait when the store could not answer, in seconds.
 const RETRY_AFTER_UNAVAILABLE: u64 = 5;
+/// What a client is told to wait when this process is already running [`MAX_CONCURRENT_SEARCHES`], in seconds.
+const RETRY_AFTER_BUSY: u64 = 1;
+/// The most searches one process runs at the same time, for everybody: a search over a large index is the
+/// costliest read of the API, and the limiter per person does not bound the sum of many people. Over it a
+/// search is answered at once with 503 `search_unavailable` and `Retry-After` (no queue: a queue under a
+/// slow database only holds connections longer).
+pub(crate) const MAX_CONCURRENT_SEARCHES: usize = 8;
 
 /// `search` of `GET /api/config`: its presence is the capability, its numbers what is enforced.
 #[derive(Serialize)]
@@ -59,14 +66,28 @@ impl Default for SearchCapability {
     }
 }
 
-/// The body of the request: only these members, whatever else is a 400.
+/// A member that is there is its type: `null` is not absent, it is the wrong type, as for any other.
+fn not_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// The body of the request: only these members, each of its type, none twice (serde refuses a member that
+/// appears twice), whatever else is a 400. `limit` is a JSON integer literal: `20.0` and `2e1` are not.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SearchBody {
     q: String,
+    #[serde(default, deserialize_with = "not_null")]
     limit: Option<i64>,
+    #[serde(default, deserialize_with = "not_null")]
     cursor: Option<String>,
+    #[serde(default, deserialize_with = "not_null")]
     archived: Option<String>,
+    #[serde(default, deserialize_with = "not_null")]
     branches: Option<String>,
 }
 
@@ -87,18 +108,16 @@ fn query_problem(error: QueryError) -> ApiError {
         .into()
 }
 
-/// The request as a JSON body: `application/json` or 415, a body of at most [`MAX_BODY_BYTES`], and
-/// fixed words for whatever does not parse.
+/// The request as a JSON body: media type exactly `application/json` (parameters such as `charset` are
+/// allowed, case does not matter; `application/problem+json` and the like are not) or 415, a body of at
+/// most [`MAX_BODY_BYTES`], and fixed words for whatever does not parse.
 async fn read_body(request: Request) -> Result<SearchBody, ApiError> {
     let json = request
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(';').next())
-        .is_some_and(|essence| {
-            let essence = essence.trim().to_ascii_lowercase();
-            essence == "application/json" || essence.ends_with("+json")
-        });
+        .is_some_and(|essence| essence.trim().eq_ignore_ascii_case("application/json"));
     if !json {
         return Err(Problem::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -146,13 +165,17 @@ fn decode_cursor(cursor: &str, fingerprint: &str) -> Option<SearchPosition> {
         return None;
     }
     let rest = cursor.strip_prefix("v1-")?;
-    let (rank, rest) = rest.split_once('-')?;
+    let (rank_text, rest) = rest.split_once('-')?;
     // a UUID has hyphens itself: the fingerprint is what follows the last one
-    let (thread, print) = rest.rsplit_once('-')?;
+    let (thread_text, print) = rest.rsplit_once('-')?;
     (print == fingerprint).then_some(())?;
+    // a position and nothing else: a rank 0 to 2 and a thread id, each in the one form this server writes
+    let rank: u8 = rank_text.parse().ok()?;
+    let thread: ThreadId = thread_text.parse().ok()?;
+    (rank.to_string() == rank_text && thread.to_string() == thread_text).then_some(())?;
     Some(SearchPosition {
-        rank: SearchRank::from_number(rank.parse().ok()?)?,
-        thread: thread.parse::<ThreadId>().ok()?,
+        rank: SearchRank::from_number(rank)?,
+        thread,
     })
 }
 
@@ -191,6 +214,18 @@ struct Page<'a> {
     next: Option<String>,
 }
 
+/// 503 `search_unavailable` with `Retry-After` in seconds: the store could not answer, or this process
+/// is running as many searches as it runs.
+fn unavailable(retry_after_secs: u64) -> Response {
+    let mut response = Problem::new(StatusCode::SERVICE_UNAVAILABLE, "search is unavailable now")
+        .with_code("search_unavailable")
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// 429 for a search the limiter holds back, with `Retry-After`.
 fn rate_limited(retry_after_secs: u64) -> Response {
     let mut response = Problem::new(
@@ -218,6 +253,10 @@ pub(crate) async fn search_threads<P: Ports>(
 ) -> ApiResult<Response> {
     if let Err(limited) = state.search.admit(&principal.user) {
         return Ok(rate_limited(limited.retry_after_secs));
+    }
+    // who may search is decided before anything of the request is read
+    if !state.app.access(&principal).has(Permission::ThreadRead) {
+        return Err(AppError::missing_permission(Permission::ThreadRead).into());
     }
     let body = read_body(request).await?;
     let terms = SearchTerms::parse(&body.q).map_err(query_problem)?;
@@ -253,19 +292,17 @@ pub(crate) async fn search_threads<P: Ports>(
         after,
         limit,
     };
+    // at most MAX_CONCURRENT_SEARCHES at once in this process, for everybody: over it, at once, no queue
+    let Ok(_slot) = state.search_slots.try_acquire() else {
+        tracing::warn!("a search was refused: this process is running the most it runs at once");
+        return Ok(unavailable(RETRY_AFTER_BUSY));
+    };
     let rows = match state.app.search_threads(&principal, &asked).await {
         Ok(rows) => rows,
         Err(AppError::Store(StoreError::Unavailable { source })) => {
             // The cause is logged, never sent; and nothing of the query is in it.
             tracing::warn!(error = %source, "a search could not be answered");
-            let mut response =
-                Problem::new(StatusCode::SERVICE_UNAVAILABLE, "search is unavailable now")
-                    .with_code("search_unavailable")
-                    .into_response();
-            response
-                .headers_mut()
-                .insert(RETRY_AFTER, HeaderValue::from(RETRY_AFTER_UNAVAILABLE));
-            return Ok(response);
+            return Ok(unavailable(RETRY_AFTER_UNAVAILABLE));
         }
         Err(other) => return Err(other.into()),
     };

@@ -58,15 +58,32 @@ second client (the Flutter app) must be able to search from the contract, and tw
    `(search_through, last_seq]`, so a thread is complete whichever builds wrote and in whatever order. **Migration `0025`** adds columns and an empty table: nothing is
    rewritten and nothing locks a large table. `orchestrator search backfill` indexes the logs that predate it, per thread under its lock, in pages,
    idempotently (the same command shape as `usage backfill`).
+
+   *Amended 2026-11-15 (the review of pull request 322).* **Three rules were missing.** (a) **A fold version.** The keys are made by three Unicode tables
+   (Rust's `to_lowercase`, `regex-syntax`'s classes, `unicode-normalization`), so a dependency bump could split the stored keys from the query's with no error.
+   `orch_core::search::FOLD_VERSION` (1) is stored per thread (`threads.search_fold`, in `0025`: it was not released) and **must be raised whenever the folding
+   rules or the tables behind them change**; a unit test pins the fold on inputs chosen to move with those tables, and its failure message says "raise the
+   version". A thread stored under another version is **unindexed: it is not found** (the choice: never found, rather than found by old keys), its next commit
+   or the backfill indexes it again from the start replacing its rows, and `search backfill --rebuild` does that for every thread. (b) **The operator is told.**
+   At startup the orchestrator logs one WARN with the count of unindexed threads (capped at 100,000) and the command; the count reads `threads` once per process
+   start (it stops at the cap, but reads the whole table when nearly every thread is indexed: there is no index on columns that change with every commit),
+   and `search backfill` reports how many `remaining`. (c) **A commit's catch-up is bounded**: at most 500 older events beside its own, the watermark moving only
+   as far as it got (never past a gap), the commit's own events always indexed (above the watermark when the old log is not done: the upsert makes the later
+   catch-up over them harmless), a message that a later final message replaces not indexed. A thread not caught up is found only for what is indexed.
 7. **Authorization:** `thread.read`, which every role holds for its own threads, and **no new permission**; both `message_terms.owner` and
    `threads.owner` are the caller; no administrator reads more (ADR 0039); another person's thread is simply never a hit, by title or by content. **What it finds is always
    a subset of what `listThreads` lists** for the same `archived` and `branches` (a test holds it). No search under `/api/shared` or `/api/public`.
 8. **Deletion (ADR 0043):** `message_terms` hangs on `events` with `ON DELETE CASCADE` and the title columns are on the thread row, so the delete's own
    transaction removes every word. Backups keep them, as ADR 0043 already says of everything else.
-9. **Cost and abuse.** A query has at most 8 prefix terms of at least 2 characters; the store runs it in a read transaction under
-   `SET LOCAL statement_timeout = '2s'` (a timeout is `503 search_unavailable` with `Retry-After`); each person has a token bucket (a burst of 20, then 2 a second,
+9. **Cost and abuse.** A query has at most 8 prefix terms of at least 2 characters; the store runs it in a read transaction under **one 2-second budget for all
+   its statements** (each statement's `SET LOCAL statement_timeout` is what the ones before it left; a timeout is `503 search_unavailable` with `Retry-After`), and a
+   process runs **at most 8 searches at once, for everybody**: the ninth is a 503 at once (no queue: a queue under a slow database holds connections longer);
+   each person has a token bucket (a burst of 20, then 2 a second,
    in this process, `429 rate_limited` with `Retry-After`); the query is never in a URL, a trace or a log line (the log says the number of terms), and a test reads
-   the captured log.
+   the captured log. **What is not bounded:** the cost of a prefix term over a very large shared index. The GIN index on `terms` spans every owner, so a
+   prefix such as `ab` scans the postings of every person's messages that start with it before the owner filter applies, and the limits above bound the
+   number and the time of searches, not that scan. If it is too slow at scale the follow-ups are a per-owner index (a partitioned or an owner-prefixed key)
+   and a rule on the shortest prefix; neither is built here.
 
 ## Consequences
 
@@ -74,7 +91,7 @@ second client (the Flutter app) must be able to search from the contract, and tw
   ranking function to tune; the thread list keeps its shape.
 - **Harder:** the index is a second place that holds words, written on every message (a few hundred bytes of keys a message, and a GIN insert); a person's
   words are in two tables until the thread is erased; a new Unicode version could change which characters are letters, so the contract's vectors use only
-  Unicode 13 and earlier and a change of the fold needs a backfill.
+  Unicode 13 and earlier and a change of the fold raises `FOLD_VERSION` and needs a backfill (decision 6, amended).
 - **Required elsewhere:** the `ThreadSearch` port is a supertrait of `ThreadStore`: **every implementer of `ThreadStore` must implement it** (a breaking change
   for those who implement the store: the in-memory and Postgres stores do); `GET /api/config` has the member `search`; the web's mock server has the route;
   7b draws the box.
@@ -117,8 +134,14 @@ second client (the Flutter app) must be able to search from the contract, and tw
 *Verified by running both implementations on the same vectors:* `orch_core::search` (the regex crate's Unicode tables, `unicode-normalization` 0.1.25) and `web/mock/search.ts`
 (Node 22's ICU) agree on every vector, which use only characters of Unicode 13 and earlier; whether they agree beyond that is *unverified*.
 
-*Unverified:* that the planner combines the GIN index on `terms` with the btree on `owner` (BitmapAnd) at the size of a real deployment (the query is written so that it can; no
-plan was read at scale); the cost of the index at a million messages; `dev/search-e2e.sh` (it has not run against the stack: no Docker where it was written); and the web (7b).
+*Verified 2026-11-15, after the review, on the same PostgreSQL 16 by the conformance suite and `tests/thread_search.rs`:* a thread under a lower fold version (with keys no query
+makes) is not found, is indexed again by its commit (rows replaced) or by the backfill, and `--rebuild` goes through every thread; a commit to a thread with 1,200 or 2,000 old
+events moves the watermark by exactly 500 and indexes its own events above it, the next commits do the next 500, the backfill finishes (rows written beyond the watermark
+are upserted, never doubled) and a message replaced beyond the part caught up is never indexed; a commit that fails after its index write (a trigger of the test) leaves no row;
+a later commit rewrites no old row (`xmin`); the backfill's message count is exact. Each of these was made to fail by the mutation that undoes it.
+
+*Unverified:* the cost of a prefix term over a very large shared index (above: **not bounded**), and that the planner combines the GIN index on `terms` with the btree on `owner` (BitmapAnd) at the size of a real deployment (the query is written so that it can; no
+plan was read at scale: the plan at scale stays *unverified*); the cost of the index at a million messages; `dev/search-e2e.sh` (it has not run against the stack: no Docker where it was written); and the web (7b).
 
 ## Not done here
 

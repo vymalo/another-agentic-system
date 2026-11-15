@@ -161,6 +161,8 @@ pub(crate) struct ApiState<P: Ports> {
     pub(crate) authorize: Arc<AuthorizeLimiter>,
     /// The brake on searching (per person, in this process).
     pub(crate) search: Arc<AuthorizeLimiter>,
+    /// The searches this process runs at once, for everybody (`search::MAX_CONCURRENT_SEARCHES`).
+    pub(crate) search_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl<P: Ports> Clone for ApiState<P> {
@@ -169,6 +171,7 @@ impl<P: Ports> Clone for ApiState<P> {
             app: Arc::clone(&self.app),
             authorize: Arc::clone(&self.authorize),
             search: Arc::clone(&self.search),
+            search_slots: Arc::clone(&self.search_slots),
         }
     }
 }
@@ -276,6 +279,7 @@ pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
         app,
         authorize: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
         search: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
+        search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
     }))
 }
 
@@ -299,6 +303,7 @@ pub fn router_with_surfaces<P: Ports>(
         app,
         authorize: Arc::new(AuthorizeLimiter::new(cfg.authorize_limits)),
         search: Arc::new(AuthorizeLimiter::new(cfg.search_limits)),
+        search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
     };
     let state_for_me = state.clone();
     let state_for_public = state.clone();

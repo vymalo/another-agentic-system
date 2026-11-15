@@ -572,50 +572,76 @@ macro_rules! usage_ledger_conformance {
 /// suite): the index is written by the commits of the store it is read from. The calling crate needs
 /// `tokio` (with `macros` and `rt`) as a dev-dependency.
 ///
-/// Two cases play a log older than the index, so they need a store that can **forget its index**:
+/// Some cases play a log older than the index, so they need a store that can **forget its index**:
 /// `thread_search_conformance!(make, forget = path)` where `path` is an `async fn(&S)` that deletes
 /// the index and marks no thread as gone through (a Postgres adapter deletes `message_terms` and
-/// clears the columns of `threads`; `MemoryStore` has `forget_search_index`). Without a `forget`
-/// those cases are skipped, and say so.
+/// clears the columns of `threads`; `MemoryStore` has `forget_search_index`). One more plays an index
+/// made under an **older fold version**: `thread_search_conformance!(make, forget = path, age = path)`
+/// where the second `async fn(&S)` marks every thread as indexed under a lower
+/// [`FOLD_VERSION`](orch_core::search::FOLD_VERSION) (a Postgres adapter lowers `search_fold` and may
+/// write keys no query can match; `MemoryStore` has `age_search_index`). Without the hooks those cases
+/// are skipped, and say so.
 #[macro_export]
 macro_rules! thread_search_conformance {
     ($make:path) => {
         $crate::thread_search_conformance!(@common $make);
-        #[tokio::test]
-        async fn a_commit_catches_up_with_the_log_the_index_has_not_been_through() {
-            eprintln!("skipped: this adapter supplies no `forget` hook");
-        }
-        #[tokio::test]
-        async fn backfill_indexes_old_events_and_is_idempotent() {
-            eprintln!("skipped: this adapter supplies no `forget` hook");
-        }
+        $crate::thread_search_conformance!(@skipped
+            a_commit_catches_up_with_the_log_the_index_has_not_been_through
+            backfill_indexes_old_events_and_is_idempotent
+            a_commit_catches_an_old_log_up_in_bounded_steps
+            a_catch_up_does_not_index_a_message_a_later_one_replaced
+            a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again
+        );
     };
     ($make:path, forget = $forget:path) => {
         $crate::thread_search_conformance!(@common $make);
+        $crate::thread_search_conformance!(@forgetting $make, $forget);
+        $crate::thread_search_conformance!(@skipped
+            a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again
+        );
+    };
+    ($make:path, forget = $forget:path, age = $age:path) => {
+        $crate::thread_search_conformance!(@common $make);
+        $crate::thread_search_conformance!(@forgetting $make, $forget);
         #[tokio::test]
-        async fn a_commit_catches_up_with_the_log_the_index_has_not_been_through() {
+        async fn a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again() {
             match $make().await {
                 Some(store) => {
-                    $crate::testkit::thread_search::a_commit_catches_up_with_the_log_the_index_has_not_been_through(
-                        store, $forget,
+                    $crate::testkit::thread_search::a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again(
+                        store, $age,
                     )
                     .await
                 }
                 None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
             }
         }
-        #[tokio::test]
-        async fn backfill_indexes_old_events_and_is_idempotent() {
-            match $make().await {
-                Some(store) => {
-                    $crate::testkit::thread_search::backfill_indexes_old_events_and_is_idempotent(
-                        store, $forget,
-                    )
-                    .await
-                }
-                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+    };
+    (@skipped $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                eprintln!("skipped: this adapter supplies no hook for it");
             }
-        }
+        )*
+    };
+    (@forgetting $make:path, $forget:path) => {
+        $crate::thread_search_conformance!(@with_forget $make, $forget;
+            a_commit_catches_up_with_the_log_the_index_has_not_been_through
+            backfill_indexes_old_events_and_is_idempotent
+            a_commit_catches_an_old_log_up_in_bounded_steps
+            a_catch_up_does_not_index_a_message_a_later_one_replaced
+        );
+    };
+    (@with_forget $make:path, $forget:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::thread_search::$case(store, $forget).await,
+                    None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+                }
+            }
+        )*
     };
     (@common $make:path) => {
         $crate::thread_search_conformance!(@cases $make;
@@ -633,6 +659,9 @@ macro_rules! thread_search_conformance {
             keys_roundtrip_cyrillic_cjk_digits
             paging_is_stable
             a_limit_of_zero_is_one_and_no_term_matches_nothing
+            a_page_that_holds_every_result_has_no_more
+            a_persons_second_message_does_not_erase_the_first
+            a_title_that_matches_only_some_terms_is_not_a_title_hit
         );
     };
     (@cases $make:path; $($case:ident)*) => {

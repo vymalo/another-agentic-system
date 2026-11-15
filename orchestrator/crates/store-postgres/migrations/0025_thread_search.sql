@@ -14,12 +14,21 @@
 --   message_terms.terms     the distinct keys of the message's first 3000 words
 --   threads.title_terms     the keys of the title; NULL until the thread has been indexed
 --   threads.description_terms  the keys of the description; NULL when the thread has none or has not been indexed
---   threads.search_through  the seq of the thread's log the index has been through, every searched message up to
---                           it indexed; 0 for a thread that exists today: its log is not indexed yet, the next
---                           commit of the thread or `orchestrator search backfill` indexes it. Unlike the usage
+--   threads.search_through the seq of the thread's log the index has been through, with no gap: every searched
+--                           message up to it is indexed. 0 for a thread that exists today: its log is not indexed
+--                           yet. A commit catches an old log up by at most `COMMIT_CATCH_UP_EVENTS` (500) events
+--                           and always indexes its own events (rows may exist above the watermark: the
+--                           upsert makes the catch-up that reaches them harmless), so a long thread is caught up
+--                           over several commits or by `orchestrator search backfill`. Unlike the usage
 --                           ledger's, a fork's starts at its last seq: the events it copied are indexed from its
 --                           own log in the transaction that creates it (they are searched only once its parent is
 --                           gone), because the parent's rows may no longer hold a message the parent replaced
+--   threads.search_fold     the `orch_core::search::FOLD_VERSION` the thread's keys were made under; 0 for a thread
+--                           that exists today. A thread whose value is not the current version is unindexed: it is
+--                           not found, a commit to it or `search backfill` indexes it again from the start (its rows
+--                           replaced), and `search backfill --rebuild` does it for every thread. A change to the
+--                           folding rules, or a bump of a dependency whose Unicode tables they read, raises the
+--                           version and so needs no migration
 --
 -- Erasing a thread (ADR 0043) deletes its events, and `message_terms` goes with them (`ON DELETE CASCADE`), and
 -- the title columns are on the row that is deleted: no word of the thread is left when the transaction commits.
@@ -33,6 +42,7 @@
 ALTER TABLE threads ADD COLUMN title_terms tsvector;
 ALTER TABLE threads ADD COLUMN description_terms tsvector;
 ALTER TABLE threads ADD COLUMN search_through bigint NOT NULL DEFAULT 0;
+ALTER TABLE threads ADD COLUMN search_fold integer NOT NULL DEFAULT 0;
 
 CREATE TABLE message_terms (
     thread_id  uuid   NOT NULL,

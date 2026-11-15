@@ -293,3 +293,159 @@ async fn the_watermark_follows_the_log() {
             .unwrap();
     assert_eq!(rows, vec![(id(1).0, 3), (id(2).0, 4)]);
 }
+
+/// A commit that fails **after** its index rows were written, for a reason that is not a version conflict
+/// (a trigger of the test raises when the thread row is updated, the last statement of the commit), leaves
+/// no row of the index and no event: the words are written in the transaction of the event or not at all.
+#[tokio::test]
+async fn a_commit_that_fails_late_leaves_no_index_row() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (rec, _) = store
+        .create_thread(new_thread(1, "Notes"), commit(vec![say("walrus first")]))
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE FUNCTION fail_late() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+         RAISE EXCEPTION 'a test made this commit fail late'; END $$",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_late BEFORE UPDATE ON threads FOR EACH ROW \
+         WHEN (NEW.last_seq = 2) EXECUTE FUNCTION fail_late()",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let err = store
+        .commit(id(1), rec.version, commit(vec![say("otter second")]))
+        .await
+        .unwrap_err();
+    assert!(
+        !matches!(err, StoreError::VersionConflict),
+        "it failed late, not on the version: {err:?}"
+    );
+    assert_eq!(
+        rows(&store, "message_terms").await,
+        1,
+        "no row of the failed commit"
+    );
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(events, 1);
+    assert!(
+        store
+            .search_threads(&alice(), &request("otter"))
+            .await
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    // and without the failure it is searched
+    sqlx::query("DROP TRIGGER fail_late ON threads")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store
+        .commit(id(1), rec.version, commit(vec![say("otter second")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .search_threads(&alice(), &request("otter"))
+            .await
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+/// The watermark moves with a commit and the commit indexes its own events only: the rows of the events
+/// before it are not written again (same transaction ids), and the row of its own is new.
+#[tokio::test]
+async fn a_later_commit_indexes_only_its_own_events() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (rec, _) = store
+        .create_thread(
+            new_thread(1, "Notes"),
+            commit(vec![say("one"), say("two"), say("three")]),
+        )
+        .await
+        .unwrap();
+    let snapshot = |store: &PgStore| {
+        let pool = store.pool().clone();
+        async move {
+            sqlx::query_as::<_, (i64, String)>(
+                "SELECT seq, xmin::text FROM message_terms ORDER BY seq",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let before = snapshot(&store).await;
+    assert_eq!(before.len(), 3);
+    store
+        .commit(id(1), rec.version, commit(vec![say("four")]))
+        .await
+        .unwrap();
+    let after = snapshot(&store).await;
+    assert_eq!(after.len(), 4);
+    assert_eq!(after[..3], before[..], "the old rows were not rewritten");
+    assert_eq!(after[3].0, 4);
+    let through: i64 = sqlx::query_scalar("SELECT search_through FROM threads")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(through, 4);
+    let fold: i32 = sqlx::query_scalar("SELECT search_fold FROM threads")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(fold, orch_core::search::FOLD_VERSION);
+}
+
+/// A commit to a thread with a long old log moves the watermark by exactly the bound and not past it, and
+/// its own events are in the index above the watermark.
+#[tokio::test]
+async fn a_commit_moves_the_watermark_by_the_bound_and_no_further() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let events: Vec<NewEvent> = (1..=1200).map(|n| say(&format!("filler {n}"))).collect();
+    let (rec, _) = store
+        .create_thread(new_thread(1, "Old"), commit(events))
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM message_terms")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE threads SET search_through = 0, title_terms = NULL")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store
+        .commit(id(1), rec.version, commit(vec![say("walrus own")]))
+        .await
+        .unwrap();
+    let through: i64 = sqlx::query_scalar("SELECT search_through FROM threads")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(through, orch_core::search::COMMIT_CATCH_UP_EVENTS);
+    // 500 old rows, and the commit's own at seq 1201, nothing between
+    let seqs: Vec<i64> = sqlx::query_scalar("SELECT seq FROM message_terms ORDER BY seq")
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(seqs.len(), 501);
+    assert_eq!(seqs.first(), Some(&1));
+    assert_eq!(seqs[499], 500);
+    assert_eq!(seqs[500], 1201);
+}

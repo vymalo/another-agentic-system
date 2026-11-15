@@ -482,6 +482,9 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
             .context("cannot apply the database migrations")?,
     }
     tracing::info!("database migrations applied");
+    // Threads the search index has not been through are not found until a message or the backfill indexes
+    // them: say so once, with the command to run (one capped count, at startup).
+    crate::search::warn_when_unindexed(&store).await;
 
     let pool = store.pool().clone();
     let wakeup = match cfg.database_direct_url.as_deref() {

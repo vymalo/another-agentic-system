@@ -195,12 +195,25 @@ async fn nothing_of_a_query_is_in_any_log_line() {
         !bad_body.text().await.unwrap().contains("Badbodysecret"),
         "the answer does not quote the body"
     );
+    // the store cannot answer: 503, and still nothing of what was asked in the log
+    app.ports().store.set_search_down(true);
+    let down = post(serde_json::to_vec(&json!({"q": "Downsecretword zyxwvut"})).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(down.status(), 503);
+    assert_eq!(down.headers()["retry-after"], "5");
+    let down: Value = down.json().await.unwrap();
+    assert_eq!(down["code"], "search_unavailable");
     server.abort();
 
     let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
     assert!(
         log.contains("/api/search/threads"),
         "the request is logged, without its body:\n{log}"
+    );
+    assert!(
+        log.contains("a search could not be answered"),
+        "the 503 is logged, with its cause and not the query:\n{log}"
     );
     assert!(
         log.contains("threads searched"),
@@ -217,6 +230,8 @@ async fn nothing_of_a_query_is_in_any_log_line() {
         "hunter2secret",
         "Cursorsecret",
         "Badbodysecret",
+        "Downsecretword",
+        "downsecretword",
         "DROP",
         "1=1",
     ] {

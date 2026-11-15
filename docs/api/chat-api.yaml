@@ -683,7 +683,12 @@ paths:
         `listThreads` lists** for the same `archived` and `branches`, for every role (an administrator finds their own
         too). Another person's thread is never a hit, by its title or by its content. The permission is `thread.read`.
         A `POST`, though it is a safe read that writes nothing: the query is a person's words, and they must not be in a
-        URL, a proxy's access log or a trace. A body that is not `application/json` is a 415.
+        URL, a proxy's access log or a trace. The media type is exactly `application/json` (a parameter such as `charset` is
+        allowed; `application/problem+json` and `application/json-seq` are not): any other is a 415. The checks run in
+        one order, so two errors never leave a client guessing: 401, 429, 403, 415, then the body's shape (400
+        `bad_request`: one JSON object, only the five members, each of its type, none twice, no `null`), `q` (400
+        `query_empty`, `query_too_long`), `limit`'s range, `archived`, `branches`, the cursor (400 `bad_cursor`), and last
+        the store (503). The vectors of `requests.json` hold every case.
 
         **Every rule is in [`thread-search-v1.md`](thread-search-v1.md), with vectors**: what a word is, how it is folded
         (`Café`, `cafe` and `CAFÉ` are one word; `cœur` is `coeur`), how the query is read, when a document matches (every
@@ -724,12 +729,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ThreadSearchPage" }
-        "400": { description: "`code: query_empty` (nothing is left of `q` after it is trimmed), `query_too_long` (more than 200 characters), `bad_cursor` (`cursor` is not the `next` of a page of this request: another `q`, `archived` or `branches`, or not a cursor); or `code: bad_request`: not JSON, a member that is not allowed (there is no `owner`: ADR 0039), `limit` out of range, `archived` or `branches` not one of their words", $ref: "#/components/responses/Problem" }
+        "400": { description: "`code: query_empty` (nothing is left of `q` after it is trimmed), `query_too_long` (more than 200 characters), `bad_cursor` (`cursor` is not a position of a page of this request: it is checked against the terms, `archived` and `branches` of the request, not the text of `q`, and a position that is not valid is refused); or `code: bad_request`: not JSON, not one object, a member that is not allowed (there is no `owner`: ADR 0039), a member twice, a member of the wrong type (`null` too), a lone surrogate, `limit` out of range or not an integer literal (`20.0` is refused), `archived` or `branches` not one of their words", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
-        "415": { description: "The body is not `application/json`", $ref: "#/components/responses/Problem" }
-        "429": { description: "`code: rate_limited`: a person searches in bursts of 20 and then twice a second; `Retry-After` says how long to wait", $ref: "#/components/responses/Problem" }
-        "503": { description: "`code: search_unavailable`: the store is down or the search took too long; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json` (parameters such as `charset` are allowed)", $ref: "#/components/responses/Problem" }
+        "429": { description: "`code: rate_limited`: a person searches in bursts of 20 and then twice a second; `Retry-After` says, in seconds, how long to wait", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: search_unavailable`: the store is down, the whole search took more than 2 seconds, or this process is already running 8 searches (for everybody: it refuses at once and does not queue); `Retry-After` says, in seconds, when to try again", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
       operationId: listThreads
@@ -1615,7 +1620,7 @@ paths:
       parameters:
         - { name: before, in: query, description: "An event of the chain the caller holds the page of, normally the `start` of its oldest page: the answer is the turns that precede the chain that holds it. A value beyond the log counts as absent. Not with `after`", schema: { type: integer, minimum: 1 } }
         - { name: limit, in: query, description: "How many turns, 1 to `server.history.maxTurns` (default `ui.history.pageTurns`). Not with `since` or `after`", schema: { type: integer, minimum: 1 } }
-        - { name: since, in: query, description: "Go back at least to the chain that holds this event, never beyond `maxTurns` turns or `maxPageBytes`. Not with `limit` or `after`", schema: { type: integer, minimum: 1 } }
+        - { name: since, in: query, description: "Go back at least to the chain that holds this event, never beyond `maxTurns` turns or `maxPageBytes`. **Inclusive**: the event itself is in the page, with the rest of its turn in front of it (a page starts at a turn's first event, so it may start earlier than `since`), unless a limit stops it first. A hit's `seq` opens the thread with it. Not with `limit` or `after`", schema: { type: integer, minimum: 1 } }
         - { name: after, in: query, description: "A catch-up: the settled chains after the chain that holds this event, to the newest settled point (at most `maxTurns` turns). The answer has `anchor`. Not with `limit`, `since` or `before`", schema: { type: integer, minimum: 1 } }
       responses:
         "200":
@@ -2081,8 +2086,8 @@ components:
       description: "A search of the caller's own threads ([`thread-search-v1.md`](thread-search-v1.md)). There is no `owner`: a person's threads are the only ones there are to search."
       properties:
         q: { type: string, description: "The words to look for. Trimmed of U+0020, U+0009, U+000A and U+000D; blank is `query_empty`; more than 200 Unicode scalar values (after the trim) is `query_too_long`. Read as words: quotes, `OR`, `-`, `*` and SQL are punctuation, there is no query syntax. At most 8 terms are used (`maxTerms` of `getConfig`)" }
-        limit: { type: integer, minimum: 1, maximum: 50, default: 20, description: "Threads per page" }
-        cursor: { type: string, maxLength: 512, description: "The `next` of the page before, sent back unchanged with the same `q`, `archived` and `branches`; anything else is `bad_cursor`. What is in it is the server's own" }
+        limit: { type: integer, minimum: 1, maximum: 50, default: 20, description: "Threads per page. A JSON integer literal: `20.0` and `2e1` are refused, and so is `null` (as for every member)" }
+        cursor: { type: string, maxLength: 512, description: "The `next` of the page before, sent back with the same terms (the text of `q` may be spelled differently), `archived` and `branches`; anything else is `bad_cursor`. It is a position (rank, thread) and carries no authority; what is in it is the server's own" }
         archived: { type: string, enum: [exclude, only, include], default: include, description: "`include` (the default): archived threads are searched too (the `thread` says it is archived). `exclude`: the threads that are not archived. `only`: the archived ones" }
         branches: { type: string, enum: [include], description: "`include`: search the threads made by an edit of a message too, as `listThreads` does. Without it they are left out" }
     ThreadSearchPage:

@@ -407,16 +407,18 @@ The binary's third command ([ADR 0065](../../../docs/decisions/0065-a-usage-ledg
 ## The command `search backfill`
 
 ```text
-orchestrator search backfill [--page <N>] [--config <file>]
+orchestrator search backfill [--page <N>] [--rebuild] [--config <file>]
 ```
 
-The binary's fourth command ([ADR 0068](../../../docs/decisions/0068-a-person-searches-their-own-threads.md)), `usage backfill`'s twin. It indexes into the **search index of the people's threads** the titles, descriptions and messages that the log holds and the index has not been through: the threads that existed before migration `0025`, and those a build without the index wrote to (a commit to a thread catches that thread up as well, so the command only has to reach the threads nobody writes to any more). It goes through the threads in pages of `--page` (1 to 10 000, default 100), each thread in a transaction of its own under the thread's lock (it waits at most 5 seconds for it: a thread whose lock is held longer is skipped and counted), so **it can run while the service does**; a fork's copied events are indexed from the fork's own log. It is idempotent: a second run finds nothing to do and the index is the same.
+The binary's fourth command ([ADR 0068](../../../docs/decisions/0068-a-person-searches-their-own-threads.md)), `usage backfill`'s twin. It indexes into the **search index of the people's threads** the titles, descriptions and messages that the log holds and the index has not been through: the threads that existed before migration `0025`, those a build without the index wrote to, threads stored under another **fold version** (`orch_core::search::FOLD_VERSION`: the folding rules changed, so the stored keys are not the query's), and threads a commit only caught up in part (a commit catches an old log up by at most 500 events beside its own, so the command finishes the long ones). A thread under another fold version is indexed again from the start, replacing its rows; `--rebuild` does that for **every** thread, whatever it holds. **At startup the service logs one WARN line** when any thread is unindexed (the count, capped at 100 000, and this command): until then those threads are not found by a search. The count reads the `threads` table once per process start. It goes through the threads in pages of `--page` (1 to 10 000, default 100), each thread in a transaction of its own under the thread's lock (it waits at most 5 seconds for it: a thread whose lock is held longer is skipped and counted), so **it can run while the service does**; a fork's copied events are indexed from the fork's own log. It is idempotent: a second run finds nothing to do and the index is the same.
 
 It reads the configuration file (`--config` or `ORCH_CONFIG_FILE`) but **only `database.url`** (and `database.directUrl`, as `usage backfill` does), applies the store's migrations and then indexes. The logs go to stderr; **stdout is one line of JSON with counts only** (nothing a person wrote is in a stream):
 
 ```json
-{"complete":true,"pages":3,"threads":250,"messages":4100,"skipped":0}
+{"complete":true,"pages":3,"threads":250,"messages":4100,"skipped":0,"remaining":0}
 ```
+
+`messages` is the number of messages in the index for the threads it went through, exact; `remaining` is how many threads the index is still behind when the run is over (capped at 100 000): `0` after a run that skipped nothing, unless threads were written to meanwhile.
 
 | Exit | Meaning |
 |---|---|
@@ -427,7 +429,7 @@ It reads the configuration file (`--config` or `ORCH_CONFIG_FILE`) but **only `d
 | `75` | nothing failed, but `skipped` threads were left alone because their lock was held (`complete` is `false`): run it again |
 | `78` | the configuration (no file, a database URL that does not resolve) |
 
-`tests/search.rs` runs it as a process: the exit codes, no database URL in a stream, and (with `ORCH_TEST_DATABASE_URL`) an index emptied by hand, indexed in pages of two, searched the same as before, a second run finding nothing, and no word of a thread in any stream.
+`tests/search.rs` runs it as a process: the exit codes, no database URL in a stream, and (with `ORCH_TEST_DATABASE_URL`) an index emptied by hand, indexed in pages of two, searched the same as before, a second run finding nothing, a thread under another fold version found again by the run and `--rebuild` going through all three, and no word of a thread in any stream. The startup warning (its text, one line, the count) is a unit test of `src/search.rs`.
 
 ## Features
 

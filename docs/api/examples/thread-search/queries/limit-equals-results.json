@@ -1,0 +1,263 @@
+{
+  "name": "`next` is there only if at least one more thread follows",
+  "about": "`next` is there only if at least one more thread follows: four threads have `tomatoes`; a page of limit 4 holds them all and has no `next`, a page of 3 has one and the next page is the last, with none.",
+  "steps": [
+    {
+      "request": {
+        "q": "tomatoes",
+        "limit": 4
+      },
+      "expect": {
+        "terms": [
+          "tomatoes"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000f",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Tomatoes",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 8
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000001",
+            "rank": 1,
+            "hits": [
+              {
+                "field": "description",
+                "snippet": {
+                  "text": "Which tomatoes to plant",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 6,
+                      "end": 14
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 2,
+                "role": "agent",
+                "at": "2026-11-14T10:02:00Z",
+                "snippet": {
+                  "text": "Start with tomatoes and basil.",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 11,
+                      "end": 19
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000011",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "buy tomatoes today",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 4,
+                      "end": 12
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000010",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "tomatoes are red",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 8
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "tomatoes",
+        "limit": 3
+      },
+      "expect": {
+        "terms": [
+          "tomatoes"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000f",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Tomatoes",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 8
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000001",
+            "rank": 1,
+            "hits": [
+              {
+                "field": "description",
+                "snippet": {
+                  "text": "Which tomatoes to plant",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 6,
+                      "end": 14
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 2,
+                "role": "agent",
+                "at": "2026-11-14T10:02:00Z",
+                "snippet": {
+                  "text": "Start with tomatoes and basil.",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 11,
+                      "end": 19
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          },
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000011",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "buy tomatoes today",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 4,
+                      "end": 12
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": true
+      }
+    },
+    {
+      "request": {
+        "q": "tomatoes",
+        "limit": 3,
+        "cursor": "$previous"
+      },
+      "expect": {
+        "terms": [
+          "tomatoes"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000010",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "tomatoes are red",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 8
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

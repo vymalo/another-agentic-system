@@ -12,6 +12,7 @@ import {
   MAX_WORDS,
   MIN_TERM,
   parseQuery,
+  readRequest,
   type Searchable,
   searchableMessages,
   searchThreads,
@@ -118,7 +119,7 @@ describe("a person's threads (corpus.json and queries/)", () => {
     seq: number;
     at: string;
     kind: string;
-    text?: string;
+    text?: Text;
     messageId?: string;
     final?: boolean;
     purpose?: string;
@@ -126,8 +127,8 @@ describe("a person's threads (corpus.json and queries/)", () => {
   const corpus = read<{
     threads: {
       id: string;
-      title: string;
-      description?: string | null;
+      title: Text;
+      description?: Text | null;
       archived: boolean;
       edit: boolean;
       copiedThrough?: number;
@@ -136,12 +137,14 @@ describe("a person's threads (corpus.json and queries/)", () => {
   }>("corpus.json");
   const threads: Searchable[] = corpus.threads.map((t) => ({
     id: t.id,
-    title: t.title,
-    description: t.description ?? null,
+    title: expand(t.title),
+    description: t.description === undefined || t.description === null ? null : expand(t.description),
     archived: t.archived,
     edit: t.edit,
     ...(t.copiedThrough !== undefined ? { copiedThrough: t.copiedThrough } : {}),
-    messages: searchableMessages(t.events),
+    messages: searchableMessages(
+      t.events.map((e) => ({ ...e, ...(e.text !== undefined ? { text: expand(e.text) } : {}) })),
+    ),
   }));
 
   type Step = {
@@ -174,6 +177,82 @@ describe("a person's threads (corpus.json and queries/)", () => {
       }
     });
   }
+});
+
+describe("a request (requests.json)", () => {
+  const file = read<{
+    cases: {
+      name: string;
+      headers?: Record<string, string>;
+      body: string;
+      expect: { status: number; code?: string; terms?: string[] };
+    }[];
+  }>("requests.json");
+  const threads: Searchable[] = [];
+  it("has the cases the page names", () => {
+    expect(file.cases.length).toBeGreaterThanOrEqual(60);
+  });
+  for (const c of file.cases) {
+    it(c.name, () => {
+      const headers = c.headers ?? { "content-type": "application/json" };
+      const read = readRequest(headers["content-type"], c.body);
+      let got: { status: number; code?: string; terms?: string[] };
+      if (!read.ok) got = { status: read.status, ...(read.code ? { code: read.code } : {}) };
+      else {
+        const out = searchThreads(threads, read.request);
+        got = out.ok ? { status: 200, terms: out.page.terms } : { status: 400, code: out.code };
+      }
+      expect(got.status).toBe(c.expect.status);
+      expect(got.code).toBe(c.expect.code);
+      if (c.expect.terms) expect(got.terms).toEqual(c.expect.terms);
+    });
+  }
+});
+
+describe("a cursor is a position that carries no authority", () => {
+  const id = (n: number) => `0190aaaa-0000-7000-8000-00000000000${n}`;
+  const threads: Searchable[] = [1, 2, 3].map((n) => ({
+    id: id(n),
+    title: "Zebra",
+    archived: false,
+    edit: false,
+    messages: [],
+  }));
+  const encode = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+  const first = searchThreads(threads, { q: "zebra", limit: 2 });
+  const next = first.ok ? (first.page.next as string) : "";
+  const [rank, at, print] = JSON.parse(Buffer.from(next, "base64url").toString("utf8")) as [
+    number,
+    string,
+    string,
+  ];
+  it("is accepted for the same terms and filters, however the query is spelled", () => {
+    const out = searchThreads(threads, { q: "  ZEBRA!! ", limit: 2, cursor: next });
+    expect(out.ok && out.page.results.length).toBe(1);
+  });
+  it("is bad_cursor when the position is not valid", () => {
+    for (const bad of [
+      [7, at, print],
+      [3, at, print],
+      [-1, at, print],
+      [1.5, at, print],
+      ["0", at, print],
+      [rank, at.toUpperCase(), print],
+      [rank, "not-a-uuid", print],
+      [rank, "", print],
+      [rank, at],
+      [rank, at, print, 1],
+    ]) {
+      expect(searchThreads(threads, { q: "zebra", limit: 2, cursor: encode(bad) })).toEqual({
+        ok: false,
+        code: "bad_cursor",
+      });
+    }
+    expect(searchThreads(threads, { q: "zebra", cursor: "x".repeat(600) })).toEqual({
+      ok: false,
+      code: "bad_cursor",
+    });
+  });
 });
 
 describe("the page and the code agree", () => {
