@@ -199,6 +199,8 @@ webhooks:
 #   chat-only  a user limited to the agent `chat`: Adam and the researcher answer it 403
 #   tool-maker a user who also holds `tools.user.add` (ADR 0046): adds, edits and re-keys MCP servers of their own. No other role does: a
 #              deployment gives the permission to the roles it chooses, and `admin` does not imply it (dev/user-tools-e2e.sh)
+#   prompt-sharer a user who also holds `prompts.share` (ADR 0070): shares a prompt of their own with roles. No other role does: `admin` does not
+#              imply it (dev/prompts-e2e.sh)
 # Each lists `thread.share` (ADR 0040) and `thread.delete` (ADR 0043): a role that lists its permissions does not get them by itself, and
 # without `thread.delete` a person cannot delete a thread (403), which is how a deployment holds threads for a legal reason.
 # The roles are the `roles` claim of the token. A valid token with none of them (`guest@example.com`) gets `defaultRole`.
@@ -235,3 +237,4 @@ auth:
     admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], scope: own, agents: ["*"] }
     chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: [chat] }
     tool-maker: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, tools.user.add], scope: own, agents: ["*"] }
+    prompt-sharer: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, prompts.share], scope: own, agents: ["*"] }

@@ -352,7 +352,8 @@
         "thread.share",
         "thread.delete",
         "admin",
-        "tools.user.add"
+        "tools.user.add",
+        "prompts.share"
       ],
       "type": "string"
     },

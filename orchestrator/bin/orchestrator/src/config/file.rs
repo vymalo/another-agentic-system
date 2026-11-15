@@ -5061,6 +5061,43 @@ auth:
             }
         }
 
+        /// `prompts.share` (ADR 0070): no role holds it by default (the built-in `user` and `admin`
+        /// do not, and `admin` does not imply it); a file that lists it for a role gives it to that
+        /// role and no other. There is no switch: the library is always on.
+        #[test]
+        fn the_permission_to_share_a_prompt_reaches_the_policy_and_no_built_in_role_holds_it() {
+            use orch_app::{Permission, Resource};
+            let user = orch_core::UserId::new("a@example.com");
+            let principal = |roles: &[&str]| orch_ports::Principal {
+                roles: roles.iter().map(|r| orch_ports::Role::new(*r)).collect(),
+                ..orch_ports::Principal::of(user.clone())
+            };
+            let can = |policy: &orch_app::Policy, roles: &[&str]| {
+                policy.allows(
+                    &principal(roles),
+                    Permission::PromptsShare,
+                    &Resource::Anything,
+                )
+            };
+            let built_in = load("").unwrap().config.auth.policy;
+            assert!(!can(&built_in, &[]));
+            assert!(!can(&built_in, &["user"]));
+            assert!(!can(&built_in, &["admin"]), "admin does not imply it");
+            let text = "auth:
+  defaultRole: plain
+  roles:
+    plain: { permissions: [agent.read, agent.invoke, thread.read, thread.write] }
+    sharer: { permissions: [prompts.share] }
+    root: { permissions: [admin] }
+";
+            let policy = load(text).unwrap().config.auth.policy;
+            assert!(can(&policy, &["sharer"]));
+            assert!(!can(&policy, &["plain"]));
+            assert!(!can(&policy, &["root"]));
+            assert!(!can(&policy, &[]), "the default role is plain");
+            assert!(can(&policy, &["plain", "sharer"]), "roles are unioned");
+        }
+
         /// A host pattern is written twice, in `orch-config` (what a configuration file is checked
         /// with) and in `orch-ports` (what the egress policy is built from), because neither crate
         /// may depend on the other. This binary sees both, so here they are made to agree: an entry

@@ -1469,6 +1469,11 @@ When the chart gets that switch, the permission **`tools.user.add` stays off by 
 the `permissions` of the roles they choose (`auth.roles.<role>.permissions: [..., tools.user.add]`, values `auth.roles`; a role that lists permissions gets none by itself), and in Keycloak by giving those people the role (a client role a composite can bundle). `orchestrator.userSecrets.enabled` is **off by default**, and
 the default render has no trace of it (`render-check.sh` asserts that, byte for byte).
 
+**The permission `prompts.share` ([ADR 0070](../../docs/decisions/0070-a-persons-prompt-library.md)) stays off by default too, and the chart does not list it for any role**: the built-in `user` and `admin` do not hold it and `admin` does not imply it,
+so nobody can share a prompt with a role until an operator lists it in the `permissions` of the roles they choose (`auth.roles.<role>.permissions: [..., prompts.share]`, values `auth.roles`; a role that lists permissions gets none by itself) and, in Keycloak, gives those people the role. The prompt library itself has no switch
+(it is in the image and always on: saving, rendering and deleting one's own prompts need no permission). Its value is not in `values.yaml` on purpose: the chart's check reads the rendered configuration through the *pinned* orchestrator image, which refuses a permission it does not know, so the permission is listed here only once a release that
+has it is pinned.
+
 **Authorizing an OAuth server (slice 4c): in the image, and half-way in this chart.** The orchestrator now serves `POST /api/user-tool-servers/{id}/authorize`, the callback the person's browser comes back to
 (`GET /api/user-tool-servers/oauth/callback`) and, when a URL is named, its Client ID Metadata Document. **The chart has no `userToolServers` key yet**, so the feature is off and none of it can work in a cluster until the rollout slice does the rest of these (step 2 is done, since 2026-11-14), in this order (ADR 0046, "Amended 2026-10-15, slice 4c", "What the rollout must do"):
 

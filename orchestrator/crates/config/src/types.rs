@@ -2115,6 +2115,11 @@ pub enum AuthPermission {
     /// `userToolServers.enabled`.
     #[serde(rename = "tools.user.add")]
     ToolsUserAdd,
+    /// Share a prompt of one's own with roles (ADR 0070): any write of a prompt whose result is
+    /// shared. It takes no scope and **no role holds it unless the file lists it: `admin` does not
+    /// imply it**. Saving, rendering, unsharing and deleting one's own prompts are not gated by it.
+    #[serde(rename = "prompts.share")]
+    PromptsShare,
 }
 
 impl AuthPermission {
@@ -2130,6 +2135,7 @@ impl AuthPermission {
             AuthPermission::ArtifactRead => "artifact.read",
             AuthPermission::Admin => "admin",
             AuthPermission::ToolsUserAdd => "tools.user.add",
+            AuthPermission::PromptsShare => "prompts.share",
         }
     }
 }
