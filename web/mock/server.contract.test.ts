@@ -668,8 +668,10 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     const res = await fetch(`${base}/api/config`);
     expect(res.status).toBe(200);
     const search = { maxQueryLength: 200, maxTerms: 8 };
+    const prompts = { limit: 100, maxVariables: 8, maxBodyBytes: 16384, maxRenderedBytes: 32768 };
     expect(await expectDocumented("/api/config", "get", res)).toEqual({
       search,
+      prompts,
       ui: { showDescriptions: true, history },
     });
     const cookie = { Cookie: "mock-registry=config-test" };
@@ -677,10 +679,15 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       204,
     );
     const off = await fetch(`${base}/api/config`, { headers: cookie });
-    expect(await off.json()).toEqual({ search, ui: { showDescriptions: false, history } });
+    expect(await off.json()).toEqual({
+      search,
+      prompts,
+      ui: { showDescriptions: false, history },
+    });
     // another session keeps its own
     expect(await (await fetch(`${base}/api/config`)).json()).toEqual({
       search,
+      prompts,
       ui: { showDescriptions: true, history },
     });
   });
@@ -5878,5 +5885,304 @@ describe("searching the caller's own threads (ADR 0068, docs/api/thread-search-v
     expect(limited, "a burst of 60 searches is limited").toBeDefined();
     expect(limited?.headers.get("retry-after")).toMatch(/^[1-9][0-9]*$/);
     await refused(limited as Response, 429, "rate_limited");
+  });
+});
+
+describe("a person's prompt library (ADR 0070, docs/api/prompts-v1.md), as the mock does it", () => {
+  type Prompt = components["schemas"]["Prompt"];
+  type List = components["schemas"]["PromptList"];
+  type Problem = {
+    title: string;
+    status: number;
+    detail?: string;
+    code?: string;
+    at?: string;
+    offset?: number;
+    question?: string;
+    rule?: string;
+  };
+  type Who = { headers: Record<string, string>; session: string };
+
+  let sessions = 0;
+  /** A session of its own that is `me`. */
+  async function as(me: "user" | "admin" | "prompt-sharer" | "no-access"): Promise<Who> {
+    const session = `prompts-contract-${++sessions}`;
+    expect((await post(`/__mock/config?me=${me}&session=${session}`)).status).toBe(204);
+    return { session, headers: { Cookie: `mock-registry=${session}` } };
+  }
+  const send = (method: string, p: string, who: Who, body?: unknown, type = "application/json") =>
+    fetch(base + p, {
+      method,
+      headers: { "Content-Type": type, ...who.headers },
+      ...(body === undefined
+        ? {}
+        : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+    });
+  const LIST = "/api/prompts";
+  const ONE = "/api/prompts/{promptId}";
+  const RENDER = "/api/prompts/{promptId}/render";
+  const seed = (who: Who, prompts: unknown[]) =>
+    post(`/__mock/prompts/shared?session=${who.session}`, prompts);
+  const made = async (who: Who, body: Record<string, unknown>): Promise<Prompt> => {
+    const res = await send("POST", LIST, who, { title: "T", body: "x", ...body });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    return (await expectDocumented(LIST, "post", res)) as Prompt;
+  };
+  const listing = async (who: Who, query = ""): Promise<List> => {
+    const res = await send("GET", `${LIST}${query}`, who);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    return (await expectDocumented(LIST, "get", res)) as List;
+  };
+  const refused = async (
+    template: string,
+    method: string,
+    res: Response,
+    status: number,
+    code?: string,
+  ): Promise<Problem> => {
+    expect(res.status).toBe(status);
+    const body = (await expectDocumented(template, method, res)) as Problem;
+    expect(body.code).toBe(code);
+    return body;
+  };
+  const SEL = {
+    id: "focus",
+    question: "Focus?",
+    type: "select",
+    options: [
+      { value: "security", label: "Security" },
+      { value: "speed", label: "Speed" },
+    ],
+  };
+
+  it("the profile `prompt-sharer` holds `prompts.share` and no built-in role does", async () => {
+    const me = async (who: string) => {
+      const res = await send("GET", "/api/me", await as(who as "user"));
+      return (await res.json()) as components["schemas"]["Me"];
+    };
+    expect((await me("prompt-sharer")).permissions).toContainEqual({ permission: "prompts.share" });
+    for (const role of ["user", "admin", "read-only", "limited", "capped", "tool-maker"]) {
+      expect((await me(role)).permissions, role).not.toContainEqual({
+        permission: "prompts.share",
+      });
+    }
+  });
+
+  it("creates, lists as summaries, reads, renders, edits, and deletes: each answer is the documented one", async () => {
+    const who = await as("prompt-sharer");
+    const p = await made(who, {
+      name: "review",
+      title: "Review",
+      body: "Review for {{focus}}.",
+      variables: [SEL],
+    });
+    expect(p).toMatchObject({ own: true, audience: [], revision: expect.stringMatching(/^[1-9]/) });
+    const page = await listing(who);
+    expect(page).toMatchObject({ limit: 100, held: 1 });
+    expect(page.items[0]).toMatchObject({ id: p.id, variableCount: 1, own: true });
+    expect(page.items[0]).not.toHaveProperty("body");
+    expect(page.items[0]).not.toHaveProperty("variables");
+    const got = await send("GET", `${LIST}/${p.id}`, who);
+    expect(await expectDocumented(ONE, "get", got)).toEqual(p);
+    const answers = [{ id: "focus", values: ["speed"] }];
+    const rendered = await send("POST", `${LIST}/${p.id}/render`, who, {
+      revision: p.revision,
+      answers,
+    });
+    expect(await expectDocumented(RENDER, "post", rendered)).toEqual({
+      text: "Review for Speed.",
+      revision: p.revision,
+    });
+    // it wrote nothing
+    expect(((await (await send("GET", `${LIST}/${p.id}`, who)).json()) as Prompt).revision).toBe(
+      p.revision,
+    );
+    const edited = await send("PATCH", `${LIST}/${p.id}`, who, {
+      revision: p.revision,
+      title: "Reviewing",
+    });
+    const next = (await expectDocumented(ONE, "patch", edited)) as Prompt;
+    expect(next.title).toBe("Reviewing");
+    expect(next.revision).not.toBe(p.revision);
+    const stale = await send("PATCH", `${LIST}/${p.id}`, who, {
+      revision: p.revision,
+      title: "Again",
+    });
+    await refused(ONE, "patch", stale, 409, "stale_revision");
+    const same = await send("PATCH", `${LIST}/${p.id}`, who, {
+      revision: next.revision,
+      title: "Reviewing",
+    });
+    expect(((await expectDocumented(ONE, "patch", same)) as Prompt).revision).toBe(next.revision);
+    const gone = await send("DELETE", `${LIST}/${p.id}?revision=${next.revision}`, who);
+    expect(gone.status).toBe(204);
+    await refused(ONE, "get", await send("GET", `${LIST}/${p.id}`, who), 404);
+    await refused(ONE, "delete", await send("DELETE", `${LIST}/${p.id}`, who), 404);
+  });
+
+  it("a save the rules refuse says where, and a render the answer does not fit says which rule", async () => {
+    const who = await as("prompt-sharer");
+    const bad = await send("POST", LIST, who, { name: "a", title: "T", body: "{{ x }}" });
+    expect(await refused(LIST, "post", bad, 400, "bad_reference")).toMatchObject({
+      at: "body",
+      offset: 0,
+    });
+    const p = await made(who, { name: "r", body: "{{focus}}", variables: [SEL] });
+    const wrong = await send("POST", `${LIST}/${p.id}/render`, who, {
+      answers: [{ id: "focus", values: ["zzz"] }],
+    });
+    expect(await refused(RENDER, "post", wrong, 422, "invalid_answer")).toMatchObject({
+      question: "focus",
+      rule: "not_offered",
+    });
+    const long = await made(who, {
+      name: "long",
+      body: `{{t}}`.repeat(2100),
+      variables: [{ id: "t", question: "T?", type: "longText" }],
+    });
+    const big = await send("POST", `${LIST}/${long.id}/render`, who, {
+      answers: [{ id: "t", values: [], text: "x".repeat(2000) }],
+    });
+    await refused(RENDER, "post", big, 422, "rendered_too_long");
+  });
+
+  it("the limit is 100, and the 101st is `too_many_prompts`", async () => {
+    const who = await as("user");
+    for (let i = 0; i < 100; i++) await made(who, { name: `p${i}` });
+    const res = await send("POST", LIST, who, { name: "one-more", title: "T", body: "x" });
+    await refused(LIST, "post", res, 409, "too_many_prompts");
+    expect((await listing(who)).held).toBe(100);
+    await refused(
+      LIST,
+      "post",
+      await send("POST", LIST, who, { name: "p1", title: "T", body: "x" }),
+      409,
+      "name_taken",
+    );
+  });
+
+  it("sharing needs `prompts.share`, unsharing and deleting do not, and a prompt shared before is frozen", async () => {
+    const plain = await as("user");
+    await refused(
+      LIST,
+      "post",
+      await send("POST", LIST, plain, { name: "s", title: "T", body: "x", audience: ["*"] }),
+      403,
+      "forbidden",
+    );
+    const mine = await made(plain, { name: "mine" });
+    await refused(
+      ONE,
+      "patch",
+      await send("PATCH", `${LIST}/${mine.id}`, plain, {
+        revision: mine.revision,
+        audience: ["team"],
+      }),
+      403,
+      "forbidden",
+    );
+    // somebody shared it before the permission was taken away: the mock has one person per session, so it is the same session that
+    // changes profile
+    const who = await as("prompt-sharer");
+    const shared = await made(who, { name: "shared", audience: ["team"] });
+    expect(shared.audience).toEqual(["team"]);
+    expect((await post(`/__mock/config?me=user&session=${who.session}`)).status).toBe(204);
+    const frozen = await send("PATCH", `${LIST}/${shared.id}`, who, {
+      revision: shared.revision,
+      title: "New",
+    });
+    await refused(ONE, "patch", frozen, 403, "forbidden");
+    const unshared = await send("PATCH", `${LIST}/${shared.id}`, who, {
+      revision: shared.revision,
+      audience: [],
+    });
+    expect(((await expectDocumented(ONE, "patch", unshared)) as Prompt).audience).toEqual([]);
+  });
+
+  it("a shared prompt is seen by its audience only, never names its author, and cannot be changed by them", async () => {
+    const who = await as("user");
+    expect(
+      (
+        await seed(who, [
+          { name: "team-only", title: "Team", body: "Hello", audience: ["team"] },
+          {
+            name: "everybody",
+            title: "All",
+            body: "Hi {{x}}",
+            audience: ["*"],
+            variables: [{ id: "x", question: "X?", type: "text" }],
+          },
+          { name: "user-role", title: "Users", body: "U", audience: ["user"] },
+          { name: "mixed-case", title: "Case", body: "C", audience: ["User"] },
+        ])
+      ).status,
+    ).toBe(204);
+    const shared = await listing(who, "?scope=shared");
+    expect(shared.items.map((i) => i.name).sort()).toEqual(["everybody", "user-role"]);
+    for (const item of shared.items) {
+      expect(item.own).toBe(false);
+      expect(item).not.toHaveProperty("audience");
+    }
+    expect(shared.held).toBe(0);
+    const everybody = shared.items.find(
+      (i) => i.name === "everybody",
+    ) as components["schemas"]["PromptSummary"];
+    const got = await send("GET", `${LIST}/${everybody.id}`, who);
+    const prompt = (await expectDocumented(ONE, "get", got)) as Prompt;
+    expect(prompt).toMatchObject({ own: false, body: "Hi {{x}}" });
+    expect(prompt).not.toHaveProperty("audience");
+    const text = await send("POST", `${LIST}/${everybody.id}/render`, who, {
+      answers: [{ id: "x", values: [], text: "there" }],
+    });
+    expect(((await expectDocumented(RENDER, "post", text)) as { text: string }).text).toBe(
+      "Hi there",
+    );
+    await refused(
+      ONE,
+      "patch",
+      await send("PATCH", `${LIST}/${everybody.id}`, who, {
+        revision: prompt.revision,
+        title: "Mine",
+      }),
+      404,
+    );
+    await refused(ONE, "delete", await send("DELETE", `${LIST}/${everybody.id}`, who), 404);
+    // `all` is the caller's own and the shared ones; a prompt outside the audience is a 404 even by its id
+    expect((await listing(who)).items.length).toBe(2);
+    const hidden = (await listing(await as("prompt-sharer"), "")).items.length;
+    expect(hidden).toBe(0);
+  });
+
+  it("an administrator has no bypass: a prompt for `team` is a 404 for `admin`", async () => {
+    const who = await as("admin");
+    await seed(who, [{ name: "t", title: "T", body: "x", audience: ["team"] }]);
+    expect((await listing(who)).items).toEqual([]);
+  });
+
+  it("pages by id with a cursor, and refuses a scope or a cursor it does not know", async () => {
+    const who = await as("user");
+    for (let i = 0; i < 3; i++) await made(who, { name: `p${i}` });
+    const all = (await listing(who)).items.map((i) => i.id);
+    expect(all).toEqual([...all].sort());
+    expect((await listing(who, `?cursor=${all[0]}`)).items.map((i) => i.id)).toEqual(all.slice(1));
+    await refused(
+      LIST,
+      "get",
+      await send("GET", `${LIST}?scope=everything`, who),
+      400,
+      "bad_scope",
+    );
+    await refused(LIST, "get", await send("GET", `${LIST}?cursor=x`, who), 400, "bad_cursor");
+  });
+
+  it("the refusals carry the codes of the contract", async () => {
+    const who = await as("user");
+    await refused(LIST, "post", await send("POST", LIST, who, "not json"), 400, "bad_request");
+    await refused(LIST, "post", await send("POST", LIST, who, "{}", "text/plain"), 415);
+    await refused(ONE, "get", await send("GET", `${LIST}/nope`, who), 400, "bad_request");
+    await refused(ONE, "get", await send("GET", `${LIST}/p-zzzzzzzzzzzz`, who), 404);
+    await refused(LIST, "get", await send("GET", LIST, await as("no-access")), 403, "no_access");
   });
 });

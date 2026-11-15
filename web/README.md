@@ -1160,6 +1160,23 @@ words in the body of a POST and in no URL or storage; the shortcut from the comp
 screens `search` and `search-empty` of `pnpm screens`. **Not proven:** against a real orchestrator (`dev/search-e2e.sh` is the orchestrator's own and has not run against the stack), in Firefox or WebKit, with a real screen
 reader, or with the browsers' own use of Ctrl+K; and a hit in an older part of an open thread that its transcript has not loaded (the page waits and gives up after ten seconds, as for any `#m-<seq>` it cannot find).
 
+## A person's prompt library (the mock, no UI yet)
+
+*Added 2026-11-15 ([ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md), slices P1, P4 and the server half of P2 of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)).*
+There is **no screen** yet: the form that draws a prompt's variables as a `Choices` surface and the `/` menu are the next slices, and they are written against what is
+here. What exists is the contract ([`docs/api/prompts-v1.md`](../docs/api/prompts-v1.md), with vectors in `docs/api/examples/prompts/`) and the mock server's answers to it, so a
+client can be built and tested before the orchestrator is deployed.
+
+| What | Where |
+|---|---|
+| The rules | `mock/prompts.ts`: the **second implementation** of the page (the first is `orch_core::prompt`, in Rust). It imports nothing of `src/`, so what the page says, and not what the web does, is what is held: references, a whole save (the first error, with its `at`), an answer (the first refusal, with the question and the rule) and the text of a render |
+| The routes | `listPrompts`, `createPrompt`, `getPrompt`, `updatePrompt`, `deletePrompt` and `renderPrompt` in `mock/server.ts`, through `handlePrompts`, a function of one session's shelf and the request. `GET /api/config` has `prompts: {limit, maxVariables, maxBodyBytes, maxRenderedBytes}`: its presence is the capability |
+| The person | One person per session, as for every other route. The profile **`prompt-sharer`** (`POST /__mock/config?me=prompt-sharer`) holds `prompts.share` (no other profile does); the others own prompts and are 403 for one shared with a role |
+| Somebody else's prompts | `POST /__mock/prompts/shared?session=` with a list of `{name, title, description?, body, variables?, audience}` puts prompts "of somebody else" in the session's library: the session's roles decide which it sees (`*`, or one of its roles, byte for byte; no administrator exception), and a shared one never names its author |
+| The tests | `mock/prompts.test.ts` reads every vector (`references.json`, `prompts.json`, `render.json`, `requests.json`) and the three answer blocks of the UI catalog page (`vectors`, `whole-answers`, `invalid-questions`), twice: through the route function and through HTTP against the mock server; and holds the page's constants to the code. `mock/server.contract.test.ts` validates every answer against `docs/api/chat-api.yaml` and states the profile's permission |
+
+One difference from the orchestrator, written in the file's header: `JSON.parse` cannot tell `2.0` from `2`, so an integer member written `2.0` (`to`, `min`...) is accepted by the mock and refused by the orchestrator.
+
 ## A thread's description
 
 *Added 2026-10-02 (S19; [ADR 0035](../docs/decisions/0035-utility-model-tasks.md)).* When a job ends the orchestrator's own

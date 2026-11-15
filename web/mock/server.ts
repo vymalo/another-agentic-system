@@ -53,6 +53,16 @@ import {
   Projector,
   surfacesOf,
 } from "./projection";
+import {
+  addShared,
+  handlePrompts,
+  MAX_PROMPTS,
+  newShelf,
+  MAX_BODY_BYTES as PROMPT_MAX_BODY_BYTES,
+  MAX_RENDERED_BYTES as PROMPT_MAX_RENDERED_BYTES,
+  MAX_VARIABLES as PROMPT_MAX_VARIABLES,
+  type Shelf,
+} from "./prompts";
 import { cancelSteps, longThreadTurn, nextMessageId, type Step, scriptFor } from "./scripts";
 import {
   type LogEvent,
@@ -410,6 +420,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     myUsage: Record<string, MyUsage>;
     /** The person's own MCP servers and the deployment's rules for them (ADR 0046; `user-tools.ts`, `POST /__mock/user-tools`). */
     userTools: UserTools;
+    /** The person's prompt library, and the shared prompts "of somebody else" a test puts beside it (ADR 0070; `prompts.ts`). */
+    prompts: Shelf;
     /** The deployment's cap on sharing (`sharing.mode`, ADR 0040); what `/api/me` says is the cap for a role that may share. */
     sharing: Sharing;
     /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
@@ -443,6 +455,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         toolServers: [...TOOL_SERVERS],
         myUsage: {},
         userTools: newUserTools(),
+        prompts: newShelf(),
         sharing: "internal",
         signedIn: true,
         stale: false,
@@ -1583,6 +1596,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     // The person's own MCP servers (ADR 0046) as a test sets the deployment's rules for its own session: `enabled`,
     // `credentials`, `issuer`, `denyHosts`, `authorize` and `mark` (see `user-tools.ts`).
+    // Prompts "of somebody else" for the session's library (ADR 0070): a list of `{name, title, description?, body, variables?,
+    // audience}`; the session's roles decide which it sees. 400 for one the rules refuse, with the reason.
+    if (path === "/__mock/prompts/shared" && method === "POST") {
+      const refusal = addShared(
+        registryOf(url.searchParams.has("session") ? session : sessionOf(req)).prompts,
+        await readBody(req),
+        new Date(),
+      );
+      if (refusal) return problem(res, 400, "Bad Request", refusal);
+      return void res.writeHead(204).end();
+    }
     if (path === "/__mock/user-tools" && method === "POST") {
       const refusal = configureUserTools(
         registryOf(url.searchParams.has("session") ? session : sessionOf(req)).userTools,
@@ -1724,6 +1748,30 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         );
       }
     }
+    // A person's prompt library (ADR 0070): no permission to own prompts, `prompts.share` to share one (`prompts.ts`).
+    if (path === "/api/prompts" || path.startsWith("/api/prompts/")) {
+      const me = meOf(req);
+      const raw = await readBytes(req);
+      let body: string;
+      try {
+        body = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+      } catch {
+        body = "\u0000"; // not UTF-8: not JSON, but the media type is judged first
+      }
+      const answered = handlePrompts(
+        registryOf(sessionOf(req)).prompts,
+        { roles: me.roles, canShare: holds(me, "prompts.share") },
+        {
+          method,
+          rest: path.slice("/api/prompts".length),
+          search: url.searchParams,
+          contentType: req.headers["content-type"],
+          body,
+        },
+        new Date(),
+      );
+      if (answered) return reply(res, answered);
+    }
     if (path === "/api/agents" && method === "GET") {
       if (!holds(meOf(req), "agent.read")) return forbid(res, "agent.read");
       return sendJson(res, 200, listedAgents(req));
@@ -1734,6 +1782,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return sendJson(res, 200, {
         // the capability: this server serves `searchThreads` (ADR 0068)
         search: { maxQueryLength: MAX_QUERY_LENGTH, maxTerms: MAX_TERMS },
+        // the capability: this server serves the prompt library (ADR 0070)
+        prompts: {
+          limit: MAX_PROMPTS,
+          maxVariables: PROMPT_MAX_VARIABLES,
+          maxBodyBytes: PROMPT_MAX_BODY_BYTES,
+          maxRenderedBytes: PROMPT_MAX_RENDERED_BYTES,
+        },
         ui: {
           showDescriptions,
           ...(history

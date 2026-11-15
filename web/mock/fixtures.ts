@@ -52,6 +52,7 @@ export type ProfileName =
   | "limited"
   | "capped"
   | "tool-maker"
+  | "prompt-sharer"
   | "no-access";
 
 /**
@@ -70,6 +71,7 @@ export type ProfileName =
  * - `limited`: the `user` role, but of the agents it may invoke only the reviewer (it reads all).
  * - `capped`: the `user` role with `maxTier: edits` (ADR 0061): it picks up to `edits`; an agent whose default is `auto` runs its messages under `edits`.
  * - `tool-maker`: the `user` role and one that holds `tools.user.add` (ADR 0046: no built-in role does), so the person adds MCP servers of their own.
+ * - `prompt-sharer`: the `user` role and one that holds `prompts.share` (ADR 0070: no built-in role does), so the person shares prompts with roles.
  * - `no-access`: a valid identity whose roles grant nothing; every route but `/api/me` is a 403.
  */
 export const PROFILES: Record<ProfileName, Me> = {
@@ -165,6 +167,23 @@ export const PROFILES: Record<ProfileName, Me> = {
       { permission: "thread.delete" },
       { permission: "artifact.read", scope: "own" },
       { permission: "tools.user.add" },
+    ],
+    agents: { read: ["*"], invoke: ["*"] },
+  },
+  "prompt-sharer": {
+    user: "sharer@example.com",
+    email: "sharer@example.com",
+    name: "Pia Sharer",
+    roles: ["prompt-sharer", "user"],
+    permissions: [
+      { permission: "agent.read" },
+      { permission: "agent.invoke" },
+      { permission: "thread.read", scope: "own" },
+      { permission: "thread.write", scope: "own" },
+      { permission: "thread.share" },
+      { permission: "thread.delete" },
+      { permission: "artifact.read", scope: "own" },
+      { permission: "prompts.share" },
     ],
     agents: { read: ["*"], invoke: ["*"] },
   },
