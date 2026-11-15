@@ -13,6 +13,8 @@ let searchConfig: { maxQueryLength: number; maxTerms: number } | undefined;
 vi.mock("@/features/chat/hooks/use-ui-config", () => ({
   useShowDescriptions: () => showDescriptions,
   useSearchConfig: () => searchConfig,
+  // the account menu at the foot of the sidebar asks whether there is a prompt library; this test has none
+  usePromptsConfig: () => undefined,
 }));
 const router = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({

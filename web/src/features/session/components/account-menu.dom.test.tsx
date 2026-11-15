@@ -15,8 +15,11 @@ import { navigation } from "@/lib/auth/navigation";
 const state = vi.hoisted(() => ({
   me: { status: "loading", me: null } as MeState,
   signOut: vi.fn(async () => {}),
+  /** `prompts` of the configuration: its presence is the capability. */
+  prompts: undefined as undefined | { limit: number },
 }));
 vi.mock("@/features/me/hooks/use-me", () => ({ useMe: () => state.me }));
+vi.mock("@/features/chat/hooks/use-ui-config", () => ({ usePromptsConfig: () => state.prompts }));
 vi.mock("@/lib/auth/sign-out", () => ({ signOut: state.signOut, isSigningOut: () => false }));
 
 import { AccountMenu, SIGN_OUT_LABEL, SignOutButton } from "./account-menu";
@@ -41,6 +44,7 @@ let go: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   state.me = { status: "ready", me: ME };
   state.signOut.mockClear();
+  state.prompts = undefined;
   go = vi.spyOn(navigation, "go").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -97,6 +101,21 @@ describe("the account menu", () => {
     await openMenu();
     const usage = screen.getByRole("menuitem", { name: "Usage" });
     expect(usage.getAttribute("href")).toBe("/usage");
+  });
+
+  it("links to My prompts when the deployment has a prompt library, whatever the person's roles are, and not otherwise", async () => {
+    setBrowserAuth(null);
+    state.me = { status: "ready", me: { ...ME, roles: [], permissions: [] } };
+    const { unmount } = render(<AccountMenu />, { wrapper: TooltipProvider });
+    await openMenu();
+    expect(screen.queryByRole("menuitem", { name: "My prompts" })).toBeNull();
+    unmount();
+    state.prompts = { limit: 100 };
+    render(<AccountMenu />, { wrapper: TooltipProvider });
+    await openMenu();
+    expect(screen.getByRole("menuitem", { name: "My prompts" }).getAttribute("href")).toBe(
+      "/prompts",
+    );
   });
 
   it("links to My tool servers only for a person whose roles hold tools.user.add, as GET /api/me says", async () => {
