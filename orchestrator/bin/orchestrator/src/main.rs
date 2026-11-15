@@ -11,6 +11,7 @@ mod local;
 mod logging;
 mod migrate;
 mod model;
+mod search;
 mod secrets;
 mod usage;
 mod user_tools;
@@ -130,6 +131,7 @@ async fn main() -> ExitCode {
                 secrets::run_command(secrets, args, &matches).await
             }
             migrate::Command::Usage(usage) => usage::run_command(usage, args, &matches).await,
+            migrate::Command::Search(search) => search::run_command(search, args, &matches).await,
         };
     }
     let print = args.print_config;
