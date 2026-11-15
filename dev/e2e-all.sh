@@ -106,6 +106,19 @@
 #                     (the administrator) finds none of it; text that looks like SQL is
 #                     words; the refusals carry their codes; a deleted thread is gone at
 #                     once; no word of a query is in the orchestrator's log
+#   prompts           a person's prompt library (ADR 0070): `/api/prompts` saves a      prompts-e2e.sh
+#                     prompt with variables that are questions of the UI catalog (a
+#                     select and a scale), lists summaries without bodies, renders the
+#                     text on the server from the answers (the option's label, nothing
+#                     sent) and refuses what the contract says (an undeclared or an
+#                     unused variable, spaces in a reference, an images question, a
+#                     stale revision); the owner shares it with a role (`prompts.share`,
+#                     held by the role `prompt-sharer` only): that role lists, reads and
+#                     renders it, never sees who wrote it and cannot change it, and a
+#                     person outside the audience, the administrator included, gets 404;
+#                     a person without the permission is 403 for sharing and can still
+#                     unshare; the limit of 100; a delete with a stale revision is 409;
+#                     no word of a prompt is in the orchestrator's log
 #   delete            deleting a thread erases it (ADR 0043): a thread that works is   delete-e2e.sh
 #                     refused (409 thread_active), a cancelled one is deleted (204);
 #                     another person's delete is a 404 that changes nothing; the owner's
@@ -223,7 +236,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier title description fork rail search delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -420,6 +433,7 @@ for s in "$@"; do
     fork) run fork sh "$here/fork-e2e.sh" ;;
     rail) run rail sh "$here/rail-e2e.sh" ;;
     search) run search sh "$here/search-e2e.sh" ;;
+    prompts) run prompts sh "$here/prompts-e2e.sh" ;;
     delete) run delete sh "$here/delete-e2e.sh" ;;
     share) run share sh "$here/share-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;

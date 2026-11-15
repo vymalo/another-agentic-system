@@ -180,7 +180,9 @@ jobs:
         # (dev/rail-e2e.sh, ADR 0042: pinned first in `order=rail`, a thread put on top, before or after another, an archived one left out and brought back where it was, a fork nested under its parent
         # and ejected on request, none of it in the log, another person's request a 404), searching a person's own threads (dev/search-e2e.sh, ADR 0068: found by a word, a prefix and with accents
         # folded, the agent's final answer included, a title ranks first, archived in by default and out when asked, a fork's copied messages are its parent's, another person finds none of it, text that
-        # looks like SQL is words, a deleted thread is gone at once, and no word of a query is in the orchestrator's log), deleting a thread (dev/delete-e2e.sh, ADR 0043: a thread that works is refused with 409,
+        # looks like SQL is words, a deleted thread is gone at once, and no word of a query is in the orchestrator's log), a person's prompt library (dev/prompts-e2e.sh, ADR 0070: saved prompts
+        # with variables that are catalog questions, rendered on the server from the answers (the option's label, nothing sent), the refusals of the contract, a share with a role under `prompts.share`
+        # that the role reads and renders and never learns the author of, 404 for a person outside the audience and for the administrator, the limit of 100, and no word of a prompt in the log), deleting a thread (dev/delete-e2e.sh, ADR 0043: a thread that works is refused with 409,
         # the owner's delete erases the thread, its files from the artifact volume and its link, keeps a fork whole and is a 404 for anybody else; a late model reply for a deleted thread is dropped and counted),
         # sharing a thread by a revocable link (dev/share-e2e.sh, ADR 0040, through the edge of dev/Caddyfile: at the cap `internal` a second user reads the link, every write by them is a 404 or
         # a 405 and changes nothing, a new link kills the old one, revoking is a 404 and ends a stream open on the link; the script then restarts the orchestrator, only it, on a copy of
