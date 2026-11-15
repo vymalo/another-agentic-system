@@ -2,28 +2,24 @@
 //! `docs/api/chat-api.yaml`, the vectors of `docs/api/examples/prompts/` (the ones the web's mock server passes
 //! too) are asked of it, and the rules that make the library safe are held: only the owner writes, a share needs
 //! `prompts.share` and is read by its audience only, the administrator has no bypass, a prompt never names its
-//! author, a prompt is in no export.
+//! author. (There is no test that "a prompt is in no export": no route or port joins the library to a thread's log, so a
+//! test that created both and looked for one in the other could not fail. What puts a prompt's words in a thread is the
+//! person sending the rendered text as an ordinary message, which is then the thread's, by design.)
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use jiff::Timestamp;
 use orch_api::ApiConfig;
 use orch_app::{
     AgentDirectory, AgentEntry, AgentScope, App, AppConfig, Permission, Policy, RoleGrant,
 };
-use orch_core::{
-    Actor, AgentId, AgentTarget, EventBody, ThreadId, ThreadState, UserId, UserMessageData,
-};
+use orch_core::{AgentId, UserId};
 use orch_ports::memory::{
     MemoryArtifacts, MemoryAuth, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds,
 };
-use orch_ports::{
-    AgentEndpoint, Commit, FixedRegistry, NewEvent, NewThreadRecord, NoModel, PortSet, Principal,
-    Role, SystemClock, ThreadStore,
-};
+use orch_ports::{AgentEndpoint, NoModel, PortSet, Principal, Role, SystemClock};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
@@ -31,18 +27,6 @@ const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 const ROOT: &str = "root@example.com";
-
-type Stack = PortSet<
-    MemoryStore,
-    MemoryWakeup,
-    ScriptedAgent,
-    SystemClock,
-    SeqIds,
-    NoModel,
-    FixedRegistry,
-    MemoryAuth,
-    MemoryArtifacts,
->;
 
 const REFERENCES_PROMPTS: &str = include_str!("../../../../docs/api/examples/prompts/prompts.json");
 const RENDER: &str = include_str!("../../../../docs/api/examples/prompts/render.json");
@@ -153,7 +137,6 @@ impl Resp {
 struct Harness {
     base: String,
     client: reqwest::Client,
-    app: Arc<App<Stack>>,
     contract: Contract,
     server: JoinHandle<()>,
 }
@@ -255,7 +238,6 @@ impl Harness {
         Harness {
             base: format!("http://{addr}"),
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
-            app,
             contract: Contract::load(),
             server,
         }
@@ -624,65 +606,91 @@ async fn a_person_whose_roles_grant_nothing_is_refused_with_no_access() {
     assert_eq!((r.status, r.code().as_deref()), (403, Some("no_access")));
 }
 
-/// A prompt is in no thread, no fork and no export: what a person exports holds nothing of the library.
+/// Every answer under `/api/prompts` is `Cache-Control: no-store`, the ones that no handler of the library gives
+/// included: the identity layer's 401, the guard's `no_access`, a path that is no route (404), a verb that is not
+/// one (405) and a media type that is not JSON (415). The layer is outside the timeout and the guard by its place in
+/// `router_with_surfaces`, so the timeout's own 503 has it too (a 503 cannot be made here: the in-memory store never
+/// waits). What is not the library's is not touched by the layer.
 #[tokio::test]
-async fn a_prompt_is_in_no_export() {
+async fn every_answer_under_api_prompts_is_never_cached() {
     let h = Harness::start().await;
-    let sentinel = "zqsentinelzq";
-    let mut body = greet("secret", &[]);
-    body["body"] = json!(format!("{sentinel} {{{{who}}}}"));
-    h.make("alice", &body).await;
-    let id = ThreadId(uuid::Uuid::from_u128(
-        0x0190_aaaa_0000_7000_8000_0000_0000_0001,
-    ));
-    let now: Timestamp = "2026-11-14T10:00:00Z".parse().unwrap();
-    h.app
-        .ports()
-        .store
-        .create_thread(
-            NewThreadRecord {
-                id,
-                owner: UserId::new(ALICE),
-                title: "A thread".to_owned(),
-                description: None,
-                target: AgentTarget {
-                    agent_id: AgentId::new("plain"),
-                    release: None,
-                },
-                context_id: None,
-                rail_parent: None,
-                now,
-            },
-            Commit {
-                new_state: ThreadState::Done,
-                job: None,
-                events: vec![NewEvent {
-                    at: now,
-                    actor: Actor::user(&UserId::new(ALICE)),
-                    body: EventBody::UserMessage(UserMessageData::new("hello")),
-                    idempotency_key: None,
-                }],
-                outbox: Vec::new(),
-                binding: None,
-                now,
-                lease: None,
-                watches: Vec::new(),
-                timers: Vec::new(),
-                inbox: None,
-                finishes_outbox: None,
-                title: None,
-                description: None,
-                sharing: None,
-                skip_unsent_delegates: false,
-            },
+    let no_store = |r: &Resp, what: &str| {
+        assert_eq!(
+            r.headers.get("cache-control").and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+            "{what}: {}",
+            r.status
+        );
+    };
+    let cases: [(&str, &str, &str, u16); 7] = [
+        ("a token nobody has", "GET", "/api/prompts", 401),
+        ("nobody", "GET", "/api/prompts", 403),
+        ("alice", "PUT", "/api/prompts", 405),
+        ("alice", "DELETE", "/api/prompts", 405),
+        ("alice", "GET", "/api/prompts/p-aaaaaaaaaaaa/nothing", 404),
+        ("alice", "PUT", "/api/prompts/p-aaaaaaaaaaaa", 405),
+        ("alice", "GET", "/api/prompts/p-aaaaaaaaaaaa", 404),
+    ];
+    for (token, method, path, status) in cases {
+        let r = h.raw(token, method, path, None, None).await;
+        assert_eq!(r.status, status, "{method} {path} as {token}");
+        no_store(&r, &format!("{method} {path} as {token}"));
+    }
+    let r = h
+        .raw(
+            "alice",
+            "POST",
+            "/api/prompts",
+            Some("text/plain"),
+            Some(b"{}".to_vec()),
         )
-        .await
-        .unwrap();
-    let export = h
-        .call("alice", "GET", &format!("/api/threads/{id}/export"), None)
         .await;
-    assert_eq!(export.status, 200);
-    let text = String::from_utf8_lossy(&export.body);
-    assert!(text.contains("hello"));
-    assert!(!text.contains(sentinel) && !text.contains("secret"));
+    assert_eq!(r.status, 415);
+    no_store(&r, "a media type");
+    // the layer is for the library: another path is not given the header by it
+    let r = h.raw("alice", "GET", "/api/agents", None, None).await;
+    assert_eq!(r.status, 200);
+    assert!(
+        r.headers
+            .get("cache-control")
+            .is_none_or(|v| v != "no-store"),
+        "the layer is for /api/prompts alone"
+    );
+}
+
+/// A page is 100: with exactly 100 visible there is no `nextCursor`, the 101st gives one that is the last id of the
+/// page, and the next page holds the rest and no cursor.
+#[tokio::test]
+async fn a_page_has_a_cursor_only_when_more_follow() {
+    let h = Harness::start().await;
+    for n in 0..100 {
+        let r = h
+            .call(
+                "bob",
+                "POST",
+                "/api/prompts",
+                Some(&greet(&format!("p{n}"), &[])),
+            )
+            .await;
+        assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
+    }
+    let full = h.checked("bob", "GET", "/api/prompts", None).await.json();
+    assert_eq!(full["items"].as_array().unwrap().len(), 100);
+    assert_eq!(full["limit"], 100);
+    assert!(full.get("nextCursor").is_none(), "exactly 100 is one page");
+    // one more is visible to bob: a prompt of alice's for everybody
+    h.make("alice", &greet("everybody", &["*"])).await;
+    let first = h.checked("bob", "GET", "/api/prompts", None).await.json();
+    let items = first["items"].as_array().unwrap();
+    assert_eq!(items.len(), 100);
+    let cursor = first["nextCursor"].as_str().expect("a cursor");
+    assert_eq!(cursor, items[99]["id"].as_str().unwrap());
+    let second = h
+        .checked("bob", "GET", &format!("/api/prompts?cursor={cursor}"), None)
+        .await
+        .json();
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert!(second.get("nextCursor").is_none());
+    // the listing says how many bob holds, whatever the page
+    assert_eq!(second["held"], 100);
 }

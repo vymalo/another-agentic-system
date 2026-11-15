@@ -364,7 +364,8 @@ pub fn router_with_surfaces<P: Ports>(
         .with_state(state.clone())
         .merge(
             // A person's prompt library (ADR 0070): always on, and every answer, the problems
-            // included, is never kept by a cache. The body of none of them is ever logged.
+            // included, is never kept by a cache (`prompts::no_store_for_prompts`, below). The body of
+            // none of them is ever logged.
             Router::new()
                 .route(
                     "/api/prompts",
@@ -377,8 +378,7 @@ pub fn router_with_surfaces<P: Ports>(
                         .delete(prompts::delete::<P>),
                 )
                 .route("/api/prompts/{id}/render", post(prompts::render::<P>))
-                .with_state(state.clone())
-                .layer(axum::middleware::map_response(prompts::no_store_layer)),
+                .with_state(state.clone()),
         )
         .merge(
             // People's own MCP servers (ADR 0046): 404 for every route while the feature is off,
@@ -516,6 +516,9 @@ pub fn router_with_surfaces<P: Ports>(
             .merge(oauth_public)
             .merge(api),
     );
+    // A person's prompts are never kept by a cache, whatever answers: the identity layer's 401, the
+    // guard's `no_access`, a timeout, a 404 or a 405 included (ADR 0070).
+    let router = router.layer(axum::middleware::from_fn(prompts::no_store_for_prompts));
     // Outermost: a preflight is answered before identity (it carries no credentials), and every
     // answer, a refusal included, says which origin may read it.
     match cors::layer(&cfg.cors_allowed_origins) {

@@ -25,8 +25,8 @@
 use std::collections::BTreeSet;
 
 use orch_core::prompt::{
-    AnswerRefusal, PromptDefinition, PromptError, PromptId, PromptInput, RenderError, render,
-    validate_answers,
+    AnswerRefusal, PromptAudience, PromptDefinition, PromptError, PromptId, PromptInput,
+    RenderError, render, validate_answers,
 };
 use orch_ports::{
     Clock, IdGen, PromptPage, PromptRevision, PromptScope, PromptStore, PromptStoreError,
@@ -149,6 +149,9 @@ fn store_error(error: PromptStoreError) -> AppError {
             "a person's prompt does not read back",
             error,
         )),
+        PromptStoreError::Internal { .. } => {
+            AppError::Store(orch_ports::StoreError::internal(error))
+        }
         PromptStoreError::Exists => {
             AppError::internal("a prompt id the store reported as taken was not retried")
         }
@@ -160,10 +163,13 @@ fn store_error(error: PromptStoreError) -> AppError {
 fn viewer(who: &impl Requester) -> PromptViewer {
     PromptViewer {
         user: who.user().clone(),
+        // as given, byte for byte; a role that cannot be in any audience (a NUL, a space, over 64
+        // bytes) can match nothing, so it never reaches a store
         roles: who
             .roles()
             .into_iter()
             .map(|r| r.as_str().to_owned())
+            .filter(|r| PromptAudience::is_role_value(r))
             .collect::<BTreeSet<_>>(),
     }
 }

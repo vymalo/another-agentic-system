@@ -12,9 +12,9 @@ use orch_app::{
     AgentScope, AppConfig, AppError, EditPrompt, Permission, Policy, PromptRefusal, RenderPrompt,
     RoleGrant,
 };
-use orch_core::prompt::{PromptId, PromptInput};
+use orch_core::prompt::{PromptDefinition, PromptId, PromptInput};
 use orch_core::{Classify, ErrorClass};
-use orch_ports::{Principal, PromptScope, Role};
+use orch_ports::{IdGen, Principal, PromptScope, PromptStore, Role};
 use serde_json::{Value, json};
 use support::*;
 
@@ -461,4 +461,348 @@ async fn the_limit_the_name_and_the_values_have_their_codes() {
         refusal(app.get_prompt(&alice, &nobody).await.unwrap_err()),
         PromptRefusal::NotFound
     );
+}
+
+fn edit_of(revision: orch_ports::PromptRevision) -> EditPrompt {
+    EditPrompt {
+        revision: Some(revision),
+        ..EditPrompt::default()
+    }
+}
+
+/// An administrator is a person like any other for sharing: `admin` does not imply `prompts.share`, for a
+/// save, for an edit, and for the one share that needs no audience named (`*`).
+#[tokio::test]
+async fn an_administrator_without_prompts_share_cannot_share_and_nobody_shares_with_everybody_for_free()
+ {
+    let w = World::new();
+    let app = app_with_roles(&w, &["sharer"]);
+    let admin = principal("root@example.com", &["admin"]);
+    for audience in [&["team"][..], &["*"][..]] {
+        let denied = app
+            .create_prompt(&admin, input("shared", audience))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                denied,
+                AppError::Forbidden {
+                    permission: Permission::PromptsShare,
+                    ..
+                }
+            ),
+            "{audience:?}: {denied:?}"
+        );
+    }
+    let mine = app.create_prompt(&admin, input("mine", &[])).await.unwrap();
+    for audience in [vec!["team".to_owned()], vec!["*".to_owned()]] {
+        let denied = app
+            .edit_prompt(
+                &admin,
+                mine.prompt().id(),
+                EditPrompt {
+                    audience: Some(audience.clone()),
+                    ..edit_of(mine.revision())
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(denied, AppError::Forbidden { .. }),
+            "{audience:?}: {denied:?}"
+        );
+    }
+    // a person without it who inherits a share for everybody is frozen too, however little they change
+    let sharer = principal("sharer@example.com", &["sharer"]);
+    let everybody = app
+        .create_prompt(&sharer, input("everybody", &["*"]))
+        .await
+        .unwrap();
+    let lost = app_with_roles(&w, &[]);
+    for edit in [
+        EditPrompt {
+            title: Some("New".into()),
+            ..edit_of(everybody.revision())
+        },
+        EditPrompt {
+            audience: Some(vec!["*".into()]),
+            ..edit_of(everybody.revision())
+        },
+    ] {
+        let denied = lost
+            .edit_prompt(&sharer, everybody.prompt().id(), edit)
+            .await
+            .unwrap_err();
+        assert!(matches!(denied, AppError::Forbidden { .. }), "{denied:?}");
+    }
+}
+
+/// The permission is judged before the revision: a person who lost `prompts.share` and holds a stale
+/// revision is told 403, not 409.
+#[tokio::test]
+async fn the_permission_is_asked_before_the_revision() {
+    let w = World::new();
+    let app = app_with_roles(&w, &["sharer"]);
+    let sharer = principal("sharer@example.com", &["sharer"]);
+    let shared = app
+        .create_prompt(&sharer, input("shared", &["team"]))
+        .await
+        .unwrap();
+    let lost = app_with_roles(&w, &[]);
+    let stale = orch_ports::PromptRevision::new(shared.revision().get() + 1_000);
+    let denied = lost
+        .edit_prompt(
+            &sharer,
+            shared.prompt().id(),
+            EditPrompt {
+                title: Some("New".into()),
+                ..edit_of(stale)
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(denied, AppError::Forbidden { .. }), "{denied:?}");
+    // with the permission it is the stale revision
+    let late = app
+        .edit_prompt(
+            &sharer,
+            shared.prompt().id(),
+            EditPrompt {
+                title: Some("New".into()),
+                ..edit_of(stale)
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(late), PromptRefusal::StaleRevision);
+    // and an edit that names no revision at all is stale too, never a write
+    let none = app
+        .edit_prompt(
+            &sharer,
+            shared.prompt().id(),
+            EditPrompt {
+                title: Some("New".into()),
+                ..EditPrompt::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(none), PromptRefusal::StaleRevision);
+}
+
+/// A role is compared byte for byte: `Team` is not `team`, for a read, a render and a listing.
+#[tokio::test]
+async fn roles_are_passed_to_the_store_as_given() {
+    let w = World::new();
+    let app = app_with_roles(&w, &["sharer"]);
+    let author = principal("sharer@example.com", &["sharer"]);
+    let shared = app
+        .create_prompt(&author, input("shared", &["team"]))
+        .await
+        .unwrap();
+    let id = shared.prompt().id();
+    let capital = principal("capital@example.com", &["plain", "Team"]);
+    assert_eq!(
+        refusal(app.get_prompt(&capital, id).await.unwrap_err()),
+        PromptRefusal::NotFound
+    );
+    let render = app
+        .render_prompt(
+            &capital,
+            id,
+            RenderPrompt {
+                answers: Some(answer("x")),
+                ..RenderPrompt::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(render), PromptRefusal::NotFound);
+    assert!(
+        app.list_prompts(&capital, PromptScope::All, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let exact = principal("exact@example.com", &["plain", "team"]);
+    assert!(app.get_prompt(&exact, id).await.is_ok());
+    // a role that no audience can hold is not asked about, and the person still sees what their other roles share
+    let odd = principal("odd@example.com", &["team", "with space", "nul\u{0}role"]);
+    assert!(app.get_prompt(&odd, id).await.is_ok());
+}
+
+/// A member of the audience who writes is told what a stranger is told, whatever else is wrong with the
+/// request: a stale revision, a missing permission, an invalid value.
+#[tokio::test]
+async fn an_audience_member_who_writes_is_told_not_found_whatever_else_is_wrong() {
+    let w = World::new();
+    let app = app_with_roles(&w, &["sharer"]);
+    let author = principal("sharer@example.com", &["sharer"]);
+    let shared = app
+        .create_prompt(&author, input("shared", &["team"]))
+        .await
+        .unwrap();
+    let id = shared.prompt().id();
+    let stale = orch_ports::PromptRevision::new(shared.revision().get() + 1_000);
+    for member in [
+        principal("plain-member@example.com", &["plain", "team"]),
+        principal("sharing-member@example.com", &["sharer", "team"]),
+    ] {
+        for edit in [
+            EditPrompt {
+                title: Some("Mine".into()),
+                ..edit_of(stale)
+            },
+            EditPrompt {
+                title: Some("Mine".into()),
+                ..edit_of(shared.revision())
+            },
+            EditPrompt {
+                audience: Some(vec!["team".into()]),
+                ..edit_of(stale)
+            },
+            EditPrompt {
+                body: Some("{{ x }}".into()),
+                ..edit_of(shared.revision())
+            },
+        ] {
+            let told = app
+                .edit_prompt(&member, id, edit.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(refusal(told), PromptRefusal::NotFound, "{edit:?}");
+        }
+        let told = app
+            .delete_prompt(&member, id, Some(stale))
+            .await
+            .unwrap_err();
+        assert_eq!(refusal(told), PromptRefusal::NotFound);
+    }
+}
+
+/// An edit that renames renames, and one whose values the rules refuse is refused, whatever it changes.
+#[tokio::test]
+async fn an_edit_renames_and_a_bad_value_is_refused() {
+    let w = World::new();
+    let app = app_with_roles(&w, &["sharer"]);
+    let alice = principal("alice@example.com", &["plain"]);
+    let saved = app.create_prompt(&alice, input("old", &[])).await.unwrap();
+    let id = saved.prompt().id();
+    let renamed = app
+        .edit_prompt(
+            &alice,
+            id,
+            EditPrompt {
+                name: Some("new".into()),
+                ..edit_of(saved.revision())
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.prompt().name().as_str(), "new");
+    assert_eq!(
+        app.get_prompt(&alice, id)
+            .await
+            .unwrap()
+            .prompt()
+            .name()
+            .as_str(),
+        "new"
+    );
+    let PromptRefusal::Invalid(e) = refusal(
+        app.edit_prompt(
+            &alice,
+            id,
+            EditPrompt {
+                body: Some("{{ who }}".into()),
+                ..edit_of(renamed.revision())
+            },
+        )
+        .await
+        .unwrap_err(),
+    ) else {
+        panic!("not a rule of the page");
+    };
+    assert_eq!((e.code, e.at.as_str()), ("bad_reference", "body"));
+    // nothing was written
+    assert_eq!(
+        app.get_prompt(&alice, id).await.unwrap().revision(),
+        renamed.revision()
+    );
+}
+
+/// A page is 100 however many are visible: 100 of one's own and one shared make two pages, the first full.
+#[tokio::test]
+async fn a_listing_is_a_page_of_a_hundred_and_says_when_more_follow() {
+    let w = World::new();
+    let app = app_with_roles(&w, &["sharer"]);
+    let author = principal("sharer@example.com", &["sharer"]);
+    let reader = principal("reader@example.com", &["plain"]);
+    for n in 0..100 {
+        app.create_prompt(&reader, input(&format!("p{n}"), &[]))
+            .await
+            .unwrap();
+    }
+    let page = app
+        .list_prompts(&reader, PromptScope::All, None)
+        .await
+        .unwrap();
+    assert_eq!((page.items.len(), page.more), (100, false));
+    app.create_prompt(&author, input("everybody", &["*"]))
+        .await
+        .unwrap();
+    let page = app
+        .list_prompts(&reader, PromptScope::All, None)
+        .await
+        .unwrap();
+    assert_eq!((page.items.len(), page.more, page.held), (100, true, 100));
+}
+
+/// A new id that turns out to be taken is drawn again, a few times; four in a row is an internal error.
+#[tokio::test]
+async fn an_id_that_is_taken_is_drawn_again() {
+    let w = World::new();
+    let app = app_with_roles(&w, &["sharer"]);
+    let alice = principal("alice@example.com", &["plain"]);
+    let squatter = orch_core::UserId::new("squatter@example.com");
+    let at = orch_core::Timestamp::from_second(1_700_000_000).unwrap();
+    // the ids the next draws of the app will make: the counter is shared
+    let next = u128::from_be_bytes(w.ids.new_token_bytes()) & 0xffff_ffff;
+    let taken = |n: u128| {
+        let bytes = (0x5eed_0000_0000_0000_0000_0000_0000_0000_u128 | n).to_be_bytes();
+        PromptId::from_entropy(bytes)
+    };
+    let squat = |n: u128| {
+        let w = w.clone();
+        let squatter = squatter.clone();
+        async move {
+            let def = PromptDefinition::new(
+                taken(n),
+                PromptInput {
+                    name: format!("squat{n}"),
+                    ..input("x", &[])
+                },
+            )
+            .unwrap();
+            w.store.insert_prompt(&squatter, &def, at).await.unwrap();
+        }
+    };
+    squat(next + 1).await;
+    squat(next + 2).await;
+    let made = app
+        .create_prompt(&alice, input("greet", &[]))
+        .await
+        .unwrap();
+    assert_eq!(made.prompt().id(), &taken(next + 3));
+    squat(next + 4).await;
+    squat(next + 5).await;
+    squat(next + 6).await;
+    squat(next + 7).await;
+    let failed = app
+        .create_prompt(&alice, input("greet2", &[]))
+        .await
+        .unwrap_err();
+    assert!(!matches!(failed, AppError::Prompt(_)), "{failed:?}");
+    assert_eq!(failed.class(), ErrorClass::Internal);
 }

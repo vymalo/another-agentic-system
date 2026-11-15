@@ -701,6 +701,126 @@
         "status": 400,
         "code": "bad_request"
       }
+    },
+    {
+      "name": "a member twice",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"name\":\"b\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice inside a variable",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"question\":\"R?\",\"type\":\"text\"}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice inside an option",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"options\":[{\"value\":\"a\",\"label\":\"A\",\"label\":\"B\"},{\"value\":\"b\",\"label\":\"B\"}]}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice inside an answer",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"],\"values\":[]}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an integer written 5e0",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"made5e0\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"type\":\"scale\",\"to\":5e0}]}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "an integer written 5.0",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"made50\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"type\":\"scale\",\"to\":5.0}]}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "an integer written 5.5",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"made55\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"type\":\"scale\",\"to\":5.5}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_variable"
+      }
+    },
+    {
+      "name": "a revision of 19 digits is a revision that is stale",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"revision\":\"9999999999999999999\",\"title\":\"X\"}",
+      "expect": {
+        "status": 409,
+        "code": "stale_revision"
+      }
+    },
+    {
+      "name": "a revision of 20 digits is not a revision",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"revision\":\"99999999999999999999\",\"title\":\"X\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "null answers",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a null note",
+      "method": "POST",
+      "path": "/api/prompts/$id1/render",
+      "body": "{\"answers\":[],\"note\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "the media type comes before the id",
+      "method": "POST",
+      "path": "/api/prompts/nope/render",
+      "headers": {
+        "content-type": "text/plain"
+      },
+      "body": "{}",
+      "expect": {
+        "status": 415
+      }
     }
   ]
 }

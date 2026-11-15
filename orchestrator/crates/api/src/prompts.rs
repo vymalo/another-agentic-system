@@ -17,7 +17,12 @@
 //! an answer or a role. **A shared prompt never names its author**: the views have no owner, and
 //! `audience` and nothing else of the share is the owner's own.
 //!
-//! Every answer, the problems included, is `Cache-Control: no-store`.
+//! Every answer under `/api/prompts`, the problems included (a 401, a `no_access`, a 404 for a path
+//! that is no route, a 405, the timeout's 503), is `Cache-Control: no-store`: [`no_store_for_prompts`]
+//! is the outermost layer of the whole router, outside the guard and the identity layer.
+//!
+//! A member twice in any object of a request, a variable's or an answer's included, is a 400:
+//! `serde_json` keeps the last of two, which is not what the person wrote ([`Strict`]).
 
 use axum::Extension;
 use axum::Json;
@@ -25,6 +30,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderValue, StatusCode, Uri};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use orch_app::{EditPrompt, RenderPrompt};
 use orch_core::prompt::{
@@ -79,12 +85,101 @@ fn bad_id() -> ApiError {
     bad_request("the prompt id is `p-` and 12 lowercase letters or digits")
 }
 
-/// Every answer of these routes, problems included, is never kept by a cache.
-pub(crate) async fn no_store_layer(mut response: Response) -> Response {
+/// Every answer under `/api/prompts`, problems included, is never kept by a cache. It is the outermost
+/// layer of the router, so the answers of the layers inside (the identity layer's 401, the guard's
+/// `no_access`, the timeout's 503, the fallbacks' 404 and 405) carry it too.
+pub(crate) async fn no_store_for_prompts(request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let ours = path == "/api/prompts" || path.starts_with("/api/prompts/");
+    let mut response = next.run(request).await;
+    if ours {
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+}
+
+/// A JSON value that refuses an object with a member twice, at any depth. `serde_json::Value` keeps
+/// the last of two, silently: a client that sent `"question"` twice meant one of them, and the server
+/// cannot say which. The refusal is a bare error: the key is never quoted.
+struct Strict(Value);
+
+impl<'de> Deserialize<'de> for Strict {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Value;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+                Ok(Value::Bool(v))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+                Ok(v.into())
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+                Ok(v.into())
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+                Ok(serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+                Ok(Value::String(v.to_owned()))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Value, E> {
+                Ok(Value::String(v))
+            }
+            fn visit_unit<E>(self) -> Result<Value, E> {
+                Ok(Value::Null)
+            }
+            fn visit_none<E>(self) -> Result<Value, E> {
+                Ok(Value::Null)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Value, A::Error> {
+                let mut items = Vec::new();
+                while let Some(Strict(item)) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(Value::Array(items))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Value, A::Error> {
+                let mut members = serde_json::Map::new();
+                while let Some((key, Strict(value))) = map.next_entry::<String, Strict>()? {
+                    if members.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("a member twice"));
+                    }
+                }
+                Ok(Value::Object(members))
+            }
+        }
+        deserializer.deserialize_any(Visit).map(Strict)
+    }
+}
+
+/// `deserialize_with` of a member that is any JSON value: not `null`, and no member twice.
+fn strict_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Strict::deserialize(deserializer).map(|Strict(v)| Some(v))
+}
+
+/// `deserialize_with` of the list of variables: not `null`, and no member twice in any of them.
+fn strict_list<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<Value>>, D::Error> {
+    match Strict::deserialize(deserializer)?.0 {
+        Value::Array(items) => Ok(Some(items)),
+        _ => Err(serde::de::Error::custom("not a list")),
+    }
 }
 
 fn parse_id(text: &str) -> ApiResult<PromptId> {
@@ -245,7 +340,7 @@ struct CreateBody {
     #[serde(default, deserialize_with = "not_null")]
     description: Option<String>,
     body: String,
-    #[serde(default, deserialize_with = "not_null")]
+    #[serde(default, deserialize_with = "strict_list")]
     variables: Option<Vec<Value>>,
     #[serde(default, deserialize_with = "not_null")]
     audience: Option<Vec<String>>,
@@ -263,7 +358,7 @@ struct EditBody {
     description: Option<String>,
     #[serde(default, deserialize_with = "not_null")]
     body: Option<String>,
-    #[serde(default, deserialize_with = "not_null")]
+    #[serde(default, deserialize_with = "strict_list")]
     variables: Option<Vec<Value>>,
     #[serde(default, deserialize_with = "not_null")]
     audience: Option<Vec<String>>,
@@ -274,9 +369,9 @@ struct EditBody {
 struct RenderBody {
     #[serde(default, deserialize_with = "not_null")]
     revision: Option<String>,
-    #[serde(default, deserialize_with = "not_null")]
+    #[serde(default, deserialize_with = "strict_value")]
     answers: Option<Value>,
-    #[serde(default, deserialize_with = "not_null")]
+    #[serde(default, deserialize_with = "strict_value")]
     note: Option<Value>,
 }
 
