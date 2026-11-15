@@ -667,7 +667,9 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     };
     const res = await fetch(`${base}/api/config`);
     expect(res.status).toBe(200);
+    const search = { maxQueryLength: 200, maxTerms: 8 };
     expect(await expectDocumented("/api/config", "get", res)).toEqual({
+      search,
       ui: { showDescriptions: true, history },
     });
     const cookie = { Cookie: "mock-registry=config-test" };
@@ -675,9 +677,10 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       204,
     );
     const off = await fetch(`${base}/api/config`, { headers: cookie });
-    expect(await off.json()).toEqual({ ui: { showDescriptions: false, history } });
+    expect(await off.json()).toEqual({ search, ui: { showDescriptions: false, history } });
     // another session keeps its own
     expect(await (await fetch(`${base}/api/config`)).json()).toEqual({
+      search,
       ui: { showDescriptions: true, history },
     });
   });
@@ -5696,5 +5699,184 @@ describe("people's own MCP servers (ADR 0046), as the mock does them", () => {
         `${method} ${template} answered \`${code}\`, which the contract does not name`,
       ).toBe(true);
     }
+  });
+});
+
+describe("searching the caller's own threads (ADR 0068, docs/api/thread-search-v1.md), as the mock does it", () => {
+  type Page = components["schemas"]["ThreadSearchPage"];
+  type Problem = { title: string; status: number; detail?: string; code?: string };
+  type Who = { headers: Record<string, string> };
+
+  let sessions = 0;
+  /** A session of its own that is `me`. */
+  async function as(me: "user" | "admin" | "read-only" | "no-access"): Promise<Who> {
+    const session = `search-${++sessions}`;
+    expect((await post(`/__mock/config?me=${me}&session=${session}`)).status).toBe(204);
+    return { headers: { Cookie: `mock-registry=${session}` } };
+  }
+  const send = (method: string, p: string, who: Who, body?: unknown, type = "application/json") =>
+    fetch(base + p, {
+      method,
+      headers: { "Content-Type": type, ...who.headers },
+      ...(body === undefined
+        ? {}
+        : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+    });
+  const search = (who: Who, body: unknown) => send("POST", "/api/search/threads", who, body);
+  async function threadOf(who: Who, text: string): Promise<string> {
+    const threadId = newId();
+    const res = await fetch(`${base}/agui/agents/adam`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...who.headers },
+      body: JSON.stringify({
+        threadId,
+        runId: "run-1",
+        messages: [{ id: "m-1", role: "user", content: text }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    await frames(res);
+    return threadId;
+  }
+  const found = async (who: Who, body: unknown): Promise<Page> => {
+    const res = await search(who, body);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    return (await expectDocumented("/api/search/threads", "post", res)) as Page;
+  };
+  const refused = async (res: Response, status: number, code?: string): Promise<Problem> => {
+    expect(res.status).toBe(status);
+    const body = (await expectDocumented("/api/search/threads", "post", res)) as Problem;
+    expect(body.code).toBe(code);
+    return body;
+  };
+  /** A word no other test has: letters only (a digit would be a word of its own in the title). */
+  const word = (stem: string) =>
+    `${stem}${Math.random().toString(36).slice(2, 10).replace(/[0-9]/g, "q")}`;
+
+  it("getConfig says the route exists, and what it bounds", async () => {
+    const res = await fetch(`${base}/api/config`);
+    const config = (await expectDocumented("/api/config", "get", res)) as {
+      search?: { maxQueryLength: number; maxTerms: number };
+    };
+    expect(config.search).toEqual({ maxQueryLength: 200, maxTerms: 8 });
+  });
+
+  it("finds a thread by the words of its message, with the seq, the role and the snippet, validated against the contract", async () => {
+    const who = await as("user");
+    const unique = word("walrus");
+    const id = await threadOf(who, `echo ${unique} is here`);
+    const page = await found(who, { q: unique.toUpperCase() });
+    expect(page.query.terms).toEqual([unique]);
+    expect(page.results.map((r) => r.thread.id)).toEqual([id]);
+    const hit = page.results[0];
+    expect(hit?.messageHits).toBeGreaterThanOrEqual(1);
+    const message = hit?.hits.find((h) => h.field === "message");
+    expect(message).toMatchObject({ role: "person", seq: expect.any(Number) });
+    const marked = message?.snippet.matches.map((m) => message.snippet.text.slice(m.start, m.end));
+    expect(marked?.every((w) => w.toLowerCase().startsWith(unique))).toBe(true);
+    expect(page.next).toBeUndefined();
+  });
+
+  it("another person's thread is never a hit, by title or by words, for any role", async () => {
+    const mine = await as("user");
+    const theirs = await as("admin");
+    const unique = word("pineapple");
+    await threadOf(mine, `echo ${unique}`);
+    const adminPage = await found(theirs, { q: unique });
+    expect(adminPage.results).toEqual([]);
+    const own = await found(mine, { q: unique });
+    expect(own.results.length).toBe(1);
+  });
+
+  it("every hit is a thread the caller's list has: the result is a subset of listThreads", async () => {
+    const who = await as("user");
+    const unique = word("subset");
+    for (let i = 0; i < 3; i++) await threadOf(who, `echo ${unique} ${i}`);
+    const page = await found(who, { q: unique });
+    const list = (await (
+      await send("GET", "/api/threads?limit=100&archived=include", who)
+    ).json()) as Thread[];
+    const listed = new Set(list.map((t) => t.id));
+    expect(page.results.length).toBe(3);
+    expect(page.results.every((r) => listed.has(r.thread.id))).toBe(true);
+  });
+
+  it("a deleted thread is gone from the results at once", async () => {
+    const who = await as("user");
+    const unique = word("gone");
+    const id = await threadOf(who, `echo ${unique}`);
+    expect((await found(who, { q: unique })).results.length).toBe(1);
+    const deleted = await send("DELETE", `/api/threads/${id}`, who);
+    expect(deleted.status).toBeLessThan(300);
+    expect((await found(who, { q: unique })).results).toEqual([]);
+  });
+
+  it("archived: included by default, `exclude` and `only` as asked", async () => {
+    const who = await as("user");
+    const unique = word("shelf");
+    const id = await threadOf(who, `echo ${unique}`);
+    const arranged = await send("PATCH", `/api/threads/${id}/rail`, who, { archived: true });
+    expect(arranged.status).toBe(200);
+    expect((await found(who, { q: unique })).results.length).toBe(1);
+    expect((await found(who, { q: unique, archived: "exclude" })).results).toEqual([]);
+    expect((await found(who, { q: unique, archived: "only" })).results.length).toBe(1);
+  });
+
+  it("pages: a cursor goes with its own request, and one that is not is `bad_cursor`", async () => {
+    const who = await as("user");
+    const unique = word("paged");
+    const made: string[] = [];
+    for (let i = 0; i < 3; i++) made.push(await threadOf(who, `echo ${unique} ${i}`));
+    const first = await found(who, { q: unique, limit: 2 });
+    expect(first.results.length).toBe(2);
+    expect(first.next).toBeDefined();
+    const second = await found(who, { q: unique, limit: 2, cursor: first.next });
+    expect(second.results.length).toBe(1);
+    expect(second.next).toBeUndefined();
+    expect([...first.results, ...second.results].map((r) => r.thread.id).sort()).toEqual(
+      [...made].sort(),
+    );
+    await refused(
+      await search(who, { q: `${unique} more`, limit: 2, cursor: first.next }),
+      400,
+      "bad_cursor",
+    );
+    await refused(await search(who, { q: unique, cursor: "nonsense" }), 400, "bad_cursor");
+  });
+
+  it("the refusals carry the codes of the contract", async () => {
+    const who = await as("user");
+    await refused(await search(who, { q: "  \t " }), 400, "query_empty");
+    await refused(await search(who, { q: "x".repeat(201) }), 400, "query_too_long");
+    await refused(await search(who, { q: "ok", limit: 0 }), 400, "bad_request");
+    await refused(await search(who, { q: "ok", limit: 51 }), 400, "bad_request");
+    await refused(await search(who, { q: "ok", archived: "maybe" }), 400, "bad_request");
+    await refused(await search(who, { q: "ok", branches: "exclude" }), 400, "bad_request");
+    // there is no `owner`, and no other member
+    await refused(await search(who, { q: "ok", owner: "someone@example.com" }), 400, "bad_request");
+    await refused(await search(who, "not json"), 400, "bad_request");
+    await refused(await send("POST", "/api/search/threads", who, "q=ok", "text/plain"), 415);
+    await refused(await search(await as("no-access"), { q: "ok" }), 403, "no_access");
+  });
+
+  it("a query that keeps no term is a 200 with no term and no result; text that looks like SQL is words", async () => {
+    const who = await as("user");
+    expect(await found(who, { q: "!!" })).toEqual({ query: { terms: [] }, results: [] });
+    const page = await found(who, { q: "' OR 1=1 --; DROP TABLE threads" });
+    expect(page.query.terms).toEqual(["or", "drop", "table", "threads"]);
+  });
+
+  it("a person searches in a burst and then more slowly: 429 with Retry-After", async () => {
+    const who = await as("read-only");
+    let limited: Response | undefined;
+    for (let i = 0; i < 60 && !limited; i++) {
+      const res = await search(who, { q: "burst" });
+      if (res.status === 429) limited = res;
+      else expect(res.status).toBe(200);
+    }
+    expect(limited, "a burst of 60 searches is limited").toBeDefined();
+    expect(limited?.headers.get("retry-after")).toMatch(/^[1-9][0-9]*$/);
+    await refused(limited as Response, 429, "rate_limited");
   });
 });
