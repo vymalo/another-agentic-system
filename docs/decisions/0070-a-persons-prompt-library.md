@@ -120,7 +120,9 @@ answer; an unknown query parameter of `listPrompts` is ignored; a render body wi
 | the web reads `required` as true when absent for every kind | *verified 2026-11-15*, `web/src/features/chat/lib/a2ui/choices.ts` (`required: v.required !== false`) |
 | `char_length` counts code points, as Rust's `chars().count()`; `octet_length` counts bytes | PostgreSQL documentation, *unverified* here; the Postgres tests in CI pin it |
 | a `COLLATE` on a `text[]` column is accepted | *unverified*; the migration leaves it off (equality under a deterministic collation is byte equality) |
-| the Postgres store and the scenario script on the real stack | *unverified* until CI has run them |
+| the Postgres store | passes `prompt_store_conformance!` (24 cases) and its six Postgres-only tests (`tests/prompts.rs`), run on a local PostgreSQL 16.15 on 2026-11-15; the Rust unit and API tests ran on the in-memory store. CI runs them again, and through PgBouncer in transaction mode (`orchestrator.yml`'s pooler job): *unverified* until it has |
+| `dev/prompts-e2e.sh` on the real stack | *unverified*: no Docker where it was written; CI only. It was run on 2026-11-15 against the web's mock server (a stub `auth-header.sh`, one session per person): every step that needs one person passed; the steps where a second person reads what the first shared fail there, because the mock's sessions are separate people, which the orchestrator's are not |
+| the web's mock and the Rust core read the same vectors | *verified 2026-11-15*: `orch_core::prompt` and `web/mock/prompts.ts` were written one after the other and both pass `references.json`, `prompts.json`, `render.json` and the three answer blocks of the UI catalog page, and the Rust API and the mock pass `requests.json` |
 
 ## Not done here
 
