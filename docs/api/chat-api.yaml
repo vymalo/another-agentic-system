@@ -673,6 +673,63 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OAuthClientMetadata" }
         "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
+  /api/search/threads:
+    post:
+      operationId: searchThreads
+      summary: Search the caller's own threads by the words of their titles, descriptions and messages
+      description: |
+        The caller's own threads, and nobody else's ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md),
+        [ADR 0068](../decisions/0068-a-person-searches-their-own-threads.md)): what it finds is always a **subset of what
+        `listThreads` lists** for the same `archived` and `branches`, for every role (an administrator finds their own
+        too). Another person's thread is never a hit, by its title or by its content. The permission is `thread.read`.
+        A `POST`, though it is a safe read that writes nothing: the query is a person's words, and they must not be in a
+        URL, a proxy's access log or a trace. A body that is not `application/json` is a 415.
+
+        **Every rule is in [`thread-search-v1.md`](thread-search-v1.md), with vectors**: what a word is, how it is folded
+        (`Café`, `cafe` and `CAFÉ` are one word; `cœur` is `coeur`), how the query is read, when a document matches (every
+        term is the start of one word of one title, one description or one message), what is searched (titles,
+        descriptions, a person's messages and an agent's **final** answers; not working text, reasoning, steps, tool
+        results or file names), how the snippet is cut and its offsets, and the order. A second client reads that page and
+        gets the same threads, snippets and order as this server.
+
+        **Order:** `rank` descending (2: the title matches, 1: the description, 0: only messages), then the thread's `id`
+        descending (the newest created first). A page that is read later differs from an earlier one only when a thread was
+        renamed, deleted or written to in between.
+
+        **Client recipe** (the server enforces every rule above; a client only offers the box):
+
+        1. If `getConfig` has no `search`, offer no box.
+        2. Debounce about 250 ms, cancel the request in flight when the text changes, and drop an answer that is not for
+           the latest text.
+        3. Send `{"q": text}`; do not trim, fold or bound it yourself. Draw each result with `thread.title`, and each
+           hit's `snippet.text` split at `matches` (UTF-16 code unit offsets) into plain and marked runs, with an
+           ellipsis where `cutStart` or `cutEnd`. Never interpret the text as markup. Say `messageHits` beyond the hits
+           shown. `query.terms` says what was searched for.
+        4. A message hit opens the thread at its `seq` (`getThreadHistory` with `since=<seq>`, as for a `#m-<seq>` link); a
+           title or description hit opens the thread as usual.
+        5. For more, send the same request with `cursor` set to `next`, until `next` is absent.
+        6. On 429 wait `Retry-After`; on 503 say that the search is unavailable and offer to try again.
+
+        A query that keeps no term (`a`, `!!`) is a 200 with `terms: []` and no result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchThreadsRequest" }
+      responses:
+        "200":
+          description: One page of results
+          headers:
+            Cache-Control: { description: "`no-store`: the page holds a person's words", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ThreadSearchPage" }
+        "400": { description: "`code: query_empty` (nothing is left of `q` after it is trimmed), `query_too_long` (more than 200 characters), `bad_cursor` (`cursor` is not the `next` of a page of this request: another `q`, `archived` or `branches`, or not a cursor); or `code: bad_request`: not JSON, a member that is not allowed (there is no `owner`: ADR 0039), `limit` out of range, `archived` or `branches` not one of their words", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "415": { description: "The body is not `application/json`", $ref: "#/components/responses/Problem" }
+        "429": { description: "`code: rate_limited`: a person searches in bursts of 20 and then twice a second; `Retry-After` says how long to wait", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: search_unavailable`: the store is down or the search took too long; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
       operationId: listThreads
@@ -1722,7 +1779,7 @@ components:
               detail: { type: string }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `Retry-After`); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `searchThreads`: a burst of 20 and then two a second; `Retry-After`); `query_empty`, `query_too_long`, `bad_cursor` (400, `searchThreads`: the query is blank or too long, the cursor is not this request's); `bad_request` (400, `searchThreads`: any other malformed request); `search_unavailable` (503, `searchThreads`: the store is down or the search took too long; `Retry-After`); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
   schemas:
     BrowserAuth:
       type: object
@@ -1990,8 +2047,15 @@ components:
     PublicConfig:
       type: object
       required: [ui]
-      description: "Exactly `{ui}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it)."
+      description: "`{ui, search}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`)."
       properties:
+        search:
+          type: object
+          description: "**Its presence is the capability**: this orchestrator serves `searchThreads` ([ADR 0068](../decisions/0068-a-person-searches-their-own-threads.md)). An older one leaves it out, and a client then offers no search box. The numbers are what the server enforces, for a client that wants to bound its input."
+          required: [maxQueryLength, maxTerms]
+          properties:
+            maxQueryLength: { type: integer, minimum: 1, description: "The longest `q`, in Unicode scalar values (200)" }
+            maxTerms: { type: integer, minimum: 1, description: "The most terms of a query that are used (8)" }
         ui:
           type: object
           description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know."
@@ -2010,6 +2074,62 @@ components:
                 maxTurns: { type: integer, minimum: 1, description: "The most turns a page holds (`server.history.maxTurns`, default 100): the largest `limit` the server accepts, where the pages that grow stop" }
                 projection: { type: integer, minimum: 1, description: "The version of the projection this build writes: the `projection` of a page" }
                 windowed: { type: boolean, description: "Whether the web opens a thread from its history (`ui.history.windowed`); false opens it by replaying the log" }
+    SearchThreadsRequest:
+      type: object
+      required: [q]
+      additionalProperties: false
+      description: "A search of the caller's own threads ([`thread-search-v1.md`](thread-search-v1.md)). There is no `owner`: a person's threads are the only ones there are to search."
+      properties:
+        q: { type: string, description: "The words to look for. Trimmed of U+0020, U+0009, U+000A and U+000D; blank is `query_empty`; more than 200 Unicode scalar values (after the trim) is `query_too_long`. Read as words: quotes, `OR`, `-`, `*` and SQL are punctuation, there is no query syntax. At most 8 terms are used (`maxTerms` of `getConfig`)" }
+        limit: { type: integer, minimum: 1, maximum: 50, default: 20, description: "Threads per page" }
+        cursor: { type: string, maxLength: 512, description: "The `next` of the page before, sent back unchanged with the same `q`, `archived` and `branches`; anything else is `bad_cursor`. What is in it is the server's own" }
+        archived: { type: string, enum: [exclude, only, include], default: include, description: "`include` (the default): archived threads are searched too (the `thread` says it is archived). `exclude`: the threads that are not archived. `only`: the archived ones" }
+        branches: { type: string, enum: [include], description: "`include`: search the threads made by an edit of a message too, as `listThreads` does. Without it they are left out" }
+    ThreadSearchPage:
+      type: object
+      required: [query, results]
+      properties:
+        query:
+          type: object
+          required: [terms]
+          properties:
+            terms: { type: array, items: { type: string }, description: "The terms the query was read as: folded keys (`Café` is `cafe`), at most 8, of 2 to 64 characters, each looked for as the start of a word. Empty when the query keeps none" }
+        results: { type: array, items: { $ref: "#/components/schemas/ThreadHit" } }
+        next: { type: string, description: "The `cursor` of the next page; absent on the last page" }
+    ThreadHit:
+      type: object
+      required: [thread, rank, hits, messageHits]
+      properties:
+        thread: { $ref: "#/components/schemas/Thread" }
+        rank: { type: integer, enum: [0, 1, 2], description: "2: the title matches. 1: the description does (and the title does not). 0: only messages match. Results are in `rank` order, descending, then newest thread first" }
+        hits: { type: array, items: { $ref: "#/components/schemas/SearchHit" }, description: "The title hit, then the description hit, then at most three message hits, newest first" }
+        messageHits: { type: integer, minimum: 0, description: "How many messages match in all (every one of `hits` that is a message is among them)" }
+    SearchHit:
+      type: object
+      required: [field, snippet]
+      properties:
+        field: { type: string, enum: [title, description, message] }
+        seq: { type: integer, format: int64, minimum: 1, description: "A message hit only: the `seq` of the event, the number to open the thread at (`getThreadHistory` with `since=<seq>`)" }
+        role: { type: string, enum: [person, agent], description: "A message hit only: who said it. `agent` is a final answer" }
+        at: { type: string, format: date-time, description: "A message hit only: when it was said" }
+        snippet: { $ref: "#/components/schemas/SearchSnippet" }
+    SearchSnippet:
+      type: object
+      required: [text, cutStart, cutEnd, matches]
+      description: "A piece of a title, a description or a message around its first match, cut as [`thread-search-v1.md`](thread-search-v1.md#the-snippet) says. `text` is plain text (whitespace flattened) and is never markup."
+      properties:
+        text: { type: string }
+        cutStart: { type: boolean, description: "Something of the document comes before `text`: draw an ellipsis in front" }
+        cutEnd: { type: boolean, description: "Something comes after: draw an ellipsis behind" }
+        matches:
+          type: array
+          description: "The words of `text` that start with a term, in order, as UTF-16 code unit offsets into `text` (what a JavaScript string indexes), never inside a surrogate pair"
+          items:
+            type: object
+            required: [start, end]
+            properties:
+              start: { type: integer, minimum: 0, description: "Inclusive" }
+              end: { type: integer, minimum: 1, description: "Exclusive" }
     Registry:
       type: object
       required: [sources]
