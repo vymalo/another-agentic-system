@@ -420,7 +420,7 @@ a composition of `orch-api` that builds none (`ApiConfig::public_limits: None`) 
 refused by `ApiConfig::check` when the cap is `public` (the binary maps that to exit 78): the order the owner asked for, the limit
 before `public`, is enforced by the code. `sharing.secret` is one of the **fourteen** secrets of the contract (with
 `sharing.previousSecret`). `server.publicUrl` is the address a link is shown under (`<publicUrl>/s/<token>`); without it a link is
-the path `/s/<token>`. The cap is **not** in [`GET /api/config`](#get-apiconfig) (its body is exactly `{ui}`): the web learns it per
+the path `/s/<token>`. The cap is **not** in [`GET /api/config`](#get-apiconfig) (its body is `{ui, search}`): the web learns it per
 person from `GET /api/me` (`sharing`, the cap when the person's roles hold `thread.share`, else `disabled`).
 
 ### `usage`
@@ -677,13 +677,16 @@ do not. No other crate of `orchestrator/` reads the environment outside tests an
 ```http
 GET /api/config
 → 200 application/json
-{ "ui": { "showDescriptions": true,
+{ "search": { "maxQueryLength": 200, "maxTerms": 8 },
+  "ui": { "showDescriptions": true,
           "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 2, "windowed": true } } }
 ```
 
-- The body is exactly `{ "ui": { … } }`: every key of the `ui` section, with its effective value (defaults filled in).
+- The body is `{ "ui": { … } }` and `search`: every key of the `ui` section, with its effective value (defaults filled in).
   Nothing else of the file is ever in it. The `ui` section's Rust type has no secret field, and a test asserts that its
   schema has no secret reference, so a secret cannot be added to it by mistake.
+- `search` is **not configuration**: it is the capability of the build ([ADR 0068](../decisions/0068-a-person-searches-their-own-threads.md), [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md) rule 3). Its presence says this orchestrator serves `searchThreads`
+  ([`thread-search-v1.md`](thread-search-v1.md)); an older one leaves it out and a client then offers no search box. `maxQueryLength` and `maxTerms` are what the server enforces.
 - **Behind the identity layer**, like every `/api/*` route (401 without an identity, fail closed). The web asks for it
   after the edge has let the browser in, and nothing in it is needed before that.
 - `ui.history` is the one key that can be **absent**: it is served only by a process that serves the history route
@@ -693,7 +696,7 @@ GET /api/config
 - It changes only when the process restarts. The web treats a missing key as its default and ignores a key it does not
   know, so the section grows additively; a key is never renamed or retyped in `version: 1`.
 - It is `getConfig` in [`chat-api.yaml`](chat-api.yaml), served by the resource API of every role that serves routes, and
-  the contract test of the API checks it (200 with exactly `{ "ui": … }`, 401 without an identity). A deployment with no
+  the contract test of the API checks it (200 with exactly `{ "search": …, "ui": … }`, 401 without an identity). A deployment with no
   `ui` section serves the defaults.
 </content>
 </invoke>
