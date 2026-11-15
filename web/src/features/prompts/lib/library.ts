@@ -86,6 +86,10 @@ export const fieldsOf = (
   questions: toForm(p.variables),
 });
 
+/** The names of the questions as they would be sent, in order: what a refusal of "unused" names. */
+export const questionIds = (questions: readonly FormQuestion[]): string[] =>
+  questions.map((q) => (q.kept ? q.id : q.fields.id.trim()));
+
 /** A key-order-free comparison: the server may write the members of an object in another order than a form did. */
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;

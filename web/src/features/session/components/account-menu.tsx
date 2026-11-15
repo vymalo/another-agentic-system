@@ -1,6 +1,12 @@
 "use client";
 
-import { ChartNoAxesColumnIcon, ChevronsUpDownIcon, LogOutIcon, WrenchIcon } from "lucide-react";
+import {
+  ChartNoAxesColumnIcon,
+  ChevronsUpDownIcon,
+  LogOutIcon,
+  ScrollTextIcon,
+  WrenchIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { ThemeMenu, ThemeRadioGroup } from "@/components/theme/theme-menu";
@@ -14,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePromptsConfig } from "@/features/chat/hooks/use-ui-config";
 import { useMe } from "@/features/me/hooks/use-me";
 import { holds } from "@/features/me/lib/access";
 import { canSignOut, signOutNow } from "@/lib/api/session";
@@ -23,6 +30,7 @@ import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
 export const SIGN_OUT_LABEL = "Sign out";
 export const USAGE_LABEL = "Usage";
 export const TOOL_SERVERS_LABEL = "My tool servers";
+export const PROMPTS_LABEL = "My prompts";
 
 /** Whether this deployment has a sign-in to end; it is known once the page has asked (`useBrowserAuth`). */
 export function useCanSignOut(): boolean {
@@ -42,6 +50,8 @@ export function useCanSignOut(): boolean {
 export function AccountMenu() {
   const me = useMe();
   const signOut = useCanSignOut();
+  // the library is offered when the deployment has one (`prompts` of the configuration): owning prompts needs no permission
+  const hasPrompts = usePromptsConfig() !== undefined;
   const [leaving, setLeaving] = useState(false);
   const person = me.status === "ready" ? me.me : null;
   // while `/api/me` is on its way: nothing, rather than a placeholder that turns into the person
@@ -110,6 +120,14 @@ export function AccountMenu() {
               {USAGE_LABEL}
             </Link>
           </DropdownMenuItem>
+          {hasPrompts ? (
+            <DropdownMenuItem asChild>
+              <Link href="/prompts" className="text-foreground no-underline">
+                <ScrollTextIcon aria-hidden="true" />
+                {PROMPTS_LABEL}
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
           {person && holds(person, "tools.user.add") ? (
             <DropdownMenuItem asChild>
               <Link href="/tools" className="text-foreground no-underline">
