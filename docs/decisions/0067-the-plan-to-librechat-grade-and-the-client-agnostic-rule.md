@@ -27,15 +27,15 @@ record.
 with the question kinds `confirm`, `number`, `scale`, `date` and `rank`. Neither is built until it merges. Slices that depend on the second
 (prompt variables as a catalog form, questions that show, the live plan) wait for it.
 
-**Progress on 2026-11-15: 10 of the 35 slices are merged, 29 % by count, and the server half of three more, P1, P2 and P4** (the three above, the two that were in review, four of the waves
-below, **and search, now complete**; the prompt library has its API and no web yet, and a slice is counted when a person can use it in the web, as search was counted only with its box). Merged since 2026-11-14: "My tool servers" (pull request 316), UI catalog
+**Progress on 2026-11-15: 11 of the 35 slices are merged, 31 % by count (P1, the page "My prompts", is counted), and the server half of two more, P2 and P4** (the three above, the two that were in review, four of the waves
+below, **search, now complete, and P1**; the rest of the prompt library has its API and no web yet, and a slice is counted when a person can use it in the web, as search was counted only with its box). Merged since 2026-11-14: "My tool servers" (pull request 316), UI catalog
 version 7 (317), the theme (318), quote, copy and export as Markdown (319), UI catalog version 8 with questions that show what they
 ask about and the agent's plan (320; adam-rs sends a plan since its pull request 149 and sends no `show` yet), and the fix that keeps a
 long-lived plan projected (321). Search has its API, its index and its contract (slice 7a, [ADR 0068](0068-a-person-searches-their-own-threads.md)) and its box in
 the web (slice 7b, built on 2026-11-15: the box under "New chat", the results, the highlighting and the shortcut Ctrl or ⌘ with K; proven on the mock in Chromium only).
 The prompt library has its API, its store and its contract (the server half of slices P1, P2 and P4, [ADR 0070](0070-a-persons-prompt-library.md): saved prompts whose
 variables are questions of the UI catalog, a render done by the server, a share with roles under `prompts.share`; `docs/api/prompts-v1.md` with vectors that the Rust core and the
-web's mock server both pass; no web UI: P2's form and P3's `/` menu are next, against the mock). Nothing else of the waves is started.
+web's mock server both pass; and, since the web half of P1, the page `/prompts` (list, create, edit, delete, copy; `web/README.md`); P2's form and `/` menu, P3 and P4's control are next, against the mock). Nothing else of the waves is started.
 
 The recipe of regenerate was the first thing written for a client that is not the web, and it found API gaps at once ([below](#the-rule)).
 That is the evidence for the rule.

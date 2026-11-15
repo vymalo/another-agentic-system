@@ -1160,12 +1160,57 @@ words in the body of a POST and in no URL or storage; the shortcut from the comp
 screens `search` and `search-empty` of `pnpm screens`. **Not proven:** against a real orchestrator (`dev/search-e2e.sh` is the orchestrator's own and has not run against the stack), in Firefox or WebKit, with a real screen
 reader, or with the browsers' own use of Ctrl+K; and a hit in an older part of an open thread that its transcript has not loaded (the page waits and gives up after ten seconds, as for any `#m-<seq>` it cannot find).
 
-## A person's prompt library (the mock, no UI yet)
+## A person's prompt library
 
 *Added 2026-11-15 ([ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md), slices P1, P4 and the server half of P2 of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)).*
-There is **no screen** yet: the form that draws a prompt's variables as a `Choices` surface and the `/` menu are the next slices, and they are written against what is
-here. What exists is the contract ([`docs/api/prompts-v1.md`](../docs/api/prompts-v1.md), with vectors in `docs/api/examples/prompts/`) and the mock server's answers to it, so a
-client can be built and tested before the orchestrator is deployed.
+The page **My prompts** (`/prompts`, slice P1) is built: list, create, edit, rename, delete, read a prompt somebody shared and copy it into one's own. The form that fills a
+prompt's questions and the `/` menu (P2's web), and the control that shares a prompt with roles (P4), are the next slices and are written against the same mock. The contract
+is [`docs/api/prompts-v1.md`](../docs/api/prompts-v1.md), with vectors in `docs/api/examples/prompts/`, and the mock server answers it, so the page is tested before the
+orchestrator is deployed.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-page.png">
+  <img src="e2e/__screens__/desktop-light-prompts-page.png" alt="The My prompts page on a desktop: Back to chat, the heading, a sentence, Your prompts 3 of 100 with three cards (title, /name, description, how many questions it asks, and who it is shared with where it is), a New prompt button, and below it Shared with you with two cards that have View and Copy to my prompts." width="720">
+</picture>
+
+*The page on a desktop, from the web's mock server.*
+
+### The page
+
+The page reads `getConfig.prompts` first (its presence is the capability; without it the account menu has no item and the page says the deployment offers no library, and nothing is asked of `/api/prompts`). It then pages `listPrompts` until `nextCursor` is absent and sorts by name, then id, as the contract tells a client to. The server decides every value: the page bounds only what the configuration names (the text's size in bytes, the number of questions), and draws what the server refuses.
+
+| File (`src/features/prompts/`) | What |
+|---|---|
+| `hooks/use-prompt-library.ts` | the list, `get`, `create`, `update`, `remove`; rereads on focus, drops an overtaken read, rereads after a write whose outcome is not known; keeps nothing on the device |
+| `lib/library.ts` | order, own against shared, the words of a card, the bodies of create and edit (only what changed, plus the `revision`; never an `audience`) |
+| `lib/editor.ts` | the form model of the questions, and back; lossless (below) |
+| `lib/failures.ts` | the words of every refusal from the problem's `code`, `at` and `offset`, and the field each is about |
+| `components/` | `my-prompts-page`, `prompt-row`, `prompt-form`, `question-editor`, `kept-question`, `delete-prompt-dialog`, `shared-prompt-view` |
+
+**Editing is lossless.** The editor draws seven kinds of question (short text, long text, one choice, several choices, yes or no, number, date). A question of another kind (a long list, a scale, a ranking, a kind a later catalog adds) is a read-only card, kept and sent back as the very object that was read. In a question of an editable kind, every member the card does not show (a choice's `default`, an option's `description` or `icon`, a member nobody here knows) stays, because a member is written only when its field differs from what was read. `variables` is sent only when the list differs from what was read. A test runs the 35 `ok` vectors of `prompts.json` through `toForm` then `fromForm` and expects each back byte for byte.
+
+**A refusal is told where it is.** `at` picks the field (`name`, `body`, `variables.2.options.1.label`): the words go under it, it gets `aria-invalid` and `aria-describedby`, and the focus. For `bad_reference` and `undeclared_variable` the braces at `offset` (UTF-16 units, as a JavaScript string counts) are selected in the text.
+
+**A stale edit never overwrites.** The form keeps the revision it was opened at, so a save after a change elsewhere is a 409 again and says so; what was typed stays, and **Load the current version** starts the form again from the prompt as it is now. Delete sends the row's revision, and a 409 says to look again.
+
+**Shared text is text.** A shared prompt's title, description and text are drawn as plain text, never as Markdown or HTML, and the page shows no author (the API gives none). **Copy to my prompts** opens the form with what was read and no audience.
+
+```mermaid
+stateDiagram-v2
+  [*] --> List
+  List --> Form: New prompt, Edit, Copy to my prompts
+  List --> Reading: View (a shared prompt)
+  Reading --> Form: Copy to my prompts
+  Reading --> List: Back
+  Form --> List: Saved, Cancel
+  Form --> Form: refused (words at the field), stale (Load the current version)
+  List --> Deleting: Delete
+  Deleting --> List: deleted, gone, Cancel
+```
+
+Not built here, and said so: the control that shares a prompt (the list only shows "Shared with: …" on a prompt that is), and the `/` menu with the form that fills a prompt. **Not proven:** against a real orchestrator, in Firefox or WebKit, and in the desktop app.
+
+### The mock
 
 | What | Where |
 |---|---|

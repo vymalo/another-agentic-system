@@ -458,6 +458,23 @@ reached from the account menu's **Usage** item (no permission gates it). A page,
 - **In the Tools menu** a person's own server carries a small **Yours** badge after its name. One that is not ready is not a checkbox: it is a link item that says what it needs ("Needs a key or a sign-in. Open My tool servers to set it up.") and leads to the page. Links in a menu item are drawn as the item is (the foreground colour, no underline): the global link style (brand colour, underlined) is for links in text.
 - **Keyboard and screen reader:** every row action is a button in tab order after its row's text; the dialogs are `alertdialog`s that trap the focus and return it; the failure is announced; the status is read as text.
 
+## My prompts
+
+*Added 2026-11-15 ([ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md)); slice P1 of the "LibreChat-grade" plan.* A person's prompts, on a page of their own, `/prompts`, reached from the account menu's **My prompts** item (shown wherever the configuration has a library; owning prompts needs no permission).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-prompts-page.png">
+  <img src="e2e/__screens__/mobile-light-prompts-page.png" alt="The My prompts page on a phone: Back to chat, the heading, a sentence, Your prompts 3 of 100 with three bordered cards, a New prompt button, and Shared with you with two cards." width="320">
+</picture>
+
+*The page on a phone, from the web's mock server.*
+
+- **Same frame as My tool servers:** one column in `max-w-3xl`, 16 px gutters on a phone, **Back to chat** above the `h1`, `h2` sections "Your prompts (3 of 100)" and "Shared with you".
+- **A row is a card:** the title (`h3`, wraps), `/name` in monospace, the description clamped to two lines, "Asks 2 questions", and "Shared with: …" on an own shared prompt. A shared prompt carries a "Shared with you" badge and **no author**. Buttons are small and name their prompt (`Edit “T”`, `Delete “T”`, `View “T”`, `Copy to my prompts: “T”`); the form, the reading view and the delete dialog replace or cover the list, and the focus moves to the form's or view's heading and returns to the button that opened it.
+- **The form** uses the page's own controls: a label above, help under, native selects and checkboxes, a plain `textarea` for the text with its size in bytes against the configuration's limit. Each question is a card with Move up, Move down and Remove buttons (no dragging); a question the page cannot edit is a dashed card that says so and is kept.
+- **A refusal** is a destructive line at the field it is about (`role="alert"`, `aria-invalid`, `aria-describedby`, focus); the text's braces are selected for a bad reference; a stale edit is a warning at the top of the form with **Load the current version**.
+- **Phone:** one column, options and buttons wrap, no sideways scroll with a long title, name or question (`e2e/prompts.spec.ts`).
+
 ## Mentions
 
 *Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11).* A person who wants

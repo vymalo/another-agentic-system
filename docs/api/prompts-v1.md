@@ -2,8 +2,9 @@
 
 - **Status:** contract written 2026-11-15 for the owner's "LibreChat-grade, client-agnostic" plan
   ([ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), wave 1, slices P1, P2 and P4), decided by
-  [ADR 0070](../decisions/0070-a-persons-prompt-library.md). It describes what the orchestrator does and what the web's mock server does. There is **no
-  web UI yet** (the form that draws the variables and the `/` menu are later slices that read this page and the mock). *Verified 2026-11-15*: the
+  [ADR 0070](../decisions/0070-a-persons-prompt-library.md). It describes what the orchestrator does and what the web's mock server does. The web has
+  its page **My prompts** (`/prompts`: list, create, edit, delete, copy a shared prompt; `web/README.md` "A person's prompt library", built 2026-11-15,
+  proven on the mock only); the form that draws the variables, the `/` menu and the sharing control are later slices that read this page and the mock. *Verified 2026-11-15*: the
   Postgres store's tests (the conformance suite and its own) ran on PostgreSQL 16.15 locally, and the Rust API and the mock pass the same vectors; the
   scenario `dev/prompts-e2e.sh` on the whole stack is the pull request's CI run. *Unverified*: a client other than the web's mock.
 - **What it covers:** the six routes [`listPrompts`](chat-api.yaml), `createPrompt`, `getPrompt`, `updatePrompt`, `deletePrompt` and `renderPrompt`

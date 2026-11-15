@@ -10,6 +10,13 @@
   read). **It amends invariant 3** of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) with a dated note (decision 1), as ADR 0042, 0046,
   0065 and 0068 did before it.
 
+> **Status note, 2026-11-15 (web half, P1 built):** the page **My prompts** (`/prompts`) is built: list, create, edit, rename, delete, a shared prompt read as plain
+> text with no author, and **Copy to my prompts**. The editor draws seven kinds of question (short and long text, one and several choices, yes or no, number, date);
+> any other question and any member the page does not show are **kept** and sent back byte for byte, and `variables` is sent only when it differs from what was read
+> (all 35 `ok` vectors of `prompts.json` round-trip). A refusal is drawn from the problem's `code`, `at` and `offset` at the field it names. **A stale edit keeps the
+> typed text and offers "Load the current version"; it never overwrites.** The page sends no `audience` (sharing is P4's control), keeps nothing on the device, and
+> needed no change to the API. Proven on the web's mock in Chromium and a phone emulation with axe in both schemes; not against a real orchestrator.
+
 ## Context
 
 A person types the same instructions again and again ("review this for security, depth 3"). LibreChat has a prompt library with variables; ADR 0067 puts
