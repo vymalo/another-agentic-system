@@ -369,7 +369,7 @@ adam-rs designs and builds its side in its own ADR (B1c). The shape:
   change than a derived value, and the question stays open (85).
 - **A GitHub OAuth App, or a personal access token the person pastes.** An OAuth App is another application with its own, broader scopes; a token is a secret the
   person must make and paste. The owner chose the App's user authorization.
-- **Per-person lists of allowed owners in the coder's configuration** (`GITHUB_APP_OWNERS` for each person). A mapping an administrator would keep for 10,000 people.
+- **Per-person lists of allowed owners in the coder's configuration** (`GITHUB_APP_OWNERS` for each person). A mapping an administrator would keep for every person.
 - **Nothing: keep one deployment per customer.** Works, and it is not the product the owner described.
 
 ## Consequences
