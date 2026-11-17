@@ -1,7 +1,9 @@
 # ADR 0071 — Embeddings and vector search use pgvector, behind a port
 
 - **Status:** **accepted (2026-11-16)** for the choice of the store, an owner decision (*"I propose to use pgvector for embedding and
-  vector search"*, and on 2026-11-16: the decision is recorded now and built when the track resumes). **Nothing is built.** The shape
+  vector search"*, and on 2026-11-16: the decision is recorded now and built when the track resumes). **Amended (2026-11-17):
+  relations are kept beside the vectors, in two plain tables (decision 11), an owner decision** (*"RAG today makes no sense with text
+  only. We need relations too"*; *"Two tables simplifies also my job"*). **Nothing is built.** The shape
   below is **proposed**, for the owner to confirm slice by slice. Builds on [ADR 0001](0001-rust-state-machine-on-postgres.md) (one
   Postgres), [ADR 0009](0009-swappable-implementations-at-build-time.md) (a port and a testkit per boundary),
   [ADR 0005](0005-openai-compatible-model-endpoint.md) and [ADR 0035](0035-utility-model-tasks.md) (a model is an OpenAI-compatible
@@ -51,6 +53,21 @@ orchestrator will also be embedded in a desktop application with no Postgres at 
 10. **Each use is its own slice with its own contract page, written first** (ADR 0067's rule, so a second client builds against the page):
     a search of threads by meaning, as a mode of `POST /api/search/threads`; then a person's memory notes; then files. This decision fixes
     only the store, the port and the rules above.
+11. **Relations are kept beside the vectors, in two plain tables** *(added 2026-11-17)*. pgvector stores vectors and nothing else, and
+    a search by nearest text alone misses what is connected to a hit. So the same Postgres holds `entities` (an owner, a kind, an id, a
+    label, where it came from) and `relations` (an owner, a source entity, a kind, a target entity, where it came from). No graph
+    extension and no graph database: a walk is an ordinary recursive query with a bounded depth.
+    - **The same rules as the vectors** (decisions 5 to 8): derived state beside the log, rebuilt by the backfill, the owner's alone
+      with the owner on every row and in every query, erased with what they came from, never in a fork or an export.
+    - **The port covers both.** Retrieval is two steps behind one port: the nearest items by meaning, then their neighbours along
+      relations, to a depth and a count the caller bounds. The in-memory implementation does the same walk.
+    - **The relations the log already has come first, and need no model:** a thread and the thread it was forked from; a message and its
+      thread; a file and the thread it was handed to; a run, the repository it worked in and the pull request it opened; a message and
+      the agent it mentions; a memory note and the agent that wrote it. They are exact, and they cost nothing to make.
+    - **Relations a model reads out of text are a later slice of their own**, off by default like embeddings: a call per piece of text
+      to a model the configuration names, a kind taken from a closed list, each relation kept with the text it was read from so a
+      person can see why it is there and remove it. A model's reading can be wrong, so such a relation is never shown as a fact
+      without its source.
 
 ```mermaid
 sequenceDiagram
@@ -108,6 +125,9 @@ Nothing in these diagrams exists in code yet: they are the design to build again
   answer on every build.
 - **Word search only:** it stays, and it is the default. It does not find by meaning.
 - **Embedding in the commit of the event**, as the word index is written: a commit would wait on a network call to a model.
+- **A graph extension or a graph database for the relations** *(2026-11-17)*: a second extension to find in every database image and
+  to keep current, or a second stateful system, for walks of two or three steps that a recursive query does. Graph queries in SQL itself
+  (SQL/PGQ) are not in a released PostgreSQL (below).
 
 ## Facts, and how far each is proven
 
@@ -117,6 +137,10 @@ Nothing in these diagrams exists in code yet: they are the design to build again
 - *Unverified*: which CloudNativePG operand images carry the `vector` extension. `deploy/chart` pins its database image, and the first
   slice checks it there.
 - *Unverified*: the request and response shape of `/v1/embeddings` on the gateway a deployment will use.
+- *Verified 2026-11-17* (secondary sources that agree, not the release notes: depesz.com, "Waiting for PostgreSQL 19 – SQL Property
+  Graph Queries", with its later update; neon.com, "SQL/PGQ graph queries in PostgreSQL 19"): property graph queries (SQL/PGQ,
+  `GRAPH_TABLE`) were committed for PostgreSQL 19 on 2026-03-16 and reverted on 2026-09-07, before the release. To check again against
+  the release notes when the first slice is built.
 
 ## Not done here
 
