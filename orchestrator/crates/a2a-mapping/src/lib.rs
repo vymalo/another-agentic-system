@@ -142,6 +142,27 @@
 //! | the totals of task `T` when it reached `<state>` | `Turn("T:usage-total:<state>")` |
 //! | a report that does not pass the door | `Turn("T:usage-rejected")` (never applied) |
 //!
+//! Child sessions (ADR 0072, `child-sessions/v1`, `docs/api/child-sessions-v1.md`). Three places
+//! carry what an agent says of its sessions, each read by one strict, bounded parse (a bound broken
+//! refuses the whole entry; the reason is a fixed text with no value of the entry): the `sessions`
+//! object of a parent `Task` (`SessionNews::Listed`, the truth), an `event` on a status update's
+//! metadata (`SessionNews::Event`, a latency optimisation; its session's state follows from the event
+//! and its round), and the object a round `Task`, or the status update that ends the round, carries
+//! about its session (`SessionNews::OfRound`, whose round is the task itself, in the task's own
+//! state). Round states are read in the A2A JSON spelling (`TASK_STATE_COMPLETED`, what adam writes)
+//! and as the plain word; `null` is unknown. Each is one envelope, `AgentUpdate::ChildSessions`, or
+//! `AgentUpdate::ChildSessionsRejected(why)`, with no task state, **before** the status it came
+//! with; a snapshot says a round's session first and a parent's listing just before the totals and
+//! the status. An update with an event, `working` and no message is the news and nothing else.
+//! [`wants_task_read`] names a status that ends or pauses the turn, for the adapter's one read, and
+//! [`sessions_news`] reads the task it returns. Read as data whether or not the request activated the
+//! extension.
+//!
+//! | Sessions in | key |
+//! |---|---|
+//! | news about task `T` | `Turn("T:sessions:<16 hex digits of an FNV-1a of the news as JSON>")` (the same news collapses) |
+//! | an entry that does not pass the door | `Turn("T:sessions-rejected")` (never applied) |
+//!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
@@ -205,13 +226,15 @@ use a2a::{
     TaskStatus,
 };
 use orch_core::{
-    A2UI_MEDIA_TYPE, ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate, LiveChunk,
-    LiveEnd, LiveKind, MAX_REASONING_BYTES, MessagePurpose, STEPS_EXTENSION, StepKind, StepOutput,
-    StepReport, StepState, TEXT_STREAM_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UsageCall,
-    UsageTotals, UsageUpdate, check_operations,
+    A2UI_MEDIA_TYPE, ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate,
+    CHILD_SESSIONS_EXTENSION, LiveChunk, LiveEnd, LiveKind, MAX_REASONING_BYTES, MessagePurpose,
+    STEPS_EXTENSION, StepKind, StepOutput, StepReport, StepState, TEXT_STREAM_EXTENSION,
+    UPLOADS_EXTENSION, USAGE_EXTENSION, UsageCall, UsageTotals, UsageUpdate, check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
+
+mod child_sessions;
 
 /// URI of the release-channels v1 extension (ADR 0008). Here because the revision an agent echoes
 /// in event metadata is read under this key; `orch-agent-a2a` re-exports it for the request side.
@@ -550,6 +573,13 @@ fn usage_totals_envelope(
 /// task once (`GetTask`) and passes [`usage_totals`] on before the status, for an agent whose card
 /// lists the extension. `None` for any other item.
 pub fn wants_usage_totals(item: &StreamResponse) -> Option<&str> {
+    wants_task_read(item)
+}
+
+/// The task a status update ends or pauses: the adapter reads it once (`GetTask`) for what only the
+/// task holds, the `usage/v1` totals ([`usage_totals`]) and the sessions of `child-sessions/v1`
+/// ([`sessions_news`]). `None` for any other item.
+pub fn wants_task_read(item: &StreamResponse) -> Option<&str> {
     let StreamResponse::StatusUpdate(u) = item else {
         return None;
     };
@@ -570,6 +600,69 @@ pub fn usage_totals(task: &Task) -> Option<AgentEnvelope> {
         entry,
         revision_of(&task.metadata),
     ))
+}
+
+/// The `child-sessions/v1` entry of a metadata map (ADR 0072).
+fn sessions_entry(metadata: &Metadata) -> Option<&Value> {
+    metadata.as_ref()?.get(CHILD_SESSIONS_EXTENSION)
+}
+
+/// FNV-1a over the news as JSON: a key that is the same for the same news on every replica and
+/// every run (`DefaultHasher` promises neither).
+fn digest(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// The envelope of what an entry says of sessions, or of why it could not be read (a fixed text,
+/// no value). `None` when the entry says nothing of sessions. The news implies no state: the status
+/// that follows says it.
+fn sessions_envelope(
+    task_id: &str,
+    context_id: &str,
+    state: Option<AgentTaskState>,
+    entry: &Value,
+    revision: Option<String>,
+) -> Option<AgentEnvelope> {
+    let (key, update) = match child_sessions::read(entry, task_id, context_id, state) {
+        Ok(None) => return None,
+        Ok(Some(news)) => {
+            let said = serde_json::to_string(&news).unwrap_or_default();
+            (
+                IdemKey::Turn(format!("{task_id}:sessions:{:016x}", digest(&said))),
+                AgentUpdate::ChildSessions(news),
+            )
+        }
+        Err(why) => (
+            IdemKey::Turn(format!("{task_id}:sessions-rejected")),
+            AgentUpdate::ChildSessionsRejected(why.to_owned()),
+        ),
+    };
+    Some(AgentEnvelope {
+        task_id: task_id.to_owned(),
+        context_id: context_id.to_owned(),
+        task_state: None,
+        revision,
+        key,
+        update: Some(update),
+        live: None,
+    })
+}
+
+/// What a task holds under `child-sessions/v1` (ADR 0072), as the envelope a stream would have said
+/// it in: the `sessions` object of a parent task, or the session a round task belongs to (its state
+/// is the task's own). `None` for a task that says nothing of sessions; a task whose entry cannot be
+/// read gives a rejected one. A2A's task state is read as the task has it.
+pub fn sessions_news(task: &Task) -> Option<AgentEnvelope> {
+    let entry = sessions_entry(&task.metadata)?;
+    sessions_envelope(
+        &task.id,
+        &task.context_id,
+        state_of(&task.status.state),
+        entry,
+        revision_of(&task.metadata),
+    )
 }
 
 /// The envelopes of a status: the A2UI parts of its message first, then the status itself.
@@ -1181,6 +1274,21 @@ fn task_envelopes_echoing(
     };
     let mut answer: Option<(&str, String)> = None;
     let mut out: Vec<AgentEnvelope> = Vec::new();
+    // the session a round task belongs to comes first: the thread that follows it learns it before
+    // anything the round did; a parent's listing is said just before its totals and status
+    let sessions = sessions_news(task);
+    let of_round = matches!(
+        sessions.as_ref().and_then(|e| e.update.as_ref()),
+        Some(AgentUpdate::ChildSessions(orch_core::SessionNews::OfRound(
+            _
+        )))
+    );
+    let (first, listing) = if of_round {
+        (sessions, None)
+    } else {
+        (None, sessions)
+    };
+    out.extend(first);
     if invalid {
         out.push(tier_rejected_envelope(
             &task.id,
@@ -1216,6 +1324,7 @@ fn task_envelopes_echoing(
             revision.clone(),
         ));
     }
+    out.extend(listing);
     // the task's totals, before the status that ends or pauses it (ADR 0056)
     out.extend(usage_totals(task));
     out.extend(status_envelopes(
@@ -1367,6 +1476,11 @@ pub struct StreamMapper {
 }
 
 impl StreamMapper {
+    /// The task the stream belongs to, once an event has named it.
+    pub fn task_id(&self) -> Option<&str> {
+        self.task_id.as_deref()
+    }
+
     fn learn(&mut self, task_id: &str, context_id: &str) {
         if !task_id.is_empty() {
             self.task_id = Some(task_id.to_owned());
@@ -1482,6 +1596,17 @@ impl StreamMapper {
                     }
                     _ => false,
                 };
+                // child-sessions/v1 (ADR 0072): an event of the parent's, or the object of a round
+                // that ends, rides on the event's metadata; an update that says only that, while
+                // working with no message, is the news and nothing else
+                let news = sessions_entry(&u.metadata).and_then(|entry| {
+                    sessions_envelope(&u.task_id, &u.context_id, state, entry, revision.clone())
+                });
+                let report_only = report_only
+                    || (news.is_some()
+                        && state == Some(AgentTaskState::Working)
+                        && u.status.message.is_none());
+                out.extend(news.map(Ok));
                 // access-tier/v1 (ADR 0061): what the agent says of its tier rides on the event's
                 // metadata, and on the status that follows it
                 if self.note_echo(&u.metadata) {
@@ -4420,5 +4545,205 @@ mod tests {
         );
         let env = only(StreamMapper::default().map(status_update(TaskState::Working, None)));
         assert_eq!(env.key, IdemKey::Turn("task-1:status:working".into()));
+    }
+    // ---- child-sessions/v1 (ADR 0072)
+
+    fn sessions_metadata(entry: Value) -> Metadata {
+        Some(HashMap::from([(
+            orch_core::CHILD_SESSIONS_EXTENSION.to_owned(),
+            entry,
+        )]))
+    }
+
+    fn parent_listing() -> Value {
+        json!({"sessions": [{
+            "session": "s1", "contextId": "k1", "agent": "planner", "description": "Plan it",
+            "keepOpen": true, "state": "idle",
+            "round": {"number": 1, "taskId": "r1", "state": "TASK_STATE_COMPLETED"}
+        }]})
+    }
+
+    fn news_of(env: &AgentEnvelope) -> &orch_core::SessionNews {
+        match &env.update {
+            Some(AgentUpdate::ChildSessions(news)) => news,
+            other => panic!("not sessions news: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_task_frame_that_lists_sessions_says_them_before_its_status() {
+        let mut parent = task(TaskState::Working, vec![], None);
+        parent.metadata = sessions_metadata(parent_listing());
+        let out: Vec<_> = StreamMapper::default()
+            .map(StreamResponse::Task(parent))
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(out.len(), 2, "{out:?}");
+        let orch_core::SessionNews::Listed(listed) = news_of(&out[0]) else {
+            panic!("{:?}", out[0])
+        };
+        assert_eq!(listed[0].session, "s1");
+        assert_eq!(
+            listed[0].round.as_ref().unwrap().state,
+            Some(AgentTaskState::Completed)
+        );
+        assert!(matches!(out[0].key, IdemKey::Turn(ref k) if k.starts_with("task-1:sessions:")));
+        assert_eq!(out[0].task_state, None);
+        assert!(matches!(out[1].update, Some(AgentUpdate::Status { .. })));
+        // the same listing is the same key, a changed one is not
+        let mut again = task(TaskState::Working, vec![], None);
+        again.metadata = sessions_metadata(parent_listing());
+        let key_again = snapshot(&again).unwrap().envelopes[0].key.clone();
+        assert_eq!(key_again, out[0].key);
+        let mut changed = parent_listing();
+        changed["sessions"][0]["state"] = json!("closed");
+        again.metadata = sessions_metadata(changed);
+        assert_ne!(snapshot(&again).unwrap().envelopes[0].key, out[0].key);
+    }
+
+    #[test]
+    fn an_event_on_a_status_update_is_the_news_and_nothing_else_when_it_has_no_message() {
+        let event = json!({"event": "opened", "session": "s1", "contextId": "k1", "agent": "planner",
+            "description": "d", "keepOpen": false, "by": "agent",
+            "round": {"number": 1, "taskId": "r1", "state": "TASK_STATE_WORKING"}});
+        let update = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: T.into(),
+            context_id: C.into(),
+            status: status(TaskState::Working, None),
+            metadata: sessions_metadata(event.clone()),
+        });
+        let env = only(StreamMapper::default().map(update));
+        let orch_core::SessionNews::Event(kind, report) = news_of(&env) else {
+            panic!("{env:?}")
+        };
+        assert_eq!(*kind, orch_core::SessionEvent::Opened);
+        assert_eq!(report.state, orch_core::SessionState::Working);
+        // with a message the status is still said, after the news
+        let update = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: T.into(),
+            context_id: C.into(),
+            status: status(TaskState::Working, Some(msg("m1", Role::Agent, "starting"))),
+            metadata: sessions_metadata(event),
+        });
+        let out = StreamMapper::default().map(update);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(matches!(
+            out[0].as_ref().unwrap().update,
+            Some(AgentUpdate::ChildSessions(_))
+        ));
+    }
+
+    #[test]
+    fn a_round_snapshot_says_its_session_first_with_the_tasks_own_state() {
+        let mut round = task(
+            TaskState::Completed,
+            vec![art("a1", Some("result"), vec![Part::text("x")])],
+            None,
+        );
+        round.id = "r1".into();
+        round.context_id = "k1".into();
+        round.metadata = sessions_metadata(json!({
+            "session": "s1", "parentContextId": "c0", "agent": "planner", "description": "d",
+            "keepOpen": true, "round": 1, "by": "agent", "state": "idle", "closing": false
+        }));
+        let snap = snapshot(&round).unwrap();
+        let first = &snap.envelopes[0];
+        let orch_core::SessionNews::OfRound(report) = news_of(first) else {
+            panic!("{first:?}")
+        };
+        assert_eq!(report.context_id, "k1");
+        let r = report.round.as_ref().unwrap();
+        assert_eq!(
+            (r.number, r.task_id.as_deref(), r.state),
+            (1, Some("r1"), Some(AgentTaskState::Completed))
+        );
+        assert!(snap.envelopes.len() > 1);
+        // the stream says it the same way: first on the Task frame
+        let out = StreamMapper::default().map(StreamResponse::Task(round));
+        assert_eq!(out[0].as_ref().unwrap().key, first.key);
+        // the object on the update that ends the round is read with that update's state
+        let ending = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "r1".into(),
+            context_id: "k1".into(),
+            status: status(TaskState::Failed, None),
+            metadata: sessions_metadata(json!({
+                "session": "s1", "parentContextId": "c0", "agent": "planner", "keepOpen": false,
+                "round": 1, "state": "closed", "closing": true
+            })),
+        });
+        let out = StreamMapper::default().map(ending);
+        let orch_core::SessionNews::OfRound(report) = news_of(out[0].as_ref().unwrap()) else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            report.round.as_ref().unwrap().state,
+            Some(AgentTaskState::Failed)
+        );
+        assert_eq!(report.state, orch_core::SessionState::Closed);
+    }
+
+    #[test]
+    fn a_malformed_entry_is_rejected_without_a_value_and_the_status_still_follows() {
+        let mut parent = task(TaskState::Working, vec![], None);
+        parent.metadata =
+            sessions_metadata(json!({"sessions": [{"session": "", "contextId": "k"}]}));
+        let out: Vec<_> = StreamMapper::default()
+            .map(StreamResponse::Task(parent.clone()))
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        let Some(AgentUpdate::ChildSessionsRejected(why)) = &out[0].update else {
+            panic!("{out:?}")
+        };
+        assert!(!why.is_empty());
+        assert_eq!(out[0].key, IdemKey::Turn("task-1:sessions-rejected".into()));
+        assert!(matches!(out[1].update, Some(AgentUpdate::Status { .. })));
+        let polled = snapshot(&parent).unwrap();
+        assert_eq!(polled.envelopes[0].key, out[0].key);
+        // not an object at all
+        parent.metadata = sessions_metadata(json!("sessions"));
+        assert!(matches!(
+            snapshot(&parent).unwrap().envelopes[0].update,
+            Some(AgentUpdate::ChildSessionsRejected(_))
+        ));
+    }
+
+    #[test]
+    fn a_task_that_says_nothing_of_sessions_maps_as_it_always_did() {
+        let polled = snapshot(&task(TaskState::Working, vec![], None)).unwrap();
+        assert!(polled.envelopes.iter().all(|e| !matches!(
+            e.update,
+            Some(AgentUpdate::ChildSessions(_) | AgentUpdate::ChildSessionsRejected(_))
+        )));
+        let mut other = task(TaskState::Working, vec![], None);
+        other.metadata = sessions_metadata(json!({"unknown": true}));
+        assert_eq!(
+            snapshot(&other).unwrap().envelopes.len(),
+            polled.envelopes.len()
+        );
+    }
+
+    #[test]
+    fn sessions_news_reads_a_task_and_a_status_that_ends_the_turn_asks_for_the_read() {
+        let mut parent = task(TaskState::Completed, vec![], None);
+        parent.metadata = sessions_metadata(parent_listing());
+        let env = sessions_news(&parent).unwrap();
+        assert!(matches!(
+            news_of(&env),
+            orch_core::SessionNews::Listed(l) if l.len() == 1
+        ));
+        assert_eq!(
+            sessions_news(&task(TaskState::Completed, vec![], None)),
+            None
+        );
+        assert_eq!(
+            wants_task_read(&status_update(TaskState::Completed, None)),
+            Some(T)
+        );
+        assert_eq!(
+            wants_task_read(&status_update(TaskState::Working, None)),
+            None
+        );
     }
 }
