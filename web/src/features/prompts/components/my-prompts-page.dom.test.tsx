@@ -15,9 +15,10 @@ import { createMockServer } from "../../../../mock/server";
 
 /*
  * The page "My prompts" in jsdom against the mock orchestrator, which holds the contract's own rules (docs/api/prompts-v1.md):
- * create, list, edit, delete and copy as a person does them, a shared prompt read only, and nothing asked of `/api/prompts` where
- * the configuration has no library. The cookie of the mock's session is not sent from jsdom, so every test shares one library:
- * each starts by emptying it.
+ * create, list, edit, delete and copy as a person does them, a shared prompt read only, the sharing control of slice P4
+ * (Share, Change sharing, Stop sharing and the dialog's refusals), and nothing asked of `/api/prompts` where the
+ * configuration has no library. The cookie of the mock's session is not sent from jsdom, so every test shares one library
+ * and one profile: each starts by emptying it and by being a plain `user`.
  */
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
@@ -30,6 +31,7 @@ vi.mock("@/features/session/components/account-menu", () => ({ PROMPTS_LABEL: "M
 
 let MyPromptsPage: typeof import("./my-prompts-page").MyPromptsPage;
 let resetUiConfig: typeof import("@/features/chat/hooks/use-ui-config").resetUiConfig;
+let resetMe: typeof import("@/features/me/hooks/use-me").resetMe;
 
 const server = createMockServer({ stepMs: 5, keepaliveMs: 1000 });
 let base = "";
@@ -37,8 +39,12 @@ const realFetch = globalThis.fetch;
 const RealRequest = globalThis.Request;
 /** Every request the page made: `METHOD path`. */
 let calls: string[] = [];
+/** The body of every write the page made, as it was sent. */
+let sent: { method: string; path: string; body: string }[] = [];
 /** Answer `GET /api/config` with this instead of the mock's. */
 let configOverride: object | undefined;
+/** Answer a request with this instead of the mock's (the path and the method decide). */
+let answerWith: ((method: string, path: string) => Response | undefined) | undefined;
 /** Holds a request until its promise is settled (the path of the request decides). */
 let hold: ((method: string, pathname: string) => Promise<void> | undefined) | undefined;
 
@@ -65,18 +71,25 @@ beforeAll(async () => {
     const url = new URL(request ? request.url : String(abs(String(input))));
     const method = request?.method ?? init?.method ?? "GET";
     calls.push(`${method} ${url.pathname}`);
+    if (method !== "GET" && method !== "HEAD") {
+      const body = request ? await request.clone().text() : String(init?.body ?? "");
+      if (body !== "") sent.push({ method, path: url.pathname, body });
+    }
     if (configOverride && method === "GET" && url.pathname === "/api/config") {
       return new Response(JSON.stringify(configOverride), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
     }
+    const replaced = answerWith?.(method, url.pathname);
+    if (replaced) return replaced;
     const gate = hold?.(method, url.pathname);
     if (gate) await gate;
     return realFetch(abs(input) as RequestInfo, init);
   }) as typeof fetch;
   ({ MyPromptsPage } = await import("./my-prompts-page"));
   ({ resetUiConfig } = await import("@/features/chat/hooks/use-ui-config"));
+  ({ resetMe } = await import("@/features/me/hooks/use-me"));
 });
 afterAll(async () => {
   globalThis.fetch = realFetch;
@@ -92,17 +105,28 @@ const api = async (method: string, path: string, body?: unknown) =>
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
+/** Who the mock's session is (`GET /api/me`); `resetMe` then makes the page read it again. */
+const asProfile = async (profile: "user" | "prompt-sharer") => {
+  const res = await api("POST", `/__mock/config?me=${profile}`);
+  expect(res.status, await res.clone().text()).toBe(204);
+};
+
 beforeEach(async () => {
   calls = [];
+  sent = [];
   configOverride = undefined;
+  answerWith = undefined;
   hold = undefined;
   resetUiConfig();
+  await asProfile("user");
+  resetMe();
   // the mock keeps one library for this file: empty what the person owns (what others shared stays, and tests find it by name)
   const list = (await (await api("GET", "/api/prompts")).json()) as {
     items: { id: string; own: boolean; revision: string }[];
   };
   for (const p of list.items) if (p.own) await api("DELETE", `/api/prompts/${p.id}`);
   calls = [];
+  sent = [];
 });
 afterEach(cleanup);
 
@@ -322,5 +346,346 @@ describe("My prompts, against the mock's own rules", () => {
     expect(set.mock.calls.filter(([key]) => key !== "another-agentic.had-session")).toEqual([]);
     expect(sessionStorage.length).toBe(0);
     set.mockRestore();
+  });
+});
+
+/** A prompt of the person's own, made behind the page's back, as another tab would. */
+const make = async (body: unknown) => {
+  const res = await api("POST", "/api/prompts", body);
+  expect(res.status, await res.clone().text()).toBe(201);
+  return (await res.json()) as { id: string; revision: string };
+};
+
+const patchOf = () => sent.filter((s) => s.method === "PATCH");
+
+const audienceFieldOf = (dialog: HTMLElement) =>
+  within(dialog).getByLabelText("Roles who can read it") as HTMLInputElement;
+
+/** The page, as a holder of `prompts.share`, with one private prompt of theirs. */
+const openAsSharer = async (prompt: unknown = { name: "plan", title: "Plan", body: "Plan it" }) => {
+  await asProfile("prompt-sharer");
+  resetMe();
+  const made = await make(prompt);
+  await open();
+  return made;
+};
+
+describe("the sharing control (P4)", () => {
+  it("offers no share control without prompts.share, and Stop sharing on what was shared before it was lost", async () => {
+    await asProfile("prompt-sharer");
+    resetMe();
+    await make({ name: "priv", title: "Private one", body: "x" });
+    await make({ name: "shared", title: "Shared one", body: "y", audience: ["user"] });
+    // the roles change elsewhere: the page reads who the person is now
+    await asProfile("user");
+    resetMe();
+    await open();
+
+    // the frozen control is the proof that `getMe` was read: only then does a private prompt offer nothing
+    const stop = await screen.findByRole("button", { name: "Stop sharing “Shared one”" });
+    expect(screen.queryByRole("button", { name: "Share “Private one”" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change sharing “Shared one”" })).toBeNull();
+    fireEvent.click(stop);
+    await screen.findByText("“Shared one” is no longer shared.");
+    // the Stop control is gone, so the row's Edit takes the focus
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Edit “Shared one”" }),
+      ),
+    );
+
+    const listed = (await (await api("GET", "/api/prompts?scope=mine")).json()) as {
+      items: { title: string; audience?: string[] }[];
+    };
+    expect(listed.items.find((p) => p.title === "Shared one")?.audience ?? []).toEqual([]);
+    // and a private prompt offers nothing to a person who may not share
+    expect(
+      screen.queryByRole("button", { name: /^(Share|Change sharing|Stop sharing)/ }),
+    ).toBeNull();
+  });
+
+  it("says Stopping… on the row whose Stop sharing is in flight", async () => {
+    await asProfile("prompt-sharer");
+    resetMe();
+    await make({ name: "shared", title: "Shared one", body: "y", audience: ["user"] });
+    await asProfile("user");
+    resetMe();
+    await open();
+
+    let release!: () => void;
+    hold = (method) =>
+      method === "PATCH"
+        ? new Promise<void>((resolve) => {
+            release = resolve;
+          })
+        : undefined;
+    const stop = await screen.findByRole("button", { name: "Stop sharing “Shared one”" });
+    fireEvent.click(stop);
+    await waitFor(() => expect(stop.textContent).toBe("Stopping…"));
+    expect((stop as HTMLButtonElement).disabled).toBe(true);
+    release();
+    await screen.findByText("“Shared one” is no longer shared.");
+  });
+
+  it("a 404 on the row's Stop sharing says so and puts the focus on the list", async () => {
+    await asProfile("prompt-sharer");
+    resetMe();
+    const made = await make({ name: "shared", title: "Shared one", body: "y", audience: ["user"] });
+    await asProfile("user");
+    resetMe();
+    await open();
+    const stop = await screen.findByRole("button", { name: "Stop sharing “Shared one”" });
+    await api("DELETE", `/api/prompts/${made.id}`);
+    fireEvent.click(stop);
+    await screen.findByText("This prompt no longer exists.");
+    await screen.findByText("You have no prompts yet.");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(document.getElementById("my-prompts-list")),
+    );
+  });
+
+  it("a stale Stop sharing says so, reads the list again, and a second press stops it", async () => {
+    await asProfile("prompt-sharer");
+    resetMe();
+    const made = await make({
+      name: "shared",
+      title: "Shared one",
+      body: "y",
+      audience: ["user"],
+    });
+    await asProfile("user");
+    resetMe();
+    await open();
+    const row = (await screen.findByRole("heading", { name: "Shared one", level: 3 })).closest(
+      "li",
+    ) as HTMLElement;
+    const stop = within(row).getByRole("button", { name: "Stop sharing “Shared one”" });
+
+    // another tab (the owner, still holding prompts.share) changes the title: the row's revision is stale
+    await asProfile("prompt-sharer");
+    const other = await api("PATCH", `/api/prompts/${made.id}`, {
+      revision: made.revision,
+      title: "Shared one, renamed",
+    });
+    expect(other.status).toBe(200);
+    await asProfile("user");
+    fireEvent.click(stop);
+    await screen.findByText(/It was changed since you opened this page/);
+
+    const fresh = (
+      await screen.findByRole("heading", { name: "Shared one, renamed", level: 3 })
+    ).closest("li") as HTMLElement;
+    const freshStop = within(fresh).getByRole("button", {
+      name: "Stop sharing “Shared one, renamed”",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(freshStop));
+    fireEvent.click(freshStop);
+    await screen.findByText("“Shared one, renamed” is no longer shared.");
+    const held = (await (await api("GET", `/api/prompts/${made.id}`)).json()) as {
+      audience: string[];
+    };
+    expect(held.audience).toEqual([]);
+  });
+
+  it("offers Share on a private prompt, Change sharing on a shared one, and nothing on one shared with you", async () => {
+    await shareWithEveryone("theirs", "Theirs");
+    await asProfile("prompt-sharer");
+    resetMe();
+    await make({ name: "plan", title: "Plan", body: "Plan it" });
+    await make({ name: "shared", title: "Shared one", body: "y", audience: ["user"] });
+    await open();
+
+    // the positive control is the proof that `getMe` was read
+    await screen.findByRole("button", { name: "Share “Plan”" });
+    expect(screen.getByRole("button", { name: "Change sharing “Shared one”" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Stop sharing/ })).toBeNull();
+    const shared = (await screen.findByRole("heading", { name: "Theirs", level: 3 })).closest(
+      "li",
+    ) as HTMLElement;
+    expect(
+      within(shared).queryByRole("button", { name: /^(Share|Change sharing|Stop sharing)/ }),
+    ).toBeNull();
+  });
+
+  it("the dialog sends the revision and the audience and nothing else, and the row says who can read it", async () => {
+    const made = await openAsSharer();
+    fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Share “Plan”" })).toBeTruthy();
+    expect(within(dialog).getByText("/plan")).toBeTruthy();
+    const field = audienceFieldOf(dialog);
+    expect(field.value).toBe("");
+    expect(within(dialog).getByText("Only you can read it.")).toBeTruthy();
+
+    fireEvent.change(field, { target: { value: " user , prompt-team, user " } });
+    expect(
+      within(dialog).getByText("Everyone with one of these roles can read it: user, prompt-team."),
+    ).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText("“Plan” is shared with prompt-team, user.");
+    // the focus returns to the row's control, which now says Change sharing
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Change sharing “Plan”" }),
+      ),
+    );
+
+    const patches = patchOf();
+    expect(patches).toHaveLength(1);
+    const body = JSON.parse(patches[0]?.body ?? "{}") as Record<string, unknown>;
+    // the values as typed, once each, and nothing else: no title, no text, no questions
+    expect(Object.keys(body).sort()).toEqual(["audience", "revision"]);
+    expect(body).toEqual({ revision: made.revision, audience: ["user", "prompt-team"] });
+    const row = (await screen.findByRole("heading", { name: "Plan", level: 3 })).closest(
+      "li",
+    ) as HTMLElement;
+    expect(within(row).getByText(/Shared with: prompt-team, user/)).toBeTruthy();
+    // the server's order is the one shown, whatever order was typed
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("returns the focus to the share control after Cancel", async () => {
+    await openAsSharer();
+    const share = await screen.findByRole("button", { name: "Share “Plan”" });
+    fireEvent.click(share);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(share));
+  });
+
+  it("Everyone is * alone, and the row says so", async () => {
+    await openAsSharer();
+    fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = audienceFieldOf(dialog);
+    fireEvent.change(field, { target: { value: "*" } });
+    expect(within(dialog).getByText("Everyone can read it.")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText("“Plan” is shared with Everyone.");
+    expect(JSON.parse(patchOf()[0]?.body ?? "{}")).toMatchObject({ audience: ["*"] });
+    const row = (await screen.findByRole("heading", { name: "Plan", level: 3 })).closest(
+      "li",
+    ) as HTMLElement;
+    expect(within(row).getByText(/Shared with: Everyone/)).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Change sharing “Plan”" })).toBeTruthy();
+  });
+
+  it("bad_audience puts the words at the field and the focus there", async () => {
+    await openAsSharer();
+    fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = audienceFieldOf(dialog);
+
+    // `*` beside a role, then a role with a space: the server judges both, and neither is sent as valid
+    const save = within(dialog).getByRole("button", { name: "Save" });
+    for (const typed of ["* , user", "prompt team"]) {
+      fireEvent.change(field, { target: { value: typed } });
+      save.focus();
+      fireEvent.click(save);
+      await waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
+      expect(document.activeElement).toBe(field);
+      const described = document.getElementById(
+        field.getAttribute("aria-describedby")?.split(" ").pop() ?? "",
+      );
+      expect(described?.textContent).toMatch(/A role is 1 to 64 characters with no spaces/);
+      // the typed roles stay
+      expect(field.value).toBe(typed);
+    }
+
+    fireEvent.change(field, { target: { value: "prompt-team" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText("“Plan” is shared with prompt-team.");
+  });
+
+  it("a stale share keeps the roles typed, and Load the current version shows the current audience", async () => {
+    const made = await openAsSharer();
+    fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = audienceFieldOf(dialog);
+    fireEvent.change(field, { target: { value: "user" } });
+    // another tab shares it with a team
+    const other = await api("PATCH", `/api/prompts/${made.id}`, {
+      revision: made.revision,
+      audience: ["team"],
+    });
+    expect(other.status).toBe(200);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText(/This prompt was changed elsewhere since you opened it/);
+    expect(field.value).toBe("user");
+    // again: still stale, never an overwrite
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText(/Your changes are still here/);
+    const held = (await (await api("GET", `/api/prompts/${made.id}`)).json()) as {
+      audience: string[];
+    };
+    expect(held.audience).toEqual(["team"]);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Load the current version" }));
+    await waitFor(() => expect(field.value).toBe("team"));
+    expect(screen.queryByText(/changed elsewhere since you opened it/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText("“Plan” is shared with team.");
+  });
+
+  it("403 forbidden offers Stop sharing, the only write the person may still make", async () => {
+    const made = await openAsSharer({
+      name: "plan",
+      title: "Plan",
+      body: "Plan it",
+      audience: ["user"],
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Change sharing “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = audienceFieldOf(dialog);
+    // the roles change behind the page's back: it still offers what it may no longer do
+    await asProfile("user");
+    fireEvent.change(field, { target: { value: "user, prompt-team" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText(/Your roles no longer let you share prompts/);
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop sharing" }));
+    await screen.findByText("“Plan” is no longer shared.");
+    const held = (await (await api("GET", `/api/prompts/${made.id}`)).json()) as {
+      audience: string[];
+    };
+    expect(held.audience).toEqual([]);
+  });
+
+  it("a 404 says the prompt is gone, closes the dialog and reads the list again", async () => {
+    const made = await openAsSharer();
+    fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    await api("DELETE", `/api/prompts/${made.id}`);
+    fireEvent.change(audienceFieldOf(dialog), { target: { value: "user" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await screen.findByText("This prompt no longer exists.");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // the list was read again, and the row is gone
+    await screen.findByText("You have no prompts yet.");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(document.getElementById("my-prompts-list")),
+    );
+  });
+
+  it("a 503 says the write may or may not have been made and keeps the dialog open", async () => {
+    await openAsSharer();
+    answerWith = (method) =>
+      method === "PATCH"
+        ? new Response(JSON.stringify({ title: "Unavailable", status: 503 }), {
+            status: 503,
+            headers: { "content-type": "application/problem+json" },
+          })
+        : undefined;
+    fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(audienceFieldOf(dialog), { target: { value: "user" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText(
+      /could not be saved just now, and the change may or may not have been made/,
+    );
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeTruthy();
   });
 });

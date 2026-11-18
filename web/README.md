@@ -1162,15 +1162,15 @@ reader, or with the browsers' own use of Ctrl+K; and a hit in an older part of a
 
 ## A person's prompt library
 
-*Added 2026-11-15 ([ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md), slices P1, P4 and the server half of P2 of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md); P2's web added 2026-11-18).*
+*Added 2026-11-15 ([ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md), slices P1, P4 and the server half of P2 of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md); P2's web added 2026-11-18, and P4's sharing control the same day).*
 The page **My prompts** (`/prompts`, slice P1) is built: list, create, edit, rename, delete, read a prompt somebody shared and copy it into one's own. The `/` menu of
-the message box and the form that fills a prompt's questions (P2's web) are built too, on the composer itself. The control that shares a prompt with roles (P4) is
-the next slice. The contract is [`docs/api/prompts-v1.md`](../docs/api/prompts-v1.md), with vectors in `docs/api/examples/prompts/`, and the mock server answers
+the message box and the form that fills a prompt's questions (P2's web) are built too, on the composer itself, and so is the control that shares a prompt with roles
+(P4, below). The contract is [`docs/api/prompts-v1.md`](../docs/api/prompts-v1.md), with vectors in `docs/api/examples/prompts/`, and the mock server answers
 it, so the page and the composer are tested before the orchestrator is deployed.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-page.png">
-  <img src="e2e/__screens__/desktop-light-prompts-page.png" alt="The My prompts page on a desktop: Back to chat, the heading, a sentence, Your prompts 3 of 100 with three cards (title, /name, description, how many questions it asks, and who it is shared with where it is), a New prompt button, and below it Shared with you with two cards that have View and Copy to my prompts." width="720">
+  <img src="e2e/__screens__/desktop-light-prompts-page.png" alt="The My prompts page on a desktop: Back to chat, the heading, a sentence, Your prompts 3 of 100 with three cards (title, /name, description, how many questions it asks, who it is shared with, and Edit and Delete, with Stop sharing on the one shared before the person lost prompts.share), a New prompt button, and below it Shared with you with two cards that have View and Copy to my prompts." width="720">
 </picture>
 
 *The page on a desktop, from the web's mock server.*
@@ -1182,14 +1182,15 @@ The page reads `getConfig.prompts` first (its presence is the capability; withou
 | File (`src/features/prompts/`) | What |
 |---|---|
 | `hooks/use-prompt-library.ts` | the list, `get`, `create`, `update`, `remove`; rereads on focus, drops an overtaken read, rereads after a write whose outcome is not known; keeps nothing on the device |
-| `hooks/use-prompt-picker.ts` | the `/` menu's list (read when the menu opens, and again each time it reopens), `getPrompt`, `renderPrompt`; nothing is read on a thread's mount |
+| `hooks/use-prompt-picker.ts` | the `/` menu's list (read when the box becomes one `/name`, and again after it stops being one and becomes one again), `getPrompt`, `renderPrompt`; nothing is read on a thread's mount |
 | `hooks/use-prompt-menu.ts` | the trigger, the keys of the listbox, the pick, the fill dialog's state and the text put in the box |
 | `lib/library.ts` | order, own against shared, the words of a card, the bodies of create and edit (only what changed, plus the `revision`; never an `audience`) |
+| `lib/share.ts` | the sharing control of a row, the roles field and back (`audienceOf`, `audienceField`), who can read it in words, and `updatePrompt`'s body for a share (`{revision, audience}`, and nothing else) |
 | `lib/editor.ts` | the form model of the questions, and back; lossless (below) |
 | `lib/failures.ts` | the words of every refusal from the problem's `code`, `at` and `offset`, and the field each is about |
 | `lib/fill.ts` | the `/` trigger, the order of the matches, the Choices form of a prompt's variables, and the words of a refused `renderPrompt` |
 | `lib/read.ts` | `listPrompts` page by page and `getPrompt`, shared by the page and the menu |
-| `components/` | `my-prompts-page`, `prompt-row`, `prompt-form`, `question-editor`, `kept-question`, `delete-prompt-dialog`, `shared-prompt-view`, `prompt-menu`, `prompt-fill-dialog` |
+| `components/` | `my-prompts-page`, `prompt-row`, `prompt-form`, `question-editor`, `kept-question`, `delete-prompt-dialog`, `share-prompt-dialog`, `shared-prompt-view`, `prompt-menu`, `prompt-fill-dialog` |
 
 **Editing is lossless.** The editor draws seven kinds of question (short text, long text, one choice, several choices, yes or no, number, date). A question of another kind (a long list, a scale, a ranking, a kind a later catalog adds) is a read-only card, kept and sent back as the very object that was read. In a question of an editable kind, every member the card does not show (a choice's `default`, an option's `description` or `icon`, a member nobody here knows) stays, because a member is written only when its field differs from what was read. `variables` is sent only when the list differs from what was read. A test runs the 35 `ok` vectors of `prompts.json` through `toForm` then `fromForm` and expects each back byte for byte. A question with `multiple: true` and no `type` (the older spelling) is drawn as **Several choices** and, untouched, sent back as read; when the person picks another kind, `type` is written and `multiple` dropped. A sibling's edit never rewrites an option nobody touched. **Changing a question's kind** keeps the members both kinds show (`question`, `help`, `required`; `default` between short and long text; `options` and `allowOther` between one and several choices), drops the rest, and the card says so ("Changing the kind removes the settings this page does not show.") when it holds members the page does not show.
 
@@ -1214,7 +1215,43 @@ stateDiagram-v2
   Form --> Form: refused (words at the field), stale (Load the current version)
   List --> Deleting: Delete
   Deleting --> List: deleted, gone, Cancel
+  List --> Sharing: Share, Change sharing, Stop sharing
+  Sharing --> List: saved, stopped, gone, Cancel
+  Sharing --> Sharing: refused (bad_audience at the field), stale (Load the current version), 403 (Stop sharing)
 ```
+
+### Sharing a prompt
+
+*Added 2026-11-18 (slice P4).* An own prompt offers the one sharing control the person may use; **Share** (private) and **Change sharing** (shared with
+somebody) need `prompts.share` from `getMe`, and a prompt the person shared before they lost it offers **Stop sharing** and nothing else (the contract's
+frozen prompt). Nothing is offered while `me` is not known, and a prompt shared *with* the person offers none of it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-share.png">
+  <img src="e2e/__screens__/desktop-light-prompts-share.png" alt="The share dialog over the My prompts page: Share “Write my standup”, /standup, the field Roles who can read it holding “user”, the help line, “Everyone with one of these roles can read it: user.”, and Cancel and Save." width="720">
+</picture>
+
+*The share dialog, from the web's mock server.*
+
+- **The dialog** names the prompt and its `/name`, and holds the audience as a comma-separated field of **role values** (the values of the roles claim;
+  `*` alone means everyone, and empty means only the owner). Under it, a sentence says who can read it now ("Everyone can read it.", "Only you can read it.",
+  the roles, or, when `*` is typed beside a role, that the server will refuse it), and the help line says that a role may be one the person does not hold: the
+  server accepts a share with a role nobody holds, and the page never checks one.
+- **The write is the audience and nothing else.** The field is split on commas, trimmed, its empty values dropped and each role kept once (the order typed
+  is the order sent), and `updatePrompt` is sent `{revision, audience}`: a share never carries a title, a text or a question. The row's "Shared with: …" comes
+  from the summary, and the prompt the server answers with replaces it (the roles sorted by the server, `*` as Everyone).
+- **A refusal is said where it is.** `bad_audience` (a role with a space, `*` beside a role, more than 32) puts the words under the field with
+  `aria-invalid`, `aria-describedby` and the focus, and the roles typed stay. A **403 `forbidden`** (the roles no longer let the person keep a share) says so
+  and offers **Stop sharing**, the only write it accepts. A **409 `stale_revision`** keeps the roles typed and offers **Load the current version**, which
+  reads the prompt again and shows the audience it has now: the dialog never overwrites. A **404** closes the dialog with the words that it is gone and the
+  list is read again; a 401, a 403 `no_access`, a 429 and a 5xx say their own words and keep the dialog open.
+- **Stop sharing in a row** is the frozen prompt's only action on who can read it: it sends the row's revision and an empty audience, and the row says it is no longer shared.
+- **Tests.** The pure part is `src/features/prompts/lib/share.test.ts` (the control of a row, the field and back, the words, the body). The page and the dialog
+  are in `src/features/prompts/components/my-prompts-page.dom.test.tsx` against the mock server: the control with and without `prompts.share`, the frozen
+  Stop sharing, the body sent (`{revision, audience}`, and nothing else), `bad_audience` at the field, a stale share and Load the current version, a 403 and
+  its Stop sharing, a 404, a 503, the row's audience after a save, the row's “Stopping…” while its write is in flight, and the focus after a save, a stop and a 404 (the row's control, its Edit button, the list's heading). `e2e/prompts.spec.ts` runs them in a
+  browser on both projects: Everyone and a role, the permission lost, `bad_audience` for `*` beside a role (`* , user`) and for a role with a space, a stale share from another tab,
+  the 403, axe on the dialog in both schemes, and no sideways scroll on a phone with a long list of roles.
 
 ### Using a prompt from the message box
 
@@ -1296,8 +1333,7 @@ stateDiagram-v2
   `components/prompt-fill-dialog.dom.test.tsx` (the kinds, defaults, stale, refusals), `components/prompt-menu.dom.test.tsx` (the keys, the pick, the insertion,
   no library) and `e2e/prompt-composer.spec.ts` against the mock (the menu, the form, a stale prompt, no library, axe in both schemes on desktop and phone).
 
-**Not built here:** the control that shares a prompt (the list only shows "Shared with: …" on a prompt that is). **Not proven:** against a real
-orchestrator, in Firefox or WebKit, and in the desktop app.
+**Not proven:** against a real orchestrator, in Firefox or WebKit, and in the desktop app.
 
 ### The mock
 

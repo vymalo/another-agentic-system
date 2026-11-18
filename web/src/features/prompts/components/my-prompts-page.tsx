@@ -6,6 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
 import { Button } from "@/components/ui/button";
 import { useUiConfig } from "@/features/chat/hooks/use-ui-config";
+import { useMe } from "@/features/me/hooks/use-me";
+import { holds } from "@/features/me/lib/access";
 import { PROMPTS_LABEL } from "@/features/session/components/account-menu";
 import { openSignIn } from "@/lib/api/session";
 import type { ApiPrompt, ApiPromptSummary } from "@/lib/api/types";
@@ -18,9 +20,11 @@ import {
   questionIds,
   splitPrompts,
 } from "../lib/library";
+import { buildShare, sharingControl } from "../lib/share";
 import { DeletePromptDialog } from "./delete-prompt-dialog";
 import { type FormOutcome, PromptForm } from "./prompt-form";
 import { PromptRow } from "./prompt-row";
+import { SharePromptDialog } from "./share-prompt-dialog";
 import { SharedPromptView } from "./shared-prompt-view";
 
 type Limits = {
@@ -33,9 +37,11 @@ type Limits = {
 const BLANK: PromptFields = { title: "", name: "", description: "", body: "", questions: [] };
 
 /**
- * `/prompts`: the person's prompt library (ADR 0070): list, create, edit, rename, delete, read what others shared and copy it.
- * Nothing is asked until the configuration says the deployment has a library (`prompts` of `GET /api/config`). Owning prompts
- * needs no permission, so nothing here is hidden by one. The server decides every value; this page draws its answers.
+ * `/prompts`: the person's prompt library (ADR 0070): list, create, edit, rename, delete, read what others shared, copy it,
+ * and share one's own with roles. Nothing is asked until the configuration says the deployment has a library (`prompts` of
+ * `GET /api/config`). Owning prompts needs no permission; **the sharing control needs `prompts.share`** (`getMe`), and a
+ * prompt the person shared before they lost it is only offered **Stop sharing**. The server decides every value; this page
+ * draws its answers.
  */
 export function MyPromptsPage() {
   const ui = useUiConfig();
@@ -82,13 +88,20 @@ type View =
 function Library({ config }: { config: Limits }) {
   const lib = usePromptLibrary(config);
   const { state } = lib;
+  const me = useMe();
+  // `getMe` lists `prompts.share` for a holder; null while it is unknown, and then no share control is offered at all
+  const permitted = me.status === "ready" ? holds(me.me, "prompts.share") : null;
   const [view, setView] = useState<View>({ kind: "list" });
   const [notice, setNotice] = useState<{ text: string; tone: "muted" | "warning" } | null>(null);
   const [deleting, setDeleting] = useState<ApiPromptSummary | null>(null);
+  const [sharing, setSharing] = useState<ApiPromptSummary | null>(null);
   const opener = useRef<string | null>(null);
   const tokens = useRef(0);
   // the opening that is current: an answer for an earlier one is ignored
   const opening = useRef(0);
+  // a Stop sharing in flight, by prompt id: the row says so, and a second press on the same row is not sent
+  const stoppingIds = useRef(new Set<string>());
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set());
 
   // when the list is back, the focus returns to the button that opened what was closed (or the list, if that is gone)
   const listing = view.kind === "list";
@@ -206,6 +219,63 @@ function Library({ config }: { config: Limits }) {
     return null;
   }
 
+  /**
+   * Where the focus goes after a share or a stop: the row's sharing control (which may now say something
+   * else), else its Edit button, else the list's heading. The write re-renders the row, so this waits a frame.
+   */
+  const focusAfterShare = (id: string) => {
+    requestAnimationFrame(() => {
+      const target =
+        document.querySelector<HTMLElement>(`[data-opener="share:${id}"]`) ??
+        document.querySelector<HTMLElement>(`[data-opener="stop:${id}"]`) ??
+        document.querySelector<HTMLElement>(`[data-opener="edit:${id}"]`) ??
+        document.getElementById("my-prompts-list");
+      target?.focus();
+    });
+  };
+
+  /** A prompt that is gone has no row to return to: the list's heading takes the focus. */
+  const focusList = () =>
+    requestAnimationFrame(() => document.getElementById("my-prompts-list")?.focus());
+
+  /**
+   * The row's **Stop sharing**: the one write a person who lost `prompts.share` may make. It sends the row's revision and
+   * an empty audience; the server's answer replaces the row, and its refusal is said where the row was.
+   */
+  async function stopSharing(p: ApiPromptSummary) {
+    if (stoppingIds.current.has(p.id)) return;
+    stoppingIds.current.add(p.id);
+    setStopping((s) => new Set(s).add(p.id));
+    let gone = false;
+    try {
+      const result = await lib.update(p.id, buildShare(p.revision, []), {
+        name: p.name,
+        body: "",
+        ids: [],
+      });
+      gone = !result.ok && result.failure.gone === true;
+      const message =
+        !result.ok && result.failure.stale
+          ? "It was changed since you opened this page. The list was read again: check it, then stop sharing again."
+          : result.ok
+            ? `“${p.title}” is no longer shared.`
+            : result.failure.message;
+      setNotice({
+        text: message,
+        tone: result.ok ? "muted" : "warning",
+      });
+    } finally {
+      stoppingIds.current.delete(p.id);
+      setStopping((s) => {
+        const next = new Set(s);
+        next.delete(p.id);
+        return next;
+      });
+    }
+    if (gone) focusList();
+    else focusAfterShare(p.id);
+  }
+
   return (
     <>
       {state.status === "loading" ? <LoadingStatus>Loading your prompts</LoadingStatus> : null}
@@ -286,11 +356,15 @@ function Library({ config }: { config: Limits }) {
             <ListArea
               prompts={state.prompts}
               limit={config.limit}
+              permitted={permitted}
+              stopping={stopping}
               onCreate={create}
               onEdit={edit}
               onDelete={setDeleting}
               onView={read}
               onCopy={copy}
+              onShare={setSharing}
+              onStopSharing={stopSharing}
             />
           ) : null}
           {deleting ? (
@@ -298,6 +372,22 @@ function Library({ config }: { config: Limits }) {
               prompt={deleting}
               onDelete={lib.remove}
               onClose={() => setDeleting(null)}
+            />
+          ) : null}
+          {sharing ? (
+            <SharePromptDialog
+              prompt={sharing}
+              write={(body) =>
+                lib.update(sharing.id, body, { name: sharing.name, body: "", ids: [] })
+              }
+              read={() => lib.get(sharing.id)}
+              onClose={(outcome) => {
+                const closed = sharing;
+                setSharing(null);
+                setNotice(outcome ? { text: outcome.message, tone: outcome.tone } : null);
+                if (outcome?.gone) focusList();
+                else focusAfterShare(closed.id);
+              }}
             />
           ) : null}
         </>
@@ -311,14 +401,32 @@ const ownCount = (list: readonly ApiPromptSummary[]) => list.filter((p) => p.own
 type ListProps = {
   prompts: ApiPromptSummary[];
   limit: number;
+  /** Whether `getMe` lists `prompts.share`: null while it is unknown, and then no row offers a share control. */
+  permitted: boolean | null;
+  /** The prompts whose Stop sharing is in flight, so their rows say so. */
+  stopping: ReadonlySet<string>;
   onCreate: () => void;
   onEdit: (p: ApiPromptSummary) => void;
   onDelete: (p: ApiPromptSummary) => void;
   onView: (p: ApiPromptSummary) => void;
   onCopy: (p: ApiPromptSummary) => void;
+  onShare: (p: ApiPromptSummary) => void;
+  onStopSharing: (p: ApiPromptSummary) => void;
 };
 
-function ListArea({ prompts, limit, onCreate, onEdit, onDelete, onView, onCopy }: ListProps) {
+function ListArea({
+  prompts,
+  limit,
+  permitted,
+  stopping,
+  onCreate,
+  onEdit,
+  onDelete,
+  onView,
+  onCopy,
+  onShare,
+  onStopSharing,
+}: ListProps) {
   const { own, shared } = splitPrompts(prompts);
   const atLimit = own.length >= limit;
   return (
@@ -338,10 +446,14 @@ function ListArea({ prompts, limit, onCreate, onEdit, onDelete, onView, onCopy }
               <PromptRow
                 key={p.id}
                 prompt={p}
+                sharing={sharingControl(p, permitted)}
+                stopping={stopping.has(p.id)}
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onView={onView}
                 onCopy={onCopy}
+                onShare={onShare}
+                onStopSharing={onStopSharing}
               />
             ))}
           </ul>
@@ -374,10 +486,14 @@ function ListArea({ prompts, limit, onCreate, onEdit, onDelete, onView, onCopy }
               <PromptRow
                 key={p.id}
                 prompt={p}
+                sharing={sharingControl(p, permitted)}
+                stopping={stopping.has(p.id)}
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onView={onView}
                 onCopy={onCopy}
+                onShare={onShare}
+                onStopSharing={onStopSharing}
               />
             ))}
           </ul>

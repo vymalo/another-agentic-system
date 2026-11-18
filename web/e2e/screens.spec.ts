@@ -727,6 +727,14 @@ for (const scheme of ["light", "dark"] as const) {
       await page.getByRole("button", { name: "View “Release notes”" }).click();
       await expect(page.getByRole("heading", { name: "Release notes", level: 2 })).toBeVisible();
       await shot(page, "prompts-shared-view");
+
+      // the sharing control (P4): the same session, as the holder of `prompts.share` it is, with the dialog open
+      await lib.hook("/__mock/config?me=prompt-sharer");
+      await page.goto("/prompts");
+      await page.getByRole("button", { name: "Change sharing “Write my standup”" }).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await expect(page.getByLabel("Roles who can read it")).toHaveValue("user");
+      await shot(page, "prompts-share");
     });
 
     test("my prompts: the form, and a refusal in the text", async ({ page, context }) => {

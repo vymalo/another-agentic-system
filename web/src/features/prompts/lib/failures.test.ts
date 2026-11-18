@@ -167,10 +167,11 @@ describe("failureOf: the words for a refused save", () => {
     expect(f.message).toContain("Stop sharing");
   });
 
-  it("a 404 says the prompt is gone and rereads", () => {
+  it("a 404 says the prompt is gone, rereads and is gone", () => {
     const f = failureOf({ status: 404 }, ctx);
     expect(f.message).toBe("This prompt no longer exists.");
     expect(f.reread).toBe(true);
+    expect(f.gone).toBe(true);
   });
 });
 
@@ -182,7 +183,7 @@ describe("failureOf: each code goes to its own field", () => {
     ["bad_description", { field: "description" }],
     ["bad_body", { field: "body" }],
     ["bad_reference", { field: "body" }],
-    // this page has no audience field (a prompt is only ever private from here): the page shows it with the form's words
+    // a save that says only `bad_audience` at "form" is still the audience's: the share dialog draws it there
     ["bad_audience", { field: "audience" }],
   ] as const)("%s", (code, target) => {
     const f = failureOf({ status: code === "name_taken" ? 409 : 400, code, at: "form" }, ctx);

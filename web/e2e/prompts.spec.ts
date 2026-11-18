@@ -195,6 +195,9 @@ test("the list holds the person's own and the ones shared with them; a shared on
   await expect(row.getByText("Shared with you")).toBeVisible();
   // nothing to change, and nobody named
   await expect(row.getByRole("button", { name: /^(Edit|Delete)/ })).toHaveCount(0);
+  await expect(
+    row.getByRole("button", { name: /^(Share|Change sharing|Stop sharing)/ }),
+  ).toHaveCount(0);
   await expect(row).not.toContainText(/@|owner|author/i);
 
   await row.getByRole("button", { name: "View “Deploy notes”" }).click();
@@ -520,6 +523,205 @@ test("delete asks first, sends the revision, and a stale delete is told in words
   expect(deletes.at(-1)).toContain(`/api/prompts/${one.id}?revision=${one.revision}`);
 });
 
+test("a prompt is shared with everyone and with roles; the row says who can read it, and only the audience is sent", async ({
+  page,
+  mine,
+}) => {
+  await mine.as("prompt-sharer");
+  const made = await mine.seed(review());
+  const patches: Record<string, unknown>[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PATCH") patches.push(request.postDataJSON());
+  });
+  await page.goto("/prompts");
+  const row = rowOf(page, "Review a change");
+  await expect(row).not.toContainText("Shared with:");
+
+  await row.getByRole("button", { name: "Share “Review a change”" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "Share “Review a change”" })).toBeVisible();
+  await expect(dialog.getByText("/review")).toBeVisible();
+  const field = dialog.getByLabel("Roles who can read it");
+  await expect(field).toHaveValue("");
+  await expect(dialog.getByText("Only you can read it.", { exact: true })).toBeVisible();
+  // `*` alone is everyone
+  await field.fill("*");
+  await expect(dialog.getByText("Everyone can read it.", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("“Review a change” is shared with Everyone.")).toBeVisible();
+  await expect(row).toContainText("Shared with: Everyone");
+  // the revision it was opened at and the audience: no title, no text, no questions
+  expect(patches).toHaveLength(1);
+  expect(Object.keys(patches[0] ?? {}).sort()).toEqual(["audience", "revision"]);
+  expect(patches[0]).toEqual({ revision: made.revision, audience: ["*"] });
+
+  // a role, typed with spaces and twice: what the server stores is each once, sorted
+  await row.getByRole("button", { name: "Change sharing “Review a change”" }).click();
+  await expect(field).toHaveValue("*");
+  await field.fill(" user , prompt-team, user ");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("“Review a change” is shared with prompt-team, user.")).toBeVisible();
+  await expect(row).toContainText("Shared with: prompt-team, user");
+  expect(patches.at(-1)).toMatchObject({ audience: ["user", "prompt-team"] });
+  const stored = (await (await mine.call("GET", "/api/prompts?scope=mine")).json()) as {
+    items: { title: string; audience?: string[] }[];
+  };
+  expect(stored.items.find((p) => p.title === "Review a change")?.audience).toEqual([
+    "prompt-team",
+    "user",
+  ]);
+  await expectNoHorizontalScroll(page);
+});
+
+test("a person without prompts.share is offered no Share, and Stop sharing on what they shared before", async ({
+  page,
+  mine,
+}) => {
+  await mine.as("prompt-sharer");
+  await mine.seed({ name: "priv", title: "Private one", body: "x" });
+  await mine.seed({ name: "shared", title: "Shared one", body: "y", audience: ["user"] });
+  await mine.share([{ name: "theirs", title: "Theirs", body: "z", audience: ["*"] }]);
+  await page.goto("/prompts");
+  await expect(
+    rowOf(page, "Private one").getByRole("button", { name: "Share “Private one”" }),
+  ).toBeVisible();
+  await expect(
+    rowOf(page, "Shared one").getByRole("button", { name: "Change sharing “Shared one”" }),
+  ).toBeVisible();
+
+  // the roles change: the same session is a plain user now, and the page reads who it is
+  await mine.as("user");
+  await page.reload();
+  await expect(rowOf(page, "Private one").getByRole("button", { name: /^Share/ })).toHaveCount(0);
+  const frozen = rowOf(page, "Shared one");
+  await expect(frozen.getByRole("button", { name: "Change sharing “Shared one”" })).toHaveCount(0);
+  await frozen.getByRole("button", { name: "Stop sharing “Shared one”" }).click();
+  await expect(page.getByText("“Shared one” is no longer shared.")).toBeVisible();
+  await expect(frozen).not.toContainText("Shared with:");
+  // and with the share gone, a person who may not share is offered nothing
+  await expect(frozen.getByRole("button", { name: /^Share/ })).toHaveCount(0);
+  const stored = (await (await mine.call("GET", "/api/prompts?scope=mine")).json()) as {
+    items: { title: string; audience?: string[] }[];
+  };
+  expect(stored.items.find((p) => p.title === "Shared one")?.audience ?? []).toEqual([]);
+  // a prompt shared with the person has no control at all
+  const theirs = rowOf(page, "Theirs");
+  await expect(theirs).toContainText("Shared with you");
+  await expect(
+    theirs.getByRole("button", { name: /^(Share|Change sharing|Stop sharing)/ }),
+  ).toHaveCount(0);
+});
+
+test("bad_audience is said at the field, for * beside a role and for a role with a space", async ({
+  page,
+  mine,
+}) => {
+  await mine.as("prompt-sharer");
+  await mine.seed(review());
+  await page.goto("/prompts");
+  await rowOf(page, "Review a change")
+    .getByRole("button", { name: "Share “Review a change”" })
+    .click();
+  const field = page.getByLabel("Roles who can read it");
+
+  for (const typed of ["* , user", "prompt team"]) {
+    await field.fill(typed);
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute("aria-invalid", "true");
+    await expect(
+      page.getByRole("alert").filter({ hasText: "A role is 1 to 64 characters with no spaces" }),
+    ).toBeVisible();
+    // the roles typed are still there
+    await expect(field).toHaveValue(typed);
+  }
+
+  await field.fill("prompt-team");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("“Review a change” is shared with prompt-team.")).toBeVisible();
+});
+
+test("a stale share keeps the roles typed, and Load the current version shows the current audience", async ({
+  page,
+  mine,
+}) => {
+  await mine.as("prompt-sharer");
+  const made = await mine.seed(review());
+  await page.goto("/prompts");
+  await rowOf(page, "Review a change")
+    .getByRole("button", { name: "Share “Review a change”" })
+    .click();
+  const field = page.getByLabel("Roles who can read it");
+  await field.fill("user");
+  // another tab shares it with a team: the revision the dialog holds is stale
+  const other = await mine.call("PATCH", `/api/prompts/${made.id}`, {
+    revision: made.revision,
+    audience: ["team"],
+  });
+  expect(other.status).toBe(200);
+
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(errorLine(page)).toContainText("changed elsewhere since you opened it");
+  await expect(field).toHaveValue("user");
+  // again: still stale, never an overwrite
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(errorLine(page)).toContainText("Your changes are still here");
+  const held = (await (await mine.call("GET", `/api/prompts/${made.id}`)).json()) as {
+    audience: string[];
+  };
+  expect(held.audience).toEqual(["team"]);
+
+  await page.getByRole("button", { name: "Load the current version" }).click();
+  await expect(field).toHaveValue("team");
+  await expect(page.getByRole("button", { name: "Load the current version" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("“Review a change” is shared with team.")).toBeVisible();
+});
+
+test("403 forbidden offers Stop sharing, the only write a person without prompts.share may make", async ({
+  page,
+  mine,
+}) => {
+  await mine.as("prompt-sharer");
+  const made = await mine.seed(review({ audience: ["user"] }));
+  await page.goto("/prompts");
+  await rowOf(page, "Review a change")
+    .getByRole("button", { name: "Change sharing “Review a change”" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  // the roles change behind the page's back: it still offers what it may no longer do
+  await mine.as("user");
+  await dialog.getByLabel("Roles who can read it").fill("user, prompt-team");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toContainText("Your roles no longer let you share prompts");
+
+  await dialog.getByRole("button", { name: "Stop sharing" }).click();
+  await expect(page.getByText("“Review a change” is no longer shared.")).toBeVisible();
+  const held = (await (await mine.call("GET", `/api/prompts/${made.id}`)).json()) as {
+    audience: string[];
+  };
+  expect(held.audience).toEqual([]);
+});
+
+test("on a phone the share dialog needs no sideways scroll, with a long list of roles", async ({
+  page,
+  mine,
+}) => {
+  await mine.as("prompt-sharer");
+  const roles = Array.from({ length: 8 }, (_, i) => `a-long-role-name-number-${i}`);
+  await mine.seed(review({ audience: roles }));
+  await page.goto("/prompts");
+  await expect(rowOf(page, "Review a change")).toContainText(
+    "Shared with: a-long-role-name-number-0",
+  );
+  await expectNoHorizontalScroll(page);
+  await rowOf(page, "Review a change")
+    .getByRole("button", { name: "Change sharing “Review a change”" })
+    .click();
+  await expect(page.getByLabel("Roles who can read it")).toHaveValue(roles.join(", "));
+  await expectNoHorizontalScroll(page);
+});
+
 test("at the limit New prompt goes away with the reason, and too_many_prompts from another tab says it", async ({
   page,
   mine,
@@ -677,10 +879,11 @@ for (const scheme of ["light", "dark"] as const) {
       return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
     }
 
-    test("axe: the list with own and shared, the empty list, the form with every editable kind and a kept one, a refused form and the delete dialog have no serious violations", async ({
+    test("axe: the list with own and shared, the empty list, the form with every editable kind and a kept one, a refused form, the delete dialog and the share dialog have no serious violations", async ({
       page,
       mine,
     }) => {
+      await mine.as("prompt-sharer");
       await page.goto("/prompts");
       await expect(page.getByText("You have no prompts yet.")).toBeVisible();
       expect(await serious(page)).toEqual([]);
@@ -732,6 +935,16 @@ for (const scheme of ["light", "dark"] as const) {
       // the delete dialog
       await rowOf(page, "Mixed").getByRole("button", { name: "Delete “Mixed”" }).click();
       await expect(page.getByRole("alertdialog")).toContainText("Delete “Mixed”?");
+      expect(await serious(page)).toEqual([]);
+      await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
+
+      // the share dialog, with a role typed
+      await rowOf(page, "Review a change")
+        .getByRole("button", { name: "Share “Review a change”" })
+        .click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByLabel("Roles who can read it").fill("user, prompt-team");
+      await expect(page.getByText("Everyone with one of these roles can read it")).toBeVisible();
       expect(await serious(page)).toEqual([]);
     });
   });

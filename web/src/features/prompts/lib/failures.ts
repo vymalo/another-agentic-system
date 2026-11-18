@@ -40,6 +40,8 @@ export type Failure = {
   stale?: boolean;
   /** 403 `forbidden`: the roles no longer let the person keep a share in place. */
   forbidden?: boolean;
+  /** 404: the prompt is not there any more (or is no longer the person's): there is nothing left to write. */
+  gone?: boolean;
 };
 
 const FORM: Target = { field: "form" };
@@ -201,7 +203,8 @@ export function failureOf(problem: Problem, ctx: Context): Failure {
       return say("Your roles grant no access to this app.", { target: FORM });
     default:
   }
-  if (status === 404) return say("This prompt no longer exists.", { target: FORM, reread: true });
+  if (status === 404)
+    return say("This prompt no longer exists.", { target: FORM, reread: true, gone: true });
   if (status === 400 || status === 415) {
     return say("The app sent something the server could not read. Reload the page and try again.", {
       target: FORM,

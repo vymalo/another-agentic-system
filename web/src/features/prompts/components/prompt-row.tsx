@@ -4,21 +4,38 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { ApiPromptSummary } from "@/lib/api/types";
 import { asksWords, sharedLine } from "../lib/library";
+import type { SharingControl } from "../lib/share";
 
 type Props = {
   prompt: ApiPromptSummary;
+  /** What the person may do about who reads it (`sharingControl`): nothing while `prompts.share` is unknown. */
+  sharing: SharingControl | null;
+  /** The row's Stop sharing is in flight: the button says so and takes no second press. */
+  stopping: boolean;
   onEdit: (prompt: ApiPromptSummary) => void;
   onDelete: (prompt: ApiPromptSummary) => void;
   onView: (prompt: ApiPromptSummary) => void;
   onCopy: (prompt: ApiPromptSummary) => void;
+  onShare: (prompt: ApiPromptSummary) => void;
+  onStopSharing: (prompt: ApiPromptSummary) => void;
 };
 
 /**
  * One prompt of the list. Its words are drawn as plain text, never as Markdown or HTML: for a shared prompt they are somebody
  * else's. A shared prompt shows no author (the API gives none) and offers only to be read and to be copied; an own one shows who
- * it is shared with, as the server returned it. Every button names its prompt.
+ * it is shared with, as the server returned it, and the one sharing control the person may use. Every button names its prompt.
  */
-export function PromptRow({ prompt, onEdit, onDelete, onView, onCopy }: Props) {
+export function PromptRow({
+  prompt,
+  sharing,
+  stopping,
+  onEdit,
+  onDelete,
+  onView,
+  onCopy,
+  onShare,
+  onStopSharing,
+}: Props) {
   const shared = sharedLine(prompt.own ? prompt.audience : undefined);
   const title = `“${prompt.title}”`;
   return (
@@ -57,6 +74,44 @@ export function PromptRow({ prompt, onEdit, onDelete, onView, onCopy }: Props) {
             >
               Edit
             </Button>
+            {sharing === "share" ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-opener={`share:${prompt.id}`}
+                aria-label={`Share ${title}`}
+                onClick={() => onShare(prompt)}
+              >
+                Share
+              </Button>
+            ) : null}
+            {sharing === "change" ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-opener={`share:${prompt.id}`}
+                aria-label={`Change sharing ${title}`}
+                onClick={() => onShare(prompt)}
+              >
+                Change sharing
+              </Button>
+            ) : null}
+            {sharing === "stop" ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-opener={`stop:${prompt.id}`}
+                aria-label={stopping ? `Stopping sharing ${title}` : `Stop sharing ${title}`}
+                aria-busy={stopping || undefined}
+                disabled={stopping}
+                onClick={() => onStopSharing(prompt)}
+              >
+                {stopping ? "Stopping…" : "Stop sharing"}
+              </Button>
+            ) : null}
             <Button
               type="button"
               size="sm"
