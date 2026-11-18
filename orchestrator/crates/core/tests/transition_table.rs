@@ -318,6 +318,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
         child: orch_core::ThreadId(uuid::Uuid::from_u128(7)),
         reported: 1,
         closed: false,
+        outcome: None,
     }]);
     let child = orch_core::ChildLedger {
         session: "s0".into(),
@@ -327,6 +328,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
         closing: false,
         followed: 1,
         started: 0,
+        refollow: false,
     };
     for s in TERMINAL {
         let before = Snapshot {

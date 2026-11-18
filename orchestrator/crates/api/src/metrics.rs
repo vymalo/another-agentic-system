@@ -137,7 +137,7 @@ pub(crate) fn render_tier(stats: &TierStats) -> String {
 /// sessions this process did not apply, by a closed set of reasons (`rejected`: the adapter refused
 /// what the agent said; `malformed`: it failed the core's bounds; `ledger_full`: the parent notes
 /// 256 sessions; `child_deleted`: the session's thread was deleted; `refused`: the thread cannot
-/// have it). It names no thread, no session and no agent.
+/// have it; `foreign_context`: a followed round answered with a task of another context). It names no thread, no session and no agent.
 pub(crate) fn render_child_sessions(stats: &ChildSessionStats) -> String {
     let mut out = String::from(
         "# HELP child_sessions_dropped_total News about child sessions (child-sessions/v1) that was not applied, by why.\n\
@@ -428,6 +428,7 @@ shared_reads_total{visibility=\"public\"} 9
                 (orch_app::ChildSessionDrop::LedgerFull, 1),
                 (orch_app::ChildSessionDrop::ChildDeleted, 2),
                 (orch_app::ChildSessionDrop::Refused, 3),
+                (orch_app::ChildSessionDrop::ForeignContext, 5),
             ],
         });
         assert_eq!(
@@ -438,7 +439,8 @@ shared_reads_total{visibility=\"public\"} 9
              child_sessions_dropped_total{reason=\"malformed\"} 0\n\
              child_sessions_dropped_total{reason=\"ledger_full\"} 1\n\
              child_sessions_dropped_total{reason=\"child_deleted\"} 2\n\
-             child_sessions_dropped_total{reason=\"refused\"} 3\n"
+             child_sessions_dropped_total{reason=\"refused\"} 3\n\
+             child_sessions_dropped_total{reason=\"foreign_context\"} 5\n"
         );
     }
 }

@@ -180,13 +180,15 @@ async fn a_session_whose_child_was_deleted_is_skipped_and_counted() {
         .await
         .unwrap();
     let kid = children(&w, parent.id).await.remove(0);
-    // the child is erased alone: the parent keeps the note, and is never given another child
-    // for the session
-    let now = jiff::Timestamp::now();
-    w.store
-        .delete_threads(&alice(), &[(kid.id, kid.version)], now)
-        .await
-        .unwrap();
+    assert_eq!(
+        kid.state,
+        ThreadState::Done,
+        "a child with nothing to follow is at rest"
+    );
+    // the child is erased alone, through the application: the parent keeps the note, and is never
+    // given another child for the session
+    app.delete_thread(&alice(), kid.id).await.unwrap();
+    let said = report("s1", SessionState::Closed, None);
     app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![said]))
         .await
         .unwrap();
@@ -278,9 +280,7 @@ async fn the_dispatcher_follows_the_round_without_sending_and_the_parent_hears_o
             assert_eq!(started.job, 1);
             let round = started.round.as_ref().unwrap();
             assert_eq!(round.number, 1);
-            // who started a round is learned from the round's own task; none is taken for the
-            // agent's (a person starts rounds from S3 on)
-            assert_eq!(round.by, None);
+            assert_eq!(round.by, Some(SessionBy::Agent));
         }
         other => panic!("{other:?}"),
     }
@@ -501,4 +501,278 @@ async fn a_child_is_neither_forked_nor_shared_and_a_fork_of_its_parent_takes_no_
     assert_eq!(count(&copied, EventKind::ChildSessionOpened), 1);
     // and the parent still has its one child
     assert_eq!(children(&w, parent.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_child_with_nothing_to_follow_is_at_rest_and_its_parent_can_be_deleted() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    wait_state(&app, &alice(), parent.id, ThreadState::Done).await;
+    run.shutdown().await;
+    // idle with no round; closed as the first thing seen; a round with no task to follow
+    let reports = vec![
+        report("idle", SessionState::Idle, None),
+        report("closed", SessionState::Closed, None),
+        report(
+            "notask",
+            SessionState::Working,
+            Some(RoundReport {
+                number: 1,
+                task_id: None,
+                state: None,
+            }),
+        ),
+    ];
+    app.child_sessions_news(parent.id, None, SessionNews::Listed(reports))
+        .await
+        .unwrap();
+    let kids = children(&w, parent.id).await;
+    assert_eq!(kids.len(), 3);
+    for kid in &kids {
+        assert_eq!(kid.state, ThreadState::Done, "{}", kid.title);
+        assert!(w.store.list_open_outbox(kid.id).await.unwrap().is_empty());
+    }
+    // deleted through the application: the parent and the three children go
+    app.delete_thread(&alice(), parent.id).await.unwrap();
+    for id in std::iter::once(parent.id).chain(kids.iter().map(|k| k.id)) {
+        assert!(matches!(
+            app.get_thread(&alice(), id).await,
+            Err(AppError::NotFound)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn a_blocked_round_answered_in_the_same_task_is_followed_and_reported_again() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let parent = create(&app, &alice(), "plain", "sessions-blocked planner").await;
+    wait_state(&app, &alice(), parent.id, ThreadState::Done).await;
+    let kid = eventually("the child thread", || async {
+        children(&w, parent.id).await.into_iter().next()
+    })
+    .await;
+    wait_state(&app, &alice(), kid.id, ThreadState::Blocked).await;
+    let reports = |ev: &[orch_core::Event]| -> Vec<(u32, SessionOutcome)> {
+        ev.iter()
+            .filter_map(|e| match &e.body {
+                EventBody::ChildSessionReported(d) => Some((d.round, d.report)),
+                _ => None,
+            })
+            .collect()
+    };
+    eventually("the blocked round to be reported", || async {
+        (reports(&events(&app, &alice(), parent.id).await) == [(1, SessionOutcome::Blocked)])
+            .then_some(())
+    })
+    .await;
+    // the person answers within the same round: the agent goes on, and the parent is told
+    w.agent.release_gate();
+    app.child_sessions_news(
+        parent.id,
+        None,
+        SessionNews::Listed(vec![report(
+            "task-1-s1",
+            SessionState::Working,
+            Some(round(1, "task-1-r1", AgentTaskState::Working)),
+        )]),
+    )
+    .await
+    .unwrap();
+    wait_state(&app, &alice(), kid.id, ThreadState::Done).await;
+    eventually("the round to be reported again", || async {
+        (reports(&events(&app, &alice(), parent.id).await)
+            == [(1, SessionOutcome::Blocked), (1, SessionOutcome::Done)])
+        .then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    let log = events(&app, &alice(), kid.id).await;
+    assert_eq!(
+        count(&log, EventKind::JobStarted),
+        1,
+        "one job: {:?}",
+        shape(&log)
+    );
+}
+
+#[tokio::test]
+async fn one_parent_has_at_most_eight_rounds_followed_at_once_and_the_rest_wait() {
+    let w = World::new();
+    let app = w.app();
+    let cfg = orch_app::DispatcherConfig {
+        concurrency: 14,
+        ..fast()
+    };
+    let run = spawn_dispatcher(&app, cfg, "d1");
+    let parent = create(&app, &alice(), "plain", "sessions-many 11").await;
+    wait_state(&app, &alice(), parent.id, ThreadState::Done).await;
+    let followed = || {
+        w.agent
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Resubscribe { task_id } if task_id.contains("-r")))
+            .count()
+    };
+    eventually("eight rounds to be followed", || async {
+        (followed() >= orch_app::MAX_OBSERVED_PER_PARENT).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let mut tasks: Vec<String> = w
+        .agent
+        .calls()
+        .iter()
+        .filter_map(|c| match c {
+            Call::Resubscribe { task_id } if task_id.contains("-r") => Some(task_id.clone()),
+            _ => None,
+        })
+        .collect();
+    tasks.sort();
+    tasks.dedup();
+    assert_eq!(tasks.len(), orch_app::MAX_OBSERVED_PER_PARENT, "{tasks:?}");
+    // the other three wait, and are never dropped: each round ends, each child is done
+    for _ in 0..11 {
+        w.agent.release_gate();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    eventually("every child to end", || async {
+        let kids = children(&w, parent.id).await;
+        (kids.len() == 11 && kids.iter().all(|k| k.state == ThreadState::Done)).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_round_that_names_another_contexts_task_is_refused_and_fails_the_follow() {
+    let w = World::new();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let parent = create(&app, &alice(), "plain", "sessions-foreign").await;
+    wait_state(&app, &alice(), parent.id, ThreadState::Done).await;
+    let kid = eventually("the child thread", || async {
+        children(&w, parent.id).await.into_iter().next()
+    })
+    .await;
+    wait_state(&app, &alice(), kid.id, ThreadState::Failed).await;
+    run.shutdown().await;
+    let log = events(&app, &alice(), kid.id).await;
+    // nothing of the parent's task was copied into the child
+    assert_eq!(count(&log, EventKind::Artifact), 0, "{:?}", shape(&log));
+    assert!(dropped(&app, ChildSessionDrop::ForeignContext) >= 1);
+    let binding = w.store.get_binding(kid.id).await.unwrap().unwrap();
+    assert_eq!(binding.context_id.as_deref(), Some("ctx-1/s/task-1-s1"));
+}
+
+#[tokio::test]
+async fn a_child_thread_takes_no_message_steer_stop_and_send_or_action() {
+    let w = World::new();
+    let app = w.app();
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    app.child_sessions_news(
+        parent.id,
+        None,
+        SessionNews::Listed(vec![report("s1", SessionState::Idle, None)]),
+    )
+    .await
+    .unwrap();
+    let kid = children(&w, parent.id).await.remove(0);
+    let child_thread = |e: AppError| match e {
+        AppError::Arrangement { code, .. } => assert_eq!(code, "child_thread"),
+        other => panic!("{other:?}"),
+    };
+    child_thread(
+        app.post_message(&alice(), kid.id, "hello".into())
+            .await
+            .unwrap_err(),
+    );
+    child_thread(
+        app.stop_and_send(&alice(), kid.id, "hello".into())
+            .await
+            .unwrap_err(),
+    );
+    let action = orch_core::UiActionData {
+        surface_id: "s1".into(),
+        name: "go".into(),
+        source_component_id: "go".into(),
+        context: serde_json::Map::new(),
+        version: orch_core::UiVersion::V0_9_1,
+        run_id: None,
+        tier: None,
+        tier_cap: None,
+    };
+    child_thread(
+        app.submit(
+            &alice(),
+            kid.id,
+            orch_core::Input::UiAction {
+                user: alice(),
+                action,
+                catalog: None,
+                tier: None,
+                tier_cap: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err(),
+    );
+    // while it works a message would be a steer: the same refusal (a working child needs a round)
+    let log = events(&app, &alice(), kid.id).await;
+    assert!(log.is_empty(), "nothing was written: {:?}", shape(&log));
+    assert!(w.store.list_open_outbox(kid.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_child_stopped_before_its_round_began_skips_the_row() {
+    let w = World::new();
+    let app = w.app();
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    app.child_sessions_news(
+        parent.id,
+        None,
+        SessionNews::Listed(vec![report(
+            "s1",
+            SessionState::Working,
+            Some(round(1, "never", AgentTaskState::Working)),
+        )]),
+    )
+    .await
+    .unwrap();
+    let kid = children(&w, parent.id).await.remove(0);
+    assert_eq!(kid.state, ThreadState::Queued);
+    // stopped before the round began (the row waits to be claimed)
+    app.apply(
+        kid.id,
+        orch_core::Input::CancelledBeforeStart,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    wait_state(&app, &alice(), kid.id, ThreadState::Cancelled).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the observe row to end", || async {
+        w.store
+            .list_open_outbox(kid.id)
+            .await
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    let log = events(&app, &alice(), kid.id).await;
+    assert_eq!(count(&log, EventKind::JobStarted), 0, "{:?}", shape(&log));
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Resubscribe { task_id } | Call::GetTask { task_id } if task_id == "never"))
+    );
 }

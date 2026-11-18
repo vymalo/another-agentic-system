@@ -3127,6 +3127,7 @@ fn busy_job() -> Job {
             child: orch_core::ThreadId(uuid::Uuid::from_u128(0x77)),
             reported: 2,
             closed: true,
+            outcome: None,
         }]),
         child: Some(orch_core::ChildLedger {
             session: "s0".to_owned(),
@@ -3136,6 +3137,7 @@ fn busy_job() -> Job {
             closing: false,
             followed: 3,
             started: 3,
+            refollow: false,
         }),
         observed: Some(orch_core::ObservedRound {
             number: 3,
@@ -7426,6 +7428,7 @@ fn child_first(n: u128, session: &str) -> Commit {
             closing: false,
             followed: 1,
             started: 0,
+            refollow: false,
         }),
         ..Job::default()
     });
@@ -7439,6 +7442,7 @@ fn observe_row(n: u128, session: &str, round: u32) -> NewOutbox {
             session: session.to_owned(),
             round,
             task_id: format!("{session}-r{round}"),
+            by: Some(orch_core::SessionBy::Agent),
         },
     }
 }
@@ -7512,7 +7516,8 @@ pub async fn a_child_thread_is_made_with_its_first_commit_and_says_whose_child_i
         OutboxPayload::Observe {
             session: "s1".to_owned(),
             round: 1,
-            task_id: "s1-r1".to_owned()
+            task_id: "s1-r1".to_owned(),
+            by: Some(orch_core::SessionBy::Agent)
         }
     );
     // the parent is as it was
@@ -8038,6 +8043,7 @@ pub async fn the_session_events_ledgers_and_observe_rows_round_trip<S: ThreadSto
             child: thread_id(2),
             reported: 1,
             closed: true,
+            outcome: None,
         }]),
         ..Job::default()
     });
@@ -8094,7 +8100,8 @@ pub async fn the_session_events_ledgers_and_observe_rows_round_trip<S: ThreadSto
         OutboxPayload::Observe {
             session: "s1".to_owned(),
             round: 1,
-            task_id: "s1-r1".to_owned()
+            task_id: "s1-r1".to_owned(),
+            by: Some(orch_core::SessionBy::Agent)
         }
     );
     store

@@ -42,7 +42,9 @@ pub use authz::{
 };
 pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schemas};
 pub use directory::{AgentDirectory, AgentEntry};
-pub use dispatcher::{Dispatcher, DispatcherConfig, FileLimits, MAX_FILES_PER_JOB};
+pub use dispatcher::{
+    Dispatcher, DispatcherConfig, FileLimits, MAX_FILES_PER_JOB, MAX_OBSERVED_PER_PARENT,
+};
 pub use error::AppError;
 pub use gate_config::{
     CiLayer, DEFAULT_MAX_ATTEMPTS_CAP, GateError, GateLayer, GateRules, Layer,

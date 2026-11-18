@@ -2299,6 +2299,16 @@ impl<P: Ports> App<P> {
     ) -> Result<ApplyOutcome, AppError> {
         let access = self.access(who);
         let thread = self.writable_thread(&access, id).await?;
+        // A child session's thread is read-only until a person may talk to its helper (ADR 0072,
+        // S3): no message, steer, Stop & send or action. A cancel is allowed.
+        if thread.child_of.is_some()
+            && matches!(
+                input,
+                Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
+            )
+        {
+            return Err(AppError::child_thread());
+        }
         // What starts the agent's work takes the right to invoke it.
         if matches!(
             input,
@@ -2880,12 +2890,14 @@ impl<P: Ports> App<P> {
                     session,
                     round,
                     task_id,
+                    by,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Observe {
                         session,
                         round,
                         task_id,
+                        by,
                     },
                 }),
                 Command::RequestCancel { job } => outbox.push(NewOutbox {

@@ -422,6 +422,10 @@ pub enum OutboxPayload {
         round: u32,
         /// The round's A2A task.
         task_id: String,
+        /// Who started the round, when the report said (`orch_core::Command::Observe`): the
+        /// dispatcher passes it to `Input::RoundStarted`. Absent in a row written before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<orch_core::SessionBy>,
     },
 }
 

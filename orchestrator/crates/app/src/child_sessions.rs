@@ -39,16 +39,20 @@ pub enum ChildSessionDrop {
     /// The news is about a thread that cannot have it: a child is no parent, a round is no news of
     /// a thread that is no child, or another session's round.
     Refused,
+    /// The agent answered a followed round with a task of another context than the child thread's:
+    /// nothing of it was applied and the follow failed.
+    ForeignContext,
 }
 
 impl ChildSessionDrop {
     /// Every reason, in the order the counter lists them.
-    pub const ALL: [ChildSessionDrop; 5] = [
+    pub const ALL: [ChildSessionDrop; 6] = [
         ChildSessionDrop::Rejected,
         ChildSessionDrop::Malformed,
         ChildSessionDrop::LedgerFull,
         ChildSessionDrop::ChildDeleted,
         ChildSessionDrop::Refused,
+        ChildSessionDrop::ForeignContext,
     ];
 
     /// The label of the counter.
@@ -59,6 +63,7 @@ impl ChildSessionDrop {
             ChildSessionDrop::LedgerFull => "ledger_full",
             ChildSessionDrop::ChildDeleted => "child_deleted",
             ChildSessionDrop::Refused => "refused",
+            ChildSessionDrop::ForeignContext => "foreign_context",
         }
     }
 
@@ -69,20 +74,37 @@ impl ChildSessionDrop {
             ChildSessionDrop::LedgerFull => 2,
             ChildSessionDrop::ChildDeleted => 3,
             ChildSessionDrop::Refused => 4,
+            ChildSessionDrop::ForeignContext => 5,
         }
     }
 }
 
+/// The most parents whose last listing is remembered (the memory is emptied past it).
+const MAX_LISTINGS_KEPT: usize = 1024;
+
+/// A key of what a listing says: equal listings have equal keys.
+fn listing_key(reports: &[SessionReport]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(reports)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ChildSessionCounters {
-    dropped: [AtomicU64; 5],
+    dropped: [AtomicU64; 6],
+    /// The last `Listed` applied for each parent (a hash), so that the same listing, which a poll
+    /// repeats, is not read from the store again; bounded.
+    last_listed: std::sync::Mutex<std::collections::HashMap<ThreadId, u64>>,
 }
 
 /// The counter of news about sessions this process did not apply, by why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChildSessionStats {
     /// `child_sessions_dropped_total{reason}`.
-    pub dropped: [(ChildSessionDrop, u64); 5],
+    pub dropped: [(ChildSessionDrop, u64); 6],
 }
 
 impl<P: Ports> App<P> {
@@ -130,11 +152,17 @@ impl<P: Ports> App<P> {
     ) -> Result<bool, AppError> {
         match news {
             SessionNews::Listed(reports) => {
+                // a poll says the same listing again and again: once applied, it is not read again
+                let key = listing_key(&reports);
+                if self.listed_last(thread) == Some(key) {
+                    return Ok(true);
+                }
                 for report in reports {
                     if !self.session_of_parent(thread, lease, report).await? {
                         return Ok(false);
                     }
                 }
+                self.listed_applied(thread, key);
                 Ok(true)
             }
             SessionNews::Event(_, report) => self.session_of_parent(thread, lease, report).await,
@@ -247,11 +275,32 @@ impl<P: Ports> App<P> {
         {
             Ok(_) => Ok(()),
             Err(AppError::NotFound) => {
-                self.late_input_dropped(LateSource::Dispatcher, child);
+                self.child_session_dropped(ChildSessionDrop::ChildDeleted, child);
                 Ok(())
             }
             Err(e) => Err(e),
         }
+    }
+
+    fn listed_last(&self, parent: ThreadId) -> Option<u64> {
+        self.child_session_counters
+            .last_listed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&parent)
+            .copied()
+    }
+
+    fn listed_applied(&self, parent: ThreadId, key: u64) {
+        let mut map = self
+            .child_session_counters
+            .last_listed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map.len() >= MAX_LISTINGS_KEPT {
+            map.clear();
+        }
+        map.insert(parent, key);
     }
 
     /// The parent's three events for `report`, each once: written through the core, whose ledger

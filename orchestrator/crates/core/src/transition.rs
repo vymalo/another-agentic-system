@@ -573,6 +573,9 @@ pub enum Command {
         round: u32,
         /// The round's A2A task.
         task_id: String,
+        /// Who started the round, when the report said: the dispatcher passes it to
+        /// [`Input::RoundStarted`].
+        by: Option<SessionBy>,
     },
     /// Finish the thread's **unsent** `delegate` and `steer` rows of the jobs
     /// up to `job` as `skipped`, in the commit that starts the next job (ADR 0036): the message
@@ -1806,7 +1809,7 @@ fn decide(
             report,
             child,
         } => Ok((state, child_sessions::learn(job, actor, report, *child)?)),
-        Input::ChildSessionSaid(report) => Ok((state, child_sessions::said(job, report)?)),
+        Input::ChildSessionSaid(report) => Ok((state, child_sessions::said(state, job, report)?)),
         Input::RoundStarted {
             session,
             number,

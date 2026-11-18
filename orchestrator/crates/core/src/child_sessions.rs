@@ -322,6 +322,11 @@ pub struct SessionNote {
     pub reported: u32,
     /// `child_session_closed` is in the parent's log.
     pub closed: bool,
+    /// How the round `reported` ended when it was reported: a round that was `blocked` and goes on
+    /// (the person answered within the same round) is reported again when it ends otherwise, and
+    /// the same `(round, outcome)` is never reported twice. `None` in a note stored before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<SessionOutcome>,
 }
 
 /// The sessions a parent thread has noted (`Job.sessions`): what makes the parent's three events
@@ -383,6 +388,11 @@ pub struct ChildLedger {
     /// replay or a reordering and changes nothing.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub started: u32,
+    /// The round the thread was blocked on has gone on within the same round number (the person
+    /// answered it) and the thread was told to follow it again, once; cleared when the thread is
+    /// heard of again and is no longer blocked.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refollow: bool,
 }
 
 /// The round of a session this thread's current job follows without having sent it (`Job.observed`,
@@ -522,6 +532,7 @@ pub(crate) fn learn(
                 child,
                 reported: 0,
                 closed: false,
+                outcome: None,
             });
             job.sessions.notes.len() - 1
         }
@@ -529,9 +540,14 @@ pub(crate) fn learn(
     let note = &mut job.sessions.notes[at];
     if let Some((round, outcome)) = report.ended_round()
         && !note.closed
-        && round > note.reported
+        && (round > note.reported
+            // a round reported blocked that goes on in the same task and ends otherwise
+            || (round == note.reported
+                && note.outcome == Some(SessionOutcome::Blocked)
+                && outcome != SessionOutcome::Blocked))
     {
         note.reported = round;
+        note.outcome = Some(outcome);
         cmds.push(append(
             actor.clone(),
             EventBody::ChildSessionReported(ChildSessionReportedData {
@@ -580,33 +596,40 @@ pub fn start_child(report: &SessionReport) -> (Snapshot, Vec<Command>) {
             closing: report.closing,
             followed: round.as_ref().map_or(0, |(n, _)| *n),
             started: 0,
+            refollow: false,
         }),
         title: TitleLedger::of(TitleSource::Model),
         // the helper's words are the agent's, fixed: nothing replaces them
         description: DescriptionLedger::of(DescriptionSource::User),
         ..Job::default()
     };
-    let cmds = round
+    let cmds: Vec<Command> = round
         .map(|(round, task_id)| Command::Observe {
             session: report.session.clone(),
             round,
             task_id,
+            by: report.by,
         })
         .into_iter()
         .collect();
-    (
-        Snapshot {
-            state: ThreadState::Queued,
-            job,
-        },
-        cmds,
-    )
+    // A thread with nothing to follow is at rest, in a state a person can delete it in (`queued`
+    // would wait for a round that never comes): idle, or closed.
+    let state = if cmds.is_empty() {
+        ThreadState::Done
+    } else {
+        ThreadState::Queued
+    };
+    (Snapshot { state, job }, cmds)
 }
 
 /// A child thread is told what its session looks like now (`Input::ChildSessionSaid`): the ledger
 /// follows it and a round not yet followed is ordered followed, once. Writes no event. A thread
 /// that is not this session's child changes nothing.
-pub(crate) fn said(job: &mut Job, report: &SessionReport) -> Result<Vec<Command>, TransitionError> {
+pub(crate) fn said(
+    state: ThreadState,
+    job: &mut Job,
+    report: &SessionReport,
+) -> Result<Vec<Command>, TransitionError> {
     report.check().map_err(malformed)?;
     let Some(child) = job.child.as_mut().filter(|c| c.session == report.session) else {
         return Ok(Vec::new());
@@ -620,18 +643,36 @@ pub(crate) fn said(job: &mut Job, report: &SessionReport) -> Result<Vec<Command>
     if !report.agent.is_empty() {
         child.agent.clone_from(&report.agent);
     }
+    if state != ThreadState::Blocked {
+        child.refollow = false;
+    }
     let order = report
         .round
         .as_ref()
         .filter(|r| r.number > child.followed)
-        .and_then(|r| r.task_id.as_ref().map(|t| (r.number, t.clone())));
+        .and_then(|r| r.task_id.as_ref().map(|t| (r.number, t.clone())))
+        .or_else(|| {
+            // the round the thread is blocked on goes on in the same task: followed again, once
+            let r = report.round.as_ref()?;
+            let goes_on = state == ThreadState::Blocked
+                && !child.refollow
+                && r.number == child.followed
+                && matches!(
+                    r.state,
+                    Some(AgentTaskState::Working | AgentTaskState::Submitted)
+                );
+            let task = r.task_id.as_ref().filter(|_| goes_on)?;
+            child.refollow = true;
+            Some((r.number, task.clone()))
+        });
     Ok(match order {
         Some((round, task_id)) => {
-            child.followed = round;
+            child.followed = child.followed.max(round);
             vec![Command::Observe {
                 session: report.session.clone(),
                 round,
                 task_id,
+                by: report.by,
             }]
         }
         None => Vec::new(),
@@ -665,9 +706,10 @@ pub(crate) fn round_started(
     if number <= child.started || job.observed.as_ref().is_some_and(|o| o.number == number) {
         return Ok((state, Vec::new()));
     }
-    let fresh = job.observed.is_none() && job.number == 1;
+    let fresh = job.observed.is_none() && job.number == 1 && child.started == 0;
     match state {
-        ThreadState::Queued if fresh => {}
+        // a thread made at rest (nothing to follow when it was made) starts its first job in place
+        ThreadState::Queued | ThreadState::Done if fresh => {}
         ThreadState::Blocked | ThreadState::Done | ThreadState::Failed | ThreadState::Cancelled => {
             *job = job.next();
         }

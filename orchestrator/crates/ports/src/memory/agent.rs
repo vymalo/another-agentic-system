@@ -243,6 +243,13 @@ struct Shared {
 ///   the listing again (the session `closed`, or `idle` with `keep`) and `completed`. With `gate` the
 ///   round stays `working` until [`ScriptedAgent::release_gate`] and the parent completes at once, the
 ///   session still `working`;
+/// - `sessions-blocked <helper>`: like `sessions gate`, but the round asks the person (`input-required`)
+///   before it waits for [`ScriptedAgent::release_gate`]; then it goes on in the same task (`working`, an
+///   artifact, its session closed, `completed`);
+/// - `sessions-many <n>`: `n` sessions, each with a round that stays `working` until
+///   [`ScriptedAgent::release_gate`] is called once for it; the parent completes at once;
+/// - `sessions-foreign`: a session whose round is the parent's own task, of another context, with an
+///   artifact on it, as an agent that names a task that is not the session's would;
 /// - `sessions-bad`: `working`, a listing the adapter refused (`ChildSessionsRejected`), `completed`;
 /// - `failed`: `working`, then `failed("scripted failure")`;
 /// - `pushed`: `working`, the artifacts `branch` (a commit pushed to [`PUSHED_REPOSITORY`]) and
@@ -1056,6 +1063,9 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_status(&task, Failed, Some("the model failed"));
         }
         "sessions" => sessions(&shared, &task, &text).await,
+        "sessions-blocked" => sessions_blocked(&shared, &task, &text),
+        "sessions-many" => sessions_many(&shared, &task, &text),
+        "sessions-foreign" => sessions_foreign(&shared, &task),
         "sessions-bad" => {
             shared.push(
                 &task,
@@ -1320,6 +1330,189 @@ async fn sessions(shared: &Arc<Shared>, task: &str, text: &str) {
     } else {
         listed(2, report(over, Completed));
     }
+    shared.push_status(task, Completed, Some("parent: done"));
+}
+
+/// A report about the session `session` of `task`'s context, with round 1 the task `round`.
+fn session_report(
+    session: &str,
+    context: &str,
+    helper: &str,
+    state: orch_core::SessionState,
+    round: &str,
+    round_state: AgentTaskState,
+) -> orch_core::SessionReport {
+    orch_core::SessionReport {
+        session: session.to_owned(),
+        context_id: context.to_owned(),
+        agent: helper.to_owned(),
+        description: format!("{helper} {session}"),
+        keep_open: false,
+        by: Some(orch_core::SessionBy::Agent),
+        state,
+        closing: false,
+        round: Some(orch_core::RoundReport {
+            number: 1,
+            task_id: Some(round.to_owned()),
+            state: Some(round_state),
+        }),
+    }
+}
+
+fn parent_context(shared: &Shared, task: &str) -> String {
+    shared
+        .state()
+        .tasks
+        .get(task)
+        .map(|t| t.context_id.clone())
+        .unwrap_or_default()
+}
+
+/// Makes a round task of a session, working, in the child's context.
+fn add_round(shared: &Shared, round: &str, context: &str) {
+    let mut st = shared.state();
+    st.contexts.insert(context.to_owned());
+    st.tasks.insert(
+        round.to_owned(),
+        TaskRec {
+            context_id: context.to_owned(),
+            state: AgentTaskState::Working,
+            detail: None,
+            revision: None,
+            tier: None,
+            log: Vec::new(),
+            message_ids: Vec::new(),
+            of_session: true,
+        },
+    );
+}
+
+fn list_sessions(shared: &Shared, task: &str, n: u32, reports: Vec<orch_core::SessionReport>) {
+    shared.push(
+        task,
+        None,
+        None,
+        IdemKey::Turn(format!("{task}:sessions:{n}")),
+        Some(AgentUpdate::ChildSessions(orch_core::SessionNews::Listed(
+            reports,
+        ))),
+    );
+}
+
+fn of_round(shared: &Shared, round: &str, n: u32, report: orch_core::SessionReport) {
+    shared.push(
+        round,
+        None,
+        None,
+        IdemKey::Turn(format!("{round}:session:{n}")),
+        Some(AgentUpdate::ChildSessions(orch_core::SessionNews::OfRound(
+            report,
+        ))),
+    );
+}
+
+fn sessions_blocked(shared: &Arc<Shared>, task: &str, text: &str) {
+    use AgentTaskState::{Completed, InputRequired, Working};
+    use orch_core::SessionState;
+    let helper = text
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("helper")
+        .to_owned();
+    let session = format!("{task}-s1");
+    let round = format!("{task}-r1");
+    let context = format!("{}/s/{session}", parent_context(shared, task));
+    add_round(shared, &round, &context);
+    let report = |state, round_state| {
+        session_report(&session, &context, &helper, state, &round, round_state)
+    };
+    list_sessions(
+        shared,
+        task,
+        1,
+        vec![report(SessionState::Working, Working)],
+    );
+    of_round(shared, &round, 1, report(SessionState::Working, Working));
+    shared.push_status(&round, Working, None);
+    shared.push_status(&round, InputRequired, Some("Which branch?"));
+    {
+        let shared = Arc::clone(shared);
+        let (round, closed) = (round.clone(), report(SessionState::Closed, Completed));
+        tokio::spawn(async move {
+            shared.gate.notified().await;
+            shared.push_status(&round, Working, None);
+            shared.push_artifact(&round, "echo", "answered".to_owned());
+            of_round(&shared, &round, 2, closed);
+            shared.push_status(&round, Completed, None);
+        });
+    }
+    shared.push_status(task, Completed, Some("parent: done"));
+}
+
+fn sessions_many(shared: &Arc<Shared>, task: &str, text: &str) {
+    use AgentTaskState::{Completed, Working};
+    use orch_core::SessionState;
+    let n: u32 = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1);
+    let parent = parent_context(shared, task);
+    let mut reports = Vec::new();
+    for i in 0..n {
+        let session = format!("{task}-s{i}");
+        let round = format!("{task}-r{i}");
+        let context = format!("{parent}/s/{session}");
+        add_round(shared, &round, &context);
+        reports.push(session_report(
+            &session,
+            &context,
+            "helper",
+            SessionState::Working,
+            &round,
+            Working,
+        ));
+        let shared = Arc::clone(shared);
+        let done = session_report(
+            &session,
+            &context,
+            "helper",
+            SessionState::Closed,
+            &round,
+            Completed,
+        );
+        tokio::spawn(async move {
+            shared.gate.notified().await;
+            shared.push_artifact(&round, "echo", "helper: done".to_owned());
+            of_round(&shared, &round, 2, done);
+            shared.push_status(&round, Completed, None);
+        });
+    }
+    list_sessions(shared, task, 1, reports);
+    shared.push_status(task, Completed, Some("parent: done"));
+}
+
+fn sessions_foreign(shared: &Arc<Shared>, task: &str) {
+    use AgentTaskState::{Completed, Working};
+    use orch_core::SessionState;
+    let session = format!("{task}-s1");
+    // the round is the parent's own task: another context than the session's
+    let context = format!("{}/s/{session}", parent_context(shared, task));
+    shared.state().contexts.insert(context.clone());
+    shared.push_artifact(task, "secret", "the parent's own".to_owned());
+    list_sessions(
+        shared,
+        task,
+        1,
+        vec![session_report(
+            &session,
+            &context,
+            "helper",
+            SessionState::Working,
+            task,
+            Working,
+        )],
+    );
     shared.push_status(task, Completed, Some("parent: done"));
 }
 
