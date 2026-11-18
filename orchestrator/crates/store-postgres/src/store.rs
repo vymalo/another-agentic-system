@@ -8,11 +8,11 @@ use orch_core::{
     ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
 use orch_ports::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ClaimOrder, Commit, CommitOutcome,
-    ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder, NewEvent, NewInbox,
-    NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem, OutboxPayload,
-    OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
-    ThreadStore,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
+    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder,
+    NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem,
+    OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE,
+    ThreadListing, ThreadStore,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -142,8 +142,75 @@ impl PgStore {
         fork: Option<ForkOrigin>,
         first: Commit,
     ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+        // only `open_child_thread` makes a child
+        if new.child_of.is_some() {
+            return Err(StoreError::Refused("child_of"));
+        }
+        match self.insert_thread(new, fork, first, false).await? {
+            ChildThread::Created { thread, events } => Ok((thread, events)),
+            ChildThread::Existing(_) => {
+                Err(StoreError::corrupt("a thread that is no child exists"))
+            }
+        }
+    }
+
+    /// [`ThreadStore::open_child_thread`]: the thread of a session, or the one it has.
+    async fn open_child(
+        &self,
+        new: NewThreadRecord,
+        first: Commit,
+    ) -> Result<ChildThread, StoreError> {
+        if new.child_of.as_ref().is_none_or(|of| of.thread == new.id) {
+            return Err(StoreError::Refused("child_of"));
+        }
+        self.insert_thread(new, None, first, true).await
+    }
+
+    /// The one transaction behind [`create`](Self::create) and [`open_child`](Self::open_child).
+    async fn insert_thread(
+        &self,
+        new: NewThreadRecord,
+        fork: Option<ForkOrigin>,
+        first: Commit,
+        child: bool,
+    ) -> Result<ChildThread, StoreError> {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         let cut = fork.map_or(0, |o| o.cut);
+        if child && let Some(of) = &new.child_of {
+            // KEY SHARE: the parent cannot be deleted under us, and its own commits go on.
+            let parent = sqlx::query(
+                "SELECT child_of IS NOT NULL AS is_child FROM threads \
+                 WHERE id = $1 AND owner = $2 FOR KEY SHARE",
+            )
+            .bind(of.thread.0)
+            .bind(new.owner.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            let Some(parent) = parent else {
+                rollback(tx).await;
+                return Err(StoreError::NotFound);
+            };
+            if parent.try_get::<bool, _>("is_child").map_err(store_err)? {
+                rollback(tx).await;
+                return Err(StoreError::Refused("nested_child"));
+            }
+            let found = sqlx::query(concat!(
+                "SELECT ",
+                thread_cols!(),
+                " FROM threads WHERE child_of = $1 AND child_session = $2"
+            ))
+            .bind(of.thread.0)
+            .bind(&of.session)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            if let Some(found) = found {
+                let record = thread_from_row(&found)?;
+                rollback(tx).await;
+                return Ok(ChildThread::Existing(record));
+            }
+        }
         if let Some(origin) = fork {
             // KEY SHARE: the parent cannot be deleted under us, and its own commits go on.
             let parent: Option<i64> = sqlx::query_scalar(
@@ -194,9 +261,9 @@ impl PgStore {
         let inserted = sqlx::query(
             "INSERT INTO threads (id, owner, title, description, agent_id, release, state, job, \
              version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind, \
-             rail_parent, rail_rank, title_terms, description_terms) \
+             rail_parent, rail_rank, title_terms, description_terms, child_of, child_session) \
              VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12, $14, $15, \
-             array_to_tsvector($16::text[]), array_to_tsvector($17::text[]))",
+             array_to_tsvector($16::text[]), array_to_tsvector($17::text[]), $18, $19)",
         )
         .bind(new.id.0)
         .bind(new.owner.as_str())
@@ -217,9 +284,34 @@ impl PgStore {
         .bind(search::keys_of(
             new.description.as_deref().filter(|d| !d.is_empty()),
         ))
+        .bind(new.child_of.as_ref().map(|of| of.thread.0))
+        .bind(new.child_of.as_ref().map(|of| of.session.as_str()))
         .execute(&mut *tx)
         .await;
         if let Err(e) = inserted {
+            // another caller opened this session between our look and our insert: it won, and the
+            // thread it made is the answer
+            if is_unique_violation(&e, Some("threads_child"))
+                && let Some(of) = &new.child_of
+            {
+                rollback(tx).await;
+                let row = sqlx::query(concat!(
+                    "SELECT ",
+                    thread_cols!(),
+                    " FROM threads WHERE child_of = $1 AND child_session = $2"
+                ))
+                .bind(of.thread.0)
+                .bind(&of.session)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_err)?;
+                return match row {
+                    Some(row) => Ok(ChildThread::Existing(thread_from_row(&row)?)),
+                    // gone again already (the winner and its parent were deleted): as if the
+                    // parent were missing
+                    None => Err(StoreError::NotFound),
+                };
+            }
             return Err(if is_unique_violation(&e, None) {
                 StoreError::corrupt("thread id already exists")
             } else {
@@ -308,7 +400,10 @@ impl PgStore {
             notify_inbox(&mut *tx).await?;
         }
         tx.commit().await.map_err(store_err)?;
-        Ok((record, events))
+        Ok(ChildThread::Created {
+            thread: record,
+            events,
+        })
     }
 }
 
@@ -864,6 +959,18 @@ async fn delete(
     .await
     .map_err(store_err)?;
     if missed.is_some() {
+        return Err(StoreError::VersionConflict);
+    }
+    // A child of one that goes that the caller did not name: a session opened since it looked. (One
+    // opened while we hold the locks waits for them, and finds its parent gone.)
+    let unnamed = sqlx::query(
+        "SELECT 1 FROM threads WHERE child_of = ANY($1) AND NOT (id = ANY($1)) LIMIT 1",
+    )
+    .bind(&ids)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    if unnamed.is_some() {
         return Err(StoreError::VersionConflict);
     }
     // The threads nested under one that goes take its place in the owner's list: top-level, with
@@ -1450,6 +1557,32 @@ impl ThreadStore for PgStore {
         first: Commit,
     ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
         self.create(new, Some(origin), first).await
+    }
+
+    async fn open_child_thread(
+        &self,
+        new: NewThreadRecord,
+        first: Commit,
+    ) -> Result<ChildThread, StoreError> {
+        self.open_child(new, first).await
+    }
+
+    async fn child_threads(
+        &self,
+        owner: &UserId,
+        parent: ThreadId,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM threads WHERE owner = $1 AND child_of = $2 ORDER BY id LIMIT 1000"
+        ))
+        .bind(owner.as_str())
+        .bind(parent.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        rows.iter().map(thread_from_row).collect()
     }
 
     async fn fork_family(

@@ -2,7 +2,7 @@
 
 use jiff::{Timestamp, Unit};
 use orch_core::{
-    Actor, AgentId, AgentTarget, Event, EventBody, ForkedFrom, Job, NONCE_LEN, ShareLevel,
+    Actor, AgentId, AgentTarget, ChildOf, Event, EventBody, ForkedFrom, Job, NONCE_LEN, ShareLevel,
     ShareNonce, ThreadId, ThreadRecord, ThreadShare, UserId,
 };
 use orch_ports::{
@@ -20,7 +20,7 @@ macro_rules! thread_cols {
     () => {
         "id, owner, title, description, agent_id, release, state, job, version, last_seq, \
          created_at, updated_at, forked_from, forked_at, fork_kind, visibility, share_nonce, \
-         shared_at, pinned_at, archived_at, rail_parent, rail_rank"
+         shared_at, pinned_at, archived_at, rail_parent, rail_rank, child_of, child_session"
     };
 }
 
@@ -107,6 +107,21 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         }
     };
     let share = share_from_row(row)?;
+    let child_of = match (
+        get::<Option<uuid::Uuid>>(row, "child_of")?,
+        get::<Option<String>>(row, "child_session")?,
+    ) {
+        (Some(parent), Some(session)) => Some(ChildOf {
+            thread: ThreadId(parent),
+            session,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(StoreError::corrupt(
+                "a thread row has half of a child_of (parent and session disagree)",
+            ));
+        }
+    };
     Ok(ThreadRecord {
         id: ThreadId(get(row, "id")?),
         owner: UserId::new(&get::<String>(row, "owner")?),
@@ -124,6 +139,7 @@ pub(crate) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         pinned_at: get_ts_opt(row, "pinned_at")?,
         archived_at: get_ts_opt(row, "archived_at")?,
         rail_parent: get::<Option<uuid::Uuid>>(row, "rail_parent")?.map(ThreadId),
+        child_of,
         rail_rank: get(row, "rail_rank")?,
         last_seq: get(row, "last_seq")?,
         created_at: get_ts(row, "created_at")?,

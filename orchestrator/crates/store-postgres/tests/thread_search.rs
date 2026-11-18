@@ -59,6 +59,7 @@ fn new_thread(n: u128, title: &str) -> NewThreadRecord {
         },
         context_id: None,
         rail_parent: None,
+        child_of: None,
         now: t0(),
     }
 }

@@ -143,6 +143,7 @@ async fn nothing_of_a_query_is_in_any_log_line() {
                 },
                 context_id: None,
                 rail_parent: None,
+                child_of: None,
                 now: Timestamp::UNIX_EPOCH,
             },
             commit(vec![NewEvent {

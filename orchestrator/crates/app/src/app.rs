@@ -1129,6 +1129,7 @@ impl<P: Ports> App<P> {
             // the agent assigns the thread's context with its first answer (ADR 0055)
             context_id: None,
             rail_parent: None,
+            child_of: None,
             now,
         };
         match self.ports.store().create_thread(new, commit).await {
@@ -1689,6 +1690,7 @@ impl<P: Ports> App<P> {
             // (ADR 0055)
             context_id: None,
             rail_parent: self.fork_rail_parent(user, &parent, kind).await?,
+            child_of: None,
             now,
         };
         let origin = ForkOrigin {

@@ -10,12 +10,12 @@ use orch_core::{
 };
 
 use crate::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ClaimOrder, Commit, CommitOutcome,
-    ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease, ListOrder,
-    NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxStats,
-    OutboxStatus, Parking, Place, Received, SearchBackfill, SearchPosition, SearchRank,
-    SearchRequest, SearchRow, SearchRows, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
-    ThreadSearch, ThreadStore, UsageBackfill, UsageLedger,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
+    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease,
+    ListOrder, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind,
+    OutboxStats, OutboxStatus, Parking, Place, Received, SearchBackfill, SearchPosition,
+    SearchRank, SearchRequest, SearchRow, SearchRows, SharingChange, StoreError, TIMER_SOURCE,
+    ThreadListing, ThreadSearch, ThreadStore, UsageBackfill, UsageLedger,
 };
 
 struct StoredEvent {
@@ -573,7 +573,12 @@ fn insert_thread(
     new: NewThreadRecord,
     fork: Option<ForkOrigin>,
     first: Commit,
+    child: bool,
 ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+    // only `open_child_thread` makes a child
+    if new.child_of.is_some() && !child {
+        return Err(StoreError::Refused("child_of"));
+    }
     // A thread that does not exist yet has no inbox row to be applied.
     let first = Commit {
         inbox: None,
@@ -649,6 +654,7 @@ fn insert_thread(
         pinned_at: None,
         archived_at: None,
         rail_parent: new.rail_parent,
+        child_of: new.child_of.clone(),
         rail_rank,
         last_seq: fork.map_or(0, |o| o.cut),
         created_at: new.now,
@@ -683,6 +689,36 @@ fn insert_thread(
     }
     record.version = 1;
     Ok((record, events))
+}
+
+/// [`ThreadStore::open_child_thread`] on the data.
+fn open_child(
+    inner: &mut Inner,
+    new: NewThreadRecord,
+    first: Commit,
+) -> Result<ChildThread, StoreError> {
+    let of = new
+        .child_of
+        .clone()
+        .filter(|of| of.thread != new.id)
+        .ok_or(StoreError::Refused("child_of"))?;
+    let parent = inner
+        .threads
+        .get(&of.thread)
+        .filter(|e| e.record.owner == new.owner)
+        .ok_or(StoreError::NotFound)?;
+    if parent.record.child_of.is_some() {
+        return Err(StoreError::Refused("nested_child"));
+    }
+    if let Some(found) = inner
+        .threads
+        .values()
+        .find(|e| e.record.child_of.as_ref() == Some(&of))
+    {
+        return Ok(ChildThread::Existing(found.record.clone()));
+    }
+    let (thread, events) = insert_thread(inner, new, None, first, true)?;
+    Ok(ChildThread::Created { thread, events })
 }
 
 /// The owner's top-level rows, whatever they are (hidden ones too), as ranks are kept for all.
@@ -917,6 +953,17 @@ fn delete(
             })
     });
     if orphaned_edit {
+        return Err(StoreError::VersionConflict);
+    }
+    // so is a child of one that goes: the caller names the sessions it erases with their parent
+    let orphaned_child = inner.threads.values().any(|e| {
+        !doomed.contains(&e.record.id)
+            && e.record
+                .child_of
+                .as_ref()
+                .is_some_and(|c| doomed.contains(&c.thread))
+    });
+    if orphaned_child {
         return Err(StoreError::VersionConflict);
     }
     // The threads nested under one that goes take its place, in their order (newest first, as the
@@ -1158,7 +1205,7 @@ impl ThreadStore for MemoryStore {
         if let Some(fault) = inner.create_faults.pop_front() {
             return Err(fault);
         }
-        insert_thread(&mut inner, new, None, first)
+        insert_thread(&mut inner, new, None, first, false)
     }
 
     async fn fork_thread(
@@ -1171,7 +1218,37 @@ impl ThreadStore for MemoryStore {
         if let Some(fault) = inner.create_faults.pop_front() {
             return Err(fault);
         }
-        insert_thread(&mut inner, new, Some(origin), first)
+        insert_thread(&mut inner, new, Some(origin), first, false)
+    }
+
+    async fn open_child_thread(
+        &self,
+        new: NewThreadRecord,
+        first: Commit,
+    ) -> Result<ChildThread, StoreError> {
+        let mut inner = self.lock();
+        if let Some(fault) = inner.create_faults.pop_front() {
+            return Err(fault);
+        }
+        open_child(&mut inner, new, first)
+    }
+
+    async fn child_threads(
+        &self,
+        owner: &UserId,
+        parent: ThreadId,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let inner = self.lock();
+        let mut children: Vec<&ThreadRecord> = inner
+            .threads
+            .values()
+            .map(|e| &e.record)
+            .filter(|r| {
+                &r.owner == owner && r.child_of.as_ref().is_some_and(|c| c.thread == parent)
+            })
+            .collect();
+        children.sort_by_key(|r| r.id);
+        Ok(children.into_iter().take(1000).cloned().collect())
     }
 
     async fn thread_by_share_nonce(

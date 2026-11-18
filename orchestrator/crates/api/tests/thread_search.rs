@@ -316,6 +316,7 @@ fn new_thread(
         },
         context_id: None,
         rail_parent: None,
+        child_of: None,
         now: t0(),
     }
 }

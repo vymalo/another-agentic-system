@@ -1065,6 +1065,10 @@ impl ThreadStore for RacyStore {
         purges_pending() -> Result<u64, StoreError>;
         fork_thread(new: orch_ports::NewThreadRecord, origin: orch_ports::ForkOrigin, first: orch_ports::Commit)
             -> Result<(ThreadRecord, Vec<orch_core::Event>), StoreError>;
+        open_child_thread(new: orch_ports::NewThreadRecord, first: orch_ports::Commit)
+            -> Result<orch_ports::ChildThread, StoreError>;
+        child_threads(owner: &orch_core::UserId, parent: ThreadId)
+            -> Result<Vec<ThreadRecord>, StoreError>;
         fork_family(owner: &orch_core::UserId, thread: ThreadId)
             -> Result<Vec<orch_core::ForkNode>, StoreError>;
         thread_by_share_nonce(nonce: &[u8; 16]) -> Result<Option<ThreadRecord>, StoreError>;

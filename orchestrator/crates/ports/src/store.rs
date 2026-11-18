@@ -49,8 +49,28 @@ pub struct NewThreadRecord {
     /// [`StoreError::Corrupt`] and nothing is written. The store ranks the new thread: on top of
     /// the owner's list when it is a top-level one.
     pub rail_parent: Option<ThreadId>,
+    /// The thread this one is a child of and the session it is (ADR 0072): set by
+    /// [`ThreadStore::open_child_thread`] and required there; [`ThreadStore::create_thread`] and
+    /// [`ThreadStore::fork_thread`] refuse a thread that sets it ([`StoreError::Refused`]
+    /// `child_of`), so a child is only ever made with its place in the parent's sessions.
+    pub child_of: Option<orch_core::ChildOf>,
     /// Creation time.
     pub now: Timestamp,
+}
+
+/// What [`ThreadStore::open_child_thread`] did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChildThread {
+    /// The child was made: the thread as it is after its first commit, and that commit's events.
+    Created {
+        /// The new thread.
+        thread: ThreadRecord,
+        /// The events of the first commit, with their `seq`.
+        events: Vec<Event>,
+    },
+    /// The parent has a child for this session already (made by this call's racing twin or by an
+    /// earlier one): the thread as it is. Nothing was written.
+    Existing(ThreadRecord),
 }
 
 /// Where a new thread is cut from, for [`ThreadStore::fork_thread`] (ADR 0029).
@@ -387,13 +407,27 @@ pub enum OutboxPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier_cap: Option<orch_core::AccessTier>,
     },
+    /// Follow a round of a session (`orch_core::Command::Observe`, ADR 0072) without sending
+    /// anything: it is a `delegate` row for the claim, the lease, the resume and the per-thread
+    /// order, but the dispatcher never sends it. The thread is the child's; the row names the
+    /// round the session's agent started.
+    Observe {
+        /// The session's id.
+        session: String,
+        /// The round's number, from 1.
+        round: u32,
+        /// The round's A2A task.
+        task_id: String,
+    },
 }
 
 impl OutboxPayload {
     /// The kind matching this payload.
     pub fn kind(&self) -> OutboxKind {
         match self {
-            OutboxPayload::Delegate { .. } | OutboxPayload::Action { .. } => OutboxKind::Delegate,
+            OutboxPayload::Delegate { .. }
+            | OutboxPayload::Action { .. }
+            | OutboxPayload::Observe { .. } => OutboxKind::Delegate,
             OutboxPayload::Cancel { .. } => OutboxKind::Cancel,
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
             OutboxPayload::Title { .. } => OutboxKind::Title,
@@ -431,6 +465,7 @@ impl OutboxPayload {
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
             | OutboxPayload::Description { .. }
+            | OutboxPayload::Observe { .. }
             | OutboxPayload::Ask { .. } => None,
         }
     }
@@ -932,8 +967,11 @@ pub trait ThreadStore:
     /// [`StoreError::NotFound`] when any of them is not the owner's or does not exist (a foreign
     /// thread and a missing one look alike; a thread deleted twice is the second time missing);
     /// [`StoreError::VersionConflict`] when a thread changed since it was read, **or when a
-    /// thread made from one of them by an edit is not in `threads`** (one was made since the
-    /// caller looked): the caller reads again and decides again. An empty `threads` is `Ok`.
+    /// thread made from one of them by an edit is not in `threads`, or a child of one of them
+    /// ([`ThreadRecord::child_of`]) is not** (one was made since the caller looked): the caller
+    /// reads again and decides again. A child of the deleted parent is erased with it, in the same
+    /// transaction, only when the caller named it; the parent of a child that goes alone is left
+    /// whole (its ledger keeps the child's id). An empty `threads` is `Ok`.
     fn delete_threads(
         &self,
         owner: &UserId,
@@ -982,6 +1020,42 @@ pub trait ThreadStore:
         origin: ForkOrigin,
         first: Commit,
     ) -> impl Future<Output = Result<(ThreadRecord, Vec<Event>), StoreError>> + Send;
+
+    /// Atomically makes the thread of a helper session (ADR 0072, `docs/orchestrator.md` "Child
+    /// sessions"), or says it exists: `new.child_of` names the parent thread and the session's id,
+    /// and **a parent has at most one child for a session**, so two callers that open the same
+    /// session at once get one thread. The new thread is made as [`create_thread`](Self::create_thread)
+    /// makes one (state, job and events from `first`, version 1, binding with `new.context_id` and
+    /// `first.binding`, outbox rows, watches and timers), with `first` possibly carrying **no
+    /// events** (a child begins without any), and the writes of that commit are in the one
+    /// transaction. `new.rail_parent` follows the rules of `create_thread`.
+    ///
+    /// The parent must be `new.owner`'s, else [`StoreError::NotFound`] (a foreign thread and a
+    /// missing one look alike) and nothing is written. It may not be a child itself:
+    /// [`StoreError::Refused`] `nested_child`. A `new.child_of` of `None` is
+    /// [`StoreError::Refused`] `child_of`, and so is a parent that is the thread itself. A session
+    /// the parent has a child for already is [`ChildThread::Existing`], that thread as it is,
+    /// whatever `new` and `first` say: nothing is written, not even a wakeup. A parent that is
+    /// being deleted cannot gain a child: the call waits for the delete and then finds the parent
+    /// missing.
+    ///
+    /// A child is never moved to another parent, and its row keeps the parent's id and the session
+    /// ([`ThreadRecord::child_of`]) for as long as it exists; [`delete_threads`](Self::delete_threads)
+    /// says what happens to it when the parent goes.
+    fn open_child_thread(
+        &self,
+        new: NewThreadRecord,
+        first: Commit,
+    ) -> impl Future<Output = Result<ChildThread, StoreError>> + Send;
+
+    /// The children of `parent`, the owner's, oldest first (ties by id), at most 1000: every thread
+    /// whose [`ThreadRecord::child_of`] names it. A parent that is not the owner's, or does not
+    /// exist, has none: empty.
+    fn child_threads(
+        &self,
+        owner: &UserId,
+        parent: ThreadId,
+    ) -> impl Future<Output = Result<Vec<ThreadRecord>, StoreError>> + Send;
 
     /// The thread whose share has this nonce, or `None` when no thread does: the lookup behind a
     /// link (ADR 0040). Nobody is asked who: the caller checks the link's MAC and what the

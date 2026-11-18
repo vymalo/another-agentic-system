@@ -213,6 +213,7 @@ fn record(share: Option<ThreadShare>) -> ThreadRecord {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 0,
         created_at: Timestamp::from_second(1_790_000_000).unwrap(),

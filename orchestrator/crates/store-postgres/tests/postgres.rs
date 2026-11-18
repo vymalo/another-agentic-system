@@ -104,6 +104,7 @@ async fn create(store: &PgStore, outbox: Vec<NewOutbox>) -> ThreadId {
                 },
                 context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             commit(ThreadState::Queued, vec![event("hi", None)], outbox),
@@ -543,6 +544,7 @@ async fn timestamps_round_trip_at_microsecond_precision() {
                 },
                 context_id: Some("c".into()),
                 rail_parent: None,
+                child_of: None,
                 now: precise,
             },
             first,
@@ -574,6 +576,7 @@ async fn creating_the_same_thread_twice_is_refused_and_writes_nothing() {
                 },
                 context_id: Some("c".into()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             commit(
@@ -2493,6 +2496,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
                 },
                 context_id: Some(id.to_string()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             };
             let data = ThreadForkedData {
@@ -2628,6 +2632,7 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
                 },
                 context_id: Some(id.to_string()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             };
             let forked = NewEvent {
@@ -3315,6 +3320,7 @@ async fn a_delete_leaves_no_row_of_the_thread_but_its_purge_row() {
                 },
                 context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             first,
@@ -3514,6 +3520,7 @@ async fn a_fork_racing_the_delete_of_its_parent_has_the_parent_whole_or_none() {
                 },
                 context_id: Some(id.to_string()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             };
             let forked = NewEvent {

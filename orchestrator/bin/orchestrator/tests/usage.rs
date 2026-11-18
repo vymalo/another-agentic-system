@@ -234,6 +234,7 @@ async fn it_folds_in_the_logs_the_ledger_has_not_been_through_and_a_second_run_f
                     },
                     context_id: None,
                     rail_parent: None,
+                    child_of: None,
                     now: t0(),
                 },
                 commit(vec![

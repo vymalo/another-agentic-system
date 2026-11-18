@@ -69,6 +69,7 @@ fn new_thread(owner: &UserId, n: u128) -> NewThreadRecord {
         // no context: the agent assigns it with its first answer (ADR 0055)
         context_id: None,
         rail_parent: None,
+        child_of: None,
         now: t0(),
     }
 }

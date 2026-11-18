@@ -773,6 +773,7 @@ mod tests {
             pinned_at: None,
             archived_at: None,
             rail_parent: None,
+            child_of: None,
             rail_rank: "i".to_owned(),
             last_seq: 12,
             created_at: Timestamp::from_second(1_790_000_000).unwrap(),
@@ -819,6 +820,7 @@ mod tests {
             pinned_at: None,
             archived_at: None,
             rail_parent: None,
+            child_of: None,
             rail_rank: "i".to_owned(),
             last_seq: 12,
             created_at: at,
@@ -866,6 +868,7 @@ mod tests {
             pinned_at: None,
             archived_at: None,
             rail_parent: None,
+            child_of: None,
             rail_rank: "i".to_owned(),
             last_seq: 12,
             created_at: at,
@@ -875,6 +878,7 @@ mod tests {
             pinned_at: Some(at),
             archived_at: Some(at),
             rail_parent: Some(parent),
+            child_of: None,
             rail_rank: "0000000000zz".to_owned(),
             ..plain.clone()
         };

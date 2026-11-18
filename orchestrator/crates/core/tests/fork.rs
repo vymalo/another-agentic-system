@@ -761,6 +761,7 @@ fn fork_record(forked_from: Option<ForkedFrom>) -> ThreadRecord {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 0,
         created_at: at(0),
@@ -1605,6 +1606,7 @@ fn a_fork_is_nested_under_the_row_the_person_sees() {
     let row = |n: u128, forked_from: Option<ForkedFrom>, rail_parent: Option<u128>| ThreadRecord {
         id: thread(n),
         rail_parent: rail_parent.map(thread),
+        child_of: None,
         ..fork_record(forked_from)
     };
 

@@ -268,6 +268,7 @@ impl Harness {
                     },
                     context_id: None,
                     rail_parent: None,
+                    child_of: None,
                     now: NOW.parse().unwrap(),
                 },
                 Commit {

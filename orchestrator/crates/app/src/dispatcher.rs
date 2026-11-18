@@ -644,6 +644,18 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                 ),
+                // Nothing writes this row yet (the application drops `Command::Observe`, ADR 0072);
+                // the dispatcher that follows a round takes it in S2d.
+                OutboxPayload::Observe { .. } => {
+                    return self
+                        .finish(
+                            &row,
+                            OutboxFinal::Dead {
+                                error: "observe rows are not followed by this build".to_owned(),
+                            },
+                        )
+                        .await;
+                }
                 OutboxPayload::Steer { .. }
                 | OutboxPayload::Cancel { .. }
                 | OutboxPayload::Verify { .. }

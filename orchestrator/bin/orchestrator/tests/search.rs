@@ -187,6 +187,7 @@ async fn it_indexes_the_logs_the_index_has_not_been_through_and_a_second_run_fin
                     },
                     context_id: None,
                     rail_parent: None,
+                    child_of: None,
                     now: t0(),
                 },
                 commit(vec![NewEvent {

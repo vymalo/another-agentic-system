@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::child_sessions::ChildOf;
 use crate::fork::ForkedFrom;
 use crate::gate::{Job, JobView, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
@@ -146,6 +147,10 @@ pub struct ThreadRecord {
     /// The thread this one is nested under in the owner's list, one level deep; `None` for a row of
     /// the list's own. Display grouping only: the lineage is [`ThreadRecord::forked_from`].
     pub rail_parent: Option<ThreadId>,
+    /// The thread this one is a child of, and the session it is (ADR 0072): set when the thread is
+    /// made for a helper session of an agent's, never changed, `None` for every other thread. Not
+    /// serialised yet (the API says it from S2d on).
+    pub child_of: Option<ChildOf>,
     /// The thread's place among the owner's top-level threads: a key of [`crate::rank`], compared
     /// bytewise, ties broken by id (newest first). Never serialised.
     pub rail_rank: String,
