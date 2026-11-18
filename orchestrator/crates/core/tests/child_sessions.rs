@@ -1290,3 +1290,95 @@ fn a_forked_child_thread_carries_no_child_ledger() {
     assert_eq!(forked.job.observed, None);
     assert!(forked.job.sessions.is_empty());
 }
+
+// --- mutation pass (S2a) ---------------------------------------------------------------------
+
+#[test]
+fn a_replayed_round_after_its_job_moved_on_is_a_no_op() {
+    let (snap, _) = start_child(&report("s1", SessionState::Working, None));
+    let (mut once, _) = started(&snap, 1, None).unwrap();
+    // the job ended and the next one began: `observed` is forgotten, `started` is kept
+    once.state = Done;
+    once.job = once.job.next();
+    assert_eq!(once.job.observed, None);
+    let (next, cmds) = started(&once, 1, None).unwrap();
+    assert_eq!(next, once);
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn what_is_said_updates_keep_open_and_keeps_the_name_when_none_is_given() {
+    let (snap, _) = start_child(&report("s1", SessionState::Working, None));
+    assert!(snap.job.child.as_ref().unwrap().keep_open);
+    let mut r = report("s1", SessionState::Idle, None);
+    r.keep_open = false;
+    r.agent = String::new();
+    let (snap, _) = transition(&snap, &Input::ChildSessionSaid(r)).unwrap();
+    let child = snap.job.child.unwrap();
+    assert!(!child.keep_open);
+    assert_eq!(child.agent, "planner", "an empty name does not replace it");
+}
+
+#[test]
+fn starting_an_older_round_does_not_lower_what_was_followed() {
+    use AgentTaskState as T;
+    let (snap, _) = start_child(&report("s1", SessionState::Working, None));
+    let two = report(
+        "s1",
+        SessionState::Working,
+        Some(round(2, Some("t2"), Some(T::Working))),
+    );
+    let (snap, cmds) = transition(&snap, &Input::ChildSessionSaid(two.clone())).unwrap();
+    assert_eq!(cmds.len(), 1);
+    // round 1 is started late: followed stays 2
+    let (snap, _) = started(&snap, 1, None).unwrap();
+    assert_eq!(snap.job.child.as_ref().unwrap().followed, 2);
+    let (_, cmds) = transition(&snap, &Input::ChildSessionSaid(two)).unwrap();
+    assert!(cmds.is_empty(), "round 2 is not ordered a second time");
+}
+
+#[test]
+fn the_child_ledger_is_written_and_read_back_whole() {
+    let mut ledger = ChildLedger {
+        session: "s1".into(),
+        agent: "planner".into(),
+        keep_open: false,
+        state: SessionState::Idle,
+        closing: false,
+        followed: 0,
+        started: 0,
+    };
+    let v = serde_json::to_value(&ledger).unwrap();
+    assert!(
+        v.get("closing").is_none() && v.get("started").is_none(),
+        "{v}"
+    );
+    ledger.closing = true;
+    ledger.followed = 3;
+    ledger.started = 2;
+    let v = serde_json::to_value(&ledger).unwrap();
+    assert_eq!(v["closing"], true);
+    assert_eq!(v["followed"], 3);
+    assert_eq!(v["started"], 2);
+    let back: ChildLedger = serde_json::from_value(v).unwrap();
+    assert_eq!(back, ledger);
+    // a ledger written without the optional members reads as zero and false
+    let bare: ChildLedger = serde_json::from_value(serde_json::json!({
+        "session": "s1", "agent": "a", "keepOpen": true, "state": "working"
+    }))
+    .unwrap();
+    assert_eq!((bare.followed, bare.started, bare.closing), (0, 0, false));
+}
+
+#[test]
+fn a_round_with_no_by_leaves_it_out_of_job_started() {
+    let v = serde_json::to_value(JobStartedData {
+        job: 1,
+        round: Some(JobRound {
+            number: 2,
+            by: None,
+        }),
+    })
+    .unwrap();
+    assert_eq!(v, serde_json::json!({"job": 1, "round": {"number": 2}}));
+}
