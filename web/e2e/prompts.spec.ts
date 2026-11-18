@@ -592,13 +592,18 @@ test("a person without prompts.share is offered no Share, and Stop sharing on wh
   // the roles change: the same session is a plain user now, and the page reads who it is
   await mine.as("user");
   await page.reload();
-  await expect(rowOf(page, "Private one").getByRole("button", { name: /^Share/ })).toHaveCount(0);
+  // the row is still there with the control it should have: a `toHaveCount(0)` scoped to a row that vanished proves nothing
+  const priv = rowOf(page, "Private one");
+  await expect(priv.getByRole("button", { name: "Edit “Private one”" })).toBeVisible();
+  await expect(priv.getByRole("button", { name: /^Share/ })).toHaveCount(0);
   const frozen = rowOf(page, "Shared one");
+  await expect(frozen.getByRole("button", { name: "Edit “Shared one”" })).toBeVisible();
   await expect(frozen.getByRole("button", { name: "Change sharing “Shared one”" })).toHaveCount(0);
   await frozen.getByRole("button", { name: "Stop sharing “Shared one”" }).click();
   await expect(page.getByText("“Shared one” is no longer shared.")).toBeVisible();
   await expect(frozen).not.toContainText("Shared with:");
   // and with the share gone, a person who may not share is offered nothing
+  await expect(frozen.getByRole("button", { name: "Edit “Shared one”" })).toBeVisible();
   await expect(frozen.getByRole("button", { name: /^Share/ })).toHaveCount(0);
   const stored = (await (await mine.call("GET", "/api/prompts?scope=mine")).json()) as {
     items: { title: string; audience?: string[] }[];
@@ -607,6 +612,7 @@ test("a person without prompts.share is offered no Share, and Stop sharing on wh
   // a prompt shared with the person has no control at all
   const theirs = rowOf(page, "Theirs");
   await expect(theirs).toContainText("Shared with you");
+  await expect(theirs.getByRole("button", { name: "View “Theirs”" })).toBeVisible();
   await expect(
     theirs.getByRole("button", { name: /^(Share|Change sharing|Stop sharing)/ }),
   ).toHaveCount(0);

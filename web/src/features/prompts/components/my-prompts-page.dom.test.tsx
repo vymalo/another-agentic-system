@@ -398,7 +398,9 @@ describe("the sharing control (P4)", () => {
       items: { title: string; audience?: string[] }[];
     };
     expect(listed.items.find((p) => p.title === "Shared one")?.audience ?? []).toEqual([]);
-    // and a private prompt offers nothing to a person who may not share
+    // and a private prompt offers nothing to a person who may not share, though its row is still there with the control it
+    // should have: a `null` check on a row that vanished proves nothing
+    expect(screen.getByRole("button", { name: "Edit “Private one”" })).toBeTruthy();
     expect(
       screen.queryByRole("button", { name: /^(Share|Change sharing|Stop sharing)/ }),
     ).toBeNull();
