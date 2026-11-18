@@ -583,6 +583,51 @@ resolves to a private address is never connected to; what the server says is bel
 description); and a server whose credential cannot be had is **left out and fails a call as a step**, never skipped silently.
 A 401 or 403 from the server sets the definition to `needs_reauth`, and the picker tells the person to authorize or key it again.
 
+### Child sessions: a helper an agent runs is a thread
+
+*Built 2026-11-18 ([ADR 0072](decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slices S2a to
+S2d; the contract is [`api/child-sessions-v1.md`](api/child-sessions-v1.md)).* An agent whose card lists `child-sessions/v1` runs
+a helper as a **session** and says so on its task. The orchestrator makes a **child thread** for each session, nested under its
+parent in the person's list, whose log is the helper's own work, and writes three events in the **parent's** log (`child_session_opened`,
+`child_session_reported`, `child_session_closed`), each once. The orchestrator **sends the child nothing**: each round is a task the agent
+already runs, and the child's job follows it (an `observe` row of the outbox, claimed, leased and resumed like a delegation).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent (A2A)
+  participant D as Dispatcher (crates/app/src/dispatcher.rs)
+  participant P as Parent thread
+  participant C as Child thread
+  A-->>D: the parent's task lists its sessions
+  D->>C: the child thread is made, queued, with no event
+  D->>P: child_session_opened
+  D->>C: job_started with the round (RoundStarted)
+  D->>A: resubscribe, else get_task, of the round's task
+  A-->>D: steps, text, usage, the round completed
+  D->>C: the helper's events, usage with counted false, thread_state done
+  D->>P: child_session_reported (and closed when the session is over)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Queued: the child thread is made (open_child_thread)
+  Queued --> Working: RoundStarted, job 1
+  Working --> Done: the round completed
+  Working --> Blocked: the round waits for the person
+  Working --> Failed: the round failed, or the follow failed
+  Working --> Cancelled: the round was canceled
+  Done --> Working: the next round, the next job
+  Blocked --> Working: the next round, the next job
+  Failed --> Working: the next round, the next job
+  Cancelled --> Working: the next round, the next job
+```
+
+A kept-open session that is sent another message by its parent's model has a round 2: the parent's task says so, and the **same**
+child thread starts job 2. The helper's tokens are in the parent's totals, so the child logs its own with `counted: false` and the
+usage ledger counts the parent's alone. A child is neither forked nor shared, and deleting its parent deletes it (a child that works
+refuses the delete). How each part works is in [Orchestrator: child sessions](orchestrator.md#child-sessions-the-applications-half-slice-s2d).
+
 ## How a job flows
 
 **Target design** (MVP steps 3–7; steps 1–2 exist, see [As built](#as-built); the verify and rework part

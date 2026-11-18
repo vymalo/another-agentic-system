@@ -538,8 +538,8 @@ What the diagrams cannot say:
   A2UI action row keeps that failure.
 - **An `observe` row is a delegation that sends nothing** (ADR 0072, S2b). `OutboxPayload::Observe { session, round, task_id }` is kind
   `delegate`: it is claimed in the thread's order, leased and resumed by `sent_at` like a delegation, and the dispatcher follows the
-  named round's task instead of sending a message (S2d). It is written in the commit of the child's own decision (`Command::Observe`),
-  on the child's thread, one per round the thread is told to follow.
+  named round's task instead of sending a message (`Dispatcher::observe`, S2d). It is written in the commit of the child's own
+  decision (`Command::Observe`, `App::build_commit`), on the child's thread, one per round the thread is told to follow.
 - **A cancel row names its job.** `OutboxPayload::Cancel { job }`; a row whose job is not the thread's current one is
   finished without calling the agent, so a "stop" typed during job 1 never stops job 2. A row stored before the field
   existed reads as "the current job".
@@ -1513,9 +1513,9 @@ stateDiagram-v2
   and a snapshot where `thread_described` is read, exactly as the title's ([`agui.md`](api/agui.md#descriptions)).
   `ui.showDescriptions` (`GET /api/config`) hides it in the web; the API returns it either way.
 
-### Child sessions: the core's half (ADR 0072, slice S2a)
+### Child sessions: the core's half and the application's (ADR 0072, slices S2a to S2d)
 
-**Built** (S2a, `crates/core/src/child_sessions.rs`; nothing applies it yet). An agent that lists
+**Built** (S2a, `crates/core/src/child_sessions.rs`; applied by S2d, [below](#child-sessions-the-applications-half-slice-s2d)). An agent that lists
 [`child-sessions/v1`](api/child-sessions-v1.md) runs a helper as a **session**; the core decides what the
 parent's log says about it and what a child thread starts as. It never reads the wire: an adapter hands it a
 `SessionReport` (strict, bounded, checked again at the door by `SessionReport::check`) and the core decides.
@@ -1543,18 +1543,18 @@ events into the history its agent is told.
 it. A blocked child answered within the same job keeps its round's `by`; what counts that answer is S3's decision.
 A thread that follows no round counts as it always did (ADR 0072, amended 2026-11-18).
 
-**For S2d:** `apply_commit`'s binding and task logic for a new job must leave out a `job_started` that carries
-`round`: an observed job sends nothing, so it has no outbox row, task or binding of its own to make.
+An observed job sends nothing, so it has no delegation row, task or binding of its own to make: the application's
+`build_commit` writes the `observe` row for `Command::Observe` and the dispatcher marks it sent with the round's task.
 
-**Store** (S2b, built). The three `child_session_*` event kinds are accepted by Postgres from migration 0027, and nothing
-writes them before S2d. `ThreadRecord.child_of` (`ChildOf { thread, session }`, not serialised before S2d) is a column pair
+**Store** (S2b, built). The three `child_session_*` event kinds are accepted by Postgres from migration 0027 and written by the
+application from S2d. `ThreadRecord.child_of` (`ChildOf { thread, session }`, serialised as `Thread.childOf` from S2d) is a column pair
 ([Data model](#data-model)); `ThreadStore::open_child_thread` makes the child thread once per `(parent, session)` and
 `child_threads` lists a parent's; `delete_threads` erases a parent's children with it and refuses a set that leaves one.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant A as Application (S2d)
+  participant A as Application
   participant P as Parent thread (core)
   participant C as Child thread (core)
   A->>P: Input ChildSession with the session's report
@@ -1587,10 +1587,81 @@ stateDiagram-v2
 ```
 
 The store for all of this is built (S2b: migration `0027`, `ThreadRecord.child_of`, `open_child_thread`,
-`child_threads`, the delete rule and the `Observe` outbox payload). The dispatcher that follows the round and the
-application that makes the child thread are S2d; until then the application drops the new agent updates
-(`ChildSessions`, `ChildSessionsRejected`) with a debug log and writes nothing for `Observe`, and the dispatcher
-dead-letters an `Observe` row it is handed.
+`child_threads`, the delete rule and the `Observe` outbox payload).
+
+### Child sessions: the application's half (slice S2d)
+
+**Built** (S2d: `crates/app/src/child_sessions.rs`, `Dispatcher::observe` in `crates/app/src/dispatcher.rs`). The dispatcher hands
+what an agent says of its sessions to `App::child_sessions_news(thread, lease, news)`, which acts on the
+**kind of thread** the stream belongs to:
+
+| News | On the stream of | The application |
+|---|---|---|
+| `Listed(reports)` or `Event(_, report)` | a parent's task | For each report: **the child thread first**, then `Input::ChildSession` on the parent. The child thread is made by `ThreadStore::open_child_thread` (the parent's owner and agent, the report's context, nested under the parent's row of the list, the first commit from `start_child`: no event, a `queued` thread with the order to follow the report's round); a session whose thread exists (`Existing`: a repeat, or a crash between the two writes) is told the report with `Input::ChildSessionSaid` instead. The parent's ledger names the child: one it names that was deleted is skipped and counted (`child_deleted`), a parent that notes 256 sessions gets no thread for the 257th (`ledger_full`), a report that fails the core's bounds is `malformed`, a child asked to have children is `refused` |
+| `OfRound(report)` | a child's followed round | `Input::ChildSessionSaid` on the child under the row's claim (a round it was not told to follow is ordered, once), then `Input::ChildSession` on the parent, so the parent hears of the round's end whatever way the child learned of it |
+| `ChildSessionsRejected` | any | counted (`rejected`), the task goes on |
+
+Every drop is counted in `child_sessions_dropped_total{reason}` (a closed set, no thread, session or agent in a label) and
+none fails a task. The writes are idempotent by the ledgers, not by a key: the same news said twice, by two workers or after a
+restart, writes nothing twice.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent (A2A)
+  participant D as Dispatcher
+  participant S as Store
+  participant P as Parent thread
+  participant C as Child thread
+  A-->>D: the parent's task says its sessions (Listed)
+  D->>S: open_child_thread (no event, an observe row)
+  D->>P: Input ChildSession: child_session_opened
+  D->>S: claim the observe row
+  D->>C: Input RoundStarted: job_started with the round
+  D->>S: mark_sent with the round's task
+  D->>A: resubscribe, else get_task, of the round's task (no message)
+  A-->>D: the round's steps, text, usage, completed
+  D->>C: Input Agent for each, usage with counted false
+  D->>P: Input ChildSession: child_session_reported
+  D->>S: finish the row delivered
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Open: Command Observe in the child's commit
+  Open --> Claimed: the dispatcher claims it in the thread's order
+  Claimed --> Open: the child still works on an earlier round, tried again later
+  Claimed --> Dead: attempts used up, or the follow failed (the child fails)
+  Claimed --> Skipped: the thread was deleted
+  Claimed --> Started: RoundStarted applied, mark_sent
+  Started --> Following: resubscribe, else poll
+  Following --> Started: the lease lapsed, the row is claimed again
+  Following --> Reported: the turn ended, the parent hears of the round
+  Reported --> Delivered: the row is finished
+```
+
+- **`Dispatcher::observe(row)`** loads the child with the parent's agent (the registry is read now, as for any row). A row with no
+  `sent_at` applies `RoundStarted` under the claim (key `observe:<row id>`; the round's `by` is **not** known before its own task
+  is read, so none is said and the round is taken for the agent's, S3 refines it), then `mark_sent` with the round's task, then
+  follows the task: `follow_task`, which resubscribes and falls back to polling. **It never sends a message to the agent.** A row
+  that was sent already (a claim that lapsed) follows the same task again, even if the child is over. A child that still works on
+  another round retries the row with backoff, and dead-letters it when its attempts are used up, without failing the child.
+- **At the round's end** (`Dispatcher::delivered`) the application tells the parent (`App::report_round_over`: the child's
+  ledger, its context and the state its binding records for the round) **before** the row is finished: a crash in between
+  follows the round again and reports again, which writes nothing twice.
+- **A follow that fails** (the card dropped the extension and the agent refuses a child context, ADR 0008) is a delivery failure
+  of the row like any other: the child thread fails with its `error` event, and the parent keeps what it was told.
+- **Usage is counted once.** The usage ledger reads `counted: false` events as nothing (S2a); the check is that a parent whose
+  agent reports 15 tokens and whose helper reports 15 more has a month of 15 tokens and one task (`crates/e2e/tests/child_sessions.rs`).
+- **Forks and shares.** `forkThread` and `shareThread` of a child are 422 `child_thread` (`AppError::child_thread`, an
+  `Arrangement` refusal); a fork of a parent copies the log, including its `child_session_*` events, and has **no** sessions
+  ledger and no children (`forked_snapshot`). A shared parent's readers never see a child or its id (the reader projection is
+  an allow-list).
+- **Delete.** `App::erase` already named every child with its parent (S2b): a child that works refuses the parent's delete
+  (`thread_active`), a child can be deleted alone (the parent keeps its note, and a later report of the session is dropped and
+  counted `child_deleted`).
+- **The API.** `Thread.childOf { threadId, session, agent, state }` and `nestedUnder` (the parent's row); the child's events and
+  the parent's three are in the log's contract ([`api/chat-api.yaml`](api/chat-api.yaml)).
 
 ### Forking a thread (MVP-plan item F, ADR 0029)
 
@@ -2157,7 +2228,7 @@ pub enum Command {
     SetSharing { level: ShareLevel, nonce: ShareNonce },  // ADR 0040: the row's share, in the commit of the `thread_shared` that says so; `ClearSharing` likewise for `thread_unshared`
     Ask { job: u32, ask: u32, agent: AgentId, depth: u8, text: String,
           continue_task: Option<String>, reference_task_ids: Vec<String> },   // ADR 0026: → an outbox row, kind `ask`, unordered
-    Observe { session: String, round: u32, task_id: String },   // ADR 0072: follow a round without sending anything: an outbox row `OutboxPayload::Observe`, kind `delegate` (S2b; the dispatcher that follows it is S2d)
+    Observe { session: String, round: u32, task_id: String },   // ADR 0072: follow a round without sending anything: an outbox row `OutboxPayload::Observe`, kind `delegate` (S2b; followed by `Dispatcher::observe`, S2d)
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
@@ -2635,7 +2706,7 @@ erDiagram
 | `user_prompts` | A person's **prompt library** ([ADR 0070](decisions/0070-a-persons-prompt-library.md), migration `0026`): `id` (`p-` and 12 base-36 characters, **global**, the whole key: a person in the audience fetches a shared prompt without the author), `owner`, `name` (unique per owner), `title`, `description`, `body` (text with `{{id}}` references), `variables` (a JSON array of questions of the UI catalog, version 8, without `show` and `images`), `audience` (role values, `*` alone, empty is private), `revision` (from the sequence `user_prompt_revisions`, never given twice), `created_at`, `updated_at`. **Beside the log, not in it: no event records a prompt**, it is never folded, never copied into a thread, a fork or an export, and deleting a thread erases nothing of it; it is the person's and goes with their account (issue 294). The limit of 100 per person is the store's, under an advisory lock of the owner |
 | `usage_tasks`, `usage_lines`, `usage_sandbox` | What each person used, per task: the counts per provider and model and the sandbox time per shape, in the UTC month of the latest event that changed the row (**built**, PR 1 of [ADR 0065](decisions/0065-a-usage-ledger-per-person.md), migration `0023`; read by `GET /api/me/usage` priced with `usage.prices`, and swept past `usage.retentionMonths` by a worker, PR 2) | Written by the store in the transaction that appends the `model_usage` or `model_usage_total` event (a total replaces the row, a call adds only while there is no total, an event already folded in changes nothing); no foreign key to `threads`, so the rows outlive the thread, with `thread_id` cleared in the transaction that erases it; `threads.usage_through` makes the catch-up of a log a build without the ledger wrote sound |
 | `threads.child_of`, `threads.child_session` | A **child session's** thread (**built**, S2b, migration `0027`, [ADR 0072](decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): the parent thread and the session's id, both `NULL` for any other thread | Made by `ThreadStore::open_child_thread`, never by `create_thread` or `fork_thread` (`Refused("child_of")`), in one transaction with its first commit (which may hold no event) and at most once per `(parent, session)`: a second open answers `ChildThread::Existing` and writes nothing, so a race makes one thread. The parent is the owner's, else `NotFound`, and is not a child itself (`Refused("nested_child")`). The **caller** nests the child under the parent's root in the owner's list (`rail_parent_of_fork`; the store only applies `create_thread`'s rail rules to the `rail_parent` it is given); the session id is 1 to 512 characters (`Refused("child_session")`, and the CHECK `threads_child_session_len`); `child_threads(owner, parent)` lists them oldest first by `created_at`, then `id` (ids are the caller's), at most 1000. **Delete:** a child of a thread that goes is erased only if the caller named it (`delete_threads` is `VersionConflict` otherwise, as for an edit; the parent is locked, so a child made meanwhile waits and finds it gone; `App::erase` names every thread's children and refuses (409 `thread_active`) when one works); a child may be deleted alone and its parent stays whole, and a later open of the same `(parent, session)` then makes a **new** child (the store keeps no trace of the deleted one; the parent's ledger decides whether it is asked) |
-| `outbox` row, payload `{"observe": {"session", "round", "task_id"}}` | A round of a session the child thread **follows without sending** (**built**, S2b; written by the application from `Command::Observe` and followed by the dispatcher in S2d) | Kind `delegate`, so the claim, the lease, the resume with `sent_at` and the **per-thread order** are a delegation's and no outbox kind or constraint changes; the dispatcher routes it to a follow, never a send. It is **not a message**: `Commit.skip_unsent_delegates` (a Stop & send) leaves it. A build that does not know it dead-letters the row |
+| `outbox` row, payload `{"observe": {"session", "round", "task_id"}}` | A round of a session the child thread **follows without sending** (**built**, S2b and S2d; written by the application from `Command::Observe` and followed by `Dispatcher::observe`) | Kind `delegate`, so the claim, the lease, the resume with `sent_at` and the **per-thread order** are a delegation's and no outbox kind or constraint changes; the dispatcher routes it to a follow, never a send. It is **not a message**: `Commit.skip_unsent_delegates` (a Stop & send) leaves it. A build that does not know it dead-letters the row |
 | `outbox.kind = 'description'` | A request to the model for the thread's description (**built**, PR S18, migration `0011`); payload `{"description": {"job": n}}` | Written in the commit of the transition that gets the thread to `done` or `blocked`, once per job; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Described` or `Input::DescriptionDeclined`, key `description:<row>`, with no model asked below `minNewMessages`) or `skipped` (a person wrote the description first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'title'` | A request to the model for the thread's title (**built**, slice 6, migration `0009`); payload `{"title": {"ask": n}}` | Written in the commit of the agent's reply that asks; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Titled` or `Input::TitleDeclined`, key `title:<row>`) or `skipped` (the person renamed first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'ask'`, `outbox.task_id` | A request to an agent the person mentioned, for the job's agent, and its A2A task (**built**, PR-19, migration `0014`; sent by PR-20) | Written in the commit that logs `ask_started` and arms the ask's deadline; claimable whatever the thread's delegations and other asks; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; ends `delivered` (the answer, in the commit of `Input::AskFinished`), `dead` (`Input::AskFailed`, same commit) or `skipped` (the ask ended first; its task cancelled) |

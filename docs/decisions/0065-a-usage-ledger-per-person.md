@@ -14,6 +14,14 @@
   (a port has a testkit). **It amends invariant 3** of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 1) with a
   dated note, as [ADR 0042](0042-the-thread-list-is-the-owners.md) and [ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)
   did before it (decision 3).
+- **Amended 2026-11-18: a child session's round is counted once** ([ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md),
+  S2a and S2d). The tokens of a round the parent's model started are already in the parent's totals (they are reported on the parent's
+  task), so the child thread that follows the round logs its own `model_usage` and `model_usage_total` with `counted: false` (written only
+  when false, read as `true` when absent) and the ledger skips them (`usage_change` returns nothing): the parent's task is the row, and
+  the child's is not. A round a person started is counted in the child (S3). A round whose `by` the agent did not say is taken for the
+  agent's, and the application follows it without saying a `by` (it is learned from the round's own task, S3). No decision above changes.
+  *Proven* by `crates/core/tests/child_sessions.rs` and, through the application and a real stream, `crates/e2e/tests/child_sessions.rs`
+  (a parent that reports 15 tokens and a helper that reports 15 more is a month of 15 tokens and one task); no live agent has run it.
 - **Amended 2026-11-14: the screen exists.** The web draws `GET /api/me/usage` as the **Usage** page, `/usage`, reached from the account menu
   (`web/src/features/me/components/usage-page.tsx`; [`web/README.md`](../../web/README.md#the-usage-page), [`web/DESIGN.md`](../../web/DESIGN.md#usage-page)),
   the owner having asked on 2026-11-14 for the system to be "LibreChat-grade". No decision above changes; what the page does with them: it shows tokens and
