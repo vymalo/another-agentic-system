@@ -276,6 +276,19 @@ fn a_card_that_lists_child_sessions_declares_its_agents_and_limit_under_the_uri(
             "maxOpen": 16
         }})
     );
+    // the smallest offer is declared too
+    let one = CardFacts {
+        child_sessions: ChildSessionsOffer::from_params(&json!({
+            "agents": [{"name": "planner", "description": ""}],
+            "maxOpen": 1,
+        })),
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("chat"), "Chat", Some(&one));
+    assert_eq!(
+        serde_json::to_value(&doc).unwrap()["custom"][CHILD_SESSIONS_EXTENSION]["maxOpen"],
+        json!(1)
+    );
     // a card without the offer has no key
     let none = agent_capabilities(&AgentId::new("chat"), "Chat", Some(&CardFacts::default()));
     assert!(

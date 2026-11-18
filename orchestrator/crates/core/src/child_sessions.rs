@@ -142,6 +142,24 @@ mod tests {
     }
 
     #[test]
+    fn names_and_descriptions_are_kept_as_written() {
+        // a name is the agent's own: not trimmed, and names that differ only in case are two names
+        let offer = ChildSessionsOffer::from_params(&json!({
+            "agents": [
+                {"name": " planner ", "description": "  spaced  "},
+                {"name": "Planner", "description": ""},
+                {"name": "planner", "description": ""}
+            ],
+            "maxOpen": 1
+        }))
+        .unwrap();
+        let names: Vec<_> = offer.agents().iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, [" planner ", "Planner", "planner"]);
+        assert_eq!(offer.agents()[0].description, "  spaced  ");
+        assert_eq!(offer.max_open(), 1);
+    }
+
+    #[test]
     fn a_whole_double_is_a_whole_number() {
         let mut params = good();
         params["maxOpen"] = json!(4.0);
