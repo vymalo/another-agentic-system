@@ -536,6 +536,10 @@ What the diagrams cannot say:
   the next job for it ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)), and skips the row. On a `cancelled`
   thread it is skipped with "message not delivered: thread already finished", as before: the person asked to stop. An
   A2UI action row keeps that failure.
+- **An `observe` row is a delegation that sends nothing** (ADR 0072, S2b). `OutboxPayload::Observe { session, round, task_id }` is kind
+  `delegate`: it is claimed in the thread's order, leased and resumed by `sent_at` like a delegation, and the dispatcher follows the
+  named round's task instead of sending a message (S2d). It is written in the commit of the child's own decision (`Command::Observe`),
+  on the child's thread, one per round the thread is told to follow.
 - **A cancel row names its job.** `OutboxPayload::Cancel { job }`; a row whose job is not the thread's current one is
   finished without calling the agent, so a "stop" typed during job 1 never stops job 2. A row stored before the field
   existed reads as "the current job".
@@ -1542,8 +1546,10 @@ A thread that follows no round counts as it always did (ADR 0072, amended 2026-1
 **For S2d:** `apply_commit`'s binding and task logic for a new job must leave out a `job_started` that carries
 `round`: an observed job sends nothing, so it has no outbox row, task or binding of its own to make.
 
-**Store.** The three `child_session_*` event kinds are accepted by Postgres only from migration 0027 (S2b), and
-nothing writes them before S2d.
+**Store** (S2b, built). The three `child_session_*` event kinds are accepted by Postgres from migration 0027, and nothing
+writes them before S2d. `ThreadRecord.child_of` (`ChildOf { thread, session }`, not serialised before S2d) is a column pair
+([Data model](#data-model)); `ThreadStore::open_child_thread` makes the child thread once per `(parent, session)` and
+`child_threads` lists a parent's; `delete_threads` erases a parent's children with it and refuses a set that leaves one.
 
 ```mermaid
 sequenceDiagram
@@ -1580,10 +1586,11 @@ stateDiagram-v2
   Cancelled --> Working: RoundStarted, the next job
 ```
 
-The outbox row for `Observe`, the dispatcher that follows the round and the application that makes the child
-thread are S2b and S2d; until then the application drops the new agent updates (`ChildSessions`,
-`ChildSessionsRejected`) with a debug log and writes nothing for `Observe`. `ThreadRecord.child_of` and the
-migration are S2b.
+The store for all of this is built (S2b: migration `0027`, `ThreadRecord.child_of`, `open_child_thread`,
+`child_threads`, the delete rule and the `Observe` outbox payload). The dispatcher that follows the round and the
+application that makes the child thread are S2d; until then the application drops the new agent updates
+(`ChildSessions`, `ChildSessionsRejected`) with a debug log and writes nothing for `Observe`, and the dispatcher
+dead-letters an `Observe` row it is handed.
 
 ### Forking a thread (MVP-plan item F, ADR 0029)
 
@@ -2150,7 +2157,7 @@ pub enum Command {
     SetSharing { level: ShareLevel, nonce: ShareNonce },  // ADR 0040: the row's share, in the commit of the `thread_shared` that says so; `ClearSharing` likewise for `thread_unshared`
     Ask { job: u32, ask: u32, agent: AgentId, depth: u8, text: String,
           continue_task: Option<String>, reference_task_ids: Vec<String> },   // ADR 0026: → an outbox row, kind `ask`, unordered
-    Observe { session: String, round: u32, task_id: String },   // ADR 0072: follow a round without sending anything (the outbox row is (S2b), the dispatcher (S2d))
+    Observe { session: String, round: u32, task_id: String },   // ADR 0072: follow a round without sending anything: an outbox row `OutboxPayload::Observe`, kind `delegate` (S2b; the dispatcher that follows it is S2d)
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
@@ -2450,6 +2457,8 @@ erDiagram
     timestamptz archived_at "0016: NULL while not archived"
     uuid rail_parent "0016: the thread it is nested under, NULL for a top-level thread"
     text rail_rank "0016: the place among the owner's top-level threads, COLLATE C"
+    uuid child_of "0027: the thread this is a child session of, NULL for any other; no ON DELETE"
+    text child_session "0027: the session's id; NULL exactly when child_of is"
     text agent_id
     text release
     text state "queued working blocked done failed cancelled"
@@ -2625,6 +2634,8 @@ erDiagram
 | `message_terms`, `threads.title_terms`, `threads.description_terms`, `threads.search_through` | The search index of a person's threads: the folded words of titles, descriptions and searched messages, a function of the log, the owner's alone (**built**, slice 7a of [ADR 0067](decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), [ADR 0068](decisions/0068-a-person-searches-their-own-threads.md), migration `0025`; read by `POST /api/search/threads`, erased with the thread) | the store, in the transaction of the event |
 | `user_prompts` | A person's **prompt library** ([ADR 0070](decisions/0070-a-persons-prompt-library.md), migration `0026`): `id` (`p-` and 12 base-36 characters, **global**, the whole key: a person in the audience fetches a shared prompt without the author), `owner`, `name` (unique per owner), `title`, `description`, `body` (text with `{{id}}` references), `variables` (a JSON array of questions of the UI catalog, version 8, without `show` and `images`), `audience` (role values, `*` alone, empty is private), `revision` (from the sequence `user_prompt_revisions`, never given twice), `created_at`, `updated_at`. **Beside the log, not in it: no event records a prompt**, it is never folded, never copied into a thread, a fork or an export, and deleting a thread erases nothing of it; it is the person's and goes with their account (issue 294). The limit of 100 per person is the store's, under an advisory lock of the owner |
 | `usage_tasks`, `usage_lines`, `usage_sandbox` | What each person used, per task: the counts per provider and model and the sandbox time per shape, in the UTC month of the latest event that changed the row (**built**, PR 1 of [ADR 0065](decisions/0065-a-usage-ledger-per-person.md), migration `0023`; read by `GET /api/me/usage` priced with `usage.prices`, and swept past `usage.retentionMonths` by a worker, PR 2) | Written by the store in the transaction that appends the `model_usage` or `model_usage_total` event (a total replaces the row, a call adds only while there is no total, an event already folded in changes nothing); no foreign key to `threads`, so the rows outlive the thread, with `thread_id` cleared in the transaction that erases it; `threads.usage_through` makes the catch-up of a log a build without the ledger wrote sound |
+| `threads.child_of`, `threads.child_session` | A **child session's** thread (**built**, S2b, migration `0027`, [ADR 0072](decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): the parent thread and the session's id, both `NULL` for any other thread | Made by `ThreadStore::open_child_thread`, never by `create_thread` or `fork_thread` (`Refused("child_of")`), in one transaction with its first commit (which may hold no event) and at most once per `(parent, session)`: a second open answers `ChildThread::Existing` and writes nothing, so a race makes one thread. The parent is the owner's, else `NotFound`, and is not a child itself (`Refused("nested_child")`). The child is nested under the parent's root in the owner's list (`rail_parent`, as a fork is); `child_threads(owner, parent)` lists them oldest first, at most 1000. **Delete:** a child of a thread that goes is erased only if the caller named it (`delete_threads` is `VersionConflict` otherwise, as for an edit; the parent is locked, so a child made meanwhile waits and finds it gone); a child may be deleted alone and its parent stays whole |
+| `outbox` row, payload `{"observe": {"session", "round", "task_id"}}` | A round of a session the child thread **follows without sending** (**built**, S2b; written by the application from `Command::Observe` and followed by the dispatcher in S2d) | Kind `delegate`, so the claim, the lease, the resume with `sent_at` and the **per-thread order** are a delegation's and no outbox kind or constraint changes; the dispatcher routes it to a follow, never a send. A build that does not know it dead-letters the row |
 | `outbox.kind = 'description'` | A request to the model for the thread's description (**built**, PR S18, migration `0011`); payload `{"description": {"job": n}}` | Written in the commit of the transition that gets the thread to `done` or `blocked`, once per job; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Described` or `Input::DescriptionDeclined`, key `description:<row>`, with no model asked below `minNewMessages`) or `skipped` (a person wrote the description first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'title'` | A request to the model for the thread's title (**built**, slice 6, migration `0009`); payload `{"title": {"ask": n}}` | Written in the commit of the agent's reply that asks; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Titled` or `Input::TitleDeclined`, key `title:<row>`) or `skipped` (the person renamed first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'ask'`, `outbox.task_id` | A request to an agent the person mentioned, for the job's agent, and its A2A task (**built**, PR-19, migration `0014`; sent by PR-20) | Written in the commit that logs `ask_started` and arms the ask's deadline; claimable whatever the thread's delegations and other asks; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; ends `delivered` (the answer, in the commit of `Input::AskFinished`), `dead` (`Input::AskFailed`, same commit) or `skipped` (the ask ended first; its task cancelled) |
@@ -2763,6 +2774,7 @@ stateDiagram-v2
 
 - **`0025` (the search index, built, [ADR 0068](decisions/0068-a-person-searches-their-own-threads.md)):** `threads` gains `title_terms` and `description_terms` (`tsvector`, nullable: the folded keys of the title and the description, `NULL` until the thread is indexed) and `search_through bigint NOT NULL DEFAULT 0` (the `seq` up to which the index has been through the log; a fork's starts at its last `seq`, because the events it copied are indexed from its own log in the transaction that creates it); and a table `message_terms (thread_id, seq, owner, message_id, terms tsvector)` with a foreign key to `events` **`ON DELETE CASCADE`** (an erase leaves no word), a GIN index on `terms`, a btree on `owner` and one on `(thread_id, message_id)`. The keys are made in Rust (`orch_core::search`) and stored with `array_to_tsvector`: no parser, no dictionary, no extension. `insert_events` indexes a person's `user_message` and an agent's final `agent_message` that is not working text in the transaction of the event (a later final message with the same `messageId` deletes the earlier row), each commit first indexes `(search_through, last_seq]`, and `orchestrator search backfill` indexes the logs that predate it.
 - **`0026` (the prompt library, built, [ADR 0070](decisions/0070-a-persons-prompt-library.md)):** `user_prompts` and the sequence `user_prompt_revisions`; nothing is rewritten and no large table is locked. The header of the migration says what each column is, why there is no event and no foreign key, and the lock of the limit.
+- **`0027` (child sessions, built, [ADR 0072](decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), S2b):** `threads` gains `child_of uuid REFERENCES threads (id)` (**no `ON DELETE`**: a parent is never deleted from under its children, which `delete_threads` erases with it or refuses to) and `child_session text` (the session's id, opaque), the constraints `threads_child_pair` (`(child_of IS NULL) = (child_session IS NULL)`) and `threads_child_not_self`, and the partial **unique** index `threads_child (child_of, child_session) WHERE child_of IS NOT NULL`: at most one child of a parent for a session, which is what makes two replicas that learn of the same session at once make one thread (the loser of the race reads the winner's, `ChildThread::Existing`). `events.kind` gains `child_session_opened`, `child_session_reported` and `child_session_closed` (the constraint rebuilt with every kind, `NOT VALID` and then validated, as `0020` did). No table: what a parent knows of its sessions (`Job.sessions`) and what a child knows of its own (`Job.child`) live inside `threads.job`. **Rollout order:** every replica on the build that has this migration **before** an agent that lists `child-sessions/v1` is deployed: an older build cannot decode a log that has one of the kinds, and its `delete_threads` does not know to take a parent's children (the foreign key refuses the delete). Nothing writes a child or a kind until such an agent does. A `ThreadStore` implementation: `open_child_thread` and `child_threads` ([ports README](../orchestrator/crates/ports/README.md)).
 - **Nothing about a connection is kept.** There is no registry of connections or runs. A reconnect
   with `Last-Event-ID` builds a new `Connect` from the log: the events up to the cursor are folded
   and not written, so the projector's state at the cursor is the same on every replica, the
