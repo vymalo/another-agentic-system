@@ -80,7 +80,8 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
   const busy = acting !== null || reading;
   const values = audienceIn(field, stored);
   // a role the field cannot show (one with a comma): said, and kept while the field is untouched
-  const fits = audienceFits(stored);
+  const untouched = field === audienceField(stored);
+  const comma = !audienceFits(stored) && untouched;
   const fieldError = failure?.target.field === "audience" ? failure.message : null;
   // every other refusal is the dialog's own: a stale share, a lost permission, a prompt that is gone, a failed request
   const topFailure = failure && failure.target.field !== "audience" ? failure : null;
@@ -150,6 +151,8 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
     setStored(result.value.audience ?? []);
     setField(audienceField(result.value.audience));
     setFailure(null);
+    // the InlineStatus that held the focus is gone: the field the person is about to Save takes it
+    requestAnimationFrame(() => fieldRef.current?.focus());
   }
 
   return (
@@ -183,11 +186,12 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
+              disabled={busy}
               aria-invalid={fieldError ? true : undefined}
               aria-describedby={joined(
                 `${id}-help`,
                 `${id}-live`,
-                !fits && `${id}-comma`,
+                comma && `${id}-comma`,
                 fieldError && errorId,
               )}
               onChange={(event) => setField(event.target.value)}
@@ -199,12 +203,13 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
             <p id={`${id}-live`} className="text-sm text-muted-foreground">
               {audienceSentence(values)}
             </p>
-            {fits ? null : (
+            {comma ? (
               <p id={`${id}-comma`} className="text-xs text-muted-foreground">
-                One of these roles holds a comma, which this field uses between roles: leave the
-                field as it is to keep it, or it is replaced by the roles as typed.
+                One of these roles holds a comma, which this field uses between roles. The stored
+                role is kept while the field reads exactly as it does now; any other text is split
+                on the commas as typed.
               </p>
-            )}
+            ) : null}
             {fieldError ? (
               <p id={errorId} role="alert" className="text-sm text-destructive">
                 {fieldError}

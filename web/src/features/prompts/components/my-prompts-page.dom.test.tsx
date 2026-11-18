@@ -518,6 +518,7 @@ describe("the sharing control (P4)", () => {
     const field = audienceFieldOf(dialog);
     expect(field.value).toBe("");
     expect(within(dialog).getByText("Only you can read it.")).toBeTruthy();
+    expect(field.getAttribute("aria-describedby")).not.toMatch(/-comma/);
 
     fireEvent.change(field, { target: { value: " user , prompt-team, user " } });
     expect(
@@ -625,6 +626,7 @@ describe("the sharing control (P4)", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Load the current version" }));
     await waitFor(() => expect(field.value).toBe("team"));
+    await waitFor(() => expect(document.activeElement).toBe(field));
     expect(screen.queryByText(/changed elsewhere since you opened it/)).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await screen.findByText("“Plan” is shared with team.");
@@ -685,12 +687,67 @@ describe("the sharing control (P4)", () => {
     const again = await screen.findByRole("dialog");
     const other = audienceFieldOf(again);
     fireEvent.change(other, { target: { value: "a,b, prompt-team" } });
+    expect(within(again).queryByText(/One of these roles holds a comma/)).toBeNull();
     fireEvent.click(within(again).getByRole("button", { name: "Save" }));
     await screen.findByText("“Plan” is shared with a, b, prompt-team.");
     const split = (await (await api("GET", `/api/prompts/${made.id}`)).json()) as {
       audience: string[];
     };
     expect(split.audience).toEqual(["a", "b", "prompt-team"]);
+  });
+
+  it("Load the current version updates a stored comma role before the next Save", async () => {
+    const made = await openAsSharer({
+      name: "comma",
+      title: "Comma",
+      body: "x",
+      audience: ["a,b"],
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Change sharing “Comma”" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = audienceFieldOf(dialog);
+    // another tab adds a role: the revision the dialog holds is stale
+    const other = await api("PATCH", `/api/prompts/${made.id}`, {
+      revision: made.revision,
+      audience: ["a,b", "user"],
+    });
+    expect(other.status).toBe(200);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText(/changed elsewhere/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Load the current version" }));
+    await waitFor(() => expect(field.value).toBe("a,b, user"));
+    expect(document.activeElement).toBe(field);
+    expect(within(dialog).getByText(/One of these roles holds a comma/)).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patchOf()).toHaveLength(2));
+    const body = JSON.parse(patchOf()[1]?.body ?? "{}") as { audience: string[] };
+    expect(body.audience).toEqual(["a,b", "user"]);
+    const held = (await (await api("GET", `/api/prompts/${made.id}`)).json()) as {
+      audience: string[];
+    };
+    expect(held.audience).toEqual(["a,b", "user"]);
+  });
+
+  it("disables the field while a save is in flight", async () => {
+    await openAsSharer();
+    fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = audienceFieldOf(dialog);
+    fireEvent.change(field, { target: { value: "user" } });
+
+    let release!: () => void;
+    hold = (method) =>
+      method === "PATCH"
+        ? new Promise<void>((resolve) => {
+            release = resolve;
+          })
+        : undefined;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(field.disabled).toBe(true));
+    release();
+    await screen.findByText("“Plan” is shared with user.");
   });
 
   it("a 404 says the prompt is gone, closes the dialog and reads the list again", async () => {

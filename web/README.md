@@ -1240,8 +1240,9 @@ frozen prompt). Nothing is offered while `me` is not known, and a prompt shared 
   `0x21` to `0x7E`), which is what the field separates roles with: while the field is exactly what the prompt's audience renders to, that audience is sent as
   it is — so opening the dialog and pressing Save changes nothing — and a line under the field says that a change would replace it; once the field differs,
   the roles are what was typed.
-- **The write is the audience and nothing else.** The field is split on commas, trimmed, its empty values dropped and each role kept once (the order typed
-  is the order sent), and `updatePrompt` is sent `{revision, audience}`: a share never carries a title, a text or a question. The row's "Shared with: …" comes
+- **The write is the audience and nothing else.** For the roles as typed, the field is split on commas, trimmed, its empty values dropped and each role kept once (the order typed
+  is the order sent); a field left exactly as the prompt's audience renders it keeps the stored roles, so a role that holds a comma (which the field cannot show) is not
+  split by a Save that changes nothing. `updatePrompt` is sent `{revision, audience}`: a share never carries a title, a text or a question. The row's "Shared with: …" comes
   from the summary, and the prompt the server answers with replaces it (the roles sorted by the server, `*` as Everyone).
 - **A refusal is said where it is.** `bad_audience` (a role with a space, `*` beside a role, more than 32) puts the words under the field with
   `aria-invalid`, `aria-describedby` and the focus, and the roles typed stay. A **403 `forbidden`** (the roles no longer let the person keep a share) says so

@@ -41,7 +41,7 @@ export const audienceField = (audience: readonly string[] | undefined): string =
 
 /**
  * Whether the field can hold this audience at all: a role value may hold a comma (the contract allows every byte
- * `0x21` to `0x7E`, and `PromptAudience`'s pattern with it), and the comma is what this field separates roles with.
+ * `0x21` to `0x7E`, and the core's `is_role_value` with it), and the comma is what this field separates roles with.
  */
 export const audienceFits = (audience: readonly string[] | undefined): boolean =>
   (audience ?? []).every((role) => !role.includes(","));
