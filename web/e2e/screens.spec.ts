@@ -782,6 +782,51 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "prompts-form-refused");
     });
 
+    test("prompts in the composer: the / menu and the fill form", async ({ page, context }) => {
+      const lib = await promptsSession(context, "user");
+      await lib.make({
+        name: "review",
+        title: "Review a change",
+        description: "Reviews a change for one concern, at the depth you pick.",
+        body: "Review this change for {{focus}} at depth {{depth}}.",
+        variables: [
+          {
+            id: "focus",
+            question: "What should the review focus on?",
+            options: [
+              { value: "security", label: "Security" },
+              { value: "speed", label: "Speed" },
+            ],
+          },
+          { id: "depth", question: "How deep?", type: "number", unit: "levels" },
+        ],
+      });
+      await lib.make({
+        name: "standup",
+        title: "Write my standup",
+        description: "A short note of what I did, what is next and what blocks me.",
+        body: "Write my standup from {{notes}}.",
+        variables: [{ id: "notes", question: "Your notes", type: "longText" }],
+      });
+      await page.goto("/");
+      const box = page.getByLabel("Message", { exact: true });
+      await expect(box).toBeVisible();
+      await box.fill("/rev");
+      await expect(page.getByRole("listbox", { name: "Prompts" })).toBeVisible();
+      await shot(page, "prompts-menu");
+
+      await page.keyboard.press("Enter");
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await shot(page, "prompts-fill");
+
+      await dialog.getByText("Security", { exact: true }).click();
+      await dialog.getByRole("textbox", { name: /How deep\?/ }).fill("3");
+      await dialog.getByRole("button", { name: "Use prompt" }).click();
+      await expect(box).toHaveValue("Review this change for Security at depth 3.");
+      await shot(page, "prompts-filled");
+    });
+
     test("sign-in screen, and the same after a sign-in lapsed (browser mode)", async ({ page }) => {
       // the mock is an edge deployment: the page is told it is a browser-mode one, whose issuer is never reached here
       const issuer = "https://auth.example.com/realms/acme";

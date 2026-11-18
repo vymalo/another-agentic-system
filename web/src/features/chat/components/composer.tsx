@@ -21,6 +21,9 @@ import { MentionChips } from "@/features/mentions/components/mention-chips";
 import { MentionListbox } from "@/features/mentions/components/mention-listbox";
 import { useMentions } from "@/features/mentions/hooks/use-mentions";
 import { MentionsStore } from "@/features/mentions/lib/store";
+import { PromptFillDialog } from "@/features/prompts/components/prompt-fill-dialog";
+import { PromptMenu } from "@/features/prompts/components/prompt-menu";
+import { usePromptMenu } from "@/features/prompts/hooks/use-prompt-menu";
 import type { ApiAgent, ThreadState } from "@/lib/api/types";
 import { isActive, isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
@@ -153,11 +156,15 @@ export function Composer({
   // While the agent works (and does not wait for an answer) a message goes out with how it is
   // delivered; the runtime's own send would be a 409 on an open run.
   const whileWorking = running && interrupts.length === 0 && sending !== undefined;
+  // "/" opens the person's prompts, and a pick fills one into the box (docs/api/prompts-v1.md): the
+  // list is read when the menu opens, and nothing is sent
+  const promptMenu = usePromptMenu({ enabled: interrupts.length === 0, inputRef: boxRef });
   const mention = useMentions({
     agents: mentions?.agents ?? [],
     store,
     inputRef: boxRef,
-    enabled: mentions !== undefined && interrupts.length === 0,
+    // a message that is one "/name" is a command: the two lists never open together
+    enabled: mentions !== undefined && interrupts.length === 0 && !promptMenu.open,
   });
   const sendWhileWorking = (mode: SendMode) => {
     if (!sending?.ready) return;
@@ -182,7 +189,10 @@ export function Composer({
     requestAnimationFrame(() => boxRef.current?.focus());
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // the list of agents has the arrows, Enter, Tab and Escape while it is open
+    // the list of prompts has the arrows, Enter, Tab and Escape while it is open, and so does the
+    // list of agents; the two never open together ("/" starts a message, "@" follows a word)
+    promptMenu.onKeyDown(e);
+    if (e.defaultPrevented) return;
     mention.onKeyDown(e);
     if (e.defaultPrevented) return;
     if (!whileWorking || e.nativeEvent.isComposing) return;
@@ -237,7 +247,9 @@ export function Composer({
           ? "Waiting for your answer."
           : held
             ? "Your message goes out as soon as the conversation is shown."
-            : ""}
+            : promptMenu.notice?.tone === "muted"
+              ? promptMenu.notice.text
+              : ""}
       </p>
       {finished && state === "failed" && failure?.code === CHECKS_FAILED ? (
         <Alert variant="destructive" role="status" data-slot="checks-failed" className="rounded-xl">
@@ -256,11 +268,31 @@ export function Composer({
           {sendError}
         </InlineStatus>
       ) : null}
+      {promptMenu.notice ? (
+        <InlineStatus
+          tone={promptMenu.notice.tone}
+          role={promptMenu.notice.tone === "error" ? "alert" : undefined}
+        >
+          {promptMenu.notice.text}
+        </InlineStatus>
+      ) : null}
       <ComposerPrimitive.Root
         onSubmit={answerInterrupt}
         data-slot="composer"
         className="relative flex flex-col gap-1 rounded-3xl border border-input bg-card p-2 shadow-composer transition-[border-color,box-shadow] focus-within:border-ring/60 focus-within:ring-4 focus-within:ring-ring/15"
       >
+        {promptMenu.open ? (
+          <PromptMenu
+            id={promptMenu.listboxId}
+            optionId={promptMenu.optionId}
+            state={promptMenu.state}
+            query={promptMenu.query}
+            options={promptMenu.options}
+            active={promptMenu.active}
+            onPick={promptMenu.pick}
+            onHover={promptMenu.hover}
+          />
+        ) : null}
         {mention.open ? (
           <MentionListbox
             id={mention.listboxId}
@@ -274,6 +306,7 @@ export function Composer({
         <ComposerPrimitive.Input
           ref={boxRef}
           {...mention.comboboxProps}
+          {...promptMenu.comboboxProps}
           className="max-h-60 min-h-11 w-full min-w-0 resize-none bg-transparent px-3 pt-2 pb-1 text-base leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           aria-label="Message"
           placeholder={placeholder}
@@ -350,6 +383,15 @@ export function Composer({
           )}
         </div>
       </ComposerPrimitive.Root>
+      {promptMenu.filling ? (
+        <PromptFillDialog
+          prompt={promptMenu.filling}
+          fill={promptMenu.fill}
+          loadCurrent={promptMenu.loadCurrent}
+          onFilled={promptMenu.filled}
+          onClose={promptMenu.close}
+        />
+      ) : null}
       {isNew ? null : (
         <p className="px-4 text-center text-xs text-muted-foreground">
           Agents can make mistakes. Check their work.

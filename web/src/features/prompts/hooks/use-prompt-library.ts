@@ -14,9 +14,9 @@ import {
   failureOf,
   type Problem,
   type ReadFailure,
-  readFailureOf,
 } from "../lib/failures";
 import { sortPrompts } from "../lib/library";
+import { problemOf, readAllPrompts, readPrompt } from "../lib/read";
 
 /*
  * The person's prompt library (`/api/prompts`, ADR 0070; the recipe is in `docs/api/chat-api.yaml`, on `listPrompts`). The list is
@@ -65,16 +65,6 @@ export type PromptLibraryView = {
 
 type Limits = { limit: number; maxVariables: number };
 
-const problemOf = (error: unknown, status: number): Problem => {
-  const e = (error ?? {}) as { code?: unknown; at?: unknown; offset?: unknown };
-  return {
-    status,
-    ...(typeof e.code === "string" ? { code: e.code } : {}),
-    ...(typeof e.at === "string" ? { at: e.at } : {}),
-    ...(typeof e.offset === "number" ? { offset: e.offset } : {}),
-  };
-};
-
 const summaryOf = (p: ApiPrompt): ApiPromptSummary => ({
   id: p.id,
   name: p.name,
@@ -86,27 +76,6 @@ const summaryOf = (p: ApiPrompt): ApiPromptSummary => ({
   revision: p.revision,
   updatedAt: p.updatedAt,
 });
-
-type Read = { ok: true; items: ApiPromptSummary[] } | { ok: false; status: number; error: unknown };
-
-/** Every page, in the order the server gave them, until it names no next one (or names one it already gave). */
-async function readAll(): Promise<Read> {
-  // by id: a prompt written between two pages must not be listed twice
-  const items = new Map<string, ApiPromptSummary>();
-  const seen = new Set<string>();
-  let cursor: string | undefined;
-  for (;;) {
-    const { data, error, response } = await api.GET("/api/prompts", {
-      params: { query: cursor === undefined ? {} : { cursor } },
-    });
-    if (!data) return { ok: false, status: response.status, error };
-    for (const item of data.items) items.set(item.id, item);
-    const next = data.nextCursor;
-    if (!next || seen.has(next)) return { ok: true, items: [...items.values()] };
-    seen.add(next);
-    cursor = next;
-  }
-}
 
 export function usePromptLibrary(config: Limits): PromptLibraryView {
   const [state, setState] = useState<LibraryState>({ status: "loading" });
@@ -132,7 +101,7 @@ export function usePromptLibrary(config: Limits): PromptLibraryView {
       settled.current = mine;
       setState((s) => (s.status === "ready" ? { ...s, readError } : s));
     };
-    readAll()
+    readAllPrompts()
       .then((read) => {
         if (read.ok) {
           shown.current = true;
@@ -260,17 +229,7 @@ export function usePromptLibrary(config: Limits): PromptLibraryView {
     [load],
   );
 
-  const get = useCallback<PromptLibraryView["get"]>(async (id) => {
-    try {
-      const { data, error, response } = await api.GET("/api/prompts/{promptId}", {
-        params: { path: { promptId: id } },
-      });
-      if (data) return { ok: true, value: data };
-      return { ok: false, failure: readFailureOf(problemOf(error, response.status)) };
-    } catch {
-      return { ok: false, failure: readFailureOf({ status: 0 }) };
-    }
-  }, []);
+  const get = useCallback<PromptLibraryView["get"]>(async (id) => readPrompt(id), []);
 
   return { state, reload: load, get, create, update, remove };
 }

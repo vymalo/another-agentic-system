@@ -492,7 +492,12 @@ function rangeHint(q: ChoiceQuestion): string | undefined {
   return undefined;
 }
 
-function Question({
+/**
+ * One question of a Choices form, drawn by the catalog renderer. Exported for the prompt fill form
+ * (`features/prompts`), which draws a prompt's variables as the catalog's own Choices (the recipe of
+ * `docs/api/prompts-v1.md`) and has no surface to take pictures from: a prompt has no `images`.
+ */
+export function Question({
   question,
   name,
   state,

@@ -475,6 +475,31 @@ reached from the account menu's **Usage** item (no permission gates it). A page,
 - **A refusal** is a destructive line at the field it is about (`role="alert"`, `aria-invalid`, `aria-describedby`, focus); the text's braces are selected for a bad reference; a stale edit is a warning at the top of the form with **Load the current version**.
 - **Phone:** one column, options and buttons wrap, no sideways scroll with a long title, name or question (`e2e/prompts.spec.ts`).
 
+## Prompts in the message box
+
+*Added 2026-11-18 (slice P2's web of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), on the library of [ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md)).* A message that is one `/name` opens the person's prompts above the box; a pick fills one into the box, never sends it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-menu.png">
+  <img src="e2e/__screens__/desktop-light-prompts-menu.png" alt="A new chat with “/rev” in the message box and, above it, one row: “/review Review a change” and its description, “Reviews a change for one concern, at the depth you pick.”" width="640">
+</picture>
+
+*The list after `/rev`, from the web's mock server.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-fill.png">
+  <img src="e2e/__screens__/desktop-light-prompts-fill.png" alt="The fill form over the chat: the heading “Review a change”, “/review — Reviews a change for one concern, at the depth you pick.”, the question “What should the review focus on?” with Security and Speed, “How deep? (in levels)” with a number box, “2 questions are not answered yet.”, Cancel and a disabled Use prompt." width="640">
+</picture>
+
+*The form that fills the prompt's questions, from the web's mock server.*
+
+- **The trigger is the first character.** `/` then a name with no white space (`/` alone lists all); a slash inside a message, or a message with a space, is a message. The matches put the name first and the title after it, fold accents, and tie by name then id. The list is read **when the box becomes one `/name`**, and again after it stops being one and becomes one again; a query that changes while the list is open only narrows it, and a thread that never types `/` asks `/api/prompts` nothing.
+- **The menu is the mentions' listbox**, above the box, as wide as it: `--popover`, 16 px radius, the composer's shadow, at most 18 rem and it scrolls. A row has `/name` (12 px monospace, muted), the title (14 px, weight 500), and one line: the description, else "Asks 2 questions". A shared prompt carries a small **Shared** badge and names no author. The active row is on `--accent`; the focus stays in the textarea and `aria-activedescendant` names the row. **↓ ↑** move, **Enter** or **Tab** pick, **Escape** closes the list until the query changes, a click picks; Enter with nothing matching sends the message, and Enter while the list is still being read does nothing.
+- **The form is a dialog, not a surface.** Its title is the prompt's title (the focus moves there), `/name — description` under it, and the questions are the catalog's own `Choices`, with the conversation's renderer and its controls. A prompt cannot use `images` or `show`; a kind this client cannot draw is not offered and says so. The defaults are the form's start. **Use prompt** is held until every required question is answered, with "N questions are not answered yet." in words and `aria-describedby`; Cancel closes and puts the command back in the box.
+- **A refusal is in words at the form.** A stale prompt (409) keeps the answers and offers **Load the current version**, which reads it again and keeps the answers whose questions still exist: the form never overwrites. A 404 reads the list again; a 422 `invalid_answer` names the question and the rule and moves the focus there; `rendered_too_long` gives the limit in KiB; a 503, 401, 403 and 429 say their own words. A failed read of the prompt puts `/query` back in the box.
+- **Nothing is sent.** The text `renderPrompt` answers with goes into the box, the caret after it, and the person edits and sends it as any message.
+- **Phone and both schemes:** the menu is as wide as the box and its rows truncate; the dialog is `min(32rem, 100vw - 2rem)` and scrolls; axe (WCAG AA) reports no serious or critical violations on the list with a match, the list with no match and the form, in both schemes, on a phone and a desktop (`e2e/prompt-composer.spec.ts`), and no sideways scroll appears. *Verified 2026-11-18*: the Playwright spec passes on `chromium` and `mobile` (six tests each); the unit suite passes (233 files, 4,456 tests at `--maxWorkers=8`).
+
 ## Mentions
 
 *Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11).* A person who wants
