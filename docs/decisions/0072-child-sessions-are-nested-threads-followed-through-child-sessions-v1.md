@@ -113,7 +113,9 @@ stateDiagram-v2
 | Slice | What | Depends on |
 |---|---|---|
 | S1 | The contract, this ADR, the card read into a typed offer, the capabilities key, the fake agent's word `child-sessions` | nothing |
-| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension | S1 |
+| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension (built as S2a to S2d, then S2e and S2f below) | S1 |
+| S2e | The AG-UI projection of a session: the parent's card and the child's log in the stream | S2 |
+| S2f | The scenario on mocks: a WireMock agent that serves the extension and `dev/child-sessions-e2e.sh` | S2 |
 | S3 | The person sends, steers, stops, closes and starts a session | S2 |
 | S4 | The web: the nested thread, the step card with "Open", the strip of sessions, "New subagent" with "Close when done" | S3 |
 | S5 | The adam pin with adam-rs ADR 0045 slice 6, the chat's `planner` kept open in `dev/agents-e2e.sh` | S4, adam-rs slice 6 |
@@ -127,3 +129,20 @@ whose `by` the agent did not say is taken for the agent's and is not counted in 
 within the same job keeps the `by` of its round; what counts that answer is decided with S3. If adam moves a round's usage onto
 the round itself, the rule flips: the flag is per event, so the history already written stays right. This replaces the wording of
 decision 3 and of the consequences that left the choice open.
+
+## Amended (2026-11-18, S2d review)
+
+- **A background round that outlives its parent's task** (a helper the model started and the parent's task did not wait for) is counted in
+  the parent **only if adam adds it to the parent task's totals** once it ends. *Unverified*: adam-rs was read for the case of a round
+  the parent waits for, not for one that ends after the parent's task did. If adam does not, **the round is counted nowhere** (the
+  child's totals are `counted: false` and the parent's task is over). To be checked when S5 pins adam, with the flag per event
+  (decision above) as the lever if the answer is no.
+- **Decision 2: where a child nests.** A child of a thread that is itself a nested fork is nested under that fork's **root row** of the
+  person's list, as a fork of it would be (`rail_parent_of_fork`, one level deep), not under the fork; and under its parent's row
+  even when that row is archived (the child is archived with the block).
+- **A child is read-only until S3.** A message, a steer, a Stop & send, an action and an AG-UI run on a child thread are `422
+  child_thread` like a fork and a share; a cancel is allowed. S3 opens them deliberately.
+- **Fail closed against an agent that lies about a round.** An envelope whose `contextId` is not the context the child adopted is
+  refused and counted (`child_sessions_dropped_total{reason="foreign_context"}`) and the follow fails, so a task id naming the
+  parent's task or another conversation's is never copied into the child. A dispatcher follows at most
+  `MAX_OBSERVED_PER_PARENT` (8) rounds of one parent at once; the rest wait with backoff and are never dropped.

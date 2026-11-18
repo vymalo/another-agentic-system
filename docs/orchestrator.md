@@ -1630,22 +1630,36 @@ sequenceDiagram
 stateDiagram-v2
   [*] --> Open: Command Observe in the child's commit
   Open --> Claimed: the dispatcher claims it in the thread's order
-  Claimed --> Open: the child still works on an earlier round, tried again later
-  Claimed --> Dead: attempts used up, or the follow failed (the child fails)
-  Claimed --> Skipped: the thread was deleted
+  Claimed --> Open: the registry is unreachable, the child still works on an earlier round, or the parent's rounds are all followed (retry with backoff)
+  Claimed --> Dead: attempts used up on a busy child, or the row can never be followed (another session's, round 0)
+  Claimed --> Skipped: the thread was deleted or stopped, or it holds the task as over
   Claimed --> Started: RoundStarted applied, mark_sent
+  Claimed --> Following: the row was sent already (a lapsed claim)
   Started --> Following: resubscribe, else poll
-  Following --> Started: the lease lapsed, the row is claimed again
+  Following --> Claimed: the lease lapsed, the row is claimed again
+  Following --> Dead: the follow failed (the agent refused, the polls failed, a task of another context)
   Following --> Reported: the turn ended, the parent hears of the round
   Reported --> Delivered: the row is finished
 ```
 
 - **`Dispatcher::observe(row)`** loads the child with the parent's agent (the registry is read now, as for any row). A row with no
-  `sent_at` applies `RoundStarted` under the claim (key `observe:<row id>`; the round's `by` is **not** known before its own task
-  is read, so none is said and the round is taken for the agent's, S3 refines it), then `mark_sent` with the round's task, then
+  `sent_at` applies `RoundStarted` under the claim (key `observe:<row id>`; the round's `by` is the report's, carried on the row
+  and `None` when the report said none, then taken for the agent's), then `mark_sent` with the round's task, then
   follows the task: `follow_task`, which resubscribes and falls back to polling. **It never sends a message to the agent.** A row
   that was sent already (a claim that lapsed) follows the same task again, even if the child is over. A child that still works on
-  another round retries the row with backoff, and dead-letters it when its attempts are used up, without failing the child.
+  another round retries the row with backoff, and dead-letters it when its attempts are used up, without failing the child. A row
+  that can never be followed (another session's, round 0) is dead-lettered at once; one whose thread was stopped before the
+  round began, or already holds the task as over, is skipped.
+- **At most `MAX_OBSERVED_PER_PARENT` (8) rounds of one parent are followed at once** by a dispatcher: each holds a worker for the
+  round's length and an agent chooses how many sessions it opens. A row past it waits (retry with backoff, never dropped or
+  dead-lettered for it).
+- **Fail closed against a hostile round.** Every envelope of a followed round must carry the context the child adopted
+  (`binding.context_id`): one that does not is refused, counted (`foreign_context`) and fails the follow, so the parent's task
+  id, or another conversation's, named as a round is never copied into the child.
+- **A blocked round answered in the same round** is followed again once (`ChildLedger.refollow`) and reported again when it ends
+  otherwise (`SessionNote.outcome`: each `(round, outcome)` once).
+- **A child with nothing to follow is made at rest** (`done`), so a person can delete it; its first round starts as job 1.
+- **A child is read-only until S3**: a message, steer, Stop & send, action or run is 422 `child_thread`.
 - **At the round's end** (`Dispatcher::delivered`) the application tells the parent (`App::report_round_over`: the child's
   ledger, its context and the state its binding records for the round) **before** the row is finished: a crash in between
   follows the round again and reports again, which writes nothing twice.
@@ -2228,7 +2242,7 @@ pub enum Command {
     SetSharing { level: ShareLevel, nonce: ShareNonce },  // ADR 0040: the row's share, in the commit of the `thread_shared` that says so; `ClearSharing` likewise for `thread_unshared`
     Ask { job: u32, ask: u32, agent: AgentId, depth: u8, text: String,
           continue_task: Option<String>, reference_task_ids: Vec<String> },   // ADR 0026: → an outbox row, kind `ask`, unordered
-    Observe { session: String, round: u32, task_id: String },   // ADR 0072: follow a round without sending anything: an outbox row `OutboxPayload::Observe`, kind `delegate` (S2b; followed by `Dispatcher::observe`, S2d)
+    Observe { session: String, round: u32, task_id: String, by: Option<SessionBy> },   // ADR 0072: follow a round without sending anything: an outbox row `OutboxPayload::Observe`, kind `delegate` (S2b; followed by `Dispatcher::observe`, S2d)
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
@@ -2706,7 +2720,7 @@ erDiagram
 | `user_prompts` | A person's **prompt library** ([ADR 0070](decisions/0070-a-persons-prompt-library.md), migration `0026`): `id` (`p-` and 12 base-36 characters, **global**, the whole key: a person in the audience fetches a shared prompt without the author), `owner`, `name` (unique per owner), `title`, `description`, `body` (text with `{{id}}` references), `variables` (a JSON array of questions of the UI catalog, version 8, without `show` and `images`), `audience` (role values, `*` alone, empty is private), `revision` (from the sequence `user_prompt_revisions`, never given twice), `created_at`, `updated_at`. **Beside the log, not in it: no event records a prompt**, it is never folded, never copied into a thread, a fork or an export, and deleting a thread erases nothing of it; it is the person's and goes with their account (issue 294). The limit of 100 per person is the store's, under an advisory lock of the owner |
 | `usage_tasks`, `usage_lines`, `usage_sandbox` | What each person used, per task: the counts per provider and model and the sandbox time per shape, in the UTC month of the latest event that changed the row (**built**, PR 1 of [ADR 0065](decisions/0065-a-usage-ledger-per-person.md), migration `0023`; read by `GET /api/me/usage` priced with `usage.prices`, and swept past `usage.retentionMonths` by a worker, PR 2) | Written by the store in the transaction that appends the `model_usage` or `model_usage_total` event (a total replaces the row, a call adds only while there is no total, an event already folded in changes nothing); no foreign key to `threads`, so the rows outlive the thread, with `thread_id` cleared in the transaction that erases it; `threads.usage_through` makes the catch-up of a log a build without the ledger wrote sound |
 | `threads.child_of`, `threads.child_session` | A **child session's** thread (**built**, S2b, migration `0027`, [ADR 0072](decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): the parent thread and the session's id, both `NULL` for any other thread | Made by `ThreadStore::open_child_thread`, never by `create_thread` or `fork_thread` (`Refused("child_of")`), in one transaction with its first commit (which may hold no event) and at most once per `(parent, session)`: a second open answers `ChildThread::Existing` and writes nothing, so a race makes one thread. The parent is the owner's, else `NotFound`, and is not a child itself (`Refused("nested_child")`). The **caller** nests the child under the parent's root in the owner's list (`rail_parent_of_fork`; the store only applies `create_thread`'s rail rules to the `rail_parent` it is given); the session id is 1 to 512 characters (`Refused("child_session")`, and the CHECK `threads_child_session_len`); `child_threads(owner, parent)` lists them oldest first by `created_at`, then `id` (ids are the caller's), at most 1000. **Delete:** a child of a thread that goes is erased only if the caller named it (`delete_threads` is `VersionConflict` otherwise, as for an edit; the parent is locked, so a child made meanwhile waits and finds it gone; `App::erase` names every thread's children and refuses (409 `thread_active`) when one works); a child may be deleted alone and its parent stays whole, and a later open of the same `(parent, session)` then makes a **new** child (the store keeps no trace of the deleted one; the parent's ledger decides whether it is asked) |
-| `outbox` row, payload `{"observe": {"session", "round", "task_id"}}` | A round of a session the child thread **follows without sending** (**built**, S2b and S2d; written by the application from `Command::Observe` and followed by `Dispatcher::observe`) | Kind `delegate`, so the claim, the lease, the resume with `sent_at` and the **per-thread order** are a delegation's and no outbox kind or constraint changes; the dispatcher routes it to a follow, never a send. It is **not a message**: `Commit.skip_unsent_delegates` (a Stop & send) leaves it. A build that does not know it dead-letters the row |
+| `outbox` row, payload `{"observe": {"session", "round", "task_id", "by"?}}` | A round of a session the child thread **follows without sending** (**built**, S2b and S2d; written by the application from `Command::Observe` and followed by `Dispatcher::observe`) | Kind `delegate`, so the claim, the lease, the resume with `sent_at` and the **per-thread order** are a delegation's and no outbox kind or constraint changes; the dispatcher routes it to a follow, never a send. It is **not a message**: `Commit.skip_unsent_delegates` (a Stop & send) leaves it. A build that does not know it dead-letters the row |
 | `outbox.kind = 'description'` | A request to the model for the thread's description (**built**, PR S18, migration `0011`); payload `{"description": {"job": n}}` | Written in the commit of the transition that gets the thread to `done` or `blocked`, once per job; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Described` or `Input::DescriptionDeclined`, key `description:<row>`, with no model asked below `minNewMessages`) or `skipped` (a person wrote the description first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'title'` | A request to the model for the thread's title (**built**, slice 6, migration `0009`); payload `{"title": {"ask": n}}` | Written in the commit of the agent's reply that asks; claimable whatever the thread's older delegations; ends as `delivered` (the answer is the commit of `Input::Titled` or `Input::TitleDeclined`, key `title:<row>`) or `skipped` (the person renamed first); a row an older build cannot read dead-letters |
 | `outbox.kind = 'ask'`, `outbox.task_id` | A request to an agent the person mentioned, for the job's agent, and its A2A task (**built**, PR-19, migration `0014`; sent by PR-20) | Written in the commit that logs `ask_started` and arms the ask's deadline; claimable whatever the thread's delegations and other asks; the task is on the row (`ThreadStore::mark_verify_sent`), never on the thread's binding; ends `delivered` (the answer, in the commit of `Input::AskFinished`), `dead` (`Input::AskFailed`, same commit) or `skipped` (the ask ended first; its task cancelled) |

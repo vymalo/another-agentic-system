@@ -611,14 +611,18 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Queued: the child thread is made (open_child_thread)
+  [*] --> Queued: made with a round to follow (open_child_thread)
+  [*] --> Done: made at rest, with nothing to follow (idle or closed)
   Queued --> Working: RoundStarted, job 1
+  Queued --> Cancelled: stopped before its round began
+  Queued --> Failed: the agent is no longer listed
+  Done --> Working: a round starts, job 1 for a child at rest
   Working --> Done: the round completed
   Working --> Blocked: the round waits for the person
   Working --> Failed: the round failed, or the follow failed
   Working --> Cancelled: the round was canceled
+  Blocked --> Working: the same round goes on (followed again) or the next round, the next job
   Done --> Working: the next round, the next job
-  Blocked --> Working: the next round, the next job
   Failed --> Working: the next round, the next job
   Cancelled --> Working: the next round, the next job
 ```
