@@ -102,6 +102,9 @@ stateDiagram-v2
   gains what S2 adds to the store port, with its conformance cases.
 - Invariant 3 holds: a child thread is a thread, with its own log.
 - The usage ledger (ADR 0065) counts a round once, in the child thread.
+- **Until adam-rs moves it**, the live usage of a round the parent's model starts is reported on the parent's task (as it is today),
+  and the round's own task carries its totals when it ends. S2 must count such a round once: from the parent's reports or from the
+  round's totals, never both.
 - Slices, in [#332](https://github.com/vymalo/another-agentic-system/issues/332):
 
 | Slice | What | Depends on |

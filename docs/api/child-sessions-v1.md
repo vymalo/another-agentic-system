@@ -28,7 +28,7 @@ An agent whose card does not list the extension is unchanged, and so is a client
 |---|---|
 | **parent context** | The A2A context of the conversation that owns the sessions (a thread's context, [ADR 0055](../decisions/0055-the-agent-assigns-the-a2a-context.md)). |
 | **session** | A helper's conversation. Its id is opaque. It lives in the parent context, not in one of its tasks, so a later task of the parent context still has it. |
-| **child context** | The A2A context of a session. The agent assigns it; a client never builds one. |
+| **child context** | The A2A context of a session. The agent assigns it; a client never builds one and treats it as opaque. An agent may reserve a shape for it (adam-rs: `<parent context, escaped>/s/<session>`) and refuse a root message whose context has that shape. |
 | **round** | One task of the child context: the helper working on one message. Round 1 is the start; a message to an idle session starts the next. |
 | **keep open** | Chosen when the session starts. `false` (the default, "close when done"): the session closes when its round ends. `true`: it goes idle after each round. |
 
@@ -145,8 +145,9 @@ below, which every `Task` the agent returns carries.
 
 ### The sessions object
 
-Every `Task` of the parent context that the agent returns to an activated request (the first event of a stream, `GetTask`, the
-final task) carries under the URI in `Task.metadata` the sessions of the **parent context**, open first, then the 16 most recently
+Every `Task` of the parent context that the agent returns to an activated request (the answer to `SendMessage`, the first event of
+a stream, `GetTask`, each task of `ListTasks {contextId}`; a stream's later events are status updates and carry the events above)
+carries under the URI in `Task.metadata` the sessions of the **parent context**, open first, then the 16 most recently
 closed (a fixed 16):
 
 ```json
@@ -205,7 +206,8 @@ A message to the **child context**, activated, is the person's words to the help
 Every task of a child context carries under the URI in `Task.metadata` the session it belongs to:
 `{session, parentContextId, agent, description, keepOpen, round, by, state, closing}`: `round` its number, `by` who started it,
 `state` the session's state now (`working`, `idle` or `closed`, as in the sessions object) and `closing` whether a close waits for
-the round to end. A round is an
+the round to end. An activated stream of a round also carries this object on the status update that ends the round and on the
+one where `closing` turns true. A round is an
 ordinary A2A task: it streams its steps, text and usage as the parent does, and `GetTask`, `SubscribeToTask` and `ListTasks
 {contextId}` read it. **`CancelTask` of a working round** stops it: a kept-open session goes idle, another closes.
 
@@ -221,10 +223,16 @@ one text part, such as "close"):
 "metadata": {"https://agents.vymalo.com/a2a/extensions/child-sessions/v1": {"close": {"cancel": false}}}
 ```
 
-- An idle session closes at once. A working one closes when its round ends; with `"cancel": true` its round is canceled first.
+- An idle session closes at once, by a task of its own in the child context (it calls no model and is reported only as `closed`).
+  A working one closes when its round ends; with `"cancel": true` its round is canceled first.
 - The answer is a task of the child context whose session says `closed` (it was idle) or the working round with `closing: true`.
   The parent task, if one runs, reports `closed` when it closes.
 - A closed session is closed for the parent's model too: its next `subagent_send` is an error result.
+- A `close` that names a `taskId`, or that is sent to a parent context, is `InvalidParams`.
+
+**Also:** a `start` without a `contextId` starts a new parent context; unknown members of `start` and `close` are ignored; the
+card's commands are not expanded in a child context (they are the parent agent's); `ListTasks {contextId}` of an unknown child
+context, or another caller's, is an empty page, as for an unknown context.
 
 ## 7. Refusals
 
