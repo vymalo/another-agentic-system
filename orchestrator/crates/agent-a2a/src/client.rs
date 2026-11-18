@@ -295,27 +295,20 @@ impl A2aAgentClient {
             .map_err(classify)
     }
 
-    /// Fetches the live card and builds a client for it.
-    async fn connect(
-        &self,
-        ep: &AgentEndpoint,
-    ) -> Result<A2AClient<Box<dyn Transport>>, AgentError> {
-        let card = self.fetch_card(ep).await?;
-        self.client_for(ep, &card, Vec::new()).await
-    }
-
-    /// [`connect`](Self::connect) for a call about a task (`GetTask`, `CancelTask`): the card read
-    /// for this very call decides whether `child-sessions/v1` is activated, which is what makes the
-    /// task say its sessions and lets a round of a child context be read at all (ADR 0072).
+    /// Fetches the live card and builds a client for a call about a task (`GetTask`, `CancelTask`,
+    /// `ListTasks`), and says whether it activated `child-sessions/v1`. The card read for this very
+    /// call decides: activated, the task says its sessions and a round of a child context can be
+    /// read at all (ADR 0072); not, nothing the agent says of sessions is believed.
     async fn connect_for_task(
         &self,
         ep: &AgentEndpoint,
-    ) -> Result<A2AClient<Box<dyn Transport>>, AgentError> {
+    ) -> Result<(A2AClient<Box<dyn Transport>>, bool), AgentError> {
         let card = self.fetch_card(ep).await?;
         let activate = child_sessions_from_card(&card)
             .map(|_| vec![CHILD_SESSIONS_EXTENSION.to_owned()])
             .unwrap_or_default();
-        self.client_for(ep, &card, activate).await
+        let activated = !activate.is_empty();
+        Ok((self.client_for(ep, &card, activate).await?, activated))
     }
 
     /// The snapshot with the links on allowed hosts turned into the files they name.
@@ -331,6 +324,7 @@ impl A2aAgentClient {
     /// neither.
     fn task_reader(
         &self,
+        ep: &AgentEndpoint,
         activated: &[String],
         client: &Arc<A2AClient<Box<dyn Transport>>>,
     ) -> Option<TaskReader> {
@@ -342,6 +336,8 @@ impl A2aAgentClient {
             usage,
             sessions,
             poll: self.cfg.child_sessions_poll,
+            agent: self.clone(),
+            endpoint: ep.clone(),
         })
     }
 
@@ -363,10 +359,14 @@ impl A2aAgentClient {
 
 type Item = Result<orch_ports::AgentEnvelope, AgentError>;
 
-/// How a stream reads what only the task holds (the client of the call that opened it, and the
-/// timeout of a unary call): the `usage/v1` totals, which are on the task and never on a status
-/// update (ADR 0056), and the `sessions` object of `child-sessions/v1` (ADR 0072), which a stream
-/// that has no events learns by reading the task again and again.
+/// How a stream reads what only the task holds: the `usage/v1` totals, which are on the task and
+/// never on a status update (ADR 0056), and the `sessions` object of `child-sessions/v1` (ADR
+/// 0072), which a stream whose agent sends no events learns by reading the task again and again.
+///
+/// The reads run inline in the stream's loop: while one is out, the stream is not read (a call is
+/// bounded by `call_timeout`, and the agent keeps what it sends in the connection meanwhile). The
+/// order of what a read says is the totals, then the sessions: the listing is the newest truth, so
+/// it comes last, and it wins over what an event said before it.
 #[derive(Clone)]
 struct TaskReader {
     client: Arc<A2AClient<Box<dyn Transport>>>,
@@ -377,6 +377,15 @@ struct TaskReader {
     sessions: bool,
     /// How often the stream reads the task for its sessions.
     poll: Duration,
+    /// To read the card again before each read of sessions (ADR 0008: never remembered).
+    agent: A2aAgentClient,
+    endpoint: AgentEndpoint,
+}
+
+/// What one read of the task gave.
+struct TaskRead {
+    totals: Option<orch_ports::AgentEnvelope>,
+    sessions: Option<orch_ports::AgentEnvelope>,
 }
 
 impl TaskReader {
@@ -401,21 +410,85 @@ impl TaskReader {
         }
     }
 
-    /// What the task holds, as the envelopes the stream would have said it in and in the order a
-    /// status that ends the turn follows them: the usage totals, then the sessions.
-    async fn read(&self, task_id: &str) -> Vec<orch_ports::AgentEnvelope> {
-        let Some(task) = self.task(task_id).await else {
-            return Vec::new();
-        };
-        let totals = self.usage.then(|| usage_totals(&task)).flatten();
-        let sessions = self.sessions.then(|| sessions_news(&task)).flatten();
-        totals.into_iter().chain(sessions).collect()
+    /// Whether the card, read now, still offers `child-sessions/v1` well formed. A card that cannot
+    /// be read does not: sessions are not read from an agent that cannot say it offers them.
+    async fn still_offered(&self) -> bool {
+        match self.agent.fetch_card(&self.endpoint).await {
+            Ok(card) => child_sessions_from_card(&card).is_some(),
+            Err(_) => false,
+        }
     }
 
-    /// The sessions of a task that still runs.
-    async fn read_sessions(&self, task_id: &str) -> Option<orch_ports::AgentEnvelope> {
-        sessions_news(&self.task(task_id).await?)
+    /// What the task holds, for the read before a status that ends or pauses the turn.
+    async fn read(&self, task_id: &str) -> TaskRead {
+        let offered = self.sessions && self.still_offered().await;
+        if !self.usage && !offered {
+            return TaskRead {
+                totals: None,
+                sessions: None,
+            };
+        }
+        let Some(task) = self.task(task_id).await else {
+            return TaskRead {
+                totals: None,
+                sessions: None,
+            };
+        };
+        TaskRead {
+            totals: self.usage.then(|| usage_totals(&task)).flatten(),
+            sessions: offered.then(|| sessions_news(&task)).flatten(),
+        }
     }
+}
+
+/// What a read of the task says, in its place: after what the update itself said, and before the
+/// first status it comes with (the totals, then the sessions). With no status among them it comes
+/// first.
+fn with_reads(mut mapped: Vec<Item>, reads: Vec<orch_ports::AgentEnvelope>) -> Vec<Item> {
+    let at = mapped
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                Ok(orch_ports::AgentEnvelope {
+                    update: Some(orch_core::AgentUpdate::Status { .. }),
+                    ..
+                })
+            )
+        })
+        .unwrap_or(0);
+    mapped.splice(at..at, reads.into_iter().map(Ok));
+    mapped
+}
+
+/// Drops what an agent said of sessions to a call that did not ask for it (the contract: an
+/// agent says none of it to a request that did not activate the extension; one that does anyway
+/// is not believed, ADR 0008).
+fn unasked(item: &Item) -> bool {
+    matches!(
+        item,
+        Ok(orch_ports::AgentEnvelope {
+            update: Some(
+                orch_core::AgentUpdate::ChildSessions(_)
+                    | orch_core::AgentUpdate::ChildSessionsRejected(_)
+            ),
+            ..
+        })
+    )
+}
+
+/// A snapshot without what its agent said of sessions, for a call that did not activate them.
+fn without_sessions(mut snap: TaskSnapshot) -> TaskSnapshot {
+    snap.envelopes.retain(|e| {
+        !matches!(
+            e.update,
+            Some(
+                orch_core::AgentUpdate::ChildSessions(_)
+                    | orch_core::AgentUpdate::ChildSessionsRejected(_)
+            )
+        )
+    });
+    snap
 }
 
 struct Mapping {
@@ -423,6 +496,8 @@ struct Mapping {
     fetcher: Option<Fetcher>,
     /// Present when the call activated `usage/v1` or `child-sessions/v1`.
     reader: Option<TaskReader>,
+    /// The call activated `child-sessions/v1`: only then is anything said of sessions believed.
+    sessions: bool,
     /// Ticks while the task runs, when the call activated `child-sessions/v1`.
     poll: Option<tokio::time::Interval>,
     mapper: StreamMapper,
@@ -436,14 +511,18 @@ struct Mapping {
 /// what a refused request (for example a proxy's 401, whose status the SDK drops) looks like.
 ///
 /// With `reader` (the call activated `usage/v1` or `child-sessions/v1`), a status that ends or
-/// pauses the task has the task read first (`GetTask`): its totals and its sessions are passed on
-/// before it. With `child-sessions/v1` the task is also read every `child_sessions_poll` while the
-/// stream is open, which is how a parent that sends no events (or lost one) is followed.
+/// pauses the task has the task read (`GetTask`): its totals and its sessions are passed on after
+/// what that update said itself and before its status. With `child-sessions/v1` the task is also read
+/// every `child_sessions_poll` while the stream is open and has carried no event, which is how a
+/// parent that sends none is followed; the card is read again before each read, and a card that no
+/// longer offers the extension stops them. What an agent says of sessions to a call that did not
+/// activate the extension is dropped.
 fn map_stream(
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,
     reader: Option<TaskReader>,
 ) -> AgentStream {
+    let sessions = reader.as_ref().is_some_and(|r| r.sessions);
     let poll = reader.as_ref().filter(|r| r.sessions).map(|r| {
         let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + r.poll, r.poll);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -453,6 +532,7 @@ fn map_stream(
         inner,
         fetcher,
         reader,
+        sessions,
         poll,
         mapper: StreamMapper::default(),
         queue: VecDeque::new(),
@@ -480,26 +560,50 @@ fn map_stream(
                 None => Some(st.inner.next().await),
             };
             let Some(next) = next else {
-                // time to read the task for its sessions
-                if let Some(reader) = &st.reader
-                    && let Some(task_id) = st.mapper.task_id()
-                    && let Some(news) = reader.read_sessions(task_id).await
-                {
-                    st.queue.push_back(Ok(news));
+                // time to read the task for its sessions, unless the agent sends events (it is told
+                // when something changes) or its card no longer offers them
+                let task_id = st.mapper.task_id().map(str::to_owned);
+                match (&st.reader, task_id) {
+                    (Some(reader), Some(task_id)) if !st.mapper.has_session_events() => {
+                        if reader.still_offered().await {
+                            if let Some(task) = reader.task(&task_id).await
+                                && let Some(news) = sessions_news(&task)
+                                && let Some(news) = st.mapper.sessions_read(news, false)
+                            {
+                                st.queue.push_back(Ok(news));
+                            }
+                        } else {
+                            st.poll = None;
+                        }
+                    }
+                    (_, _) if st.mapper.has_session_events() => st.poll = None,
+                    _ => {}
                 }
                 continue;
             };
             match next {
                 Some(Ok(response)) => {
                     st.seen_any = true;
-                    if let Some(reader) = &st.reader
-                        && let Some(task_id) = wants_task_read(&response)
-                    {
-                        let read = reader.read(task_id).await;
-                        st.queue.extend(read.into_iter().map(Ok));
-                    }
+                    let wants = wants_task_read(&response).map(str::to_owned);
+                    let read = match (&st.reader, wants) {
+                        (Some(reader), Some(task_id)) => Some(reader.read(&task_id).await),
+                        _ => None,
+                    };
                     let mapped = st.mapper.map(response);
-                    st.queue.extend(mapped);
+                    // what the update said itself, then what the task says, then its status
+                    let mut reads = Vec::new();
+                    if let Some(read) = read {
+                        reads.extend(read.totals);
+                        reads.extend(
+                            read.sessions
+                                .and_then(|news| st.mapper.sessions_read(news, true)),
+                        );
+                    }
+                    let mut items = with_reads(mapped, reads);
+                    if !st.sessions {
+                        items.retain(|item| !unasked(item));
+                    }
+                    st.queue.extend(items);
                 }
                 Some(Err(e)) => {
                     st.seen_any = true;
@@ -760,10 +864,18 @@ impl AgentClient for A2aAgentClient {
         let tier = tier_metadata(&req, listing.offer())?;
         // The limits of a large file, when the extension is activated for this message (ADR 0058).
         let uploads = uploads_metadata(&req, &known, thread_tools.is_some());
+        // a steer asks for no reporting of its own (the task keeps reporting on the stream that
+        // started it), but the contract wants `child-sessions/v1` on every request about a child
+        // context, and the card read for this call decides
+        let child = child_sessions_from_card(&card).is_some();
         let reporting = if req.steer {
-            Vec::new()
+            if child {
+                vec![CHILD_SESSIONS_EXTENSION.to_owned()]
+            } else {
+                Vec::new()
+            }
         } else {
-            reporting_extensions(&known, child_sessions_from_card(&card).is_some())
+            reporting_extensions(&known, child)
         };
         let riders = Riders {
             thread_tools: thread_tools.as_ref(),
@@ -779,7 +891,7 @@ impl AgentClient for A2aAgentClient {
             )
             .await?,
         );
-        let reader = self.task_reader(&reporting, &client);
+        let reader = self.task_reader(&req.endpoint, &reporting, &client);
         let request = SendMessageRequest {
             message: user_message(&req, ui.as_ref(), catalog, riders, &reporting),
             configuration: None,
@@ -808,7 +920,7 @@ impl AgentClient for A2aAgentClient {
             self.client_for(&task.endpoint, &card, reporting.clone())
                 .await?,
         );
-        let reader = self.task_reader(&reporting, &client);
+        let reader = self.task_reader(&task.endpoint, &reporting, &client);
         let request = SubscribeToTaskRequest {
             id: task.task_id.clone(),
             tenant: None,
@@ -823,7 +935,7 @@ impl AgentClient for A2aAgentClient {
     }
 
     async fn get_task(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {
-        let client = self.connect_for_task(&task.endpoint).await?;
+        let (client, activated) = self.connect_for_task(&task.endpoint).await?;
         let request = GetTaskRequest {
             id: task.task_id.clone(),
             history_length: Some(0),
@@ -832,11 +944,17 @@ impl AgentClient for A2aAgentClient {
         let found = self
             .timed("reading the task", client.get_task(&request))
             .await?;
-        self.files_of(snapshot(&found)?).await
+        let snap = snapshot(&found)?;
+        self.files_of(if activated {
+            snap
+        } else {
+            without_sessions(snap)
+        })
+        .await
     }
 
     async fn cancel(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {
-        let client = self.connect_for_task(&task.endpoint).await?;
+        let (client, activated) = self.connect_for_task(&task.endpoint).await?;
         let request = CancelTaskRequest {
             id: task.task_id.clone(),
             metadata: None,
@@ -845,7 +963,13 @@ impl AgentClient for A2aAgentClient {
         let canceled = self
             .timed("cancelling the task", client.cancel_task(&request))
             .await?;
-        self.files_of(snapshot(&canceled)?).await
+        let snap = snapshot(&canceled)?;
+        self.files_of(if activated {
+            snap
+        } else {
+            without_sessions(snap)
+        })
+        .await
     }
 
     /// A2A 1.0 has no lookup by message id, so this lists the tasks of the context (`ListTasks`;
@@ -860,7 +984,8 @@ impl AgentClient for A2aAgentClient {
         message_id: &str,
     ) -> Result<Option<String>, AgentError> {
         const MAX_PAGES: usize = 10;
-        let client = self.connect(ep).await?;
+        // a child context is listed only by a request that activated the extension
+        let (client, _) = self.connect_for_task(ep).await?;
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let request = ListTasksRequest {
@@ -896,5 +1021,62 @@ impl AgentClient for A2aAgentClient {
             page_token = Some(page.next_page_token);
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use orch_core::{AgentTaskState, AgentUpdate};
+    use orch_ports::{AgentEnvelope, IdemKey};
+
+    use super::*;
+
+    fn env(word: &str, update: Option<AgentUpdate>) -> AgentEnvelope {
+        AgentEnvelope {
+            task_id: "t".into(),
+            context_id: "c".into(),
+            task_state: None,
+            revision: None,
+            key: IdemKey::Turn(word.into()),
+            update,
+            live: None,
+        }
+    }
+
+    fn status() -> AgentEnvelope {
+        env(
+            "status",
+            Some(AgentUpdate::Status {
+                state: AgentTaskState::Completed,
+                detail: None,
+                tier: None,
+            }),
+        )
+    }
+
+    fn word(item: &Item) -> String {
+        match &item.as_ref().unwrap().key {
+            IdemKey::Turn(w) | IdemKey::Task(w) => w.clone(),
+        }
+    }
+
+    #[test]
+    fn what_a_read_of_the_task_says_comes_after_the_updates_own_news_and_before_its_status() {
+        let own = env("own-news", None);
+        let mapped = vec![Ok(own), Ok(status())];
+        let reads = vec![env("totals", None), env("listing", None)];
+        let order: Vec<String> = with_reads(mapped, reads).iter().map(word).collect();
+        // the newest truth, the task's own listing, is the last thing said before the status
+        assert_eq!(order, ["own-news", "totals", "listing", "status"]);
+    }
+
+    #[test]
+    fn a_read_with_no_status_to_precede_is_said_first() {
+        let order: Vec<String> = with_reads(vec![Ok(env("a", None))], vec![env("r", None)])
+            .iter()
+            .map(word)
+            .collect();
+        assert_eq!(order, ["r", "a"]);
     }
 }

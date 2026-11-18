@@ -4,9 +4,7 @@
 - **Status:** **proposed (2026-11-18).** The feature is the owner's decision of 2026-11-14 (adam-rs
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md),
   decision 11, which puts this contract here); the shape of this page is proposed with
-  [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** the orchestrator
-  reads the card (S1), and its agent side: activation and the strict read of what an agent says (S2c). Nothing else, on either side: the agent's half is adam-rs ADR 0045 slice 6, the orchestrator's and the web's
-  are ADR 0072 slices S2 to S4.
+  [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** on the agent's side, adam-rs ADR 0045 slice 6 (adam-rs #173 and #174, merged); on the orchestrator's, the reading of the card (S1) and its agent side, activation and the strict read of what an agent says (S2c). Not built: the rest of the orchestrator's (ADR 0072 slices S2d to S4: threads for sessions, and the web). Neither half has run against the other.
 - **Decided in:** [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** this system. **Served by:** agents that run their helpers as sessions (adam-rs agents with subagents). **Used
@@ -49,7 +47,7 @@ sequenceDiagram
   P-->>O: status update of T1: reported {session S, round 1, report done}
   O->>R: SendStreamingMessage {contextId K} (the person, activated)
   R-->>O: task R2 of K, working: round 2, by the person
-  O->>R: SendMessage {contextId K}, data part {close: true}
+  O->>R: SendMessage {contextId K}, metadata {close: {cancel: false}}
   R-->>O: the session is closed (closed in the task's session object)
 ```
 
@@ -87,10 +85,10 @@ stateDiagram-v2
 | Member | Meaning |
 |---|---|
 | `agents` | The helpers a session can be started with, by name, each once, at least one. `name` is a string that is not blank; `description` a string, shown to the person (untrusted, as all card text). |
-| `maxOpen` | The most sessions that may be open (working or idle) in one parent context: a whole number from 1 to 4294967295 (a whole double such as `16.0` counts, as SDKs hand numbers back as doubles). |
+| `maxOpen` | The most sessions that may be open (working or idle) in one parent context: a whole number from 1 to 256 (a whole double such as `16.0` counts, as SDKs hand numbers back as doubles). The bound is the most sessions a parent thread notes in its life (a closed session keeps its note), so an offer above it, `257` or more, is an offer the orchestrator cannot honour and counts as no offer: a card that lists it is a card that does not list the extension. |
 
 The orchestrator reads the card on **every send** (never cached, ADR 0008) and uses the extension only when the URI is listed
-exactly **and** `params` is well formed as above; unknown members are ignored. A card that lists it with bad `params` is a card
+exactly **and** `params` is well formed as above; unknown members are ignored. A card that lists it with bad `params`, a `maxOpen` above 256 included, is a card
 that does not list it.
 
 ## 2. Activation
@@ -290,6 +288,8 @@ WireMock agent.
   the A2A front encodes a context as `<subject>:<contextId>` (`crates/adam-a2a-runtime/src/convert.rs`, `encode_conversation`).
 - *Verified* (as [`steer-v1.md`](steer-v1.md) and [`usage-v1.md`](usage-v1.md) say): `TaskStatusUpdateEvent` and `Task` each carry
   an optional `metadata` map, and extensions are activated by the `A2A-Extensions` header and `message.extensions`.
-- *Unverified:* everything an agent does under this page: no agent serves it yet (adam-rs ADR 0045 slice 6).
+- *Unverified:* everything an agent does under this page against a real agent: adam's half is built (adam-rs #173 and #174, merged), and nothing here has run against it; the orchestrator's side is proven on the fake agent only.
 - *Verified 2026-11-18* by reading adam-rs after its child-sessions slice merged (adam-rs #173): adam writes `round.state` with the protobuf JSON names (`TASK_STATE_COMPLETED`, and `null` when it cannot read the state), not the plain words (`crates/adam-a2a-runtime/src/child_sessions.rs`, `a2a_state_word`; `crates/adam-a2a/src/push/cursor.rs`). The examples above use that spelling; the orchestrator's reader accepts both.
 - *Built (S2c):* the orchestrator's agent side: activation on a send, a resubscribe, a `GetTask` and a `CancelTask` only for a card that offers the extension well formed, a strict bounded read of the sessions object, the events and a round's own object, and a poll of the parent task every 5 seconds while it runs (the events are a latency optimisation, so until an agent sends them, a poll is how a session is learned). Proven against the fake agent only; a real agent is unverified.
+- *Built (S2c, fix round):* the orchestrator activates the extension on a steer too (every request about a child context), on `ListTasks`, `GetTask`, `CancelTask`, a send and a resubscribe, each only for a card read for that very call that lists it well formed; what an agent says of sessions to a call that did not activate it is dropped, and a stream whose agent sends events is not polled (the read before its ending status still runs). A `reported` event's `report` word (`done`, `failed`, `canceled`, `blocked`) is read when `round.state` is `null`.
+- *Built (S2c, fix round):* the orchestrator refuses a whole `sessions` object or event that breaks a bound: a session id, context id or helper name that is blank or holds a control or format character, a context id that two sessions share or that is the parent's own, a round whose `parentContextId` is its own context, or a description is cleaned instead (each such character becomes a space) and cut to 256 characters.

@@ -3,11 +3,12 @@
 //! exactly and its `params` are well formed.
 
 use a2a::AgentCard;
-use orch_core::{CHILD_SESSIONS_EXTENSION, ChildSessionsOffer};
+use orch_core::{CHILD_SESSIONS_EXTENSION, ChildSessionsOffer, MAX_CHILD_SESSIONS};
 use serde_json::Value;
 
 /// The card's `child-sessions/v1` offer: `None` when the card does not list the URI exactly, or
-/// lists it with `params` that are not `{agents, maxOpen}` as the contract has them (fail closed).
+/// lists it with `params` that are not `{agents, maxOpen}` as the contract has them, or with a
+/// `maxOpen` above [`MAX_CHILD_SESSIONS`] (fail closed).
 pub fn child_sessions_from_card(card: &AgentCard) -> Option<ChildSessionsOffer> {
     let entry = card
         .capabilities
@@ -19,6 +20,9 @@ pub fn child_sessions_from_card(card: &AgentCard) -> Option<ChildSessionsOffer> 
     ChildSessionsOffer::from_params(&Value::Object(
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     ))
+    // a parent notes at most MAX_CHILD_SESSIONS sessions in its life: an offer of more open at once
+    // is one no listing could honour (and one that lets a listing pass the bound on listings)
+    .filter(|offer| usize::try_from(offer.max_open()).is_ok_and(|n| n <= MAX_CHILD_SESSIONS))
 }
 
 #[cfg(test)]

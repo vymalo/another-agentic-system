@@ -152,15 +152,16 @@
 //! state). Round states are read in the A2A JSON spelling (`TASK_STATE_COMPLETED`, what adam writes)
 //! and as the plain word; `null` is unknown. Each is one envelope, `AgentUpdate::ChildSessions`, or
 //! `AgentUpdate::ChildSessionsRejected(why)`, with no task state, **before** the status it came
-//! with; a snapshot says a round's session first and a parent's listing just before the totals and
-//! the status. An update with an event, `working` and no message is the news and nothing else.
+//! with; a snapshot says a round's session first and a parent's listing after the totals and just
+//! before the status. An update with an event, `working` and no message is the news and nothing else.
 //! [`wants_task_read`] names a status that ends or pauses the turn, for the adapter's one read, and
 //! [`sessions_news`] reads the task it returns. Read as data whether or not the request activated the
 //! extension.
 //!
 //! | Sessions in | key |
 //! |---|---|
-//! | news about task `T` | `Turn("T:sessions:<16 hex digits of an FNV-1a of the news as JSON>")` (the same news collapses) |
+//! | a listing or a round's session, task `T`, the `n`th that differs from the one before on the stream (1 for a snapshot and a stream's first) | `Turn("T:sessions:<n>:<16 hex digits of an FNV-1a of the news as JSON>")` (a return to an earlier state has a new `n`, so it is news; a repeat of the last one is not passed on, and a forced one keeps its key) |
+//! | an event | `Turn("T:sessions-event:<16 hex digits>")` |
 //! | an entry that does not pass the door | `Turn("T:sessions-rejected")` (never applied) |
 //!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
@@ -629,10 +630,15 @@ fn sessions_envelope(
         Ok(None) => return None,
         Ok(Some(news)) => {
             let said = serde_json::to_string(&news).unwrap_or_default();
-            (
-                IdemKey::Turn(format!("{task_id}:sessions:{:016x}", digest(&said))),
-                AgentUpdate::ChildSessions(news),
-            )
+            // a listing or a round's session is counted from 1 (a stream counts its changes from
+            // there, `StreamMapper::sessions_read`); an event is a fact, keyed by what it says
+            let key = match news {
+                orch_core::SessionNews::Event(..) => {
+                    format!("{task_id}:sessions-event:{:016x}", digest(&said))
+                }
+                _ => format!("{task_id}:sessions:1:{:016x}", digest(&said)),
+            };
+            (IdemKey::Turn(key), AgentUpdate::ChildSessions(news))
         }
         Err(why) => (
             IdemKey::Turn(format!("{task_id}:sessions-rejected")),
@@ -1324,9 +1330,10 @@ fn task_envelopes_echoing(
             revision.clone(),
         ));
     }
-    out.extend(listing);
-    // the task's totals, before the status that ends or pauses it (ADR 0056)
+    // the task's totals, before the status that ends or pauses it (ADR 0056), and after them the
+    // parent's listing, the newest truth, in the order the adapter's read of the task says them
     out.extend(usage_totals(task));
+    out.extend(listing);
     out.extend(status_envelopes(
         &task.id,
         &task.context_id,
@@ -1473,9 +1480,53 @@ pub struct StreamMapper {
     /// How many times a status of this stream carried a tier: the key of the nth differs from the
     /// key of the one before it, even when the tier went back to an earlier one.
     reports: u32,
+    /// The last listing or round session this stream said (as JSON) and its key.
+    sessions_said: Option<(String, IdemKey)>,
+    /// How many listings or round sessions this stream said that differed from the one before:
+    /// the count in their keys, so that a return to an earlier state is news.
+    session_changes: u32,
+    /// The stream carried a `child-sessions/v1` event.
+    saw_session_events: bool,
 }
 
 impl StreamMapper {
+    /// Whether the stream has carried a `child-sessions/v1` event: an agent that sends them does not
+    /// need its task read again and again to learn its sessions.
+    pub fn has_session_events(&self) -> bool {
+        self.saw_session_events
+    }
+
+    /// What a read of the task says of sessions (the adapter's `GetTask`), counted as the stream's
+    /// own news is: a listing or a round's session that differs from the last one the stream said is
+    /// news under the next key, one that does not is `None` (`repeat_ok` keeps it, under the key it
+    /// repeats, for the read before the status that ends the turn, which always says the newest
+    /// truth). An envelope that is not that passes as it is.
+    pub fn sessions_read(&mut self, env: AgentEnvelope, repeat_ok: bool) -> Option<AgentEnvelope> {
+        let Some(AgentUpdate::ChildSessions(news)) = &env.update else {
+            return Some(env);
+        };
+        if matches!(news, orch_core::SessionNews::Event(..)) {
+            self.saw_session_events = true;
+            return Some(env);
+        }
+        let said = serde_json::to_string(news).unwrap_or_default();
+        if let Some((last, key)) = &self.sessions_said
+            && *last == said
+        {
+            let key = key.clone();
+            return repeat_ok.then_some(AgentEnvelope { key, ..env });
+        }
+        self.session_changes = self.session_changes.saturating_add(1);
+        let key = IdemKey::Turn(format!(
+            "{}:sessions:{}:{:016x}",
+            env.task_id,
+            self.session_changes,
+            digest(&said)
+        ));
+        self.sessions_said = Some((said, key.clone()));
+        Some(AgentEnvelope { key, ..env })
+    }
+
     /// The task the stream belongs to, once an event has named it.
     pub fn task_id(&self) -> Option<&str> {
         self.task_id.as_deref()
@@ -1640,7 +1691,15 @@ impl StreamMapper {
                 })
             )
         });
-        out
+        // what this stream says of sessions is counted, and a repeat of the last is not said again
+        out.into_iter()
+            .filter_map(|item| match item {
+                Ok(env) if matches!(env.update, Some(AgentUpdate::ChildSessions(_))) => {
+                    self.sessions_read(env, false).map(Ok)
+                }
+                other => Some(other),
+            })
+            .collect()
     }
 
     /// The artifact held back, now that nothing more is appended to it: kept for the end of the
@@ -4745,5 +4804,103 @@ mod tests {
             wants_task_read(&status_update(TaskState::Working, None)),
             None
         );
+    }
+
+    fn listing_in(round_state: &str) -> Value {
+        json!({"sessions": [{
+            "session": "s1", "contextId": "k1", "agent": "planner", "keepOpen": true,
+            "state": "working", "round": {"number": 1, "taskId": "r1", "state": round_state}
+        }]})
+    }
+
+    fn frame_listing(entry: Value) -> StreamResponse {
+        let mut parent = task(TaskState::Working, vec![], None);
+        parent.metadata = sessions_metadata(entry);
+        StreamResponse::Task(parent)
+    }
+
+    fn news_keys(out: Vec<Result<AgentEnvelope, AgentError>>) -> Vec<IdemKey> {
+        out.into_iter()
+            .map(Result::unwrap)
+            .filter(|e| matches!(e.update, Some(AgentUpdate::ChildSessions(_))))
+            .map(|e| e.key)
+            .collect()
+    }
+
+    #[test]
+    fn a_listing_that_returns_to_an_earlier_state_is_not_taken_for_the_one_before() {
+        let mut mapper = StreamMapper::default();
+        let first = news_keys(mapper.map(frame_listing(listing_in("TASK_STATE_WORKING"))));
+        let second = news_keys(mapper.map(frame_listing(listing_in("TASK_STATE_INPUT_REQUIRED"))));
+        let third = news_keys(mapper.map(frame_listing(listing_in("TASK_STATE_WORKING"))));
+        assert_eq!((first.len(), second.len(), third.len()), (1, 1, 1));
+        assert_ne!(
+            first, third,
+            "the same payload again, after another one, is news"
+        );
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        // a repeat of what was just said is not
+        let again = news_keys(mapper.map(frame_listing(listing_in("TASK_STATE_WORKING"))));
+        assert!(again.is_empty(), "{again:?}");
+        // a snapshot, which has no history, says it under the key a stream's first says it
+        let mut parent = task(TaskState::Working, vec![], None);
+        parent.metadata = sessions_metadata(listing_in("TASK_STATE_WORKING"));
+        assert_eq!(snapshot(&parent).unwrap().envelopes[0].key, first[0]);
+    }
+
+    #[test]
+    fn what_a_read_of_the_task_says_goes_through_the_same_count_and_a_forced_repeat_is_kept() {
+        let mut mapper = StreamMapper::default();
+        let mut parent = task(TaskState::Working, vec![], None);
+        parent.metadata = sessions_metadata(listing_in("TASK_STATE_WORKING"));
+        let read = sessions_news(&parent).unwrap();
+        let first = mapper
+            .sessions_read(read.clone(), false)
+            .expect("the first is news");
+        assert_eq!(
+            mapper.sessions_read(read.clone(), false),
+            None,
+            "a repeat is skipped"
+        );
+        let forced = mapper
+            .sessions_read(read.clone(), true)
+            .expect("a forced read stays");
+        assert_eq!(
+            forced.key, first.key,
+            "and collapses with the one it repeats"
+        );
+        let mut input = task(TaskState::Working, vec![], None);
+        input.metadata = sessions_metadata(listing_in("TASK_STATE_INPUT_REQUIRED"));
+        let changed = mapper
+            .sessions_read(sessions_news(&input).unwrap(), false)
+            .expect("a change is news");
+        assert_ne!(changed.key, first.key);
+        // a read that is not about sessions passes as it is
+        let other = StreamMapper::default()
+            .map(status_update(TaskState::Working, None))
+            .remove(0)
+            .unwrap();
+        assert_eq!(
+            StreamMapper::default().sessions_read(other.clone(), false),
+            Some(other)
+        );
+    }
+
+    #[test]
+    fn a_stream_that_has_carried_an_event_says_so() {
+        let mut mapper = StreamMapper::default();
+        assert!(!mapper.has_session_events());
+        mapper.map(frame_listing(listing_in("TASK_STATE_WORKING")));
+        assert!(!mapper.has_session_events(), "a listing is not an event");
+        let event = json!({"event": "opened", "session": "s1", "contextId": "k1", "agent": "planner",
+            "keepOpen": true, "round": {"number": 1}});
+        mapper.map(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: T.into(),
+            context_id: C.into(),
+            status: status(TaskState::Working, None),
+            metadata: sessions_metadata(event),
+        }));
+        assert!(mapper.has_session_events());
     }
 }

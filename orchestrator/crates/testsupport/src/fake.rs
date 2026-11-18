@@ -61,9 +61,10 @@
 //! | `file-url-redirect` | as `file-url`, the `url` is this agent's `/redirect`, which answers 302 to `/files/chart.png`: a redirect is never followed |
 //! | `recall` | `working`, artifact `recalled: <the first line of the conversation the message was told>` (or `recalled: nothing`), `completed`: what the first task of a **fork** carries (ADR 0029) |
 //! | `tiered` | the agent's side of `access-tier/v1` (ADR 0061, `docs/api/access-tier-v1.md`): `working`, then the artifact `tiered: <tier>` (the tier the message named, or `tiered: none`), `completed`. When the request **activated** the extension (the URI in the `A2A-Extensions` header and in the message's `extensions`) and the message's metadata names a `tier` the card's `tiers` hold, the task starts with a `Task` frame that is `working` and every event of the task echoes `{tier}` in its metadata under the URI; a `tier` that is missing, is not one of the four or is not in the card's `tiers` fails the task (`refused: …`) with no echo. A message that did not activate it names no tier, whatever its metadata says. The card lists the extension when [`FakeAgentOptions::access_tier`] holds its `params`, as plain JSON so that a test can list them badly, and [`FakeAgent::set_access_tier`] changes them while the agent runs |
-//! | `child-sessions <helper> [keep] [gate] [hold]` | the agent's side of `child-sessions/v1` (ADR 0072, `docs/api/child-sessions-v1.md`): `working`, then its model starts the session `S = <task>-s1` of the helper in the parent's context `C`, whose context is `K = <C>/s/<S>` and whose round 1 is the task `R1 = S` (by the agent; `keep` keeps it open, else it closes when the round ends). **Only when the request activated the extension** (the URI in the `A2A-Extensions` header and in the message's `extensions`) the stream starts with a `Task` frame whose metadata lists the sessions of `C`, and every `GetTask` of a task of `C` (activated too) carries the same listing; with [`FakeAgentOptions::child_session_events`] the `opened`, `reported` and `closed` events ride on `working` updates with no message. The parent then reports a sub-agent step `Helper`, a call under it (`tool:helper`: model `fake-model`, 10 tokens in, 5 out) and the task's totals including them, ends the round (so the session is `idle` or `closed`), says "parent: done" and completes. `gate` leaves the round working until [`FakeAgent::release_gate`] (the parent completes without it, as an agent whose helper runs in the background does; its `reported` and `closed` events are lost); `hold` makes the parent wait for the round to end before it completes. The round task `R1` is served by `SubscribeToTask` and `GetTask` **only to a request that activated the extension** (`InvalidParams` otherwise): a `Task` frame (working) carrying the round's object `{session, parentContextId, agent, description, keepOpen, round, by, state, closing}`, a step `helper:work`, the message "`<helper>: done`" and the status `completed` once the round ends; its `GetTask` holds the totals (`fake-model`, 10 in, 5 out) when it has ended |
-//! | `child-sessions-send <session>` | in a later task of the same parent context: the model sends the session another message: round 2, `R2 = <session>-r2`, by the agent, which ends at once (an `idle` session stays open, a closed one fails the task "no such open session"); the stream lists the sessions and, with events, says `round` and `reported`, then "parent: sent" and completes |
-//! | `child-sessions-bad` | `working`, then, when the request activated the extension, a `Task` frame whose `sessions` object is malformed (an empty session id), which every `GetTask` of the context says too, then `completed("Done.")`: the orchestrator drops it and counts it |
+//! | `child-sessions <helper> [keep] [gate] [hold] [close]` | the agent's side of `child-sessions/v1` (ADR 0072, `docs/api/child-sessions-v1.md`): `working`, then its model starts the session `S = <task>-s1` of the helper in the parent's context `C`, whose context is `K = <C>/s/<S>` and whose round 1 is the task `R1 = S` (by the agent; `keep` keeps it open, else it closes when the round ends; `close` has the model close it while its round is open, so the round object says `closing: true` until the round ends). **Only when the request activated the extension** (the URI in the `A2A-Extensions` header and in the message's `extensions`; or always with [`FakeAgentOptions::child_sessions_leak`], an agent that breaks the contract) the session is started in the first place, the stream starts with a `Task` frame whose metadata lists the sessions of `C`, and every `GetTask` of a task of `C` (activated too) carries the same listing; with [`FakeAgentOptions::child_session_events`] the `opened`, `reported` and `closed` events ride on `working` updates with no message. The parent then reports a sub-agent step `Helper`, a call under it (`tool:helper`: model `fake-model`, 10 tokens in, 5 out) and the task's totals including them, ends the round (so the session is `idle` or `closed`), says "parent: done" and completes. `gate` leaves the round working until [`FakeAgent::release_gate`] (the parent completes without it, as an agent whose helper runs in the background does; its `reported` and `closed` events are lost); `hold` makes the parent wait for the round to end, and then for another 250 ms, before it completes (an agent still writing its answer: time for a poll to see the session idle). The round task `R1` is served by `SubscribeToTask` and `GetTask` **only to a request that activated the extension** (`InvalidParams` otherwise): a `Task` frame (working) carrying the round's object `{session, parentContextId, agent, description, keepOpen, round, by, state, closing}`, a step `helper:work`, the message "`<helper>: done`" and the status `completed` once the round ends; its `GetTask` holds the totals (`fake-model`, 10 in, 5 out) when it has ended |
+//! | `child-sessions-send <session>` | in a later task of the same parent context: the model sends the session another message: round 2, `R2 = <session>-r2`, by the agent, which ends at once (an `idle` session stays open, a closed one, or one that was never started because the request did not activate the extension, fails the task "no such open session"); the stream lists the sessions and, with events, says `round` and `reported`, then "parent: sent" and completes |
+//! | `child-sessions-bad` | `working`, then, when the request activated the extension, a `Task` frame whose `sessions` object is malformed (an empty session id), which every `GetTask` of the context says too, then `completed("Done.")`: the adapter rejects it (`ChildSessionsRejected`); nothing counts it until the application acts on the news (S2d) |
+//! | (messages to a child context) | not served: a message, a close or a person's `start` is for S3; the fake serves a child context's rounds by `GetTask`, `SubscribeToTask`, `CancelTask` and `ListTasks` only |
 //! | `verify-pass` | `working`, artifacts `branch` (a commit) and `checks` (`passed: true`), `completed` |
 //! | `verify-red-once` | as `verify-pass`, but `checks` fails (with a finding) until the message is the rework prompt of attempt 2 or later; then it passes |
 //! | `verify-red` | as `verify-pass`, but `checks` always fails |
@@ -399,6 +400,11 @@ pub struct FakeAgentOptions {
     /// default): the sessions are in the parent task's `sessions` object only, which the adapter
     /// reads by polling.
     pub child_session_events: bool,
+    /// Say the sessions (the first frame, the events, the `sessions` object of every `GetTask` and
+    /// `CancelTask` of the context) to a request that did **not** activate `child-sessions/v1`: an
+    /// agent that breaks the contract, so a test can prove the orchestrator drops what nobody asked
+    /// for. `false` (the default): a request that did not activate it is told nothing.
+    pub child_sessions_leak: bool,
 }
 
 impl Default for FakeAgentOptions {
@@ -416,6 +422,7 @@ impl Default for FakeAgentOptions {
             access_tier: None,
             child_sessions: None,
             child_session_events: false,
+            child_sessions_leak: false,
         }
     }
 }
@@ -611,6 +618,8 @@ struct Shared {
     child_sessions: Mutex<Option<Value>>,
     /// The parent says the events of its sessions.
     child_session_events: bool,
+    /// Tell sessions to a request that did not activate the extension.
+    child_sessions_leak: bool,
     /// The helper sessions the agent runs, in the order they were started.
     sessions: Mutex<Vec<HelperSession>>,
     /// The parent contexts whose `sessions` object is malformed (`child-sessions-bad`).
@@ -630,7 +639,10 @@ struct HelperSession {
     agent: String,
     description: String,
     keep_open: bool,
+    /// The session is over: its round ended and it is not kept open, or it was closed.
     closed: bool,
+    /// A close waits for the open round to end.
+    closing: bool,
     rounds: Vec<HelperRound>,
 }
 
@@ -653,12 +665,17 @@ fn helper_totals() -> Value {
 }
 
 /// A task state as the A2A JSON spells it, which is how adam writes `round.state`.
-fn state_word(state: TaskState) -> &'static str {
+fn state_word(state: &TaskState) -> &'static str {
     match state {
+        TaskState::Unspecified => "TASK_STATE_UNSPECIFIED",
+        TaskState::Submitted => "TASK_STATE_SUBMITTED",
         TaskState::Working => "TASK_STATE_WORKING",
         TaskState::Completed => "TASK_STATE_COMPLETED",
+        TaskState::Failed => "TASK_STATE_FAILED",
         TaskState::Canceled => "TASK_STATE_CANCELED",
-        _ => "TASK_STATE_UNSPECIFIED",
+        TaskState::InputRequired => "TASK_STATE_INPUT_REQUIRED",
+        TaskState::Rejected => "TASK_STATE_REJECTED",
+        TaskState::AuthRequired => "TASK_STATE_AUTH_REQUIRED",
     }
 }
 
@@ -675,7 +692,7 @@ impl HelperSession {
     }
 
     fn round_json(round: &HelperRound) -> Value {
-        json!({"number": round.number, "taskId": round.task_id, "state": state_word(round.state.clone())})
+        json!({"number": round.number, "taskId": round.task_id, "state": state_word(&round.state)})
     }
 
     /// The session as the `sessions` object of the parent task lists it.
@@ -706,7 +723,7 @@ impl HelperSession {
         json!({
             "session": self.session, "parentContextId": self.parent_context, "agent": self.agent,
             "description": self.description, "keepOpen": self.keep_open, "round": round.number,
-            "by": "agent", "state": self.state(), "closing": false,
+            "by": "agent", "state": self.state(), "closing": self.closing,
         })
     }
 }
@@ -758,8 +775,15 @@ fn round_task(shared: &Shared, task_id: &str) -> Option<Task> {
 /// A round of a session ended in `state`: a session that is not kept open closes with it.
 fn end_round(shared: &Shared, task_id: &str, state: TaskState) {
     for session in lock(&shared.sessions).iter_mut() {
+        let mut ended = false;
         for round in session.rounds.iter_mut().filter(|r| r.task_id == task_id) {
             round.state = state.clone();
+            ended = true;
+        }
+        // a session that is not kept open, or whose close was waiting, closes with its round
+        if ended && (!session.keep_open || session.closing) {
+            session.closed = true;
+            session.closing = false;
         }
     }
     shared.rounds.send_modify(|n| *n += 1);
@@ -922,6 +946,7 @@ impl FakeAgent {
             access_tier: Mutex::new(opts.access_tier.clone()),
             child_sessions: Mutex::new(opts.child_sessions.clone()),
             child_session_events: opts.child_session_events,
+            child_sessions_leak: opts.child_sessions_leak,
             sessions: Mutex::new(Vec::new()),
             malformed: Mutex::new(HashSet::new()),
             rounds: tokio::sync::watch::channel(0).0,
@@ -1464,7 +1489,7 @@ impl RequestHandler for Front {
                 };
             }
             let task = self.inner.get_task(params, req).await?;
-            Ok(self.with_sessions(task, activated))
+            Ok(self.with_sessions(task, activated || self.shared.child_sessions_leak))
         }
     }
 
@@ -1475,6 +1500,16 @@ impl RequestHandler for Front {
     ) -> Result<ListTasksResponse, A2AError> {
         {
             self.seen("list_tasks", params);
+            let child = req.context_id.as_deref().is_some_and(|context| {
+                lock(&self.shared.sessions)
+                    .iter()
+                    .any(|s| s.context_id == context)
+            });
+            if child && !activates_sessions(params) {
+                return Err(A2AError::invalid_params(
+                    "a child context needs the child-sessions/v1 extension",
+                ));
+            }
             self.inner.list_tasks(params, req).await
         }
     }
@@ -1486,7 +1521,20 @@ impl RequestHandler for Front {
     ) -> Result<Task, A2AError> {
         {
             self.seen("cancel_task", params);
-            self.inner.cancel_task(params, req).await
+            let activated = activates_sessions(params);
+            if round_task(&self.shared, &req.id).is_some() {
+                if !activated {
+                    return Err(A2AError::invalid_params(
+                        "a child context needs the child-sessions/v1 extension",
+                    ));
+                }
+                // stops the round: a kept-open session goes idle, another closes
+                end_round(&self.shared, &req.id, TaskState::Canceled);
+                return round_task(&self.shared, &req.id)
+                    .ok_or_else(|| A2AError::task_not_found(&req.id));
+            }
+            let task = self.inner.cancel_task(params, req).await?;
+            Ok(self.with_sessions(task, activated || self.shared.child_sessions_leak))
         }
     }
 
@@ -3210,27 +3258,33 @@ async fn script(
             let mut words = text.split_whitespace().skip(1);
             let helper = words.next().unwrap_or("helper").to_owned();
             let options: Vec<&str> = words.collect();
-            let (keep, gate, hold) = (
+            let (keep, gate, hold, close) = (
                 options.contains(&"keep"),
                 options.contains(&"gate"),
                 options.contains(&"hold"),
+                options.contains(&"close"),
             );
             let session = format!("{}-s1", ctx.task_id);
-            lock(&shared.sessions).push(HelperSession {
-                session: session.clone(),
-                context_id: format!("{}/s/{session}", ctx.context_id),
-                parent_context: ctx.context_id.clone(),
-                agent: helper.clone(),
-                description: format!("{helper} for {}", ctx.task_id),
-                keep_open: keep,
-                closed: false,
-                rounds: vec![HelperRound {
-                    number: 1,
-                    task_id: session.clone(),
-                    state: TaskState::Working,
-                }],
-            });
-            shared.rounds.send_modify(|n| *n += 1);
+            // a session is started only for a request that activated the extension: an agent
+            // without the client's help runs its helper as a step and nothing more
+            if ctx.sessions {
+                lock(&shared.sessions).push(HelperSession {
+                    session: session.clone(),
+                    context_id: format!("{}/s/{session}", ctx.context_id),
+                    parent_context: ctx.context_id.clone(),
+                    agent: helper.clone(),
+                    description: format!("{helper} for {}", ctx.task_id),
+                    keep_open: keep,
+                    closed: false,
+                    closing: close,
+                    rounds: vec![HelperRound {
+                        number: 1,
+                        task_id: session.clone(),
+                        state: TaskState::Working,
+                    }],
+                });
+                shared.rounds.send_modify(|n| *n += 1);
+            }
             let event = |name: &str| {
                 lock(&shared.sessions)
                     .iter()
@@ -3273,12 +3327,16 @@ async fn script(
             }
             if hold {
                 round_ended(&shared, &session).await;
+                // the agent is still writing its answer
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
             if events && (!gate || hold) {
                 if let Some(reported) = event("reported") {
                     emit(&tx, ctx.session_event(reported)).await?;
                 }
-                if !keep && let Some(closed) = event("closed") {
+                if (!keep || close)
+                    && let Some(closed) = event("closed")
+                {
                     emit(&tx, ctx.session_event(closed)).await?;
                 }
             }
@@ -3293,7 +3351,9 @@ async fn script(
         // a later task of the parent's context: the model sends a session another message
         "child-sessions-send" => {
             let target = text.split_whitespace().nth(1).unwrap_or("").to_owned();
-            let round = {
+            let round = if !ctx.sessions {
+                None
+            } else {
                 let mut sessions = lock(&shared.sessions);
                 sessions
                     .iter_mut()
@@ -3474,12 +3534,13 @@ impl AgentExecutor for Executor {
         let user_message = ctx.message.clone();
         let grant = thread_tools_of(ctx.message.as_ref());
         // the request activated `child-sessions/v1`: the header and the message's own extensions
-        let sessions = activates_sessions(&ctx.service_params)
-            && ctx
-                .message
-                .as_ref()
-                .and_then(|m| m.extensions.as_ref())
-                .is_some_and(|e| e.iter().any(|e| e == orch_core::CHILD_SESSIONS_EXTENSION));
+        let sessions = shared.child_sessions_leak
+            || (activates_sessions(&ctx.service_params)
+                && ctx
+                    .message
+                    .as_ref()
+                    .and_then(|m| m.extensions.as_ref())
+                    .is_some_and(|e| e.iter().any(|e| e == orch_core::CHILD_SESSIONS_EXTENSION)));
         // the agent's side of `access-tier/v1`, for the `tiered` word
         let tier_say = if text.split_whitespace().next() == Some("tiered") {
             tier_say(&shared, &ctx)
@@ -3593,5 +3654,27 @@ impl AgentExecutor for Executor {
         Box::pin(futures::stream::once(async move {
             Ok(task.status(TaskState::Canceled, Some("canceled")))
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_task_state_has_its_protojson_word() {
+        for (state, word) in [
+            (TaskState::Unspecified, "TASK_STATE_UNSPECIFIED"),
+            (TaskState::Submitted, "TASK_STATE_SUBMITTED"),
+            (TaskState::Working, "TASK_STATE_WORKING"),
+            (TaskState::Completed, "TASK_STATE_COMPLETED"),
+            (TaskState::Failed, "TASK_STATE_FAILED"),
+            (TaskState::Canceled, "TASK_STATE_CANCELED"),
+            (TaskState::InputRequired, "TASK_STATE_INPUT_REQUIRED"),
+            (TaskState::Rejected, "TASK_STATE_REJECTED"),
+            (TaskState::AuthRequired, "TASK_STATE_AUTH_REQUIRED"),
+        ] {
+            assert_eq!(state_word(&state), word);
+        }
     }
 }

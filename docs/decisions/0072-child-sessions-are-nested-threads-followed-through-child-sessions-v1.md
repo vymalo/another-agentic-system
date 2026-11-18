@@ -4,8 +4,9 @@
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md)
   (*"we need to add the capability that opencode has to create child session, and exchange messages with it. At creation, there
   should be a button to auto-close after work is done, so that the child session can further be reused."*), whose decision 11 puts
-  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1** (the contract
-  [`child-sessions-v1.md`](../api/child-sessions-v1.md) and the orchestrator's reading of the card). Epic:
+  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1, S2a, S2b, S2c** (the contract
+  [`child-sessions-v1.md`](../api/child-sessions-v1.md) and the orchestrator's reading of the card; the pure core; the store; the A2A
+  client's activation and strict reading of what an agent says). Epic:
   [#332](https://github.com/vymalo/another-agentic-system/issues/332). Amends [ADR 0042](0042-the-thread-list-is-the-owners.md),
   [ADR 0055](0055-the-agent-assigns-the-a2a-context.md), [ADR 0029](0029-forking-a-thread-copies-its-log.md),
   [ADR 0036](0036-sending-while-an-agent-works.md), [ADR 0050](0050-the-chat-has-sub-agents.md) and

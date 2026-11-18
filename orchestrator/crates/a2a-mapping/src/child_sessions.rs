@@ -9,8 +9,8 @@
 use orch_core::{
     AgentTaskState, MAX_SESSION_AGENT_BYTES, MAX_SESSION_CONTEXT_BYTES,
     MAX_SESSION_DESCRIPTION_CHARS, MAX_SESSION_ID_BYTES, MAX_SESSION_TASK_BYTES,
-    MAX_SESSIONS_LISTED, RoundReport, SessionBy, SessionEvent, SessionNews, SessionReport,
-    SessionState,
+    MAX_SESSIONS_LISTED, RoundReport, SessionBy, SessionEvent, SessionNews, SessionOutcome,
+    SessionReport, SessionState,
 };
 use serde_json::{Map, Value};
 
@@ -53,9 +53,12 @@ pub(crate) fn read(
         let mut reports: Vec<SessionReport> = Vec::with_capacity(list.len());
         for item in list {
             let item = item.as_object().ok_or("a session is not an object")?;
-            let report = report(item, &Shape::Listed)?;
+            let report = report(item, &Shape::Listed, context_id)?;
             if reports.iter().any(|r| r.session == report.session) {
                 return Err("a session is listed twice");
+            }
+            if reports.iter().any(|r| r.context_id == report.context_id) {
+                return Err("two sessions name one context");
             }
             reports.push(report);
         }
@@ -71,7 +74,7 @@ pub(crate) fn read(
         };
         return Ok(Some(SessionNews::Event(
             kind,
-            report(object, &Shape::Event(kind))?,
+            report(object, &Shape::Event(kind), context_id)?,
         )));
     }
     if object.contains_key("session") {
@@ -80,13 +83,45 @@ pub(crate) fn read(
             context_id,
             task_state,
         };
-        return Ok(Some(SessionNews::OfRound(report(object, &shape)?)));
+        return Ok(Some(SessionNews::OfRound(report(
+            object, &shape, context_id,
+        )?)));
     }
     Ok(None)
 }
 
+/// A character that is not text a person reads: a control character (newline included), a format
+/// character (the bidirectional overrides and isolates, zero-width characters, the byte order mark,
+/// tags, soft hyphen, ...) or a line or paragraph separator. The standard library has no test for the
+/// format category, so its ranges are listed (written from the Cf category of the Unicode Character
+/// Database; *unverified* against a current copy of it).
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00ad}' | '\u{0600}'..='\u{0605}' | '\u{061c}' | '\u{06dd}' | '\u{070f}'
+            | '\u{0890}'..='\u{0891}' | '\u{08e2}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}'
+            | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{110bd}' | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}' | '\u{e0001}' | '\u{e0020}'..='\u{e007f}')
+}
+
 fn printable(s: &str, max: usize) -> bool {
-    !s.trim().is_empty() && s.len() <= max && !s.chars().any(char::is_control)
+    !s.trim().is_empty() && s.len() <= max && !s.chars().any(hidden)
+}
+
+/// A description a person reads: each hidden character becomes a space, the ends are trimmed and
+/// it is cut to [`MAX_SESSION_DESCRIPTION_CHARS`] characters.
+fn description_of(raw: &str) -> String {
+    let spaced: String = raw
+        .chars()
+        .map(|c| if hidden(c) { ' ' } else { c })
+        .collect();
+    spaced
+        .trim()
+        .chars()
+        .take(MAX_SESSION_DESCRIPTION_CHARS)
+        .collect()
 }
 
 fn text<'a>(object: &'a Object, key: &str, missing: Refused) -> Result<&'a str, Refused> {
@@ -174,23 +209,41 @@ fn round_of(value: &Value) -> Result<RoundReport, Refused> {
     })
 }
 
+/// What a `reported` event says of the round (`report`, a closed set of four words).
+fn report_word(object: &Object) -> Result<Option<SessionOutcome>, Refused> {
+    match object.get("report") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(word)) => match word.as_str() {
+            "done" => Ok(Some(SessionOutcome::Done)),
+            "failed" => Ok(Some(SessionOutcome::Failed)),
+            "canceled" => Ok(Some(SessionOutcome::Canceled)),
+            "blocked" => Ok(Some(SessionOutcome::Blocked)),
+            _ => Err("report is not one of done, failed, canceled, blocked"),
+        },
+        Some(_) => Err("report is not a word"),
+    }
+}
+
 /// What an event says of the session's state, from its kind and its round: a round that ended
-/// leaves a kept-open session idle and another closed, unless the round waits for the person.
+/// leaves a kept-open session idle and another closed, unless the round waits for the person. The
+/// round's state is read first; when it could not be (`null`), the event's `report` stands in.
 fn state_of_event(
     kind: SessionEvent,
     keep_open: bool,
     round: Option<&RoundReport>,
+    report: Option<SessionOutcome>,
 ) -> SessionState {
     match kind {
         SessionEvent::Opened | SessionEvent::Round => SessionState::Working,
         SessionEvent::Closed => SessionState::Closed,
         SessionEvent::Reported => {
-            let waits = round.and_then(|r| r.state).is_some_and(|s| {
-                matches!(
+            let waits = match round.and_then(|r| r.state) {
+                Some(s) => matches!(
                     s,
                     AgentTaskState::InputRequired | AgentTaskState::AuthRequired
-                )
-            });
+                ),
+                None => report == Some(SessionOutcome::Blocked),
+            };
             if waits {
                 SessionState::Working
             } else if keep_open {
@@ -202,7 +255,7 @@ fn state_of_event(
     }
 }
 
-fn report(object: &Object, shape: &Shape<'_>) -> Result<SessionReport, Refused> {
+fn report(object: &Object, shape: &Shape<'_>, own_context: &str) -> Result<SessionReport, Refused> {
     let session = text(object, "session", "the session id is missing")?;
     if !printable(session, MAX_SESSION_ID_BYTES) {
         return Err("the session id is not 1 to 128 printable bytes");
@@ -214,13 +267,29 @@ fn report(object: &Object, shape: &Shape<'_>) -> Result<SessionReport, Refused> 
     if !printable(context_id, MAX_SESSION_CONTEXT_BYTES) {
         return Err("the context id is not 1 to 512 printable bytes");
     }
+    match shape {
+        // a session lives in a context of its own, never in the stream's (the parent's)
+        Shape::Listed | Shape::Event(_) if context_id == own_context => {
+            return Err("a session names the parent's own context as its own");
+        }
+        // the parent's context is not known to a round's stream (the round's own is), so it is
+        // only checked for what can be: it is a context id, and a round is not its own parent
+        Shape::Round { .. } => match object.get("parentContextId") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(parent))
+                if printable(parent, MAX_SESSION_CONTEXT_BYTES) && parent != own_context => {}
+            Some(_) => return Err("the parent context is not another printable context id"),
+        },
+        _ => {}
+    }
     let agent = text(object, "agent", "the helper name is missing")?;
-    if agent.len() > MAX_SESSION_AGENT_BYTES || agent.chars().any(char::is_control) {
-        return Err("the helper name is not at most 128 printable bytes");
+    if agent.trim().is_empty() || agent.len() > MAX_SESSION_AGENT_BYTES || agent.chars().any(hidden)
+    {
+        return Err("the helper name is not 1 to 128 printable bytes");
     }
     let description = match object.get("description") {
         None | Some(Value::Null) => String::new(),
-        Some(Value::String(d)) => d.chars().take(MAX_SESSION_DESCRIPTION_CHARS).collect(),
+        Some(Value::String(d)) => description_of(d),
         Some(_) => return Err("the description is not text"),
     };
     let keep_open = flag(object, "keepOpen", "keepOpen is not a boolean")?;
@@ -253,7 +322,13 @@ fn report(object: &Object, shape: &Shape<'_>) -> Result<SessionReport, Refused> 
         _ => object.get("round").map(round_of).transpose()?,
     };
     let state = match shape {
-        Shape::Event(kind) => state_of_event(*kind, keep_open, round.as_ref()),
+        Shape::Event(kind) => {
+            let report = match kind {
+                SessionEvent::Reported => report_word(object)?,
+                _ => None,
+            };
+            state_of_event(*kind, keep_open, round.as_ref(), report)
+        }
         Shape::Listed | Shape::Round { .. } => object
             .get("state")
             .and_then(Value::as_str)
@@ -428,7 +503,7 @@ mod tests {
 
     #[test]
     fn at_most_512_sessions_are_listed() {
-        let many = |n: usize| json!({"sessions": (0..n).map(|i| session(json!({"session": format!("s{i}")}))).collect::<Vec<_>>()});
+        let many = |n: usize| json!({"sessions": (0..n).map(|i| session(json!({"session": format!("s{i}"), "contextId": format!("k{i}")}))).collect::<Vec<_>>()});
         assert_eq!(listed(&many(512)).len(), 512);
         refused(&many(513));
     }
@@ -512,5 +587,125 @@ mod tests {
     fn an_entry_that_says_nothing_of_sessions_is_nothing() {
         assert_eq!(read(&json!({}), "t", "c", None), Ok(None));
         assert_eq!(read(&json!({"other": 1}), "t", "c", None), Ok(None));
+    }
+
+    fn event(name: &str, keep: bool, round: Value, report: Option<&str>) -> Value {
+        let mut entry = json!({"event": name, "session": "s1", "contextId": "k1", "agent": "planner",
+            "description": "d", "keepOpen": keep, "round": round});
+        if let Some(report) = report {
+            entry["report"] = json!(report);
+        }
+        entry
+    }
+
+    fn event_state(entry: &Value) -> SessionState {
+        match read(entry, "t1", "c1", Some(AgentTaskState::Working)) {
+            Ok(Some(SessionNews::Event(_, r))) => r.state,
+            other => panic!("not an event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_reported_events_report_stands_in_for_a_round_state_that_could_not_be_read() {
+        let unread = json!({"number": 1, "state": null});
+        for (report, keep, want) in [
+            ("done", true, SessionState::Idle),
+            ("done", false, SessionState::Closed),
+            ("failed", true, SessionState::Idle),
+            ("canceled", false, SessionState::Closed),
+            ("blocked", true, SessionState::Working),
+            ("blocked", false, SessionState::Working),
+        ] {
+            let got = event_state(&event("reported", keep, unread.clone(), Some(report)));
+            assert_eq!(got, want, "{report} keep={keep}");
+        }
+        // a round with no state at all reads the same
+        assert_eq!(
+            event_state(&event(
+                "reported",
+                false,
+                json!({"number": 1}),
+                Some("blocked")
+            )),
+            SessionState::Working
+        );
+        // a state that was read wins over the word
+        let completed = json!({"number": 1, "state": "TASK_STATE_COMPLETED"});
+        assert_eq!(
+            event_state(&event("reported", true, completed, Some("blocked"))),
+            SessionState::Idle
+        );
+        // the words are a closed set
+        for word in ["ok", "DONE", "", "completed"] {
+            let entry = event("reported", true, unread.clone(), Some(word));
+            assert!(read(&entry, "t1", "c1", None).is_err(), "{word:?}");
+        }
+        let entry = json!({"event": "reported", "session": "s1", "contextId": "k", "agent": "a", "report": 3});
+        assert!(read(&entry, "t1", "c1", None).is_err());
+        // an absent or null report is no report
+        let entry = event("reported", true, unread, None);
+        assert_eq!(event_state(&entry), SessionState::Idle);
+    }
+
+    #[test]
+    fn control_and_format_characters_of_a_description_become_spaces() {
+        let clean = |raw: &str| {
+            listed(&json!({"sessions": [session(json!({"description": raw}))]}))[0]
+                .description
+                .clone()
+        };
+        assert_eq!(clean("a\nb"), "a b");
+        assert_eq!(clean("  evil \u{202e}txt.exe\u{202c} "), "evil  txt.exe");
+        assert_eq!(clean("\u{2028}line\u{2029}para"), "line para");
+        assert_eq!(clean("zero\u{200b}width\u{feff}"), "zero width");
+        assert_eq!(clean("tab\tand\u{7}bell"), "tab and bell");
+        assert_eq!(clean("\u{e0041}tag"), "tag");
+        assert_eq!(clean("plain é ü 日本"), "plain é ü 日本");
+        // cut after cleaning
+        let long = format!("\u{202e}{}", "x".repeat(400));
+        assert_eq!(clean(&long).chars().count(), 256);
+    }
+
+    #[test]
+    fn a_blank_helper_name_and_hidden_characters_in_names_are_refused() {
+        let bad = |extra: Value| refused(&json!({"sessions": [session(extra)]}));
+        bad(json!({"agent": ""}));
+        bad(json!({"agent": "   "}));
+        bad(json!({"agent": "pl\u{202e}anner"}));
+        bad(json!({"session": "s\u{202e}1"}));
+        bad(json!({"contextId": "k\u{200b}1"}));
+        bad(json!({"round": {"number": 1, "taskId": "r\u{2028}1"}}));
+    }
+
+    #[test]
+    fn a_listing_may_not_name_a_context_it_does_not_own() {
+        // two sessions in one context
+        let twin = json!({"sessions": [
+            session(json!({"session": "a", "contextId": "k"})),
+            session(json!({"session": "b", "contextId": "k"}))
+        ]});
+        refused(&twin);
+        // a session in the parent's own context (the stream's is c1)
+        refused(&json!({"sessions": [session(json!({"contextId": "c1"}))]}));
+        let ev = event("opened", true, json!({"number": 1}), None);
+        let mut own = ev.clone();
+        own["contextId"] = json!("c1");
+        assert!(read(&own, "t1", "c1", None).is_err());
+        assert!(read(&ev, "t1", "c1", None).is_ok());
+    }
+
+    #[test]
+    fn a_round_that_names_its_own_context_as_its_parent_is_refused() {
+        let entry = |parent: Value| {
+            json!({"session": "s1", "parentContextId": parent, "agent": "planner", "round": 1,
+                   "state": "working"})
+        };
+        assert!(read(&entry(json!("c0")), "r1", "k1", None).is_ok());
+        assert!(read(&entry(json!("k1")), "r1", "k1", None).is_err());
+        assert!(read(&entry(json!("")), "r1", "k1", None).is_err());
+        assert!(read(&entry(json!(3)), "r1", "k1", None).is_err());
+        // it is optional
+        let bare = json!({"session": "s1", "agent": "a", "round": 1, "state": "working"});
+        assert!(read(&bare, "r1", "k1", None).is_ok());
     }
 }

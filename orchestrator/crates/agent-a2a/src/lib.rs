@@ -48,11 +48,14 @@
 //! so when such a stream reaches a status that ends or pauses the task, the adapter reads the task
 //! once (`GetTask`) and passes its totals on before the status; a read that fails passes nothing.
 //!
-//! Child sessions (`child-sessions/v1`, ADR 0072) are activated on a send (not a steer), a
-//! resubscribe, a `GetTask` and a `CancelTask`, each only when the card read for that very call
-//! offers the extension well formed ([`child_sessions_from_card`]). A stream that activated it also
-//! reads its task for its sessions, before the status that ends or pauses the turn and every
-//! [`A2aConfig::child_sessions_poll`] while it runs, and passes them on (`orch_a2a_mapping`).
+//! Child sessions (`child-sessions/v1`, ADR 0072) are activated on a send (a steer too), a
+//! resubscribe, a `GetTask`, a `CancelTask` and a `ListTasks`, each only when the card read for that
+//! very call offers the extension well formed ([`child_sessions_from_card`]); what an agent says of
+//! sessions to a call that did not activate it is dropped. A stream that activated it also reads its
+//! task for its sessions, once for the status that ends or pauses the turn (said after what that
+//! update said itself, and before its status, so that the listing is the last word) and every
+//! [`A2aConfig::child_sessions_poll`] while it runs and has carried no event, and passes them on
+//! (`orch_a2a_mapping`). The reads run inline in the stream's loop.
 //!
 //! Files (ADR 0032): an artifact's `raw` part reaches the worker as `AgentUpdate::File` (the
 //! mapper), and a `url` part on a host of [`A2aConfig::fetch_files`] is read here and reaches it the
