@@ -10,8 +10,9 @@
 //! delegation; the contract of each is a page of `docs/api/`). A breaking change is a `v2` URI,
 //! never an edit of `v1`.
 //!
-//! The release-channels extension and A2UI are not here: each has its own reading of the card
-//! (the releases a card offers; the A2UI versions it speaks), because each carries parameters the
+//! The release-channels extension, A2UI, `access-tier/v1` and `child-sessions/v1` are not here:
+//! each has its own reading of the card (the releases a card offers; the A2UI versions it speaks;
+//! the tiers it honours; the helpers it runs as sessions), because each carries parameters the
 //! orchestrator uses. These eight carry none on the card; `uploads/v1` carries its limits in the
 //! message (`docs/api/uploads-v1.md`).
 

@@ -14,6 +14,7 @@
   an asked agent is told what the person said in the thread, the person's own words under `thread-tools/v1`, written by the
   orchestrator and never by a model, so that it decides what the person named from them
   ([status note](#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)).
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** `ask_agent` stays separate from child sessions: an asked agent is another agent of the deployment, never a session of the asking agent.
 
 ## Context
 

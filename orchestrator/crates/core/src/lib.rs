@@ -10,6 +10,7 @@ mod agent;
 mod answer;
 mod ask;
 mod build;
+mod child_sessions;
 mod delete;
 mod description;
 mod error;
@@ -55,6 +56,7 @@ pub use build::{
     AgentBuild, MAX_BUILD_KEY_BYTES, MAX_BUILD_PARAMS, MAX_BUILD_TEXT_BYTES, MAX_BUILD_VALUE_BYTES,
     MAX_BUILDS,
 };
+pub use child_sessions::{CHILD_SESSIONS_EXTENSION, ChildAgent, ChildSessionsOffer};
 pub use delete::{NotDeletable, deletable};
 pub use description::{
     DEFAULT_DESCRIPTION_CHARS, DEFAULT_MIN_NEW_MESSAGES, DescribedBy, DescriptionError,

@@ -62,6 +62,7 @@
 
 mod a2ui;
 mod access_tier;
+mod child_sessions;
 mod client;
 mod errors;
 mod extensions;
@@ -75,6 +76,7 @@ pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
 pub use access_tier::access_tier_from_card;
+pub use child_sessions::child_sessions_from_card;
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
 pub use extensions::{
     build_from_card, extensions_from_card, steps_from_card, text_stream_from_card, usage_from_card,

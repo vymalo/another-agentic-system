@@ -34,6 +34,7 @@ use crate::a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
 use crate::access_tier::{access_tier_from_card, check_plain_under_cap, tier_metadata};
+use crate::child_sessions::child_sessions_from_card;
 use crate::errors::classify;
 use crate::extensions::{build_from_card, extensions_from_card};
 use crate::files::{Fetcher, FileFetch};
@@ -633,6 +634,7 @@ impl AgentClient for A2aAgentClient {
             ui: ui_from_card(&card),
             extensions: extensions_from_card(&card),
             access_tier: access_tier_from_card(&card),
+            child_sessions: child_sessions_from_card(&card),
             build: build_from_card(&card),
         })
     }

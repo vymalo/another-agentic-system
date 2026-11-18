@@ -4,6 +4,7 @@
   said the thread's id is the context of every message) and [ADR 0029](0029-forking-a-thread-copies-its-log.md) (a fork's context). Built
   and proven on mocks and unit tests, including agents that **refuse a context they did not create**; the kagent scenarios that prove it
   against kagent itself ([`dev/kagent-e2e.sh`](../../dev/kagent-e2e.sh)) have **not run yet**, CI is their first run.
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** a child thread's context is adopted from the parent task's `opened` event, or from the answer to a person's `start`, not from a first answer of its own.
 
 ## Context
 

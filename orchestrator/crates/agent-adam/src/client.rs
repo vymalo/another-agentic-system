@@ -175,6 +175,7 @@ impl AgentClient for LocalAgentClient {
             ui: None,
             extensions: std::collections::BTreeSet::new(),
             access_tier: orch_core::TierListing::Absent,
+            child_sessions: None,
             build: std::collections::BTreeMap::new(),
         })
     }

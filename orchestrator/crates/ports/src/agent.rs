@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use futures::stream::BoxStream;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, BoxError, Classify, ErrorClass, ForkHistory,
-    KnownExtension, LiveChunk, Releases, TierListing, Timestamp, ToolsGrant, UiActionData,
-    UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, BoxError, ChildSessionsOffer, Classify, ErrorClass,
+    ForkHistory, KnownExtension, LiveChunk, Releases, TierListing, Timestamp, ToolsGrant,
+    UiActionData, UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -125,6 +125,10 @@ pub struct AgentCardInfo {
     /// agent honours and the one it works under by default. Read live like the rest of the card
     /// (ADR 0008).
     pub access_tier: TierListing,
+    /// The helpers the card offers to run as sessions, when it lists `child-sessions/v1` with
+    /// well-formed `params` (ADR 0072); `None` when it does not list it or lists it badly. Read
+    /// live like the rest of the card (ADR 0008).
+    pub child_sessions: Option<ChildSessionsOffer>,
     /// The parameters of a build extension the card lists, as text (ADR 0053): empty for a card
     /// that lists none. Read live like the rest of the card, bounded by the core when recorded,
     /// never read as an instruction.

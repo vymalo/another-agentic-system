@@ -13,6 +13,7 @@
   "continue with another agent" in the agent menu are built ([`web/DESIGN.md`](../../web/DESIGN.md), "Fork
   and branch"), and so is editing a message into a branch with `‹ 1/2 ›` between the versions (the
   same section, "Edit a message, and the versions of it").
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** a fork takes none of the parent's child sessions; they stay the parent's.
 
   Status note (2026-10-03): [ADR 0042](0042-the-thread-list-is-the-owners.md) (proposed) changes how a fork is made from the
   web, and where it is listed: "Fork from here" and "Continue with another agent" open a draft that writes nothing, and the

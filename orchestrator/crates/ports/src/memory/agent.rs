@@ -285,6 +285,7 @@ impl ScriptedAgent {
                 ui: None,
                 extensions: BTreeSet::new(),
                 access_tier: TierListing::Absent,
+                child_sessions: None,
                 build: std::collections::BTreeMap::new(),
             },
         );
@@ -455,6 +456,7 @@ fn default_card() -> AgentCardInfo {
         ui: None,
         extensions: BTreeSet::new(),
         access_tier: TierListing::Absent,
+        child_sessions: None,
         build: std::collections::BTreeMap::new(),
     }
 }

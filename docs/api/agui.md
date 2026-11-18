@@ -1558,6 +1558,10 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   no role of theirs caps it; the document is per person and `no-store`). A card that lists
   the URI badly (a `default` that is not among the `tiers`, a repeated or unknown tier) is a card that does not list it: no key.
   The web draws its tier chip from this key, and shows none without it;
+- `custom["https://agents.vymalo.com/a2a/extensions/child-sessions/v1"] = {agents: [{name, description}], maxOpen}` only while the
+  live card lists the extension with well-formed `params` (ADR 0072, [`child-sessions-v1.md`](child-sessions-v1.md)): the helpers a
+  person may start a session with, and the most sessions open at once in one thread. A card that lists it badly (no agent, a name
+  twice, a `maxOpen` that is not a whole number of at least 1) has no key;
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.

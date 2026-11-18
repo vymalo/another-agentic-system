@@ -387,6 +387,10 @@ pub struct FakeAgentOptions {
     /// JSON so that a test can list them badly; `None` (the default): the card does not list the
     /// extension.
     pub access_tier: Option<Value>,
+    /// The `params` of the card's `child-sessions/v1` entry (`{agents, maxOpen}`, ADR 0072), as
+    /// plain JSON so that a test can list them badly; `None` (the default): the card does not list
+    /// the extension. Only the card says it: no script serves a session yet.
+    pub child_sessions: Option<Value>,
 }
 
 impl Default for FakeAgentOptions {
@@ -402,6 +406,7 @@ impl Default for FakeAgentOptions {
             verifier: None,
             strict_contexts: false,
             access_tier: None,
+            child_sessions: None,
         }
     }
 }
@@ -583,6 +588,8 @@ struct Shared {
     strict_contexts: bool,
     /// The `params` of the card's `access-tier/v1` entry right now.
     access_tier: Mutex<Option<Value>>,
+    /// The `params` of the card's `child-sessions/v1` entry right now.
+    child_sessions: Mutex<Option<Value>>,
 }
 
 /// What a `steerable` task reads its steers from: the texts, in the order received, and the message
@@ -720,6 +727,7 @@ impl FakeAgent {
             contexts: Mutex::new(HashSet::new()),
             strict_contexts: opts.strict_contexts,
             access_tier: Mutex::new(opts.access_tier.clone()),
+            child_sessions: Mutex::new(opts.child_sessions.clone()),
         });
         let capabilities = AgentCapabilities {
             streaming: Some(true),
@@ -823,6 +831,12 @@ impl FakeAgent {
         *lock(&self.shared.access_tier) = params;
     }
 
+    /// Changes the `params` of the card's `child-sessions/v1` entry (`None` removes the entry),
+    /// from the next card request on.
+    pub fn set_child_sessions(&self, params: Option<Value>) {
+        *lock(&self.shared.child_sessions) = params;
+    }
+
     /// Changes whether the A2UI entries of the card say `acceptsInlineCatalogs: true`, from the
     /// next card request on.
     pub fn set_accepts_inline_catalogs(&self, accepts: bool) {
@@ -901,6 +915,17 @@ impl a2a_server::agent_card::AgentCardProducer for LiveCard {
                 description: Some(
                     "Works under the access tier the person picks for each message.".to_owned(),
                 ),
+                required: Some(false),
+                params: match params {
+                    Value::Object(map) => Some(map.into_iter().collect()),
+                    _ => None,
+                },
+            });
+        }
+        if let Some(params) = lock(&self.shared.child_sessions).clone() {
+            extensions.push(AgentExtension {
+                uri: orch_core::CHILD_SESSIONS_EXTENSION.to_owned(),
+                description: Some("Runs its helpers as sessions a client can open.".to_owned()),
                 required: Some(false),
                 params: match params {
                     Value::Object(map) => Some(map.into_iter().collect()),

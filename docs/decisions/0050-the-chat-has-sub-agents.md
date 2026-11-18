@@ -5,6 +5,7 @@
   proven on mocks (the scripted model, the chart's render checks); no real model, search or sub-agent run of a real adam-agent was
   tried. Uses what adam-rs already has (sub-agents as files, [`docs/authoring.md`](https://github.com/vymalo/another-adam-rs/blob/6478fbcf0003f939c32c8f5602fe94c25eff974a/docs/authoring.md)
   at the pinned revision `6478fbc`); nothing here changes the pin.
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** the chat's sub-agents can be kept open as sessions that the person opens as child threads, once the pinned adam-rs serves `child-sessions/v1`.
 
 ## Context
 

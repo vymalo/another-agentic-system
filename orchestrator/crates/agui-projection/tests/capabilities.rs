@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use orch_agui_projection::{CardFacts, RELEASE_CHANNELS_URI, agent_capabilities};
 use orch_agui_proto::testkit::assert_capabilities_conform;
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, ACCESS_TIER_EXTENSION, AgentId, KnownExtension,
-    Releases, TierOffer, UiVersion,
+    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, ACCESS_TIER_EXTENSION, AgentId,
+    CHILD_SESSIONS_EXTENSION, ChildSessionsOffer, KnownExtension, Releases, TierOffer, UiVersion,
 };
 use serde_json::json;
 
@@ -32,6 +32,7 @@ fn a_card_with_releases_is_declared_under_the_extension_uri() {
         extensions: BTreeSet::new(),
         access_tier: None,
         max_tier: None,
+        child_sessions: None,
     };
     let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&card));
     assert_capabilities_conform(&doc);
@@ -67,6 +68,7 @@ fn a_card_without_the_extension_declares_no_releases() {
         extensions: BTreeSet::new(),
         access_tier: None,
         max_tier: None,
+        child_sessions: None,
     };
     let doc = agent_capabilities(&AgentId::new("plain"), "Plain", Some(&card));
     assert_capabilities_conform(&doc);
@@ -251,4 +253,35 @@ fn a_card_that_lists_no_access_tier_or_an_unreadable_one_has_no_key_for_it() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn a_card_that_lists_child_sessions_declares_its_agents_and_limit_under_the_uri() {
+    // the web offers "New subagent" from this key (ADR 0072)
+    let offer = ChildSessionsOffer::from_params(&json!({
+        "agents": [{"name": "planner", "description": "Plans."}],
+        "maxOpen": 16,
+    }))
+    .unwrap();
+    let card = CardFacts {
+        child_sessions: Some(offer),
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("chat"), "Chat", Some(&card));
+    assert_capabilities_conform(&doc);
+    assert_eq!(
+        serde_json::to_value(&doc).unwrap()["custom"],
+        json!({CHILD_SESSIONS_EXTENSION: {
+            "agents": [{"name": "planner", "description": "Plans."}],
+            "maxOpen": 16
+        }})
+    );
+    // a card without the offer has no key
+    let none = agent_capabilities(&AgentId::new("chat"), "Chat", Some(&CardFacts::default()));
+    assert!(
+        serde_json::to_value(&none)
+            .unwrap()
+            .get("custom")
+            .is_none_or(|c| c.get(CHILD_SESSIONS_EXTENSION).is_none())
+    );
 }
