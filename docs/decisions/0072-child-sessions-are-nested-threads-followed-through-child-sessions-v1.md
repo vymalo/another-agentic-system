@@ -45,8 +45,8 @@ What this system has to build on, *verified 2026-11-18* at `470e156`:
    already knows is matched by its session id; an event seen twice changes nothing.
 3. **A round is an observed job** (new): a job of the child thread that the orchestrator did not send but follows, by
    `SubscribeToTask` of the round's task, to its end. Its steps, text and usage go to **the child thread's log only**, so a round's
-   usage is counted once, against the person who owns the parent thread. A round the person starts in the child thread is an ordinary
-   job of it.
+   usage is counted once, against the person who owns the parent thread (see the *Amended (2026-11-18)* note for which thread
+   counts which round). A round the person starts in the child thread is an ordinary job of it.
 4. **The parent's log** records `child_session_opened`, `child_session_reported` and `child_session_closed` (new events, decided by the
    pure core from the parent task's events and from the session state each round it follows carries, whichever comes first, once
    each: a session the person started while no parent task runs is known only from its rounds); the helper's work is not copied
@@ -101,7 +101,8 @@ stateDiagram-v2
 - New: the core's `child_of` on a thread, the three parent events, the observed job; a migration for `child_of` (S2). A store adapter
   gains what S2 adds to the store port, with its conformance cases.
 - Invariant 3 holds: a child thread is a thread, with its own log.
-- The usage ledger (ADR 0065) counts a round once, in the child thread.
+- The usage ledger (ADR 0065) counts a round once: in the parent for a round the parent's model started, in the child for a
+  round a person started (*Amended (2026-11-18)*).
 - **Until adam-rs moves it**, the live usage of a round the parent's model starts is reported on the parent's task (as it is today),
   and the round's own task carries its totals when it ends. S2 must count such a round once: from the parent's reports or from the
   round's totals, never both.
@@ -114,3 +115,13 @@ stateDiagram-v2
 | S3 | The person sends, steers, stops, closes and starts a session | S2 |
 | S4 | The web: the nested thread, the step card with "Open", the strip of sessions, "New subagent" with "Close when done" | S3 |
 | S5 | The adam pin with adam-rs ADR 0045 slice 6, the chat's `planner` kept open in `dev/agents-e2e.sh` | S4, adam-rs slice 6 |
+
+## Amended (2026-11-18)
+
+**Which thread counts a round's usage.** A round the parent's model started is counted **once, in the parent**: adam already
+adds it to the parent's totals and reports it live on the parent's task. The child thread logs that round's `model_usage` and
+`model_usage_total` with `counted: false`, so the ledger skips them. A round a **person** started is counted in the child. A round
+whose `by` the agent did not say is taken for the agent's and is not counted in the child. A child that is blocked and answered
+within the same job keeps the `by` of its round; what counts that answer is decided with S3. If adam moves a round's usage onto
+the round itself, the rule flips: the flag is per event, so the history already written stays right. This replaces the wording of
+decision 3 and of the consequences that left the choice open.

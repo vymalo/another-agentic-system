@@ -1518,9 +1518,9 @@ parent's log says about it and what a child thread starts as. It never reads the
 
 | Input | Thread | What it does |
 |---|---|---|
-| `ChildSession { actor, report, child }` | the parent, **any state** | Never moves the thread. A session not in `Job.sessions` is noted and writes `child_session_opened`, then `child_session_reported` if the report's round has ended, then `child_session_closed` if it is closed, in one commit. A session noted already writes `reported` only for a round **newer** than the one noted, and `closed` once. A repeat, a stale round or a report in another order writes nothing. A parent that notes 256 sessions refuses a new one (`ChildSessionRefused`, class `rejected`) and the session stays a step of the parent's task |
-| `ChildSessionSaid(report)` | the child, any state | Writes no event. The ledger `Job.child` follows the session's state, and a round it was not told to follow and that has a task is ordered once: `Command::Observe { session, round, task_id }`. A report of another session, or to a thread that is no child, changes nothing |
-| `RoundStarted { number, task_id, by }` | the child | A fresh thread (queued, no round yet) starts job 1 in place. `blocked`, `done`, `failed` or `cancelled` starts the next job. The same round again changes nothing. `working`, `verifying`, or `queued` after a round refuse (`InvalidInState`) and the dispatcher tries again. Writes `job_started { job, round: { number, by } }`, sets `Job.observed` and the thread is `working` |
+| `ChildSession { actor, report, child }` | the parent, **any state** | Never moves the thread. A session not in `Job.sessions` is noted and writes `child_session_opened`, then `child_session_reported` if the report's round has ended, then `child_session_closed` if it is closed, in one commit. A session noted already writes `reported` only for a round **newer** than the one noted, and `closed` once. `reported` is once per round **a report names**, in increasing order: a report carries only the newest ended round, so a round that ended unseen between two reports is not reported (the child's log has it). Nothing is `reported` after `closed`. A repeat, a stale round or a report in another order writes nothing. A parent that notes 256 sessions refuses a new one (`ChildSessionRefused`, class `rejected`) and the session stays a step of the parent's task; the 256 counts every session in the thread's life, **closed ones included**, since a closed session keeps its note |
+| `ChildSessionSaid(report)` | the child, any state | Writes no event. The ledger `Job.child` follows the session's state, and a round it was not told to follow and that has a task is ordered once: `Command::Observe { session, round, task_id }`. A closed ledger is final: a later report does not move it back to working or idle. A report of another session, or to a thread that is no child, changes nothing |
+| `RoundStarted { session, number, task_id, by }` | the child | A fresh thread (queued, no round yet) starts job 1 in place. `blocked`, `done`, `failed` or `cancelled` starts the next job. The same round again, or any round at or below the highest started (`ChildLedger.started`: a replay or a reordering), changes nothing. A thread that is not `session`'s child, or round 0, is refused (`InvalidInState`). `working`, `verifying`, or `queued` after a round refuse (`InvalidInState`) and the dispatcher tries again. Writes `job_started { job, round: { number, by } }`, sets `Job.observed` and the thread is `working` |
 
 `start_child(report)` is the child thread's first decision: a `queued` thread with no event, `Job.child` set, the
 title ledger and the description ledger fixed (the model is never asked to title or describe a child), and the
@@ -1534,8 +1534,16 @@ events into the history its agent is told.
 
 **Usage is counted once.** A round the parent's model started is already in the parent's totals, so while
 `Job.observed.by` is not `person` the thread logs its `model_usage` and `model_usage_total` with `counted: false`
-(written only when false, read as `true` when absent) and `usage_change` returns nothing for them. A thread
-that follows no round counts as it always did.
+(written only when false, read as `true` when absent) and `usage_change` returns nothing for them. A round whose
+`by` the agent did not say (`None`) is taken for the agent's, so it is uncounted in the child too: the parent counts
+it. A blocked child answered within the same job keeps its round's `by`; what counts that answer is S3's decision.
+A thread that follows no round counts as it always did (ADR 0072, amended 2026-11-18).
+
+**For S2d:** `apply_commit`'s binding and task logic for a new job must leave out a `job_started` that carries
+`round`: an observed job sends nothing, so it has no outbox row, task or binding of its own to make.
+
+**Store.** The three `child_session_*` event kinds are accepted by Postgres only from migration 0027 (S2b), and
+nothing writes them before S2d.
 
 ```mermaid
 sequenceDiagram
@@ -2128,7 +2136,7 @@ pub enum Input {
     AskFailed { job: u32, ask: u32, reason: String },         // it could not be had
     ChildSession { actor: Actor, report: SessionReport, child: ThreadId },   // ADR 0072: the parent hears of a session; never moves its state
     ChildSessionSaid(SessionReport),                          // a child thread hears what its session is now; no event
-    RoundStarted { number: u32, task_id: String, by: Option<SessionBy> },   // a child thread begins to follow a round: the job becomes the round's
+    RoundStarted { session: String, number: u32, task_id: String, by: Option<SessionBy> },   // a child thread begins to follow a round: the job becomes the round's
     TimerFired(Timer),   // Timer::{CiDeadline, VerifierDeadline, AskDeadline { job, ask }}
 }
 
