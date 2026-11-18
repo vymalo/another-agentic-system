@@ -2961,7 +2961,7 @@ components:
         - ui_action           # data: { surfaceId, name, sourceComponentId, context, version, runId?, tier?, tierCap? }  what the user did on an A2UI surface of the thread (ADR 0013); attributed to the user. Additive.
         - ci_result           # data: { provider: github|generic, repository, sha, branch?, name, conclusion: success|neutral|skipped|failure|cancelled|timed_out|action_required|stale|startup_failure, url?, summary? }  a CI provider reported a completed check on a commit (ADR 0017); attributed to the system. Additive; logged since MVP slice 6 (the CI webhooks).
         - check_result        # data: { source: CheckSource, attempt, status: pending|passed|failed, name?, commit?, summary?, stale?, findings?: [string] }  a source of the verification gate answered (ADR 0018); attributed to the system. `findings` are untrusted text (at most 20 items and 16 KiB). `stale`: the answer was for a verification that is no longer the current one and decided nothing. Additive.
-        - job_started         # data: { job: integer }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
+        - job_started         # data: { job: integer, round?: { number: integer, by?: agent|person } }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); in a **child thread** (ADR 0072) a round the orchestrator follows without having sent it starts a job too, and the event names it in `round` (`job` is 1 for the first round): absent for a job a message started; attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
         - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
         - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail?, input?, output?, ioDropped? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. `input` (with the start) and `output` (with the end) say what the tool was called with and what it returned, cut, redacted and budgeted (ADR 0030). Additive.
@@ -2974,8 +2974,11 @@ components:
         - thread_shared       # data: { visibility: internal|public, nonce_sha256 }  the owner shared the thread, widened or narrowed the share, or made a new link ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): `nonce_sha256` is the lower-case hex SHA-256 of the nonce the link is built on, which tells one link from another and is useless as a link (the nonce itself is never in the log, because the export carries it). Attributed to the owner. `threads.visibility`, `share_nonce` and this event are one commit. Additive; a build that does not know it cannot read a log that has one, so roll the build out before raising `sharing.mode` above `disabled`. A fork copies it as history; the fork itself is private. No AG-UI frame.
         - thread_unshared     # data: {}  the owner took the link down ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)); the thread is private again and the nonce is gone. Attributed to the owner. Additive. No AG-UI frame.
         - ask_finished        # data: { ask: integer, state: completed|input_required|auth_required|failed|rejected|canceled|timed_out, text?, question?, artifacts?: [{ name, uri?, mimeType? }], error?, form?: true }  the ask ended, exactly once ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)); attributed to the asked agent for what it said, to the orchestrator for a deadline, a cancel (the person stopped the job, or the task that asked ended) or an agent it could not reach. `text` is the answer (untrusted, at most 64 KiB), `question` the question the agent asked back and `error` why it did not complete (at most 4 KiB each), `artifacts` at most 20. `form` is true when the asked agent showed an interface and then waited (`input_required` or `auth_required`): it waits for the **person's** answer to a form that nobody can see, so the ask is over, the task is cancelled, and the agent is not asked again in this job (a model does not answer a form that was shown). It is set when an interface was shown, or when a claim that re-attached saw the task wait (it cannot know what the task drew); an ask is sent the job's UI catalog, so a question with choices is a form, while a question in words that was seen from the start has no `form` and is still the asking agent's to answer. Absent when false and in older logs. Additive.
-        - model_usage         # data: { job, agent, task, call, path: [string], provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow? }  the tokens of one model call an agent made ([ADR 0056](../decisions/0056-token-usage-per-model-call.md), [`usage-v1.md`](usage-v1.md)), once per call (the idempotency key `a2a:<task>:usage:<call>`): `job` is the thread's job, `agent` the agent that made it, `task` its A2A task, `call` the agent's id for it. `path` is the step path it ran under, as `agent_step`'s: empty for the agent's own call, the sub-agent step's path and the step for a call under one, `["ask-<n>"]` for an asked agent's. The counts are AG-UI 1.0's `TokenUsage` accounting (`totalTokens` is the sum of the two totals, the others are parts of them); `contextWindow` is the model's window as the deployment configured it. Labels and numbers only. At most 10 000 per job. Attributed to the agent. Additive.
-        - model_usage_total   # data: { job, agent, task, path?: [string], totals: [{ provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens? }], sandbox?: { environment, usage?: [{ cpuMillis?, memoryBytes?, commands, milliseconds }] } }  a task's token totals when it ended or paused ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)): one entry per provider and model, every call of the task included, its sub-agents' too; the latest of a task is the record (a resumed task reports the totals of all its calls so far). `path` is `["ask-<n>"]` for an asked agent's task and absent for the thread's agent's. `sandbox` is the time the run's commands used in the environment they ran in ([`usage-v1.md`](usage-v1.md) section 5, ADR 0056 amended 2026-10-27), present only when the agent reported a valid one; events written before it existed have none. Attributed to the agent. Additive.
+        - model_usage         # data: { job, agent, task, call, path: [string], provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?, counted?: false }  the tokens of one model call an agent made ([ADR 0056](../decisions/0056-token-usage-per-model-call.md), [`usage-v1.md`](usage-v1.md)), once per call (the idempotency key `a2a:<task>:usage:<call>`): `job` is the thread's job, `agent` the agent that made it, `task` its A2A task, `call` the agent's id for it. `path` is the step path it ran under, as `agent_step`'s: empty for the agent's own call, the sub-agent step's path and the step for a call under one, `["ask-<n>"]` for an asked agent's. The counts are AG-UI 1.0's `TokenUsage` accounting (`totalTokens` is the sum of the two totals, the others are parts of them); `contextWindow` is the model's window as the deployment configured it. Labels and numbers only. At most 10 000 per job. Attributed to the agent. Additive.
+        - model_usage_total   # data: { job, agent, task, path?: [string], totals: [{ provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens? }], sandbox?: { environment, usage?: [{ cpuMillis?, memoryBytes?, commands, milliseconds }] }, counted?: false }  a task's token totals when it ended or paused ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)): one entry per provider and model, every call of the task included, its sub-agents' too; the latest of a task is the record (a resumed task reports the totals of all its calls so far). `path` is `["ask-<n>"]` for an asked agent's task and absent for the thread's agent's. `sandbox` is the time the run's commands used in the environment they ran in ([`usage-v1.md`](usage-v1.md) section 5, ADR 0056 amended 2026-10-27), present only when the agent reported a valid one; events written before it existed have none. Attributed to the agent. Additive.
+        - child_session_opened   # data: { session, thread, agent, description, keepOpen: bool, by?: agent|person, round?: integer }  a helper session the agent started became a child thread ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), [`child-sessions-v1.md`](child-sessions-v1.md)): `session` is the agent's id for it, `thread` the child thread made for it, `agent` and `description` the helper's name and what it was asked to do (the agent's text, untrusted, at most 256 characters), `round` the number of the round the report named when the session was first seen. Once per session, in the **parent's** log, attributed to the parent's agent; the helper's own work is in the child's log. Additive (S2).
+        - child_session_reported # data: { session, thread, round: integer, report: done|failed|canceled|blocked }  a round of a child session ended ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): `blocked` is a round waiting for the person. Once per round, in order, in the parent's log, attributed to the parent's agent. Additive (S2).
+        - child_session_closed   # data: { session, thread }  a child session closed ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): once per session, in the parent's log, attributed to the parent's agent. Additive (S2).
     Mention:
       type: object
       description: "An agent a person mentioned in a message, as a structured reference ([`mentions-v1.md`](mentions-v1.md), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)): the identity is `agentId`, never the label."
@@ -3071,11 +3074,12 @@ components:
           description: "ask_started, ask_finished (ADR 0026): the ask's number in the job, from 1."
         agent:
           type: string
-          description: "ask_started: the agent that was asked (an agent id). model_usage, model_usage_total: the agent that spent the tokens."
+          description: "ask_started: the agent that was asked (an agent id). model_usage, model_usage_total: the agent that spent the tokens. child_session_opened: the helper's name, as the agent gave it."
         by:
-          type: string
-          pattern: "^(main|ask:[1-9][0-9]*)$"
-          description: "ask_started: who asked, the addressed agent (`main`) or an earlier ask of the job (`ask:<n>`)."
+          anyOf:
+            - { type: string, pattern: "^(main|ask:[1-9][0-9]*)$" }
+            - { type: string, enum: [agent, person] }
+          description: "ask_started: who asked, the addressed agent (`main`) or an earlier ask of the job (`ask:<n>`). child_session_opened (ADR 0072): who started the session, the parent's model (`agent`) or a person (`person`); absent when the agent did not say."
         depth:
           type: integer
           minimum: 1
@@ -3156,7 +3160,7 @@ components:
         description:
           type: string
           maxLength: 500
-          description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none."
+          description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none. child_session_opened: what the helper was asked to do (the agent's text, untrusted, at most 256 characters)."
         from:
           type: object
           required: [threadId, seq]
@@ -3169,7 +3173,37 @@ components:
         job:
           type: integer
           minimum: 1
-          description: "job_started: the number of the job that started (from 2). model_usage, model_usage_total: the job the tokens were spent in (from 1)."
+          description: "job_started: the number of the job that started (from 2; 1 for the first round a child thread follows). model_usage, model_usage_total: the job the tokens were spent in (from 1)."
+        session:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "child_session_opened, child_session_reported, child_session_closed (ADR 0072): the session's id, the agent's own and opaque."
+        thread:
+          type: string
+          format: uuid
+          description: "child_session_opened, child_session_reported, child_session_closed (ADR 0072): the child thread made for the session. A reader of a shared thread never sees these events."
+        keepOpen:
+          type: boolean
+          description: "child_session_opened: whether the session goes idle after a round instead of closing."
+        round:
+          anyOf:
+            - { type: integer, minimum: 1 }
+            - type: object
+              required: [number]
+              additionalProperties: false
+              properties:
+                number: { type: integer, minimum: 1 }
+                by: { type: string, enum: [agent, person] }
+          description: "child_session_opened: the number of the round the report named when the session was first seen. child_session_reported: the round that ended. job_started (ADR 0072): the round of a child session this job follows, `{number, by?}`; absent for a job a message started."
+        report:
+          type: string
+          enum: [done, failed, canceled, blocked]
+          description: "child_session_reported: how the round ended; `blocked` is a round that waits for the person."
+        counted:
+          type: boolean
+          enum: [false]
+          description: "model_usage, model_usage_total (ADR 0072): `false` when the usage ledger does not count the tokens because they are the parent's, whose totals hold them (a round a child thread follows and a person did not start). Absent when counted, and in every event written before the member existed."
         attempt:
           type: integer
           minimum: 1

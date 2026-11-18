@@ -1509,6 +1509,74 @@ stateDiagram-v2
   and a snapshot where `thread_described` is read, exactly as the title's ([`agui.md`](api/agui.md#descriptions)).
   `ui.showDescriptions` (`GET /api/config`) hides it in the web; the API returns it either way.
 
+### Child sessions: the core's half (ADR 0072, slice S2a)
+
+**Built** (S2a, `crates/core/src/child_sessions.rs`; nothing applies it yet). An agent that lists
+[`child-sessions/v1`](api/child-sessions-v1.md) runs a helper as a **session**; the core decides what the
+parent's log says about it and what a child thread starts as. It never reads the wire: an adapter hands it a
+`SessionReport` (strict, bounded, checked again at the door by `SessionReport::check`) and the core decides.
+
+| Input | Thread | What it does |
+|---|---|---|
+| `ChildSession { actor, report, child }` | the parent, **any state** | Never moves the thread. A session not in `Job.sessions` is noted and writes `child_session_opened`, then `child_session_reported` if the report's round has ended, then `child_session_closed` if it is closed, in one commit. A session noted already writes `reported` only for a round **newer** than the one noted, and `closed` once. A repeat, a stale round or a report in another order writes nothing. A parent that notes 256 sessions refuses a new one (`ChildSessionRefused`, class `rejected`) and the session stays a step of the parent's task |
+| `ChildSessionSaid(report)` | the child, any state | Writes no event. The ledger `Job.child` follows the session's state, and a round it was not told to follow and that has a task is ordered once: `Command::Observe { session, round, task_id }`. A report of another session, or to a thread that is no child, changes nothing |
+| `RoundStarted { number, task_id, by }` | the child | A fresh thread (queued, no round yet) starts job 1 in place. `blocked`, `done`, `failed` or `cancelled` starts the next job. The same round again changes nothing. `working`, `verifying`, or `queued` after a round refuse (`InvalidInState`) and the dispatcher tries again. Writes `job_started { job, round: { number, by } }`, sets `Job.observed` and the thread is `working` |
+
+`start_child(report)` is the child thread's first decision: a `queued` thread with no event, `Job.child` set, the
+title ledger and the description ledger fixed (the model is never asked to title or describe a child), and the
+order to follow the report's round. Its title is `child_title(report)`: the description when it is a usable
+title, else the helper's name. `report_of` says how a round ended to the parent: `completed` is `done`,
+`failed` and `rejected` are `failed`, `canceled` is `canceled`, `input-required` and `auth-required` are `blocked`.
+
+`Job.sessions` and `Job.child` belong to the conversation and `Job::next` keeps them; `Job.observed` belongs to the
+job and `next` forgets it; a fork has none of them (`forked_snapshot`) and does not take the `child_session_*`
+events into the history its agent is told.
+
+**Usage is counted once.** A round the parent's model started is already in the parent's totals, so while
+`Job.observed.by` is not `person` the thread logs its `model_usage` and `model_usage_total` with `counted: false`
+(written only when false, read as `true` when absent) and `usage_change` returns nothing for them. A thread
+that follows no round counts as it always did.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Application (S2d)
+  participant P as Parent thread (core)
+  participant C as Child thread (core)
+  A->>P: Input ChildSession with the session's report
+  P-->>A: child_session_opened, then reported and closed when they are owed
+  A->>C: start_child(report) makes a queued thread
+  C-->>A: Command Observe with the round and its task
+  A->>C: Input RoundStarted with number, task and who started it
+  C-->>A: job_started with round, the thread works
+  A->>C: Input Agent with the round's steps, text and usage
+  C-->>A: model_usage with counted false unless a person started the round
+  A->>C: Input Agent with the round's final status
+  C-->>A: agent_status completed, the thread is done
+  A->>P: Input ChildSession with the round ended
+  P-->>A: child_session_reported once
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Queued: start_child
+  Queued --> Working: RoundStarted on a fresh thread
+  Working --> Working: ChildSessionSaid, a newer round is ordered once
+  Working --> Done: the round completed
+  Working --> Blocked: the round waits for the person
+  Working --> Failed: the round failed
+  Working --> Cancelled: the round was canceled
+  Blocked --> Working: RoundStarted, the next job
+  Done --> Working: RoundStarted, the next job
+  Failed --> Working: RoundStarted, the next job
+  Cancelled --> Working: RoundStarted, the next job
+```
+
+The outbox row for `Observe`, the dispatcher that follows the round and the application that makes the child
+thread are S2b and S2d; until then the application drops the new agent updates (`ChildSessions`,
+`ChildSessionsRejected`) with a debug log and writes nothing for `Observe`. `ThreadRecord.child_of` and the
+migration are S2b.
+
 ### Forking a thread (MVP-plan item F, ADR 0029)
 
 **Built** (2026-10-01): the core, the store, the API and the AG-UI projection (the marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](api/agui.md#forks)); the transcript on the wire (`SendRequest.history`, below); the web is the next step. A fork is a new thread that starts with a
@@ -2058,6 +2126,9 @@ pub enum Input {
     AskSent { job: u32, ask: u32, task_id: String },          // the asked agent's task, recorded on the ledger
     AskFinished { job: u32, ask: u32, revision: Option<String>, result: AskResult },   // its task ended: the ask ends once
     AskFailed { job: u32, ask: u32, reason: String },         // it could not be had
+    ChildSession { actor: Actor, report: SessionReport, child: ThreadId },   // ADR 0072: the parent hears of a session; never moves its state
+    ChildSessionSaid(SessionReport),                          // a child thread hears what its session is now; no event
+    RoundStarted { number: u32, task_id: String, by: Option<SessionBy> },   // a child thread begins to follow a round: the job becomes the round's
     TimerFired(Timer),   // Timer::{CiDeadline, VerifierDeadline, AskDeadline { job, ask }}
 }
 
@@ -2071,17 +2142,20 @@ pub enum Command {
     SetSharing { level: ShareLevel, nonce: ShareNonce },  // ADR 0040: the row's share, in the commit of the `thread_shared` that says so; `ClearSharing` likewise for `thread_unshared`
     Ask { job: u32, ask: u32, agent: AgentId, depth: u8, text: String,
           continue_task: Option<String>, reference_task_ids: Vec<String> },   // ADR 0026: → an outbox row, kind `ask`, unordered
+    Observe { session: String, round: u32, task_id: String },   // ADR 0072: follow a round without sending anything (the outbox row is (S2b), the dispatcher (S2d))
 }
 
 /// The log the chat renders: `seq`, thread, time, `Actor { user | agent | system, name, revision? }`, body.
 pub enum EventBody { UserMessage(_), AgentMessage(_), AgentStatus(_), Artifact(_), ThreadState(_), Error(_),
-                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_), ToolsAttached(_), ToolsDetached(_), AskStarted(_), AskFinished(_), ThreadShared(_), ThreadUnshared(_) }
+                     /* UiSurface, UiAction, and the gate's: */ CiResult(_), CheckResult(_), Rework(_), JobStarted(_), UiCatalog(_), AgentStep(_), ThreadTitled(_), ThreadDescribed(_), ThreadForked(_), ToolsAttached(_), ToolsDetached(_), AskStarted(_), AskFinished(_), ThreadShared(_), ThreadUnshared(_),
+                     /* ADR 0072, the parent's log: */ ChildSessionOpened(_), ChildSessionReported(_), ChildSessionClosed(_) }
 
 pub enum TransitionError {
     Finished { state: ThreadState },                        // an A2UI action on a finished thread
     InvalidInState { state: ThreadState, input: &'static str }, // a late agent update
     TextTooLong { max: usize },                             // Stop & send: the text held for the next job is over 64 KiB (ADR 0036)
     AskRefused(AskRefusal),                                 // an ask refused, with the reason (ADR 0026)
+    ChildSessionRefused(SessionRefusal),                    // a session report refused: the parent notes 256 already, or the report is malformed (ADR 0072)
 }
 
 pub fn transition(snapshot: &Snapshot, input: &Input)
