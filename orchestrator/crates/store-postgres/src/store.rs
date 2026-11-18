@@ -160,8 +160,11 @@ impl PgStore {
         new: NewThreadRecord,
         first: Commit,
     ) -> Result<ChildThread, StoreError> {
-        if new.child_of.as_ref().is_none_or(|of| of.thread == new.id) {
+        let Some(of) = new.child_of.as_ref().filter(|of| of.thread != new.id) else {
             return Err(StoreError::Refused("child_of"));
+        };
+        if !(1..=orch_ports::MAX_CHILD_SESSION_CHARS).contains(&of.session.chars().count()) {
+            return Err(StoreError::Refused("child_session"));
         }
         self.insert_thread(new, None, first, true).await
     }
@@ -1260,6 +1263,7 @@ async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
         "UPDATE outbox SET status = 'skipped', lease_owner = NULL, lease_until = NULL, \
          updated_at = $2 \
          WHERE thread_id = $1 AND kind IN ('delegate', 'steer') AND sent_at IS NULL \
+           AND payload -> 'observe' IS NULL \
            AND (status = 'pending' OR (status = 'inflight' AND lease_until < $2))",
     )
     .bind(thread.0)
@@ -1575,7 +1579,7 @@ impl ThreadStore for PgStore {
         let rows = sqlx::query(concat!(
             "SELECT ",
             thread_cols!(),
-            " FROM threads WHERE owner = $1 AND child_of = $2 ORDER BY id LIMIT 1000"
+            " FROM threads WHERE owner = $1 AND child_of = $2 ORDER BY created_at, id LIMIT 1000"
         ))
         .bind(owner.as_str())
         .bind(parent.0)

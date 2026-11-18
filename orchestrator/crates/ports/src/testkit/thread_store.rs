@@ -7768,17 +7768,34 @@ pub async fn child_threads_are_the_parents_children_oldest_first<S: ThreadStore>
     seed(&store, &alice(), 1).await;
     seed(&store, &alice(), 2).await;
     seed(&store, &bob(), 9).await;
-    for (n, session) in [(13, "c"), (11, "a"), (12, "b")] {
-        created(open_child(&store, n, 1, session).await.unwrap());
+    // ids are the caller's, so the order is the time of creation: the greatest id is the oldest
+    for (k, (n, session)) in [(13, "c"), (11, "a"), (12, "b")].into_iter().enumerate() {
+        let mut new = new_child(n, 1, session);
+        new.now = at(i64::try_from(k).unwrap() + 1);
+        created(
+            store
+                .open_child_thread(new, child_first(n, session))
+                .await
+                .unwrap(),
+        );
     }
+    // two made at the same instant are told apart by id
+    let mut tie = new_child(10, 1, "d");
+    tie.now = at(3);
+    created(
+        store
+            .open_child_thread(tie, child_first(10, "d"))
+            .await
+            .unwrap(),
+    );
     created(open_child(&store, 20, 2, "a").await.unwrap());
     let listed_for = |rows: Vec<orch_core::ThreadRecord>| {
         rows.into_iter().map(|t| number(t.id)).collect::<Vec<_>>()
     };
     assert_eq!(
         listed_for(store.child_threads(&alice(), thread_id(1)).await.unwrap()),
-        vec![11, 12, 13],
-        "oldest first: by id, which is by creation"
+        vec![13, 11, 10, 12],
+        "oldest first by creation time, then by id"
     );
     assert_eq!(
         listed_for(store.child_threads(&alice(), thread_id(2)).await.unwrap()),
@@ -7798,7 +7815,7 @@ pub async fn child_threads_are_the_parents_children_oldest_first<S: ThreadStore>
     arrange(&store, 12, archive(true), 60).await.unwrap();
     assert_eq!(
         listed_for(store.child_threads(&alice(), thread_id(1)).await.unwrap()),
-        vec![11, 12, 13]
+        vec![13, 11, 10, 12]
     );
 }
 
@@ -8099,4 +8116,81 @@ pub async fn a_commit_with_no_events_creates_a_thread<S: ThreadStore>(store: S) 
     );
     assert_eq!(after.last_seq, 1);
     assert_eq!(written[0].seq, 1);
+}
+
+/// A `Stop & send` skips the thread's unsent messages (`Commit.skip_unsent_delegates`); an
+/// `Observe` row is not a message and stays, whichever way the skip is asked for.
+pub async fn the_skip_of_unsent_delegates_leaves_observe_rows<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    created(open_child(&store, 2, 1, "s1").await.unwrap());
+    // a message on the child too, behind the observe row, never sent
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![delegate(40)]),
+            )
+            .await
+            .unwrap(),
+    );
+    let mut skip = commit(ThreadState::Working, vec![], vec![]);
+    skip.skip_unsent_delegates = true;
+    applied(store.commit(thread_id(2), 2, skip).await.unwrap());
+    let status = |n: u128| {
+        let store = &store;
+        async move {
+            store
+                .get_outbox(outbox_id(n))
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+        }
+    };
+    assert_eq!(status(40).await, OutboxStatus::Skipped, "a message goes");
+    assert_eq!(
+        status(2).await,
+        OutboxStatus::Pending,
+        "a round to follow stays"
+    );
+    // the same when asked for on its own
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                3,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![observe_row(41, "s1", 2), delegate(42)],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        store
+            .skip_unsent_delegates(thread_id(2), at(5))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(status(42).await, OutboxStatus::Skipped);
+    assert_eq!(status(41).await, OutboxStatus::Pending);
+    assert_eq!(status(2).await, OutboxStatus::Pending);
+}
+
+/// A session id is 1 to 512 characters: none and more are refused and nothing is written.
+pub async fn a_session_id_is_bounded<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    for bad in [String::new(), "s".repeat(513)] {
+        let err = open_child(&store, 2, 1, &bad).await;
+        assert_eq!(refusal(err), "child_session");
+        assert!(!exists(&store, 2).await);
+    }
+    let longest = "é".repeat(512);
+    created(open_child(&store, 2, 1, &longest).await.unwrap());
+    let read = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(read.child_of.map(|c| c.session), Some(longest));
 }

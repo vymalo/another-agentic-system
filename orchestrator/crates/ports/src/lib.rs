@@ -130,9 +130,9 @@ pub use secrets::{
 };
 pub use store::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, Lease, ListOrder, NewEvent, NewOutbox, NewThreadRecord, OutboxFinal,
-    OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats, OutboxStatus, Place,
-    SharingChange, StoreError, ThreadListing, ThreadStore,
+    CommitOutcome, ForkOrigin, Lease, ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewOutbox,
+    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
+    OutboxStatus, Place, SharingChange, StoreError, ThreadListing, ThreadStore,
 };
 pub use tools::{
     MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, MAX_USER_SERVER_TOOLS, MAX_USER_TOOL_SCHEMA_BYTES,

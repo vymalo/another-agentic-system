@@ -58,6 +58,10 @@ pub struct NewThreadRecord {
     pub now: Timestamp,
 }
 
+/// The longest session id a store keeps, in characters (the column's CHECK). The core's bound is
+/// tighter ([`orch_core::MAX_SESSION_ID_BYTES`]); this one only keeps a row sane.
+pub const MAX_CHILD_SESSION_CHARS: usize = 512;
+
 /// What [`ThreadStore::open_child_thread`] did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChildThread {
@@ -971,7 +975,11 @@ pub trait ThreadStore:
     /// ([`ThreadRecord::child_of`]) is not** (one was made since the caller looked): the caller
     /// reads again and decides again. A child of the deleted parent is erased with it, in the same
     /// transaction, only when the caller named it; the parent of a child that goes alone is left
-    /// whole (its ledger keeps the child's id). An empty `threads` is `Ok`.
+    /// whole: its sessions ledger (`Job.sessions`) still names the deleted child, which the
+    /// application treats as a session whose later reports are dropped. Once a child is gone, a
+    /// later [`open_child_thread`](Self::open_child_thread) of the same `(parent, session)` makes a
+    /// new child: the store keeps no memory of the deleted one, and the parent's ledger is what
+    /// decides whether the application asks. An empty `threads` is `Ok`.
     fn delete_threads(
         &self,
         owner: &UserId,
@@ -1033,7 +1041,8 @@ pub trait ThreadStore:
     /// The parent must be `new.owner`'s, else [`StoreError::NotFound`] (a foreign thread and a
     /// missing one look alike) and nothing is written. It may not be a child itself:
     /// [`StoreError::Refused`] `nested_child`. A `new.child_of` of `None` is
-    /// [`StoreError::Refused`] `child_of`, and so is a parent that is the thread itself. A session
+    /// [`StoreError::Refused`] `child_of`, and so is a parent that is the thread itself; a session id
+    /// of no character or of more than [`MAX_CHILD_SESSION_CHARS`] is `Refused("child_session")`. A session
     /// the parent has a child for already is [`ChildThread::Existing`], that thread as it is,
     /// whatever `new` and `first` say: nothing is written, not even a wakeup. A parent that is
     /// being deleted cannot gain a child: the call waits for the delete and then finds the parent
@@ -1048,7 +1057,8 @@ pub trait ThreadStore:
         first: Commit,
     ) -> impl Future<Output = Result<ChildThread, StoreError>> + Send;
 
-    /// The children of `parent`, the owner's, oldest first (ties by id), at most 1000: every thread
+    /// The children of `parent`, the owner's, oldest first by creation time (ties by id: ids are the
+    /// caller's, so they do not order), at most 1000: every thread
     /// whose [`ThreadRecord::child_of`] names it. A parent that is not the owner's, or does not
     /// exist, has none: empty.
     fn child_threads(

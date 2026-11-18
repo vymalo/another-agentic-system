@@ -327,6 +327,8 @@ fn skip_unsent(inner: &mut Inner, thread: ThreadId, now: Timestamp) -> u32 {
     for row in inner.outbox.iter_mut().filter(|r| {
         r.thread_id == thread
             && matches!(r.kind, OutboxKind::Delegate | OutboxKind::Steer)
+            // a round to follow is no message (ADR 0072)
+            && !matches!(r.payload, crate::OutboxPayload::Observe { .. })
             && r.sent_at.is_none()
     }) {
         let skippable = match row.status {
@@ -702,6 +704,9 @@ fn open_child(
         .clone()
         .filter(|of| of.thread != new.id)
         .ok_or(StoreError::Refused("child_of"))?;
+    if !(1..=crate::MAX_CHILD_SESSION_CHARS).contains(&of.session.chars().count()) {
+        return Err(StoreError::Refused("child_session"));
+    }
     let parent = inner
         .threads
         .get(&of.thread)
@@ -1247,7 +1252,7 @@ impl ThreadStore for MemoryStore {
                 &r.owner == owner && r.child_of.as_ref().is_some_and(|c| c.thread == parent)
             })
             .collect();
-        children.sort_by_key(|r| r.id);
+        children.sort_by_key(|r| (r.created_at, r.id));
         Ok(children.into_iter().take(1000).cloned().collect())
     }
 
