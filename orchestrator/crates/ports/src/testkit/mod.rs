@@ -109,6 +109,7 @@ macro_rules! thread_store_conformance {
             a_child_is_refused_a_foreign_parent_a_child_parent_and_no_parent
             only_open_child_thread_makes_a_child_and_a_fork_of_one_is_none
             child_threads_are_the_parents_children_oldest_first
+            child_threads_lists_at_most_a_thousand
             children_are_nested_under_their_parent_in_the_rail
             deleting_a_parent_needs_its_children_named_and_takes_them
             a_child_is_deleted_alone_and_its_parent_stays

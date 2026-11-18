@@ -7678,7 +7678,8 @@ pub async fn a_child_is_refused_a_foreign_parent_a_child_parent_and_no_parent<S:
     assert_eq!(refusal(err), "child_of");
     // a thread is not its own child
     let err = open_child(&store, 1, 1, "s9").await;
-    assert!(err.is_err(), "{err:?}");
+    assert_eq!(class_of(&err), Some(ErrorClass::Rejected), "{err:?}");
+    assert_eq!(refusal(err), "child_of");
     // a nesting that the list cannot show: under a child
     let mut deep = new_child(3, 1, "s9");
     deep.rail_parent = Some(thread_id(2));
@@ -7816,6 +7817,32 @@ pub async fn child_threads_are_the_parents_children_oldest_first<S: ThreadStore>
     assert_eq!(
         listed_for(store.child_threads(&alice(), thread_id(1)).await.unwrap()),
         vec![13, 11, 10, 12]
+    );
+}
+
+/// A parent lists at most a thousand children, the oldest first: the thousand and first is made
+/// and is not listed.
+pub async fn child_threads_lists_at_most_a_thousand<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    for k in 0..=1000u32 {
+        let n = 1000 + u128::from(k);
+        let session = format!("s{k}");
+        let mut new = new_child(n, 1, &session);
+        new.now = at(i64::from(k));
+        created(
+            store
+                .open_child_thread(new, child_first(n, &session))
+                .await
+                .unwrap(),
+        );
+    }
+    let listed = store.child_threads(&alice(), thread_id(1)).await.unwrap();
+    assert_eq!(listed.len(), 1000);
+    assert_eq!(number(listed[0].id), 1000, "the oldest first");
+    assert_eq!(number(listed[999].id), 1999);
+    assert!(
+        listed.iter().all(|t| number(t.id) != 2000),
+        "the newest is the one left out"
     );
 }
 

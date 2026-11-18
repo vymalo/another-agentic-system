@@ -826,3 +826,33 @@ async fn deleting_a_thread_erases_its_idle_children_and_a_working_child_refuses(
     app.delete_thread(&alice(), kid).await.unwrap();
     assert!(app.get_thread(&alice(), parent2).await.is_ok());
 }
+
+#[tokio::test]
+async fn deleting_a_thread_erases_the_children_of_its_edits_too() {
+    let w = World::new();
+    let files = Files::default();
+    let app = everyone(&w, files.clone());
+    let run = dispatch(&app);
+    let parent = start(&app, &alice(), "echo one").await;
+    settle(&app, parent, ThreadState::Done).await;
+    let message = log(&app, &alice(), parent).await[0].seq;
+    let edit = app
+        .fork_thread(&alice(), parent, replace(message, "echo edited"))
+        .await
+        .unwrap()
+        .thread
+        .id;
+    settle(&app, edit, ThreadState::Done).await;
+    run.shutdown().await;
+    let of_parent = child_of(&w, parent, "s1", ThreadState::Done).await;
+    let of_edit = child_of(&w, edit, "s1", ThreadState::Done).await;
+
+    app.delete_thread(&alice(), parent).await.unwrap();
+
+    for gone in [parent, edit, of_parent, of_edit] {
+        assert!(
+            w.store.get_thread(None, gone).await.unwrap().is_none(),
+            "{gone}"
+        );
+    }
+}
