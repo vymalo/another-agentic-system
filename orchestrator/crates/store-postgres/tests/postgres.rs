@@ -3872,7 +3872,7 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
     );
 
     // the rows the store never writes are refused by the table as well
-    let child = |id: Uuid, of: Option<Uuid>, session: Option<&'static str>| {
+    let child = |id: Uuid, of: Option<Uuid>, session: Option<&str>| {
         sqlx::query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, rail_rank, child_of, child_session) \
@@ -3911,6 +3911,20 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
             .is_err(),
         "its own child"
     );
+    assert!(
+        child(c1, Some(parent.0), Some(""))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "an empty session"
+    );
+    assert!(
+        child(c1, Some(parent.0), Some(&"s".repeat(513)))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a session of 513 characters"
+    );
     child(c1, Some(parent.0), Some("s1"))
         .execute(store.pool())
         .await
@@ -3947,4 +3961,107 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
             .is_err(),
         "the foreign key refuses to leave a child without its parent"
     );
+}
+
+/// The race `open_child_thread` loses at the index, made deterministic: another transaction holds an
+/// uncommitted child for the session, the call looks, finds nothing, inserts and waits on the unique
+/// index; when the other commits the call reads its thread and answers `Existing`, writing nothing.
+#[tokio::test]
+async fn an_open_that_loses_at_the_unique_index_answers_with_the_winners_thread() {
+    use orch_ports::{ChildThread, Commit};
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (parent, winner, loser) = (Uuid::now_v7(), Uuid::now_v7(), ThreadId(Uuid::now_v7()));
+    let owner = orch_core::UserId::new("alice@example.com");
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at, rail_rank) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 0, now(), now(), 'i')",
+    )
+    .bind(parent)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    // the winner's transaction: its child is written and not yet committed
+    let mut tx = store.pool().begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at, rail_rank, child_of, child_session) \
+         VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 0, now(), now(), 'i', $2, 's1')",
+    )
+    .bind(winner)
+    .bind(parent)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let now: Timestamp = T0.parse().unwrap();
+    let new = orch_ports::NewThreadRecord {
+        id: loser,
+        owner,
+        title: "helper".into(),
+        description: None,
+        target: orch_core::AgentTarget {
+            agent_id: orch_core::AgentId::new("coder"),
+            release: None,
+        },
+        context_id: None,
+        rail_parent: None,
+        child_of: Some(orch_core::ChildOf {
+            thread: ThreadId(parent),
+            session: "s1".into(),
+        }),
+        now,
+    };
+    let first = Commit {
+        new_state: orch_core::ThreadState::Queued,
+        job: None,
+        events: vec![],
+        outbox: vec![],
+        binding: None,
+        now,
+        lease: None,
+        watches: vec![],
+        timers: vec![],
+        inbox: None,
+        finishes_outbox: None,
+        title: None,
+        description: None,
+        sharing: None,
+        skip_unsent_delegates: false,
+    };
+    let call = {
+        let store = store.clone();
+        tokio::spawn(async move { store.open_child_thread(new, first).await })
+    };
+    // it is waiting on the index: a lock wait of another backend, not a finished call
+    let waiting = async {
+        loop {
+            let (n,): (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+                 AND query LIKE 'INSERT INTO threads%' AND pid <> pg_backend_pid()",
+            )
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+            if n > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the call waits for the other transaction");
+    assert!(!call.is_finished());
+    tx.commit().await.unwrap();
+    match call.await.unwrap().unwrap() {
+        ChildThread::Existing(found) => assert_eq!(found.id, ThreadId(winner)),
+        other => panic!("{other:?}"),
+    }
+    assert!(store.get_thread(None, loser).await.unwrap().is_none());
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM threads WHERE child_of = $1")
+        .bind(parent)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
 }
