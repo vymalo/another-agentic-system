@@ -56,7 +56,15 @@ pub use build::{
     AgentBuild, MAX_BUILD_KEY_BYTES, MAX_BUILD_PARAMS, MAX_BUILD_TEXT_BYTES, MAX_BUILD_VALUE_BYTES,
     MAX_BUILDS,
 };
-pub use child_sessions::{CHILD_SESSIONS_EXTENSION, ChildAgent, ChildSessionsOffer};
+pub use child_sessions::{
+    CHILD_SESSIONS_EXTENSION, ChildAgent, ChildLedger, ChildOf, ChildSessionClosedData,
+    ChildSessionOpenedData, ChildSessionReportedData, ChildSessionsOffer, MAX_CHILD_SESSIONS,
+    MAX_SESSION_AGENT_BYTES, MAX_SESSION_CONTEXT_BYTES, MAX_SESSION_DESCRIPTION_CHARS,
+    MAX_SESSION_ID_BYTES, MAX_SESSION_TASK_BYTES, MAX_SESSIONS_LISTED, ObservedRound, RoundReport,
+    SessionBy, SessionEvent, SessionInvalid, SessionLedger, SessionNews, SessionNote,
+    SessionOutcome, SessionRefusal, SessionReport, SessionState, child_title, report_of,
+    start_child,
+};
 pub use delete::{NotDeletable, deletable};
 pub use description::{
     DEFAULT_DESCRIPTION_CHARS, DEFAULT_MIN_NEW_MESSAGES, DescribedBy, DescriptionError,
@@ -66,8 +74,8 @@ pub use description::{
 pub use error::{BoxError, Classify, ErrorClass, report};
 pub use event::{
     Actor, ActorType, AgentMessageData, AgentStatus, AgentStatusData, AnswerVia, ArtifactData,
-    Delivery, ErrorData, Event, EventBody, EventKind, FileRef, JobStartedData, MessagePurpose,
-    Origin, Preview, ThreadStateData, UserMessageData,
+    Delivery, ErrorData, Event, EventBody, EventKind, FileRef, JobRound, JobStartedData,
+    MessagePurpose, Origin, Preview, ThreadStateData, UserMessageData,
 };
 pub use extension::{
     KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,

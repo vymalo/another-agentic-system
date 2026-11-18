@@ -267,7 +267,10 @@ impl Answer {
                 // an asked agent may be sent a tier (the person's cap on it, ADR 0061) and echo one;
                 // a refused echo is counted where the stream is read (`ask_stream`, `poll_ask`) and
                 // changes nothing here
-                | AgentUpdate::TierRejected,
+                | AgentUpdate::TierRejected
+                // an asked agent's sessions are not followed (ADR 0072)
+                | AgentUpdate::ChildSessions(_)
+                | AgentUpdate::ChildSessionsRejected(_),
             )
             | None => {}
         }

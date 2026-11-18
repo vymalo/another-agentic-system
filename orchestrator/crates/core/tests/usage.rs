@@ -151,6 +151,7 @@ fn a_call_report_is_a_model_usage_of_the_agent_and_moves_nothing() {
                 model: "glm-5.3".into(),
                 tokens: tokens(41_250, 812),
                 context_window: Some(131_072),
+                counted: true,
             }))
         );
         assert_eq!(after.job.usage.calls(), 1);
@@ -264,6 +265,7 @@ fn totals_are_a_model_usage_total_and_are_never_capped() {
             path: vec![],
             totals: totals().totals,
             sandbox: None,
+            counted: true,
         })]
     );
     assert_eq!(snap.state, Working);

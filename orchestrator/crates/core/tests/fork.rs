@@ -75,7 +75,7 @@ fn job_started(seq: i64, job: u32) -> Event {
     ev(
         seq,
         Actor::system(),
-        EventBody::JobStarted(JobStartedData { job }),
+        EventBody::JobStarted(JobStartedData { job, round: None }),
     )
 }
 

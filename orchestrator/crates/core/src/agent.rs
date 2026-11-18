@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::access_tier::AccessTier;
+use crate::child_sessions::SessionNews;
 use crate::event::{FileRef, MessagePurpose};
 use crate::step::StepReport;
 use crate::usage::{UsageInvalid, UsageUpdate};
@@ -215,4 +216,12 @@ pub enum AgentUpdate {
     /// failure. The application counts it (the dispatcher does not hand it to the core; a core
     /// that is handed one changes nothing).
     TierRejected,
+    /// What the agent said about its sessions (`child-sessions/v1`, ADR 0072): the sessions object
+    /// of a parent task, a status event, or the session a round task belongs to. The dispatcher
+    /// intercepts it and the application acts on it; a core that is handed one changes nothing.
+    ChildSessions(SessionNews),
+    /// A `child-sessions/v1` report that broke the contract: never logged and never a task
+    /// failure. The application counts it (the dispatcher does not hand it to the core; a core
+    /// that is handed one changes nothing). The text says why, with no value from the report.
+    ChildSessionsRejected(String),
 }

@@ -95,7 +95,10 @@ fn every_kind_roundtrips_and_never_emits_null() {
             version: UiVersion::V0_9_1,
             run_id: None,
         }),
-        EventBody::JobStarted(JobStartedData { job: 2 }),
+        EventBody::JobStarted(JobStartedData {
+            job: 2,
+            round: None,
+        }),
         EventBody::UiCatalog(note_catalog()),
         EventBody::AgentStep(AgentStepData {
             id: "t/acp:c2:1".into(),
@@ -259,7 +262,10 @@ fn an_agent_step_is_the_agents_event_and_leaves_out_what_it_does_not_say() {
 #[test]
 fn job_started_is_the_systems_word_and_carries_the_number() {
     let e = event(
-        EventBody::JobStarted(JobStartedData { job: 2 }),
+        EventBody::JobStarted(JobStartedData {
+            job: 2,
+            round: None,
+        }),
         Actor::system(),
     );
     assert_eq!(e.kind(), EventKind::JobStarted);

@@ -535,7 +535,10 @@ fn a_new_job_forgets_the_asks_of_the_old_one() {
     events.push(ev(
         8,
         Actor::system(),
-        EventBody::JobStarted(JobStartedData { job: 2 }),
+        EventBody::JobStarted(JobStartedData {
+            job: 2,
+            round: None,
+        }),
     ));
     events.push(status(9, AgentStatus::Working, None));
     events.push(asked(10, 1, Caller::Main, "coder", "second", None));

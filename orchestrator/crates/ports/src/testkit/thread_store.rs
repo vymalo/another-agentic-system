@@ -3117,6 +3117,26 @@ fn busy_job() -> Job {
         after_stop_tier_cap: Some(orch_core::AccessTier::Edits),
         tier: Some(orch_core::AccessTier::Auto),
         tier_cap: Some(orch_core::AccessTier::Bypass),
+        // ADR 0072: what a parent and a child thread note, and the round a job follows
+        sessions: orch_core::SessionLedger::of(vec![orch_core::SessionNote {
+            session: "s1".to_owned(),
+            child: orch_core::ThreadId(uuid::Uuid::from_u128(0x77)),
+            reported: 2,
+            closed: true,
+        }]),
+        child: Some(orch_core::ChildLedger {
+            session: "s0".to_owned(),
+            agent: "planner".to_owned(),
+            keep_open: true,
+            state: orch_core::SessionState::Idle,
+            closing: false,
+            followed: 3,
+        }),
+        observed: Some(orch_core::ObservedRound {
+            number: 3,
+            task_id: "task-r3".to_owned(),
+            by: Some(orch_core::SessionBy::Person),
+        }),
     };
     // Two steps open, one of them nested and updated: the ledger has an entry with a path and a
     // count of updates.
@@ -4300,7 +4320,10 @@ pub async fn gate_events_roundtrip<S: ThreadStore>(store: S) {
                 findings: vec!["red".into()],
             }],
         }),
-        EventBody::JobStarted(orch_core::JobStartedData { job: 2 }),
+        EventBody::JobStarted(orch_core::JobStartedData {
+            job: 2,
+            round: None,
+        }),
     ];
     let events: Vec<NewEvent> = bodies
         .iter()

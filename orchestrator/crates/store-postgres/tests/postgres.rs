@@ -3633,6 +3633,7 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
             cache_write_input_tokens: None,
         },
         context_window: Some(131_072),
+        counted: true,
     }));
     let totals = EventBody::ModelUsageTotal(orch_core::ModelUsageTotalData {
         job: 1,
@@ -3659,6 +3660,7 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
                 milliseconds: 81_234,
             }]),
         }),
+        counted: true,
     });
     let insert = |seq: i64, kind: &'static str, data: String| {
         sqlx::query(

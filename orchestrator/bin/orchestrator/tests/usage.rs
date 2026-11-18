@@ -181,6 +181,7 @@ fn total(task: &str, input: u64) -> NewEvent {
                 },
             }],
             sandbox: None,
+            counted: true,
         }),
         idempotency_key: None,
     }

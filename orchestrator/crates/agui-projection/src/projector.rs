@@ -683,6 +683,13 @@ impl Projector {
             EventBody::ThreadShared(_) | EventBody::ThreadUnshared(_) => {
                 self.pending_error = pending_error;
             }
+            // A helper session (ADR 0072) says nothing in the stream yet: the log moves, and an
+            // `error` before it still explains the `thread_state` that follows.
+            EventBody::ChildSessionOpened(_)
+            | EventBody::ChildSessionReported(_)
+            | EventBody::ChildSessionClosed(_) => {
+                self.pending_error = pending_error;
+            }
             // Token usage (ADR 0056) is not the transcript: a `CUSTOM` inside a run, folded for the
             // run's accounting, and an `error` before it still explains the `thread_state` after it.
             EventBody::ModelUsage(d) => {

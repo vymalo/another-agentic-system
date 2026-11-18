@@ -86,6 +86,7 @@ fn call(seq: i64, task: &str, call: &str, path: &[&str], input: u64, output: u64
             model: "m".into(),
             tokens: counts(input, output),
             context_window: Some(1000),
+            counted: true,
         })),
     )
 }
@@ -105,6 +106,7 @@ fn total(seq: i64, task: &str, path: &[&str], input: u64, output: u64) -> Event 
                 tokens: counts(input, output),
             }],
             sandbox: None,
+            counted: true,
         }),
     )
 }

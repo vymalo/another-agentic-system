@@ -88,6 +88,7 @@ fn call(task: &str, id: &str, tokens: TokenCounts) -> NewEvent {
             model: "glm".into(),
             tokens,
             context_window: None,
+            counted: true,
         })),
         idempotency_key: None,
     }
@@ -104,6 +105,7 @@ fn total(task: &str, totals: Vec<ModelTokens>, sandbox: Option<SandboxUsage>) ->
             path: Vec::new(),
             totals,
             sandbox,
+            counted: true,
         }),
         idempotency_key: None,
     }

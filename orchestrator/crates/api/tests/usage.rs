@@ -318,6 +318,7 @@ fn total(
             path: Vec::new(),
             totals,
             sandbox,
+            counted: true,
         }),
         idempotency_key: None,
     }
@@ -337,6 +338,7 @@ fn call(when: &str, task: &str, model: &str, tokens: TokenCounts) -> NewEvent {
             model: model.into(),
             tokens,
             context_window: None,
+            counted: true,
         })),
         idempotency_key: None,
     }

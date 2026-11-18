@@ -226,7 +226,9 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::Step(_)
             | AgentUpdate::Usage(_)
             | AgentUpdate::UsageRejected(_)
-            | AgentUpdate::TierRejected,
+            | AgentUpdate::TierRejected
+            | AgentUpdate::ChildSessions(_)
+            | AgentUpdate::ChildSessionsRejected(_),
         )
         | None => None,
     })
@@ -1308,6 +1310,15 @@ impl<P: Ports> Dispatcher<P> {
         // counted, and the turn goes on.
         if matches!(env.update, Some(AgentUpdate::TierRejected)) {
             self.app.tier_echo_dropped(ctx.thread);
+            return Ok(());
+        }
+        // What an agent says of its sessions (`child-sessions/v1`, ADR 0072) is not applied to the
+        // thread yet: dropped, and counted by nothing.
+        if matches!(
+            env.update,
+            Some(AgentUpdate::ChildSessions(_) | AgentUpdate::ChildSessionsRejected(_))
+        ) {
+            tracing::debug!(thread = %ctx.thread, "child sessions report not applied yet");
             return Ok(());
         }
         let key = match &env.key {

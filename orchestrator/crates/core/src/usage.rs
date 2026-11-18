@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ask::ask_step_id;
+use crate::child_sessions::ObservedRound;
 use crate::event::{Actor, EventBody};
 use crate::gate::Job;
 use crate::step::MAX_STEP_ID_BYTES;
@@ -501,6 +502,11 @@ pub struct ModelUsageData {
     /// The model's context window in tokens, when the deployment configured one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Whether the usage ledger counts this call (ADR 0065). `false` for a call of a round this
+    /// thread only follows, whose tokens its parent's totals hold (ADR 0072); omitted when `true`
+    /// and in every log written before the member existed.
+    #[serde(default = "counted_by_default", skip_serializing_if = "is_counted")]
+    pub counted: bool,
 }
 
 /// `data` of a `model_usage_total`: a task's totals when it ended or paused.
@@ -523,6 +529,17 @@ pub struct ModelUsageTotalData {
     /// written before the member existed have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxUsage>,
+    /// Whether the usage ledger counts these totals, as for [`ModelUsageData::counted`].
+    #[serde(default = "counted_by_default", skip_serializing_if = "is_counted")]
+    pub counted: bool,
+}
+
+fn counted_by_default() -> bool {
+    true
+}
+
+fn is_counted(counted: &bool) -> bool {
+    *counted
 }
 
 /// The job's count of its usage (`Job.usage`): how many call reports it logged and how many it
@@ -588,6 +605,11 @@ pub(crate) fn record_usage(
         }
     }
     let ask_path = || ask.map(|n| vec![ask_step_id(n)]);
+    // a round this thread only follows is in its parent's totals (ADR 0072)
+    let counted = job
+        .observed
+        .as_ref()
+        .is_none_or(ObservedRound::counts_usage);
     let body = match update {
         UsageUpdate::Call(call) => {
             if call.check().is_err() {
@@ -614,6 +636,7 @@ pub(crate) fn record_usage(
                 model: call.model.clone(),
                 tokens: call.tokens,
                 context_window: call.context_window,
+                counted,
             }))
         }
         UsageUpdate::Total(totals) => {
@@ -630,6 +653,7 @@ pub(crate) fn record_usage(
                 path: ask_path().unwrap_or_default(),
                 totals: totals.totals.clone(),
                 sandbox: sandbox.cloned(),
+                counted,
             })
         }
     };
@@ -1190,6 +1214,7 @@ mod tests {
                     milliseconds: 81234,
                 }]),
             }),
+            counted: true,
         };
         let wire = serde_json::to_value(&data).unwrap();
         assert_eq!(
@@ -1232,6 +1257,7 @@ mod tests {
                 ..TokenCounts::default()
             },
             context_window: Some(100),
+            counted: true,
         };
         let wire = serde_json::to_value(&data).unwrap();
         assert_eq!(

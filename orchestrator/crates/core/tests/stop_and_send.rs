@@ -495,7 +495,13 @@ fn row5_every_ending_logs_what_the_agent_said_and_starts_the_next_job_with_no_th
             assert_eq!(next.job.after_stop, None, "{name}");
             assert_eq!(
                 bodies(&cmds),
-                [&logged, &EventBody::JobStarted(JobStartedData { job: 2 })],
+                [
+                    &logged,
+                    &EventBody::JobStarted(JobStartedData {
+                        job: 2,
+                        round: None
+                    })
+                ],
                 "{name} in {s:?}: the agent's word, then the boundary, and no `thread_state`"
             );
             assert_eq!(

@@ -2324,6 +2324,10 @@ impl<P: Ports> App<P> {
             // nonce, which only `share_thread` and its siblings do (ADR 0040).
             | Input::Share { .. }
             | Input::Unshare { .. }
+            // What an agent said of its sessions is the dispatcher's to apply (ADR 0072)
+            | Input::ChildSession { .. }
+            | Input::ChildSessionSaid(_)
+            | Input::RoundStarted { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -2841,6 +2845,9 @@ impl<P: Ports> App<P> {
                 // Said by the commit itself: the store finishes the abandoned job's unsent rows in
                 // the transaction that writes this commit's, so none of those is touched.
                 Command::DropQueued { .. } => skip_unsent_delegates = true,
+                // The outbox row that follows a round is not written yet; nothing in the
+                // application produces the inputs that order it.
+                Command::Observe { .. } => {}
                 Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel { job: Some(job) },
