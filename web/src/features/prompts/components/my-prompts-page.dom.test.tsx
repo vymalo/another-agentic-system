@@ -653,6 +653,44 @@ describe("the sharing control (P4)", () => {
     expect(held.audience).toEqual([]);
   });
 
+  it("a role the field cannot hold (one with a comma) is kept by a Save that changes nothing, and said there", async () => {
+    const made = await openAsSharer({
+      name: "plan",
+      title: "Plan",
+      body: "Plan it",
+      audience: ["a,b", "user"],
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Change sharing “Plan”" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = audienceFieldOf(dialog);
+    // the contract allows a comma in a role value (every byte 0x21 to 0x7E); the field separates roles with one
+    expect(field.value).toBe("a,b, user");
+    expect(within(dialog).getByText(/One of these roles holds a comma/)).toBeTruthy();
+    expect(field.getAttribute("aria-describedby")).toMatch(/-comma/);
+
+    // opening it and pressing Save sends the audience it has, not the two roles the field would be read as
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await screen.findByText("“Plan” is shared with a,b, user.");
+    const body = JSON.parse(patchOf()[0]?.body ?? "{}") as Record<string, unknown>;
+    expect(body).toEqual({ revision: made.revision, audience: ["a,b", "user"] });
+    const held = (await (await api("GET", `/api/prompts/${made.id}`)).json()) as {
+      audience: string[];
+    };
+    expect(held.audience).toEqual(["a,b", "user"]);
+
+    // once the field is changed, the roles are what was typed: the dialog said so
+    fireEvent.click(await screen.findByRole("button", { name: "Change sharing “Plan”" }));
+    const again = await screen.findByRole("dialog");
+    const other = audienceFieldOf(again);
+    fireEvent.change(other, { target: { value: "a,b, prompt-team" } });
+    fireEvent.click(within(again).getByRole("button", { name: "Save" }));
+    await screen.findByText("“Plan” is shared with a, b, prompt-team.");
+    const split = (await (await api("GET", `/api/prompts/${made.id}`)).json()) as {
+      audience: string[];
+    };
+    expect(split.audience).toEqual(["a", "b", "prompt-team"]);
+  });
+
   it("a 404 says the prompt is gone, closes the dialog and reads the list again", async () => {
     const made = await openAsSharer();
     fireEvent.click(await screen.findByRole("button", { name: "Share “Plan”" }));

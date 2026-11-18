@@ -4,7 +4,8 @@ import { isFrozen } from "./library";
 /*
  * The pure part of the sharing control (docs/api/prompts-v1.md, "The audience"): which control a row offers, what the
  * dialog's field holds and what is sent. **No rule is enforced here**: nothing refuses a role, and the server judges every
- * value it is given (`failures.ts` says what it answered). The one hint drawn is that `*` beside a role will be refused.
+ * value it is given (`failures.ts` says what it answered). The one hint drawn is that `*` beside a role will be refused,
+ * and the one value kept from being lost is a stored role the comma-separated field cannot show (`audienceIn`).
  */
 
 /** What an own prompt's row offers: `share` (private), `change` (shared), `stop` (shared, and `prompts.share` is gone). */
@@ -37,6 +38,22 @@ export function audienceOf(text: string): string[] {
 /** What the field holds for an audience: the server's values as it sorted them, separated by commas. */
 export const audienceField = (audience: readonly string[] | undefined): string =>
   (audience ?? []).join(", ");
+
+/**
+ * Whether the field can hold this audience at all: a role value may hold a comma (the contract allows every byte
+ * `0x21` to `0x7E`, and `PromptAudience`'s pattern with it), and the comma is what this field separates roles with.
+ */
+export const audienceFits = (audience: readonly string[] | undefined): boolean =>
+  (audience ?? []).every((role) => !role.includes(","));
+
+/**
+ * What the field means: the roles it holds, or **the audience as it was** while the text is exactly what that audience
+ * renders to. So opening the dialog and saving changes nothing, even for a role the field cannot show (one with a comma,
+ * `audienceFits`); as soon as the text differs, it is read as typed.
+ */
+export function audienceIn(text: string, stored: readonly string[]): string[] {
+  return text === audienceField(stored) ? [...stored] : audienceOf(text);
+}
 
 /** "Everyone", "Only you", or the roles. A mixed `*` is the roles with Everyone first; the server refuses it. */
 export function audienceWords(audience: readonly string[] | undefined): string {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ApiPromptSummary } from "@/lib/api/types";
 import {
   audienceField,
+  audienceFits,
+  audienceIn,
   audienceOf,
   audienceSentence,
   audienceWords,
@@ -76,6 +78,40 @@ describe("audienceField", () => {
     expect(audienceField([])).toBe("");
     expect(audienceField(["*"])).toBe("*");
     expect(audienceField(["prompt-team", "user"])).toBe("prompt-team, user");
+  });
+});
+
+describe("audienceFits", () => {
+  it("says whether the field can hold the audience: a role may hold the comma it separates with", () => {
+    expect(audienceFits(undefined)).toBe(true);
+    expect(audienceFits([])).toBe(true);
+    expect(audienceFits(["*"])).toBe(true);
+    expect(audienceFits(["prompt-team", "user"])).toBe(true);
+    expect(audienceFits(["a,b"])).toBe(false);
+    expect(audienceFits(["user", "a,b"])).toBe(false);
+  });
+});
+
+describe("audienceIn", () => {
+  it("reads the field as typed when it differs from what the prompt has", () => {
+    expect(audienceIn("", [])).toEqual([]);
+    expect(audienceIn(" user , prompt-team, user ", ["team"])).toEqual(["user", "prompt-team"]);
+    expect(audienceIn("*", ["user"])).toEqual(["*"]);
+  });
+
+  it("keeps the audience the prompt has while the field is exactly what that audience renders to", () => {
+    expect(audienceIn("prompt-team, user", ["prompt-team", "user"])).toEqual([
+      "prompt-team",
+      "user",
+    ]);
+    // the contract allows a comma in a role value, and the field separates roles with one: an untouched field must not
+    // split a stored role into two
+    expect(audienceIn("a,b", ["a,b"])).toEqual(["a,b"]);
+    expect(audienceIn("a,b, user", ["a,b", "user"])).toEqual(["a,b", "user"]);
+  });
+
+  it("splits a stored role with a comma once the field is changed: that is what the dialog says it will do", () => {
+    expect(audienceIn("a,b, prompt-team", ["a,b"])).toEqual(["a", "b", "prompt-team"]);
   });
 });
 

@@ -17,7 +17,14 @@ import type { ApiPrompt, ApiPromptSummary, ApiUpdatePrompt } from "@/lib/api/typ
 import type { WriteResult } from "../hooks/use-prompt-library";
 import type { Failure } from "../lib/failures";
 import type { PromptRead } from "../lib/read";
-import { audienceField, audienceOf, audienceSentence, buildShare, shareNotice } from "../lib/share";
+import {
+  audienceField,
+  audienceFits,
+  audienceIn,
+  audienceSentence,
+  buildShare,
+  shareNotice,
+} from "../lib/share";
 
 /** What the page says after the dialog closed: a share went through, or the prompt is gone. */
 export type ShareNotice = { message: string; tone: "muted" | "warning"; gone?: boolean };
@@ -42,12 +49,15 @@ const joined = (...ids: (string | false | null | undefined)[]): string | undefin
  * everyone and empty for nobody but the owner. **The server judges every value**: nothing here refuses a role, and a
  * `bad_audience` is said under the field, with `aria-invalid` and the focus. A stale share keeps the roles typed and
  * offers the current audience; a 403 offers **Stop sharing**, the only write a person without `prompts.share` may make.
+ * A role the field cannot show (one with a comma) is kept as it was while the field is untouched, and said there.
  */
 export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
   const id = useId();
   const fieldRef = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
   const [field, setField] = useState(() => audienceField(prompt.audience));
+  // the audience the prompt has, as the server last said it: what an untouched field means (`audienceIn`)
+  const [stored, setStored] = useState<readonly string[]>(() => prompt.audience ?? []);
   const [revision, setRevision] = useState(prompt.revision);
   const [acting, setActing] = useState<"save" | "stop" | null>(null);
   const [reading, setReading] = useState(false);
@@ -68,7 +78,9 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
   }, [failure]);
 
   const busy = acting !== null || reading;
-  const values = audienceOf(field);
+  const values = audienceIn(field, stored);
+  // a role the field cannot show (one with a comma): said, and kept while the field is untouched
+  const fits = audienceFits(stored);
   const fieldError = failure?.target.field === "audience" ? failure.message : null;
   // every other refusal is the dialog's own: a stale share, a lost permission, a prompt that is gone, a failed request
   const topFailure = failure && failure.target.field !== "audience" ? failure : null;
@@ -89,7 +101,7 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
     setFailure(null);
     setReadError(null);
     setActing("save");
-    const audience = audienceOf(field);
+    const audience = audienceIn(field, stored);
     const result = await write(buildShare(revision, audience));
     if (!alive.current) return;
     setActing(null);
@@ -135,6 +147,7 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
       return;
     }
     setRevision(result.value.revision);
+    setStored(result.value.audience ?? []);
     setField(audienceField(result.value.audience));
     setFailure(null);
   }
@@ -171,7 +184,12 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
               autoCapitalize="none"
               spellCheck={false}
               aria-invalid={fieldError ? true : undefined}
-              aria-describedby={joined(`${id}-help`, `${id}-live`, fieldError && errorId)}
+              aria-describedby={joined(
+                `${id}-help`,
+                `${id}-live`,
+                !fits && `${id}-comma`,
+                fieldError && errorId,
+              )}
               onChange={(event) => setField(event.target.value)}
             />
             <p id={`${id}-help`} className="text-xs text-muted-foreground">
@@ -181,6 +199,12 @@ export function SharePromptDialog({ prompt, write, read, onClose }: Props) {
             <p id={`${id}-live`} className="text-sm text-muted-foreground">
               {audienceSentence(values)}
             </p>
+            {fits ? null : (
+              <p id={`${id}-comma`} className="text-xs text-muted-foreground">
+                One of these roles holds a comma, which this field uses between roles: leave the
+                field as it is to keep it, or it is replaced by the roles as typed.
+              </p>
+            )}
             {fieldError ? (
               <p id={errorId} role="alert" className="text-sm text-destructive">
                 {fieldError}

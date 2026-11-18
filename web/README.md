@@ -1236,7 +1236,10 @@ frozen prompt). Nothing is offered while `me` is not known, and a prompt shared 
 - **The dialog** names the prompt and its `/name`, and holds the audience as a comma-separated field of **role values** (the values of the roles claim;
   `*` alone means everyone, and empty means only the owner). Under it, a sentence says who can read it now ("Everyone can read it.", "Only you can read it.",
   the roles, or, when `*` is typed beside a role, that the server will refuse it), and the help line says that a role may be one the person does not hold: the
-  server accepts a share with a role nobody holds, and the page never checks one.
+  server accepts a share with a role nobody holds, and the page never checks one. **A role value may itself hold a comma** (the contract allows every byte
+  `0x21` to `0x7E`), which is what the field separates roles with: while the field is exactly what the prompt's audience renders to, that audience is sent as
+  it is — so opening the dialog and pressing Save changes nothing — and a line under the field says that a change would replace it; once the field differs,
+  the roles are what was typed.
 - **The write is the audience and nothing else.** The field is split on commas, trimmed, its empty values dropped and each role kept once (the order typed
   is the order sent), and `updatePrompt` is sent `{revision, audience}`: a share never carries a title, a text or a question. The row's "Shared with: …" comes
   from the summary, and the prompt the server answers with replaces it (the roles sorted by the server, `*` as Everyone).
@@ -1246,12 +1249,14 @@ frozen prompt). Nothing is offered while `me` is not known, and a prompt shared 
   reads the prompt again and shows the audience it has now: the dialog never overwrites. A **404** closes the dialog with the words that it is gone and the
   list is read again; a 401, a 403 `no_access`, a 429 and a 5xx say their own words and keep the dialog open.
 - **Stop sharing in a row** is the frozen prompt's only action on who can read it: it sends the row's revision and an empty audience, and the row says it is no longer shared.
-- **Tests.** The pure part is `src/features/prompts/lib/share.test.ts` (the control of a row, the field and back, the words, the body). The page and the dialog
-  are in `src/features/prompts/components/my-prompts-page.dom.test.tsx` against the mock server: the control with and without `prompts.share`, the frozen
-  Stop sharing, the body sent (`{revision, audience}`, and nothing else), `bad_audience` at the field, a stale share and Load the current version, a 403 and
-  its Stop sharing, a 404, a 503, the row's audience after a save, the row's “Stopping…” while its write is in flight, and the focus after a save, a stop and a 404 (the row's control, its Edit button, the list's heading). `e2e/prompts.spec.ts` runs them in a
-  browser on both projects: Everyone and a role, the permission lost, `bad_audience` for `*` beside a role (`* , user`) and for a role with a space, a stale share from another tab,
-  the 403, axe on the dialog in both schemes, and no sideways scroll on a phone with a long list of roles.
+- **Tests.** The pure part is `src/features/prompts/lib/share.test.ts` (the control of a row, the field and back, a role the field cannot hold, the words, the
+  body). The page and the dialog are in `src/features/prompts/components/my-prompts-page.dom.test.tsx` against the mock server: the control with and without
+  `prompts.share`, the frozen Stop sharing, the body sent (`{revision, audience}`, and nothing else), `bad_audience` at the field, a stale share and Load the
+  current version, a 403 and its Stop sharing, a 404, a 503, the row's audience after a save, a stored role with a comma kept by a Save that changes nothing,
+  the row's “Stopping…” while its write is in flight, and the focus after a save, a stop and a 404 (the row's control, its Edit button, the list's heading).
+  `e2e/prompts.spec.ts` runs them in a browser on both projects: Everyone and a role, the permission lost (each row that must offer no share control is
+  asserted to still be there with the one it should have), `bad_audience` for `*` beside a role (`* , user`) and for a role with a space, a stale share from
+  another tab, the 403, axe on the dialog in both schemes, and no sideways scroll on a phone with a long list of roles.
 
 ### Using a prompt from the message box
 
