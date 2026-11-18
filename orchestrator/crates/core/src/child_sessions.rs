@@ -106,7 +106,9 @@ fn whole_at_least_one(value: &Value) -> Option<u32> {
     u32::try_from(n).ok().filter(|n| *n >= 1)
 }
 
-/// The most sessions one parent thread notes. A session past it is refused
+/// The most sessions one parent thread notes, counting every session in the thread's life: a
+/// closed session keeps its note (it is what makes the parent's events once each), so it still
+/// counts. A session past it is refused
 /// ([`TransitionError::ChildSessionRefused`]) and stays a step of the parent's task.
 pub const MAX_CHILD_SESSIONS: usize = 256;
 /// The longest session id, in bytes.
@@ -212,6 +214,10 @@ pub struct SessionReport {
     /// The newest round the report names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round: Option<RoundReport>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 fn is_false(b: &bool) -> bool {
@@ -373,6 +379,10 @@ pub struct ChildLedger {
     /// The newest round the thread was told to follow (0: none).
     #[serde(default)]
     pub followed: u32,
+    /// The highest round the thread started a job for (0: none). A start at or below it is a
+    /// replay or a reordering and changes nothing.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub started: u32,
 }
 
 /// The round of a session this thread's current job follows without having sent it (`Job.observed`,
@@ -391,7 +401,10 @@ pub struct ObservedRound {
 
 impl ObservedRound {
     /// Whether the tokens of this round are counted in this thread: only a round a person started
-    /// is. A round the parent's model started is in the parent's totals (ADR 0072, consequences).
+    /// is. A round the parent's model started is in the parent's totals (ADR 0072, amended
+    /// 2026-11-18), and so is a round whose `by` the agent did not say (`None`): it is taken for
+    /// the agent's and left uncounted here. A blocked child that a person answers within the same
+    /// job keeps this round's `by`; what counts that answer is S3's decision.
     pub fn counts_usage(&self) -> bool {
         self.by == Some(SessionBy::Person)
     }
@@ -515,6 +528,7 @@ pub(crate) fn learn(
     };
     let note = &mut job.sessions.notes[at];
     if let Some((round, outcome)) = report.ended_round()
+        && !note.closed
         && round > note.reported
     {
         note.reported = round;
@@ -565,6 +579,7 @@ pub fn start_child(report: &SessionReport) -> (Snapshot, Vec<Command>) {
             state: report.state,
             closing: report.closing,
             followed: round.as_ref().map_or(0, |(n, _)| *n),
+            started: 0,
         }),
         title: TitleLedger::of(TitleSource::Model),
         // the helper's words are the agent's, fixed: nothing replaces them
@@ -596,8 +611,11 @@ pub(crate) fn said(job: &mut Job, report: &SessionReport) -> Result<Vec<Command>
     let Some(child) = job.child.as_mut().filter(|c| c.session == report.session) else {
         return Ok(Vec::new());
     };
-    child.state = report.state;
-    child.closing = report.closing;
+    // closed is final: a late or reordered report does not reopen the session
+    if child.state != SessionState::Closed {
+        child.state = report.state;
+        child.closing = report.closing;
+    }
     child.keep_open = report.keep_open;
     if !report.agent.is_empty() {
         child.agent.clone_from(&report.agent);
@@ -623,15 +641,28 @@ pub(crate) fn said(job: &mut Job, report: &SessionReport) -> Result<Vec<Command>
 /// The orchestrator began to follow a round of this child thread (`Input::RoundStarted`): the job
 /// is the round's, under the number the agent gave it. A fresh child thread starts its first job
 /// in place; one that is blocked or over starts the next job; the same round again changes nothing;
-/// a thread that is busy refuses, and the dispatcher tries again later.
+/// a thread that is busy refuses, and the dispatcher tries again later. A round at or below the
+/// highest one started is a replay and changes nothing. A thread that is not `session`'s child, or
+/// round 0, is refused ([`TransitionError::InvalidInState`]).
 pub(crate) fn round_started(
     state: ThreadState,
     job: &mut Job,
+    session: &str,
     number: u32,
     task_id: &str,
     by: Option<SessionBy>,
 ) -> Result<(ThreadState, Vec<Command>), TransitionError> {
-    if job.observed.as_ref().is_some_and(|o| o.number == number) {
+    let refuse = TransitionError::InvalidInState {
+        state,
+        input: "round started",
+    };
+    let Some(child) = job.child.as_ref().filter(|c| c.session == session) else {
+        return Err(refuse);
+    };
+    if number == 0 {
+        return Err(refuse);
+    }
+    if number <= child.started || job.observed.as_ref().is_some_and(|o| o.number == number) {
         return Ok((state, Vec::new()));
     }
     let fresh = job.observed.is_none() && job.number == 1;
@@ -654,6 +685,7 @@ pub(crate) fn round_started(
     });
     if let Some(child) = job.child.as_mut() {
         child.followed = child.followed.max(number);
+        child.started = number;
     }
     Ok((
         ThreadState::Working,

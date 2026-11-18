@@ -450,8 +450,12 @@ pub enum Input {
     /// The orchestrator began to follow a round of this child thread's session (ADR 0072): the
     /// job becomes the round's. A fresh thread, or one blocked or over, takes it; the same round
     /// again changes nothing; a thread that works refuses
-    /// ([`TransitionError::InvalidInState`]) and the dispatcher tries again.
+    /// ([`TransitionError::InvalidInState`]) and the dispatcher tries again. A round at or below
+    /// the highest started is a replay and changes nothing; a thread that is not the session's
+    /// child, or round 0, is refused.
     RoundStarted {
+        /// The session this thread is the child of; another session's round is refused.
+        session: String,
         /// The round's number, from 1.
         number: u32,
         /// The round's A2A task.
@@ -1804,10 +1808,11 @@ fn decide(
         } => Ok((state, child_sessions::learn(job, actor, report, *child)?)),
         Input::ChildSessionSaid(report) => Ok((state, child_sessions::said(job, report)?)),
         Input::RoundStarted {
+            session,
             number,
             task_id,
             by,
-        } => child_sessions::round_started(state, job, *number, task_id, *by),
+        } => child_sessions::round_started(state, job, session, *number, task_id, *by),
         Input::Rename { user, title } => {
             job.title.written_by(TitledBy::User);
             Ok((

@@ -326,6 +326,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
         state: orch_core::SessionState::Idle,
         closing: false,
         followed: 1,
+        started: 0,
     };
     for s in TERMINAL {
         let before = Snapshot {

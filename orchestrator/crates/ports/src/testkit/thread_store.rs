@@ -3117,7 +3117,10 @@ fn busy_job() -> Job {
         after_stop_tier_cap: Some(orch_core::AccessTier::Edits),
         tier: Some(orch_core::AccessTier::Auto),
         tier_cap: Some(orch_core::AccessTier::Bypass),
-        // ADR 0072: what a parent and a child thread note, and the round a job follows
+        // ADR 0072: what a parent and a child thread note, and the round a job follows. The three
+        // child_session_* event kinds are accepted by the Postgres store only from migration 0027
+        // (S2b); nothing writes them before S2d, so a store of an earlier migration is not asked
+        // for them beyond this snapshot's round trip.
         sessions: orch_core::SessionLedger::of(vec![orch_core::SessionNote {
             session: "s1".to_owned(),
             child: orch_core::ThreadId(uuid::Uuid::from_u128(0x77)),
@@ -3131,6 +3134,7 @@ fn busy_job() -> Job {
             state: orch_core::SessionState::Idle,
             closing: false,
             followed: 3,
+            started: 3,
         }),
         observed: Some(orch_core::ObservedRound {
             number: 3,

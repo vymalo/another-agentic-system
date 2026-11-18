@@ -607,6 +607,7 @@ fn a_child_thread_starts_queued_with_no_event_and_follows_its_round() {
             state: SessionState::Working,
             closing: false,
             followed: 1,
+            started: 0,
         })
     );
     // the model is never asked to title or describe it
@@ -747,6 +748,7 @@ fn started(
     transition(
         snap,
         &Input::RoundStarted {
+            session: "s1".into(),
             number,
             task_id: format!("t{number}"),
             by,
@@ -1178,4 +1180,113 @@ proptest! {
             replay = next;
         }
     }
+}
+
+#[test]
+fn a_stale_round_after_a_newer_one_is_a_no_op() {
+    let (snap, _) = start_child(&report("s1", SessionState::Working, None));
+    let (r1, _) = started(&snap, 1, None).unwrap();
+    for end in [Done, Blocked] {
+        let mut two = started(
+            &{
+                let mut s = r1.clone();
+                s.state = Done;
+                s
+            },
+            2,
+            Some(SessionBy::Person),
+        )
+        .unwrap()
+        .0;
+        two.state = end;
+        let (next, cmds) = started(&two, 1, None).unwrap();
+        assert_eq!(next, two, "{end:?}");
+        assert!(cmds.is_empty(), "{end:?}");
+        assert_eq!(next.job.number, 2);
+        assert_eq!(next.job.observed.as_ref().unwrap().number, 2);
+    }
+}
+
+#[test]
+fn a_round_is_refused_by_a_thread_that_is_not_that_sessions_child_or_with_number_zero() {
+    let (child, _) = start_child(&report("s1", SessionState::Working, None));
+    let err = started(&child, 0, None).unwrap_err();
+    assert!(matches!(err, TransitionError::InvalidInState { .. }));
+    let other = transition(
+        &child,
+        &Input::RoundStarted {
+            session: "other".into(),
+            number: 1,
+            task_id: "t1".into(),
+            by: None,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(other, TransitionError::InvalidInState { .. }));
+    let plain = snapshot(Done);
+    let err = started(&plain, 1, None).unwrap_err();
+    assert!(matches!(err, TransitionError::InvalidInState { .. }));
+    assert_eq!(err.class(), ErrorClass::Rejected);
+}
+
+#[test]
+fn a_round_with_no_by_is_the_agents_and_not_counted_in_the_child() {
+    let (snap, _) = start_child(&report("s1", SessionState::Working, None));
+    let (next, _) = started(&snap, 1, None).unwrap();
+    assert!(!next.job.observed.as_ref().unwrap().counts_usage());
+    let (next, _) = started(&snap, 1, Some(SessionBy::Person)).unwrap();
+    assert!(next.job.observed.as_ref().unwrap().counts_usage());
+}
+
+#[test]
+fn a_closed_session_is_never_reported_afterwards() {
+    let (parent, cmds) = tell(
+        &snapshot(Done),
+        &report("s1", SessionState::Closed, None),
+        child_id(1),
+    )
+    .unwrap();
+    assert_eq!(cmds.len(), 2);
+    let (after, cmds) = tell(
+        &parent,
+        &report(
+            "s1",
+            SessionState::Closed,
+            Some(round(3, Some("t3"), Some(AgentTaskState::Completed))),
+        ),
+        child_id(1),
+    )
+    .unwrap();
+    assert!(cmds.is_empty());
+    assert_eq!(after.job.sessions.note("s1").unwrap().reported, 0);
+}
+
+#[test]
+fn a_closed_child_stays_closed_whatever_is_said_after() {
+    let (mut child, _) = start_child(&report("s1", SessionState::Closed, None));
+    for state in [SessionState::Working, SessionState::Idle] {
+        let (next, _) =
+            transition(&child, &Input::ChildSessionSaid(report("s1", state, None))).unwrap();
+        assert_eq!(next.job.child.as_ref().unwrap().state, SessionState::Closed);
+        child = next;
+    }
+}
+
+#[test]
+fn a_forked_child_thread_carries_no_child_ledger() {
+    let (mut child, _) = start_child(&report("s1", SessionState::Working, None));
+    child.job.observed = Some(ObservedRound {
+        number: 1,
+        task_id: "t1".into(),
+        by: None,
+    });
+    let forked = forked_snapshot(
+        &[],
+        GatePolicy::default(),
+        child.job.title,
+        child.job.description,
+    );
+    assert_eq!(forked.job.child, None);
+    assert_eq!(forked.job.observed, None);
+    assert!(forked.job.sessions.is_empty());
 }

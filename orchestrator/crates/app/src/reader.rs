@@ -458,6 +458,37 @@ mod tests {
                     parent_step_id: None,
                 }),
             ),
+            ev(
+                11,
+                coder(),
+                EventBody::ChildSessionOpened(orch_core::ChildSessionOpenedData {
+                    session: "s1".into(),
+                    thread: tid(),
+                    agent: "planner".into(),
+                    description: "plan".into(),
+                    keep_open: true,
+                    by: None,
+                    round: Some(1),
+                }),
+            ),
+            ev(
+                12,
+                coder(),
+                EventBody::ChildSessionReported(orch_core::ChildSessionReportedData {
+                    session: "s1".into(),
+                    thread: tid(),
+                    round: 1,
+                    report: orch_core::SessionOutcome::Done,
+                }),
+            ),
+            ev(
+                13,
+                coder(),
+                EventBody::ChildSessionClosed(orch_core::ChildSessionClosedData {
+                    session: "s1".into(),
+                    thread: tid(),
+                }),
+            ),
         ]
     }
 
@@ -501,6 +532,9 @@ mod tests {
                     | EventBody::ThreadForked(_)
                     | EventBody::ThreadShared(_)
                     | EventBody::ThreadUnshared(_)
+                    | EventBody::ChildSessionOpened(_)
+                    | EventBody::ChildSessionReported(_)
+                    | EventBody::ChildSessionClosed(_)
             );
             assert_eq!(is_inert(&out), expect_inert, "{:?}", event.kind());
             if !expect_inert {
