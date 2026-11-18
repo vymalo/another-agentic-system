@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::child_sessions::ChildOf;
+use crate::child_sessions::{ChildOf, SessionState};
 use crate::fork::ForkedFrom;
 use crate::gate::{Job, JobView, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
@@ -148,8 +148,8 @@ pub struct ThreadRecord {
     /// the list's own. Display grouping only: the lineage is [`ThreadRecord::forked_from`].
     pub rail_parent: Option<ThreadId>,
     /// The thread this one is a child of, and the session it is (ADR 0072): set when the thread is
-    /// made for a helper session of an agent's, never changed, `None` for every other thread. Not
-    /// serialised yet (the API says it from S2d on).
+    /// made for a helper session of an agent's, never changed, `None` for every other thread.
+    /// Serialised as `childOf` with the helper's name and state from the thread's own ledger.
     pub child_of: Option<ChildOf>,
     /// The thread's place among the owner's top-level threads: a key of [`crate::rank`], compared
     /// bytewise, ties broken by id (newest first). Never serialised.
@@ -186,10 +186,25 @@ impl Serialize for ThreadRecord {
             archived: bool,
             #[serde(skip_serializing_if = "Option::is_none")]
             nested_under: Option<ThreadId>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            child_of: Option<ChildOfView<'a>>,
             last_seq: i64,
             created_at: Timestamp,
             updated_at: Timestamp,
         }
+        /// `childOf` of the contract: the parent and the session this thread is, with what the
+        /// thread's own ledger knows of the helper.
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ChildOfView<'a> {
+            thread_id: ThreadId,
+            session: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            state: Option<SessionState>,
+        }
+        let child = self.job.child.as_ref();
         Wire {
             id: self.id,
             owner: &self.owner,
@@ -203,6 +218,12 @@ impl Serialize for ThreadRecord {
             pinned: self.pinned_at.is_some(),
             archived: self.archived_at.is_some(),
             nested_under: self.rail_parent,
+            child_of: self.child_of.as_ref().map(|of| ChildOfView {
+                thread_id: of.thread,
+                session: &of.session,
+                agent: child.map(|c| c.agent.as_str()),
+                state: child.map(|c| c.state),
+            }),
             last_seq: self.last_seq,
             created_at: self.created_at,
             updated_at: self.updated_at,

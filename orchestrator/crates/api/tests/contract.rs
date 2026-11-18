@@ -2370,6 +2370,72 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     let r = h.get("/api/threads", Some(DEL)).await;
     assert_eq!(r.json(), json!([]));
 
+    // A helper session's thread (ADR 0072): the thread of a session an agent runs says whose child it
+    // is, is nested under its parent's row, and is never forked.
+    const KID: &str = "dana@example.com";
+    let parent = h
+        .create(
+            KID,
+            Some("With a helper"),
+            "plain",
+            None,
+            "sessions planner",
+        )
+        .await;
+    h.wait_state(KID, &parent, "done").await;
+    let child = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let r = h.get("/api/threads?order=rail", Some(KID)).await;
+            c.check("listThreads", &r);
+            let found = r
+                .json()
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t.get("childOf").is_some())
+                .cloned();
+            if let Some(found) = found {
+                break found;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the helper's thread was not made"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let child_id = child["id"].as_str().unwrap().to_owned();
+    h.wait_state(KID, &child_id, "done").await;
+    let r = h.get(&format!("/api/threads/{child_id}"), Some(KID)).await;
+    c.check("getThread", &r);
+    let child = r.json();
+    assert_eq!(child["nestedUnder"], parent.as_str());
+    assert_eq!(child["childOf"]["threadId"], parent.as_str());
+    assert_eq!(child["childOf"]["agent"], "planner");
+    assert_eq!(child["childOf"]["state"], "closed");
+    assert!(child["childOf"]["session"].as_str().is_some());
+    let r = h.get(&format!("/api/threads/{parent}"), Some(KID)).await;
+    assert!(r.json().get("childOf").is_none());
+    // the helper's events validate against the log's contract
+    for event in h.events(KID, &child_id).await {
+        c.contract.validate_component("Event", &event);
+    }
+    for event in h.events(KID, &parent).await {
+        c.contract.validate_component("Event", &event);
+    }
+    // it is never forked: well formed, and what it names cannot be done
+    let r = h
+        .post(
+            &format!("/api/threads/{child_id}/fork"),
+            Some(KID),
+            Some(r#"{"after":1}"#),
+        )
+        .await;
+    assert_eq!(r.status, 422);
+    c.check("forkThread", &r);
+    assert_eq!(r.json()["code"], "child_thread");
+
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());
     // The contract documents every status this suite saw (the 400 of `listThreads` since ADR 0039).

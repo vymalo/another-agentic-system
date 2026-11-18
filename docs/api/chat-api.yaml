@@ -1322,7 +1322,7 @@ paths:
         "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the target agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or the caller may not read it (one answer for all three)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's (for `after` with `text`: any thread but the fork this very request made), or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
-        "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person; a `tier` above what the caller's roles allow or one the agent's live card does not honour, or a tier an edit inherits that cannot be kept", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: child_thread`: the thread is the thread of a helper session (`childOf`, ADR 0072), which is never forked; `after` or `replace` is not an event of the thread, or `replace` is not a message of a person; a `tier` above what the caller's roles allow or one the agent's live card does not honour, or a tier an edit inherits that cannot be kept", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, or the agent registry cannot say whether the target exists, or the agent's live card cannot be read to decide the access tier; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/branches:
@@ -1463,6 +1463,7 @@ paths:
         "403": { description: "No role of the caller holds `thread.share` (`code: forbidden`), or the deployment's cap is `disabled` (`code: sharing_disabled`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or it is not the caller's (one answer for all three, an administrator's included)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: over_cap`: `visibility` is above the deployment's cap (`public` under `internal`)", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: child_thread`: the thread is the thread of a helper session (`childOf`, ADR 0072), which is shared with the thread it belongs to and never alone", $ref: "#/components/responses/Problem" }
     delete:
       operationId: unshareThread
       summary: Take a link down
@@ -2562,7 +2563,23 @@ components:
         lastSeq: { type: integer, format: int64, description: "The `seq` of the thread's last event. It may be an event with no frame (a share, a UI catalog), so no frame's `id:` need name it: a connect stream says it has read as far with an `id:` that has no `data:` (`connectThread`)" }
         pinned: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread pinned ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md)); absent otherwise. Set with `arrangeThread`. The owner's routes and the export say it; the reader projection of a shared thread never does. Additive" }
         archived: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread archived; absent otherwise. Set with `arrangeThread`. Same readers as `pinned`. Additive" }
-        nestedUnder: { type: string, format: uuid, description: "The thread this one is nested under in the owner's list, one level deep: a fork is made nested under the thread the person sees (its parent; for a fork of a nested fork the same parent; for a fork of an edit the conversation's root). Absent for a thread of the list's own level. Display grouping only: the lineage is `forkedFrom`. `arrangeThread` with `nested: false` ejects it. Same readers as `pinned`. Additive" }
+        nestedUnder: { type: string, format: uuid, description: "The thread this one is nested under in the owner's list, one level deep: a fork is made nested under the thread the person sees (its parent; for a fork of a nested fork the same parent; for a fork of an edit the conversation's root), and a child thread (`childOf`, ADR 0072) under its parent's row. Absent for a thread of the list's own level. Display grouping only: the lineage is `forkedFrom`. `arrangeThread` with `nested: false` ejects it. Same readers as `pinned`. Additive" }
+        childOf:
+          type: object
+          description: |
+            Present only on the thread of a helper session an agent runs ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md),
+            [`child-sessions-v1.md`](child-sessions-v1.md)): a **child thread**. It is made by the orchestrator when the parent's agent
+            says it started the session, never by a request, and is nested under its parent (`nestedUnder` is the parent's row of the list).
+            Its log is the helper's own work, one job for each round of the session the orchestrator follows without sending the agent
+            anything (`job_started` names the `round`). It is neither forked (`forkThread` is 422 `child_thread`) nor shared
+            (`shareThread` is 422 `child_thread`), and deleting its parent deletes it. The reader projection of a shared thread never
+            says it. Additive.
+          required: [threadId, session]
+          properties:
+            threadId: { type: string, format: uuid, description: "The parent thread" }
+            session: { type: string, maxLength: 128, description: "The session's id: the agent's own and opaque" }
+            agent: { type: string, maxLength: 128, description: "The helper's name, as the agent gave it (the agent's text, untrusted, drawn as text)" }
+            state: { type: string, enum: [working, idle, closed], description: "The session as the agent last said it, the contract's and not the thread's: `working` while a round is open, `idle` for a kept-open session between rounds, `closed` once it is over for good" }
         forkedFrom:
           type: object
           description: |
@@ -2600,7 +2617,7 @@ components:
       required: [id, title, target, state, lastSeq, visibility, isOwner, createdAt, updatedAt]
       description: |
         A shared thread as a reader is given it: the reader projection ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md), section 7)
-        of a `Thread`. **No `owner`, no `forkedFrom`, no `tools`, no `share`, and nothing of the owner's list (`pinned`, `archived`, `nestedUnder`)**: the owner's address is nowhere in it, and a reader acts on
+        of a `Thread`. **No `owner`, no `forkedFrom`, no `childOf`, no `tools`, no `share`, and nothing of the owner's list (`pinned`, `archived`, `nestedUnder`)**: the owner's address is nowhere in it, and a reader acts on
         nothing. The thread's events come by `connectSharedThread` / `connectPublicSharedThread`.
       properties:
         id: { type: string, format: uuid, description: "The thread's id: not a capability, and the AG-UI `threadId` of the stream" }

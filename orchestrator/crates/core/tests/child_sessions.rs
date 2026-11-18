@@ -900,6 +900,60 @@ fn the_child_of_names_its_parent_and_session() {
     );
 }
 
+#[test]
+fn a_child_thread_says_its_parent_its_session_and_what_the_helper_is() {
+    let (child, _) = start_child(&report(
+        "s1",
+        SessionState::Idle,
+        Some(round(1, Some("t-1"), Some(AgentTaskState::Working))),
+    ));
+    let mut record = ThreadRecord {
+        id: child_id(2),
+        owner: UserId::new("a@b.c"),
+        title: "Plan the migration".into(),
+        description: None,
+        target: AgentTarget {
+            agent_id: AgentId::new("coder"),
+            release: None,
+        },
+        state: child.state,
+        job: child.job,
+        version: 1,
+        forked_from: None,
+        share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: Some(child_id(1)),
+        child_of: Some(ChildOf {
+            thread: child_id(1),
+            session: "s1".into(),
+        }),
+        rail_rank: "i".to_owned(),
+        last_seq: 0,
+        created_at: "2026-11-18T10:00:00Z".parse().unwrap(),
+        updated_at: "2026-11-18T10:00:00Z".parse().unwrap(),
+    };
+    let wire = serde_json::to_value(&record).unwrap();
+    assert_eq!(
+        wire["childOf"],
+        serde_json::json!({
+            "threadId": child_id(1).to_string(),
+            "session": "s1",
+            "agent": "planner",
+            "state": "idle"
+        })
+    );
+    assert_eq!(wire["nestedUnder"], child_id(1).to_string());
+    // a thread that is no child says nothing of it
+    record.child_of = None;
+    assert!(
+        serde_json::to_value(&record)
+            .unwrap()
+            .get("childOf")
+            .is_none()
+    );
+}
+
 // --- usage ----------------------------------------------------------------------------------
 
 fn usage_inputs() -> Vec<Input> {

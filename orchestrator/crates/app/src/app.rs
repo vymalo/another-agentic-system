@@ -28,6 +28,9 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
+#[path = "child_sessions.rs"]
+mod child_sessions;
+pub use child_sessions::{ChildSessionDrop, ChildSessionStats};
 mod delete;
 pub use delete::{DeleteStats, LateSource};
 mod downloads;
@@ -56,6 +59,7 @@ use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
 };
+use child_sessions::ChildSessionCounters;
 use delete::DeleteCounters;
 use echo::EchoCounters;
 use history::HistoryCounters;
@@ -484,6 +488,7 @@ pub struct App<P: Ports> {
     delete_counters: DeleteCounters,
     usage_counters: UsageCounters,
     echo_counters: EchoCounters,
+    child_session_counters: ChildSessionCounters,
     history_counters: HistoryCounters,
     pub(crate) authorize_locks: AuthorizeLocks,
 }
@@ -601,6 +606,7 @@ impl<P: Ports> App<P> {
             delete_counters: DeleteCounters::default(),
             usage_counters: UsageCounters::default(),
             echo_counters: EchoCounters::default(),
+            child_session_counters: ChildSessionCounters::default(),
             history_counters: HistoryCounters::default(),
             authorize_locks: AuthorizeLocks::default(),
         })
@@ -1471,6 +1477,23 @@ impl<P: Ports> App<P> {
         parent: &ThreadRecord,
         kind: ForkKind,
     ) -> Result<Option<ThreadId>, AppError> {
+        Ok(self
+            .fork_rail_row(user, parent, kind)
+            .await?
+            .filter(|r| r.archived_at.is_none())
+            .map(|r| r.id))
+    }
+
+    /// The row of the person's list a thread made from `parent` is nested under, archived or not:
+    /// what [`fork_rail_parent`](Self::fork_rail_parent) decides before it leaves out an archived
+    /// row. A child session's thread (ADR 0072) is nested under its parent's row even when the
+    /// parent is archived, where it is archived with the block.
+    async fn fork_rail_row(
+        &self,
+        user: &UserId,
+        parent: &ThreadRecord,
+        kind: ForkKind,
+    ) -> Result<Option<ThreadRecord>, AppError> {
         if kind == ForkKind::Edit {
             return Ok(None);
         }
@@ -1490,12 +1513,11 @@ impl<P: Ports> App<P> {
         let Some(seen) = rail_parent_of_fork(parent, family_root.as_ref()) else {
             return Ok(None);
         };
-        let row = if seen == parent.id {
+        Ok(if seen == parent.id {
             Some(parent.clone())
         } else {
             store.get_thread(Some(user), seen).await?
-        };
-        Ok(row.filter(|r| r.archived_at.is_none()).map(|r| r.id))
+        })
     }
 
     /// Makes a new thread from one of the user's (ADR 0029): the parent's events up to a cut,
@@ -1521,6 +1543,10 @@ impl<P: Ports> App<P> {
         let access = self.access(who);
         // A fork is a thread of the person's own, and a copy of one they may act on.
         let parent = self.writable_thread(&access, parent_id).await?;
+        // The thread of a helper session is one part of its parent's conversation (ADR 0072).
+        if parent.child_of.is_some() {
+            return Err(AppError::child_thread());
+        }
         if let Some(id) = req.id {
             match self.find_own_thread(user, id).await? {
                 Some(existing) if self.is_replay(&existing, parent_id, &req.at).await? => {
@@ -2847,9 +2873,21 @@ impl<P: Ports> App<P> {
                 // Said by the commit itself: the store finishes the abandoned job's unsent rows in
                 // the transaction that writes this commit's, so none of those is touched.
                 Command::DropQueued { .. } => skip_unsent_delegates = true,
-                // The outbox row that follows a round is not written yet; nothing in the
-                // application produces the inputs that order it.
-                Command::Observe { .. } => {}
+                // Follow a round of the thread's child session without sending anything (ADR
+                // 0072): a `delegate` row for the claim, the lease and the per-thread order, which
+                // the dispatcher takes to a follow of the round's task and never to a send.
+                Command::Observe {
+                    session,
+                    round,
+                    task_id,
+                } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::Observe {
+                        session,
+                        round,
+                        task_id,
+                    },
+                }),
                 Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel { job: Some(job) },
