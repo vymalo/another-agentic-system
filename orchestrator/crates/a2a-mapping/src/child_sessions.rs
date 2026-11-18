@@ -708,4 +708,73 @@ mod tests {
         let bare = json!({"session": "s1", "agent": "a", "round": 1, "state": "working"});
         assert!(read(&bare, "r1", "k1", None).is_ok());
     }
+
+    #[test]
+    fn a_bound_is_inclusive_and_blank_or_hidden_ids_are_refused() {
+        let ok = |extra: Value| listed(&json!({"sessions": [session(extra)]}));
+        assert_eq!(
+            ok(json!({"session": "s".repeat(128)}))[0].session.len(),
+            128
+        );
+        assert_eq!(
+            ok(json!({"contextId": "k".repeat(512)}))[0]
+                .context_id
+                .len(),
+            512
+        );
+        assert_eq!(ok(json!({"agent": "a".repeat(128)}))[0].agent.len(), 128);
+        let task = ok(json!({"round": {"number": 1, "taskId": "t".repeat(256)}}));
+        assert_eq!(
+            task[0]
+                .round
+                .as_ref()
+                .unwrap()
+                .task_id
+                .as_ref()
+                .unwrap()
+                .len(),
+            256
+        );
+        let bad = |extra: Value| refused(&json!({"sessions": [session(extra)]}));
+        bad(json!({"session": "  "}));
+        bad(json!({"contextId": " \t"}));
+        bad(json!({"agent": "a".repeat(129)}));
+        // a round task's id is the task's own: bounded and printable too
+        let entry = json!({"session": "s1", "agent": "a", "round": 1, "state": "working"});
+        assert!(read(&entry, &"t".repeat(256), "k1", None).is_ok());
+        assert!(read(&entry, &"t".repeat(257), "k1", None).is_err());
+        assert!(read(&entry, "r\n1", "k1", None).is_err());
+        assert!(read(&entry, " ", "k1", None).is_err());
+    }
+
+    #[test]
+    fn the_isolate_characters_are_hidden_at_both_ends_of_their_range() {
+        let clean = |raw: &str| {
+            listed(&json!({"sessions": [session(json!({"description": raw}))]}))[0]
+                .description
+                .clone()
+        };
+        assert_eq!(clean("a\u{2066}b\u{206f}c"), "a b c");
+        assert_eq!(clean("a\u{2060}b\u{2064}c"), "a b c");
+        assert_eq!(clean("a\u{200b}b\u{200f}c"), "a b c");
+        assert_eq!(clean("a\u{200c}b\u{200e}c"), "a b c");
+    }
+
+    #[test]
+    fn one_session_id_is_listed_once_even_in_two_contexts() {
+        let twice = json!({"sessions": [
+            session(json!({"session": "s", "contextId": "k1"})),
+            session(json!({"session": "s", "contextId": "k2"}))
+        ]});
+        assert_eq!(refused(&twice), "a session is listed twice");
+    }
+
+    #[test]
+    fn a_round_that_waits_for_authentication_leaves_the_session_working() {
+        let auth = json!({"number": 1, "state": "TASK_STATE_AUTH_REQUIRED"});
+        assert_eq!(
+            event_state(&event("reported", false, auth, None)),
+            SessionState::Working
+        );
+    }
 }

@@ -4678,6 +4678,12 @@ mod tests {
         };
         assert_eq!(*kind, orch_core::SessionEvent::Opened);
         assert_eq!(report.state, orch_core::SessionState::Working);
+        // an event is keyed by what it says, apart from the listings' counted keys
+        assert!(
+            matches!(&env.key, IdemKey::Turn(k) if k.starts_with("task-1:sessions-event:")),
+            "{:?}",
+            env.key
+        );
         // with a message the status is still said, after the news
         let update = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
             task_id: T.into(),

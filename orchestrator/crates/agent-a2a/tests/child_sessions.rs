@@ -564,6 +564,77 @@ async fn a_card_withdrawn_while_the_stream_runs_stops_the_poll() {
 }
 
 #[tokio::test]
+async fn a_card_that_comes_back_does_not_start_the_poll_again() {
+    let fake = agent(Some(offer()), false).await;
+    let ep = fake.endpoint("coder", None);
+    let client = client_polling(Some(Duration::from_millis(40)));
+    let stream = client
+        .send_stream(request(&ep, "child-sessions planner keep gate hold"))
+        .await
+        .unwrap();
+    let (seen, reading) = read_on_a_task(stream);
+    wait_for_gets(&fake, 2).await;
+    fake.set_child_sessions(None);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let settled = fake.rpc_count("get_task");
+    fake.set_child_sessions(Some(offer()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        fake.rpc_count("get_task"),
+        settled,
+        "a poll that stopped for a withdrawn card stays stopped"
+    );
+    fake.release_gate();
+    tokio::time::timeout(Duration::from_secs(10), reading)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(is_completed(seen.lock().unwrap().last().unwrap()));
+}
+
+#[tokio::test]
+async fn the_read_before_the_end_says_the_listing_again_even_when_a_poll_just_said_it() {
+    let fake = agent(Some(offer()), false).await;
+    let ep = fake.endpoint("coder", None);
+    let client = client_polling(Some(Duration::from_millis(40)));
+    let stream = client
+        .send_stream(request(&ep, "child-sessions planner keep hold"))
+        .await
+        .unwrap();
+    let (seen, reading) = read_on_a_task(stream);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| session_of(e).is_some_and(|r| r.state == SessionState::Idle))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a poll learned the session idle");
+    tokio::time::timeout(Duration::from_secs(10), reading)
+        .await
+        .unwrap()
+        .unwrap();
+    let seen = seen.lock().unwrap();
+    let idle: Vec<usize> = seen
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| session_of(e).is_some_and(|r| r.state == SessionState::Idle))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        idle.len() >= 2,
+        "the poll's and the forced read's: {seen:?}"
+    );
+    let last = *idle.last().unwrap();
+    assert_eq!(seen[idle[0]].key, seen[last].key);
+    assert!(is_completed(&seen[last + 1]), "{seen:?}");
+}
+
+#[tokio::test]
 async fn news_nobody_asked_for_is_dropped_on_every_road() {
     // an agent that tells its sessions to a call that did not activate the extension
     for params in [None, Some(json!({"agents": [], "maxOpen": 2}))] {
