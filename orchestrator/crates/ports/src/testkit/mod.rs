@@ -102,6 +102,19 @@ macro_rules! thread_store_conformance {
             a_version_conflict_deletes_nothing
             purges_are_claimed_under_a_lease_and_finished
             purge_claimers_never_share_a_row
+            a_child_thread_is_made_with_its_first_commit_and_says_whose_child_it_is
+            a_session_has_one_child_and_a_second_open_writes_nothing
+            a_child_is_one_per_parent_and_session_not_per_session_alone
+            concurrent_opens_of_one_session_make_one_thread
+            a_child_is_refused_a_foreign_parent_a_child_parent_and_no_parent
+            only_open_child_thread_makes_a_child_and_a_fork_of_one_is_none
+            child_threads_are_the_parents_children_oldest_first
+            children_are_nested_under_their_parent_in_the_rail
+            deleting_a_parent_needs_its_children_named_and_takes_them
+            a_child_is_deleted_alone_and_its_parent_stays
+            a_delete_and_an_open_that_race_leave_no_orphan
+            the_session_events_ledgers_and_observe_rows_round_trip
+            a_commit_with_no_events_creates_a_thread
         );
     };
     (@cases $make:path; $($case:ident)*) => {

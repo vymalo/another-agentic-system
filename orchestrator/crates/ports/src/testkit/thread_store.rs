@@ -7393,3 +7393,710 @@ pub async fn purge_claimers_never_share_a_row<S: ThreadStore>(store: S) {
     assert_eq!(unique.len(), claimed.len(), "a row went to two workers");
     assert_eq!(claimed.len(), 12, "every row went to one");
 }
+
+// ---- child threads (ADR 0072) -----------------------------------------------------------------
+
+/// The new child thread `n` of session `session` of thread `parent`, alice's, nested under the
+/// parent in her list as the application makes it.
+fn new_child(n: u128, parent: u128, session: &str) -> NewThreadRecord {
+    let mut new = new_thread(&alice(), n);
+    new.title = format!("helper {n}");
+    new.context_id = Some(format!("ctx/s/{session}"));
+    new.rail_parent = Some(thread_id(parent));
+    new.child_of = Some(orch_core::ChildOf {
+        thread: thread_id(parent),
+        session: session.to_owned(),
+    });
+    new
+}
+
+/// What the application writes for a child: no event, a ledger, and a row for the round to follow.
+fn child_first(n: u128, session: &str) -> Commit {
+    let mut first = commit(
+        ThreadState::Queued,
+        vec![],
+        vec![observe_row(n, session, 1)],
+    );
+    first.job = Some(Job {
+        child: Some(orch_core::ChildLedger {
+            session: session.to_owned(),
+            agent: "helper".to_owned(),
+            keep_open: true,
+            state: orch_core::SessionState::Working,
+            closing: false,
+            followed: 1,
+            started: 0,
+        }),
+        ..Job::default()
+    });
+    first
+}
+
+fn observe_row(n: u128, session: &str, round: u32) -> NewOutbox {
+    NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::Observe {
+            session: session.to_owned(),
+            round,
+            task_id: format!("{session}-r{round}"),
+        },
+    }
+}
+
+async fn open_child<S: ThreadStore>(
+    store: &S,
+    n: u128,
+    parent: u128,
+    session: &str,
+) -> Result<crate::ChildThread, StoreError> {
+    store
+        .open_child_thread(new_child(n, parent, session), child_first(n, session))
+        .await
+}
+
+fn created(opened: crate::ChildThread) -> (orch_core::ThreadRecord, Vec<Event>) {
+    match opened {
+        crate::ChildThread::Created { thread, events } => (thread, events),
+        other => panic!("expected the child to be made, got {other:?}"),
+    }
+}
+
+fn existing(opened: crate::ChildThread) -> orch_core::ThreadRecord {
+    match opened {
+        crate::ChildThread::Existing(thread) => thread,
+        other => panic!("expected the child to exist already, got {other:?}"),
+    }
+}
+
+/// A child is made with the first commit's job, outbox row and binding, no event, version 1,
+/// nested under its parent, and every read of it says whose child it is.
+pub async fn a_child_thread_is_made_with_its_first_commit_and_says_whose_child_it_is<
+    S: ThreadStore,
+>(
+    store: S,
+) {
+    seed(&store, &alice(), 1).await;
+    let (child, events) = created(open_child(&store, 2, 1, "s1").await.unwrap());
+    assert!(events.is_empty(), "a child begins with no event");
+    assert_eq!(child.id, thread_id(2));
+    assert_eq!(child.version, 1);
+    assert_eq!(child.last_seq, 0);
+    assert_eq!(child.state, ThreadState::Queued);
+    assert_eq!(child.rail_parent, Some(thread_id(1)));
+    assert_eq!(
+        child.child_of,
+        Some(orch_core::ChildOf {
+            thread: thread_id(1),
+            session: "s1".to_owned()
+        })
+    );
+    assert_eq!(child.job.child.as_ref().map(|c| c.followed), Some(1));
+    // what a reader finds is what the call returned
+    let read = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(read, child);
+    assert!(
+        store
+            .list_events(thread_id(2), 0, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let binding = store.get_binding(thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(binding.context_id.as_deref(), Some("ctx/s/s1"));
+    // the row of the commit: a delegate-kind row that carries the round
+    let rows = store.list_open_outbox(thread_id(2)).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].kind, OutboxKind::Delegate);
+    assert_eq!(
+        rows[0].payload,
+        OutboxPayload::Observe {
+            session: "s1".to_owned(),
+            round: 1,
+            task_id: "s1-r1".to_owned()
+        }
+    );
+    // the parent is as it was
+    let parent = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(parent.child_of, None);
+    assert_eq!(parent.version, 1);
+    // and a thread that is not a child says so
+    assert_eq!(
+        store
+            .get_thread(None, thread_id(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .child_of,
+        None
+    );
+}
+
+/// A parent has one child for a session: a second open is `Existing`, the thread as it is, and
+/// writes nothing (no thread under the id it brought, no event, no outbox row, no version).
+pub async fn a_session_has_one_child_and_a_second_open_writes_nothing<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let (first, _) = created(open_child(&store, 2, 1, "s1").await.unwrap());
+    // the child moves on: a message and a state
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![user_event("more", None)], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    let outbox_before = store.list_open_outbox(thread_id(2)).await.unwrap();
+
+    let again = existing(open_child(&store, 3, 1, "s1").await.unwrap());
+    assert_eq!(again.id, thread_id(2));
+    assert_eq!(
+        again.version,
+        first.version + 1,
+        "as it is now, not as made"
+    );
+    assert_eq!(again.state, ThreadState::Working);
+    assert!(!exists(&store, 3).await, "the id it brought was not made");
+    assert_eq!(
+        store.list_open_outbox(thread_id(2)).await.unwrap(),
+        outbox_before
+    );
+    assert!(
+        store
+            .list_open_outbox(thread_id(3))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.get_binding(thread_id(3)).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .child_threads(&alice(), thread_id(1))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    // the parent is untouched by either open
+    let parent = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!((parent.version, parent.last_seq), (1, 1));
+}
+
+/// Another session of the same parent, and the same session of another parent, are other children.
+pub async fn a_child_is_one_per_parent_and_session_not_per_session_alone<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    created(open_child(&store, 10, 1, "s1").await.unwrap());
+    created(open_child(&store, 11, 1, "s2").await.unwrap());
+    created(open_child(&store, 12, 2, "s1").await.unwrap());
+    let of_one = store.child_threads(&alice(), thread_id(1)).await.unwrap();
+    let of_two = store.child_threads(&alice(), thread_id(2)).await.unwrap();
+    assert_eq!(
+        of_one.iter().map(|t| number(t.id)).collect::<Vec<_>>(),
+        vec![10, 11]
+    );
+    assert_eq!(
+        of_two.iter().map(|t| number(t.id)).collect::<Vec<_>>(),
+        vec![12]
+    );
+    // the id of a session is opaque text: case and spaces tell sessions apart
+    created(open_child(&store, 13, 1, "S1").await.unwrap());
+    created(open_child(&store, 14, 1, "s1 ").await.unwrap());
+}
+
+/// Callers that open one session at once make one thread: one is told `Created`, the rest
+/// `Existing` with that thread, and the parent has one child.
+pub async fn concurrent_opens_of_one_session_make_one_thread<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let store = Arc::new(store);
+    let mut tasks = Vec::new();
+    for k in 0..8u128 {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            open_child(&*store, 100 + k, 1, "s1").await.unwrap()
+        }));
+    }
+    let mut made = Vec::new();
+    let mut found = Vec::new();
+    for task in tasks {
+        match task.await.unwrap() {
+            crate::ChildThread::Created { thread, .. } => made.push(thread.id),
+            crate::ChildThread::Existing(thread) => found.push(thread.id),
+        }
+    }
+    assert_eq!(made.len(), 1, "one call made it: {made:?} {found:?}");
+    assert_eq!(found.len(), 7);
+    assert!(found.iter().all(|id| *id == made[0]), "all name the one");
+    let children = store.child_threads(&alice(), thread_id(1)).await.unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].id, made[0]);
+    // the losers made nothing at all
+    for k in 0..8u128 {
+        if thread_id(100 + k) != made[0] {
+            assert!(!exists(&*store, 100 + k).await);
+            assert!(
+                store
+                    .list_open_outbox(thread_id(100 + k))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+    assert_eq!(
+        store.list_open_outbox(made[0]).await.unwrap().len(),
+        1,
+        "one outbox row, the winner's"
+    );
+}
+
+/// What cannot be a child's parent, and who cannot make one: a parent that is not the owner's or
+/// does not exist is not found, a child is not a parent, a thread is not its own child, and a
+/// caller that names no `child_of` is refused. Nothing is written by any of them.
+pub async fn a_child_is_refused_a_foreign_parent_a_child_parent_and_no_parent<S: ThreadStore>(
+    store: S,
+) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 9).await;
+    created(open_child(&store, 2, 1, "s1").await.unwrap());
+
+    // another owner's parent and a parent that is not there look alike
+    let mut foreign = new_child(3, 9, "s1");
+    foreign.rail_parent = None;
+    let err = store.open_child_thread(foreign, child_first(3, "s1")).await;
+    assert_eq!(class_of(&err), Some(ErrorClass::NotFound), "{err:?}");
+    let err = open_child(&store, 3, 77, "s1").await;
+    assert_eq!(class_of(&err), Some(ErrorClass::NotFound), "{err:?}");
+    // a child cannot have children
+    let err = open_child(&store, 3, 2, "s1").await;
+    assert_eq!(refusal(err), "nested_child");
+    // no child_of at all
+    let mut bare = new_child(3, 1, "s9");
+    bare.child_of = None;
+    let err = store.open_child_thread(bare, child_first(3, "s9")).await;
+    assert_eq!(refusal(err), "child_of");
+    // a thread is not its own child
+    let err = open_child(&store, 1, 1, "s9").await;
+    assert!(err.is_err(), "{err:?}");
+    // a nesting that the list cannot show: under a child
+    let mut deep = new_child(3, 1, "s9");
+    deep.rail_parent = Some(thread_id(2));
+    let err = store.open_child_thread(deep, child_first(3, "s9")).await;
+    assert!(err.is_err(), "{err:?}");
+
+    assert!(!exists(&store, 3).await);
+    assert_eq!(store.list_open_outbox(thread_id(3)).await.unwrap().len(), 0);
+    assert_eq!(
+        store
+            .child_threads(&alice(), thread_id(1))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .child_threads(&bob(), thread_id(9))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// `create_thread` and `fork_thread` do not make children: a `child_of` there is refused and
+/// nothing is written. A fork of a child is an ordinary thread, no child of anyone.
+pub async fn only_open_child_thread_makes_a_child_and_a_fork_of_one_is_none<S: ThreadStore>(
+    store: S,
+) {
+    seed(&store, &alice(), 1).await;
+    let err = store
+        .create_thread(
+            new_child(2, 1, "s1"),
+            commit(ThreadState::Queued, vec![], vec![]),
+        )
+        .await;
+    assert_eq!(refusal(err), "child_of");
+    assert!(!exists(&store, 2).await);
+
+    created(open_child(&store, 3, 1, "s1").await.unwrap());
+    applied(
+        store
+            .commit(
+                thread_id(3),
+                1,
+                commit(ThreadState::Done, vec![user_event("hi", None)], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    let origin = crate::ForkOrigin {
+        parent: thread_id(3),
+        cut: 1,
+        kind: orch_core::ForkKind::Fork,
+    };
+    let err = store
+        .fork_thread(
+            new_child(4, 1, "s2"),
+            origin,
+            commit(ThreadState::Done, vec![], vec![]),
+        )
+        .await;
+    assert_eq!(refusal(err), "child_of");
+    assert!(!exists(&store, 4).await);
+
+    // a fork of the child is a thread of its own
+    let (fork, _) = store
+        .fork_thread(
+            new_thread(&alice(), 5),
+            origin,
+            commit(ThreadState::Done, vec![], vec![]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fork.child_of, None);
+    let children = store.child_threads(&alice(), thread_id(1)).await.unwrap();
+    assert_eq!(
+        children.iter().map(|t| number(t.id)).collect::<Vec<_>>(),
+        vec![3]
+    );
+}
+
+/// `child_threads` lists a parent's children, oldest first, the owner's alone, whatever state
+/// they are in; a thread that is not a parent, another owner's and a missing one have none.
+pub async fn child_threads_are_the_parents_children_oldest_first<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    seed(&store, &bob(), 9).await;
+    for (n, session) in [(13, "c"), (11, "a"), (12, "b")] {
+        created(open_child(&store, n, 1, session).await.unwrap());
+    }
+    created(open_child(&store, 20, 2, "a").await.unwrap());
+    let listed_for = |rows: Vec<orch_core::ThreadRecord>| {
+        rows.into_iter().map(|t| number(t.id)).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        listed_for(store.child_threads(&alice(), thread_id(1)).await.unwrap()),
+        vec![11, 12, 13],
+        "oldest first: by id, which is by creation"
+    );
+    assert_eq!(
+        listed_for(store.child_threads(&alice(), thread_id(2)).await.unwrap()),
+        vec![20]
+    );
+    for (who, of) in [(alice(), 11), (alice(), 77), (bob(), 1), (alice(), 9)] {
+        assert!(
+            store
+                .child_threads(&who, thread_id(of))
+                .await
+                .unwrap()
+                .is_empty(),
+            "{who:?} {of}"
+        );
+    }
+    // a child that is archived is still listed: the list is the parent's, not the person's view
+    arrange(&store, 12, archive(true), 60).await.unwrap();
+    assert_eq!(
+        listed_for(store.child_threads(&alice(), thread_id(1)).await.unwrap()),
+        vec![11, 12, 13]
+    );
+}
+
+/// A child is nested under its parent in the owner's list, newest first, as any nested thread is,
+/// and it can be ejected like any.
+pub async fn children_are_nested_under_their_parent_in_the_rail<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    created(open_child(&store, 3, 1, "a").await.unwrap());
+    created(open_child(&store, 4, 1, "b").await.unwrap());
+    assert_eq!(alice_rail(&store).await, vec![2, 1, 4, 3]);
+    let recent = listed(
+        &store,
+        &alice(),
+        crate::ThreadListing::recent(None, 50, false),
+    )
+    .await;
+    assert_eq!(recent, vec![4, 3, 2, 1], "the flat list holds them too");
+    // ejected, a child is top-level and is still the parent's child
+    arrange(
+        &store,
+        3,
+        crate::Arrangement {
+            unnest: true,
+            ..crate::Arrangement::default()
+        },
+        70,
+    )
+    .await
+    .unwrap();
+    assert_eq!(alice_rail(&store).await, vec![2, 1, 4, 3]);
+    let child = store.get_thread(None, thread_id(3)).await.unwrap().unwrap();
+    assert_eq!(child.rail_parent, None);
+    assert_eq!(child.child_of.map(|c| c.thread), Some(thread_id(1)));
+}
+
+/// A thread whose children are not all named is not deleted (they are the caller's to look at,
+/// as an edit is); with them named, they go with it, in one step, and each has its purge row.
+pub async fn deleting_a_parent_needs_its_children_named_and_takes_them<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    created(open_child(&store, 3, 1, "a").await.unwrap());
+    created(open_child(&store, 4, 1, "b").await.unwrap());
+    created(open_child(&store, 5, 2, "a").await.unwrap());
+
+    // the parent alone, and the parent with one of two children: a conflict, nothing deleted
+    let err = delete_now(&store, &[1], 50).await;
+    assert_eq!(class_of(&err), Some(ErrorClass::Conflict), "{err:?}");
+    let err = delete_now(&store, &[1, 3], 51).await;
+    assert_eq!(class_of(&err), Some(ErrorClass::Conflict), "{err:?}");
+    for n in 1..=5 {
+        assert!(exists(&store, n).await, "{n}");
+    }
+    assert_eq!(store.purges_pending().await.unwrap(), 0);
+    assert_eq!(
+        store.list_open_outbox(thread_id(3)).await.unwrap().len(),
+        1,
+        "the child's row is where it was"
+    );
+
+    // all of them: gone with their rows, a purge row each, the other family untouched
+    delete_now(&store, &[1, 3, 4], 52).await.unwrap();
+    for n in [1, 3, 4] {
+        assert!(!exists(&store, n).await, "{n}");
+        assert!(
+            store
+                .list_open_outbox(thread_id(n))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.get_binding(thread_id(n)).await.unwrap().is_none());
+    }
+    assert_eq!(store.purges_pending().await.unwrap(), 3);
+    assert!(exists(&store, 2).await && exists(&store, 5).await);
+    assert_eq!(
+        store
+            .child_threads(&alice(), thread_id(2))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// A child can be deleted alone: the parent stays whole, and the session can be opened again
+/// (the parent's ledger decides whether it is, not the store).
+pub async fn a_child_is_deleted_alone_and_its_parent_stays<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    created(open_child(&store, 2, 1, "s1").await.unwrap());
+    delete_now(&store, &[2], 50).await.unwrap();
+    assert!(!exists(&store, 2).await);
+    assert!(exists(&store, 1).await);
+    assert_eq!(store.purges_pending().await.unwrap(), 1);
+    assert!(
+        store
+            .child_threads(&alice(), thread_id(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let (again, _) = created(open_child(&store, 3, 1, "s1").await.unwrap());
+    assert_eq!(again.id, thread_id(3));
+    // and the parent can go with its new child
+    delete_now(&store, &[1, 3], 60).await.unwrap();
+    assert!(!exists(&store, 1).await && !exists(&store, 3).await);
+}
+
+/// A child made while its parent is being deleted does not outlive it: whichever is first, the
+/// parent never goes with a child nobody named, and a child is never left without its parent.
+pub async fn a_delete_and_an_open_that_race_leave_no_orphan<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let store = Arc::new(store);
+    let version = version_of(&*store, 1).await;
+    let deleter = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .delete_threads(&alice(), &[(thread_id(1), version)], at(50))
+                .await
+        })
+    };
+    let opener = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move { open_child(&*store, 2, 1, "s1").await })
+    };
+    let deleted = deleter.await.unwrap();
+    let opened = opener.await.unwrap();
+    match (deleted, opened) {
+        // the delete went first: the parent is gone and so there is nothing to open under
+        (Ok(()), Err(e)) => {
+            assert_eq!(e.class(), ErrorClass::NotFound);
+            assert!(!exists(&*store, 1).await && !exists(&*store, 2).await);
+        }
+        // the open went first: the delete did not name the child, and is a conflict
+        (Err(e), Ok(crate::ChildThread::Created { .. })) => {
+            assert_eq!(e.class(), ErrorClass::Conflict);
+            assert!(exists(&*store, 1).await && exists(&*store, 2).await);
+        }
+        (deleted, opened) => panic!("a parent and its child, split: {deleted:?} {opened:?}"),
+    }
+}
+
+/// What a parent's log says of its sessions and what a child's row follows are kept as written:
+/// the three events with their data, the sessions ledger and the child ledger in the job, and an
+/// `Observe` row, claimed as a delegation in the child's own order.
+pub async fn the_session_events_ledgers_and_observe_rows_round_trip<S: ThreadStore>(store: S) {
+    use orch_core::{
+        ChildSessionClosedData, ChildSessionOpenedData, ChildSessionReportedData, SessionBy,
+        SessionLedger, SessionNote, SessionOutcome,
+    };
+    seed(&store, &alice(), 1).await;
+    created(open_child(&store, 2, 1, "s1").await.unwrap());
+    let actor = Actor::agent(&AgentId::new("coder"), None);
+    let events = vec![
+        EventBody::ChildSessionOpened(ChildSessionOpenedData {
+            session: "s1".to_owned(),
+            thread: thread_id(2),
+            agent: "helper".to_owned(),
+            description: "look into it".to_owned(),
+            keep_open: true,
+            by: Some(SessionBy::Agent),
+            round: Some(1),
+        }),
+        EventBody::ChildSessionReported(ChildSessionReportedData {
+            session: "s1".to_owned(),
+            thread: thread_id(2),
+            round: 1,
+            report: SessionOutcome::Blocked,
+        }),
+        EventBody::ChildSessionClosed(ChildSessionClosedData {
+            session: "s1".to_owned(),
+            thread: thread_id(2),
+        }),
+    ];
+    let mut c = commit(
+        ThreadState::Working,
+        events
+            .iter()
+            .cloned()
+            .map(|body| NewEvent {
+                at: t0(),
+                actor: actor.clone(),
+                body,
+                idempotency_key: None,
+            })
+            .collect(),
+        vec![],
+    );
+    c.job = Some(Job {
+        sessions: SessionLedger::of(vec![SessionNote {
+            session: "s1".to_owned(),
+            child: thread_id(2),
+            reported: 1,
+            closed: true,
+        }]),
+        ..Job::default()
+    });
+    let (parent, written) = applied(store.commit(thread_id(1), 1, c).await.unwrap());
+    assert_eq!(
+        written.iter().map(|e| e.body.clone()).collect::<Vec<_>>(),
+        events
+    );
+    let read = store.list_events(thread_id(1), 1, 10).await.unwrap();
+    assert_eq!(
+        read.iter().map(|e| e.body.clone()).collect::<Vec<_>>(),
+        events,
+        "read back as written"
+    );
+    assert_eq!(
+        read.iter().map(|e| e.body.kind()).collect::<Vec<_>>(),
+        vec![
+            EventKind::ChildSessionOpened,
+            EventKind::ChildSessionReported,
+            EventKind::ChildSessionClosed
+        ]
+    );
+    let again = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(again.job.sessions, parent.job.sessions);
+    assert_eq!(
+        again.job.sessions.note("s1").map(|n| n.child),
+        Some(thread_id(2))
+    );
+    let child = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
+    assert_eq!(
+        child.job.child.as_ref().map(|c| c.session.as_str()),
+        Some("s1")
+    );
+
+    // the Observe rows of one child are delegations: claimed one at a time, in their order
+    let applied_second = store
+        .commit(
+            thread_id(2),
+            1,
+            commit(ThreadState::Working, vec![], vec![observe_row(30, "s1", 2)]),
+        )
+        .await
+        .unwrap();
+    applied(applied_second);
+    let first = claim(&store, "w", at(10)).await;
+    let observes: Vec<_> = first
+        .iter()
+        .filter(|r| r.thread_id == thread_id(2))
+        .collect();
+    assert_eq!(observes.len(), 1, "the second waits behind the first");
+    assert_eq!(observes[0].id, outbox_id(2));
+    assert_eq!(
+        observes[0].payload,
+        OutboxPayload::Observe {
+            session: "s1".to_owned(),
+            round: 1,
+            task_id: "s1-r1".to_owned()
+        }
+    );
+    store
+        .complete_outbox(&lease(2, "w", 1), OutboxFinal::Delivered, at(11))
+        .await
+        .unwrap();
+    let second = claim(&store, "w", at(12)).await;
+    let next = second
+        .iter()
+        .find(|r| r.thread_id == thread_id(2))
+        .expect("the next round's row");
+    assert_eq!(next.id, outbox_id(30));
+    // a row that was sent resumes with its task: mark_sent works on it like on a delegation
+    assert_eq!(next.kind, OutboxKind::Delegate);
+}
+
+/// A thread may be made with no event at all, by `create_thread` as by `open_child_thread`: it is
+/// version 1 with `last_seq` 0 and nothing to list.
+pub async fn a_commit_with_no_events_creates_a_thread<S: ThreadStore>(store: S) {
+    let (record, events) = store
+        .create_thread(
+            new_thread(&alice(), 1),
+            commit(ThreadState::Queued, vec![], vec![]),
+        )
+        .await
+        .unwrap();
+    assert!(events.is_empty());
+    assert_eq!((record.version, record.last_seq), (1, 0));
+    assert!(
+        store
+            .list_events(thread_id(1), 0, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // and the next commit's first event is seq 1
+    let (after, written) = applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Working, vec![user_event("hi", None)], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(after.last_seq, 1);
+    assert_eq!(written[0].seq, 1);
+}
