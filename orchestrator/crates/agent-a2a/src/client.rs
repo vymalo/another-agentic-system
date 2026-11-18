@@ -17,11 +17,12 @@ use a2a_client::rest::RestTransportFactory;
 use a2a_client::{A2AClient, A2AClientFactory, ServiceParams, Transport};
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use orch_a2a_mapping::{StreamMapper, snapshot, usage_totals, wants_usage_totals};
+use orch_a2a_mapping::{StreamMapper, sessions_news, snapshot, usage_totals, wants_task_read};
 use orch_core::{
-    ACCESS_TIER_EXTENSION, BoxError, KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION,
-    STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
-    UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery, UiVersion, history_preamble,
+    ACCESS_TIER_EXTENSION, BoxError, CHILD_SESSIONS_EXTENSION, KnownExtension, MENTIONS_EXTENSION,
+    STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
+    UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery, UiVersion,
+    history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -72,6 +73,10 @@ pub struct A2aConfig {
     /// The hosts a `url` part of an artifact may be fetched from, and the size it may have
     /// (ADR 0032, `artifacts.fetchHosts`). Without it (the default) every `url` part stays a link.
     pub fetch_files: Option<FileFetch>,
+    /// How often a stream that activated `child-sessions/v1` reads its task for the sessions it
+    /// lists (ADR 0072): the poll that learns a session from an agent that sends no events. Not in
+    /// the configuration file.
+    pub child_sessions_poll: Duration,
 }
 
 impl Default for A2aConfig {
@@ -85,6 +90,7 @@ impl Default for A2aConfig {
             thread_tools: None,
             asks: false,
             fetch_files: None,
+            child_sessions_poll: Duration::from_secs(5),
         }
     }
 }
@@ -298,6 +304,20 @@ impl A2aAgentClient {
         self.client_for(ep, &card, Vec::new()).await
     }
 
+    /// [`connect`](Self::connect) for a call about a task (`GetTask`, `CancelTask`): the card read
+    /// for this very call decides whether `child-sessions/v1` is activated, which is what makes the
+    /// task say its sessions and lets a round of a child context be read at all (ADR 0072).
+    async fn connect_for_task(
+        &self,
+        ep: &AgentEndpoint,
+    ) -> Result<A2AClient<Box<dyn Transport>>, AgentError> {
+        let card = self.fetch_card(ep).await?;
+        let activate = child_sessions_from_card(&card)
+            .map(|_| vec![CHILD_SESSIONS_EXTENSION.to_owned()])
+            .unwrap_or_default();
+        self.client_for(ep, &card, activate).await
+    }
+
     /// The snapshot with the links on allowed hosts turned into the files they name.
     async fn files_of(&self, snap: TaskSnapshot) -> Result<TaskSnapshot, AgentError> {
         Ok(match &self.fetcher {
@@ -306,19 +326,23 @@ impl A2aAgentClient {
         })
     }
 
-    /// The reader of a stream's missing usage totals, when the call activated `usage/v1` (ADR 0056).
-    fn totals_reader(
+    /// The reader of what only the task holds, for a stream whose call activated `usage/v1` (the
+    /// totals, ADR 0056) or `child-sessions/v1` (the sessions, ADR 0072); `None` when it activated
+    /// neither.
+    fn task_reader(
         &self,
         activated: &[String],
         client: &Arc<A2AClient<Box<dyn Transport>>>,
-    ) -> Option<TotalsReader> {
-        activated
-            .iter()
-            .any(|uri| uri == USAGE_EXTENSION)
-            .then(|| TotalsReader {
-                client: Arc::clone(client),
-                timeout: self.cfg.call_timeout,
-            })
+    ) -> Option<TaskReader> {
+        let usage = activated.iter().any(|uri| uri == USAGE_EXTENSION);
+        let sessions = activated.iter().any(|uri| uri == CHILD_SESSIONS_EXTENSION);
+        (usage || sessions).then(|| TaskReader {
+            client: Arc::clone(client),
+            timeout: self.cfg.call_timeout,
+            usage,
+            sessions,
+            poll: self.cfg.child_sessions_poll,
+        })
     }
 
     /// Bounds a call that has no protocol-level timeout of its own.
@@ -339,45 +363,68 @@ impl A2aAgentClient {
 
 type Item = Result<orch_ports::AgentEnvelope, AgentError>;
 
-/// How a stream that activated `usage/v1` reads a task's totals, which are on the task and never on
-/// a status update (ADR 0056): the client of the call that opened it, and the timeout of a unary call.
+/// How a stream reads what only the task holds (the client of the call that opened it, and the
+/// timeout of a unary call): the `usage/v1` totals, which are on the task and never on a status
+/// update (ADR 0056), and the `sessions` object of `child-sessions/v1` (ADR 0072), which a stream
+/// that has no events learns by reading the task again and again.
 #[derive(Clone)]
-struct TotalsReader {
+struct TaskReader {
     client: Arc<A2AClient<Box<dyn Transport>>>,
     timeout: Duration,
+    /// The call activated `usage/v1`.
+    usage: bool,
+    /// The call activated `child-sessions/v1`.
+    sessions: bool,
+    /// How often the stream reads the task for its sessions.
+    poll: Duration,
 }
 
-impl TotalsReader {
-    /// The totals the task holds in its metadata, as the envelope the stream would have said them
-    /// in; `None` when it holds none or cannot be read (best effort: a poll later reads them too).
-    async fn read(&self, task_id: &str) -> Option<orch_ports::AgentEnvelope> {
+impl TaskReader {
+    /// The task, once (`GetTask`); `None` when it cannot be read (best effort: a poll later reads it
+    /// too).
+    async fn task(&self, task_id: &str) -> Option<a2a::Task> {
         let request = GetTaskRequest {
             id: task_id.to_owned(),
             history_length: Some(0),
             tenant: None,
         };
         match tokio::time::timeout(self.timeout, self.client.get_task(&request)).await {
-            Ok(Ok(task)) => usage_totals(&task),
+            Ok(Ok(task)) => Some(task),
             Ok(Err(e)) => {
-                tracing::debug!(task = task_id, error = %e, "reading the task for its usage totals failed");
+                tracing::debug!(task = task_id, error = %e, "reading the task failed");
                 None
             }
             Err(_) => {
-                tracing::debug!(
-                    task = task_id,
-                    "reading the task for its usage totals timed out"
-                );
+                tracing::debug!(task = task_id, "reading the task timed out");
                 None
             }
         }
+    }
+
+    /// What the task holds, as the envelopes the stream would have said it in and in the order a
+    /// status that ends the turn follows them: the usage totals, then the sessions.
+    async fn read(&self, task_id: &str) -> Vec<orch_ports::AgentEnvelope> {
+        let Some(task) = self.task(task_id).await else {
+            return Vec::new();
+        };
+        let totals = self.usage.then(|| usage_totals(&task)).flatten();
+        let sessions = self.sessions.then(|| sessions_news(&task)).flatten();
+        totals.into_iter().chain(sessions).collect()
+    }
+
+    /// The sessions of a task that still runs.
+    async fn read_sessions(&self, task_id: &str) -> Option<orch_ports::AgentEnvelope> {
+        sessions_news(&self.task(task_id).await?)
     }
 }
 
 struct Mapping {
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,
-    /// Present when the call activated `usage/v1`.
-    totals: Option<TotalsReader>,
+    /// Present when the call activated `usage/v1` or `child-sessions/v1`.
+    reader: Option<TaskReader>,
+    /// Ticks while the task runs, when the call activated `child-sessions/v1`.
+    poll: Option<tokio::time::Interval>,
     mapper: StreamMapper,
     queue: VecDeque<Item>,
     seen_any: bool,
@@ -388,17 +435,25 @@ struct Mapping {
 /// error: the SDK treats a body-less answer to a streaming call as an empty stream, which is
 /// what a refused request (for example a proxy's 401, whose status the SDK drops) looks like.
 ///
-/// With `totals` (the call activated `usage/v1`), a status that ends or pauses the task has the
-/// task's totals read first (`GetTask`), and passed on before it.
+/// With `reader` (the call activated `usage/v1` or `child-sessions/v1`), a status that ends or
+/// pauses the task has the task read first (`GetTask`): its totals and its sessions are passed on
+/// before it. With `child-sessions/v1` the task is also read every `child_sessions_poll` while the
+/// stream is open, which is how a parent that sends no events (or lost one) is followed.
 fn map_stream(
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,
-    totals: Option<TotalsReader>,
+    reader: Option<TaskReader>,
 ) -> AgentStream {
+    let poll = reader.as_ref().filter(|r| r.sessions).map(|r| {
+        let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + r.poll, r.poll);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval
+    });
     let state = Mapping {
         inner,
         fetcher,
-        totals,
+        reader,
+        poll,
         mapper: StreamMapper::default(),
         queue: VecDeque::new(),
         seen_any: false,
@@ -417,14 +472,31 @@ fn map_stream(
             if st.ended {
                 return None;
             }
-            match st.inner.next().await {
+            let next = match st.poll.as_mut() {
+                Some(interval) => tokio::select! {
+                    item = st.inner.next() => Some(item),
+                    _ = interval.tick() => None,
+                },
+                None => Some(st.inner.next().await),
+            };
+            let Some(next) = next else {
+                // time to read the task for its sessions
+                if let Some(reader) = &st.reader
+                    && let Some(task_id) = st.mapper.task_id()
+                    && let Some(news) = reader.read_sessions(task_id).await
+                {
+                    st.queue.push_back(Ok(news));
+                }
+                continue;
+            };
+            match next {
                 Some(Ok(response)) => {
                     st.seen_any = true;
-                    if let Some(reader) = &st.totals
-                        && let Some(task_id) = wants_usage_totals(&response)
-                        && let Some(totals) = reader.read(task_id).await
+                    if let Some(reader) = &st.reader
+                        && let Some(task_id) = wants_task_read(&response)
                     {
-                        st.queue.push_back(Ok(totals));
+                        let read = reader.read(task_id).await;
+                        st.queue.extend(read.into_iter().map(Ok));
                     }
                     let mapped = st.mapper.map(response);
                     st.queue.extend(mapped);
@@ -463,10 +535,15 @@ fn catalog_for<'r>(
 /// The extensions of a call that makes the agent report (a send or a resubscribe) that do not
 /// depend on the message, each when the card read for this very call lists it: `steps/v1`, so
 /// that the agent reports its work as nested steps (ADR 0025), `text-stream/v1`, so that it
-/// sends its reply as it writes it (ADR 0027), and `usage/v1`, so that it reports the tokens of its
-/// model calls (ADR 0056). An agent without them is plain A2A.
-fn reporting_extensions(card_extensions: &BTreeSet<KnownExtension>) -> Vec<String> {
-    [
+/// sends its reply as it writes it (ADR 0027), `usage/v1`, so that it reports the tokens of its
+/// model calls (ADR 0056), and `child-sessions/v1`, so that it reports its helpers as sessions (ADR
+/// 0072; `child_sessions` is whether `child_sessions_from_card` read a well-formed offer from that
+/// card). An agent without them is plain A2A.
+fn reporting_extensions(
+    card_extensions: &BTreeSet<KnownExtension>,
+    child_sessions: bool,
+) -> Vec<String> {
+    let mut uris: Vec<String> = [
         (KnownExtension::Steps, STEPS_EXTENSION),
         (KnownExtension::TextStream, TEXT_STREAM_EXTENSION),
         (KnownExtension::Usage, USAGE_EXTENSION),
@@ -474,7 +551,11 @@ fn reporting_extensions(card_extensions: &BTreeSet<KnownExtension>) -> Vec<Strin
     .into_iter()
     .filter(|(ext, _)| card_extensions.contains(ext))
     .map(|(_, uri)| uri.to_owned())
-    .collect()
+    .collect();
+    if child_sessions {
+        uris.push(CHILD_SESSIONS_EXTENSION.to_owned());
+    }
+    uris
 }
 
 /// What rides on a message besides its text, each only when the card read for this very call allows
@@ -682,7 +763,7 @@ impl AgentClient for A2aAgentClient {
         let reporting = if req.steer {
             Vec::new()
         } else {
-            reporting_extensions(&known)
+            reporting_extensions(&known, child_sessions_from_card(&card).is_some())
         };
         let riders = Riders {
             thread_tools: thread_tools.as_ref(),
@@ -698,7 +779,7 @@ impl AgentClient for A2aAgentClient {
             )
             .await?,
         );
-        let totals = self.totals_reader(&reporting, &client);
+        let reader = self.task_reader(&reporting, &client);
         let request = SendMessageRequest {
             message: user_message(&req, ui.as_ref(), catalog, riders, &reporting),
             configuration: None,
@@ -711,7 +792,7 @@ impl AgentClient for A2aAgentClient {
                 client.send_streaming_message(&request),
             )
             .await?;
-        Ok(map_stream(stream, self.fetcher.clone(), totals))
+        Ok(map_stream(stream, self.fetcher.clone(), reader))
     }
 
     async fn resubscribe(&self, task: &TaskHandle) -> Result<AgentStream, AgentError> {
@@ -719,12 +800,15 @@ impl AgentClient for A2aAgentClient {
         // asked for them again: a stream that was cut and picked up must carry the same events the
         // first did.
         let card = self.fetch_card(&task.endpoint).await?;
-        let reporting = reporting_extensions(&extensions_from_card(&card));
+        let reporting = reporting_extensions(
+            &extensions_from_card(&card),
+            child_sessions_from_card(&card).is_some(),
+        );
         let client = Arc::new(
             self.client_for(&task.endpoint, &card, reporting.clone())
                 .await?,
         );
-        let totals = self.totals_reader(&reporting, &client);
+        let reader = self.task_reader(&reporting, &client);
         let request = SubscribeToTaskRequest {
             id: task.task_id.clone(),
             tenant: None,
@@ -735,11 +819,11 @@ impl AgentClient for A2aAgentClient {
                 client.subscribe_to_task(&request),
             )
             .await?;
-        Ok(map_stream(stream, self.fetcher.clone(), totals))
+        Ok(map_stream(stream, self.fetcher.clone(), reader))
     }
 
     async fn get_task(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {
-        let client = self.connect(&task.endpoint).await?;
+        let client = self.connect_for_task(&task.endpoint).await?;
         let request = GetTaskRequest {
             id: task.task_id.clone(),
             history_length: Some(0),
@@ -752,7 +836,7 @@ impl AgentClient for A2aAgentClient {
     }
 
     async fn cancel(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {
-        let client = self.connect(&task.endpoint).await?;
+        let client = self.connect_for_task(&task.endpoint).await?;
         let request = CancelTaskRequest {
             id: task.task_id.clone(),
             metadata: None,

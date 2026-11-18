@@ -5,7 +5,7 @@
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md),
   decision 11, which puts this contract here); the shape of this page is proposed with
   [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** the orchestrator
-  reads the card (S1). Nothing else, on either side: the agent's half is adam-rs ADR 0045 slice 6, the orchestrator's and the web's
+  reads the card (S1), and its agent side: activation and the strict read of what an agent says (S2c). Nothing else, on either side: the agent's half is adam-rs ADR 0045 slice 6, the orchestrator's and the web's
   are ADR 0072 slices S2 to S4.
 - **Decided in:** [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
@@ -125,7 +125,7 @@ under the URI, one **event**:
   "description": "Plan the migration",
   "keepOpen": true,
   "by": "agent",
-  "round": {"number": 1, "taskId": "01936f1c-7a2e-7000-8000-00000000004b", "state": "working"}
+  "round": {"number": 1, "taskId": "01936f1c-7a2e-7000-8000-00000000004b", "state": "TASK_STATE_WORKING"}
 }}
 ```
 
@@ -137,7 +137,7 @@ under the URI, one **event**:
 | `closed` | The session closed: not kept open and its round ended, a close, or the agent's idle limit. | nothing more |
 
 Every event carries `session`, `contextId`, `agent`, `description`, `keepOpen` and `by` (`agent` or `person`: who acted).
-`round.state` is the round task's A2A state. An event carries **no report text**: the text is the round's own task, which the
+`round.state` is the round task's A2A state, spelled as the A2A JSON spells it (`TASK_STATE_WORKING`, `TASK_STATE_COMPLETED`, `TASK_STATE_INPUT_REQUIRED`, ...), and `null` when the agent could not read it; the orchestrator also reads the plain word (`completed`). An event carries **no report text**: the text is the round's own task, which the
 client reads in the child context. Events of one session come in the order above; events of different sessions interleave.
 
 An event is a latency optimisation: a client that missed one (a stream that broke) learns the same from the task's sessions object
@@ -154,7 +154,7 @@ closed (a fixed 16):
 "metadata": {"https://agents.vymalo.com/a2a/extensions/child-sessions/v1": {
   "sessions": [
     {"session": "01936f1c-…-04b", "contextId": "…", "agent": "planner", "description": "Plan the migration",
-     "keepOpen": true, "state": "idle", "round": {"number": 2, "taskId": "…", "state": "completed"}}
+     "keepOpen": true, "state": "idle", "round": {"number": 2, "taskId": "…", "state": "TASK_STATE_COMPLETED"}}
   ]
 }}
 ```
@@ -291,3 +291,5 @@ WireMock agent.
 - *Verified* (as [`steer-v1.md`](steer-v1.md) and [`usage-v1.md`](usage-v1.md) say): `TaskStatusUpdateEvent` and `Task` each carry
   an optional `metadata` map, and extensions are activated by the `A2A-Extensions` header and `message.extensions`.
 - *Unverified:* everything an agent does under this page: no agent serves it yet (adam-rs ADR 0045 slice 6).
+- *Verified 2026-11-18* by reading adam-rs after its child-sessions slice merged (adam-rs #173): adam writes `round.state` with the protobuf JSON names (`TASK_STATE_COMPLETED`, and `null` when it cannot read the state), not the plain words (`crates/adam-a2a-runtime/src/child_sessions.rs`, `a2a_state_word`; `crates/adam-a2a/src/push/cursor.rs`). The examples above use that spelling; the orchestrator's reader accepts both.
+- *Built (S2c):* the orchestrator's agent side: activation on a send, a resubscribe, a `GetTask` and a `CancelTask` only for a card that offers the extension well formed, a strict bounded read of the sessions object, the events and a round's own object, and a poll of the parent task every 5 seconds while it runs (the events are a latency optimisation, so until an agent sends them, a poll is how a session is learned). Proven against the fake agent only; a real agent is unverified.
