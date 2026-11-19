@@ -1259,10 +1259,18 @@ impl<P: Ports> Dispatcher<P> {
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;
-            match stream.next().await {
-                Some(first) => first.map(Some),
-                None => Ok(None),
+            // The agent's first event is the task (steer/v1 section 3), and the adapter says what
+            // that one event holds as several envelopes: a parent task's `sessions` object
+            // (child-sessions/v1, which a steer activates when the card offers it, ADR 0072) comes
+            // before its status, and says no state. What names the task and says no state is
+            // read past; the first envelope that says a state, or names another task, is the answer.
+            while let Some(next) = stream.next().await {
+                let env = next?;
+                if env.task_id != task_id || env_state(&env).is_some() {
+                    return Ok(Some(env));
+                }
             }
+            Ok(None)
         })
         .await
         .unwrap_or_else(|_| {
