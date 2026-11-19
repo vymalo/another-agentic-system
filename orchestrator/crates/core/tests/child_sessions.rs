@@ -706,6 +706,46 @@ fn a_blocked_round_answered_in_the_same_task_is_followed_and_reported_again() {
 }
 
 #[test]
+fn a_blocked_round_that_is_submitted_again_is_followed_again_once() {
+    use AgentTaskState as T;
+    let blocked = report(
+        "s1",
+        SessionState::Working,
+        Some(round(1, Some("t1"), Some(T::InputRequired))),
+    );
+    let (mut child, _) = start_child(&blocked);
+    child.state = Blocked;
+    child.job.observed = Some(ObservedRound {
+        number: 1,
+        task_id: "t1".into(),
+        by: None,
+    });
+    let submitted = report(
+        "s1",
+        SessionState::Working,
+        Some(round(1, Some("t1"), Some(T::Submitted))),
+    );
+    let (child, cmds) = transition(&child, &Input::ChildSessionSaid(submitted.clone())).unwrap();
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    let (_, cmds) = transition(&child, &Input::ChildSessionSaid(submitted)).unwrap();
+    assert!(cmds.is_empty(), "once: {cmds:?}");
+}
+
+#[test]
+fn a_child_that_started_a_round_never_starts_another_in_place() {
+    // a thread whose job 1 holds no round but which has started one before is not fresh: the next
+    // round is job 2, never job 1 again
+    let (mut snap, _) = start_child(&report("s1", SessionState::Idle, None));
+    snap.job.child.as_mut().unwrap().started = 1;
+    assert_eq!(
+        (snap.state, snap.job.number, snap.job.observed.is_none()),
+        (Done, 1, true)
+    );
+    let (next, _) = started(&snap, 2, None).unwrap();
+    assert_eq!(next.job.number, 2);
+}
+
+#[test]
 fn the_title_is_the_description_else_the_helper_else_a_word() {
     let with = |description: &str, agent: &str| {
         child_title(&SessionReport {

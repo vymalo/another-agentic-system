@@ -19,7 +19,7 @@ use orch_core::{
     SessionOutcome, SessionReport, SessionState, ThreadId, ThreadRecord, ThreadState,
 };
 use orch_ports::memory::Call;
-use orch_ports::{OutboxKind, OutboxPayload, ThreadStore};
+use orch_ports::{Lease, OutboxKind, OutboxPayload, ThreadStore};
 use support::*;
 
 fn report(session: &str, state: SessionState, round: Option<RoundReport>) -> SessionReport {
@@ -775,4 +775,122 @@ async fn a_child_stopped_before_its_round_began_skips_the_row() {
             .iter()
             .any(|c| matches!(c, Call::Resubscribe { task_id } | Call::GetTask { task_id } if task_id == "never"))
     );
+}
+
+#[tokio::test]
+async fn a_round_of_a_thread_that_is_no_child_or_of_another_session_is_refused_and_counted() {
+    let w = World::new();
+    let app = w.app();
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    let over = |session: &str| {
+        report(
+            session,
+            SessionState::Idle,
+            Some(round(1, "t-1", AgentTaskState::Completed)),
+        )
+    };
+    // a thread that is no child hears of no round
+    assert!(
+        app.child_sessions_news(parent.id, None, SessionNews::OfRound(over("s1")))
+            .await
+            .unwrap()
+    );
+    assert_eq!(dropped(&app, ChildSessionDrop::Refused), 1);
+    assert_eq!(dropped(&app, ChildSessionDrop::Malformed), 0);
+    // nor does a child hear of the round of another session, and its parent is told nothing
+    app.child_sessions_news(
+        parent.id,
+        None,
+        SessionNews::Listed(vec![report("s1", SessionState::Idle, None)]),
+    )
+    .await
+    .unwrap();
+    let kid = children(&w, parent.id).await.remove(0);
+    assert!(
+        app.child_sessions_news(kid.id, None, SessionNews::OfRound(over("other")))
+            .await
+            .unwrap()
+    );
+    assert_eq!(dropped(&app, ChildSessionDrop::Refused), 2);
+    assert_eq!(dropped(&app, ChildSessionDrop::Malformed), 0);
+    let ev = events(&app, &alice(), parent.id).await;
+    assert_eq!(count(&ev, EventKind::ChildSessionOpened), 1, "{ev:?}");
+    assert_eq!(count(&ev, EventKind::ChildSessionReported), 0, "{ev:?}");
+    assert_eq!(children(&w, parent.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_same_listing_is_applied_once_and_not_read_again() {
+    let w = World::new();
+    let app = w.app();
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    let idle = report("s1", SessionState::Idle, None);
+    let closed = report("s1", SessionState::Closed, None);
+    app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![idle.clone()]))
+        .await
+        .unwrap();
+    let kid = children(&w, parent.id).await.remove(0);
+    app.delete_thread(&alice(), kid.id).await.unwrap();
+    // said again as it was: not read from the store, so nothing is found missing
+    for _ in 0..2 {
+        app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![idle.clone()]))
+            .await
+            .unwrap();
+    }
+    assert_eq!(dropped(&app, ChildSessionDrop::ChildDeleted), 0);
+    // a listing that differs is read, once however often it is repeated
+    for _ in 0..2 {
+        app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![closed.clone()]))
+            .await
+            .unwrap();
+    }
+    assert_eq!(dropped(&app, ChildSessionDrop::ChildDeleted), 1);
+}
+
+#[tokio::test]
+async fn a_round_told_under_a_lost_claim_writes_nothing_and_stops_the_caller() {
+    let w = World::new();
+    let app = w.app();
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    let said = report(
+        "s1",
+        SessionState::Working,
+        Some(round(1, "never", AgentTaskState::Working)),
+    );
+    app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![said.clone()]))
+        .await
+        .unwrap();
+    let kid = children(&w, parent.id).await.remove(0);
+    let row = w.store.list_open_outbox(kid.id).await.unwrap().remove(0);
+    let stale = Lease {
+        id: row.id,
+        owner: "nobody".into(),
+        attempt: 9,
+    };
+    let over = report(
+        "s1",
+        SessionState::Idle,
+        Some(round(1, "never", AgentTaskState::Completed)),
+    );
+    let go_on = app
+        .child_sessions_news(kid.id, Some(&stale), SessionNews::OfRound(over))
+        .await
+        .unwrap();
+    assert!(!go_on, "the caller must stop");
+    let ev = events(&app, &alice(), parent.id).await;
+    assert_eq!(count(&ev, EventKind::ChildSessionReported), 0, "{ev:?}");
+}
+
+#[tokio::test]
+async fn a_blank_description_leaves_the_child_without_one() {
+    let w = World::new();
+    let app = w.app();
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    let mut said = report("s1", SessionState::Idle, None);
+    said.description = "  \t ".into();
+    app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![said]))
+        .await
+        .unwrap();
+    let kid = children(&w, parent.id).await.remove(0);
+    assert_eq!(kid.description, None);
 }
