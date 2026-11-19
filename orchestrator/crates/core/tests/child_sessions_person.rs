@@ -139,9 +139,7 @@ fn a_message_to_an_idle_child_starts_the_next_job_and_delegates() {
         assert_eq!(next.job.number, 2);
         assert!(next.job.child.is_some(), "the session stays the thread's");
         assert!(next.job.observed.is_none());
-        assert!(
-            matches!(cmds.last(), Some(Command::Delegate { text, .. }) if text == "and then?")
-        );
+        assert!(matches!(cmds.last(), Some(Command::Delegate { text, .. }) if text == "and then?"));
         assert!(kinds(&cmds).contains(&"user_message"));
     }
 }
@@ -717,7 +715,11 @@ fn a_child_started_by_a_person_holds_their_message_before_round_one() {
     // the message comes first, the Observe of round 1 after it, by the person
     assert!(matches!(
         &cmds[1],
-        Command::Observe { round: 1, by: Some(SessionBy::Person), .. }
+        Command::Observe {
+            round: 1,
+            by: Some(SessionBy::Person),
+            ..
+        }
     ));
     assert_eq!(cmds.len(), 2);
 
@@ -738,7 +740,10 @@ fn a_prompt_with_no_round_to_follow_still_holds_the_message() {
     };
     let (snap, cmds) = start_child_for(&r, Some(prompt));
     assert_eq!(kinds(&cmds), ["user_message"]);
-    assert_eq!(snap.state, Done, "at rest, as a child with nothing to follow");
+    assert_eq!(
+        snap.state, Done,
+        "at rest, as a child with nothing to follow"
+    );
 }
 
 // --- the wire ----------------------------------------------------------------------------------------

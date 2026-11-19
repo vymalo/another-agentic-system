@@ -4010,7 +4010,10 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
         "number": 1,
         "child": {"session": "s1", "agent": "helper", "keepOpen": true, "state": "idle"}
     });
-    for (thread, job, of) in [(parent, &parent_job, None), (child, &child_job, Some(parent))] {
+    for (thread, job, of) in [
+        (parent, &parent_job, None),
+        (child, &child_job, Some(parent)),
+    ] {
         sqlx::query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, rail_rank, job, child_of, child_session) \
@@ -4027,7 +4030,7 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
     let insert_event = |thread: ThreadId, seq: i64, kind: &'static str, data: String| {
         sqlx::query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
-             VALUES ($1, $2, now(), $3, '{\"type\":\"system\"}', $4::jsonb)",
+             VALUES ($1, $2, now(), $3, '{\"type\":\"system\",\"name\":\"orchestrator\"}', $4::jsonb)",
         )
         .bind(thread.0)
         .bind(seq)
@@ -4075,10 +4078,15 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
     ];
     for body in &bodies {
         assert!(
-            insert_event(parent, 2, body.kind().as_str(), body.data_value().to_string())
-                .execute(&pool)
-                .await
-                .is_err(),
+            insert_event(
+                parent,
+                2,
+                body.kind().as_str(),
+                body.data_value().to_string()
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
             "0027 has no `{}`",
             body.kind().as_str()
         );
@@ -4091,10 +4099,15 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
 
     for (n, body) in bodies.iter().enumerate() {
         let seq = i64::try_from(n).unwrap() + 2;
-        insert_event(parent, seq, body.kind().as_str(), body.data_value().to_string())
-            .execute(store.pool())
-            .await
-            .unwrap();
+        insert_event(
+            parent,
+            seq,
+            body.kind().as_str(),
+            body.data_value().to_string(),
+        )
+        .execute(store.pool())
+        .await
+        .unwrap();
     }
     assert!(
         insert_event(parent, 6, "nonsense", "{}".into())
@@ -4107,7 +4120,10 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
     assert_eq!(events.len(), 5, "the old event is untouched");
     assert_eq!(events[0].body, closed);
     assert_eq!(
-        events[1..].iter().map(|e| e.body.clone()).collect::<Vec<_>>(),
+        events[1..]
+            .iter()
+            .map(|e| e.body.clone())
+            .collect::<Vec<_>>(),
         bodies,
         "read back as the core wrote them"
     );

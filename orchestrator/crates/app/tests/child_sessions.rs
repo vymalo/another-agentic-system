@@ -28,6 +28,7 @@ fn report(session: &str, state: SessionState, round: Option<RoundReport>) -> Ses
         context_id: format!("ctx-1/s/{session}"),
         agent: "planner".into(),
         description: "Plan the migration".into(),
+        parent_context_id: None,
         keep_open: false,
         by: Some(SessionBy::Agent),
         state,
@@ -261,11 +262,13 @@ async fn the_dispatcher_follows_the_round_without_sending_and_the_parent_hears_o
     let kid = wait_state(&app, &alice(), kid.id, ThreadState::Done).await;
     run.shutdown().await;
 
-    // the child's log is the round: a job that nobody sent, its artifact, its totals and its end
+    // the child's log is the session's close, then the round: a job that nobody sent, its artifact,
+    // its totals and its end
     let ev = events(&app, &alice(), kid.id).await;
     assert_eq!(
         shape(&ev),
         [
+            "child_session_state",
             "job_started",
             "artifact",
             "model_usage_total",
@@ -275,7 +278,7 @@ async fn the_dispatcher_follows_the_round_without_sending_and_the_parent_hears_o
         "{ev:?}"
     );
     assert_contiguous(&ev);
-    match &ev[0].body {
+    match &ev[1].body {
         EventBody::JobStarted(started) => {
             assert_eq!(started.job, 1);
             let round = started.round.as_ref().unwrap();

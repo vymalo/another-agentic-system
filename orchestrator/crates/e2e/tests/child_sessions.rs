@@ -481,7 +481,7 @@ async fn a_child_thread_takes_no_run_and_no_fork(backend: Backend) {
     let child = child_of(&chat, &id).await;
     chat.wait_state(&child, "done").await;
     // an AG-UI run on the child's thread: well formed, and what it names cannot be done
-    let body = Chat::agui_input(&child, "run-2", &[("msg-2", "hello helper")], json!({}));
+    let body = Chat::agui_input(&child, "run-99", &[("msg-2", "hello helper")], json!({}));
     let response = chat.agui_post("plain", &body).await;
     assert_eq!(response.status().as_u16(), 422);
     let problem: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();

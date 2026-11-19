@@ -2674,7 +2674,11 @@ pub async fn session_rows_ride_the_steer_lane_and_are_never_delegations<S: Threa
                 commit(
                     ThreadState::Working,
                     vec![],
-                    vec![session_start_row(101), session_close_row(102), delegate(103)],
+                    vec![
+                        session_start_row(101),
+                        session_close_row(102),
+                        delegate(103),
+                    ],
                 ),
             )
             .await

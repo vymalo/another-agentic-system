@@ -914,7 +914,11 @@ pub(crate) fn start_session(
     if !printable(start.request, MAX_REQUEST_BYTES) || !description_ok {
         return Err(refuse(SessionRefusal::Malformed));
     }
-    if job.session_starts.iter().any(|p| p.request == start.request) {
+    if job
+        .session_starts
+        .iter()
+        .any(|p| p.request == start.request)
+    {
         return Ok(Vec::new());
     }
     if job.session_starts.len() >= MAX_PENDING_STARTS {

@@ -20,9 +20,7 @@ use crate::access_tier::AccessTier;
 use crate::agent::{AgentTaskState, AgentUpdate, FileRefusal};
 use crate::answer::announce;
 use crate::ask::{self, AskLimits, AskRefusal, AskRequest, AskResult};
-use crate::child_sessions::{
-    self, SessionBy, SessionRefusal, SessionReport, SessionStartOutcome,
-};
+use crate::child_sessions::{self, SessionBy, SessionRefusal, SessionReport, SessionStartOutcome};
 use crate::description::{DescribedBy, DescriptionSource, ThreadDescribedData, check_description};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
