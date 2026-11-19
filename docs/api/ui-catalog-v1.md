@@ -7,6 +7,9 @@
   Mermaid, Image, the questions of Choices with a title, typed answers and pictures (versions 1 to 5), the components of version 6, the five more kinds of question of [version 7](#version-7-more-kinds-of-question), and the questions that show what they ask about and the checklist that carries a plan of [version 8](#version-8-a-question-that-shows-what-it-asks-about-and-a-plan) are built (the web's side of MVP slices 3 and 4, and of slices 9 and 10 of [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)); the adam-rs side (an agent that turns the
   catalog into model tools and refetches) is that repository's slice; see
   [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
+- **Retired by the A2UI v1.0 cutover** ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), accepted 2026-11-19, nothing built):
+  A2UI v1.0 requires `"protocolVersion": "1.0"` on a catalog, which breaks this page's document, so the cutover moves to
+  `ui-catalog/v2` (a new URI and page, the same `catalogId`, version 9 onwards). This page stays as the record of v1.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
   the A2UI transport is [ADR 0013](../decisions/0013-a2ui-generative-ui.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).

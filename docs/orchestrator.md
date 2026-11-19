@@ -921,6 +921,8 @@ What the diagrams cannot say:
 ## Local agents
 
 **Built** (`orch-agent-adam`, behind the binary's Cargo feature `agent-local`, off by default; [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
+*Decided, not built ([ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md), 2026-11-19):* the orchestrator embedded as a library in an
+application runs its local agents through `adam-engine` on adam's SQLite store, beside `orch-store-sqlite`, with no HTTP server.
 An `AGENTS_FILE` entry with `transport: local` and `agent: <kind>` is an agent that runs in the
 orchestrator's own process, on the durable runtime of adam-rs. Remote agents stay plain A2A. The kinds are
 a closed enum (`LocalKind`, today `Echo`, which repeats the message back); the endpoint carries only the

@@ -1,6 +1,9 @@
 # ADR 0001 — Orchestrator: a Rust state machine on Postgres
 
-- **Status:** accepted (2026-09-28). Amended (2026-09-29) by
+- **Status:** accepted (2026-09-28). *Amended (2026-11-19) by
+  [ADR 0076](0076-the-orchestrator-as-a-library-in-an-application.md):* the orchestrator embedded in an application
+  keeps a thread's log in SQLite, written by that one process, with the same version check and an in-process wakeup;
+  a thread's home (a deployment or one application) is fixed. Amended (2026-09-29) by
   [ADR 0015](0015-control-plane-and-workers-on-adam-rs.md): the job ledger also holds the journal of
   an in-process (local) agent, in `orch_agent_*` tables of the same Postgres. Processes stay
   stateless; the orchestrator now runs as a control plane and workers over this one database.

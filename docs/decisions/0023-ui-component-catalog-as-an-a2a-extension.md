@@ -4,6 +4,11 @@
   decided in the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
   Amended (2026-11-14): catalog version 7 adds five kinds of question to `Choices`, see the
   [status note](#status-note-2026-11-14-version-7-adds-five-kinds-of-question-to-choices).
+  **Amended (2026-11-19, [ADR 0075](0075-a2ui-v1-0-cutover.md)):** with the A2UI v1.0 cutover the extension becomes
+  `ui-catalog/v2`, a new URI and page (`docs/api/ui-catalog-v2.md`), because A2UI v1.0 requires `"protocolVersion": "1.0"`
+  on the catalog, which breaks every v1 reader; the `catalogId` stays and `version` continues at 9 (the owner's decision,
+  2026-11-19). Decisions 1 to 7 stand
+  under v2. Nothing of it is built yet.
 
 ## Context
 
