@@ -88,7 +88,7 @@ specs under [`web/e2e/`](../web/e2e/) (run against the web's own mock server).
 | 4b | A real researcher, browser and coder in the football run; a planner agent | **Partly built** (2026-10-09): a browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md), adam-agent with obscura, asked by the chat on a mention of `@browser`, or, with `browser.chatSubagent` (off by default), by the chat itself as its remote sub-agent); its screenshots are files (adam-rs `0bfea49`, ADR 0057 amended 2026-10-09) that reach the person who talks to the browser or asks the chat that calls it, but not the person who mentions `@browser` (an asked agent's file is named, not kept); the football run still asks the three mocks by decision | `dev/browser-e2e.sh`, `dev/chat-browser-e2e.sh` (written, not yet run) | 0026, 0057 |
 | 5 | Nested steps, collapsed, a little more per click, spinners, bounded log | **Built** | `dev/coder-e2e.sh` (the tree an OpenCode delegation leaves), `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`, `step-io.spec.ts` | [0025](decisions/0025-nested-steps-events-carry-their-source-path.md), [0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md) |
 | 6 | Workspaces: several repositories, asking before a new one, ephemeral with none, GitHub through MCP, credentials per installation | **Built** in adam-coder; a job that pushes to two repositories is gated on the last only; the coder's checks are not published as GitHub check runs | `dev/workspace-e2e.sh`, `dev/coder-e2e.sh` (token and App) | [0014](decisions/0014-adam-coder-default-agent-over-a2a.md) status note; question 42 |
-| 6b | A repository's devcontainer is its work environment | **Built** on a rootless Podman service; **not built** on Kubernetes | `dev/devcontainer-e2e.sh` | [0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md); question 41 |
+| 6b | A repository's devcontainer is its work environment | **The contract stands** ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md), amended 2026-11-19): the old *how* is removed, on Kubernetes the environment is a run pod of the repository's published image (adam ADR 0052, adam's own slice, not built yet and not this repository), and in this stack and on a desktop the tool does not appear | none here (its scenario was removed 2026-11-19); adam's slice, not built yet | [0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md); question 41 |
 | 7 | Agents configured at run time, not compiled | **Built** | `dev/agent-folder-e2e.sh`, `dev/greeting-e2e.sh` | 0014 status notes |
 | 8 | Examples for several uses: a coder, a chat, a researcher, a browser | **Built** with a **mock browser**; the live researcher's real search is *unverified* | `dev/agents-e2e.sh`, `dev/mentions-e2e.sh` | 0014 |
 | 9 | Streaming answers, thread titles | **Built** | `dev/coder-e2e.sh` (live frames), `dev/title-e2e.sh`, `web/e2e/stream.spec.ts` | [0027](decisions/0027-live-text-relayed-not-stored.md), [0005](decisions/0005-openai-compatible-model-endpoint.md) |
@@ -331,14 +331,29 @@ and the agents agree.
 > repository's devcontainer, or in a default image, on a rootless Podman service; a stopped service is a step that says so, and a
 > devcontainer.json it cannot use is a failed step and a question to the person, never a silent fallback. The stack runs it with an
 > override (`dev/compose.devcontainer.yaml`, a Podman service with no `privileged`, `cap_add` or `devices`) and one scenario
-> ([`dev/devcontainer-e2e.sh`](../dev/README.md#devcontainers)) that CI runs on every Coder E2E run. The orchestrator and the web did
+> (`dev/devcontainer-e2e.sh`, removed 2026-11-19) that CI ran on every Coder E2E run. The orchestrator and the web did
 > not change: the environment is a nested step ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md#status-note-2026-10-02-built-the-stack-and-its-scenario)).
 > The scenario had not run when this was written: CI is its proof. Still open: Kubernetes (question 41).
+>
+> **Note, 2026-11-19: the environment is a run pod, not a service beside the coder.** The owner removed the
+> container-service path from adam-rs and from the stack around it as a hard cutover ([adam ADR
+> 0052](https://github.com/vymalo/another-adam-rs/pull/194), accepted 2026-11-19 and merged; epic #359). The contract of [ADR
+> 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md) stands — a repository's
+> `.devcontainer/devcontainer.json` is its work environment — and its *how* changes: on Kubernetes a repository's own
+> environment is a run pod of an image the repository publishes, when the deployment allows that image (adam-rs's
+> slice, not this repository); **on a desktop and in this dev stack the tool does not appear at all**, the commands
+> run where the coder runs, and a step says the repository's configuration is not used. This repository's half of the
+> old *how* is gone: `dev/compose.devcontainer.yaml`, the vendored service directory under `dev/coder/`, `dev/devcontainer-e2e.sh`, its step in the
+> Coder E2E workflow, its compose checks, and `dev/README.md` "Devcontainers" (ADR 0028's dated note of 2026-11-19
+> has the list). *Verified 2026-11-19*: those paths are gone, and the engine's name appears nowhere under `dev/` or
+> `.github/`. *Not built yet*: adam's side, which ADR 0052 records as not built (its slices are the epic's adam
+> tickets), so nothing here proves it.
 
-**State, 2026-10-03.** Both notes stand. Proof: `dev/workspace-e2e.sh` (scratch work, a repository created after a yes to a form and
+**State, 2026-10-03.** The notes stand. Proof: `dev/workspace-e2e.sh` (scratch work, a repository created after a yes to a form and
 none after a no, a second repository added only after a yes, the gate and the pull request on the repository the work reached),
-`dev/coder-e2e.sh` with `GITHUB_AUTH=token` and `app`, `dev/devcontainer-e2e.sh`. **Not proven:** a GitHub App against github.com,
-the real `github-mcp-server`, the Podman service on a CI runner or a cluster, and a live model's use of the consent tools. The
+`dev/coder-e2e.sh` with `GITHUB_AUTH=token` and `app`. **Not proven:** a GitHub App against github.com,
+the real `github-mcp-server`, and a live model's use of the consent tools (the environment scenario this line named was
+removed on 2026-11-19: the note above). The
 compose pin is adam-rs `ddef35e` (since `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136), it includes `7e5dcc3`: a task reads `working` from the moment a worker
 claims its run; `4edee18` adds a GitHub App that finds the installation of each owner, ADR 0014's note of 2026-10-04; `588e9b5` streams a model's reasoning, ADR 0014's note of 2026-10-05; `6478fbc` keeps the input of a step that started before its subscriber attached, ADR 0014's note of 2026-10-05, second; `d9d5ea4` makes the coder Adam, a general agent with read-only helpers, gives every tool step a title, lets a failure the base branch has too cost no check cycle and puts the build on the card, ADR 0014's note of 2026-10-07; `8e1133d` adds A2A's HTTP+JSON binding and Swagger UI at `/docs`, adam-rs ADR 0031, the same note; `09291a6` reports each model call's tokens, `usage/v1`, adam-rs ADR 0032, ADR 0014's note of 2026-10-09; `0bfea49` makes the files of an MCP server's results and of a remote sub-agent's answer files of the run, adam-rs ADR 0033, ADR 0014's second note of 2026-10-09; `5581d40` keeps a remote sub-agent's words beside its files, ADR 0014's third note of 2026-10-09; `8847c28` brings access tiers per message, adam-rs ADR 0036 and [ADR 0061](decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), `ask_user` forms with a title and typed questions, and a coder that asks nobody for consent when another agent asked it, adam-rs #115 and [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md), ADR 0014's note of 2026-10-17; `ddef35e` makes an asked coder hear the repositories the person named only in the words the orchestrator carries beside the grant (`person.said`, the context key `vymalo.person`), never in the ask's text, adam-rs #116, the agent side of ADR 0026's fourth note of 2026-10-17 ([#271](https://github.com/vymalo/another-agentic-system/pull/271)), ADR 0014's note of 2026-10-18).
 

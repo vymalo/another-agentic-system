@@ -222,8 +222,7 @@
 # `share` restarts the orchestrator, and only it, twice: once on a copy of dev/orchestrator.yaml whose `sharing.mode` says `public`, once on the stack's
 # own file again (also when it fails or is interrupted); it needs `docker compose` too and is SKIPPED without it. A stack it was killed on, at `public`, is
 # put back with `docker compose --profile app up -d --no-build --no-deps orchestrator`.
-# The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither is dev/devcontainer-e2e.sh, which
-# needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers"); nor
+# The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither
 # is dev/browser-auth-e2e.sh (the web's own sign-in, ADR 0054), which needs the stack WITH -f dev/compose.browser-auth.yaml (dev/README.md, "Tokens in the browser"),
 # nor dev/chat-browser-e2e.sh (the chat's browser sub-agent, ADR 0057), which needs the stack WITH -f dev/compose.chat-browser.yaml (dev/README.md, "The browser agent").
 # Nor is dev/kagent-e2e.sh: it needs a kind cluster with kagent and Agent Substrate (dev/kagent/up.sh) and the stack WITH -f dev/compose.kagent.yaml

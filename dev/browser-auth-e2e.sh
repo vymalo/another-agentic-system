@@ -11,7 +11,7 @@
 #
 #   docker compose -f compose.yaml -f dev/compose.browser-auth.yaml --profile app up -d --build --wait
 #
-# `dev/e2e-all.sh` does not run it: it needs the override (another shape of the stack, like `devcontainer` and `split`), which CI starts
+# `dev/e2e-all.sh` does not run it: it needs the override (another shape of the stack, like `split`), which CI starts
 # in .github/workflows/coder-e2e.yml. dev/README.md, "Tokens in the browser", is the guide.
 #
 # What it asserts (each is an ok or FAIL line of the flow; the flow's header says the rest):

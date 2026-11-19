@@ -15,7 +15,7 @@ You own the integration with vymalo/another-adam-rs. Precedence: `CLAUDE.md`, th
 It is written in four places:
 
 - `dev/coder/UPSTREAM`
-- the vendored files under `dev/coder/` (`agent`, `wiremock`, `git-server`, `podman`, `coder-agent`)
+- the vendored files under `dev/coder/` (`agent`, `wiremock`, `git-server`, `coder-agent`)
 - `x-adam-image` in `compose.yaml` (`sha-<7>@sha256:…`)
 - the `rev =` lines in `orchestrator/Cargo.toml`, and `orchestrator/Cargo.lock`
 

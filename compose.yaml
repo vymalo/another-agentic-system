@@ -689,8 +689,9 @@ services:
   # "Workspaces"). Since 4edee18 (adam-rs ADR 0017) the real GitHub server is the `github-mcp` sidecar below, over http with no credential
   # of its own: the coder sends the token of each call (a placeholder to list the tools).
   # Since d56dd94 a tool call's step carries its `input` and its `output` (steps/v1, redacted and cut; an MCP tool's `title` is its label),
-  # the instructions tell the coder what the person sees (working notes beside the steps, one self-contained answer, Markdown), and a
-  # run may work in its repository's devcontainer (DEVCONTAINER_RUNTIME, off unless set: nothing here sets it). The image sets no
+  # the instructions tell the coder what the person sees (working notes beside the steps, one self-contained answer, Markdown), and the
+  # run's commands run in the coder's own container: the image's `DEVCONTAINER_RUNTIME` is off, nothing here sets it, and the stack gives
+  # the coder no environment of a repository's (ADR 0028's dated note of 2026-11-19). The image sets no
   # MCP_ALLOW_STDIO any more, and the shipped `mcp.json` no longer starts a local process: this coder needs none.
   #
   # What the coder says and offers is the folder mounted at /etc/adam/agent (ADAM_AGENT_DIR): dev/coder/agent, vendored
