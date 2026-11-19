@@ -90,7 +90,7 @@ dependencies = [
 [[package]]
 name = "adam-a2a"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "a2a-lf",
  "a2a-server-lf",
@@ -101,6 +101,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "futures",
+ "memchr",
  "reqwest",
  "rustls-pki-types",
  "ryu-js",
@@ -120,10 +121,11 @@ dependencies = [
 [[package]]
 name = "adam-a2a-runtime"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
+ "adam-agent-fs",
  "adam-core",
  "adam-error",
  "adam-runtime",
@@ -140,9 +142,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-agent-fs"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
+dependencies = [
+ "adam-error",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "adam-core"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "adam-error",
  "async-trait",
@@ -157,12 +173,12 @@ dependencies = [
 [[package]]
 name = "adam-error"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 
 [[package]]
 name = "adam-host"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "adam-error",
  "thiserror",
@@ -174,11 +190,12 @@ dependencies = [
 [[package]]
 name = "adam-model"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "adam-error",
  "async-trait",
  "futures",
+ "secrecy",
  "serde",
  "serde_json",
  "thiserror",
@@ -187,7 +204,7 @@ dependencies = [
 [[package]]
 name = "adam-notify-postgres"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -206,7 +223,7 @@ dependencies = [
 [[package]]
 name = "adam-runtime"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -227,7 +244,7 @@ dependencies = [
 [[package]]
 name = "adam-store-postgres"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=ddef35eba1b18d42d6db8c6e2df372b40a1067fa#ddef35eba1b18d42d6db8c6e2df372b40a1067fa"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=74184670e082766990aff5393ab84ce7f49829b6#74184670e082766990aff5393ab84ce7f49829b6"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -314,6 +331,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "annotate-snippets"
+version = "0.12.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0258346f92c78dbc5b336b9a5b27c64447aa10643bc64e651db2edb145361564"
+dependencies = [
+ "anstyle",
+ "memchr",
+ "unicode-width",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -377,6 +405,12 @@ checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
 ]
+
+[[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
 name = "async-trait"
@@ -1015,6 +1049,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "encoding_rs_io"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fba3fe847045ecff794b9c138293a80db914678c453ad63fbf0c6a9eb6e00b22"
+dependencies = [
+ "encoding_rs",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1321,6 +1364,16 @@ checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
 dependencies = [
  "polyval",
  "zeroize",
+]
+
+[[package]]
+name = "granit-parser"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e20f99e46474f56bd905c56e817ebddcf377a611f94c53ac4649e4d3fa3c0cd0"
+dependencies = [
+ "arraydeque",
+ "smallvec",
 ]
 
 [[package]]
@@ -3804,6 +3857,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-saphyr"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
+dependencies = [
+ "annotate-snippets",
+ "encoding_rs_io",
+ "granit-parser",
+ "num-traits",
+ "serde_core",
+ "smallvec",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4326,7 +4393,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4717,6 +4784,12 @@ name = "unicode-properties"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
+
+[[package]]
+name = "unicode-width"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "universal-hash"
