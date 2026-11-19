@@ -589,6 +589,9 @@ const USAGE = ["usage"];
  */
 const AGAIN = ["a2ui-again"];
 
+/** Child sessions: the mock serves them from S4 (#332). */
+const SESSIONS = ["sessions", "sessions-child", "sessions-failed"];
+
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
   const raw = JSON.parse(
@@ -644,7 +647,8 @@ describe("the mock server against the AG-UI goldens", () => {
           !MENTIONS.includes(f) &&
           !ASKS.includes(f) &&
           !USAGE.includes(f) &&
-          !AGAIN.includes(f),
+          !AGAIN.includes(f) &&
+          !SESSIONS.includes(f),
       );
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });
