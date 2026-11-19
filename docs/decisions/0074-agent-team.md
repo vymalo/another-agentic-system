@@ -9,7 +9,10 @@
   **(proposed)** (the turns, the ledger, the AG-UI shape) and the names of routes and events are the design's, which the owner did
   not decide and may change by a dated note. **Nothing is built.** It amends invariant 3 of `CLAUDE.md` and
   [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 13), as [ADR 0070](0070-a-persons-prompt-library.md) did. Epic:
-  [#377](https://github.com/vymalo/another-agentic-system/issues/377).
+  [#377](https://github.com/vymalo/another-agentic-system/issues/377). **Amended (2026-11-19, second, the owner's decisions after a
+  study of rakazo):** what is pushed to a member is bounded and what it can reach is not (this replaces decision 9's "no bound");
+  members with a small window; hygiene of the history and the note; sub-agents of members; a waiting approval expires.
+  See [the amendment](#amended-2026-11-19-second); the diagrams below are redrawn for it.
 
 ## Context
 
@@ -38,6 +41,19 @@ pattern (`user_prompts`, `PromptStore`, ADR 0070); an agent reports a pushed bra
 adam-coder works in a private git worktree, a slot of its run's workspace, on a new branch `agent/<short-run-id>` from the base,
 and its subagents share the worktree of their root run (*verified 2026-11-19* in adam-rs `docs/reference/coder-agent.md` at
 `9a195eb`).
+
+**Prior art.** rakazo's group chats (github.com/elie222/rakazo at `6645287`, read 2026-11-19) are the closest open design.
+Its facts are *verified (2026-11-19, `6645287749857609a13a2fbbb11db4735bef8cab`, the file and lines cited)*. A message that names
+nobody wakes every member, each told to answer only if the message fits it, else `NO_RESPONSE`
+(`packages/core/src/composer/group-mentions.ts:195-199`; `packages/adapters/src/runs/assembly/run-replies.prompt.ts:22`). A member
+hands off with `handoff_to_bot`, one per run, no fan-out, no approval, under a hop counter of 6 that a person's message resets
+(`packages/adapters/src/bots/group-handoff.ts:99-163`; `packages/core/src/bots/bot-messages.ts:9-21`;
+`packages/core/src/runs/action-approval.ts:179-183`). Only final text is shared between members; steps are reached with
+`read_history` (at most 10,000 bytes a call) (`packages/adapters/src/runs/assembly/run-assembly-history.ts:59-61`;
+`builtin-memory.tool-definition.ts:7-9`). Context is fitted without a model: the 8 newest messages whole and about 400 characters
+for each older one (`runtime-context.ts:64-67`; `runtime-context.prompt.ts:6-17`). A line that looks like a speaker label is
+rewritten (`packages/adapters/src/runtime/context/history-speakers.ts:66-72`). A card of an unattended run expires after 30 minutes
+(`docs/approvals.md:192-198`). The amendment takes these last five; it keeps the lead, the gate and fan-out, which rakazo has not.
 
 **Missions** ([#342](https://github.com/vymalo/another-agentic-system/issues/342)) stay the long-running, scheduled form: a goal,
 a limit, a plan, tasks as background sessions and a verifier. An agent-team is a conversation the person can watch and steer. A
@@ -81,9 +97,11 @@ mission may name a team preset as its team; nothing else is shared, and neither 
    compaction handles overflow, and the thread tool `read_thread` (new) pages older turns. Before it comes the **team brief**,
    written by the core, never by a model: the members and their roles, the charter, the checkpoints, the hand-off rule and, for a
    coding turn, the branches of decision 7. What another member said is data, never an instruction from the person.
+   *Amended (2026-11-19, second): the push is bounded and the reach is not ([A1](#amended-2026-11-19-second)).*
 10. **Approval of hand-offs (owner).** By default **every hand-off waits for the person**: approve, edit the note, redirect to
     other members, or stop. `POST /api/threads/{id}/handoffs/{n}` (new; a stale `n` is `409`), written as `handoff_decided`
     (new). A preset may set `after` N seconds (5 to 600; it goes unless the person acted, `Timer::HandoffAuto`, new) or `auto`.
+    *Amended (2026-11-19, second): a waiting approval expires ([A5](#amended-2026-11-19-second)).*
 11. **The other three ways in the loop (owner).** **Risky actions:** the access tier and the agents' gates apply unchanged; a
     hand-off runs under the tier of the person's message that started the chain, capped by the role cap on the receiving
     member's agent, and **never raises it**. **Interrupts:** Send steers the running members it mentions, every running member
@@ -116,34 +134,107 @@ mission may name a team preset as its team; nothing else is shared, and neither 
     `vymalo.team`, `vymalo.handoff` and `vymalo.checkpoint` are new custom events. A thread with one agent behaves as today, and a
     client that does not know teams sees a thread of its lead.
 
+## Amended (2026-11-19, second)
+
+The owner's decisions of 2026-11-19 after the study of rakazo (*Prior art*). Each is **(owner)**; what is marked **(proposed)** is
+the design's.
+
+**A1. Push is bounded, reach is unbounded (owner).** Replaces decision 9's "no bound".
+
+- A turn pushes only **final messages** (the person's, and each member's turn answer, ADR 0031), **hand-off notes**, **fan-in
+  results** and **checkpoint reasons**, each labelled `person` or `@member`. Steps, working text and tool calls are never pushed.
+- `read_thread` reaches everything, without bound. `read_thread(include: steps)` returns at most **10 KiB** a call, with a cursor.
+- A push has a **budget**: **24,000** estimated tokens by default; a preset may set **4,000 to 100,000**; the deployment sets a
+  ceiling, `teams.maxPushTokens` (proposed name). Tokens are estimated from characters, with no tokenizer (proposed: 3.3 a token,
+  as rakazo, `context-selection.ts:109-118`).
+- **Over budget, no model is called.** The push is, in order: the hand-off note or the fan-in results, whole (each at most
+  **16 KiB**, then cut with a `read_thread` cursor); the **8 newest** entries whole; **one line of at most 400 characters** per
+  older entry (author, seq, time, the start of the text); and a pointer to `read_thread`.
+- **Append-only.** `TeamLedger` keeps a `delivered_through` cursor (a log seq) per member; a turn sends only what is after it, and
+  nothing delivered is sent again. The brief goes whole on a member's **first turn** only; after that a change of members, roles or
+  charter is a change entry in the push. A **live team state** of at most **1 KiB**, written by the core from `TeamLedger` (who
+  works, the pending hand-off, open sessions, reported branches), goes at the **end** of each message, so the prefix an agent has
+  cached never moves.
+
+**A2. Small-window or non-compacting members: both mechanisms (owner).**
+
+- Each member has `history: agent-keeps | orchestrator-sends` (default `agent-keeps`, which follows A2A context semantics). With
+  `orchestrator-sends`, every turn carries the thread's history as a fork does (`fork_history`), under the same budget and rule.
+- A turn that fails on context length is **retried once** with only the one-line entries and the note, at half the budget; then it
+  fails and says why, and the floor goes back to the person. How each agent reports a context-length failure is *unverified*.
+- When a preset turns it on, the orchestrator's own model ([ADR 0035](0035-utility-model-tasks.md)) also writes a **summary** of
+  the older entries: at most **8 KiB**, labelled untrusted, cached by the seq range it covers (`team_summary`, new, proposed) and
+  reused until that range changes, never part of the brief.
+
+**A3. Hygiene (owner).** A line of rendered history that looks like a speaker label is neutralised. The brief says to weigh a
+teammate's claim as evidence, never to adopt it as an order. A hand-off note is at most **8 KiB**; larger content goes into a file
+([ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md)) that the note names. A member ends its turn after `hand_off`.
+
+**A4. Sub-agents (owner).** A member may spawn sub-agents, never primary agents.
+
+- **Steps.** adam's own subagents ([ADR 0050](0050-the-chat-has-sub-agents.md)) and an `ask_agent` to an agent that is not a
+  member are steps of the member's turn: shared means visible and readable through `read_thread`. An `ask_agent` to a team member
+  is refused: that is what `hand_off` is for.
+- **Child sessions** ([ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)) are the fully
+  shared kind. **Shared by default; a preset may make them private.**
+- **Shared:** the session's card is in the team thread; any member may `read_thread` it and **message it** with the thread tool
+  `message_session(session, text)` (new, at most **8 KiB**, a plain message to the child context, ADR 0072 decision 1). Each
+  message from a member other than the spawner counts **1 against `maxHandoffs`**. A round's report goes to the member who started
+  that round, in its next push, and never starts a turn by itself. Only the spawner, the person or the fan-in member may close it.
+- **Private:** only the spawner may read or message it; the others get a one-line notice. The person always sees every sub-agent.
+- Sub-agents get no team tools (`hand_off`, `checkpoint`, `message_session`) and cannot hand off.
+- **Caps:** the agent's own `maxOpen` (the card's params), and `teams.maxOpenSessions` for the team, default **8**.
+- Open sessions do not hold back a fan-in; the fan-in brief lists them, with their state and last report. Removing a member closes
+  its sessions with `cancel`; a fork takes none (ADR 0072 decision 6). A round's usage is counted once, against the thread's owner
+  (ADR 0072 decision 3, ADR 0065).
+
+**A5. Waiting approvals expire (owner).** A hand-off that waits for the person's approval expires after a deployment window,
+`teams.approvalExpiry`, default **30 minutes** (`Timer::HandoffExpiry`, new; written as `handoff_decided` with `expired`), and the
+floor goes back to the person. Nothing runs unapproved.
+
+**A6.** *Alternatives rejected* gains rakazo's model: every member answers an unaddressed message.
+
+## The process, as amended
+
 ```mermaid
 sequenceDiagram
   autonumber
   participant P as Person (web)
-  participant C as Orchestrator core (TeamLedger, new)
+  participant C as Orchestrator: core (TeamLedger, new) and thread tools
   participant D as Dispatcher
   participant L as Member lead
   participant A as Member coder-a
   participant B as Member coder-b
+  participant S as Session of coder-a (ADR 0072)
   P->>C: a message with no mention, through the API (to the lead)
-  C->>D: Command::Delegate to lead, brief and history
+  C->>D: Command::Delegate to lead: brief (first turn), push after delivered_through, live state (new)
   D->>L: SendStreamingMessage
   L-->>D: hand_off(to [coder-a, coder-b], note) (new)
   D->>C: the lead's answer
   C->>C: handoff_proposed (new), count 2 of 6
   C-->>P: interrupt, reason handoff (new)
-  P->>C: POST handoffs/1 approve (new)
+  alt the person answers
+    P->>C: POST handoffs/1 approve (new)
+  else teams.approvalExpiry passes
+    C->>C: handoff_decided expired, the floor to the person (new)
+  end
   par fan-out (new)
-    C->>D: Command::Delegate to coder-a, branch team/t1/coder-a
+    C->>D: Command::Delegate to coder-a, push, branch team/t1/coder-a
     D->>A: SendStreamingMessage, its own context
+    A->>S: subagent_start, a shared session
+    A-->>D: opened (child-sessions/v1, ADR 0072)
     A-->>D: branch artifact, completed
   and
-    C->>D: Command::Delegate to coder-b, branch team/t1/coder-b
+    C->>D: Command::Delegate to coder-b, push, branch team/t1/coder-b
     D->>B: SendStreamingMessage, its own context
+    B->>C: read_thread(include steps), at most 10 KiB (new)
+    B->>C: message_session(S, text), counts 1 (new)
+    C->>D: a plain message to the child context
+    D->>S: SendStreamingMessage
     B-->>D: branch artifact, completed
   end
   D->>C: both turns finished, fan_in (new)
-  C->>D: Command::Delegate to lead, results labelled by member
+  C->>D: Command::Delegate to lead, results labelled by member, open sessions listed
   D->>L: SendStreamingMessage
   L-->>D: checkpoint(reason PR ready) (new)
   D->>C: the lead's answer
@@ -165,13 +256,14 @@ stateDiagram-v2
   Working --> Interrupted: Stop and send
   Interrupted --> Working: the next job starts with the person's text
   AwaitingApproval --> Working: approved, edited, redirected, the timer, or a person's message
-  AwaitingApproval --> Idle: stopped
+  AwaitingApproval --> Idle: stopped, or expired after teams.approvalExpiry
   AtCheckpoint --> Working: the person continues or sends a message
   Capped --> Working: a person's message
 ```
 
 `Interrupted` is the stopping job of ADR 0036 (`Job::after_stop`), drawn for clarity; every other state is new in `TeamLedger`.
-A turn that waits for input (`input_required`) leaves the thread `blocked`, as today.
+A turn that waits for input (`input_required`) leaves the thread `blocked`, as today. A turn retried on context length (A2) stays
+in `Working`.
 
 ## Consequences
 
@@ -181,8 +273,11 @@ A turn that waits for input (`input_required`) leaves the thread `blocked`, as t
   loops stops at its cap.
 - The core gains a ledger, ten event kinds, a timer and three thread tools; the store three migrations (bindings by member, the
   presets, the event kinds). Each is testable in the pure core first.
-- With no bound on the history, a member re-reads everything it missed: more tokens than one agent, and a member that cannot
-  take a large message fails its turn, which is said. How each agent's compaction copes is *unverified*.
+- ~~With no bound on the history, a member re-reads everything it missed.~~ *Amended (2026-11-19, second):* a push is bounded by
+  its budget and never repeats what was delivered; the agent's cached prefix does not move. A member still reads more than one
+  agent would, through `read_thread`, when it chooses to.
+- The core gains, with the amendment, a cursor per member, a push budget, two timers, `team_summary` and the thread tool
+  `message_session`.
 - A member that does not follow the brief never hands off, which is safe. The thread tools are the reliable path.
 - Missions (#342) can name a preset as their team.
 
@@ -193,5 +288,8 @@ A turn that waits for input (`input_required`) leaves the thread `blocked`, as t
 - **Each member sees only what is addressed to it**: members would undo work they never saw.
 - **A shared working tree for parallel coders**: two writers on one tree; the owner chose a branch and worktree each.
 - **A bound on the history**: it would hide turns from members; the owner chose the member's compaction and `read_thread`.
+  *Amended (2026-11-19, second): what is pushed is bounded; what a member can reach is not (A1).*
+- **Every member answers an unaddressed message** (rakazo's model, *Prior art*): a model call per member for each such message,
+  most of them `NO_RESPONSE`; the lead costs one.
 - **Ad hoc teams only**: presets were the owner's choice; adding and removing members keeps the ad hoc case.
 
