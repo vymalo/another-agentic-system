@@ -1,13 +1,15 @@
 # ADR 0074 — Agent-team: several primary agents in one chat, handing off and fanning out, with the person in the loop
 
-- **Status:** **proposed (2026-11-19).** The feature is the owner's decision of 2026-11-19 (*"I also want the possibility of
+- **Status:** **Accepted (2026-11-19).** The feature is the owner's decision of 2026-11-19 (*"I also want the possibility of
   having in a single chat, multiple primary agents, working as a team of agents. Human in the loop would be sweet in these kinds
   of case. We'll call it agent-team."*). **Amended (2026-11-19, the owner's second answers):** fan-out and fan-in, a branch and
   worktree per coding member, the `hand_off`, `checkpoint` and `read_thread` thread tools, no bound on the history, removal of a
-  member, the lead, unattended runs and the release (R1) are decided. Every decision marked **(owner)** is the owner's; the rest
-  (names, routes, event kinds, the shape of the ledger) is **proposed**, for the owner to confirm. **Nothing is built.** It amends
-  invariant 3 of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 13), as
-  [ADR 0070](0070-a-persons-prompt-library.md) did. Epic: [#377](https://github.com/vymalo/another-agentic-system/issues/377).
+  member, the lead, unattended runs and the release (R1). **Accepted (2026-11-19, the owner's last answer):** a fanned-out member
+  does not hand off (decision 6); no question is open. Every decision marked **(owner)** is the owner's; those marked
+  **(proposed)** (the turns, the ledger, the AG-UI shape) and the names of routes and events are the design's, which the owner did
+  not decide and may change by a dated note. **Nothing is built.** It amends invariant 3 of `CLAUDE.md` and
+  [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 13), as [ADR 0070](0070-a-persons-prompt-library.md) did. Epic:
+  [#377](https://github.com/vymalo/another-agentic-system/issues/377).
 
 ## Context
 
@@ -52,7 +54,7 @@ mission may name a team preset as its team; nothing else is shared, and neither 
    has its own A2A context, which the agent assigns (ADR 0055). Two members never share a context, so they never share a run and
    never share a workspace: an agent such as adam keys its workspace by run, and two members in one context would write the same
    worktree at once.
-3. **Turns.** A message of the person starts a job ([ADR 0020](0020-a-thread-is-a-conversation.md)); inside it, each member's
+3. **Turns (proposed).** A message of the person starts a job ([ADR 0020](0020-a-thread-is-a-conversation.md)); inside it, each member's
    piece of work is a **turn** (new: `turn_started`, `turn_finished` with the member). Several turns may run at once. The member of
    a turn is its `main` caller of the thread tools; no member holds a grant outside its turns.
 4. **Who answers the person (owner).** A message that mentions no member goes to the preset's **lead** (the first member of a
@@ -64,8 +66,8 @@ mission may name a team preset as its team; nothing else is shared, and neither 
    or the member itself, is no hand-off: the floor goes back to the person. The core writes `handoff_proposed` (new).
 6. **Fan-out and fan-in (owner).** A hand-off to several members starts their turns **in parallel**. When every one has ended
    (completed, failed or stopped), the member that fanned out gets a turn with all their results, each labelled by member, and
-   continues (`fan_in`, new). A member inside a fan-out does not hand off: its hand-off is passed to the fan-in as part of its
-   result (proposed). A hand-off to one member passes the floor; nothing comes back.
+   continues (`fan_in`, new). A member inside a fan-out does not hand off: its hand-off request is passed to the fan-in member as
+   part of its result (owner). A hand-off to one member passes the floor; nothing comes back.
 7. **Coding members in parallel (owner).** Each works **on its own branch and its own worktree**; there is never a shared working
    tree. The brief (decision 9) names the base branch and a branch name for each member, `team/<thread-short>/<member>`. The
    branch that counts is the one the member reports in its `branch` artifact (ADR 0018), whatever its name: adam names its own
@@ -104,12 +106,12 @@ mission may name a team preset as its team; nothing else is shared, and neither 
 14. **Mid-chat changes (owner).** `POST /api/threads/{id}/members` adds a member; `DELETE /api/threads/{id}/members/{name}` removes
     one: its past turns stay, its running turn is stopped as Stop & send stops a task, and a pending hand-off to it is dropped.
     Both need `thread.write` on the thread.
-15. **The core decides, purely.** `TeamLedger` (new) on the job ledger: the members, the running turns, the pending fan-in, the
+15. **The core decides, purely (proposed).** `TeamLedger` (new) on the job ledger: the members, the running turns, the pending fan-in, the
     count since the person's last message and the pending hand-off or checkpoint. Its state is a closed enum
     ([ADR 0004](0004-closed-enums-over-dyn-registry.md)): `Idle`, `Working`, `AwaitingApproval`, `FanningIn`, `AtCheckpoint`,
     `Capped`. A team waiting for the person is `blocked`, as a thread waiting for input is. Usage stays attributed to the agent
     that reported it ([ADR 0056](0056-token-usage-per-model-call.md), [ADR 0065](0065-a-usage-ledger-per-person.md)).
-16. **AG-UI and clients.** Each turn is a run whose messages carry their member; a fan-out is runs side by side under the job. A
+16. **AG-UI and clients (proposed).** Each turn is a run whose messages carry their member; a fan-out is runs side by side under the job. A
     pending hand-off and a checkpoint are the projection's pending interrupt with new reasons `handoff` and `checkpoint`;
     `vymalo.team`, `vymalo.handoff` and `vymalo.checkpoint` are new custom events. A thread with one agent behaves as today, and a
     client that does not know teams sees a thread of its lead.
@@ -193,7 +195,3 @@ A turn that waits for input (`input_required`) leaves the thread `blocked`, as t
 - **A bound on the history**: it would hide turns from members; the owner chose the member's compaction and `read_thread`.
 - **Ad hoc teams only**: presets were the owner's choice; adding and removing members keeps the ad hoc case.
 
-## Questions for the owner
-
-1. **A hand-off inside a fan-out.** Proposed: a fanned-out member cannot hand off; its hand-off goes to the fan-in member as part
-   of its result. Or may it start a fan-out of its own, counted against the cap?

@@ -67,7 +67,7 @@ section *Working on this epic without colliding* that names the paths it owns. *
 | Diagrams as a UI catalog component | sys | [sys#340](https://github.com/vymalo/another-agentic-system/issues/340) | |
 | Workspaces that last | sys, adam | [sys#341](https://github.com/vymalo/another-agentic-system/issues/341) | Step 1: a conversation keeps its repository checkouts |
 | Missions, then federation | sys | [sys#342](https://github.com/vymalo/another-agentic-system/issues/342) | |
-| Agent-team: several primary agents in one chat | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | **R1, the first release** (not deferred to R2's hooks: the approval gate is the orchestrator's). [ADR 0074](docs/decisions/0074-agent-team.md), filed 2026-11-19; distinct from missions |
+| Agent-team: several primary agents in one chat | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | **R1, the first release** (not deferred to R2's hooks: the approval gate is the orchestrator's). [ADR 0074](docs/decisions/0074-agent-team.md), accepted 2026-11-19; distinct from missions |
 | Search by meaning and relations | sys | [sys#343](https://github.com/vymalo/another-agentic-system/issues/343) | ADR 0071 |
 | The rest of the kagent-grade minimum | plat | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) | AD-052 to AD-056 |
 | A faster coder | adam | [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) | Worked by one session already: do not start it elsewhere |
@@ -316,7 +316,6 @@ Anyone may comment on these in the issue or the pull request. The owner decides.
 | [sys ADR 0061](docs/decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md): the access tier | Proposed. The orchestrator and the web are built against mocks |
 | [sys ADR 0062](docs/decisions/0062-the-person-picks-a-network-tier-for-each-message-the-agent-keeps-to-it.md): the network tier | Proposed. Nothing is built |
 | [sys ADR 0063](docs/decisions/0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md): a model endpoint per thread | Proposed. Nothing is built |
-| [sys ADR 0074](docs/decisions/0074-agent-team.md): agent-team, several primary agents in one chat | Proposed 2026-11-19, amended the same day. The shape is the owner's (fan-out, approval by default, limits, presets, R1); the names, routes and events are for the owner to confirm, with one open question. Nothing is built |
 
 ## How to help
 
