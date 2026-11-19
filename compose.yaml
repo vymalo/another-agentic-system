@@ -342,6 +342,19 @@ services:
       - ./dev/wiremock/tiered/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/tiered/__files:/home/wiremock/__files:ro
 
+  # An agent that runs a helper as a session (child-sessions/v1, ADR 0072; dev/child-sessions-e2e.sh) as a WireMock A2A agent: its card lists
+  # the extension (with `planner` as its one helper), steps/v1 and usage/v1; its parent task completes with the usage totals and, read with
+  # `GetTask` by a request that activates the extension, names one session, closed, whose only round is over; that round is served by
+  # `SubscribeToTask` and `GetTask` to a client that activates the extension and refused with InvalidParams to one that does not.
+  # `mock-sessions` in dev/agents.yaml.
+  mock-sessions:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_SESSIONS_PORT:-8102}:8080"
+    volumes:
+      - ./dev/wiremock/sessions/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/sessions/__files:/home/wiremock/__files:ro
+
   orchestrator:
     <<: *orchestrator
     profiles: [app]

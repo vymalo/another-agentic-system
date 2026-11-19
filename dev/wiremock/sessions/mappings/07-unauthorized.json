@@ -1,0 +1,17 @@
+{
+  "name": "No bearer token -> 401 with a non-JSON-RPC body, like an auth proxy in front of a real agent",
+  "priority": 30,
+  "request": {
+    "method": "ANY",
+    "urlPath": "/a2a"
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "Content-Type": "text/plain",
+      "WWW-Authenticate": "Bearer"
+    },
+    "body": "Unauthorized: send Authorization: Bearer <any non-empty token>\n"
+  }
+}
+

@@ -13,7 +13,8 @@
 //!
 //! (`mock-verifier` too, for the tests of the verifier agent of the gate, `mock-usage`,
 //! `ORCH_TEST_MOCK_USAGE_URL=http://127.0.0.1:8088`, for token usage, and `mock-tiered`,
-//! `ORCH_TEST_MOCK_TIERED_URL=http://127.0.0.1:8089`, for the access tier.)
+//! `ORCH_TEST_MOCK_TIERED_URL=http://127.0.0.1:8089`, for the access tier, and `mock-sessions`,
+//! `ORCH_TEST_MOCK_SESSIONS_URL=http://127.0.0.1:8102`, for child sessions.)
 //!
 //! The store is the in-memory one: the mocks, not persistence, are under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
@@ -24,7 +25,7 @@ use std::time::Duration;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_api::ApiConfig;
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, GateLayer};
-use orch_core::{ACCESS_TIER_EXTENSION, AgentId};
+use orch_core::{ACCESS_TIER_EXTENSION, AgentId, CHILD_SESSIONS_EXTENSION};
 use orch_ports::memory::{MemoryStore, MemoryWakeup};
 use orch_ports::{AgentEndpoint, PortSet, SystemClock, UuidV7Ids};
 use orch_testsupport::{Chat, TestInstance, fast_dispatcher, shape};
@@ -35,6 +36,7 @@ const VERIFIER_URL: &str = "ORCH_TEST_MOCK_VERIFIER_URL";
 const USAGE_URL: &str = "ORCH_TEST_MOCK_USAGE_URL";
 const USAGE_URI: &str = "https://agents.vymalo.com/a2a/extensions/usage/v1";
 const TIERED_URL: &str = "ORCH_TEST_MOCK_TIERED_URL";
+const SESSIONS_URL: &str = "ORCH_TEST_MOCK_SESSIONS_URL";
 /// Any non-empty bearer token is accepted by the mocks; this one is what `dev/agents.yaml` uses.
 const DUMMY_TOKEN: &str = "dev-mock-token";
 const PR_URL: &str = "https://github.com/example/sandbox/pull/1";
@@ -678,6 +680,129 @@ async fn the_usage_mock_reports_each_call_once_and_the_totals_are_read_from_the_
             .any(|(h, m)| h.contains(USAGE_URI) && m.iter().any(|e| e == USAGE_URI)),
         "{asked:?}"
     );
+}
+
+/// The requests of `method` the WireMock at `base` received, each as whether it activated
+/// `child-sessions/v1` by its `A2A-Extensions` header, and the id of the task it named.
+async fn requests_of(base: &str, method: &str) -> Vec<(bool, String)> {
+    let journal: serde_json::Value =
+        reqwest::get(format!("{}/__admin/requests", base.trim_end_matches('/')))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    journal["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| {
+            let body: serde_json::Value =
+                serde_json::from_str(r["request"]["body"].as_str()?).ok()?;
+            (body["method"] == method).then_some(())?;
+            let activated = r["request"]["headers"].as_object()?.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("a2a-extensions")
+                    && v.to_string().contains(CHILD_SESSIONS_EXTENSION)
+            });
+            Some((
+                activated,
+                body["params"]["id"].as_str().unwrap_or_default().to_owned(),
+            ))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_sessions_mock_is_one_child_thread_followed_by_task_and_counted_once() {
+    // child-sessions/v1 (ADR 0072): the card lists it, so every call about a task activates it; the
+    // parent's GetTask names one closed session whose only round is over, the orchestrator makes the
+    // child thread and follows that round with SubscribeToTask, sending the agent nothing
+    let Some(url) = mock(SESSIONS_URL) else {
+        return;
+    };
+    // only this test talks to `mock-sessions`: its journal is read whole
+    reqwest::Client::new()
+        .delete(format!("{}/__admin/requests", url.trim_end_matches('/')))
+        .send()
+        .await
+        .unwrap();
+    let rig = rig(&[("mock-sessions", &url)]).await;
+    let id = rig
+        .chat
+        .create_thread("mock-sessions", "delegate the plan", None)
+        .await;
+    rig.chat.wait_state(&id, "done").await;
+    let parent = rig.chat.events(&id).await;
+    let of = |events: &[serde_json::Value], kind: &str| {
+        events
+            .iter()
+            .filter(|e| e["kind"] == kind)
+            .map(|e| e["data"].clone())
+            .collect::<Vec<_>>()
+    };
+    let opened = of(&parent, "child_session_opened");
+    assert_eq!(opened.len(), 1, "{:?}", shape(&parent));
+    assert_eq!(opened[0]["agent"], "planner");
+    assert_eq!(opened[0]["description"], "Plan the migration");
+    assert_eq!(opened[0]["keepOpen"], false);
+    assert_eq!(opened[0]["round"], 1);
+    let child = opened[0]["thread"].as_str().unwrap().to_owned();
+    let reported = of(&parent, "child_session_reported");
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0]["report"], "done");
+    assert_eq!(of(&parent, "child_session_closed").len(), 1);
+
+    rig.chat.wait_state(&child, "done").await;
+    let thread = rig.chat.thread(&child).await;
+    assert_eq!(thread["childOf"]["threadId"], id.as_str());
+    assert_eq!(thread["childOf"]["agent"], "planner");
+    assert_eq!(thread["childOf"]["state"], "closed");
+    assert_eq!(thread["nestedUnder"], id.as_str());
+    let log = rig.chat.events(&child).await;
+    assert_eq!(log[0]["kind"], "job_started");
+    assert_eq!(log[0]["data"]["round"]["number"], 1);
+    assert!(log.iter().all(|e| e["kind"] != "user_message"));
+    assert!(
+        log.iter()
+            .any(|e| e["kind"] == "agent_status" && e["data"]["detail"] == "planner: done"),
+        "{log:#?}"
+    );
+    // the helper's tokens are logged and not counted: the parent's totals are
+    let uncounted: Vec<_> = log
+        .iter()
+        .filter(|e| e["kind"] == "model_usage" || e["kind"] == "model_usage_total")
+        .collect();
+    assert_eq!(uncounted.len(), 2, "{:?}", shape(&log));
+    assert!(
+        uncounted.iter().all(|e| e["data"]["counted"] == false),
+        "{uncounted:?}"
+    );
+    let (status, month) = rig.chat.get("/api/me/usage").await;
+    assert_eq!(status, 200, "{month}");
+    assert_eq!(month["tasks"], 1, "{month}");
+    assert_eq!(month["models"].as_array().unwrap().len(), 1, "{month}");
+    assert_eq!(month["models"][0]["totalTokens"], 1100, "{month}");
+
+    // one message was sent, activated by the header and by the message; the round was only read
+    let sends = activations(&url).await;
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    assert!(sends[0].0.contains(CHILD_SESSIONS_EXTENSION));
+    assert!(sends[0].1.iter().any(|e| e == CHILD_SESSIONS_EXTENSION));
+    let subscribes = requests_of(&url, "SubscribeToTask").await;
+    assert!(
+        !subscribes.is_empty()
+            && subscribes
+                .iter()
+                .all(|(activated, task)| *activated && task.ends_with("-s1")),
+        "{subscribes:?}"
+    );
+    assert!(
+        requests_of(&url, "GetTask")
+            .await
+            .iter()
+            .all(|(activated, _)| *activated)
+    );
+    assert!(requests_of(&url, "SendStreamingMessage").await.len() == 1);
 }
 
 #[tokio::test]
