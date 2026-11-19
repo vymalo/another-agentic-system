@@ -68,6 +68,7 @@ section *Working on this epic without colliding* that names the paths it owns. *
 | Workspaces that last | sys, adam | [sys#341](https://github.com/vymalo/another-agentic-system/issues/341) | Step 1: a conversation keeps its repository checkouts |
 | Missions, then federation | sys | [sys#342](https://github.com/vymalo/another-agentic-system/issues/342) | |
 | Agent-team: several primary agents in one chat | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | **R1, the first release** (not deferred to R2's hooks: the approval gate is the orchestrator's). [ADR 0074](docs/decisions/0074-agent-team.md), accepted 2026-11-19; distinct from missions |
+| A2UI v1.0 cutover | sys, adam | [sys#380](https://github.com/vymalo/another-agentic-system/issues/380) | **R1, the first release** (the owner, 2026-11-19: a hard cutover, no dual support). [ADR 0075](docs/decisions/0075-a2ui-v1-0-cutover.md), with [adam ADR 0056](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0056-a2ui-v1-0-only-a-hard-cutover.md); `ui-catalog/v2`; one merge per repository, adam-rs first |
 | Search by meaning and relations | sys | [sys#343](https://github.com/vymalo/another-agentic-system/issues/343) | ADR 0071 |
 | The rest of the kagent-grade minimum | plat | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) | AD-052 to AD-056 |
 | A faster coder | adam | [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) | Worked by one session already: do not start it elsewhere |
