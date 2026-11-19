@@ -1904,7 +1904,11 @@ paths:
         well-formed params ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)):
         `tiers` lowest first, each of `plan`, `edits`, `auto`, `bypass` at most once, and `default` one of them, plus `maxTier`, the highest
         tier the person asking may use **of this agent** (over the roles that let them invoke it; absent when none caps it); the web draws
-        its tier chip from it.
+        its tier chip from it. `custom[<commands/v1 URI>]` (`https://agents.vymalo.com/a2a/extensions/commands/v1`) is
+        `{commands: [{name, description, argumentHint?}]}` while the card lists that extension with well-formed params
+        ([ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md), [`commands-v1.md`](commands-v1.md)): the agent's
+        own prompt templates, sorted by name and each once, and the web draws its `/` menu from it. A command has no inbound member:
+        it is the text of the message the person sends (`/name <arguments>`), which the orchestrator sends as it stands.
       responses:
         "200":
           description: Capabilities
