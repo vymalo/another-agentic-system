@@ -5,7 +5,9 @@
   tables, crates, defaults and timings), which the owner may change by a dated note. **Nothing is built.** It amends
   invariant 3 of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) (devices, settings, presence and
   notification intents are durable state beside the log), as [ADR 0070](0070-a-persons-prompt-library.md) did. It closes
-  open questions [37 and 57](../open-questions.md#closed). The contract for clients is
+  open questions [37 and 57](../open-questions.md#closed). The owner also decided, the same day, the three questions
+  the first draft left open: quiet is judged per device, a new device starts at `all`, and there is no Firebase adapter
+  (marked **(owner)** below). The contract for clients is
   [`api/notifications-v1.md`](../api/notifications-v1.md). Epic: [#384](https://github.com/vymalo/another-agentic-system/issues/384).
 
 ## Context
@@ -74,7 +76,8 @@ third party. This ADR uses APNs directly for iOS, and nothing else of Apple's.
    **Quiet rules** (proposed): the person's own act makes no push (they cancelled, so no `cancelled` push to the device
    that sent it); a child session's end ([ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md))
    makes none, its parent's does; a `needs_you` of a child thread does. **No push goes to a device that has the thread
-   open**: presence rides the existing connect stream (`GET /agui/threads/{id}/connect`), which names the device in the
+   open**, and **each device is judged on its own (owner)**: a thread open on one device does not quiet the person's
+   other devices. Presence rides the existing connect stream (`GET /agui/threads/{id}/connect`), which names the device in the
    header `X-Vymalo-Device`; while it is open, the orchestrator keeps a presence lease of 45 s, renewed every 20 s, in
    the store (the stream and the dispatcher may run in different processes). The web client closes its stream when the
    page has been hidden for 30 s and catches up on return with the history read of
@@ -128,7 +131,7 @@ third party. This ADR uses APNs directly for iOS, and nothing else of Apple's.
    |---|---|
    | `GET /api/me/devices`, `POST /api/me/devices`, `PATCH` and `DELETE /api/me/devices/{id}` | register a device (`channel`, `platform`, a label, and the endpoint and keys, or the token, or a request for an ntfy topic), list them (never an endpoint or a key), rename, rotate a Web Push subscription, remove one; at most 10 per person |
    | `POST /api/me/devices/{id}/test` | one test push, `kind: test` |
-   | `GET` and `PUT /api/me/notification-settings` | the person's level, `all`, `needs_you` or `off`, and their language for the fixed ntfy text |
+   | `GET` and `PUT /api/me/notification-settings` | the person's level, `all`, `needs_you` or `off`, and their language for the fixed ntfy text; **a new device starts at `all` (owner)**: the level is `all` until the person changes it |
    | `GET` and `PUT /api/threads/{id}/notifications` | the thread's level: the same three, or `inherit` |
    | `GET /api/me/notifications/{id}` | `{kind, thread, count, at}` of a notification of the person's own, for a channel that carries only the id; 404 for anyone else or after it expired |
    | `GET /api/config` | gains the channels the deployment enabled and the VAPID public key, for the web client's `PushManager.subscribe` |
@@ -150,7 +153,7 @@ third party. This ADR uses APNs directly for iOS, and nothing else of Apple's.
 
 6. **The service is the deployment's (owner).** Web Push goes to the browser's push service, which the person's browser
    chose. UnifiedPush and ntfy go to the deployment's own ntfy. APNs is used for iOS only. No other third-party relay,
-   and **no Firebase**. A deployment with no channel configured has no routes: they answer `404 notifications_disabled`
+   and **no Firebase adapter (owner)**, not even an optional one for a phone without a distributor. A deployment with no channel configured has no routes: they answer `404 notifications_disabled`
    and nothing is written (fail closed).
 
 7. **Durable state beside the log (amends invariant 3 and ADR 0001).** Postgres keeps, beside the log and not in it:
@@ -262,11 +265,3 @@ stateDiagram-v2
 - **The agent sends or asks for the push:** a push would then come from outside the log, and an agent would hold a way
   to reach a person's device.
 - **A self-hosted ntfy for iOS:** it reaches iOS through ntfy.sh and then APNs, a second third party.
-
-## Questions for the owner
-
-Each has a default the work proceeds on.
-
-1. A thread open on one device: are the person's other devices quiet too? **Default: no**, each device on its own.
-2. A first registration's level: **default `all`**.
-3. Firebase as an optional adapter for Android phones without a distributor? **Default: no.**

@@ -58,7 +58,7 @@ Every route needs a signed-in person and `thread.read`. A device, a setting or a
 | `PATCH /api/me/devices/{id}` | `{label?, subscription?}` | `200`: a renamed device, or a rotated Web Push subscription (`pushsubscriptionchange`) |
 | `DELETE /api/me/devices/{id}` | | `204`: consent withdrawn for that device |
 | `POST /api/me/devices/{id}/test` | | `202`: one push of `kind: test` |
-| `GET`, `PUT /api/me/notification-settings` | `{level: "all" \| "needs_you" \| "off", language}` | the person's level and the language of ntfy's fixed text |
+| `GET`, `PUT /api/me/notification-settings` | `{level: "all" \| "needs_you" \| "off", language}` | the person's level, `all` until they change it (a new device starts at `all`, the owner's decision), and the language of ntfy's fixed text |
 | `GET`, `PUT /api/threads/{id}/notifications` | `{level: "all" \| "needs_you" \| "off" \| "inherit"}` | the thread's level |
 | `GET /api/me/notifications/{id}` | | `{id, kind, thread, count, at}`; `404` after it expired |
 | `GET /api/config` | | gains `notifications: {channels: [...], vapidPublicKey}` |
@@ -70,7 +70,8 @@ else `422 invalid_endpoint`. Endpoints, keys, tokens and topics are sealed and n
 ## Presence
 
 A client that shows a thread opens `GET /agui/threads/{id}/connect` with the header `X-Vymalo-Device: <device id>`. While
-the stream is open, that device gets no push for that thread. A device id that is not the caller's is ignored. The web
+the stream is open, that device gets no push for that thread; the person's other devices still do (each device is judged on its own, the
+owner's decision). A device id that is not the caller's is ignored. The web
 client closes its stream when the page has been hidden for 30 s, and catches up on return with the history read
 ([`history.md`](history.md)).
 
