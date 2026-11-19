@@ -48,14 +48,15 @@ flowchart LR
 
 | Release | Its goal | Milestones it closes | First used by a real person? |
 |---|---|---|---|
-| **R1** | A person signs in, chats with the chat agent, sees the answer stream, finds their history on every device, and every model call is counted against that person | M2's usage record is used; M4's backups; M5's "Delete my account" | **Yes:** the first release meant for people outside the maintainers |
+| **R1** | People sign in and chat on the web and the desktop; answers stream; history follows them across devices; usage is counted per person; several agents work together in one chat (agent-team) | M2's usage record is used; M4's backups; M5's "Delete my account" | **Yes:** the first release meant for people outside the maintainers |
 | **R2** | An adam agent runs on the person's own computer, inside a desktop application, in a folder the person chooses, asking before what it may not do | None. It closes the quality goal "a coder as good as OpenCode" | Yes |
 | **R3** | The same agent runs in the cloud, keeps working when the person's computer is closed, and is safe for many people at once | All of M1, the rest of M2, M4, the rest of M5 | Yes |
 
 ### R1: chat in production
 
 The chat is built: the orchestrator, its chat API and AG-UI stream, and the `chat` agent served by `adam-agent`. R1 is
-what it lacks to run for real people, often behind a gateway of the deployment's own in front of the orchestrator.
+what it lacks to run for real people, often behind a gateway of the deployment's own in front of the orchestrator, and
+one new feature: agent-team.
 
 | Must | Repo | Ticket | Done when |
 |---|---|---|---|
@@ -71,6 +72,7 @@ what it lacks to run for real people, often behind a gateway of the deployment's
 | The `chat` and `browser` agents run a current adam (today's pin is of 2026-10-18), pinned by tag and digest | sys | new ticket (`bump-adam`) | `dev/agents-e2e.sh`, `dev/usage-e2e.sh` and `dev/child-sessions-e2e.sh` green on the new pin |
 | Delete my account | sys | [sys#294](https://github.com/vymalo/another-agentic-system/issues/294) | a `dev/` scenario; another person's data untouched |
 | Backups that restore: one restore of a live database into a new cluster returns a seeded thread | sys | [sys#151](https://github.com/vymalo/another-agentic-system/issues/151) | the restore drill's log on a real cluster |
+| **Agent-team** ([ADR 0074](https://github.com/vymalo/another-agentic-system/pull/378), proposed): several primary agents in one chat; hand-offs by `@name` with fan-out and fan-in; at most 6 hand-offs per message of the person; every member reads the whole thread (`read_thread`); the person's approval asked by default for a hand-off and a risky action, by a gate in the orchestrator; declared checkpoints; the person interrupts at any time; saved presets, each person's own; the web UI | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | the epic's end-to-end: a fan-out to two mock agents and their fan-in, the seventh hand-off refused with a reason, a hand-off and a risky action waiting for the yes, a checkpoint, an interrupt, a preset reused by its owner and invisible to another person; the web's Playwright specs |
 
 **Exit criteria**, measured on a real deployment with a real model:
 
@@ -82,9 +84,10 @@ what it lacks to run for real people, often behind a gateway of the deployment's
 6. The human tests [sys#202](https://github.com/vymalo/another-agentic-system/issues/202) and
    [sys#205](https://github.com/vymalo/another-agentic-system/issues/205) pass on the deployment.
 7. The orchestrator adds at most 1 s at p95 between a message accepted and the agent's first model request.
-8. The owner tries the chat and accepts it ([ADR 0037](docs/decisions/0037-the-mvp-is-complete-against-its-build-order.md)).
+8. Agent-team's end-to-end is green, and one live hand-off between two agents, approved by a person, is recorded.
+9. The owner tries the chat and accepts it ([ADR 0037](docs/decisions/0037-the-mvp-is-complete-against-its-build-order.md)).
 
-**Not in R1:** the coder in the cloud and all of M1 (R3); attachments (R2 or later); memory (after R2); a person's own
+**Not in R1:** sharing an agent-team preset by role (later); the coder in the cloud and all of M1 (R3); attachments (R2 or later); memory (after R2); a person's own
 MCP servers and the other API gaps of [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) (later);
 the limit check before dispatch, [sys#282](https://github.com/vymalo/another-agentic-system/issues/282) (R3); thread
 sharing (later); web search for the chat (later).
@@ -103,7 +106,6 @@ accepted, not built). The application brings the model client.
 | Approvals: hooks H1 and H8 ([adam ADR 0050](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0050-hooks-around-the-agent-loop-compiled-first-and-programs-second.md)) and ADR 0047 slice 5 over them; the access tiers decide what is asked | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) slices 2, 12; new ticket for slice 5 | yes runs the same call once; a replay never asks twice |
 | The tools as a library (slice 6), the person's directory and a local agent (slice 7), the local sandbox (slice 9) | adam | new tickets | each slice's proof in ADR 0047 |
 | Windows (slice 8, the Windows half) | adam | new ticket | the same tests on a hosted Windows runner |
-| Agent-team, the core (ADR 0074, being drafted, and its epic): several agents in one chat hand off with `@name`, at most a fixed number of hand-offs per message of the person, every member reads the whole thread, a hand-off waits for the person's yes, a risky action asks through the approval hooks above, and the person can interrupt at any time | sys, adam | new epic | a `dev/` scenario with two mock agents: a hand-off waits for the yes, one past the cap is refused with a reason, an interrupt stops the active agent |
 | Over the limit pauses in the engine too (R1's adam change, reused) | adam | covered by R1 | an engine test with a scripted refusal |
 | The benchmark gate: the bench on the host's container runtime, then a smoke test on six of our own tasks, then the comparison of [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 8 and the [ADR 0048](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0048-a-benchmark-harness-for-adam-coder-and-opencode.md) run | adam `bench/` | [sys#365](https://github.com/vymalo/another-agentic-system/issues/365), sys#345 slice 8 | the bench reports, with intervals |
 
@@ -116,7 +118,7 @@ accepted, not built). The application brings the model client.
 4. A person outside the maintainers runs a local agent in a folder of their own, approves one command, kills the
    application mid-run, sees the run resume, and reads what it used.
 
-**Not in R2:** agent-team's saved teams and declared checkpoints (later); macOS (after R2); adam as an ACP agent (later); the other hooks (later); the store service of
+**Not in R2:** macOS (after R2); adam as an ACP agent (later); the other hooks (later); the store service of
 [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) (R3, only if the load test asks for it); memory
 (after R2).
 
@@ -163,7 +165,7 @@ Finishing an open pull request is allowed; starting a new slice of these is not.
 | On-demand skills and MCP tools ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 7) | Not planned | Measured: a few percent of a run's model tokens, and slower |
 | `agent-local` beyond its stub | Not planned | The in-process path is `adam-engine` (R2) |
 | A folder agent in the coder chart; a settings file for adam | Not planned | The system chart and the operator run folders; the engine takes settings in code |
-| New features in the web and the desktop app of this repository | Paused | R1's second client proves the API; fixes and CI continue |
+| New features in the web and the desktop app of this repository, beyond R1's agent-team | Paused | R1's second client proves the API; fixes and CI continue |
 
 ## Three quality goals, alongside the milestones
 
