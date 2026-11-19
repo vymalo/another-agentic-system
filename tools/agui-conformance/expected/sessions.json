@@ -1,0 +1,144 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-12",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-13",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-session-3",
+      "name": "researcher",
+      "parent": "sub-2",
+      "end": "success",
+      "result": {
+        "report": "done",
+        "round": 1
+      }
+    },
+    {
+      "id": "sub-session-4",
+      "name": "reviewer",
+      "parent": "sub-2",
+      "end": "success",
+      "result": {
+        "report": "done",
+        "round": 1
+      }
+    },
+    {
+      "id": "sub-session-3-r2",
+      "name": "researcher",
+      "parent": "sub-2",
+      "end": "success",
+      "result": {
+        "report": "canceled",
+        "round": 2
+      }
+    },
+    {
+      "id": "sub-12",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-session-3",
+      "name": "researcher",
+      "parent": "sub-12",
+      "end": "success",
+      "result": {
+        "report": "blocked",
+        "round": 3
+      }
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "survey the options and write a summary"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "session-3",
+      "role": "activity",
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "researcher",
+        "at": "2027-01-15T08:00:13Z",
+        "description": "survey the options",
+        "keepOpen": true,
+        "report": "blocked",
+        "round": 3,
+        "session": "s1",
+        "state": "closed",
+        "threadId": "<child-thread-id>"
+      }
+    },
+    {
+      "id": "session-4",
+      "role": "activity",
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "reviewer",
+        "at": "2027-01-15T08:00:06Z",
+        "description": "check the sources",
+        "keepOpen": false,
+        "report": "done",
+        "round": 1,
+        "session": "s2",
+        "state": "closed",
+        "threadId": "<child-thread-id>"
+      }
+    },
+    {
+      "id": "msg-9",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Both helpers reported."
+    },
+    {
+      "id": "evt-10",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:10Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "survey the options and write a summary"
+    }
+  },
+  "pendingInterrupts": []
+}

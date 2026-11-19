@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 pub const THREAD: &str = "00000000-0000-7000-8000-000000000001";
 /// The thread a fork scenario was cut from.
 pub const PARENT: &str = "00000000-0000-7000-8000-000000000002";
+/// The child thread of a session scenario (ADR 0072).
+pub const CHILD: &str = "00000000-0000-7000-8000-000000000003";
 pub const SCENARIOS: [&str; 33] = [
     "echo",
     "file",

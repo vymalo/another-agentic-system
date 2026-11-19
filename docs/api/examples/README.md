@@ -51,6 +51,14 @@ status that repeats it, and the thread is `done`.
 the live pieces carry `"kind": "reasoning"` (absent for a reply), three of the model's reasoning arrive, the log says the whole `agent_reasoning`
 (`think-3`), and then the reply's pieces and the log's message follow.
 
+[`sessions.feed.json`](sessions.feed.json), [`sessions-failed.feed.json`](sessions-failed.feed.json) and
+[`sessions-child.feed.json`](sessions-child.feed.json) are hand-written logs (no real agent serves
+[`child-sessions/v1`](../child-sessions-v1.md) yet) that the projection reads like any other, written as `{"event": …}` items:
+the parent's with two sessions (rounds `done` and `canceled`, a kept-open session, a close, then a report and a close after the
+agent finished), a parent whose helper fails a round, and the child thread's own log whose `job_started` names its rounds
+([ADR 0072](../../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), S2e). A real run replaces
+them when the scenario on mocks lands (S2f). The child thread of the sessions is `<child-thread-id>` in the streams.
+
 Ids and clocks are normalised: `threadId` is `<thread-id>` (the thread a fork was cut from, `data.from.threadId` of `thread_forked`, is `<parent-thread-id>`), `at` is `<timestamp>`, an agent
 message's `messageId` is `<message-id>` and the task id in front of a step's id and path is `T`.
 
@@ -89,7 +97,7 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
 `run-<seq>`, the invocations `sub-<seq>`, and the interrupt `int-<seq>`.
 
 - **Producer:** `orchestrator/crates/agui-projection/tests/golden.rs` projects the `*.events.json`
-  files above (with placeholders made real, and `stream.feed.json` and `reasoning-live.feed.json` through the live overlay) and fails when a file differs.
+  files above (with placeholders made real, and `stream.feed.json` and `reasoning-live.feed.json` through the live overlay, and the three `sessions*.feed.json` files) and fails when a file differs.
   `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test golden` regenerates them; review the
   diff.
 - **Consumers:** the same test checks every event against the vendored AG-UI schema and every

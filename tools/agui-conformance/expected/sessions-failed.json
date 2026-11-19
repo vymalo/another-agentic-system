@@ -1,0 +1,81 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-session-3",
+      "name": "builder",
+      "parent": "sub-2",
+      "end": "error:session_failed"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "build it with a helper"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "session-3",
+      "role": "activity",
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "builder",
+        "at": "2027-01-15T08:00:05Z",
+        "description": "build the crate",
+        "keepOpen": false,
+        "report": "failed",
+        "round": 1,
+        "session": "s1",
+        "state": "closed",
+        "threadId": "<child-thread-id>"
+      }
+    },
+    {
+      "id": "msg-6",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "The helper failed; I built it myself."
+    },
+    {
+      "id": "evt-7",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "build it with a helper"
+    }
+  },
+  "pendingInterrupts": []
+}

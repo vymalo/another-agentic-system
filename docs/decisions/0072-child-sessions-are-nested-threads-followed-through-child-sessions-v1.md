@@ -4,7 +4,7 @@
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md)
   (*"we need to add the capability that opencode has to create child session, and exchange messages with it. At creation, there
   should be a button to auto-close after work is done, so that the child session can further be reused."*), whose decision 11 puts
-  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1, S2a–S2d** (the contract
+  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1, S2a–S2e** (the contract
   [`child-sessions-v1.md`](../api/child-sessions-v1.md) and the orchestrator's reading of the card; the pure core; the store; the A2A
   client's activation and strict reading of what an agent says; the application and the dispatcher that make the child threads and follow
   their rounds, and the API that says them). Epic:
@@ -113,8 +113,8 @@ stateDiagram-v2
 | Slice | What | Depends on |
 |---|---|---|
 | S1 | The contract, this ADR, the card read into a typed offer, the capabilities key, the fake agent's word `child-sessions` | nothing |
-| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension (built as S2a to S2d, then S2e and S2f below) | S1 |
-| S2e | The AG-UI projection of a session: the parent's card and the child's log in the stream | S2 |
+| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension (built as S2a to S2e, then S2f below) | S1 |
+| S2e | The AG-UI projection of a session: the parent's card and the child's log in the stream (built; `agui.md`) | S2 |
 | S2f | The scenario on mocks: a WireMock agent that serves the extension and `dev/child-sessions-e2e.sh` | S2 |
 | S3 | The person sends, steers, stops, closes and starts a session | S2 |
 | S4 | The web: the nested thread, the step card with "Open", the strip of sessions, "New subagent" with "Close when done" | S3 |
@@ -146,3 +146,11 @@ decision 3 and of the consequences that left the choice open.
   refused and counted (`child_sessions_dropped_total{reason="foreign_context"}`) and the follow fails, so a task id naming the
   parent's task or another conversation's is never copied into the child. A dispatcher follows at most
   `MAX_OBSERVED_PER_PARENT` (8) rounds of one parent at once; the rest wait with backoff and are never dropped.
+
+## Amended (2026-11-19, S2e)
+
+- **Decision 8 as built.** The new member is the metadata key `vymalo.childThread` of the `SUBAGENT_STARTED`, beside
+  `vymalo.session`; the session is also a `vymalo.session` card. The reference client uses a subagent id once in a run, so a round after the
+  first in the same run is `sub-session-<seq>-r<round>` and every later run uses `sub-session-<seq>` again
+  ([`agui.md`](../api/agui.md#child-sessions-as-subagents)). A session still open when the agent's invocation ends is suspended with it, not
+  canceled. `PROJECTION_VERSION` does not rise (new frames for events no log held before); `childOf` in `STATE_SNAPSHOT` stays S4's.
