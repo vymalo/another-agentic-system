@@ -63,12 +63,14 @@ one new feature: agent-team.
 |---|---|---|---|
 | The chart runs the orchestrator without its own web and edge: `web` and `edge` can be turned off, and the network policy admits only the named peer in front of it | sys | new ticket | `deploy/chart/tests/render-check.sh` asserts both renders, each check broken on purpose |
 | A person's token forwarded by that peer is accepted by configuration of `auth.jwt` alone: `userClaim: sub` on a fresh deployment, the audiences, the roles claim | sys | none expected (configuration); a new ticket if a gap appears | a scenario where a stand-in peer forwards two people's tokens and each reads only their own threads |
-| **The credential broker's first part** (the design of [sys#334](https://github.com/vymalo/another-agentic-system/issues/334)): the broker as a service of this system with its store (a vault, or the broker's own sealed store for small and development deployments), an internal lease route that is absent from the edge, and the lease contract; a leased value is scrubbed from every log. The rest of sys#334 (the request, the form, the keys page, the injector) waits | sys | sys#334, this part as its own slice (new ticket) | the broker's conformance suite over both stores; the lease route answers only the orchestrator and is absent from the chart's ingress (`render-check.sh`); no leased value in any log |
-| **A model credential per run.** The orchestrator gets a short-lived credential for the person for the person and the run through a new port (with a testkit, a `static` adapter that is today's behaviour, and a `broker` adapter that leases it from the credential broker below) and hands it to the agent with the message. It is never in the log, an export, a fork or a frame. ADR first | sys | new ticket | the port's conformance suite; a new `dev/` scenario whose mock model endpoint records the bearer of every call: each call carries the person's |
-| **The agent uses that credential** as the model key for the run, local subagents and child sessions included; with no fallback to a deployment key when it is configured so (a message without one is refused); kept in memory only; a run that outlives it pauses until the next one. Never in the journal, a log, a run pod, an MCP server or a remote subagent | adam | new ticket | a scripted model records the bearer of each call; a search of the store's rows and the logs finds none; a kill-and-resume test |
+| **The credential broker's first part** ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) slice B1, depending on no hook): the broker as a service of this system with its store (a vault, OpenBao, or the broker's own sealed store for small and development deployments), the lease contract, and an internal lease route absent from the edge, which the orchestrator calls to say which person a run is for and the injector calls to lease for that run; a leased value is scrubbed from every log | sys | sys#334 B1 (new ticket) | the broker's conformance suite over both stores; the lease route admits only the orchestrator and the injector and is absent from the chart's ingress (`render-check.sh`); no leased value in any log |
+| **The injector** ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) S8 to S10): it knows which run a request is from, leases that run's credential, adds the header only on hosts that have one (the model endpoint first), holds the value for at most 30 s and masks the response; HTTP/2 and WebSocket from the start | adam, sys | sys#334 S8, S9, S10 | the injector's properties (header overwrite, masking, smuggling); a host with no credential passes as today; a made-up value is found nowhere but the vault |
+| The system chart's `chat` and `browser` agents send their model calls through the injector, and a network policy keeps them from reaching the model endpoint any other way | sys | sys#334 S10b | `render-check.sh`; the scenario below |
+| **A model credential per run, held by no one but the vault.** The orchestrator tells the broker which person each run is for, through a new port with a testkit (a `static` adapter that is today's behaviour, and a `broker` adapter). No credential is in a message, the log, an export, a fork or a frame; the orchestrator's own model calls go through the injector too. ADR first | sys | new ticket | the port's conformance suite; a new `dev/` scenario whose mock model endpoint records the bearer of every call: each call carries the person's; no credential in any A2A message |
+| **The agent holds no model key.** Configured for it, adam sends every model call of a run, local subagents and child sessions included, through the injector, tagged with the run, with no key of its own; it fails closed: an injector that refuses or cannot be reached parks the run, never a fallback to a deployment key | adam | new ticket | a scripted model behind a test injector: every call carries the run's tag and the injected bearer; the agent's environment holds no key; the injector down parks the run |
 | **Over the limit pauses, never fails.** When the model endpoint answers that the person is over their limit, the run parks with the reason `over-limit` instead of ending as an invalid request; the person's next message after the limit is lifted resumes the same run at the same step | adam | new ticket | a scripted model refuses, then answers: the run parks, then resumes with its journal unchanged |
 | The orchestrator shows the pause: a thread state and an AG-UI event with the typed reason; the dispatcher does not retry it on its own | sys | new ticket | the new `dev/` scenario: the thread shows the reason, a new message resumes |
-| The orchestrator's own model calls (thread titles, descriptions) use the person's credential and are lines of their own in the person's usage | sys | [sys#338](https://github.com/vymalo/another-agentic-system/issues/338) slice 4 | `dev/usage-ledger-e2e.sh` extended |
+| The orchestrator's own model calls (thread titles, descriptions) go through the injector with the person's credential and are lines of their own in the person's usage | sys | [sys#338](https://github.com/vymalo/another-agentic-system/issues/338) slice 4 | `dev/usage-ledger-e2e.sh` extended |
 | A second client forks, edits and regenerates safely: a message's `seq` is a field of the API, and the server refuses a regenerate or an edit while a question waits and on a steered message | sys | [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) slices 1, 2 | the server tests; the web's mock contract test |
 | The chat contract cannot break silently: CI fails on an incompatible change to `docs/api/chat-api.yaml` or the AG-UI goldens without a version note | sys | new ticket | the check fails on a removed field in a test branch |
 | The `chat` and `browser` agents run a current adam (today's pin is of 2026-10-18), pinned by tag and digest | sys | new ticket (`bump-adam`) | `dev/agents-e2e.sh`, `dev/usage-e2e.sh` and `dev/child-sessions-e2e.sh` green on the new pin |
@@ -79,7 +81,7 @@ one new feature: agent-team.
 **Exit criteria**, measured on a real deployment with a real model:
 
 1. For 7 days, the owner and at least 3 people outside the maintainers chat on it.
-2. No model call is made without a person's credential, in the model endpoint's own record.
+2. No model call is made without a person's credential, in the model endpoint's own record, and no agent holds a model key.
 3. The person's usage record and the model endpoint's own record agree, call for call, 7 days running.
 4. A person over their limit sees the pause, and the same run continues once the limit is lifted.
 5. `dev/rbac-e2e.sh` passes against the deployment, and the restore drill has passed.
@@ -146,16 +148,21 @@ computer, and reads the result on another device; a person at their limit is ref
 
 ### Work that keeps going, with no release gate
 
-Work already started is finished, whatever release it serves, and merges when it is built. It must not delay a release.
+An epic with at least one merged slice is finished, whatever release it serves, and merges as it is built. It must not
+delay a release. An epic with only a decision record or a plan waits for its release.
 
-| Work | Note |
+| Epic | Note |
 |---|---|
 | A subagent in the background, as a session ([sys#332](https://github.com/vymalo/another-agentic-system/issues/332)), with a child session's options ([adam ADR 0054](https://github.com/vymalo/another-adam-rs/pull/195)) | adam's slices 6c, 7 and 8; the system's S3 to S5 |
 | LibreChat-grade ([sys#335](https://github.com/vymalo/another-agentic-system/issues/335)), every slice | attachments are an R2 must |
-| Hooks around the agent loop ([sys#333](https://github.com/vymalo/another-agentic-system/issues/333)), hook programs included | H1 and H8 are R2 musts |
 | The rest of the kagent-grade minimum ([sys#344](https://github.com/vymalo/another-agentic-system/issues/344)) | K13 and K14 are R3 musts; K12 waits for adam's approval hooks |
-| No Podman ([sys#359](https://github.com/vymalo/another-agentic-system/issues/359)) | the store service of [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) only if R3's load test names database connections as the first bottleneck; the bench uses SQLite |
-| This repository's web and desktop app | they are the open-source project's clients and keep evolving |
+| A faster coder ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345)) | its comparison is part of R2's benchmark gate |
+
+Waiting for their release: hooks ([sys#333](https://github.com/vymalo/another-agentic-system/issues/333), R2 for H1 and H8; once started, every slice goes on, hook
+programs included); no Podman ([sys#359](https://github.com/vymalo/another-agentic-system/issues/359): the SQLite store and the bench on the host's runtime in R2, the
+rest in R3, the store service of [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) only if R3's load
+test names database connections as the first bottleneck). This repository's web and desktop app are the open-source
+project's clients and keep evolving.
 
 ### Waits for a later release, or not planned
 
@@ -165,7 +172,7 @@ Work already started is finished, whatever release it serves, and merges when it
 | Windows: browser frames, web and phone previews ([sys#339](https://github.com/vymalo/another-agentic-system/issues/339)) | After R3 | No release needs them |
 | The app factory ([ADR 0073](docs/decisions/0073-app-factory-board-and-model-selection.md)) | After R3, after memory and its refinement | Its agents need R3's coder in the cloud |
 | Memory, then its refinement ([sys#337](https://github.com/vymalo/another-agentic-system/issues/337)) | Memory after R2; refinement after R3 | Not needed to run R1 or R2 |
-| An agent asks for a credential ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334)), beyond the broker's first part in R1 | After R3 | It needs hooks and cloud agents |
+| An agent asks the person for a credential ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) S1 to S7, S11, S12) | After hooks | The broker's first part and the injector are in R1 |
 | The API gaps 3 to 8 and the reference client ([sys#336](https://github.com/vymalo/another-agentic-system/issues/336)) | Later | A person's own MCP servers are not in R1 |
 | Diagrams as a UI catalog component ([sys#340](https://github.com/vymalo/another-agentic-system/issues/340)) | Not planned | Mermaid and charts exist; no release needs more |
 | Search by meaning ([sys#343](https://github.com/vymalo/another-agentic-system/issues/343)) | Not planned | Word search is built |
