@@ -111,6 +111,7 @@ accepted, not built). The application brings the model client.
 | The tools as a library (slice 6), the person's directory and a local agent (slice 7), the local sandbox (slice 9) | adam | new tickets | each slice's proof in ADR 0047 |
 | macOS (slice 8, the macOS half), on a self-hosted Mac runner | adam | new ticket | the same tests on that runner |
 | Attachments: files and images in a message, kept by hash in the artifact store, at most 10 MiB | sys | [sys#335](https://github.com/vymalo/another-agentic-system/issues/335) slice 10 | the slice's server and web tests |
+| **The orchestrator as a library** in an application, beside an in-process adam ([ADR 0076](https://github.com/vymalo/another-agentic-system/pull/383), epic [sys#382](https://github.com/vymalo/another-agentic-system/issues/382)): `orch-store-sqlite` with its testkits (E2); a library composition root and its dependency check (E3); `agent-local` revived, on adam's SQLite store (E4); a compile check of the embedded set for its targets (E5); a minimum application version, so a deployment can refuse an application too old for a hard cutover (E6). The move off `sqlx` (E1) may land earlier | sys | sys#382 E2 to E6 | each slice's proof in the epic; a killed example resumes its run on SQLite |
 | Over the limit pauses in the engine too (R1's adam change, reused) | adam | covered by R1 | an engine test with a scripted refusal |
 | The benchmark gate: the bench on the host's container runtime, then a smoke test on six of our own tasks, then the comparison of [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 8 and the [ADR 0048](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0048-a-benchmark-harness-for-adam-coder-and-opencode.md) run | adam `bench/` | [sys#365](https://github.com/vymalo/another-agentic-system/issues/365), sys#345 slice 8 | the bench reports, with intervals |
 
@@ -124,7 +125,7 @@ accepted, not built). The application brings the model client.
 4. A person outside the maintainers runs a local agent in a folder of their own, approves one command, kills the
    application mid-run, sees the run resume, and reads what it used.
 
-**Not in R2:** Windows (not planned); adam as an ACP agent (later); the other hooks and hook programs (no release gate, below); the store service of
+**Not in R2:** the orchestrator on a phone (later); Windows (not planned); adam as an ACP agent (later); the other hooks and hook programs (no release gate, below); the store service of
 [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) (R3, only if the load test asks for it); memory
 (after R2).
 
@@ -158,6 +159,7 @@ delay a release. An epic with only a decision record or a plan waits for its rel
 | The rest of the kagent-grade minimum ([sys#344](https://github.com/vymalo/another-agentic-system/issues/344)) | K13 and K14 are R3 musts; K12 waits for adam's approval hooks |
 | A faster coder ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345)) | its comparison is part of R2's benchmark gate |
 | Hooks around the agent loop ([sys#333](https://github.com/vymalo/another-agentic-system/issues/333)), hook programs included | H1 and H8 are also R2 musts |
+| The orchestrator off `sqlx`, onto tokio-postgres and a pool, a hard cutover, crate by crate ([sys#382](https://github.com/vymalo/another-agentic-system/issues/382) E1) | early cleanup before R2, the rest of the epic is R2 |
 | No Podman ([sys#359](https://github.com/vymalo/another-agentic-system/issues/359)), decided on 2026-11-19 | the store service of [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) only if R3's load test names database connections as the first bottleneck; the bench uses SQLite |
 
 This repository's web and desktop app are the open-source
@@ -176,7 +178,6 @@ project's clients and keep evolving.
 | Diagrams as a UI catalog component ([sys#340](https://github.com/vymalo/another-agentic-system/issues/340)) | Not planned | Mermaid and charts exist; no release needs more |
 | Search by meaning ([sys#343](https://github.com/vymalo/another-agentic-system/issues/343)) | Not planned | Word search is built |
 | On-demand skills and MCP tools ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 7) | Not planned, unless the owner decides otherwise | Measured: a few percent of a run's model tokens, and slower |
-| `agent-local` beyond its stub | Not planned | The in-process path is `adam-engine` (R2) |
 | A folder agent in the coder chart; a settings file for adam | Not planned | The system chart and the operator run folders; the engine takes settings in code |
 
 ## Three quality goals, alongside the milestones
