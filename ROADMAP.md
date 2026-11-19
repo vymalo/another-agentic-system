@@ -1,7 +1,7 @@
 # Roadmap to launch
 
 The front door for all four repositories of the another-agentic family: where the project is going, what is left,
-and where you can help. *Checked 2026-10-18.*
+and where you can help. *Checked 2026-11-19.*
 
 ## What this is
 
@@ -18,8 +18,11 @@ The goal is a coder that an operator can offer to many people at once. In these 
 and each is a milestone below: isolation between people (M1), a record and a limit of what each person uses (M2), a
 platform that holds the load (M4), and data protection and trust (M5).
 
-Payments, pricing and the plan for any particular market are the business of whoever runs a service on these building
-blocks. They are not open source, and they left this roadmap on 2026-11-15: M3 keeps its number and nothing else.
+Running a service on these building blocks, and everything about it beyond the code, is the business of whoever runs
+it. That part is not open source; it left this roadmap on 2026-11-15, and M3 keeps its number and nothing else.
+
+**adam-rs is the coder** (the owner, 2026-11-19). OpenCode is no longer used, except as the baseline the benchmark
+measures adam against.
 
 ## Where we are, honestly
 
@@ -32,28 +35,51 @@ blocks. They are not open source, and they left this roadmap on 2026-11-15: M3 k
 - **Nothing has been measured live.** No load test, no cost per person.
 - **There is no launch date.** The order below is the order of dependencies, not a schedule.
 
-## Releases, in order
+## Production in two layers, then two releases
 
-*Proposed and agreed with the owner on 2026-11-19.* The milestones below say what launch needs. This
-section says what ships first, what each release must hold, and what waits. **The rules:** a new feature is started
-when it is on a release's list; work already started keeps going to its end, with no release gate. R1's build starts
-on the owner's go, and its decision records and designs may merge before. There are no dates; the order is the order
-of dependencies.
+*Agreed with the owner on 2026-11-19, and restructured into two production layers the same evening.* The milestones
+below say what launch needs. This section says what goes to production first, what each step must hold, and what
+waits. **The rules:** a new feature is started when it is on a step's list; work already started keeps going to its
+end, with no gate. Layer 2's build starts on the owner's go once layer 1 is in production, and its decision records and
+designs may merge before. There are no dates; the order is the order of dependencies.
+
+**Where the work of these repositories centres** (the owner, 2026-11-19): **agents, on the person's computer (R2) and in
+the cloud (R3), with their features, and A2UI.** That is background sessions, hooks and approvals, credentials, adam
+embedded in an application, the stores, run pods, gVisor and the platform, and A2UI v1.0 with its catalog, which starts
+now. Layers 1 and 2 are run and built by the deployment's own team; what layer 2 needs from these repositories stays
+listed in [its section](#layer-2-r1-chat-in-production). The chat slices of LibreChat-grade that are not about agents
+are paused.
 
 ```mermaid
 flowchart LR
-  R1["R1<br/>Chat in production"] --> R2["R2<br/>Agents on the person's computer"]
+  L1["Layer 1<br/>The model gateway in production"] --> L2["Layer 2 (R1)<br/>Chat in production"]
+  L2 --> R2["R2<br/>Agents on the person's computer"]
   R2 --> R3["R3<br/>Agents in the cloud,<br/>safe for many people"]
   R3 --> L(["Later"])
 ```
 
-| Release | Its goal | Milestones it closes | First used by a real person? |
+| Step | Its goal | Milestones it closes | First used by a real person? |
 |---|---|---|---|
-| **R1** | People sign in and chat on the web and the desktop; answers stream; history follows them across devices; usage is counted per person; several agents work together in one chat (agent-team); a push tells the person when a run waits for them or ends | M2's usage record is used; M4's backups; M5's "Delete my account" | **Yes:** the first release meant for people outside the maintainers |
-| **R2** | An adam agent runs on the person's own computer, inside a desktop application, in a folder the person chooses, asking before what it may not do | None. It closes the quality goal "a coder as good as OpenCode" | Yes |
+| **Layer 1** | The model gateway in production: people sign in, every model call goes through the gateway with their credential, and their usage is metered per person | None. The gateway is the deployment's own, outside these repositories | Yes, but none of the code of these repositories |
+| **Layer 2 (R1)** | Chat in production: people sign in and chat on the web and the desktop; answers stream; history follows them across devices; usage is counted per person; several agents work together in one chat (agent-team); a push tells the person when a run waits for them or ends | M2's usage record is used; M4's backups; M5's "Delete my account" | **Yes:** the first release of these repositories meant for people outside the maintainers |
+| **R2** | An adam agent runs on the person's own computer, inside a desktop application, in a folder the person chooses, asking before what it may not do | None. adam is measured against OpenCode as a baseline (the quality goal) | Yes |
 | **R3** | The same agent runs in the cloud, keeps working when the person's computer is closed, and is safe for many people at once | All of M1, the rest of M2, M4, the rest of M5 | Yes |
 
-### R1: chat in production
+### Layer 1: the model gateway in production
+
+People sign in, every model call goes through the gateway with their credential, and their usage is metered per
+person. The gateway and the sign-in are the deployment's own and are not in these repositories, so **layer 1 needs no
+ticket here**. What these repositories do meanwhile:
+
+- **Smoke tests run.** Smoke test 4 runs adam's coder on six of our own tasks, with OpenCode as the baseline, once the
+  benchmark's doctor no longer passes the model key to its children
+  ([sys#389](https://github.com/vymalo/another-agentic-system/issues/389)). It measures; it decides nothing.
+- **Open tickets are finished or closed**: the started and exempt epics keep going
+  ([below](#work-that-keeps-going-with-no-release-gate)), and every open ticket has its step in
+  [Every open ticket, by step](#every-open-ticket-by-step).
+- Layer 2's decision records and designs may merge.
+
+### Layer 2 (R1): chat in production
 
 The chat is built: the orchestrator, its chat API and AG-UI stream, and the `chat` agent served by `adam-agent`. R1 is
 what it lacks to run for real people, often behind a gateway of the deployment's own in front of the orchestrator, and
@@ -77,7 +103,7 @@ one new feature: agent-team.
 | Delete my account | sys | [sys#294](https://github.com/vymalo/another-agentic-system/issues/294) | a `dev/` scenario; another person's data untouched |
 | Backups that restore: one restore of a live database into a new cluster returns a seeded thread | sys | [sys#151](https://github.com/vymalo/another-agentic-system/issues/151) | the restore drill's log on a real cluster |
 | **Agent-team** ([ADR 0074](https://github.com/vymalo/another-agentic-system/pull/378), proposed): several primary agents in one chat; hand-offs by `@name` with fan-out and fan-in, where a fanned-out member cannot hand off and its hand-off goes to the fan-in; at most 6 hand-offs per message of the person; every member reads the whole thread (`read_thread`); the person's approval asked by default for a hand-off and a risky action, by a gate in the orchestrator; declared checkpoints; the person interrupts at any time; saved presets, each person's own; the web UI | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | the epic's end-to-end: a fan-out to two mock agents and their fan-in, a fanned-out member's hand-off delivered to the fan-in, the seventh hand-off refused with a reason, a hand-off and a risky action waiting for the yes, a checkpoint, an interrupt, a preset reused by its owner and invisible to another person; the web's Playwright specs |
-| **A2UI v1.0, a hard cutover** ([ADR 0075](docs/decisions/0075-a2ui-v1-0-cutover.md), with [adam ADR 0056](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0056-a2ui-v1-0-only-a-hard-cutover.md); `ui-catalog/v2`): no dual support; old threads keep their v0.9.1 surfaces, shown as made by an earlier version, with actions on them refused; one merge per repository, adam-rs first | sys, adam | [sys#380](https://github.com/vymalo/another-agentic-system/issues/380) | the epic's proofs |
+| **A2UI v1.0, a hard cutover, built now** ([ADR 0075](docs/decisions/0075-a2ui-v1-0-cutover.md), with [adam ADR 0056](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0056-a2ui-v1-0-only-a-hard-cutover.md); `ui-catalog/v2`): no dual support; old threads keep their v0.9.1 surfaces, shown as made by an earlier version, with actions on them refused; one merge per repository, adam-rs first | sys, adam | [sys#380](https://github.com/vymalo/another-agentic-system/issues/380) | the epic's proofs |
 | **Push notifications** ([ADR 0077](docs/decisions/0077-push-notifications-for-a-persons-runs.md), the owner's decision of 2026-11-19: in R1, self-hosted delivery): a person's device is told, with no word of the thread, when a run waits for them (a hand-off approval, a checkpoint, a form, a gate, an over-limit park) or ends; Web Push and UnifiedPush, the deployment's ntfy, APNs for iOS only with an opaque id; no Firebase | sys | [sys#384](https://github.com/vymalo/another-agentic-system/issues/384) | `dev/notify-e2e.sh` on a mock push service: a waiting form makes one push with no text of the thread, a thread open on the device makes none, a `410` drops the device, an expired hand-off is not sent; the web's Playwright specs |
 
 **Exit criteria**, measured on a real deployment with a real model:
@@ -92,8 +118,14 @@ one new feature: agent-team.
 7. The orchestrator adds at most 1 s at p95 between a message accepted and the agent's first model request.
 8. Agent-team's end-to-end is green, and one live hand-off between two agents, approved by a person, is recorded.
 9. The owner tries the chat and accepts it ([ADR 0037](docs/decisions/0037-the-mvp-is-complete-against-its-build-order.md)).
+10. A2UI v1.0 is the only dialect: [sys#380](https://github.com/vymalo/another-agentic-system/issues/380)'s proofs are
+    green, and nothing writes or relays v0.9.1.
+11. Push works: `dev/notify-e2e.sh` is green, and a real device receives one push with no word of the thread.
 
-**Not in R1:** sharing an agent-team preset by role (later); the coder in the cloud and all of M1 (R3); attachments (R2); memory (after R2); a person's own
+All three of agent-team, A2UI v1.0 and push hold this exit (the owner, 2026-11-19). Layer 2's chat runs on this
+orchestrator (the owner, 2026-11-19).
+
+**Not in layer 2:** sharing an agent-team preset by role (later); the coder in the cloud and all of M1 (R3); attachments (R2); memory (after R2); a person's own
 MCP servers and the other API gaps of [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) (later);
 the limit check before dispatch, [sys#282](https://github.com/vymalo/another-agentic-system/issues/282) (R3); thread
 sharing (later); web search for the chat (later).
@@ -117,16 +149,16 @@ work in [Work that keeps going](#work-that-keeps-going-with-no-release-gate) doe
 | Attachments: files and images in a message, kept by hash in the artifact store, at most 10 MiB | sys | [sys#335](https://github.com/vymalo/another-agentic-system/issues/335) slice 10 | the slice's server and web tests |
 | **The orchestrator as a library** in an application, beside an in-process adam ([ADR 0076](docs/decisions/0076-the-orchestrator-as-a-library-in-an-application.md), merged (`e2ebb09`); epic [sys#382](https://github.com/vymalo/another-agentic-system/issues/382)): `orch-store-sqlite` with its testkits (E2); a library composition root and its dependency check (E3); `agent-local` revived, on adam's SQLite store (E4); a compile check of the embedded set for its targets (E5); a minimum application version, so a deployment can refuse an application too old for a hard cutover (E6). The move off `sqlx` (E1) may land earlier | sys | sys#382 E2 to E6 | each slice's proof in the epic; a killed example resumes its run on SQLite |
 | Over the limit pauses in the engine too (R1's adam change, reused) | adam | covered by R1 | an engine test with a scripted refusal |
-| The benchmark gate: the bench on the host's container runtime, then a smoke test on six of our own tasks, then the comparison of [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 8 and the [ADR 0048](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0048-a-benchmark-harness-for-adam-coder-and-opencode.md) run | adam `bench/` | [sys#365](https://github.com/vymalo/another-agentic-system/issues/365), sys#345 slice 8 | the bench reports, with intervals |
+| The benchmark measures adam, with OpenCode as the baseline: the bench on the host's container runtime (merged, adam#206), smoke test 4 on six of our own tasks, then the comparison of [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 8 and the [ADR 0048](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0048-a-benchmark-harness-for-adam-coder-and-opencode.md) run. No gate: adam is the coder whatever the result | adam `bench/` | sys#345 slice 8, [sys#389](https://github.com/vymalo/another-agentic-system/issues/389), [sys#390](https://github.com/vymalo/another-agentic-system/issues/390) | the bench reports, with intervals |
 
 **Exit criteria:**
 
-1. The smoke test is green: adam solves at least as many of the six tasks as OpenCode with the shared prompt.
-2. The bench decides which coder is the default on a person's computer: adam is, if its pass rate is not below
-   OpenCode's beyond the bench's interval and its model cost per solved task is at most 1.25 times OpenCode's.
-3. The engine's suites are green on Linux and macOS: kill and resume, approve once across a crash, the sandbox's
+1. The bench has reported adam's pass rate, model cost and time per solved task against OpenCode's as the baseline,
+   with intervals. adam is the coder on a person's computer; the report is its baseline, not a gate (the owner,
+   2026-11-19: the parity gate is gone).
+2. The engine's suites are green on Linux and macOS: kill and resume, approve once across a crash, the sandbox's
    refusal, the dependency check.
-4. A person outside the maintainers runs a local agent in a folder of their own, approves one command, kills the
+3. A person outside the maintainers runs a local agent in a folder of their own, approves one command, kills the
    application mid-run, sees the run resume, and reads what it used.
 
 **Not in R2:** the orchestrator on a phone (later); Windows (not planned); adam as an ACP agent (later); the other hooks and hook programs (no release gate, below); the store service of
@@ -159,12 +191,13 @@ delay a release. An epic with only a decision record or a plan waits for its rel
 | Epic | Note |
 |---|---|
 | A subagent in the background, as a session ([sys#332](https://github.com/vymalo/another-agentic-system/issues/332)), with a child session's options ([adam ADR 0054](https://github.com/vymalo/another-adam-rs/pull/195)) | adam's slices 6c, 7 and 8; the system's S3 to S5 |
-| LibreChat-grade ([sys#335](https://github.com/vymalo/another-agentic-system/issues/335)), every slice | attachments are an R2 must |
+| LibreChat-grade ([sys#335](https://github.com/vymalo/another-agentic-system/issues/335)), the slices about agents | its other chat slices are paused (2026-11-19); an agent's own `/` commands finish; attachments are an R2 must |
+| A2UI v1.0 ([sys#380](https://github.com/vymalo/another-agentic-system/issues/380)) | starts now (the owner, 2026-11-19), adam-rs's half first; still on layer 2's list |
 | The rest of the kagent-grade minimum ([sys#344](https://github.com/vymalo/another-agentic-system/issues/344)) | K13 and K14 are R3 musts; K12 waits for adam's approval hooks |
-| A faster coder ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345)) | its comparison is part of R2's benchmark gate |
+| A faster coder ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345)) | on-demand skills and MCP tools (slice 7) are now built, the owner's choice of 2026-11-19, after a two-call run that measures the cache first; its comparison (slice 8) is smoke test 4, then the bench |
 | Hooks around the agent loop ([sys#333](https://github.com/vymalo/another-agentic-system/issues/333)), hook programs included | H1 and H8 are also R2 musts |
 | The orchestrator off `sqlx`, onto tokio-postgres and a pool, a hard cutover, crate by crate ([sys#382](https://github.com/vymalo/another-agentic-system/issues/382) E1) | early cleanup before R2, the rest of the epic is R2 |
-| adam embedded in an application ([adam ADR 0047](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0047-adam-rs-can-be-embedded-in-an-application.md) slices 1 to 9), with the model's credentials asked of the host for each call ([adam#200](https://github.com/vymalo/another-adam-rs/pull/200), adam ADR 0058, in review) | the owner exempted it on 2026-11-19; R2 is when people use it |
+| adam embedded in an application ([adam ADR 0047](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0047-adam-rs-can-be-embedded-in-an-application.md) slices 1 to 9), with the model's credentials asked of the host for each call ([adam#200](https://github.com/vymalo/another-adam-rs/pull/200), adam ADR 0058, merged) | the owner exempted it on 2026-11-19; R2 is when people use it |
 | No Podman ([sys#359](https://github.com/vymalo/another-agentic-system/issues/359)), decided on 2026-11-19 | the store service of [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) only if R3's load test names database connections as the first bottleneck; the bench uses SQLite |
 
 This repository's web and desktop app are the open-source
@@ -182,22 +215,37 @@ project's clients and keep evolving.
 | The API gaps 3 to 8 and the reference client ([sys#336](https://github.com/vymalo/another-agentic-system/issues/336)) | Later | A person's own MCP servers are not in R1 |
 | Diagrams as a UI catalog component ([sys#340](https://github.com/vymalo/another-agentic-system/issues/340)) | Not planned | Mermaid and charts exist; no release needs more |
 | Search by meaning ([sys#343](https://github.com/vymalo/another-agentic-system/issues/343)) | Not planned | Word search is built |
-| On-demand skills and MCP tools ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 7) | Not planned, unless the owner decides otherwise | Measured: a few percent of a run's model tokens, and slower |
 | A folder agent in the coder chart; a settings file for adam | Not planned | The system chart and the operator run folders; the engine takes settings in code |
+
+## Every open ticket, by step
+
+*Read on 2026-11-19: 99 open issues across the four repositories.* Each ticket is in one row, at its earliest step; an
+epic that spans steps says the rest in its note. The epics and their tickets stay the live lists.
+
+| Step | Tickets | Note |
+|---|---|---|
+| **Layer 1** | none | the gateway and the sign-in are the deployment's own |
+| **Layer 2 (R1)** | epics sys#334 (B1, S8 to S10), sys#336 (slices 1, 2), sys#338 (slice 4), sys#377, sys#384; sys#294, sys#151, sys#149; the human tests sys#202, sys#205, sys#204 and adam#102, re-run on the new deployment; the milestone epics sys#274, sys#276, sys#277 for their layer 2 parts | the musts of [Layer 2](#layer-2-r1-chat-in-production) |
+| **Now, no gate** | sys#380 (A2UI v1.0, starts now); sys#389 and sys#390 (the benchmark, before smoke test 4); the started and exempt epics sys#332, sys#333, sys#335 (its slices about agents), sys#344, sys#345, sys#359, sys#387; of sys#359, sys#361, sys#362, sys#368, sys#369, sys#370, sys#371, sys#373, sys#374; the good first issues sys#297, adam#129, plat#37, img#13 | [Work that keeps going](#work-that-keeps-going-with-no-release-gate) |
+| **R2** | sys#382 (E2 to E6; E1 may land earlier) | most of R2's musts are adam ADR 0047's slices under sys#387 |
+| **R3** | sys#273, sys#278, sys#279, adam#121, sys#280, adam#122, adam#123, adam#119, plat#54 (M1); sys#282 and sys#170 (limits before a run); sys#291, sys#292, adam#127 (M4); sys#295 (M5); sys#341 (step 1); sys#363, sys#364, sys#367 (only if the load test asks); sys#203 (the coder from chat to a pull request, live) | the musts of [R3](#r3-agents-in-the-cloud-safe-for-many-people) |
+| **Later** | sys#337, sys#339, sys#342, sys#144, sys#155, sys#157, sys#208 | [Waits for a later release](#waits-for-a-later-release-or-not-planned) |
+| **Proposed to close** | done: sys#360 (adam#201), sys#365 (adam#206), adam#52, adam#53, adam#54 (after a check); dropped or cut: sys#366, sys#340, sys#343, the post-MVP epic sys#146 with sys#160 to sys#169 and sys#171 (sys#170 moves to R3); superseded: sys#162 (by sys#384), sys#167 (by sys#359), sys#145 (by M5, sys#277), sys#159 (a fresh deployment keys people by `sub` by configuration), sys#222 to sys#226 (by the A2UI v1.0 cutover, sys#380); the first test deployment, which is down: sys#143, sys#148, sys#158, sys#206, sys#207, sys#209, adam#101 | the maintainers close each with a dated comment that says why |
 
 ## Three quality goals, alongside the milestones
 
-On 2026-11-14 the owner set three goals that run beside M1 to M5 and are not launch milestones: a coder as good as
-OpenCode and above, this system "LibreChat-grade" with every feature usable by a second client (a Flutter app is
-planned), and the platform at a "kagent-grade minimum". Each has a plan of its own, and the plan is where its slices
+On 2026-11-14 the owner set three goals that run beside M1 to M5 and are not launch milestones: the coder, this
+system "LibreChat-grade" with every feature usable by a second client, and the platform at a "kagent-grade minimum".
+The first was "a coder as good as OpenCode, and above"; since 2026-11-19 it is **adam-rs, measured against OpenCode as a
+baseline**: adam is the coder, and the benchmark measures it with no gate. Each has a plan of its own, and the plan is where its slices
 and their state live. *Checked 2026-11-19.* The share is the slices merged to `main` against the slices of the plan:
 a count, not a measure of effort. As everywhere in this roadmap, all of it is proven on tests and mocks, none on a
 live model or a real cluster.
 
 | Goal | Plan | Merged | Share | Left |
 |---|---|---|---|---|
-| **adam**: a coder as good as OpenCode, and above | [adam ADR 0044](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0044-paged-tools-a-stable-prompt-prefix-a-plan-skills-commands-and-project-context.md), 17 slices | The loop survives bad model output (1), paged reads (2), command output kept whole and read back by page (3), OpenCode removed (5), a prompt prefix that holds across turns and a cache key (4), a plan every agent has (6), a repository's own instructions shown to the coder (7), skills on by default with a repository's own skills (8), the repeated-call rule, time limits and a cancel that reaches children (10), compaction (9), more kinds of question and forms read back (11), commands served by the agent and announced by an A2A extension (12), references a run reads and never writes (13), MCP timeouts, server instructions and prompts as commands (14), commands that keep running (16), images in, off by default (15a), diagnostics, a definition and references from a language server (17, [adam#169](https://github.com/vymalo/another-adam-rs/pull/169)) | 17 of 17, 100 % | The plan is complete. Deferred by the owner, and not counted: images made inline by a model (15b). Next for this goal, a faster coder ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345)): its code is merged (tool calls that run at the same time, [adam ADR 0049](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0049-the-tool-calls-of-a-turn-run-at-the-same-time.md), and a call that starts when its arguments are complete; one call that commits, pushes and opens the pull request; `read_files`; an `edit_file` that tolerates line endings; a failed check not run again on an unchanged tree; a static image); what is left is its comparison, part of R2's benchmark gate |
-| **adam**: a subagent in the background, as a session | [adam ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md), 8 slices | The runtime (1), the five `subagent_*` tools (2), reports during a turn (3), limits as settings and idle sessions closed (4), remote sessions (5); two of the three parts of the `child-sessions/v1` extension (6a, 6b) | 5 of 8, 63 % | In progress ([sys#332](https://github.com/vymalo/another-agentic-system/issues/332)): the extension's last part (6c, [adam#198](https://github.com/vymalo/another-adam-rs/pull/198), in review), the coder's own sessions (7), asking from a child (8). This system's side, child threads ([ADR 0072](docs/decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): the core, the store, the agent side, following a child session, its AG-UI frames and the scenario on mocks are merged (S2a to S2f); the person starting, sending to and closing a session (S3) and the web follow |
+| **adam**: adam-rs, measured against OpenCode as a baseline | [adam ADR 0044](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0044-paged-tools-a-stable-prompt-prefix-a-plan-skills-commands-and-project-context.md), 17 slices | The loop survives bad model output (1), paged reads (2), command output kept whole and read back by page (3), OpenCode removed (5), a prompt prefix that holds across turns and a cache key (4), a plan every agent has (6), a repository's own instructions shown to the coder (7), skills on by default with a repository's own skills (8), the repeated-call rule, time limits and a cancel that reaches children (10), compaction (9), more kinds of question and forms read back (11), commands served by the agent and announced by an A2A extension (12), references a run reads and never writes (13), MCP timeouts, server instructions and prompts as commands (14), commands that keep running (16), images in, off by default (15a), diagnostics, a definition and references from a language server (17, [adam#169](https://github.com/vymalo/another-adam-rs/pull/169)) | 17 of 17, 100 % | The plan is complete. Deferred by the owner, and not counted: images made inline by a model (15b). Next for this goal, a faster coder ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345)): its code is merged (tool calls that run at the same time, [adam ADR 0049](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0049-the-tool-calls-of-a-turn-run-at-the-same-time.md), and a call that starts when its arguments are complete; one call that commits, pushes and opens the pull request; `read_files`; an `edit_file` that tolerates line endings; a failed check not run again on an unchanged tree; a static image); what is left is its comparison (smoke test 4, then the bench), and on-demand skills and MCP tools (slice 7), now to build |
+| **adam**: a subagent in the background, as a session | [adam ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md), 8 slices | The runtime (1), the five `subagent_*` tools (2), reports during a turn (3), limits as settings and idle sessions closed (4), remote sessions (5); the `child-sessions/v1` extension (6a, 6b, and 6c, [adam#198](https://github.com/vymalo/another-adam-rs/pull/198)) | 6 of 8, 75 % | In progress ([sys#332](https://github.com/vymalo/another-agentic-system/issues/332)): the coder's own sessions (7), asking from a child (8). This system's side, child threads ([ADR 0072](docs/decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): the core, the store, the agent side, following a child session, its AG-UI frames and the scenario on mocks are merged (S2a to S2f); the person starting, sending to and closing a session (S3) and the web follow |
 | **sys**: LibreChat-grade, client-agnostic | [ADR 0067](docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), 35 slices | The usage page, highlighted code and math, regenerate, "My tool servers", UI catalog version 7 (more kinds of question), a theme, quote, copy and export as Markdown, questions that show what they ask about and the agent's plan (UI catalog version 8); search, the API and the box in the web ([ADR 0068](docs/decisions/0068-a-person-searches-their-own-threads.md)); the page "My prompts" (P1: list, create, edit, delete, copy a shared prompt); the `/` menu of prompts and the form that fills one (P2); sharing a prompt with roles (P4, [ADR 0070](docs/decisions/0070-a-persons-prompt-library.md)) | 13 of 35, 37 %: a slice counts when a person can use it in the web | Read aloud and speech; artifact versions, the panel and live previews; P3's `/` commands; MCP prompts (P5); memory; import; `/` commands; attachments; tags; temporary chats; French. The eight API gaps a second client meets are listed in ADR 0067 |
 | **plat**: a kagent-grade minimum | [plat §59c](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/10-control-plane-and-crds.md#59c-operator-increments-kagent-grade-minimum), 16 increments | The plan (K0), the CRDs read what adam-rs's former operator accepted (K1), status on shared objects (K2), metrics (K4), an OpenAPI document and an agent's events (K8), `aapctl validate` and `render` (K9); K9b, `aapctl` over the API, with a pasted token and with its browser sign-in; traces of the operator and the Platform API (K5); tool discovery, an MCP server's reachability and tools in a `ToolProvider`'s status (K3); several namespaces, one `Role` in each (K6); two replicas with a leader, proven in kind by killing it (K7); a bring-your-own A2A image as a second harness (K11) | 12 of 16, 75 % | In progress ([sys#344](https://github.com/vymalo/another-agentic-system/issues/344), the owner's decisions AD-052 to AD-056): the tool catalogue (K10: the Kubernetes server merged, Prometheus and GitHub next), run pods and agents under gVisor (K14: the chart, the operator and the admission policy merged; a node with gVisor next). Wait for adam: approvals per tool (K12). On hold with no cluster: the first real agent (K13) |
 
@@ -207,34 +255,35 @@ Beside the milestones, the work is split into tracks so that several people or a
 editing the same files. Each track is one epic in sys: its slices, each one pull request; its source of truth; and a
 section *Working on this epic without colliding* that names the paths it owns. *Filed 2026-11-18.*
 
-| Track | Repo | Epic | Note |
-|---|---|---|---|
-| A subagent in the background, as a session | adam, sys | [sys#332](https://github.com/vymalo/another-agentic-system/issues/332) | adam ADR 0045, slices 3 to 8, then the chat's side |
-| Hooks around the agent loop | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) | Exempt from the release rule (the owner, 2026-11-19): merges as built |
-| An agent asks the person for a credential | adam, sys | [sys#334](https://github.com/vymalo/another-agentic-system/issues/334) | The owner's choices are made: the broker's first part and the injector are R1; asking the person comes after hooks |
-| LibreChat-grade, what is left of ADR 0067 | sys | [sys#335](https://github.com/vymalo/another-agentic-system/issues/335) | |
-| The API a second client needs | sys | [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) | The eight gaps of ADR 0067 |
-| Memory, then its refinement | sys | [sys#337](https://github.com/vymalo/another-agentic-system/issues/337) | |
-| What used what, in the app | sys | [sys#338](https://github.com/vymalo/another-agentic-system/issues/338) | Builds on M2 ([sys#274](https://github.com/vymalo/another-agentic-system/issues/274)) |
-| Windows: browser, web and app previews | sys, adam | [sys#339](https://github.com/vymalo/another-agentic-system/issues/339) | |
-| Diagrams as a UI catalog component | sys | [sys#340](https://github.com/vymalo/another-agentic-system/issues/340) | |
-| Workspaces that last | sys, adam | [sys#341](https://github.com/vymalo/another-agentic-system/issues/341) | Step 1: a conversation keeps its repository checkouts |
-| Missions, then federation | sys | [sys#342](https://github.com/vymalo/another-agentic-system/issues/342) | |
-| Agent-team: several primary agents in one chat | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | **R1, the first release** (not deferred to R2's hooks: the approval gate is the orchestrator's). [ADR 0074](docs/decisions/0074-agent-team.md), accepted 2026-11-19; distinct from missions |
-| A2UI v1.0 cutover | sys, adam | [sys#380](https://github.com/vymalo/another-agentic-system/issues/380) | **R1, the first release** (the owner, 2026-11-19: a hard cutover, no dual support). [ADR 0075](docs/decisions/0075-a2ui-v1-0-cutover.md), with [adam ADR 0056](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0056-a2ui-v1-0-only-a-hard-cutover.md); `ui-catalog/v2`; one merge per repository, adam-rs first |
-| Push notifications for a person's runs | sys | [sys#384](https://github.com/vymalo/another-agentic-system/issues/384) | **R1, the first release** (the owner, 2026-11-19: self-hosted delivery). [ADR 0077](docs/decisions/0077-push-notifications-for-a-persons-runs.md); slices N1 to N9; APNs is the one exception to self-hosting, for iOS only |
-| No Podman | adam, sys, plat, img | [sys#359](https://github.com/vymalo/another-agentic-system/issues/359) | Exempt from the release rule (the owner, 2026-11-19); [adam ADR 0052](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0052-no-podman-a-repositorys-own-environment-is-a-run-pod-of-its-image.md) and [0053](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0053-sqlite-a-store-service-a-database-per-agent-and-a-static-coder.md) |
-| The orchestrator as a library in an application | sys | [sys#382](https://github.com/vymalo/another-agentic-system/issues/382) | R2; E1 (off `sqlx`) may start early. [ADR 0076](docs/decisions/0076-the-orchestrator-as-a-library-in-an-application.md) |
-| Search by meaning and relations | sys | [sys#343](https://github.com/vymalo/another-agentic-system/issues/343) | ADR 0071 |
-| The rest of the kagent-grade minimum | plat | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) | AD-052 to AD-056 |
-| A faster coder | adam | [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) | Worked by one session already: do not start it elsewhere |
+| Track | Repo | Epic | Step | Note |
+|---|---|---|---|---|
+| A subagent in the background, as a session | adam, sys | [sys#332](https://github.com/vymalo/another-agentic-system/issues/332) | No gate (started); R3 | adam ADR 0045, slices 3 to 8, then the chat's side |
+| Hooks around the agent loop | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) | No gate (exempt); H1, H8 in R2 | Exempt from the release rule (the owner, 2026-11-19): merges as built |
+| An agent asks the person for a credential | adam, sys | [sys#334](https://github.com/vymalo/another-agentic-system/issues/334) | Layer 2 (B1, S8 to S10); later | The owner's choices are made: the broker's first part and the injector are R1; asking the person comes after hooks |
+| LibreChat-grade, what is left of ADR 0067 | sys | [sys#335](https://github.com/vymalo/another-agentic-system/issues/335) | No gate (started), the slices about agents; attachments R2 | Its other chat slices are paused (2026-11-19) |
+| The API a second client needs | sys | [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) | Layer 2 (slices 1, 2); later | The eight gaps of ADR 0067 |
+| Memory, then its refinement | sys | [sys#337](https://github.com/vymalo/another-agentic-system/issues/337) | Later | |
+| What used what, in the app | sys | [sys#338](https://github.com/vymalo/another-agentic-system/issues/338) | Layer 2 (slice 4); R3 | Builds on M2 ([sys#274](https://github.com/vymalo/another-agentic-system/issues/274)) |
+| Windows: browser, web and app previews | sys, adam | [sys#339](https://github.com/vymalo/another-agentic-system/issues/339) | Later | |
+| Diagrams as a UI catalog component | sys | [sys#340](https://github.com/vymalo/another-agentic-system/issues/340) | Not planned | |
+| Workspaces that last | sys, adam | [sys#341](https://github.com/vymalo/another-agentic-system/issues/341) | R3 (step 1) | Step 1: a conversation keeps its repository checkouts |
+| Missions, then federation | sys | [sys#342](https://github.com/vymalo/another-agentic-system/issues/342) | Later | |
+| Agent-team: several primary agents in one chat | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | Layer 2 | **R1, layer 2** (not deferred to R2's hooks: the approval gate is the orchestrator's). [ADR 0074](docs/decisions/0074-agent-team.md), accepted 2026-11-19; distinct from missions |
+| A2UI v1.0 cutover | sys, adam | [sys#380](https://github.com/vymalo/another-agentic-system/issues/380) | Now; on layer 2's list | **Starts now** (the owner, 2026-11-19: a hard cutover, no dual support). [ADR 0075](docs/decisions/0075-a2ui-v1-0-cutover.md), with [adam ADR 0056](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0056-a2ui-v1-0-only-a-hard-cutover.md); `ui-catalog/v2`; one merge per repository, adam-rs first |
+| Push notifications for a person's runs | sys | [sys#384](https://github.com/vymalo/another-agentic-system/issues/384) | Layer 2 | **R1, layer 2** (the owner, 2026-11-19: self-hosted delivery). [ADR 0077](docs/decisions/0077-push-notifications-for-a-persons-runs.md); slices N1 to N9; APNs is the one exception to self-hosting, for iOS only |
+| No Podman | adam, sys, plat, img | [sys#359](https://github.com/vymalo/another-agentic-system/issues/359) | No gate (exempt); R3 | Exempt from the release rule (the owner, 2026-11-19); [adam ADR 0052](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0052-no-podman-a-repositorys-own-environment-is-a-run-pod-of-its-image.md) and [0053](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0053-sqlite-a-store-service-a-database-per-agent-and-a-static-coder.md) |
+| The orchestrator as a library in an application | sys | [sys#382](https://github.com/vymalo/another-agentic-system/issues/382) | R2; E1 now | R2; E1 (off `sqlx`) may start early. [ADR 0076](docs/decisions/0076-the-orchestrator-as-a-library-in-an-application.md) |
+| Search by meaning and relations | sys | [sys#343](https://github.com/vymalo/another-agentic-system/issues/343) | Not planned | ADR 0071 |
+| The rest of the kagent-grade minimum | plat | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) | No gate (started); K13, K14 in R3 | AD-052 to AD-056 |
+| A faster coder | adam | [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) | No gate (started); R2 | Worked by one session already: do not start it elsewhere |
+| adam embedded in an application | adam | [sys#387](https://github.com/vymalo/another-agentic-system/issues/387) | No gate (exempt); R2 | [adam ADR 0047](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0047-adam-rs-can-be-embedded-in-an-application.md) slices 1 to 9; the owner exempted it on 2026-11-19 |
 
 
 ## How the work is organised
 
 Milestones, then epics, then tickets.
 
-- A **milestone** is a step to launch: M1, M2, M4 and M5 (M3, payments, is not in these repositories). Its label is `launch-m1` to `launch-m5`.
+- A **milestone** is a step to launch: M1, M2, M4 and M5 (M3 is not in these repositories). Its label is `launch-m1` to `launch-m5`.
 - An **epic** is the parent issue of a milestone. All five are in sys, and each holds the live list of its tickets.
 - A **ticket** is one piece of work: a GitHub issue in the repository that owns the code, and a sub-issue of its epic.
   Size is S, M or L, a rough guide to the effort.
@@ -258,8 +307,9 @@ Milestones, then epics, then tickets.
 
 ## How the milestones depend on each other
 
-M1 comes before M2. M4 and M5 run alongside and can start now. Launch needs all four. M3, payments, is an operator's
-own and is not in these repositories.
+M1 comes before M2. M4 and M5 run alongside and can start now. Launch needs all four. M3 is an operator's own and is
+not in these repositories. In the steps above: layer 2 uses M2's usage record, M4's backups and M5's "Delete my
+account"; R3 closes the rest of all four.
 
 ```mermaid
 flowchart LR
@@ -276,6 +326,8 @@ flowchart LR
 ```
 
 ## M1: A coder that is safe for many people
+
+**Step:** R3, all of it.
 
 **Goal.** In production, one person's run cannot read, change or act on another person's work, or reach the coder's
 secrets. The coder knows who the person is and checks their GitHub access before it touches a repository.
@@ -317,12 +369,14 @@ commands in the coder's own container, next to the GitHub App key file.
 
 ## M2: Usage and limits per person
 
+**Step:** the usage record is used in layer 2; the check before a run starts is R3.
+
 **Goal.** Know what each person uses, in model tokens and sandbox time, and refuse a run before it starts when the
 person is over their limit or has too many runs at once.
 
 **Done when**
 
-- Each person's model tokens (priced by model) and sandbox seconds are recorded, and the person can read them.
+- Each person's model tokens (by model) and sandbox seconds are recorded, and the person can read them.
 - A run is refused before dispatch, with a reason the person can act on.
 - One person cannot fill the dispatcher.
 - The edge limits requests, and the orchestrator can tell clients apart behind the ingress.
@@ -335,8 +389,8 @@ Related: [sys#170](https://github.com/vymalo/another-agentic-system/issues/170) 
 - **A usage ledger per person.** It is written in the commit of each usage event, keeps a task's totals with the call
   reported twice counted once, and outlives an erased thread ([ADR 0065](docs/decisions/0065-a-usage-ledger-per-person.md),
   proposed).
-  - `GET /api/me/usage?month=YYYY-MM` answers the caller's own month, priced by the `usage.prices` table of the
-    configuration. Prices are in integers, and a model with no price is said so, never counted as free.
+  - `GET /api/me/usage?month=YYYY-MM` answers the caller's own month, valued by the `usage.prices` table of the
+    configuration. Amounts are integers, and a model with no entry is said so, never counted as zero.
   - A retention sweep removes old months (`usage.retentionMonths`, 24 by default).
   - Proven by `dev/usage-ledger-e2e.sh` on the mocks. [sys#281](https://github.com/vymalo/another-agentic-system/issues/281)
     is closed.
@@ -356,21 +410,23 @@ Related: [sys#170](https://github.com/vymalo/another-agentic-system/issues/170) 
 
 | Ticket | Repo | Size | Labels | Who and when |
 |---|---|---|---|---|
-| [A usage record per person, priced by model](https://github.com/vymalo/another-agentic-system/issues/281) | sys | L | | Anyone. Design first: the pull request starts with an ADR |
+| [A usage record per person, by model](https://github.com/vymalo/another-agentic-system/issues/281) | sys | L | | Anyone. Design first: the pull request starts with an ADR |
 | [Report sandbox time per run as usage](https://github.com/vymalo/another-adam-rs/issues/126) | adam | M | | Anyone |
 | [Check limits before a run starts](https://github.com/vymalo/another-agentic-system/issues/282) | sys | L | owner-decision | After the usage record and the owner's decision on the limits |
 | [A fair share of the dispatcher for each person](https://github.com/vymalo/another-agentic-system/issues/283) | sys | M | help wanted | Anyone |
 | [A rate limit at the edge, and the client address behind the ingress](https://github.com/vymalo/another-agentic-system/issues/284) | sys | M | security, help wanted | Anyone. The live check of the ingress needs access to a deployment |
 
-## M3: Payments (not in these repositories)
+## M3: Not in these repositories
 
-Payments, plans and pricing belong to the operator of a service, not to the open-source building blocks. This
-milestone left the roadmap on 2026-11-15 and keeps its number so that M4 and M5 keep theirs. What stays here is what
-an operator's payment system needs from these repositories, and that is M2: a usage record per person
+M3 belongs to the operator of a service, not to the open-source building blocks. It left the roadmap on 2026-11-15
+and keeps its number so that M4 and M5 keep theirs. What it needs from these repositories is M2: a usage record per
+person
 ([ADR 0065](docs/decisions/0065-a-usage-ledger-per-person.md)) and a check of a person's limit before a run starts
 ([sys#282](https://github.com/vymalo/another-agentic-system/issues/282)).
 
 ## M4: Scale and operations
+
+**Step:** backups that restore are layer 2; the rest is R3.
 
 **Goal.** The databases, the dispatcher and the run pods hold about 200 runs at once at peak, and someone is told
 before they run out.
@@ -405,6 +461,8 @@ is pruned, and nothing has been load-tested.
 | [Capacity metrics and alerts](https://github.com/vymalo/another-agentic-system/issues/292) | sys | M | help wanted | Anyone. Prometheus experience helps |
 
 ## M5: Data protection and trust
+
+**Step:** "Delete my account" is layer 2; the abuse controls are R3.
 
 **Goal.** Let people delete their data, and keep a deployment that is open to many people from being abused. Which
 law applies, and what it asks of an operator, depends on where the service runs: legal advice, terms of service and

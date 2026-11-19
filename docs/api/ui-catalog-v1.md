@@ -10,6 +10,10 @@
 - **Retired by the A2UI v1.0 cutover** ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), accepted 2026-11-19, nothing built):
   A2UI v1.0 requires `"protocolVersion": "1.0"` on a catalog, which breaks this page's document, so the cutover moves to
   `ui-catalog/v2` (a new URI and page, the same `catalogId`, version 9 onwards). This page stays as the record of v1.
+  **Retired by [`ui-catalog-v2.md`](ui-catalog-v2.md) (2026-11-19, slice C0):** v2's contract is written and nothing of it
+  is built. **This page is still the contract of what is built until slice S4 merges the cutover into `main`**; from then
+  on v2 is, and this page is only the record. v2 keeps this page's components, forms and answers unchanged in meaning,
+  and links to its sections for them.
 - **Decided in:** [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) and its status note;
   the A2UI transport is [ADR 0013](../decisions/0013-a2ui-generative-ui.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
