@@ -489,7 +489,7 @@ The turn as the code runs it, step by step, is a sequence diagram in
 ## Command (outbox) lifecycle
 
 **Built.** Seven outbox kinds exist: `delegate` (send the user's text to the agent), `cancel`
-(ask the agent to cancel its task), `verify` (ask the verifier agent to review a commit, [below](#the-verifiers-dispatch-mvp-slice-10)) `title` (ask the model for a title of the thread, [below](#thread-titles-mvp-slice-6)) `description` (ask it for a description, [below](#thread-descriptions-adr-0035)) `steer` (a message for the agent's running task, [below](#steering-a-running-task-adr-0036)) and `ask` (a request to an agent the person mentioned, for the job's agent, [below](#asked-agents-adr-0026)). A `cancel`, a `verify`, an `ask`, a `title` and a `description` row are claimable whatever the thread's older delegations. Rows have the statuses below (`outbox.status`, `OutboxStatus`
+(ask the agent to cancel its task), `verify` (ask the verifier agent to review a commit, [below](#the-verifiers-dispatch-mvp-slice-10)) `title` (ask the model for a title of the thread, [below](#thread-titles-mvp-slice-6)) `description` (ask it for a description, [below](#thread-descriptions-adr-0035)) `steer` (a message for the agent's running task, [below](#steering-a-running-task-adr-0036)) and `ask` (a request to an agent the person mentioned, for the job's agent, [below](#asked-agents-adr-0026)). A `cancel`, a `verify`, an `ask`, a `title` and a `description` row are claimable whatever the thread's older delegations. *Planned:* an eighth, unordered kind, `notify`, one push to one device ([ADR 0077](decisions/0077-push-notifications-for-a-persons-runs.md), nothing built). Rows have the statuses below (`outbox.status`, `OutboxStatus`
 in `orch-ports`):
 
 ```mermaid

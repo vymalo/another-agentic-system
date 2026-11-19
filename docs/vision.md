@@ -164,7 +164,7 @@ owner listed, and where each stands:
 | Skill request | ask for more skills | in (the person approves) | not built |
 | Mermaid | display a mermaid graph | out | **built** (version 3) |
 | Image | place a picture at the start, middle or end of a text, or in a list | out | **built** (version 4), for a file of the thread only: never a URL |
-| Notification opt-in | ask at first open to be notified later about this chat, and tell the agent | in | not built: needs an ADR on storage and delivery (question 37) |
+| Notification opt-in | ask at first open to be notified later about this chat, and tell the agent | in | not built; decided 2026-11-19 by [ADR 0077](decisions/0077-push-notifications-for-a-persons-runs.md): the opt-in is the client's own control and a setting per thread, not a catalog component, and the agent is not told (pushes come from the log only); in R1 |
 
 And: **combine all of these** in one answer.
 

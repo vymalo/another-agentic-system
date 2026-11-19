@@ -33,6 +33,7 @@
   thread and rebuilt from the log by `orchestrator search backfill`. It is a function of the log and holds content, so it is the owner's alone and never read
   across people. The decision stands.
   Status note (2026-11-15): [ADR 0070](0070-a-persons-prompt-library.md) (proposed) adds that Postgres also keeps a person's **prompt library**: their saved prompts (a name, a title, a body with `{{variables}}`, the variables as questions of the UI catalog) and the roles each is shared with, in `user_prompts`. It is not the log and no event records it: it is read and changed only through the API, never folded by the core, never copied into a thread, a fork or an export, and nothing of it is erased with a thread; it is the person's and goes with their account. The decision stands.
+  Status note (2026-11-19): [ADR 0077](0077-push-notifications-for-a-persons-runs.md) (accepted) adds that Postgres also keeps, for push notifications, a person's **devices** (their push addresses, sealed through `SecretStore`), their **settings** and each thread's, the **presence leases** of open connect streams, and the **notification intents** with their `notify` outbox rows. Intents are a function of the log, made by the pure core and written in the transaction of the event; the rest is the person's own, read and changed only through the API. A thread's intents, setting and presence are erased with it; nothing of it is copied into a fork or an export. The decision stands.
 
 ## Context
 
