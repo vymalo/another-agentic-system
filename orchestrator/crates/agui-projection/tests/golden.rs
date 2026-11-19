@@ -23,17 +23,13 @@ use orch_agui_projection::{Audience, Frame, LiveOverlay, Projector};
 use orch_agui_proto::testkit::assert_conforms;
 use orch_core::{AgentId, Event, LiveChunk, LiveEnd, LiveText, Timestamp};
 use serde_json::{Value, json};
-use support::goldens::{CHILD, PARENT, SCENARIOS, THREAD, examples_dir, load_events, meta_of};
+use support::goldens::{
+    CHILD, CHILD_2, PARENT, SCENARIOS, THREAD, examples_dir, load_events, meta_of,
+};
 use support::{lines, verify};
 
 /// The golden streams made of a log and live text.
-const FEEDS: [&str; 5] = [
-    "stream",
-    "reasoning-live",
-    "sessions",
-    "sessions-failed",
-    "sessions-child",
-];
+const FEEDS: [&str; 2] = ["stream", "reasoning-live"];
 
 fn project(name: &str) -> Vec<Frame> {
     let events = load_events(name);
@@ -140,6 +136,9 @@ fn render(frames: &[Frame]) -> String {
             Value::String(s) if s.contains(THREAD) => *s = s.replace(THREAD, "<thread-id>"),
             Value::String(s) if s.contains(PARENT) => *s = s.replace(PARENT, "<parent-thread-id>"),
             Value::String(s) if s.contains(CHILD) => *s = s.replace(CHILD, "<child-thread-id>"),
+            Value::String(s) if s.contains(CHILD_2) => {
+                *s = s.replace(CHILD_2, "<second-child-thread-id>");
+            }
             Value::Array(items) => items.iter_mut().for_each(placeholder),
             Value::Object(map) => map.values_mut().for_each(placeholder),
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}

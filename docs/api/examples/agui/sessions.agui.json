@@ -98,36 +98,32 @@
   },
   {
     "event": {
-      "description": "survey the options",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
-        },
-        "vymalo.at": "2027-01-15T08:00:03Z",
-        "vymalo.childThread": "<child-thread-id>",
-        "vymalo.session": "s1"
+        }
       },
-      "name": "researcher",
+      "name": "Researcher",
       "parentSubagentRunId": "sub-2",
-      "subagentRunId": "sub-session-3",
+      "subagentRunId": "sub-step-3",
       "type": "SUBAGENT_STARTED"
     }
   },
   {
     "event": {
-      "activityType": "vymalo.session",
+      "activityType": "vymalo.step",
       "content": {
-        "agent": "researcher",
         "at": "2027-01-15T08:00:03Z",
-        "description": "survey the options",
-        "keepOpen": true,
-        "round": 1,
-        "session": "s1",
-        "state": "working",
-        "threadId": "<child-thread-id>"
+        "icon": "agent",
+        "id": "T/tool:c1",
+        "kind": "subagent",
+        "label": "Researcher",
+        "path": [],
+        "startedAt": "2027-01-15T08:00:03Z",
+        "state": "running"
       },
-      "messageId": "session-3",
+      "messageId": "step-3",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -135,13 +131,14 @@
         }
       },
       "replace": true,
+      "subagentRunId": "sub-2",
       "type": "ACTIVITY_SNAPSHOT"
     },
     "id": 3
   },
   {
     "event": {
-      "description": "check the sources",
+      "description": "survey the options",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -149,9 +146,9 @@
         },
         "vymalo.at": "2027-01-15T08:00:04Z",
         "vymalo.childThread": "<child-thread-id>",
-        "vymalo.session": "s2"
+        "vymalo.session": "s1"
       },
-      "name": "reviewer",
+      "name": "researcher",
       "parentSubagentRunId": "sub-2",
       "subagentRunId": "sub-session-4",
       "type": "SUBAGENT_STARTED"
@@ -161,12 +158,12 @@
     "event": {
       "activityType": "vymalo.session",
       "content": {
-        "agent": "reviewer",
+        "agent": "researcher",
         "at": "2027-01-15T08:00:04Z",
-        "description": "check the sources",
-        "keepOpen": false,
+        "description": "survey the options",
+        "keepOpen": true,
         "round": 1,
-        "session": "s2",
+        "session": "s1",
         "state": "working",
         "threadId": "<child-thread-id>"
       },
@@ -184,15 +181,177 @@
   },
   {
     "event": {
+      "description": "check the sources",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.at": "2027-01-15T08:00:05Z",
+        "vymalo.childThread": "<second-child-thread-id>",
+        "vymalo.session": "s2"
+      },
+      "name": "reviewer",
+      "parentSubagentRunId": "sub-2",
+      "subagentRunId": "sub-session-5",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
       "activityType": "vymalo.session",
       "content": {
         "agent": "reviewer",
         "at": "2027-01-15T08:00:05Z",
         "description": "check the sources",
         "keepOpen": false,
+        "round": 1,
+        "session": "s2",
+        "state": "working",
+        "threadId": "<second-child-thread-id>"
+      },
+      "messageId": "session-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "reviewer",
+        "at": "2027-01-15T08:00:06Z",
+        "description": "check the sources",
+        "keepOpen": false,
+        "report": "blocked",
+        "round": 1,
+        "session": "s2",
+        "state": "working",
+        "threadId": "<second-child-thread-id>"
+      },
+      "messageId": "session-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "suspended"
+      },
+      "result": {
+        "report": "blocked",
+        "round": 1
+      },
+      "subagentRunId": "sub-session-5",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "description": "check the sources",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.at": "2027-01-15T08:00:07Z",
+        "vymalo.childThread": "<second-child-thread-id>",
+        "vymalo.session": "s2"
+      },
+      "name": "reviewer",
+      "parentSubagentRunId": "sub-2",
+      "subagentRunId": "sub-session-5-7",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "reviewer",
+        "at": "2027-01-15T08:00:07Z",
+        "description": "check the sources",
+        "keepOpen": false,
         "report": "done",
         "round": 1,
         "session": "s2",
+        "state": "idle",
+        "threadId": "<second-child-thread-id>"
+      },
+      "messageId": "session-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "result": {
+        "report": "done",
+        "round": 1
+      },
+      "subagentRunId": "sub-session-5-7",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "reviewer",
+        "at": "2027-01-15T08:00:08Z",
+        "description": "check the sources",
+        "keepOpen": false,
+        "report": "done",
+        "round": 1,
+        "session": "s2",
+        "state": "closed",
+        "threadId": "<second-child-thread-id>"
+      },
+      "messageId": "session-5",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "researcher",
+        "at": "2027-01-15T08:00:09Z",
+        "description": "survey the options",
+        "keepOpen": true,
+        "report": "done",
+        "round": 1,
+        "session": "s1",
         "state": "idle",
         "threadId": "<child-thread-id>"
       },
@@ -216,69 +375,7 @@
       "subagentRunId": "sub-session-4",
       "type": "SUBAGENT_FINISHED"
     },
-    "id": 5
-  },
-  {
-    "event": {
-      "activityType": "vymalo.session",
-      "content": {
-        "agent": "reviewer",
-        "at": "2027-01-15T08:00:06Z",
-        "description": "check the sources",
-        "keepOpen": false,
-        "report": "done",
-        "round": 1,
-        "session": "s2",
-        "state": "closed",
-        "threadId": "<child-thread-id>"
-      },
-      "messageId": "session-4",
-      "metadata": {
-        "vymalo.actor": {
-          "name": "plain",
-          "type": "agent"
-        }
-      },
-      "replace": true,
-      "type": "ACTIVITY_SNAPSHOT"
-    },
-    "id": 6
-  },
-  {
-    "event": {
-      "activityType": "vymalo.session",
-      "content": {
-        "agent": "researcher",
-        "at": "2027-01-15T08:00:07Z",
-        "description": "survey the options",
-        "keepOpen": true,
-        "report": "done",
-        "round": 1,
-        "session": "s1",
-        "state": "idle",
-        "threadId": "<child-thread-id>"
-      },
-      "messageId": "session-3",
-      "metadata": {
-        "vymalo.actor": {
-          "name": "plain",
-          "type": "agent"
-        }
-      },
-      "replace": true,
-      "type": "ACTIVITY_SNAPSHOT"
-    }
-  },
-  {
-    "event": {
-      "result": {
-        "report": "done",
-        "round": 1
-      },
-      "subagentRunId": "sub-session-3",
-      "type": "SUBAGENT_FINISHED"
-    },
-    "id": 7
+    "id": 9
   },
   {
     "event": {
@@ -288,13 +385,13 @@
           "name": "plain",
           "type": "agent"
         },
-        "vymalo.at": "2027-01-15T08:00:08Z",
+        "vymalo.at": "2027-01-15T08:00:10Z",
         "vymalo.childThread": "<child-thread-id>",
         "vymalo.session": "s1"
       },
       "name": "researcher",
       "parentSubagentRunId": "sub-2",
-      "subagentRunId": "sub-session-3-r2",
+      "subagentRunId": "sub-session-4-10",
       "type": "SUBAGENT_STARTED"
     }
   },
@@ -303,7 +400,7 @@
       "activityType": "vymalo.session",
       "content": {
         "agent": "researcher",
-        "at": "2027-01-15T08:00:08Z",
+        "at": "2027-01-15T08:00:10Z",
         "description": "survey the options",
         "keepOpen": true,
         "report": "canceled",
@@ -312,7 +409,7 @@
         "state": "idle",
         "threadId": "<child-thread-id>"
       },
-      "messageId": "session-3",
+      "messageId": "session-4",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -329,14 +426,46 @@
         "report": "canceled",
         "round": 2
       },
-      "subagentRunId": "sub-session-3-r2",
+      "subagentRunId": "sub-session-4-10",
       "type": "SUBAGENT_FINISHED"
     },
-    "id": 8
+    "id": 10
   },
   {
     "event": {
-      "messageId": "msg-9",
+      "activityType": "vymalo.step",
+      "content": {
+        "at": "2027-01-15T08:00:11Z",
+        "icon": "agent",
+        "id": "T/tool:c1",
+        "kind": "subagent",
+        "label": "Researcher",
+        "path": [],
+        "startedAt": "2027-01-15T08:00:03Z",
+        "state": "completed"
+      },
+      "messageId": "step-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-step-3",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "messageId": "msg-12",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -352,27 +481,27 @@
   {
     "event": {
       "delta": "Both helpers reported.",
-      "messageId": "msg-9",
+      "messageId": "msg-12",
       "subagentRunId": "sub-2",
       "type": "TEXT_MESSAGE_CONTENT"
     }
   },
   {
     "event": {
-      "messageId": "msg-9",
+      "messageId": "msg-12",
       "subagentRunId": "sub-2",
       "type": "TEXT_MESSAGE_END"
     },
-    "id": 9
+    "id": 12
   },
   {
     "event": {
       "activityType": "vymalo.status",
       "content": {
-        "at": "2027-01-15T08:00:10Z",
+        "at": "2027-01-15T08:00:13Z",
         "status": "completed"
       },
-      "messageId": "evt-10",
+      "messageId": "evt-13",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -388,7 +517,7 @@
       "subagentRunId": "sub-2",
       "type": "SUBAGENT_FINISHED"
     },
-    "id": 10
+    "id": 13
   },
   {
     "event": {
@@ -413,12 +542,12 @@
       "threadId": "<thread-id>",
       "type": "RUN_FINISHED"
     },
-    "id": 11
+    "id": 14
   },
   {
     "event": {
       "protocolVersion": "1.0",
-      "runId": "run-12",
+      "runId": "run-15",
       "threadId": "<thread-id>",
       "type": "RUN_STARTED"
     }
@@ -439,16 +568,104 @@
   },
   {
     "event": {
+      "description": "survey the options",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
           "type": "agent"
         },
-        "vymalo.at": "2027-01-15T08:00:12Z"
+        "vymalo.at": "2027-01-15T08:00:15Z",
+        "vymalo.childThread": "<child-thread-id>",
+        "vymalo.session": "s1"
       },
-      "name": "plain",
-      "subagentRunId": "sub-12",
+      "name": "researcher",
+      "subagentRunId": "sub-session-4-15",
       "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "researcher",
+        "at": "2027-01-15T08:00:15Z",
+        "description": "survey the options",
+        "keepOpen": true,
+        "report": "blocked",
+        "round": 3,
+        "session": "s1",
+        "state": "working",
+        "threadId": "<child-thread-id>"
+      },
+      "messageId": "session-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "suspended"
+      },
+      "result": {
+        "report": "blocked",
+        "round": 3
+      },
+      "subagentRunId": "sub-session-4-15",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "survey the options and write a summary"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-15",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 15
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-16",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "survey the options and write a summary"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
     }
   },
   {
@@ -459,13 +676,12 @@
           "name": "plain",
           "type": "agent"
         },
-        "vymalo.at": "2027-01-15T08:00:12Z",
+        "vymalo.at": "2027-01-15T08:00:16Z",
         "vymalo.childThread": "<child-thread-id>",
         "vymalo.session": "s1"
       },
       "name": "researcher",
-      "parentSubagentRunId": "sub-12",
-      "subagentRunId": "sub-session-3",
+      "subagentRunId": "sub-session-4-16",
       "type": "SUBAGENT_STARTED"
     }
   },
@@ -474,16 +690,16 @@
       "activityType": "vymalo.session",
       "content": {
         "agent": "researcher",
-        "at": "2027-01-15T08:00:12Z",
+        "at": "2027-01-15T08:00:16Z",
         "description": "survey the options",
         "keepOpen": true,
-        "report": "blocked",
+        "report": "done",
         "round": 3,
         "session": "s1",
         "state": "idle",
         "threadId": "<child-thread-id>"
       },
-      "messageId": "session-3",
+      "messageId": "session-4",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -497,16 +713,10 @@
   {
     "event": {
       "result": {
-        "report": "blocked",
+        "report": "done",
         "round": 3
       },
-      "subagentRunId": "sub-session-3",
-      "type": "SUBAGENT_FINISHED"
-    }
-  },
-  {
-    "event": {
-      "subagentRunId": "sub-12",
+      "subagentRunId": "sub-session-4-16",
       "type": "SUBAGENT_FINISHED"
     }
   },
@@ -529,16 +739,16 @@
       "outcome": {
         "type": "success"
       },
-      "runId": "run-12",
+      "runId": "run-16",
       "threadId": "<thread-id>",
       "type": "RUN_FINISHED"
     },
-    "id": 12
+    "id": 16
   },
   {
     "event": {
       "protocolVersion": "1.0",
-      "runId": "run-13",
+      "runId": "run-17",
       "threadId": "<thread-id>",
       "type": "RUN_STARTED"
     }
@@ -562,16 +772,16 @@
       "activityType": "vymalo.session",
       "content": {
         "agent": "researcher",
-        "at": "2027-01-15T08:00:13Z",
+        "at": "2027-01-15T08:00:17Z",
         "description": "survey the options",
         "keepOpen": true,
-        "report": "blocked",
+        "report": "done",
         "round": 3,
         "session": "s1",
         "state": "closed",
         "threadId": "<child-thread-id>"
       },
-      "messageId": "session-3",
+      "messageId": "session-4",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -601,10 +811,10 @@
       "outcome": {
         "type": "success"
       },
-      "runId": "run-13",
+      "runId": "run-17",
       "threadId": "<thread-id>",
       "type": "RUN_FINISHED"
     },
-    "id": 13
+    "id": 17
   }
 ]

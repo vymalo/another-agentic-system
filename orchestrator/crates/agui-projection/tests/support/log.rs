@@ -201,6 +201,15 @@ pub enum Action {
     Describe {
         n: u8,
     },
+    /// The agent reports session `s<session % 3>` (its own child thread) in round `round` (0 for
+    /// none yet) ended as `how` (0 still working, 1 completed, 2 failed, 3 canceled, 4 asks for
+    /// input), the session closed when `closed` (ADR 0072). The core writes the events owed.
+    Session {
+        session: u8,
+        round: u8,
+        how: u8,
+        closed: bool,
+    },
     /// The log so far is a **parent**: what follows is a fork of it, cut after the turn that holds
     /// event number `at` (modulo the log's length) as `fork_cut` allows, so the log becomes the
     /// copy up to the cut, a `thread_forked` and the fork's own life (ADR 0029). A cut that is
@@ -358,6 +367,9 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
         2 => (0u8..4).prop_map(|n| Action::Rename { n }),
         2 => (0u8..3).prop_map(|n| Action::Describe { n }),
         2 => (any::<u8>(), any::<bool>()).prop_map(|(at, edit)| Action::Fork { at, edit }),
+        6 => (0u8..3, 0u8..4, 0u8..5, any::<bool>()).prop_map(|(session, round, how, closed)| {
+            Action::Session { session, round, how, closed }
+        }),
         10 => (0u8..5, proptest::option::of(0u8..5), 0u8..4, 0u8..5, any::<bool>()).prop_map(
             |(id, parent, kind, state, by_orchestrator)| Action::Step {
                 id,
@@ -774,6 +786,51 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                 }
             }
             Action::Fork { .. } => unreachable!("handled above"),
+            Action::Session {
+                session,
+                round,
+                how,
+                closed,
+            } => {
+                let session = session % 3;
+                let state = match how {
+                    1 => Some(AgentTaskState::Completed),
+                    2 => Some(AgentTaskState::Failed),
+                    3 => Some(AgentTaskState::Canceled),
+                    4 => Some(AgentTaskState::InputRequired),
+                    _ => Some(AgentTaskState::Working),
+                };
+                Input::ChildSession {
+                    actor: Actor::agent(&agent, revision.clone()),
+                    report: orch_core::SessionReport {
+                        session: format!("s{session}"),
+                        context_id: format!("ctx-{session}"),
+                        agent: "helper".to_owned(),
+                        description: format!("work {session}"),
+                        keep_open: true,
+                        by: Some(orch_core::SessionBy::Agent),
+                        state: if *closed {
+                            orch_core::SessionState::Closed
+                        } else if *round > 0
+                            && *how <= 4
+                            && matches!(state, Some(AgentTaskState::Working))
+                        {
+                            orch_core::SessionState::Working
+                        } else {
+                            orch_core::SessionState::Idle
+                        },
+                        closing: false,
+                        round: (*round > 0).then(|| orch_core::RoundReport {
+                            number: u32::from(*round),
+                            task_id: None,
+                            state,
+                        }),
+                    },
+                    child: format!("00000000-0000-7000-8000-00000000010{session}")
+                        .parse()
+                        .unwrap(),
+                }
+            }
             Action::Rename { n } => Input::Rename {
                 user: user.clone(),
                 title: format!("title {n}"),

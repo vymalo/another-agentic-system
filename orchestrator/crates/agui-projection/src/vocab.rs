@@ -71,10 +71,11 @@ pub const ACTIVITY_ASK: &str = "vymalo.ask";
 /// Activity type of a child session (`vymalo.session`, ADR 0072): its id is `session-<seq>`, the
 /// seq of the `child_session_opened`, and every later event of the session says it again with
 /// `replace`. The content is `{session, threadId, agent, description, keepOpen, state, round?,
-/// report?, at}`: `state` is `working` while the first round runs, `idle` once a round was reported
-/// and `closed` once the session was; `round` is the newest round the log names and `report` how it
-/// ended (`done`, `failed`, `canceled`, `blocked`). `agent` and `description` come from the
-/// orchestrator's own log (the agent's words, untrusted text).
+/// report?, at}`: `state` is `working` while a round runs or waits for the person (a `blocked`
+/// report), `idle` when a round ended and none runs (also a session opened with no round), and
+/// `closed` once the session was; `round` is the newest round the log names and `report` how it
+/// ended (`done`, `failed`, `canceled`, `blocked`). `agent` and `description` are an agent's words
+/// (untrusted text).
 pub const ACTIVITY_SESSION: &str = "vymalo.session";
 
 /// Metadata member of a session's `SUBAGENT_STARTED`: the id of the child thread that holds its log.

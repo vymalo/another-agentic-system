@@ -41,6 +41,9 @@ the log itself, which the AG-UI streams below project.)
 | `stop-and-send.events.json` | `slow refactor the parser`, then **Stop & send** (`vymalo.send: "interrupt"`): `user_message` with `delivery: interrupt`, the running task is cancelled (`agent_status: canceled`, **no** `thread_state`: the abandoned job is not judged), and the message starts job 2 (`job_started`) | `done`, job 2 |
 | `reasoning.events.json` | `reasoning go` on the fake agent with `text-stream/v1` in its card ([ADR 0044](../../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)): the model's reasoning as chunks of its own stream (`kind: "reasoning"`), which the adapter collects and the log keeps once as `agent_reasoning` (`messageId` is the reasoning stream's, `<reasoning-id>`), then the reply as one `agent_message` and the status that repeats it | `done` |
 | `usage.events.json` | `usage go` on the fake agent with `usage/v1` and `steps/v1` in its card ([ADR 0056](../../decisions/0056-token-usage-per-model-call.md)): three `model_usage` events, the agent's own call `c1`, `c2` under the sub-agent step `Researcher` (its `path` names the step) and `c3` (its numbers sent as doubles, logged as integers), then the agent's message and the task's totals as one `model_usage_total` before the `completed` status: the update that ended the turn carried none, so the adapter read them from the task (`GetTask`). Task ids are `T` |
+| `sessions.events.json` | **hand-written** (no agent serves [`child-sessions/v1`](../child-sessions-v1.md) yet; S2f replaces it with a real run): a parent with a sub-agent step and two sessions: a round `blocked` and then `done`, the session closed; a kept-open one with rounds `done` and `canceled`; the agent finishes; then a report `blocked`, `done` and a close after it ([ADR 0072](../../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)); each session has its own child thread, `<child-thread-id>` and `<second-child-thread-id>` in the streams | `done` |
+| `sessions-failed.events.json` | hand-written: one helper session whose round fails (`child_session_reported` `failed`), closed; the agent finishes alone | `done` |
+| `sessions-child.events.json` | hand-written: the log of a **child thread**: `job_started` of job 1 and of job 2 name their rounds (`round: {number, by}`), each with a step, a message and `done` | `done`, job 2 |
 
 [`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
 heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
@@ -50,14 +53,6 @@ status that repeats it, and the thread is `done`.
 [`reasoning-live.feed.json`](reasoning-live.feed.json) is the same for reasoning ([ADR 0044](../../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)):
 the live pieces carry `"kind": "reasoning"` (absent for a reply), three of the model's reasoning arrive, the log says the whole `agent_reasoning`
 (`think-3`), and then the reply's pieces and the log's message follow.
-
-[`sessions.feed.json`](sessions.feed.json), [`sessions-failed.feed.json`](sessions-failed.feed.json) and
-[`sessions-child.feed.json`](sessions-child.feed.json) are hand-written logs (no real agent serves
-[`child-sessions/v1`](../child-sessions-v1.md) yet) that the projection reads like any other, written as `{"event": …}` items:
-the parent's with two sessions (rounds `done` and `canceled`, a kept-open session, a close, then a report and a close after the
-agent finished), a parent whose helper fails a round, and the child thread's own log whose `job_started` names its rounds
-([ADR 0072](../../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), S2e). A real run replaces
-them when the scenario on mocks lands (S2f). The child thread of the sessions is `<child-thread-id>` in the streams.
 
 Ids and clocks are normalised: `threadId` is `<thread-id>` (the thread a fork was cut from, `data.from.threadId` of `thread_forked`, is `<parent-thread-id>`), `at` is `<timestamp>`, an agent
 message's `messageId` is `<message-id>` and the task id in front of a step's id and path is `T`.
@@ -97,7 +92,7 @@ message open. `threadId` is `<thread-id>` (a real thread id in any stream); the 
 `run-<seq>`, the invocations `sub-<seq>`, and the interrupt `int-<seq>`.
 
 - **Producer:** `orchestrator/crates/agui-projection/tests/golden.rs` projects the `*.events.json`
-  files above (with placeholders made real, and `stream.feed.json` and `reasoning-live.feed.json` through the live overlay, and the three `sessions*.feed.json` files) and fails when a file differs.
+  files above (with placeholders made real, and `stream.feed.json` and `reasoning-live.feed.json` through the live overlay) and fails when a file differs.
   `UPDATE_GOLDEN=1 cargo test -p orch-agui-projection --test golden` regenerates them; review the
   diff.
 - **Consumers:** the same test checks every event against the vendored AG-UI schema and every

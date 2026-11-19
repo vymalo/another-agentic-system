@@ -227,36 +227,20 @@ struct SessionView {
     /// The newest round the log names, and how it ended once it did.
     round: Option<u32>,
     report: Option<SessionOutcome>,
-    /// The highest round reported: a report of a round at or below it is one already said.
-    reported: u32,
+    /// The round and outcome last projected: a report that says the same, or an earlier round, is
+    /// one already said. The core reports a round twice on purpose (blocked, then how it ended).
+    last: Option<(u32, SessionOutcome)>,
     closed: bool,
     /// The subagent is open in the run that is open.
     sub_open: bool,
-    /// The id of the subagent as it was last started: `sub-session-<seq>`, or, when a run that
-    /// already ended it holds the next round (an id is used once in a run), `-r<round>` after it.
+    /// The id of the subagent as it was last started: `sub-session-<opened seq>` for the first,
+    /// `sub-session-<opened seq>-<seq of the report>` for each later start (an id is used once
+    /// in a run, and a report is one event).
     sub: SubagentRunId,
-    /// The run that used `sub-session-<seq>` itself.
-    base_run: Option<RunId>,
-    /// The enclosing invocation, when the subagent was last started, and when (RFC 3339).
+    /// The enclosing invocation when the subagent was last started: none when no invocation was
+    /// open (a session event never opens one), and when (RFC 3339).
     parent: Option<SubagentRunId>,
     started_at: String,
-}
-
-impl SessionView {
-    fn base(&self) -> SubagentRunId {
-        SubagentRunId::new(format!("sub-session-{}", self.seq))
-    }
-
-    /// The id of the subagent that follows round `round` in the run `run`: the session's own id,
-    /// the one every run uses, unless this run has used it already.
-    fn restart(&mut self, round: u32, run: Option<&RunId>) {
-        if run.is_some() && self.base_run.as_ref() == run {
-            self.sub = SubagentRunId::new(format!("sub-session-{}-r{round}", self.seq));
-        } else {
-            self.sub = self.base();
-            self.base_run = run.cloned();
-        }
-    }
 }
 
 /// Why the thread (or the last delegation) failed.
@@ -1372,8 +1356,6 @@ impl Projector {
             self.close_run(RunClose::Cancelled, ev.seq, out);
         }
         self.forget_job();
-        // the fork has no sessions of its own (ADR 0072): the copy's cards stay as they were said
-        self.sessions.clear();
         self.catalog = UiCatalogLedger::default();
         self.last_final = None;
         self.open_run(format!("run-{}", ev.seq), false, out);
@@ -1398,6 +1380,16 @@ impl Projector {
             ev,
             false,
         ));
+        // the fork has no sessions of its own (ADR 0072): the cards it copied are closed in it
+        let mut cards: Vec<SessionView> = std::mem::take(&mut self.sessions)
+            .into_values()
+            .filter(|v| !v.closed)
+            .collect();
+        cards.sort_by_key(|v| v.seq);
+        for mut view in cards {
+            view.state = "closed";
+            out.push(self.session_card(&view, ev));
+        }
         self.settle(ev, out);
     }
 
@@ -2220,7 +2212,6 @@ impl Projector {
             return;
         }
         let opened = self.ensure_run(ev, out);
-        self.ensure_invocation(ev, out);
         let view = SessionView {
             seq: ev.seq,
             session: d.session.clone(),
@@ -2229,14 +2220,14 @@ impl Projector {
             description: d.description.clone(),
             keep_open: d.keep_open,
             actor: ev.actor.clone(),
-            state: "working",
+            // a session opened with a round is at work; with none it waits (a close may follow)
+            state: if d.round.is_some() { "working" } else { "idle" },
             round: d.round,
             report: None,
-            reported: 0,
+            last: None,
             closed: false,
             sub_open: true,
             sub: SubagentRunId::new(format!("sub-session-{}", ev.seq)),
-            base_run: self.run.clone(),
             parent: self.invocation.as_ref().map(|i| i.id.clone()),
             started_at: self.now.clone(),
         };
@@ -2248,9 +2239,12 @@ impl Projector {
         }
     }
 
-    /// A round of a session ended (once per round): a later round than the last one reported opens
-    /// the subagent again first. The card says the round and how it ended, then the subagent
-    /// finishes, or errors for a failed round.
+    /// A round of a session ended: the card says the round and how it ended, then the subagent
+    /// finishes (`suspended` for a blocked round, which goes on once the person answers), or
+    /// errors for a failed round. A report that follows the end of the subagent opens it again
+    /// first, under an id of its own. The core reports a round twice on purpose (blocked, then how
+    /// it ended), so a report is said when its round is newer than the last said or when it says
+    /// another outcome of that round; the same again, and an earlier round, say nothing.
     fn on_session_reported(
         &mut self,
         ev: &Event,
@@ -2260,30 +2254,34 @@ impl Projector {
         match self.sessions.get(&d.session) {
             // a log held from the middle has no session to report: nothing was said of it
             None => return,
-            Some(view) if d.round <= view.reported => return,
-            Some(_) => {}
+            Some(view) => match view.last {
+                Some((round, _)) if d.round < round => return,
+                Some((round, outcome)) if d.round == round && d.report == outcome => return,
+                _ => {}
+            },
         }
         let opened = self.ensure_run(ev, out);
-        let reopen = self.sessions.get(&d.session).is_some_and(|v| !v.sub_open);
-        if reopen {
-            self.ensure_invocation(ev, out);
-        }
         let parent = self.invocation.as_ref().map(|i| i.id.clone());
         let now = self.now.clone();
         let Some(mut view) = self.sessions.remove(&d.session) else {
             return;
         };
-        if reopen {
-            view.restart(d.round, self.run.as_ref());
+        if !view.sub_open {
+            view.sub = SubagentRunId::new(format!("sub-session-{}-{}", view.seq, ev.seq));
             view.parent = parent;
             view.started_at = now;
             out.push(Self::session_subagent_started(&view).into());
         }
         view.round = Some(d.round);
         view.report = Some(d.report);
-        view.reported = d.round;
+        view.last = Some((d.round, d.report));
         if !view.closed {
-            view.state = "idle";
+            // a blocked round is still the session's work: it waits for the person
+            view.state = if d.report == SessionOutcome::Blocked {
+                "working"
+            } else {
+                "idle"
+            };
         }
         out.push(self.session_card(&view, ev));
         view.sub_open = false;
@@ -2294,7 +2292,17 @@ impl Projector {
                 Some(CODE_SESSION_FAILED.to_owned()),
             )
             .into(),
-            SessionOutcome::Done | SessionOutcome::Canceled | SessionOutcome::Blocked => {
+            SessionOutcome::Blocked => {
+                let mut finished = SubagentFinishedEvent::new(
+                    view.sub.clone(),
+                    Some(SubagentFinishedOutcome::Suspended {
+                        interrupt_ids: None,
+                    }),
+                );
+                finished.result = Some(json!({"round": d.round, "report": d.report}));
+                finished.into()
+            }
+            SessionOutcome::Done | SessionOutcome::Canceled => {
                 let mut finished = SubagentFinishedEvent::new(view.sub.clone(), None);
                 finished.result = Some(json!({"round": d.round, "report": d.report}));
                 finished.into()
@@ -2336,12 +2344,16 @@ impl Projector {
         }
     }
 
-    /// The invocation is closing: the subagents of the sessions whose round still runs end with
-    /// it, as suspended, because the helper's work goes on (its report, later, opens them again).
-    /// The card keeps saying `working`.
-    fn suspend_sessions(&mut self, out: &mut Vec<agui::Event>) {
-        let mut open: Vec<&mut SessionView> =
-            self.sessions.values_mut().filter(|v| v.sub_open).collect();
+    /// The subagents of the sessions whose round still runs end as suspended, because the helper's
+    /// work goes on (its report, later, opens them again; the card keeps saying `working`): those
+    /// under the invocation that is closing (`under`), or all of them when the run closes
+    /// (`None`).
+    fn suspend_sessions(&mut self, under: Option<&SubagentRunId>, out: &mut Vec<agui::Event>) {
+        let mut open: Vec<&mut SessionView> = self
+            .sessions
+            .values_mut()
+            .filter(|v| v.sub_open && under.is_none_or(|u| v.parent.as_ref() == Some(u)))
+            .collect();
         open.sort_by_key(|v| v.seq);
         for view in open.into_iter().rev() {
             view.sub_open = false;
@@ -2735,7 +2747,8 @@ impl Projector {
         if self.invocation.is_some() {
             self.close_steps(&how, out);
             self.close_asks(&how, out);
-            self.suspend_sessions(out);
+            let under = self.invocation.as_ref().map(|i| i.id.clone());
+            self.suspend_sessions(under.as_ref(), out);
         }
         let Some(inv) = self.invocation.take() else {
             return;
@@ -2799,6 +2812,8 @@ impl Projector {
             // No interrupt: nothing is asked of the person, the agent is still at work.
             RunClose::Superseded => self.close_invocation(InvocationClose::Suspended(vec![]), out),
         }
+        // a session started with no invocation open ends with the run
+        self.suspend_sessions(None, out);
         out.push(self.state_snapshot());
         let Some(run) = self.run.take() else {
             return;

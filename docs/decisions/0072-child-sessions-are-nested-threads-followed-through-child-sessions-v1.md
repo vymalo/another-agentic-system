@@ -113,7 +113,7 @@ stateDiagram-v2
 | Slice | What | Depends on |
 |---|---|---|
 | S1 | The contract, this ADR, the card read into a typed offer, the capabilities key, the fake agent's word `child-sessions` | nothing |
-| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension (built as S2a to S2e, then S2f below) | S1 |
+| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension (S2a to S2e are built; S2f is the scenario on mocks) | S1 |
 | S2e | The AG-UI projection of a session: the parent's card and the child's log in the stream (built; `agui.md`) | S2 |
 | S2f | The scenario on mocks: a WireMock agent that serves the extension and `dev/child-sessions-e2e.sh` | S2 |
 | S3 | The person sends, steers, stops, closes and starts a session | S2 |
@@ -150,7 +150,12 @@ decision 3 and of the consequences that left the choice open.
 ## Amended (2026-11-19, S2e)
 
 - **Decision 8 as built.** The new member is the metadata key `vymalo.childThread` of the `SUBAGENT_STARTED`, beside
-  `vymalo.session`; the session is also a `vymalo.session` card. The reference client uses a subagent id once in a run, so a round after the
-  first in the same run is `sub-session-<seq>-r<round>` and every later run uses `sub-session-<seq>` again
-  ([`agui.md`](../api/agui.md#child-sessions-as-subagents)). A session still open when the agent's invocation ends is suspended with it, not
-  canceled. `PROJECTION_VERSION` does not rise (new frames for events no log held before); `childOf` in `STATE_SNAPSHOT` stays S4's.
+  `vymalo.session`; the session is also a `vymalo.session` card. A subagent id is used once in a run (the reference client refuses
+  a second start), so the first subagent is `sub-session-<seq>` and each one a later report starts is
+  `sub-session-<seq>-<seq of the report>`. A `blocked` report ends its subagent as suspended and says the card `working`; the
+  core reports that round again when it ends otherwise, and the projection says each report that differs from the last
+  ([`agui.md`](../api/agui.md#child-sessions-as-subagents)).
+- **A session event never opens or reopens the agent's invocation**: its subagent has the open invocation as its parent, or none.
+  A session still open when the invocation (or, with none, the run) ends is suspended, not canceled. A fork closes the cards it copied.
+- **`PROJECTION_VERSION` stays 2.** No released agent serves `child-sessions/v1`, so no log holds a session event, and a session
+  event changes no frame of any other event. `childOf` in `STATE_SNAPSHOT` stays S4's.
