@@ -1385,6 +1385,9 @@ TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...}, "
 ## The UI catalog
 
 *Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
+**At the A2UI v1.0 cutover** ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), nothing built yet) this section's
+extension becomes `ui-catalog/v2`, whose contract is [`ui-catalog-v2.md`](ui-catalog-v2.md): the `catalog` gains
+`"protocolVersion": "1.0"`, the version continues at 9, and the digests change. Slice S1 rewrites this section.
 Agents are meant to answer and ask through the components the person's screen can show. The web defines
 them as an A2UI **inline catalog**, `{catalogId, components: {<Name>: <JSON Schema>}}`, and sends it with a
 run; the orchestrator records it in the log and tells the agent (which is the business of the A2A adapter:
@@ -1682,6 +1685,12 @@ opens the pull request. [ADR 0013](../decisions/0013-a2ui-generative-ui.md) chos
 orchestrator → AG-UI `a2ui-surface` activity → web**, and the user's action the other way. This section
 is what the orchestrator does with it. The renderer, and the rules that only a renderer can enforce
 (vocabulary, expansion, links), are the web's ([ADR 0013](../decisions/0013-a2ui-generative-ui.md#the-web-renderer)).
+
+**This section describes what is built, A2UI v0.9.1.** The hard cutover to A2UI v1.0
+([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), nothing built yet) has its contract in
+[`ui-catalog-v2.md`](ui-catalog-v2.md): the card entry `https://a2ui.org/a2a-extension/a2ui/v1.0`,
+`a2uiRendererCapabilities` keyed `"1.0"`, no surface in a turn without them, and actions with five members only
+([section 5](ui-catalog-v2.md#5-to-the-agent-the-extension)). Slice S1 rewrites this section for v1.0.
 
 ### Facts this rests on
 
