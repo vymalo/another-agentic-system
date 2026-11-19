@@ -883,3 +883,122 @@ fn the_log_generator_makes_session_events_and_they_project_well_formed() {
     }
     project(&events);
 }
+
+fn forked(seq: i64) -> Event {
+    ev(
+        seq,
+        Actor::user(&UserId::new("alice@example.com")),
+        EventBody::ThreadForked(orch_core::ThreadForkedData {
+            from: orch_core::ForkSource {
+                thread_id: thread_id(),
+                seq: 3,
+            },
+            kind: orch_core::ForkKind::Fork,
+            title: "a parent".to_owned(),
+            description: None,
+            target: orch_core::AgentTarget {
+                agent_id: AgentId::new("plain"),
+                release: None,
+            },
+        }),
+    )
+}
+
+/// The agent works (invocation `sub-2`) and opens `s1` at seq 3 and `s2` at seq 4.
+fn two_sessions() -> Vec<Event> {
+    let mut events = working();
+    events.push(opened(4, "s2", true));
+    events
+}
+
+/// The ids of the `vymalo.session` cards in `frames`, in order.
+fn card_ids(frames: &[Frame]) -> Vec<String> {
+    frames
+        .iter()
+        .filter_map(|f| match &f.event {
+            orch_agui_proto::Event::ActivitySnapshot(e) if e.activity_type == "vymalo.session" => {
+                Some(e.message_id.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn position(got: &[String], line: &str) -> usize {
+    got.iter()
+        .position(|l| l == line)
+        .unwrap_or_else(|| panic!("{line} is not in {got:#?}"))
+}
+
+#[test]
+fn a_report_after_the_close_leaves_the_card_closed() {
+    let mut events = working();
+    events.push(closed(4, "s1"));
+    events.push(reported(5, "s1", 2, SessionOutcome::Done));
+    let frames = project(&events);
+    let snapshot = card(&frames[4]);
+    assert_eq!(snapshot["content"]["state"], "closed");
+    assert_eq!(snapshot["content"]["report"], "done");
+    assert_eq!(snapshot["content"]["round"], 2);
+}
+
+#[test]
+fn sessions_end_with_the_invocation_newest_first() {
+    let mut events = two_sessions();
+    events.push(status(5, AgentStatus::Completed));
+    events.push(thread(6, ThreadState::Done));
+    let got = all_lines(&events);
+    assert!(
+        position(&got, "SUBAGENT_FINISHED sub-session-4 suspended[]")
+            < position(&got, "SUBAGENT_FINISHED sub-session-3 suspended[]"),
+        "{got:#?}"
+    );
+}
+
+#[test]
+fn a_viewer_who_joins_is_told_of_the_open_sessions_oldest_first() {
+    let mut projector = Projector::new(meta());
+    for e in &two_sessions() {
+        projector.apply(e, Audience::Viewer);
+    }
+    let preamble = lines(&projector.resume_preamble());
+    assert!(
+        position(&preamble, "SUBAGENT_STARTED sub-session-3 helper in sub-2")
+            < position(&preamble, "SUBAGENT_STARTED sub-session-4 helper in sub-2"),
+        "{preamble:#?}"
+    );
+}
+
+#[test]
+fn a_fork_closes_the_open_cards_oldest_first_and_says_nothing_of_a_closed_one() {
+    let mut events = two_sessions();
+    events.push(opened(5, "s3", true));
+    events.push(closed(6, "s3"));
+    events.push(forked(7));
+    let frames = project(&events);
+    assert_eq!(card_ids(&frames[6]), ["session-3", "session-4"]);
+}
+
+#[test]
+fn a_session_with_no_description_says_none() {
+    let mut event = opened(3, "s1", true);
+    if let EventBody::ChildSessionOpened(d) = &mut event.body {
+        d.description = String::new();
+    }
+    let mut events = working();
+    events.pop();
+    events.push(event);
+    let frames = support::flatten(&project(&events));
+    let started = frames
+        .iter()
+        .find_map(|f| match &f.event {
+            orch_agui_proto::Event::SubagentStarted(e)
+                if e.subagent_run_id.as_str() == "sub-session-3" =>
+            {
+                Some(serde_json::to_value(e).unwrap())
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(started.get("description").is_none(), "{started}");
+}
