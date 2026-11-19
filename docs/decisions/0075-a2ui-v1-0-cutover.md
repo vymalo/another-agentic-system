@@ -7,7 +7,9 @@
   `catalogId`, its `version` continuing at 9 (decision 5). Every part marked **(owner)** is the owner's; the rest is
   the design that follows from it and from the repository's rule on extension versions, marked **(proposed)** where it
   is a choice (never forwarding an action's `userMessage`), and the owner may change it by a dated note. No question
-  of this ADR is open. **Nothing is built.** It amends
+  of this ADR is open. **Amended (2026-11-19, two more owner decisions):** A2UI over MCP is noted now and built in R2,
+  and a richer catalog (versions 10 and up) follows the cutover in R1; see [*Follow-up*](#follow-up).
+  **Nothing is built.** It amends
   [ADR 0013](0013-a2ui-generative-ui.md) (the A2UI version, its URI, its capabilities key and the actions) and
   [ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md) (the catalog's shape and the extension's URI), and closes
   [open question 22](../open-questions.md#closed). The agent side is adam-rs
@@ -227,11 +229,45 @@ stateDiagram-v2
 * **Old threads keep their v0.9.1 surfaces in the log but no longer draw them** (decision 6, the owner's), and an
   action on one is refused (decision 4); nothing is migrated, and their agents' words are untouched. R1 is the first release, so no released thread is
   affected; a thread from the test deployments shows the "earlier version" card.
+* **Look and feel belongs to the client.** A2UI v1.0 removed `theme` from the catalog and from `createSurface`, so an
+  agent describes structure (which components, what they hold, what a gesture does) and a client draws it in its own
+  design system. The web keeps its shadcn-backed components; another client of the same catalog may look different and
+  still be right. No agent, catalog or contract here names a color, a font or a spacing.
 * `ui-catalog/v1` is retired with no reader left; an agent outside adam-rs that implemented it moves to v2.
 * another-agentic-platform does not speak A2UI (its registry and forms name no A2UI value, *verified 2026-11-19* by a
   search of its tree); it only updates its vendored `adam-a2a-extensions` skill after the cutover, and its coder pins
   move on their own schedule.
 * A later A2UI version is another reviewed cutover, not a second dialect.
+
+## Follow-up
+
+**A2UI over MCP: noted now, built in R2 (owner, 2026-11-19).** A2UI's guide *Serve A2UI Layouts from an MCP Server*
+(<https://a2ui.org/guides/a2ui-over-mcp/>, read 2026-11-19) describes it:
+
+* An MCP server publishes layouts (`createSurface`, `updateComponents`) as resources under `a2ui://` URIs with the
+  media type `application/a2ui+json`; a tool names its layout in `_meta.ui.resourceUri`, and `tools/call` returns an
+  `EmbeddedResource` (`mimeType: "application/a2ui+json"`) holding an `updateDataModel` message, beside a plain text
+  summary "for text-only MCP hosts".
+* The client declares what it draws in `params.capabilities.a2ui` of `initialize`
+  (`rendererCapabilities["1.0"].supportedCatalogIds`), or, for a server without session state, in `params._meta.a2ui`
+  of each `tools/call`.
+* A gesture goes back either through `callMcpTool`, a function of A2UI's MCP catalog that calls the tool directly, or
+  as an action whose five fields (`name`, `surfaceId`, `sourceComponentId`, `timestamp`, `context`) are the arguments
+  of an `a2ui_action` tool on the server.
+
+What the system will do (R2, its own ADR): the orchestrator, as an MCP client, draws such a result as a surface
+through the same relay as an agent's (the log's `ui_surface`, the web's validator), over the same credentials and the
+same egress guard as every tool server ([ADR 0046](0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)), and allows only our
+catalog's components. **MCP Apps** (sandboxed HTML under `ui://`, `text/html;profile=mcp-app`) is a separate, later
+decision. **The cutover's types must not preclude it:** `UiVersion`, the envelope check and the web's validator take
+surfaces from any source, and nothing in them assumes an A2A agent sent them. *Unverified* as to stability: the guide
+carries no stable or experimental label, and its samples are under `samples/community/` of the A2UI repository (the
+recipe sample emits v0.9; a v1.0 one is `samples/community/mcp/a2ui-over-mcp-filesystem/`).
+
+**A richer catalog, right after the cutover, in R1 (owner, 2026-11-19).** Catalog versions 10 and up are additive
+slices after S4, each with its web components, golden surfaces and screens; each is a `ui-catalog/v2` catalog (a
+higher `version`, a new digest, no new URI). Which components is the owner's choice, drafted separately; the epic
+([#380](https://github.com/vymalo/another-agentic-system/issues/380)) lists the slices as C10 to C1n.
 
 ## Alternatives rejected
 
