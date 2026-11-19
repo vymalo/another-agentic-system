@@ -118,6 +118,12 @@ one new feature: agent-team.
 7. The orchestrator adds at most 1 s at p95 between a message accepted and the agent's first model request.
 8. Agent-team's end-to-end is green, and one live hand-off between two agents, approved by a person, is recorded.
 9. The owner tries the chat and accepts it ([ADR 0037](docs/decisions/0037-the-mvp-is-complete-against-its-build-order.md)).
+10. A2UI v1.0 is the only dialect: [sys#380](https://github.com/vymalo/another-agentic-system/issues/380)'s proofs are
+    green, and nothing writes or relays v0.9.1.
+11. Push works: `dev/notify-e2e.sh` is green, and a real device receives one push with no word of the thread.
+
+All three of agent-team, A2UI v1.0 and push hold this exit (the owner, 2026-11-19). Layer 2's chat runs on this
+orchestrator (the owner, 2026-11-19).
 
 **Not in layer 2:** sharing an agent-team preset by role (later); the coder in the cloud and all of M1 (R3); attachments (R2); memory (after R2); a person's own
 MCP servers and the other API gaps of [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) (later);
