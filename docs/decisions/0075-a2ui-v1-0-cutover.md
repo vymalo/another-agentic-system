@@ -2,8 +2,12 @@
 
 - **Status:** **Accepted (2026-11-19).** The owner's decision (2026-11-19): *"That falls into V1, we absolutely need to
   upgrade to a2ui@v1"*: the system moves from A2UI v0.9.1 to v1.0 **as a hard cutover, in R1, the first release**.
-  Decision 1 is the owner's; the rest is the design that follows from it and from the repository's rule on extension
-  versions, and the owner may change it by a dated note. **Nothing is built.** It amends
+  **Amended (2026-11-19, the owner's answers):** old threads keep their v0.9.1 surfaces, shown as made by an earlier
+  version, with actions on them refused and no migration (decisions 4 and 6); and `ui-catalog/v2` keeps the same
+  `catalogId`, its `version` continuing at 9 (decision 5). Every part marked **(owner)** is the owner's; the rest is
+  the design that follows from it and from the repository's rule on extension versions, marked **(proposed)** where it
+  is a choice (never forwarding an action's `userMessage`), and the owner may change it by a dated note. No question
+  of this ADR is open. **Nothing is built.** It amends
   [ADR 0013](0013-a2ui-generative-ui.md) (the A2UI version, its URI, its capabilities key and the actions) and
   [ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md) (the catalog's shape and the extension's URI), and closes
   [open question 22](../open-questions.md#closed). The agent side is adam-rs
@@ -92,10 +96,10 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
    `UI_CATALOG_EXTENSION` becomes `https://agents.vymalo.com/a2a/extensions/ui-catalog/v2` and the v1 URI is no longer
    detected. The fake agent (`orchestrator/crates/testsupport/src/bin/orch-fake-agent.rs`) lists the new URIs.
 4. **Actions.** The web sends, and the orchestrator forwards, `{"version": "1.0", "action": {name, surfaceId,
-   sourceComponentId, timestamp, context}}`. `userMessage` and `metadata` are never forwarded: ADR 0013's rule 7
+   sourceComponentId, timestamp, context}}`. **(proposed)** `userMessage` and `metadata` are never forwarded: ADR 0013's rule 7
    stands (an agent-authored line is put in the message box unsent, and is never sent as the person's words, inside
-   an action or outside it), and `ui_action` keeps its fields. An action on a surface whose operations are not
-   `"1.0"` (a surface of a thread from before the cutover) is refused with 422 before anything is written.
+   an action or outside it), and `ui_action` keeps its fields. **(owner)** An action on a surface whose operations are
+   not `"1.0"` (a surface of a thread from before the cutover) is refused with 422 before anything is written.
 5. **`ui-catalog/v1` becomes `ui-catalog/v2`, a new URI and a new page.** The repository's rule is that "a breaking
    change is a `v2` URI and a new page, never an edit" ([`extensions.md`](../api/extensions.md)), and this change breaks
    every v1 reader:
@@ -113,8 +117,9 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
    `$schema`, `$id`, `title`, `description`, `allowedParents` or `allowedChildren`, which a later version may add);
    component schemas may not declare `@`-prefixed properties, and since our components take literals only, they
    carry no `@path` or `@call`; a new known-answer vector for the digest; the A2UI entry of the card and the
-   capabilities key of v1.0; the forms, the answers, the refetch and section 8 unchanged in meaning. **The `catalogId`
-   stays `https://agents.vymalo.com/a2ui/catalogs/chat`, and `version` continues: 9 is the first v2 catalog**, the
+   capabilities key of v1.0; the forms, the answers, the refetch and section 8 unchanged in meaning. **(owner) The
+   `catalogId` stays `https://agents.vymalo.com/a2ui/catalogs/chat`, and `version` continues: 9 is the first v2
+   catalog**, the
    components of version 8 with `protocolVersion` added. So a thread whose current catalog is a v1 one (8 or lower)
    moves to 9 on its next run under the ledger's rule (a higher version becomes current) with no migration, and the
    v1 catalogs stay in the log. `get_ui_catalog` (`thread-tools/v1`) serves the v2 document; its own shape does not
@@ -129,10 +134,15 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
    catalog and rules 1 to 7 of ADR 0013 stand. The catalog is version 9 (`catalog.json`, `catalog.lock.json`,
    `page-ties.test.ts` against `ui-catalog-v2.md`). **The pinned converter's dialect is an implementation detail:** the
    web lowers a valid v1.0 surface to what the pinned `@assistant-ui/react-generative-ui` reads, as it lowers
-   `v0.9.1` to `v0.9` today; whether 0.0.21 (whose `isVersion` took the draft's `"v1.0"`, ADR 0013, *verified
-   2026-09-29*) or a newer release reads the released `"1.0"` is *unverified* and slice S2 decides it. **A surface of
-   another version in an old thread's history is not drawn**: it is shown as a card that says it was made by an
-   earlier version of the app, with its operations folded and no live control.
+   `v0.9.1` to `v0.9` today. **No release reads the released dialect yet** (*verified 2026-11-19*, the npm registry
+   and the published tarballs): the pinned 0.0.21 took the draft's `"v1.0"` (ADR 0013, *verified 2026-09-29*), and the
+   latest, `@assistant-ui/react-generative-ui` **0.1.11** (published 2026-11-18), depends on
+   `@assistant-ui/generative-ui` `^0.0.12` (latest 0.0.12, the same day), whose `dist/a2ui/reducer.js` still accepts
+   only `"v0.9"`, `"v0.9.1"` and `"v1.0"` and whose `dist/a2ui/convert.js` reads a binding as `{"path": …}`, never
+   `{"@path": …}`. So slice S2 keeps lowering (`"1.0"` to a version the converter takes, `@path` to `path`), and
+   decides whether to stay on 0.0.21 or move to 0.1.11 for other reasons; it checks npm again before it starts.
+   **(owner) A surface of another version in an old thread's history is not drawn and is not migrated**: it is shown
+   as a card that says it was made by an earlier version of the app, with its operations folded and no live control.
 7. **AG-UI** keeps its shape: `ACTIVITY_SNAPSHOT{activityType: "a2ui-surface", content: {a2ui_operations}}` carries the
    operations as sent, now `"1.0"`. The goldens move with the operations: `docs/api/examples/a2ui.events.json`,
    `a2ui-again.events.json`, `docs/api/examples/agui/a2ui.agui.json`, `a2ui-again.agui.json`, the history and export
@@ -214,8 +224,8 @@ stateDiagram-v2
 * Open question 22 is closed: v1.0 is final, and the candidate's spellings were wrong.
 * Every A2UI fixture, golden, mock and example moves in the cutover, and the scenarios `cards-e2e.sh`,
   `choices-e2e.sh`, `artifact-e2e.sh`, `workspace-e2e.sh` and `delete-e2e.sh` assert v1.0 cards and operations.
-* **Old threads keep their v0.9.1 surfaces in the log but no longer draw them** (decision 6), and an action on one is
-  refused (decision 4); their agents' words are untouched. R1 is the first release, so no released thread is
+* **Old threads keep their v0.9.1 surfaces in the log but no longer draw them** (decision 6, the owner's), and an
+  action on one is refused (decision 4); nothing is migrated, and their agents' words are untouched. R1 is the first release, so no released thread is
   affected; a thread from the test deployments shows the "earlier version" card.
 * `ui-catalog/v1` is retired with no reader left; an agent outside adam-rs that implemented it moves to v2.
 * another-agentic-platform does not speak A2UI (its registry and forms name no A2UI value, *verified 2026-11-19* by a
