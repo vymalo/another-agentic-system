@@ -24,6 +24,7 @@ import { useSearchConfig } from "@/features/chat/hooks/use-ui-config";
 import type { Target } from "@/features/chat/lib/agui/thread-agent";
 import { parseJob } from "@/features/chat/lib/agui/vymalo";
 import { STEER_URI } from "@/features/chat/lib/send";
+import { useCommands } from "@/features/commands/hooks/use-commands";
 import { NoAccess } from "@/features/me/components/no-access";
 import { ReadOnlyNotice } from "@/features/me/components/read-only-notice";
 import { useMe } from "@/features/me/hooks/use-me";
@@ -177,6 +178,8 @@ function Chat({ threadId }: { threadId: string | null }) {
   const capabilities = useAgentCapabilities(toolsAgentId);
   // The access tier (ADR 0061): a chip while the card lists the extension, up to what the roles allow
   const tier = useTier({ threadId, capabilities });
+  // The agent's own commands (ADR 0079): the same card, read for the "/" menu of the box
+  const commands = useCommands(capabilities);
   const [sentTiers] = useState(() => new SentTiers());
 
   // A send goes to the thread's own agent; only a new thread takes the picker's choice. The access
@@ -341,6 +344,7 @@ function Chat({ threadId }: { threadId: string | null }) {
       inputRef={composerRef}
       usage={<UsageRing usage={snapshot.usage} />}
       mentions={{ agents: mentionable, store: mentionsStore }}
+      commands={commands}
       toolbar={
         <>
           <ToolsPicker

@@ -40,8 +40,8 @@ function wordsOf(state: PickerState, query: string, options: readonly ApiPromptS
  * `aria-activedescendant` are the box's), so a press on a row does not take it. A prompt's words are
  * plain text, and a shared prompt names no author (the API gives none).
  *
- * The listbox holds options and nothing else (ARIA's rule): a line about loading, no match or a
- * failed read is its sibling, above it.
+ * The listbox holds options and nothing else (ARIA's rule): the label that says which list this is
+ * and a line about loading, no match or a failed read are its siblings, above it.
  */
 export function PromptMenu({
   id,
@@ -60,11 +60,18 @@ export function PromptMenu({
       data-slot="prompt-menu"
       className="absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-72 flex-col gap-0.5 overflow-y-auto rounded-2xl border bg-popover p-1.5 text-popover-foreground shadow-composer"
     >
+      {/* which list this is: the agent's commands and the person's prompts share one trigger */}
+      <p
+        data-slot="prompt-menu-label"
+        className="m-0 px-2.5 py-1 text-xs leading-4 text-muted-foreground"
+      >
+        Your prompts
+      </p>
       {words ? <p className="m-0 px-2.5 py-2 text-sm text-muted-foreground">{words}</p> : null}
       <div
         id={id}
         role="listbox"
-        aria-label="Prompts"
+        aria-label="Your prompts"
         aria-busy={busy || undefined}
         className="flex flex-col gap-0.5"
       >
