@@ -330,14 +330,15 @@ and the agents agree.
 > **Note, 2026-10-02: built (MVP slice 7b).** adam-coder (adam-rs `c0f12dd`) runs `run_command`, `run_checks` and OpenCode in the
 > repository's devcontainer, or in a default image, on a rootless Podman service; a stopped service is a step that says so, and a
 > devcontainer.json it cannot use is a failed step and a question to the person, never a silent fallback. The stack runs it with an
-> override (`dev/compose.devcontainer.yaml`, a Podman service with no `privileged`, `cap_add` or `devices`) and one scenario
+> override (`dev/compose.devcontainer.yaml`, a Podman service with no `privileged`, `cap_add` or `devices`, removed 2026-11-19) and one scenario
 > (`dev/devcontainer-e2e.sh`, removed 2026-11-19) that CI ran on every Coder E2E run. The orchestrator and the web did
 > not change: the environment is a nested step ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md#status-note-2026-10-02-built-the-stack-and-its-scenario)).
 > The scenario had not run when this was written: CI is its proof. Still open: Kubernetes (question 41).
 >
 > **Note, 2026-11-19: the environment is a run pod, not a service beside the coder.** The owner removed the
 > container-service path from adam-rs and from the stack around it as a hard cutover ([adam ADR
-> 0052](https://github.com/vymalo/another-adam-rs/pull/194), accepted 2026-11-19 and merged; epic #359). The contract of [ADR
+> 0052](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0052-no-podman-a-repositorys-own-environment-is-a-run-pod-of-its-image.md),
+> accepted 2026-11-19, merged as vymalo/another-adam-rs#194; epic #359). The contract of [ADR
 > 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md) stands — a repository's
 > `.devcontainer/devcontainer.json` is its work environment — and its *how* changes: on Kubernetes a repository's own
 > environment is a run pod of an image the repository publishes, when the deployment allows that image (adam-rs's
@@ -352,8 +353,8 @@ and the agents agree.
 **State, 2026-10-03.** The notes stand. Proof: `dev/workspace-e2e.sh` (scratch work, a repository created after a yes to a form and
 none after a no, a second repository added only after a yes, the gate and the pull request on the repository the work reached),
 `dev/coder-e2e.sh` with `GITHUB_AUTH=token` and `app`. **Not proven:** a GitHub App against github.com,
-the real `github-mcp-server`, and a live model's use of the consent tools (the environment scenario this line named was
-removed on 2026-11-19: the note above). The
+the real `github-mcp-server`, and a live model's use of the consent tools (the environment scenario and the service this line named
+were removed on 2026-11-19: the note above). The
 compose pin is adam-rs `ddef35e` (since `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136), it includes `7e5dcc3`: a task reads `working` from the moment a worker
 claims its run; `4edee18` adds a GitHub App that finds the installation of each owner, ADR 0014's note of 2026-10-04; `588e9b5` streams a model's reasoning, ADR 0014's note of 2026-10-05; `6478fbc` keeps the input of a step that started before its subscriber attached, ADR 0014's note of 2026-10-05, second; `d9d5ea4` makes the coder Adam, a general agent with read-only helpers, gives every tool step a title, lets a failure the base branch has too cost no check cycle and puts the build on the card, ADR 0014's note of 2026-10-07; `8e1133d` adds A2A's HTTP+JSON binding and Swagger UI at `/docs`, adam-rs ADR 0031, the same note; `09291a6` reports each model call's tokens, `usage/v1`, adam-rs ADR 0032, ADR 0014's note of 2026-10-09; `0bfea49` makes the files of an MCP server's results and of a remote sub-agent's answer files of the run, adam-rs ADR 0033, ADR 0014's second note of 2026-10-09; `5581d40` keeps a remote sub-agent's words beside its files, ADR 0014's third note of 2026-10-09; `8847c28` brings access tiers per message, adam-rs ADR 0036 and [ADR 0061](decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), `ask_user` forms with a title and typed questions, and a coder that asks nobody for consent when another agent asked it, adam-rs #115 and [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md), ADR 0014's note of 2026-10-17; `ddef35e` makes an asked coder hear the repositories the person named only in the words the orchestrator carries beside the grant (`person.said`, the context key `vymalo.person`), never in the ask's text, adam-rs #116, the agent side of ADR 0026's fourth note of 2026-10-17 ([#271](https://github.com/vymalo/another-agentic-system/pull/271)), ADR 0014's note of 2026-10-18).
 

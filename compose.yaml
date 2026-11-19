@@ -690,7 +690,7 @@ services:
   # of its own: the coder sends the token of each call (a placeholder to list the tools).
   # Since d56dd94 a tool call's step carries its `input` and its `output` (steps/v1, redacted and cut; an MCP tool's `title` is its label),
   # the instructions tell the coder what the person sees (working notes beside the steps, one self-contained answer, Markdown), and the
-  # run's commands run in the coder's own container: the image's `DEVCONTAINER_RUNTIME` is off, nothing here sets it, and the stack gives
+  # run's commands run in the coder's own container: nothing here sets a container runtime, and the stack gives
   # the coder no environment of a repository's (ADR 0028's dated note of 2026-11-19). The image sets no
   # MCP_ALLOW_STDIO any more, and the shipped `mcp.json` no longer starts a local process: this coder needs none.
   #

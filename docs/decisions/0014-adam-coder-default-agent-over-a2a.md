@@ -739,3 +739,10 @@ and the effect is fail-closed (fewer repositories count, never more). The chart'
   words yet (`dev/mentions-e2e.sh`'s asked agents are WireMock mocks), so the coder's reading of `person.said` is proven by adam-rs's own
   tests at `ddef35e` (`bin/adam-coder/tests/hearing.rs`, `tests/e2e.rs`, `crates/adam-a2a-runtime/src/person.rs`) and not by this stack;
   the Postgres cases of the orchestrator's tests; the chart's render check (`deploy.yml` runs it); the chat on netcup on the new image.
+
+> **Note, 2026-11-19:** the dev-stack paths the notes above cite for the work environment
+> (`dev/compose.devcontainer.yaml`, `dev/devcontainer-e2e.sh`) were removed with the Podman path, as
+> [ADR 0028](0028-devcontainer-json-is-the-workspace-environment-contract.md#status-note-2026-11-19-the-how-is-removed-the-contract-stays)
+> records (epic #359, [#372](https://github.com/vymalo/another-agentic-system/issues/372)). Those notes stand as the history
+> of what was checked at their pins; in this stack the coder runs commands in its own container, and a repository's
+> `devcontainer.json` is not used here.

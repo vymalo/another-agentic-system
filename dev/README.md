@@ -835,8 +835,6 @@ in a data part).
 
 Since adam-rs `1021836` ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md), status note of 2026-10-01) the coder needs no repository to
 start, and the credentials it holds are its own. The orchestrator did not change: all of this is the coder's, and the stack only has to be able to show it.
-The coder runs its commands in its own container: this stack gives it no environment of a repository's, and a repository's `.devcontainer/devcontainer.json` is not used here
-(the contract stays, its *how* is a run pod of the repository's published image, on Kubernetes: [ADR 0028](../docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md)'s dated note of 2026-11-19).
 
 - **A workspace of several repositories, started from nothing.** A task that names no repository is built in a *scratch project* (a local git repository that lives
   only while the task is open) and the coder asks where to put it; with a repository named, `publish_scratch` puts the files there. A repository the
@@ -908,6 +906,9 @@ is the one that sees the lookup: `EXPECT_INSTALLATION_LOOKUP=1 GITHUB_AUTH=app d
 **Live.** [`compose.live.yaml`](../compose.live.yaml) drops the mock `mcp.json`, `GITHUB_MCP_URL` and the mocks (the coder reads the real `github-mcp-server`, the `github-mcp` sidecar, which has no credential: the coder sends the token of each call), and takes the credential from `.env`:
 `GITHUB_TOKEN`, or `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE` (a PEM on your machine, mounted read-only; unset, an empty placeholder
 [`coder/no-github-app-key.pem`](coder/no-github-app-key.pem) is mounted that nothing reads) and exactly one of `GITHUB_APP_OWNERS` and `GITHUB_APP_INSTALLATION_ID`, plus `CREATE_REPO_OWNERS` and, for GitHub Enterprise, `GITHUB_HOST` (the sidecar's). See [Going live](#going-live).
+
+The coder runs its commands in its own container: this stack gives it no environment of a repository's, and a repository's `.devcontainer/devcontainer.json` is not used here
+(the contract stays, its *how* is a run pod of the repository's published image, on Kubernetes: [ADR 0028](../docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md)'s dated note of 2026-11-19).
 
 ## Several agents
 
@@ -3318,7 +3319,7 @@ Step input and output, clearer instructions (plan 10 S4: the pin to adam-rs `d56
   `Docker-Content-Digest` header and the sha-256 of the body agree): one `linux/amd64` manifest of thirteen layers (2,918,695,743 bytes, 2.92 GB, compressed), uid 10001, entrypoint `tini -- adam-coder`, label
   `org.opencontainers.image.revision` = `d56dd9418ec1b4e814be8c58966381ed14e664b4`. The image was not pulled (about 2.9 GB): its config blob was read from the registry. It was published by adam-rs's `coder` workflow for
   `main` at that commit; the tag appeared 20 minutes after that run started (03:58 UTC).
-- **The image sets no `MCP_ALLOW_STDIO` any more.** At `1021836` its environment had `MCP_ALLOW_STDIO=true`; at `d56dd94` the config blob has none (it names the devcontainer CLI and the container client that path drove, as `DEVCONTAINER_*` variables, and no
+- **The image sets no `MCP_ALLOW_STDIO` any more.** At `1021836` its environment had `MCP_ALLOW_STDIO=true`; at `d56dd94` the config blob has none (it names `DEVCONTAINER_CLI` and the remote client of the container engine that path drove, among the `DEVCONTAINER_*` variables, and no
   `DEVCONTAINER_RUNTIME`, which defaults to `off`). adam-rs `bin/adam-coder/README.md` says why: the image carries `github-mcp-server` (the coder's shipped `mcp.json` starts it) but also `adam-agent`, which must refuse local
   processes unless its own deployment opts in. So the deployment of the coder sets it. Here that is `compose.live.yaml`, the only place a `command` server runs (the live coder starts the real `github-mcp-server`): the **coder service**
   gets `MCP_ALLOW_STDIO: "true"`, the chat and the researcher do not (their `mcp.json` files use http servers only, so they keep refusing local processes). The offline coder needs none: the mock `mcp.json` that is mounted over its
@@ -3381,7 +3382,7 @@ that the `searxng` image starts with a read-only settings file mounted over its 
 
 Work environments on a service beside the coder (MVP slice 7b, added 2026-10-02 and removed 2026-11-19):
 
-*Verified 2026-10-02*: the scenario and the stack override that carried it were checked as this section recorded at `c0f12dd`: what the scenario relied on in adam-rs at that pin, `dev/coder/check-vendored.sh` (the three vendored files of the service included), `docker compose config -q` with the override alone and combined with the live and GitHub App overrides (the service had no `privileged`, no `cap_add` and no `devices`, uid 10001, exactly the three `security_opt`, its network and its three volumes; on `mock-ci`, `MOCK_CI_REPOS` naming `local/devbox`), `shellcheck dev/*.sh dev/coder/*.sh` and `sh -n`, and the script's `jq` (the last snapshot of a step by its label prefix, an artifact's nested field such as `environment.kind`) cut out and run on a sample of AG-UI events. It had **never run here** (no Docker daemon, no image pulled), and the Coder E2E job of the pull request that built it was its proof. That record is in this file's history; epic #359, [#372](https://github.com/vymalo/another-agentic-system/issues/372) removed the override, the vendored service and the scenario, and [ADR 0028](../docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md)'s dated note of 2026-11-19 says what stands.
+*Verified 2026-10-02*: the scenario and the stack override that carried it were checked as the history of this file records at `c0f12dd`: what the scenario relied on in adam-rs at that pin, `dev/coder/check-vendored.sh` (the three vendored files of the service included), `docker compose config -q` with the override alone and combined with the live and GitHub App overrides (the service had no `privileged`, no `cap_add` and no `devices`, uid 10001, exactly the three `security_opt`, its network and its three volumes; on `mock-ci`, `MOCK_CI_REPOS` naming `local/devbox`), `shellcheck dev/*.sh dev/coder/*.sh` and `sh -n`, and the script's `jq` (the last snapshot of a step by its label prefix, an artifact's nested field such as `environment.kind`) cut out and run on a sample of AG-UI events. It had **never run here** (no Docker daemon, no image pulled), and the Coder E2E job of the pull request that built it was its proof. That record is in this file's history; epic #359, [#372](https://github.com/vymalo/another-agentic-system/issues/372) removed the override, the vendored service and the scenario, and [ADR 0028](../docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md)'s dated note of 2026-11-19 says what stands.
 
 A web search attached to a chat (MVP slice 8, the compose end of ADR 0024: [Tools per conversation](#tools-per-conversation); the pin moves to adam-rs `851ff21`, which has [#74](https://github.com/vymalo/another-adam-rs/pull/74) and [#75](https://github.com/vymalo/another-adam-rs/pull/75)):
 

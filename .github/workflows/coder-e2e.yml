@@ -254,7 +254,7 @@ jobs:
           NO_OPENCODE=1 sh dev/coder-e2e.sh
           sh dev/workspace-e2e.sh
           # Back on the base files, as every later step expects: the App override gave the coder another credential, and the
-          # environment step that used to recreate it is gone (epic #359, slice 6). Recreates only the coder.
+          # environment step that used to recreate it is gone (epic #359, slice 12, #372). Recreates only the coder.
           docker compose up -d --no-build --wait --wait-timeout 300 coder
       - name: The web's own sign-in (the stack with dev/compose.browser-auth.yaml; dev/browser-auth-e2e.sh, ADR 0054)
         # The web is a public client of the mock issuer (`dev-web`), holds DPoP-bound tokens and an offline refresh token, and the orchestrator verifies the

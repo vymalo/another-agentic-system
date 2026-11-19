@@ -288,6 +288,12 @@ The plan built these defaults. The owner may choose differently.
 
 ## Status note, 2026-10-02: built, the stack and its scenario
 
+> **Marker, 2026-11-19:** every path this note names under `dev/` and `.github/` — the override, the vendored service,
+> the scenario, its workflow step and its compose checks — was removed with the Podman path (epic #359 slice 12,
+> [#372](https://github.com/vymalo/another-agentic-system/issues/372); adam ADR 0052). What the note says about the
+> decision and its proof stands as history; the [note of 2026-11-19](#status-note-2026-11-19-the-how-is-removed-the-contract-stays)
+> says what is true now.
+
 The contract is built on both sides. **adam-rs** (pinned in `compose.yaml` at `c0f12dd`, which contains its #67 and #68): the
 `adam-devcontainer` crate and its ADR 0010 (how adam-rs does it: the policy checked three times, the override file, the
 teardown), the coder's tools routed through the environment, OpenCode inside it, the `rebuild_environment` tool, the
@@ -330,9 +336,11 @@ under *Unverified* above (the `podman-remote` client, the user-namespace ids) ar
 ## Status note, 2026-11-19: the *how* is removed, the contract stays
 
 The owner decided on 2026-11-19 to remove Podman from adam-rs and from the stack around it, as a hard cutover
-([adam ADR 0052](https://github.com/vymalo/another-adam-rs/pull/194), accepted 2026-11-19 and merged). This note records what that does to
-this decision. **The decision above is not rewritten**: the dated notes before it say what was built and checked,
-and this one says what is true after the removal.
+([adam ADR 0052](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0052-no-podman-a-repositorys-own-environment-is-a-run-pod-of-its-image.md),
+accepted 2026-11-19, merged as vymalo/another-adam-rs#194). This note records what that does to this decision.
+**The decision above is not rewritten**: the dated notes before it say what was built and checked, and this one says
+what is true after the removal. The 2026-10-02 note carries its own marker for the paths this slice deletes, and the
+one link in it that pointed at the "Devcontainers" section points here.
 
 **The *what* is unchanged.** Decision 1 stands: a repository's `.devcontainer/devcontainer.json` is the contract of
 its work environment — the containers.dev specification, the file read in the order the specification gives, the
@@ -340,18 +348,19 @@ first repository of a workspace deciding, the untrusted-input policy (a refused 
 person decides), and nothing of it in the orchestrator. The `workspace` image of another-agentic-images stays the
 default base a repository can name, and the orchestrator and the web still change nothing.
 
-**The *how* is removed.** Decision 4 (the devcontainer CLI run against a rootless Podman service beside the coder,
-the service as the trust boundary) and decision 8's "Kubernetes waits" no longer describe anything that runs. In
-adam-rs the `adam-devcontainer` crate, the ten `DEVCONTAINER_*` and `CONTAINER_HOST` settings, `rebuild_environment`
-and the CLI and remote client in the image go. In this repository, epic #359 slice 12
-([#372](https://github.com/vymalo/another-agentic-system/issues/372), numbered slice 6 when it was claimed) removed the dev stack's half:
+**The *how* is being removed.** Decision 4 (the devcontainer CLI run against a rootless Podman service beside the
+coder, the service as the trust boundary) and decision 8's "Kubernetes waits" no longer describe anything that runs
+once adam ADR 0052's slices land. In adam-rs the `adam-devcontainer` crate, the ten `DEVCONTAINER_*` and
+`CONTAINER_HOST` settings, `rebuild_environment` and the CLI and remote client in the image go with its slices 2 and 3
+(nothing of them is built yet: the pin this stack runs still carries the path). In this repository, epic #359 slice 12
+([#372](https://github.com/vymalo/another-agentic-system/issues/372), numbered slice 6 when it was claimed, adam ADR 0052 slice 4) removed the dev stack's half:
 `dev/compose.devcontainer.yaml`, the vendored `dev/coder/podman/`, `dev/devcontainer-e2e.sh`, its step in
 `.github/workflows/coder-e2e.yml`, its compose checks, `dev/README.md`'s "Devcontainers" section, and the entries of
 `dev/coder/UPSTREAM` and `dev/coder/check-vendored.sh`. Nothing of it was left dormant or behind a flag.
 
 **The *how* is adam ADR 0052.** A repository's own environment is a **run pod of an image the repository publishes**:
 on Kubernetes, when the deployment allows the image's prefix, the coder offers `use_repository_environment` and the
-run's commands run in that pod (adam-rs slice 2, not this repository). **On a desktop and in this development stack
+run's commands run in that pod (adam-rs slice 1, not this repository). **On a desktop and in this development stack
 the tool does not appear at all**: commands run where the coder runs, and one step says the repository's
 configuration is not used. No container engine runs at run time, so the service's least-privilege table, its seccomp
 and AppArmor settings, the socket volume and the "an escape lands in the service" residual risk are history, not
@@ -360,8 +369,9 @@ the contract is still read and the answer still says so; what a repository gets 
 never a silent fallback.
 
 **What this does not decide.** Whether a cluster deployment may build an image from a repository (it may not: the
-repository's CI publishes it), how a repository names its image in `devcontainer.json`, and the platform's gVisor
-class for run pods (another-agentic-platform, AD-052). Question 41 keeps its own record in
+repository's CI publishes it), how a repository names its image in `devcontainer.json` (not here: adam ADR 0052
+decision 6 decides it — `customizations.adam.image`, or a plain `image`; a build is refused in words), and the
+platform's gVisor class for run pods (another-agentic-platform, AD-052). Question 41 keeps its own record in
 [`docs/open-questions.md`](../open-questions.md).
 
 *Verified 2026-11-19*: the paths above are gone from this repository and `git grep -i podman -- dev .github` is

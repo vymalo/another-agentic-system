@@ -12,7 +12,8 @@ chat surface. Planner-led parallel work and reviewer agents are post-MVP.
 > (`orchestrator/`) and the chat surface (`web/`) carry every slice of the [MVP](docs/mvp.md) and every
 > requirement of the [vision](docs/vision.md) that is not listed there as post-MVP: a live registry of agents, rich
 > answers and questions through the web's own components, tools attached to a conversation, several agents in one
-> message by mention, nested steps, workspaces and devcontainers for the coder, writing while an agent works, forks,
+> message by mention, nested steps, workspaces and the devcontainer contract for the coder (the dev path was removed
+> from this stack on 2026-11-19: [ADR 0028](docs/decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md#status-note-2026-11-19-the-how-is-removed-the-contract-stays)), writing while an agent works, forks,
 > files, roles. **Complete is not accepted.** Everything is proven on mocks (WireMock agents, a scripted model, mock
 > GitHub, search, registry and sign-in) by the scenario scripts of [`dev/`](dev/README.md) and by tests; nothing was run
 > against a live model, GitHub.com, the platform or a live web page (the browser agent of [ADR 0057](docs/decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)
