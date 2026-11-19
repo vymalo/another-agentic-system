@@ -47,10 +47,10 @@ name: Coder E2E
 #              tokens per model), and the AG-UI stream has the subagent and the session card),
 #              sharing a thread by a revocable link (dev/share-e2e.sh, ADR 0040: through the real edge, another signed-in user reads the link and every write by them is refused, a revoked link is a 404 and ends an open stream, an anonymous curl reads a public link with no e-mail and no step input or output, a fork is private, the cap `internal` makes a public link a 404, and the edge lets through the public link and nothing wider),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the person's own list of threads (dev/rail-e2e.sh: pin, order, archive and eject, a fork nested under its parent, none of it in the log), the platform's agent registry (an agent added
-#              to the mock registry shows up with no restart, a registry that is down leaves the static agents, and an agent's audience decides who is listed it and who is told it does not exist), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
+#              to the mock registry shows up with no restart, a registry that is down leaves the static agents, and an agent's audience decides who is listed it and who is told it does not exist), the coder (it writes the change itself: no OpenCode since adam-rs 7418467), the verification gate, the verifier, MCP through
 #              the edge, the CI webhook, the coder's workspaces (a repository created or a second one added only after a yes), the files the coder
 #              hands over (kept, referenced, served, the SVG sanitized, another user's request a 404), and the coder
-#              restarted on a copy of its agent folder with another name), then run the coder, with and without OpenCode, and the workspaces again
+#              restarted on a copy of its agent folder with another name), then run the coder and the workspaces again
 #              with the coder as a GitHub App (`-f dev/compose.github-app.yaml`; GITHUB_AUTH=app), then
 #              the web's own sign-in (the stack with `-f dev/compose.browser-auth.yaml` and dev/browser-auth-e2e.sh: a public client of the mock
 #              issuer, PKCE, DPoP-bound tokens through the edge to the real orchestrator, a refresh token used once, revocation), then
@@ -185,8 +185,8 @@ jobs:
         # a revoked public link is a 404 and ends an open anonymous stream, the cap back at `internal` makes the link a 404 for anybody not signed in, and / and /threads/x still go to sign-in,
         # /api/threads is 401 and nothing wider than the public link is let through),
         # chat -> coder ->
-        # branch -> mock-ci -> green -> pull request (OpenCode, then the check command alone; the coder's work as a tree of steps with OpenCode a
-        # sub-agent step, and its answer shown live, then completed by the log's message), red once -> sent back -> green and red always -> failed (the mock
+        # branch -> mock-ci -> green -> pull request (the coder writes hello.txt itself; its work as a tree of steps,
+        # and its answer shown live, then completed by the log's message), red once -> sent back -> green and red always -> failed (the mock
         # agent behind `mock-coder-gated`, which a run may not weaken), the verifier's findings -> rework -> pass
         # (`mock-coder-verified`), an MCP client following a job with progress, and a signed CI report that sends an
         # agent back and then ends the job (`mock-coder-ci`, dev/ci-webhook.sh through the edge's /webhooks/*), and, last, the
@@ -251,7 +251,6 @@ jobs:
           # The App has no pinned installation (GITHUB_APP_OWNERS): the first run after the coder started also asserts the installation
           # lookup, which the coder then keeps.
           EXPECT_INSTALLATION_LOOKUP=1 sh dev/coder-e2e.sh
-          NO_OPENCODE=1 sh dev/coder-e2e.sh
           sh dev/workspace-e2e.sh
           # Back on the base files, as every later step expects: the App override gave the coder another credential, and the
           # environment step that used to recreate it is gone (epic #359, slice 12, #372). Recreates only the coder.

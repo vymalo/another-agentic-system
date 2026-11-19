@@ -322,7 +322,7 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-ddef35e (since 2026-10-18; sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries adam-rs ADR 0020
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-7418467 (since 2026-11-19; sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries adam-rs ADR 0020
   # (the agent streams a model's reasoning, which the chat shows as a collapsed "Thinking" block, ADR 0044, when its model sends it) and, for adam-agent, tool
   # steps labelled with a title (a subagent's name capitalised, adam-rs ADR 0027), the build on the card (`0.1.0+5581d40` and `build/v1`, adam-rs ADR 0028),
   # the run store's schema version 3 (adam-rs ADR 0030), which the chat migrates in its database at startup, and A2A's HTTP+JSON binding beside JSON-RPC with
@@ -339,10 +339,15 @@ chat:
   # ADR 0036) are not the chat's: adam-agent's card lists no `access-tier/v1`. Since sha-ddef35e: the A2A layer of every adam agent reads
   # the `person` member beside the grant of an asked agent's message into its context (adam-rs #116, `vymalo.person`), which only the coder
   # acts on (an asked coder names only the repositories those words name, ADR 0026's fourth note): nothing of it changes the chat.
+  # Since sha-7418467 (adam-rs #140 to #208): the card of an adam agent whose root has a subagent, the chat's, lists child-sessions/v1 (adam-rs ADR 0045, ADR 0072 here), the
+  # tool calls of a turn run at the same time (adam-rs ADR 0049: an MCP server's tools too, unless its mcp.json says `"parallel": false`, as
+  # files/browser/mcp.json now does for obscura's one browser session), every agent has a plan and skills (adam-rs ADR 0044), and the run
+  # store moves to schema version 5 part 1 (file bytes out of the run, #204), which the chat and the browser migrate in their database at
+  # startup. A2UI stays v0.9.1. No new variable is required.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-ddef35e
-    digest: sha256:14a0e0dfed8f8244b73b46c46043852355a7f5d97ce4ead45f67233eeef86a44
+    tag: sha-7418467
+    digest: sha256:980c0ffba570025edbd7873813d2cba9a616da529d65a9720b108c94499f4cd9
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""

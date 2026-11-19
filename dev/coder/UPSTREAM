@@ -6,8 +6,8 @@
 # `mcp.json` that points the coder at the mock GitHub MCP server, mounted over the folder's) is dev/coder-agent/mcp.json.
 # Every file under dev/coder/agent/ (the folder the coder reads at run time, mounted by compose.yaml at /etc/adam/agent,
 # its `mcp.json` the one that names the real github-mcp-server over http, the coder's sidecar, with no credential) is a copy of the file below bin/adam-coder/agent/ upstream.
-# dev/coder/git-server/ still carries upstream's two `devbox` seed repositories: nothing here uses them since the environment
-# scenario was removed (epic #359, #372), and they leave with the pin whose upstream drops them.
+# Upstream's two `devbox` seed repositories, which nothing here used since the environment scenario was removed (epic #359, #372),
+# left with the pin 7418467, whose upstream drops them (adam-rs #208), as did the OpenCode script and its bodies (adam-rs #145).
 # Upstream's own container-service directory is neither vendored nor compared by `check-vendored.sh`: this stack runs no
 # container service at run time (epic #359, #372; adam ADR 0052).
 # Never edit them here: change them upstream, then update this commit, the copies and the image pin in compose.yaml (`x-adam-image`, one pin for the coder, its `github-mcp` sidecar and for the agents that
@@ -20,4 +20,4 @@
 # The stack's agents beside the coder (chat, researcher) are ours: dev/agents/ and dev/wiremock/model/ (each script with its own SSE
 # twin, as upstream's), which follow the same persona convention (adam-rs bin/adam-agent/README.md).
 repo=vymalo/another-adam-rs
-commit=ddef35eba1b18d42d6db8c6e2df372b40a1067fa
+commit=74184670e082766990aff5393ab84ce7f49829b6

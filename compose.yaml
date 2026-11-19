@@ -109,10 +109,17 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-10-18 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-ddef35e` is one linux/amd64 manifest (3.01 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision ddef35eba1b18d42d6db8c6e2df372b40a1067fa, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `8847c28` plus adam-rs #116 (an asked coder hears the
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-19 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-7418467` is one linux/amd64 OCI manifest (3.13 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 74184670e082766990aff5393ab84ce7f49829b6, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `ddef35e` plus adam-rs #140 to #208 (ADR 0014's status note
+# of 2026-11-19 lists what this stack sees): the coder no longer uses OpenCode (#145: `delegate_to_opencode` is gone, the scripted coder writes
+# `hello.txt` with `write_file`, and OPENCODE_MODEL is ignored, so nothing here sets it), paged tools, a plan, skills, commands and project
+# context (adam-rs ADR 0044), the tool calls of a turn at the same time (ADR 0049: MCP tools run together unless `"parallel": false`, which the
+# browser's mcp.json now says), sessions and `child-sessions/v1` on the card of an agent whose root has a subagent, the coder and the chat here (ADR 0045, #198: the orchestrator
+# activates what a card lists, ADR 0072 here), file bytes out of the run (schema v5 part 1, #204, migrated at startup), credentials per call
+# (ADR 0058, #200), static musl binaries (#201) and the dev stack without Podman (#208: the `devbox` seeds and the OpenCode script left the
+# vendored files). A2UI stays v0.9.1 (adam-rs ADR 0056 is a decision, not built). `ddef35e` was `8847c28` plus adam-rs #116 (an asked coder hears the
 # repositories the person named only in the words the orchestrator carries beside the grant of the ask's message, `person.said` of the
 # thread-tools metadata, read into the context key `vymalo.person`: never the ask's text, and nothing without the member; the agent side of
 # ADR 0026's fourth note here, #271), with adam-rs's own bump commits; no vendored file changed. `8847c28` is `5581d40` plus adam-rs #108 (a child's notice no longer keeps
@@ -152,7 +159,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-ddef35e@sha256:14a0e0dfed8f8244b73b46c46043852355a7f5d97ce4ead45f67233eeef86a44
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-7418467@sha256:980c0ffba570025edbd7873813d2cba9a616da529d65a9720b108c94499f4cd9
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
@@ -546,8 +553,8 @@ services:
       timeout: 3s
       retries: 12
 
-  # OpenAI-compatible model endpoint with two scripts, chosen by the request's model: `mock-coder`
-  # (the coder, with an SSE twin of each stub for the streamed calls it makes) and `mock-opencode` (the OpenCode the coder starts).
+  # OpenAI-compatible model endpoint with the coder's script, chosen by the request's model: `mock-coder`
+  # (with an SSE twin of each stub for the streamed calls it makes; since adam-rs 7418467 there is no `mock-opencode`: the coder no longer starts OpenCode).
   # An off-script request is a 404. The mappings come from two folders under one root, which WireMock reads recursively: the
   # vendored ones (dev/coder/wiremock, byte for byte from adam-rs) and ours (dev/wiremock/coder-share: the `[mock:share]` script,
   # where the coder makes three files and shares them, dev/artifact-e2e.sh). They are mounted beside each other, not one inside the
@@ -561,7 +568,6 @@ services:
     volumes:
       - ./dev/coder/wiremock/mock-openai/mappings:/home/wiremock/mappings/vendored:ro
       - ./dev/wiremock/coder-share/mappings:/home/wiremock/mappings/coder-share:ro
-      - ./dev/coder/wiremock/mock-openai/__files:/home/wiremock/__files:ro
 
   # The GitHub REST subset the coder uses: list and open pull requests, create a repository (`POST /orgs/{o}/repos`, `scratch`
   # is an organisation), and trade a GitHub App's JWT for an installation token (dev/compose.github-app.yaml).
@@ -677,8 +683,8 @@ services:
   # with Choices: its card lists A2UI v0.9.1, `ui-catalog/v1` and `thread-tools/v1`, so the orchestrator sends it the screen's catalog
   # and the address of the thread's own tools (`MCP_ALLOW_INSECURE` below), and `ask_user` may carry several questions at once
   # that the person answers as one form (dev/choices-e2e.sh; dev/README.md, "Choices"). `adam-agent` lists the same extensions.
-  # Since cf6ddbb the coder reports its work as steps (`steps/v1`: a step per tool call, OpenCode a sub-agent step with its own steps
-  # under it) and streams its model calls and says each answer as it is written (`text-stream/v1`); its card lists both, the
+  # Since cf6ddbb the coder reports its work as steps (`steps/v1`: a step per tool call; until 7418467 OpenCode was a sub-agent step with
+  # its own steps under it) and streams its model calls and says each answer as it is written (`text-stream/v1`); its card lists both, the
   # orchestrator activates what it lists, and `adam-agent` lists them too (dev/coder-e2e.sh; dev/README.md, "Steps and live text").
   # Since 1021836 the coder needs no repository to start: it builds in a scratch project and publishes it when the person names a
   # repository, asks the person before another repository joins its workspace (`request_repository`) and, for the owners of
@@ -724,7 +730,6 @@ services:
       # What each usage/v1 report of a call on mock-coder says as its context window, as adam-rs's own compose.yaml sets it (adam-rs ADR 0032;
       # see `x-adam-agent-env`). compose.live.yaml replaces the environment and sets none.
       MODEL_CONTEXT_WINDOW: "131072"
-      OPENCODE_MODEL: mock-opencode # OpenCode's script
       GITHUB_API_URL: http://mock-github:8080
       # Dummy. An installation is a token OR a GitHub App, never both: dev/compose.github-app.yaml turns this one off (empty) and
       # gives the coder an App (GITHUB_APP_*) that mock-github trades JWTs for tokens. MOCK_GITHUB_TOKEN=bad-token makes mock-github answer 401.
