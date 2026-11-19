@@ -703,6 +703,8 @@ impl<P: Ports> Dispatcher<P> {
                         .await;
                 }
                 OutboxPayload::Steer { .. }
+                | OutboxPayload::SessionStart { .. }
+                | OutboxPayload::SessionClose { .. }
                 | OutboxPayload::Cancel { .. }
                 | OutboxPayload::Verify { .. }
                 | OutboxPayload::Title { .. }

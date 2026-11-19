@@ -334,6 +334,9 @@ impl<P: Ports> App<P> {
                     match why {
                         orch_core::SessionRefusal::LedgerFull => ChildSessionDrop::LedgerFull,
                         orch_core::SessionRefusal::Malformed => ChildSessionDrop::Malformed,
+                        // a person's start is refused to the person, never reported by an agent
+                        orch_core::SessionRefusal::TooManyStarts
+                        | orch_core::SessionRefusal::ChildThread => ChildSessionDrop::Refused,
                     },
                     parent,
                 );
@@ -445,6 +448,7 @@ impl<P: Ports> App<P> {
                 task_id: Some(observed.task_id),
                 state: binding.task_state,
             }),
+            parent_context_id: None,
         };
         if report.check().is_err() {
             self.child_session_dropped(ChildSessionDrop::Malformed, child_id);

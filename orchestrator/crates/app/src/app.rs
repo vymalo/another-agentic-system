@@ -2366,6 +2366,13 @@ impl<P: Ports> App<P> {
             | Input::ChildSession { .. }
             | Input::ChildSessionSaid(_)
             | Input::RoundStarted { .. }
+            // A person's start and close, and what comes back for them, are the application's
+            // own methods (`start_child_session`, `close_child_session`) and the dispatcher's: a
+            // surface submits a message to a child, never these
+            | Input::StartSession { .. }
+            | Input::SessionStartEnded { .. }
+            | Input::CloseSession { .. }
+            | Input::RoundSent { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -2899,6 +2906,32 @@ impl<P: Ports> App<P> {
                         task_id,
                         by,
                     },
+                }),
+                // A person's start and close of a session (ADR 0072): `steer` rows, which the
+                // dispatcher takes to a send of its own and never to a steer.
+                Command::StartSession {
+                    request,
+                    agent,
+                    description,
+                    text,
+                    keep_open,
+                    tier,
+                    tier_cap,
+                } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::SessionStart {
+                        request,
+                        agent,
+                        description,
+                        text,
+                        keep_open,
+                        tier,
+                        tier_cap,
+                    },
+                }),
+                Command::CloseSession { cancel } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::SessionClose { cancel },
                 }),
                 Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),

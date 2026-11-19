@@ -345,6 +345,8 @@ fn report(object: &Object, shape: &Shape<'_>, own_context: &str) -> Result<Sessi
         state,
         closing,
         round,
+        // a round's `parentContextId` is checked above and kept by S3c
+        parent_context_id: None,
     })
 }
 
@@ -400,6 +402,7 @@ mod tests {
                     task_id: Some("r1".into()),
                     state: Some(AgentTaskState::Working),
                 }),
+                parent_context_id: None,
             }]
         );
     }

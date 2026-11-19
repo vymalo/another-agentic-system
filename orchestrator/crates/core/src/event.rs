@@ -5,7 +5,9 @@ use serde_json::Value;
 use crate::access_tier::AccessTier;
 use crate::ask::{AskFinishedData, AskStartedData};
 use crate::child_sessions::{
-    ChildSessionClosedData, ChildSessionOpenedData, ChildSessionReportedData, SessionBy,
+    ChildSessionCloseAskedData, ChildSessionClosedData, ChildSessionOpenedData,
+    ChildSessionReportedData, ChildSessionStartAskedData, ChildSessionStartEndedData,
+    ChildSessionStateData, SessionBy,
 };
 use crate::description::ThreadDescribedData;
 use crate::fork::ThreadForkedData;
@@ -88,6 +90,15 @@ pub enum EventKind {
     ChildSessionReported,
     /// A child session closed (ADR 0072): once per session, in the parent's log.
     ChildSessionClosed,
+    /// A person asked the parent to start a session (ADR 0072, S3): in the parent's log, with no
+    /// text.
+    ChildSessionStartAsked,
+    /// A start a person asked for ended, opened or failed (ADR 0072, S3): in the parent's log.
+    ChildSessionStartEnded,
+    /// A person asked to close the session (ADR 0072, S3): in the child's log.
+    ChildSessionCloseAsked,
+    /// The session's state changed (ADR 0072, S3): in the child's log.
+    ChildSessionState,
 }
 
 impl EventKind {
@@ -123,6 +134,10 @@ impl EventKind {
             EventKind::ChildSessionOpened => "child_session_opened",
             EventKind::ChildSessionReported => "child_session_reported",
             EventKind::ChildSessionClosed => "child_session_closed",
+            EventKind::ChildSessionStartAsked => "child_session_start_asked",
+            EventKind::ChildSessionStartEnded => "child_session_start_ended",
+            EventKind::ChildSessionCloseAsked => "child_session_close_asked",
+            EventKind::ChildSessionState => "child_session_state",
         }
     }
 }
@@ -612,6 +627,14 @@ pub enum EventBody {
     ChildSessionReported(ChildSessionReportedData),
     /// See [`ChildSessionClosedData`].
     ChildSessionClosed(ChildSessionClosedData),
+    /// See [`ChildSessionStartAskedData`].
+    ChildSessionStartAsked(ChildSessionStartAskedData),
+    /// See [`ChildSessionStartEndedData`].
+    ChildSessionStartEnded(ChildSessionStartEndedData),
+    /// See [`ChildSessionCloseAskedData`].
+    ChildSessionCloseAsked(ChildSessionCloseAskedData),
+    /// See [`ChildSessionStateData`].
+    ChildSessionState(ChildSessionStateData),
 }
 
 impl EventBody {
@@ -647,6 +670,10 @@ impl EventBody {
             EventBody::ChildSessionOpened(_) => EventKind::ChildSessionOpened,
             EventBody::ChildSessionReported(_) => EventKind::ChildSessionReported,
             EventBody::ChildSessionClosed(_) => EventKind::ChildSessionClosed,
+            EventBody::ChildSessionStartAsked(_) => EventKind::ChildSessionStartAsked,
+            EventBody::ChildSessionStartEnded(_) => EventKind::ChildSessionStartEnded,
+            EventBody::ChildSessionCloseAsked(_) => EventKind::ChildSessionCloseAsked,
+            EventBody::ChildSessionState(_) => EventKind::ChildSessionState,
         }
     }
 
@@ -682,6 +709,10 @@ impl EventBody {
             EventBody::ChildSessionOpened(d) => serde_json::to_value(d),
             EventBody::ChildSessionReported(d) => serde_json::to_value(d),
             EventBody::ChildSessionClosed(d) => serde_json::to_value(d),
+            EventBody::ChildSessionStartAsked(d) => serde_json::to_value(d),
+            EventBody::ChildSessionStartEnded(d) => serde_json::to_value(d),
+            EventBody::ChildSessionCloseAsked(d) => serde_json::to_value(d),
+            EventBody::ChildSessionState(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -724,6 +755,18 @@ impl EventBody {
             }
             EventKind::ChildSessionClosed => {
                 EventBody::ChildSessionClosed(serde_json::from_value(data)?)
+            }
+            EventKind::ChildSessionStartAsked => {
+                EventBody::ChildSessionStartAsked(serde_json::from_value(data)?)
+            }
+            EventKind::ChildSessionStartEnded => {
+                EventBody::ChildSessionStartEnded(serde_json::from_value(data)?)
+            }
+            EventKind::ChildSessionCloseAsked => {
+                EventBody::ChildSessionCloseAsked(serde_json::from_value(data)?)
+            }
+            EventKind::ChildSessionState => {
+                EventBody::ChildSessionState(serde_json::from_value(data)?)
             }
         })
     }

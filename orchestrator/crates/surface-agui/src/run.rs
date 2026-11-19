@@ -345,7 +345,11 @@ fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::AskUsage { .. }
         | Input::ChildSession { .. }
         | Input::ChildSessionSaid(_)
-        | Input::RoundStarted { .. } => {}
+        | Input::RoundStarted { .. }
+        | Input::StartSession { .. }
+        | Input::SessionStartEnded { .. }
+        | Input::CloseSession { .. }
+        | Input::RoundSent { .. } => {}
     }
     input
 }
@@ -445,7 +449,11 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::AskUsage { .. }
         | Input::ChildSession { .. }
         | Input::ChildSessionSaid(_)
-        | Input::RoundStarted { .. } => None,
+        | Input::RoundStarted { .. }
+        | Input::StartSession { .. }
+        | Input::SessionStartEnded { .. }
+        | Input::CloseSession { .. }
+        | Input::RoundSent { .. } => None,
     }
 }
 

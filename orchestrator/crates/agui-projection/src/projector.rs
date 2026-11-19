@@ -746,6 +746,15 @@ impl Projector {
                 self.on_session_closed(event, d, &mut out);
                 self.pending_error = pending_error;
             }
+            // What a person asked of a session (ADR 0072, S3) is in the log; its frames (the
+            // `vymalo.sessionStart` card, the child's own `vymalo.session` card) are S3e's, so for
+            // now the log moves and nothing is said.
+            EventBody::ChildSessionStartAsked(_)
+            | EventBody::ChildSessionStartEnded(_)
+            | EventBody::ChildSessionCloseAsked(_)
+            | EventBody::ChildSessionState(_) => {
+                self.pending_error = pending_error;
+            }
             // Token usage (ADR 0056) is not the transcript: a `CUSTOM` inside a run, folded for the
             // run's accounting, and an `error` before it still explains the `thread_state` after it.
             EventBody::ModelUsage(d) => {

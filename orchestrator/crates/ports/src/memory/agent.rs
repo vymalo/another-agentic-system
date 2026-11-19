@@ -1218,6 +1218,7 @@ async fn sessions(shared: &Arc<Shared>, task: &str, text: &str) {
             task_id: Some(round.clone()),
             state: Some(round_state),
         }),
+        parent_context_id: None,
     };
     let listed = |n: u32, report: SessionReport| {
         shared.push(
@@ -1356,6 +1357,7 @@ fn session_report(
             task_id: Some(round.to_owned()),
             state: Some(round_state),
         }),
+        parent_context_id: None,
     }
 }
 
