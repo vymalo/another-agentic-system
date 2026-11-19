@@ -79,6 +79,15 @@
 #                     names none activates nothing; a word that is not a tier is 400 and
 #                     a tier for mock-coder, whose card does not list it, is 422, with no
 #                     thread written
+#   child-sessions    child sessions (ADR 0072): mock-sessions (a WireMock agent that  child-sessions-e2e.sh
+#                     lists child-sessions/v1) names one closed session of its helper
+#                     `planner` on its parent task; the helper is a child thread, nested
+#                     under the parent, whose log is its round (read by task, nothing
+#                     sent for it); the parent's log says it opened, reported and closed,
+#                     once each; the child's tokens are logged `counted: false` and
+#                     GET /api/me/usage counts the parent's totals alone; the AG-UI
+#                     stream has the subagent `planner` and the vymalo.session card; the
+#                     agent was asked with the extension activated on every call
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
@@ -236,7 +245,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -349,6 +358,11 @@ for s in "$@"; do
           *) echo "scenario tier needs the agents mock-tiered and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    child-sessions)
+      case " $agents " in
+        *" mock-sessions "*) ;;
+        *) echo "scenario child-sessions needs the agent 'mock-sessions', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
     tools)
       for a in chat mock-coder; do
         case " $agents " in
@@ -428,6 +442,7 @@ for s in "$@"; do
     usage) run usage sh "$here/usage-e2e.sh" ;;
     usage-ledger) run usage-ledger sh "$here/usage-ledger-e2e.sh" ;;
     tier) run tier sh "$here/tier-e2e.sh" ;;
+    child-sessions) run child-sessions sh "$here/child-sessions-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;

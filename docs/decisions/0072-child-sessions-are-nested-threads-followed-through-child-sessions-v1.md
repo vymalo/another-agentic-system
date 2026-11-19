@@ -4,10 +4,10 @@
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md)
   (*"we need to add the capability that opencode has to create child session, and exchange messages with it. At creation, there
   should be a button to auto-close after work is done, so that the child session can further be reused."*), whose decision 11 puts
-  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1, S2a–S2e** (the contract
+  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1, S2a–S2f** (the contract
   [`child-sessions-v1.md`](../api/child-sessions-v1.md) and the orchestrator's reading of the card; the pure core; the store; the A2A
   client's activation and strict reading of what an agent says; the application and the dispatcher that make the child threads and follow
-  their rounds, and the API that says them). Epic:
+  their rounds, and the API that says them; the AG-UI projection; the scenario on mocks, [`dev/child-sessions-e2e.sh`](../../dev/child-sessions-e2e.sh), run against the WireMock agent `mock-sessions` on 2026-11-19 and in CI only in the full stack). Epic:
   [#332](https://github.com/vymalo/another-agentic-system/issues/332). Amends [ADR 0042](0042-the-thread-list-is-the-owners.md),
   [ADR 0055](0055-the-agent-assigns-the-a2a-context.md), [ADR 0029](0029-forking-a-thread-copies-its-log.md),
   [ADR 0036](0036-sending-while-an-agent-works.md), [ADR 0050](0050-the-chat-has-sub-agents.md) and
@@ -113,9 +113,9 @@ stateDiagram-v2
 | Slice | What | Depends on |
 |---|---|---|
 | S1 | The contract, this ADR, the card read into a typed offer, the capabilities key, the fake agent's word `child-sessions` | nothing |
-| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension (S2a to S2e are built; S2f is the scenario on mocks) | S1 |
+| S2 | Child threads, observed jobs, the parent's events, a WireMock agent that serves the extension (S2a to S2f are built) | S1 |
 | S2e | The AG-UI projection of a session: the parent's card and the child's log in the stream (built; `agui.md`) | S2 |
-| S2f | The scenario on mocks: a WireMock agent that serves the extension and `dev/child-sessions-e2e.sh` | S2 |
+| S2f | The scenario on mocks: a WireMock agent that serves the extension and `dev/child-sessions-e2e.sh` (built; `dev/README.md`) | S2 |
 | S3 | The person sends, steers, stops, closes and starts a session | S2 |
 | S4 | The web: the nested thread, the step card with "Open", the strip of sessions, "New subagent" with "Close when done" | S3 |
 | S5 | The adam pin with adam-rs ADR 0045 slice 6, the chat's `planner` kept open in `dev/agents-e2e.sh` | S4, adam-rs slice 6 |

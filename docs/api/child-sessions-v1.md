@@ -4,7 +4,7 @@
 - **Status:** **proposed (2026-11-18).** The feature is the owner's decision of 2026-11-14 (adam-rs
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md),
   decision 11, which puts this contract here); the shape of this page is proposed with
-  [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** on the agent's side, adam-rs ADR 0045 slice 6 (adam-rs #173 and #174, merged); on the orchestrator's, the reading of the card (S1), its agent side, activation and the strict read of what an agent says (S2c), and the threads for sessions: a child thread for each session, the parent's three events and the rounds followed without sending anything (S2d), and the AG-UI projection of a session (S2e: [`agui.md`](agui.md#child-sessions-as-subagents); the scenario on mocks is S2f, a person's messages S3 and the web S4). Neither half has run against the other.
+  [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** on the agent's side, adam-rs ADR 0045 slice 6 (adam-rs #173 and #174, merged); on the orchestrator's, the reading of the card (S1), its agent side, activation and the strict read of what an agent says (S2c), and the threads for sessions: a child thread for each session, the parent's three events and the rounds followed without sending anything (S2d), and the AG-UI projection of a session (S2e: [`agui.md`](agui.md#child-sessions-as-subagents)), and the scenario on mocks against a WireMock agent that serves the extension (S2f: `dev/child-sessions-e2e.sh`; a person's messages are S3 and the web S4). Neither half has run against the other.
 - **Decided in:** [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** this system. **Served by:** agents that run their helpers as sessions (adam-rs agents with subagents). **Used
@@ -277,8 +277,8 @@ round 1 in a new child context and reports `opened` by the person; a message to 
 round 1's conversation; a message to a working session is delivered into its round, and one naming the round is a steer only under
 `steer/v1`; a round that fails, asks (`blocked`) or is canceled is reported so; `CancelTask` of a round makes a kept-open session
 idle; a close closes it and a later message is refused; without activation a child context is `InvalidParams` and the parent's
-task carries nothing of this page. The orchestrator's side is tested on the fake agent's word `child-sessions` and, from S2, on a
-WireMock agent.
+task carries nothing of this page. The orchestrator's side is tested on the fake agent's word `child-sessions` and, since S2f, on a
+WireMock agent (`dev/wiremock/sessions`, `dev/child-sessions-e2e.sh`).
 
 ## Verified and unverified (2026-11-18)
 
