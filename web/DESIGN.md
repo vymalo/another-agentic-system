@@ -716,12 +716,23 @@ the thread has a plan (an agent's surface whose id starts with `plan-`, [`ui-cat
   Show in the side panel". It is a real button (`aria-controls` the panel, `aria-expanded` while the panel
   shows this turn), so Enter and Space open it.
 - **Turn actions** under a turn (`components/assistant-ui/elements/turn-actions.tsx`): **Copy** (the agent's
-  words), **Regenerate** (`RefreshCwIcon`, the newest turn only) and **Fork from here** (`SplitIcon`). They show
+  words), **Quote** (where there is a composer), **Read aloud** (`Volume2Icon`, the device's own voice), **Regenerate**
+  (`RefreshCwIcon`, the newest turn only) and **Fork from here** (`SplitIcon`). They show
   on hover and while the focus is inside the turn, and
   always on a touch screen (no hover there). Fork from here is `aria-disabled` while the turn is going on
   (the newest turn of a working thread), with a tooltip that says why; it is not offered before the page knows
   where the turn ends in the log. An earlier turn can be forked while a later one runs. Regenerate waits the same
   way (`aria-disabled`, tooltip "Regenerate (once the agent has finished this turn)"). See "Fork and branch".
+- **Read aloud** (ADR 0067 S1) is one answer at a time across the page: while its answer is read the button is **pressed**
+  (`aria-pressed="true"`, the icon a `SquareIcon`, the tooltip "Stop reading"; its name stays "Read aloud", as Copy keeps
+  "Copy" and shows "Copied"), and starting another answer cuts the first. It is not drawn in a browser without
+  `speechSynthesis`, nor for a turn with no words to say — a turn that is only a surface (`[Interface: …]`, a placeholder
+  for Copy) or only a rule has none; it *is* drawn on a shared link and for a person who may only read, where Copy is. A
+  refusal is a line of words under that answer, in the same quiet type as Copy's, and it cuts whatever the device still
+  had queued. **Esc** stops it, unless a dialog is open (that one closes, as it always did) — and only when nothing else
+  claims Esc: a menu, the search box's own clear. Nothing is stored, nothing plays by itself, and the words are the ones
+  on the screen (code is its content, a formula is the word "formula", a link is its label, and a surface says nothing).
+  A read stops when its turn leaves the page. The deployment's voice is S2/S3, behind `ui.speech`, not built.
 - **Before the first event** a shimmering "Coder is starting…" line under the avatar.
 - **A draft: the words as they are written** (2026-10-01, sys #65: "I want to see the agent's words as they
   are written"). While the model writes its reply the turn shows what it has so far, after the parts the turn
@@ -1136,6 +1147,15 @@ thread row's menu (`thread-row.tsx`). What a non-modal menu gives up: the rest o
 open (a screen reader can leave the menu by browsing), nothing locks the scroll, and a click outside closes the menu and reaches what is under it.
 The focus still goes into the menu when it opens, the arrows move in it, and Escape closes it and gives the focus back to its button. The two
 modal menus are not changed here; if axe is ever run with one of them open it will say the same.
+
+**The keyboard help sheet** (`features/shortcuts/`, ADR 0067 S1) is a modal dialog like the share and delete ones: `aria-modal`, a title
+("Keyboard shortcuts"), the focus moved into it on open and given back where it was on close (Radix has no trigger to return to here, so the
+element is remembered when the sheet opens), and Esc closes it. It lists the page's keys as a definition list, each key in a `<kbd>`, and a
+row that takes two chords draws them joined by "or" — its own two openers are a row, so the description promises nothing the page does not
+do. The modifier is the platform's own (⌘ on Apple, Ctrl elsewhere, one `isApple()` for the whole web). It opens on `?` and on Ctrl/⌘+`/`,
+**in a box, but not over a dialog that is already open** — a popover is a `role="dialog"` to Radix too, and holds Esc as well; the Shift is
+not part of the `/` chord, since on AZERTY `/` is the shifted character of its key (*unverified* against the browsers' own bindings, like
+the search shortcut above). No other binding was added, and the list is the same array the README quotes.
 
 ## A surface that needs a newer version of the app
 

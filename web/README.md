@@ -233,6 +233,94 @@ Quote). The web's implementation:
   selection, a quote is cut at 20,000 characters, and a quote is never put inside a word.
   *Unverified:* the clipboard in browsers other than Chromium, and the desktop app's download.
 
+### Read aloud, and the keyboard
+
+**Read aloud** (`features/speech/`) reads an agent's answer with **the device's own voice**: `window.speechSynthesis`
+and `SpeechSynthesisUtterance`, the voice the browser and the operating system already have. No network, no server, no
+key, no setting and nothing stored; the deployment's voice and dictation are ADR 0067's S2/S3, behind the capability
+ADR 0067 names for S2 (`ui.speech`, not built), and until then a client reads aloud with the device's voice and shows no
+microphone.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-read-aloud.png">
+  <img src="e2e/__screens__/desktop-light-read-aloud.png" alt="A finished turn in the reading column with its actions showing under the answer — Copy, Quote and Read aloud, the last one with a speaker icon — the thread list on the left and the Activity panel on the right." width="720">
+</picture>
+
+*The turn actions of a finished answer from the web's mock server (the mock's “Fix the redirect loop after signing in”), the pointer resting on Read aloud; rendered by this machine's Chromium.*
+
+- **The button** (`components/read-aloud.tsx`, in the turn actions row beside Copy and Quote) is a `TooltipIconButton`
+  named "Read aloud" (`Volume2Icon`, `data-slot="read-aloud"`), and `aria-pressed` carries the state: while that answer is
+  read the icon is a `SquareIcon` and the tooltip says "Stop reading", and the name stays "Read aloud" — as Copy keeps
+  "Copy" and shows "Copied". It goes back when the words end, when the browser refuses, or on Stop. It is **not drawn**
+  where the browser has no `speechSynthesis`, and not for a turn with no words to say — what is *spoken* gates it, so a
+  turn that is only a surface (`[Interface: …]`, a placeholder Copy takes) or only a rule draws no button. It is drawn
+  where Copy is: a shared link and a thread the person may only read still offer it.
+- **One answer at a time, app-wide** (`hooks/use-speech.ts`): the state is a module-level singleton, not a provider, so
+  starting a second answer cuts the first. The device is not the store — a chunk that fails half way can leave a queue the
+  store no longer knows about — so the queue is cut before **every** answer and on every failure, and the engine fills its
+  queue a task later, because Chromium can drop an utterance queued in the same task as `cancel()`. The snapshot carries
+  `supported`, so the server's render and the page's first render agree, and React draws the button once the page runs.
+- **What is read** (`lib/speech-text.ts`, pure; `speech-text.test.ts`) is **the words the page shows, not the Markdown**,
+  parsed with the renderer's own plugins (`remark-math` with `singleDollarTextMath: false`, then `remarkDisplayMath`), so
+  what the page draws is what the voice says. The rules are the contract's
+  ([`docs/api/message-text-v1.md`](../docs/api/message-text-v1.md)) where it has one, and ADR 0078's choices where it has
+  not: a heading and emphasis are their words; inline code and a fenced block are their content (no fence, no language
+  tag, and an unknown language reads the same as a known one); a link is its label and never its URL; an image is its alt
+  text, or "image"; list items and blockquote paragraphs are their sentences; a table is read cell by cell; **raw HTML is
+  read as it was written** (`<script>` is those characters: never run, and never dropped to nothing); **a formula the page
+  draws is the word "formula"** — `$$` on lines of its own, or a `$$…$$` paragraph by itself — while `$$x$$` beside other
+  words is text, a formula over the renderer's limit is read as its content (the page draws it as a code block), and **a
+  single dollar stays a price** ("It costs $5 or $10 a month").
+- **A `[Interface: …]` line is not a word**: `turnSource` puts one where a surface was drawn, for Copy and Quote, and the
+  voice skips it.
+- **A long answer is not cut off** (`chunkSpeech`): the words are cut at sentence ends, then at spaces, into utterances of
+  at most 240 characters, spoken in order — a browser says an utterance and stops at its end, so one utterance of 20,000
+  characters would be cut off or refused. Stop cancels the whole queue.
+- **A refusal is said in words**, in a polite status line under that answer ("Could not read aloud: the browser did not
+  allow it."), as Copy's refusal is, and never as an unhandled rejection: the browser reports through an event, or throws,
+  and the store turns either into state.
+- **Esc stops a read-aloud**, and only while one is being read and nothing else claims the key: an open dialog takes Esc
+  first (it closes, as it always did, and the answer goes on), and so do an open menu and the search box's own clear.
+- **A read stops when its turn leaves the page** (`stopSpeechIf`), and only that read.
+
+**The keyboard.** These are the keys the page listens to, and no others — including the sheet's own two openers, which
+the sheet lists as one row. `?` or Ctrl/⌘+`/` opens a sheet (`features/shortcuts/`) that lists them; the list is one array
+(`lib/shortcuts.ts`, `SHORTCUTS`) that the sheet draws, and `shortcuts.test.ts` holds each chord against the handler that
+reads it. The table below is that same list, word for word, for a reader of this page: a Markdown file cannot import it,
+so a change to a binding changes both.
+
+| Key | What it does |
+|---|---|
+| Ctrl/⌘ + K | Search threads |
+| Ctrl/⌘ + Shift + . | Thread details (the panel) |
+| Enter | Send |
+| Shift + Enter | New line |
+| Ctrl/⌘ + Shift + Enter | Stop and send |
+| Esc | Close a dialog, or stop reading aloud |
+| ? or Ctrl/⌘ + / | Show these keys |
+
+The handlers are `useSearchShortcut` (`features/search/lib/shortcut.ts`), `isPanelShortcut`
+(`features/panel/lib/shortcut.ts`), `modeOfKey` (`features/chat/lib/send.ts`), `isEscapeStop`
+(`features/speech/hooks/use-speech.ts`) and the sheet's own `isHelpKey`. The panel row is inert on the new-chat page,
+where there is no turn to open: it works in a thread.
+
+⌘ is the key on an Apple platform and Ctrl everywhere else (`isApple` in `features/search/lib/shortcut.ts`, the one
+platform check the web has). The sheet is a modal dialog: `aria-modal`, a title, the list as a definition list with
+`<kbd>` keys (the key a person reads on their keyboard: a row stores `Escape`, the sheet draws `Esc`), the focus moved
+into it when it opens and given back where it was when it closes, and Esc closes it. `?` is **not** read while a person
+writes in an input, a textarea, a select or a contenteditable; both keys are read **in a box, but not over a dialog that
+is already open** (a popover is a `role="dialog"` to Radix too, and holds Esc as well) — Ctrl/⌘+`/` in a box because no
+browser binds it (*unverified* against each browser's own list, as the search shortcut's note in `DESIGN.md` says), and
+its Shift is not part of the chord: on AZERTY `/` is the shifted character of its key, so Ctrl+Shift+`/` opens the sheet
+too. The sheet's two keys are the only ones this slice adds; every other row was already there and is unchanged.
+
+`e2e/speech.spec.ts` and `e2e/shortcuts.spec.ts` play both against the mock in Chromium, on a desktop and a phone, with
+axe in both schemes (and, for Read aloud, again while an answer is being read); `use-speech.dom.test.tsx`,
+`speech-engine.dom.test.tsx`, `speech-text.test.ts`, `shortcuts.test.ts`, `shortcuts-sheet.dom.test.tsx` and
+`turn-actions.dom.test.tsx` hold the rest. *Unverified:* a real device's voice (no browser with a speech engine was heard
+here; the e2e specs stand in for it with the queue in `e2e/voice.ts`, which also models Chromium dropping an utterance
+queued in the same task as a cancel), and a screen reader.
+
 ### Code and math in answers
 
 What any client does with an answer's text is the contract [`docs/api/message-text-v1.md`](../docs/api/message-text-v1.md); this section is how the web implements it.

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QuoteTargetContext } from "@/features/chat/components/quote";
+import { resetSpeech, SPEECH_FAILED, setSpeechEngine } from "@/features/speech/hooks/use-speech";
+import type { SpeechHandlers } from "@/features/speech/lib/speech-engine";
 import type { ThreadFork } from "@/features/threads/components/fork-provider";
 import { COPY_FAILED } from "@/hooks/use-copy-to-clipboard";
 import { REGENERATE_WAIT, TurnActions } from "./turn-actions";
@@ -210,5 +212,123 @@ describe("Copy: what reaches the clipboard and how a refusal is told", () => {
     show();
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() => expect(noteRegions()).toHaveLength(1));
+  });
+});
+
+describe("Read aloud under a turn", () => {
+  class FakeVoice {
+    spoken: string[] = [];
+    stopped = 0;
+    private handlers: SpeechHandlers | null = null;
+    speak(words: string, handlers: SpeechHandlers) {
+      this.spoken.push(words);
+      this.handlers = handlers;
+    }
+    stop() {
+      this.stopped += 1;
+    }
+    fail(reason: string) {
+      this.handlers?.error(reason);
+    }
+  }
+
+  let voice: FakeVoice;
+  // its name never changes (APG: `aria-pressed` carries the state, the name does not), and the tooltip says what a press does
+  const readAloud = () => screen.queryByRole("button", { name: "Read aloud" });
+  const pressed = () => readAloud()?.getAttribute("aria-pressed");
+  const hint = () => readAloud()?.textContent ?? "";
+
+  beforeEach(() => {
+    voice = new FakeVoice();
+    setSpeechEngine(voice);
+  });
+  afterEach(() => resetSpeech());
+
+  it("is beside Copy, and reads the words the page shows and not the Markdown", () => {
+    show({ text: "**bold** and `code`\n\n```rust\nfn main() {}\n```" });
+    const button = readAloud();
+    expect(button?.getAttribute("data-slot")).toBe("read-aloud");
+    expect(pressed()).toBe("false");
+    fireEvent.click(button as HTMLElement);
+    expect(voice.spoken).toEqual(["bold and code\nfn main() {}"]);
+  });
+
+  it("keeps its name while it reads: aria-pressed says the state, the tooltip says what a press does", () => {
+    show();
+    fireEvent.click(readAloud() as HTMLElement);
+    expect(pressed()).toBe("true");
+    expect(hint()).toContain("Stop reading");
+    fireEvent.click(readAloud() as HTMLElement);
+    expect(voice.stopped).toBe(2);
+    expect(pressed()).toBe("false");
+    expect(hint()).toContain("Read aloud");
+  });
+
+  it("says in words when the browser refuses", () => {
+    show();
+    fireEvent.click(readAloud() as HTMLElement);
+    act(() => voice.fail("not-allowed"));
+    expect(screen.getByText(SPEECH_FAILED)).toBeTruthy();
+    expect(pressed()).toBe("false");
+  });
+
+  it("stops when the turn leaves the page", () => {
+    show();
+    fireEvent.click(readAloud() as HTMLElement);
+    expect(voice.stopped).toBe(1);
+    cleanup();
+    expect(voice.stopped).toBe(2);
+  });
+
+  it("stops when the turn gains its run while it reads, rather than flipping to Read aloud", () => {
+    fork = forkOf();
+    const { rerender } = render(
+      <TooltipProvider>
+        <TurnActions text="words" runId={undefined} last={false} />
+      </TooltipProvider>,
+    );
+    fireEvent.click(readAloud() as HTMLElement);
+    expect(pressed()).toBe("true");
+    // the log's marker for the run arrives: the answer is another id now, so the read of the old one is cut
+    rerender(
+      <TooltipProvider>
+        <TurnActions text="words" runId="run-1" last={false} />
+      </TooltipProvider>,
+    );
+    expect(voice.stopped).toBe(2);
+    expect(pressed()).toBe("false");
+  });
+
+  it("is not drawn where the browser has no voice", () => {
+    setSpeechEngine(null);
+    show();
+    expect(readAloud()).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+  });
+
+  it("is not drawn for an answer that says nothing", () => {
+    show({ text: "" });
+    expect(readAloud()).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+  });
+
+  it("is not drawn for a turn that is only a surface, or only a rule", () => {
+    show({ text: "[Interface: Cards]" });
+    expect(readAloud()).toBeNull();
+    // the words are still there to copy
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+    cleanup();
+    show({ text: "---" });
+    expect(readAloud()).toBeNull();
+  });
+
+  it("is drawn where Copy is, on a link and for a person who may only read", () => {
+    show(
+      {},
+      { available: false, readOnly: "Read only: your roles do not let you write in threads." },
+    );
+    expect(readAloud()).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
   });
 });

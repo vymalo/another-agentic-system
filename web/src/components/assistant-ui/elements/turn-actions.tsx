@@ -1,9 +1,10 @@
 "use client";
 
 import { CheckIcon, CopyIcon, RefreshCwIcon, SplitIcon, TriangleAlertIcon } from "lucide-react";
-import type { FC } from "react";
+import { type FC, useId } from "react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { QuoteButton } from "@/features/chat/components/quote";
+import { ReadAloud } from "@/features/speech/components/read-aloud";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
 import { COPY_FAILED, useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
@@ -29,7 +30,7 @@ type Props = {
 };
 
 /**
- * What a person can do with a finished agent turn: copy its words (the Markdown source as `text/plain`, and a failure said in words), quote them into the composer, and **fork from here**, which
+ * What a person can do with a finished agent turn: copy its words (the Markdown source as `text/plain`, and a failure said in words), quote them into the composer, read them aloud with the device's voice, and **fork from here**, which
  * makes a new chat that holds the conversation up to the end of this turn (ADR 0029). They show
  * on hover and on focus (always on a touch screen, which has no hover), under the turn.
  *
@@ -43,6 +44,8 @@ type Props = {
 export const TurnActions: FC<Props> = ({ text, runId, last, began }) => {
   const fork = useThreadFork();
   const { isCopied, failed, copyToClipboard } = useCopyToClipboard();
+  // Read aloud is one answer at a time across the page: this is what tells this answer from the others
+  const ownId = useId();
   const forkable = fork.available && fork.canForkRun(runId);
   const open = fork.turnOpen && last;
   const unavailable = open || fork.busy;
@@ -74,6 +77,8 @@ export const TurnActions: FC<Props> = ({ text, runId, last, began }) => {
             {failed ? COPY_FAILED : ""}
           </span>
           <QuoteButton source={text} />
+          {/* two id spaces, so a run's id and a React id cannot meet: `run:` from the log, `own:` from this page */}
+          <ReadAloud id={runId ? `run:${runId}` : `own:${ownId}`} text={text} />
         </>
       ) : null}
       {regenerable && began ? (

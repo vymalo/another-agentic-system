@@ -1255,5 +1255,13 @@ for (const scheme of ["light", "dark"] as const) {
       await page.evaluate(() => document.scrollingElement?.scrollTo(0, 0));
       await shot(page, "inline-images");
     });
+
+    // last too: its thread is one more row in the list of the screens after it (none are)
+    test("read aloud: the actions under a finished answer", async ({ page }) => {
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await conversation(page).getByRole("button", { name: "Read aloud" }).hover();
+      await shot(page, "read-aloud", { hovering: true });
+    });
   });
 }
