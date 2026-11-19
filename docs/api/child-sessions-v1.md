@@ -5,6 +5,11 @@
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md),
   decision 11, which puts this contract here); the shape of this page is proposed with
   [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** on the agent's side, adam-rs ADR 0045 slice 6 (adam-rs #173 and #174, merged); on the orchestrator's, the reading of the card (S1), its agent side, activation and the strict read of what an agent says (S2c), and the threads for sessions: a child thread for each session, the parent's three events and the rounds followed without sending anything (S2d), and the AG-UI projection of a session (S2e: [`agui.md`](agui.md#child-sessions-as-subagents)), and the scenario on mocks against a WireMock agent that serves the extension (S2f: `dev/child-sessions-e2e.sh`; a person's messages are S3 and the web S4). Neither half has run against the other.
+- **Amended (2026-11-19, the owner):** the person's half is S3 (sending, steering, stopping, closing and starting, with the refusals of
+  section 7 as adam-rs `9aeb53a` returns them; the web is S4). The refusals adam returns are the contract's: `UnsupportedOperation`
+  past the agent's limit of working rounds (a person's new round included) and past its limit of rounds per session, and
+  `start.description` is required. A person's round is reported to the parent as having happened and what it produced; the person's
+  words stay in the child context.
 - **Decided in:** [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** this system. **Served by:** agents that run their helpers as sessions (adam-rs agents with subagents). **Used
@@ -90,6 +95,10 @@ stateDiagram-v2
 The orchestrator reads the card on **every send** (never cached, ADR 0008) and uses the extension only when the URI is listed
 exactly **and** `params` is well formed as above; unknown members are ignored. A card that lists it with bad `params`, a `maxOpen` above 256 included, is a card
 that does not list it.
+
+The agent has two more limits it does not put on the card: the most rounds **working** at once in one parent context (adam-rs: 4 by
+default, at most `maxOpen`) and the most rounds of one session (adam-rs: 20). A round that only closes a session counts toward
+neither. A client learns them from the refusals (section 7), whose words say them.
 
 ## 2. Activation
 
@@ -179,16 +188,20 @@ A message to the **parent context**, with no `taskId`, activated, whose `metadat
 }}
 ```
 
-- `agent` is one of the card's `agents`; `description` is at most 80 characters; `keepOpen` defaults to `false`.
+- `agent` is one of the card's `agents`. `description` is **required**: a string of 1 to 80 characters on one line, not blank, with no
+  control character (it is trimmed). `keepOpen` defaults to `false`.
 - The message's text is round 1's prompt. **It is not a turn of the parent**: the parent's model does not read it, and no parent task
   starts.
 - The answer is **round 1's task**, in the new child context (its `contextId` is the session's; the client adopts it, as
   [ADR 0055](../decisions/0055-the-agent-assigns-the-a2a-context.md) has a thread adopt its context). If a parent task is running, it
   also reports `opened` with `by: "person"`; if none runs, the round's own task is where the client follows the session (section 5).
   When the round ends, the parent agent learns its report, marked as the person's, at its
-  next step, now or in its next task (adam-rs ADR 0045 decisions 3 and 7).
-- Refused with an A2A error, nothing started: an unknown agent, a description too long, `maxOpen` sessions already open, or a
-  `start` that is not an object of those members.
+  next step, now or in its next task (adam-rs ADR 0045 decisions 3 and 7). **The report says only that the person's round happened
+  and what it produced** (its final state and the helper's answer); the person's message is not in it and stays in the child
+  context.
+- Refused with an A2A error, nothing started: an unknown agent, a missing, blank or too long description, `maxOpen` sessions
+  already open, the agent's limit of working rounds reached in the parent context, or a `start` that is not an object of those
+  members (section 7).
 
 ## 5. Talking to a session
 
@@ -196,10 +209,12 @@ A message to the **child context**, activated, is the person's words to the help
 
 | The session is | A message with no `taskId` | A message naming the open round's `taskId` |
 |---|---|---|
-| `idle` | starts the next round; the answer is the new round's task | refused: that round is over |
+| `idle` | starts the next round; the answer is the new round's task. Refused (`UnsupportedOperation`) when the session has had the agent's most rounds, or when the agent's limit of working rounds in the parent context is reached | refused: that round is over |
 | `working` | delivered into the open round, read at its next step (adam-rs ADR 0045 decision 1, as a message to a busy root context is); the answer is that round's task | a steer, under [`steer/v1`](steer-v1.md): when the card lists it and the request activates it; refused otherwise |
 | `working`, its round `input-required` (the helper asked) | answers the round, as plain A2A answers a task | answers the round |
 | `closed`, or idle past the agent's limit | refused: a closed session is never reopened | refused |
+
+A message delivered into a working round, a steer and a close are never refused by the limit of working rounds.
 
 Every task of a child context carries under the URI in `Task.metadata` the session it belongs to:
 `{session, parentContextId, agent, description, keepOpen, round, by, state, closing}`: `round` its number, `by` who started it,
@@ -239,11 +254,17 @@ A refusal is an A2A error response; nothing is started or written.
 | Situation | Error |
 |---|---|
 | A child context or round, not activated | `InvalidParams` |
-| A `start` naming an unknown agent, a description over 80 characters, a malformed `start` or `close` | `InvalidParams` |
+| A `start` naming an unknown agent, a description over 80 characters (or missing), a malformed `start` or `close` | `InvalidParams` |
 | A child context of another caller, or one that does not exist | `InvalidParams` for a message, `TaskNotFoundError` for a task |
 | `maxOpen` sessions open | `UnsupportedOperationError` |
+| A `start`, or a message to an idle session, while the agent's limit of rounds working in the parent context is reached (adam-rs: "4 rounds are already working in this context; wait for one to finish") | `UnsupportedOperationError` |
+| A message to an idle session that has had the agent's most rounds (adam-rs: "session S has had 20 rounds, the most it may have") | `UnsupportedOperationError` |
+| A `start` with no `description`, a blank one or one with a control character (adam-rs: "`start.description` is missing: it is a string") | `InvalidParams` |
 | A message to a closed session (or one idle past the agent's limit) | `UnsupportedOperationError`, as for a terminal task |
 | A message naming a round that is over | `UnsupportedOperationError`, as for a terminal task |
+
+The `message` of a refusal is written for the person (it says the limit and what to do) and a client may show it as text; it is
+the agent's, untrusted.
 
 ## 8. What the orchestrator does
 
@@ -255,7 +276,9 @@ A refusal is an A2A error response; nothing is started or written.
   context the event names, and follows each round as an observed job: the round's steps, text and usage go to the child thread's
   log only.
 - The parent's log records the session's opening, reports and closing; a fork of the parent does not take its sessions.
-- The person's messages in a child thread are sent to the child context; Stop is `CancelTask` of the round; "Close" is section 6.
+- The person's messages in a child thread are sent to the child context; Stop is `CancelTask` of the round; "Close" is section 6;
+  "New subagent" in the parent is section 4. A refusal reaches the person with the agent's words: a start's in the parent's log
+  (`child_session_start_ended`), a message's as the failed job of the child thread.
 
 ## 9. Security
 
@@ -273,7 +296,7 @@ A refusal is an A2A error response; nothing is started or written.
 
 What a build of an agent that lists the extension is tested for: a card with the params; an activated parent reports `opened`,
 `reported` and `closed` for a session its model starts, and its tasks carry the sessions object; a person's `start` answers with
-round 1 in a new child context and reports `opened` by the person; a message to an idle session starts round 2, which continues
+round 1 in a new child context and reports `opened` by the person, and a `start` with no description is `InvalidParams`; a start or a message past the limit of working rounds, and a message past the limit of rounds, is `UnsupportedOperation` with words; a message to an idle session starts round 2, which continues
 round 1's conversation; a message to a working session is delivered into its round, and one naming the round is a steer only under
 `steer/v1`; a round that fails, asks (`blocked`) or is canceled is reported so; `CancelTask` of a round makes a kept-open session
 idle; a close closes it and a later message is refused; without activation a child context is `InvalidParams` and the parent's
@@ -293,3 +316,4 @@ WireMock agent (`dev/wiremock/sessions`, `dev/child-sessions-e2e.sh`).
 - *Built (S2c):* the orchestrator's agent side: activation on a send, a resubscribe, a `GetTask` and a `CancelTask` only for a card that offers the extension well formed, a strict bounded read of the sessions object, the events and a round's own object, and a poll of the parent task every 5 seconds while it runs (the events are a latency optimisation, so until an agent sends them, a poll is how a session is learned). Proven against the fake agent only; a real agent is unverified.
 - *Built (S2c, fix round):* the orchestrator activates the extension on a steer too (every request about a child context), on `ListTasks`, `GetTask`, `CancelTask`, a send and a resubscribe, each only for a card read for that very call that lists it well formed; what an agent says of sessions to a call that did not activate it is dropped, and a stream whose agent sends events is not polled (the read before its ending status still runs). A `reported` event's `report` word (`done`, `failed`, `canceled`, `blocked`) is read when `round.state` is `null`.
 - *Built (S2c, fix round):* the orchestrator refuses a whole `sessions` object or event that breaks a bound: a session id, context id or helper name that is blank or holds a control or format character, a context id that two sessions share or that is the parent's own, a round whose `parentContextId` is its own context, or a description is cleaned instead (each such character becomes a space) and cut to 256 characters.
+- *Verified 2026-11-19* by reading adam-rs at `9aeb53a` (`crates/adam-a2a-runtime/src/child_sessions.rs`: `parse_start`, `start_session`, `message_to_session`, `working_words`; `docs/reference/a2a-server.md` "Child sessions"): the three refusals and their words as above; a round that only closes a session is not counted; a person's start and round ids derive from `messageId`, so a resend finds the same session or round. adam-rs #181 (`60579fd`): a person's round is reported to the parent's model without the person's text.

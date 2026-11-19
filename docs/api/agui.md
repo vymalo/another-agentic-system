@@ -195,6 +195,9 @@ gets everything.
 | `child_session_opened{session, thread, agent, description, keepOpen, by?, round?}` (ADR 0072) | The agent opened a helper session. A run is opened for it if none is, and the agent's invocation is **not**: a session event never opens or reopens one. One the projection holds already says nothing again | See [Child sessions as subagents](#child-sessions-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-session-<seq>", name:<the helper>, description, parentSubagentRunId:<the open invocation, when there is one>, metadata:{"vymalo.actor", "vymalo.at", "vymalo.childThread", "vymalo.session"}}` → `ACTIVITY_SNAPSHOT{messageId:"session-<seq>", activityType:"vymalo.session", replace:true, content:{session, threadId, agent, description, keepOpen, state:"working" (`"idle"` when the event names no round), round?, at}}`. The thread's state does not move |
 | `child_session_reported{session, thread, round, report}` (ADR 0072) | A round of a session ended: `done`, `failed`, `canceled` or `blocked`. The core says a round again when it was `blocked` and ends otherwise, so a round may be reported twice | The card again (`round`, `report`; `state:"working"` for `blocked`, which waits for the person, else `"idle"`), then the end of the subagent: `SUBAGENT_FINISHED{result:{round, report}}` for `done` and `canceled`, `SUBAGENT_FINISHED{outcome:suspended, result}` for `blocked`, `SUBAGENT_ERROR{code:"session_failed"}` for `failed`. When the subagent is already ended it is started again first (`SUBAGENT_STARTED`, a new id) and the card follows. With no run open the event is a producer-initiated run of its own. Said when the round is newer than the last said or says another outcome of it; the same again, an earlier round and a session the log never opened say nothing |
 | `child_session_closed{session, thread}` (ADR 0072) | The session was closed, once | The card again with `state:"closed"` (the last `round` and `report` stay), then `SUBAGENT_FINISHED{result:{state:"closed"}}` if the subagent is still open |
+| `child_session_start_asked{request, agent, description, keepOpen, tier?}` (ADR 0072, S3) | A person asked to start a helper session, in the parent's log. A run is opened for it outside one (`run-<seq>`), as for a late report | `ACTIVITY_SNAPSHOT{messageId:"session-start-<request>", activityType:"vymalo.sessionStart", replace:true, content:{request, agent, description, keepOpen, state:"starting", at}}`. No text: the prompt is the child thread's message. The thread's state does not move. See [A person starts, sends and closes a session](#a-person-starts-sends-and-closes-a-session) |
+| `child_session_start_ended{request, outcome, session?, thread?, reason?}` (ADR 0072, S3) | The outcome of that start, once | The same card with `replace:true`: `state:"opened"` (with `threadId`, `session`) or `"failed"` (with `reason`, the agent's words, untrusted). An `opened` outcome comes with the `child_session_opened` of the person, whose frames are those above |
+| `child_session_close_asked{session, cancel}`, `child_session_state{session, state, closing}` (ADR 0072, S3) | In the child's log: a person asked to close, and the session changed state (or began closing) | `ACTIVITY_SNAPSHOT{messageId:"session-self", activityType:"vymalo.session", replace:true, content:{session, agent, keepOpen, state, closing, closeAsked, at}}`: the child's own card, which a composer reads. No subagent frame, and the thread's state does not move |
 | `thread_forked{from:{threadId, seq}, kind, title, description?, target}` (ADR 0029) | Where the copy of the parent's events ends: the events before it are the parent's and say what they said. In any state of the projection | A run the copy left open (a cut before a message sent mid-run) is closed as `thread_state{cancelled}` closes one: `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}`. The projection forgets the finished job as `job_started` does (the interrupt, the A2UI surfaces, the steps, the attempt, the pushed commit) **and the UI catalog**, which the fork's agent was never sent. Then a producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` → `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>", activityType:"vymalo.fork", content:{from, kind, title, target, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"done", thread.title:<the parent's, as it was>, thread.description:<the parent's, when it had one>, thread.forkedFrom}` → `RUN_FINISHED{outcome:{type:"success"}}`. See [Forks](#forks) |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
 | `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
@@ -1030,6 +1033,48 @@ The child's own stream is an ordinary one, with one difference: its `job_started
 session with rounds done and canceled, a close, a report after the agent finished and a late close),
 [`sessions-failed`](examples/agui/sessions-failed.agui.json) (a failed round, `session_failed`) and
 [`sessions-child`](examples/agui/sessions-child.agui.json) (the child's log, two rounds). The reference client reads them in CI.
+
+
+## A person starts, sends and closes a session
+
+**Contract only** (2026-11-19, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slice S3a: nothing
+emits these frames before S3e). A person starts a helper from the parent (`startChildSession`), talks to it in the child thread
+(`runAgent` on the child, `cancelThread`) and closes it (`closeChildSession`). Three cards carry it; the web (S4) draws them.
+
+```mermaid
+sequenceDiagram
+  participant U as AG-UI consumer
+  participant O as Orchestrator
+  U->>O: POST /api/threads/{parent}/sessions
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.sessionStart session-start-<request> (starting)
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.sessionStart (opened, threadId) or (failed, reason)
+  O-->>U: SUBAGENT_STARTED sub-session-<seq> (by person), ACTIVITY_SNAPSHOT vymalo.session session-<seq> (working)
+  U->>O: POST /api/threads/{child}/session/close
+  O-->>U: child stream: ACTIVITY_SNAPSHOT vymalo.session session-self (closing)
+  O-->>U: child stream: ACTIVITY_SNAPSHOT vymalo.session session-self (closed)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> starting: child_session_start_asked
+  starting --> opened: child_session_start_ended opened
+  starting --> failed: child_session_start_ended failed
+  opened --> [*]
+  failed --> [*]
+```
+
+- **`vymalo.sessionStart`** (the parent's stream, `messageId: session-start-<request>`, said again with `replace: true`):
+  `{request, agent, description, keepOpen, state, threadId?, session?, reason?, at}`. `state` is `starting`, `opened` or `failed`;
+  `threadId` and `session` come with `opened`, `reason` with `failed`. `agent` and `description` are the person's words, `reason` is
+  the agent's and **untrusted**: drawn as text. It holds no prompt: that is the child thread's first message.
+- **`vymalo.session`, in the parent**, as in [Child sessions as subagents](#child-sessions-as-subagents), gains `by` (`agent` or
+  `person`) when the session says who started it. A session a person started is a `SUBAGENT_STARTED` like any other.
+- **`vymalo.session`, in the child** (`messageId: session-self`, `replace: true`, said again at each `child_session_close_asked` and
+  `child_session_state`): `{session, agent, keepOpen, state, closing, closeAsked, at}`. A composer is hidden when `state` is
+  `closed`, says "Closing..." while `closing`, and offers Stop & send only when `keepOpen`.
+- **The person's messages in a child** (the start's prompt, later rounds, steers) are the ordinary text frames of the child's stream.
+- **`PROJECTION_VERSION` stays 2.** No released log has these kinds and no frame of an existing event changes. `STATE_SNAPSHOT.thread.childOf`
+  keeps the members `chat-api.yaml` gives it (S4 reads them).
 
 ## Token usage
 
@@ -2106,18 +2151,38 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
     },
     "vymalo.session": {
       "type": "object",
-      "required": ["session", "threadId", "agent", "description", "keepOpen", "state", "at"],
+      "required": ["session", "agent", "keepOpen", "state", "at"],
       "additionalProperties": false,
       "description": "A child session the agent opened (ADR 0072): the activity's id is session-<seq> of the child_session_opened, said again with replace at every event of the session. agent and description are an agent's words, untrusted",
       "properties": {
         "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The session's id, the agent's own" },
-        "threadId": { "type": "string", "format": "uuid", "description": "The child thread that holds the session's log" },
+        "threadId": { "type": "string", "format": "uuid", "description": "The child thread that holds the session's log; in the parent's card, absent from the child's own (S3)" },
         "agent": { "type": "string", "description": "The helper's name" },
-        "description": { "type": "string", "description": "What the helper was asked to do" },
+        "description": { "type": "string", "description": "What the helper was asked to do; in the parent's card, absent from the child's own (S3)" },
         "keepOpen": { "type": "boolean", "description": "Whether the session goes idle after a round instead of closing" },
         "state": { "enum": ["working", "idle", "closed"] },
         "round": { "type": "integer", "minimum": 1, "description": "The newest round the log names" },
         "report": { "enum": ["done", "failed", "canceled", "blocked"], "description": "How that round ended; absent while it runs" },
+        "by": { "enum": ["agent", "person"], "description": "Who started the session (in the parent's card)" },
+        "closing": { "type": "boolean", "description": "A close waits for the round to end or is on its way (the child's own card, S3)" },
+        "closeAsked": { "type": "boolean", "description": "A person asked for the close (the child's own card, S3)" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
+    "vymalo.sessionStart": {
+      "type": "object",
+      "required": ["request", "agent", "description", "keepOpen", "state", "at"],
+      "additionalProperties": false,
+      "description": "A person asked to start a helper session (ADR 0072): the activity's id is session-start-<request>, said again with replace when the outcome arrives. description is the person's; reason is the agent's words, untrusted",
+      "properties": {
+        "request": { "type": "string", "format": "uuid", "description": "The id of the startChildSession request" },
+        "agent": { "type": "string", "description": "The helper the person chose" },
+        "description": { "type": "string", "maxLength": 80, "description": "What the person said the session is for" },
+        "keepOpen": { "type": "boolean" },
+        "state": { "enum": ["starting", "opened", "failed"] },
+        "threadId": { "type": "string", "format": "uuid", "description": "The child thread; with opened" },
+        "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The session's id; with opened" },
+        "reason": { "type": "string", "maxLength": 512, "description": "Why it failed, the agent's own words (untrusted); with failed" },
         "at": { "$ref": "#/$defs/at" }
       }
     },
