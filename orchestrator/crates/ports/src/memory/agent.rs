@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, ForkHistory, KnownExtension, LiveChunk, LiveEnd,
-    Releases, StepKind, StepReport, StepState, TierListing, TierOffer, ToolsGrant, UiActionData,
-    UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, CommandsListing, CommandsOffer, ForkHistory,
+    KnownExtension, LiveChunk, LiveEnd, Releases, StepKind, StepReport, StepState, TierListing,
+    TierOffer, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -305,6 +305,7 @@ impl ScriptedAgent {
                 ui: None,
                 extensions: BTreeSet::new(),
                 access_tier: TierListing::Absent,
+                commands: CommandsListing::Absent,
                 child_sessions: None,
                 build: std::collections::BTreeMap::new(),
             },
@@ -357,6 +358,28 @@ impl ScriptedAgent {
             .entry(AgentId::new(agent))
             .or_insert_with(default_card);
         card.access_tier = TierListing::Malformed;
+    }
+
+    /// Makes `agent`'s card list `commands/v1` with this offer (`None` removes it). Takes effect on
+    /// the next read: nothing is cached.
+    pub fn set_commands(&self, agent: &str, offer: Option<CommandsOffer>) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.commands = offer.map_or(CommandsListing::Absent, CommandsListing::Offered);
+    }
+
+    /// Makes `agent`'s card list `commands/v1` with `params` that cannot be read. Takes effect on
+    /// the next read.
+    pub fn set_commands_malformed(&self, agent: &str) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.commands = CommandsListing::Malformed;
     }
 
     /// Makes reading `agent`'s card fail.
@@ -476,6 +499,7 @@ fn default_card() -> AgentCardInfo {
         ui: None,
         extensions: BTreeSet::new(),
         access_tier: TierListing::Absent,
+        commands: CommandsListing::Absent,
         child_sessions: None,
         build: std::collections::BTreeMap::new(),
     }
