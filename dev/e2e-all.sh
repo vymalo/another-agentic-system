@@ -190,7 +190,6 @@
 #                     `tool_server_needs_auth`, and a new key makes it work with the new token
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #                     (the work as a tree of steps, the answer shown as it is written)
-#   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   workspace         the coder needs no repository to start: a scratch project, a      workspace-e2e.sh
 #                     repository it creates only after the person says yes (and none
 #                     after no), a second repository that joins the workspace only
@@ -245,7 +244,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -279,7 +278,7 @@ agents=$(curl -fsS --max-time 30 -H "$id_header" "$base/api/agents" 2>/dev/null 
 echo "stack: $base, agents: ${agents:-none}"
 for s in "$@"; do
   case $s in
-    greeting | choices | coder | coder-no-opencode | workspace | folder)
+    greeting | choices | coder | workspace | folder)
       case " $agents " in
         *" adam "*) ;;
         *) echo "scenario $s needs the agent 'adam', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
@@ -456,7 +455,6 @@ for s in "$@"; do
     user-tools) run user-tools sh "$here/user-tools-e2e.sh" ;;
     user-tools-relay) run user-tools-relay sh "$here/user-tools-relay-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
-    coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     workspace) run workspace sh "$here/workspace-e2e.sh" ;;
     artifact) run artifact sh "$here/artifact-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;

@@ -112,6 +112,7 @@ struct Scripted {
 
 async fn artifact(ctx: &Ctx, text: &str) {
     ctx.emit(RunEvent::Artifact {
+        id: None,
         name: "result".to_owned(),
         mime_type: Some("text/plain".to_owned()),
         data: json!(format!("echo: {text}")),

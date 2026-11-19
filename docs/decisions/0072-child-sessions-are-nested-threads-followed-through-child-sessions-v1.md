@@ -159,3 +159,11 @@ decision 3 and of the consequences that left the choice open.
   A session still open when the invocation (or, with none, the run) ends is suspended, not canceled. A fork closes the cards it copied.
 - **`PROJECTION_VERSION` stays 2.** No released agent serves `child-sessions/v1`, so no log holds a session event, and a session
   event changes no frame of any other event. `childOf` in `STATE_SNAPSHOT` stays S4's.
+
+## Amended (2026-11-19, the pin)
+
+The compose pin and the chart's `chat.image` are adam-rs `7418467` ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s status
+note of 2026-11-19), which has adam-rs ADR 0045 slice 6 (#173, #174) and its A6c (#198): the cards of the coder and of `adam-agent`
+list `child-sessions/v1` when the root has a subagent (the coder and the chat here), so S5's dependency on adam-rs is met. S5 itself (the chat's `planner` kept open in `dev/agents-e2e.sh`) is
+not built by the bump. *Unverified* until the Coder E2E workflow has run on the pin: the orchestrator activating the extension on the
+real cards.

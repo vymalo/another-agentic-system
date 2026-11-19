@@ -370,10 +370,11 @@ for pair in "sh-call-5:chart.svg:$svg_size:image/svg+xml:$svg_sha" "sh-call-6:sq
   type=${rest%%:*}
   sha=${rest#*:}
   # The line starts with this; an image's goes on with how to show it (adam-rs ADR 0033, since 0bfea49): by its file name, never a path,
-  # and, since adam-rs 8847c28 (#110), how to use it as the picture of an `ask_user` option: by its sha256.
+  # since adam-rs 8847c28 (#110), how to use it as the picture of an `ask_user` option: by its sha256, and, since adam-rs 8da1849
+  # (#161, ADR 0044 slice 14), how a `show` block's `Image` names it: by the same sha256 (`Artifact::shared_line`).
   want="Shared $file ($size bytes, $type)."
   case $type in
-    image/*) want="$want To show it in your answer, write ![description]($file). To use it as the picture of an \`ask_user\` option, pass image {sha256: \"$sha\", alt}." ;;
+    image/*) want="$want To show it in your answer, write ![description]($file). To use it as the picture of an \`ask_user\` option, pass image {sha256: \"$sha\", alt}. In a \`show\` block, an \`Image\` names it: {component: \"Image\", artifact: \"$sha\", alt}." ;;
   esac
   got=$(tool_result "$reqs" "$id")
   case $got in

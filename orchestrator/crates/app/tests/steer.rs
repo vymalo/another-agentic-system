@@ -163,6 +163,65 @@ async fn a_message_sent_while_the_agent_works_is_read_by_its_running_task() {
     run.shutdown().await;
 }
 
+/// An agent whose card offers `child-sessions/v1` (adam-rs since `9aeb53a`, for a folder whose root
+/// has a subagent, as `chat` has) answers a steer with its task, whose `sessions` object the adapter
+/// says before its status, with no state. The steer is delivered all the same: one job, the message
+/// read once, nothing sent again after the turn (`dev/steer-e2e.sh` at adam-rs `7418467` found a
+/// second job and a fourth model request when the dispatcher took the listing for the answer).
+#[tokio::test]
+async fn a_steer_answered_with_the_tasks_sessions_before_its_state_is_delivered() {
+    let w = steerable();
+    w.agent.set_steer_lists_sessions(true);
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "gate refactor the parser").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+
+    app.post_message(&alice(), t.id, "you were wrong since line 1".into())
+        .await
+        .unwrap();
+    eventually("the task read the message", || async {
+        said(&app, t.id)
+            .await
+            .contains(&"steered: you were wrong since line 1".to_owned())
+            .then_some(())
+    })
+    .await;
+    // delivered, not requeued as the delegation it stands for (a fallback leaves no steer row
+    // either: the job count and the messages below tell the two apart)
+    eventually("the steer row is finished", || async {
+        w.store
+            .list_open_outbox(t.id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.kind != OutboxKind::Steer)
+            .then_some(())
+    })
+    .await;
+    assert_eq!(state_of(&w, t.id).await, ThreadState::Working);
+
+    w.agent.release_gate();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(jobs_started(&app, t.id).await, 0, "no second job");
+    assert_eq!(
+        messages(&w).len(),
+        1,
+        "the message was not sent again after the turn"
+    );
+    assert_eq!(steers(&w).len(), 1);
+    assert_eq!(
+        said(&app, t.id)
+            .await
+            .iter()
+            .filter(|m| *m == "steered: you were wrong since line 1")
+            .count(),
+        1
+    );
+    run.shutdown().await;
+}
+
 /// An agent that reports its work only as steps (adam: `submitted` until a turn commits) is
 /// working as soon as it reports one: the log says so, in front of the step, and the message a
 /// person sends then is steered into the running task, not held until the turn ends.

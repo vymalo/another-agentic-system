@@ -173,6 +173,8 @@ struct State {
     files: Vec<AgentUpdate>,
     /// Whether a message that continues a task begins its stream with the task as it stands.
     snapshot_on_continue: bool,
+    /// Whether the answer to a steer says the task's sessions before its state.
+    steer_lists_sessions: bool,
     /// Contexts the agent assigned, one per conversation it started without being given one.
     next_context: u32,
     /// Every context a task of this agent has, assigned or named.
@@ -260,7 +262,8 @@ struct Shared {
 ///   stream begins with a snapshot of the finished task;
 /// - a message with [`SendRequest::steer`] goes into the running task when the agent's card lists
 ///   `steer/v1` ([`ScriptedAgent::set_extensions`]): the task says `steered: <text>` as a reply, once
-///   per message id, and its first event is the task as it is; an agent that does not list it, a task
+///   per message id, and its first event is the task as it is (after the task's sessions with
+///   [`ScriptedAgent::set_steer_lists_sessions`]); an agent that does not list it, a task
 ///   that ended and an unknown task refuse it as a real agent does;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
@@ -418,6 +421,14 @@ impl ScriptedAgent {
     /// by default it begins with what the task says next.
     pub fn set_snapshot_on_continue(&self, on: bool) {
         self.state().snapshot_on_continue = on;
+    }
+
+    /// With `true`, the answer to a steer says the running task's sessions (`child-sessions/v1`, ADR
+    /// 0072: an empty listing, with no state) before the task's state, as the adapter maps the first
+    /// event of an agent whose card offers sessions (adam-rs: the `Task` frame of a root task carries
+    /// its `sessions` object, `[]` included). By default the answer is the state alone.
+    pub fn set_steer_lists_sessions(&self, on: bool) {
+        self.state().steer_lists_sessions = on;
     }
 
     /// With `true`, a message that names a context this agent did not assign (a first message that
@@ -1627,6 +1638,14 @@ impl AgentClient for ScriptedAgent {
             }
             if req.steer {
                 let (envelope, fresh) = steer_into(&mut st, &req)?;
+                let sessions = st.steer_lists_sessions.then(|| AgentEnvelope {
+                    task_state: None,
+                    key: IdemKey::Turn(format!("{}:sessions:1", envelope.task_id)),
+                    update: Some(AgentUpdate::ChildSessions(orch_core::SessionNews::Listed(
+                        Vec::new(),
+                    ))),
+                    ..envelope.clone()
+                });
                 drop(st);
                 // The task reads it at its next step: here, at once, as a reply of its own, which
                 // the stream that started the task reports (a steer opens no stream of results).
@@ -1644,7 +1663,14 @@ impl AgentClient for ScriptedAgent {
                         }),
                     );
                 }
-                return Ok(futures::stream::once(async move { Ok(envelope) }).boxed());
+                return Ok(futures::stream::iter(
+                    sessions
+                        .into_iter()
+                        .chain([envelope])
+                        .map(Ok)
+                        .collect::<Vec<_>>(),
+                )
+                .boxed());
             }
             match script.as_str() {
                 "fail" => return Err(AgentError::Rejected("scripted failure".to_owned())),
