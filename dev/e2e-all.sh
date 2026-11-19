@@ -80,14 +80,15 @@
 #                     a tier for mock-coder, whose card does not list it, is 422, with no
 #                     thread written
 #   child-sessions    child sessions (ADR 0072): mock-sessions (a WireMock agent that  child-sessions-e2e.sh
-#                     lists child-sessions/v1) names one closed session of its helper
-#                     `planner` on its parent task; the helper is a child thread, nested
+#                     lists child-sessions/v1) opens a session of its helper `planner`
+#                     and ends before it does; the helper is a child thread, nested
 #                     under the parent, whose log is its round (read by task, nothing
-#                     sent for it); the parent's log says it opened, reported and closed,
-#                     once each; the child's tokens are logged `counted: false` and
-#                     GET /api/me/usage counts the parent's totals alone; the AG-UI
-#                     stream has the subagent `planner` and the vymalo.session card; the
-#                     agent was asked with the extension activated on every call
+#                     sent for it); the parent's log says it opened, then reported and
+#                     closed, once each; the child's tokens are logged `counted: false`
+#                     and GET /api/me/usage counts the parent's totals (the helper's
+#                     tokens in them) once; the AG-UI stream has the subagent `planner`
+#                     and the vymalo.session card; the agent was asked with the
+#                     extension activated on every call, and for nothing for the child
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final

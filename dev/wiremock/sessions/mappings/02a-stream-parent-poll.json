@@ -1,0 +1,39 @@
+{
+  "name": "SendStreamingMessage naming [mock:sessions-poll]: the same with no sessions object and no event (an agent that sends none: the orchestrator reads the task)",
+  "priority": 9,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "contains": "[mock:sessions-poll]"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-parent-poll.sse",
+    "chunkedDribbleDelay": {
+      "numberOfChunks": 8,
+      "totalDuration": 2000
+    }
+  }
+}

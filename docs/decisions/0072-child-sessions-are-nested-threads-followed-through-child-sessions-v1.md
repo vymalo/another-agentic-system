@@ -7,7 +7,7 @@
   the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1, S2a–S2f** (the contract
   [`child-sessions-v1.md`](../api/child-sessions-v1.md) and the orchestrator's reading of the card; the pure core; the store; the A2A
   client's activation and strict reading of what an agent says; the application and the dispatcher that make the child threads and follow
-  their rounds, and the API that says them; the AG-UI projection; the scenario on mocks, [`dev/child-sessions-e2e.sh`](../../dev/child-sessions-e2e.sh), run against the WireMock agent `mock-sessions` on 2026-11-19 and in CI only in the full stack). Epic:
+  their rounds, and the API that says them; the AG-UI projection; the scenario on mocks, [`dev/child-sessions-e2e.sh`](../../dev/child-sessions-e2e.sh), *verified 2026-11-19* by running it twice against the real orchestrator, Postgres and the WireMock agent `mock-sessions` (modelled on adam-rs's `subscribe.rs`, `session_events.rs` and `child_sessions.rs`), without the edge, the web or a real agent; the full stack runs it in CI only). Epic:
   [#332](https://github.com/vymalo/another-agentic-system/issues/332). Amends [ADR 0042](0042-the-thread-list-is-the-owners.md),
   [ADR 0055](0055-the-agent-assigns-the-a2a-context.md), [ADR 0029](0029-forking-a-thread-copies-its-log.md),
   [ADR 0036](0036-sending-while-an-agent-works.md), [ADR 0050](0050-the-chat-has-sub-agents.md) and

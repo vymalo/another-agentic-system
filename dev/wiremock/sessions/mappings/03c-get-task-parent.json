@@ -1,5 +1,5 @@
 {
-  "name": "GetTask of the parent task that activates child-sessions/v1 -> completed, its usage totals and its sessions: S closed, round 1 completed",
+  "name": "GetTask of the parent task that activates child-sessions/v1 -> completed, its usage totals (the helper's included) and its sessions: S working, round 1 working",
   "priority": 5,
   "request": {
     "method": "POST",

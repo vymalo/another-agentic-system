@@ -1,5 +1,5 @@
 {
-  "name": "SubscribeToTask of a round that activates child-sessions/v1 -> the round streams its step, a call report and completed",
+  "name": "SubscribeToTask of a round that activates child-sessions/v1 -> the helper still works for 2.5 s (the parent has ended), then the round streams its step, a call report and completed",
   "priority": 3,
   "request": {
     "method": "POST",
@@ -33,6 +33,7 @@
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache"
     },
-    "bodyFileName": "stream-round.sse"
+    "bodyFileName": "stream-round.sse",
+    "fixedDelayMilliseconds": 2500
   }
 }

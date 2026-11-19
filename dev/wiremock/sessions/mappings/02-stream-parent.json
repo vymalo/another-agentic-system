@@ -1,5 +1,5 @@
 {
-  "name": "SendStreamingMessage: any request -> submitted, working, a call report, completed (the sessions are on the task, read with GetTask)",
+  "name": "SendStreamingMessage: the Task with its sessions ([]), working, the session opened (event), the helper's start step and call, the parent's call, completed; dribbled over 2 s (child-sessions/v1)",
   "priority": 10,
   "request": {
     "method": "POST",
@@ -24,6 +24,10 @@
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache"
     },
-    "bodyFileName": "stream-parent.sse"
+    "bodyFileName": "stream-parent.sse",
+    "chunkedDribbleDelay": {
+      "numberOfChunks": 8,
+      "totalDuration": 2000
+    }
   }
 }

@@ -412,17 +412,29 @@ check "mock-sessions card: it lists child-sessions/v1, steps/v1 and usage/v1, no
 check "mock-sessions card: the params of child-sessions/v1 are one helper, planner, and maxOpen 4" \
   "$(printf '%s' "$card" | jq -r --arg u "$SESSIONS_EXT" '.capabilities.extensions[] | select(.uri == $u) | .params | [(.agents | map(.name) | join("+")), .maxOpen] | join(" ")')" "planner 4"
 check "mock-sessions: no token -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SESSIONS/a2a" -d '{}')" "401"
-check "mock-sessions: any request streams submitted, working, a call report, completed (nothing of sessions on the stream)" \
-  "$(frames "$SESSIONS" 'delegate this')" "submitted,working,working,completed"
-check "mock-sessions: the stream carries no sessions object" \
-  "$(rpc "$SESSIONS" SendStreamingMessage 'delegate this' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '[.[].result | (.task // .statusUpdate) | .metadata[$u] // empty] | length')" "0"
-check "mock-sessions: GetTask of the parent, activated -> its totals and one session, closed, whose round 1 is completed" \
-  "$(sessions GetTask task-m1 yes | jq -r --arg u "$SESSIONS_EXT" '.result.metadata[$u].sessions | map("\(.session) \(.agent) \(.state) \(.keepOpen) \(.round.number) \(.round.taskId) \(.round.state)") | join("|")')" \
-  "task-m1-s1 planner closed false 1 task-m1-s1 TASK_STATE_COMPLETED"
+check "mock-sessions: any request streams submitted, working, the session opened, the start step, the helper's call, the step done, the parent's call, completed" \
+  "$(frames "$SESSIONS" 'delegate this')" "submitted,working,working,working,working,working,working,completed"
+check "mock-sessions: the first Task says its sessions, none yet, and the one event is opened (round 1 working, no message), as adam sends them" \
+  "$(rpc "$SESSIONS" SendStreamingMessage 'delegate this' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '
+     [.[].result | (.task // .statusUpdate) as $e | $e.metadata[$u] // empty | if has("sessions") then "sessions=\(.sessions | length)" else "\(.event) \(.round.number) \(.round.state) \(.session) \(.by)" end] | join("|")')" \
+  "sessions=0|opened 1 TASK_STATE_WORKING task-check-msg-s1 agent"
+check "mock-sessions: the call of the helper is reported on the parent's task under the start step, and so is the parent's own" \
+  "$(rpc "$SESSIONS" SendStreamingMessage 'delegate this' | sed -n 's/^data: //p' | jq -rs --arg u "$USAGE_EXT" '[.[].result.statusUpdate.metadata[$u] // empty | "\(.call):\(.model):\(.totalTokens):\(.stepId // "-")"] | join(",")')" \
+  "h1:glm-5.3-mini:450:tool:s1,p1:glm-5.3:1100:-"
+check "mock-sessions: [mock:sessions-poll] streams the same states with no sessions object and no event (an agent that says none)" \
+  "$(rpc "$SESSIONS" SendStreamingMessage 'delegate this [mock:sessions-poll]' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '[.[].result | (.task // .statusUpdate) | .metadata[$u] // empty] | length')" "0"
+check "mock-sessions: the stream's context is ctx- and the task's id (the first message of a thread names none)" \
+  "$(CTX='' rpc "$SESSIONS" SendStreamingMessage 'delegate this' | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "ctx-task-check-msg"
+check "mock-sessions: GetTask of the parent, activated -> its totals (both models) and one session, working, whose round 1 is working" \
+  "$(sessions GetTask task-check-msg yes | jq -r --arg u "$SESSIONS_EXT" --arg v "$USAGE_EXT" '.result | [(.metadata[$u].sessions | map("\(.session) \(.agent) \(.state) \(.keepOpen) \(.round.number) \(.round.taskId) \(.round.state)") | join("|")), (.metadata[$v].totals | map("\(.model):\(.totalTokens)") | join(","))] | join(" ; ")')" \
+  "task-check-msg-s1 planner working false 1 task-check-msg-s1 TASK_STATE_WORKING ; glm-5.3:1100,glm-5.3-mini:450"
+check "mock-sessions: the parent's context is one value: the stream's, the task's and the round's parentContextId" \
+  "$(sessions GetTask task-check-msg yes | jq -r '.result.contextId') $(sessions GetTask task-check-msg-s1 yes | jq -r --arg u "$SESSIONS_EXT" '.result.metadata[$u].parentContextId')" \
+  "ctx-task-check-msg ctx-task-check-msg"
+check "mock-sessions: GetTask of the parent, not activated -> the usage totals and nothing of sessions" \
+  "$(sessions GetTask task-m1 no | jq -r --arg u "$SESSIONS_EXT" --arg v "$USAGE_EXT" '[(.result.metadata | has($u)), (.result.metadata[$v].totals | map(.model) | join(","))] | join(" ")')" "false glm-5.3,glm-5.3-mini"
 check "mock-sessions: the session's context is not the task's" \
   "$(sessions GetTask task-m1 yes | jq -r --arg u "$SESSIONS_EXT" '.result | (.metadata[$u].sessions[0].contextId != .contextId)')" "true"
-check "mock-sessions: GetTask of the parent, not activated -> the usage totals and nothing of sessions" \
-  "$(sessions GetTask task-m1 no | jq -r --arg u "$SESSIONS_EXT" --arg v "$USAGE_EXT" '[(.result.metadata | has($u)), (.result.metadata[$v].totals | map(.model) | join(","))] | join(" ")')" "false glm-5.3"
 check "mock-sessions: GetTask of the round, activated -> completed, its session object (round 1, by the agent, closed) and its own totals" \
   "$(sessions GetTask task-m1-s1 yes | jq -r --arg u "$SESSIONS_EXT" --arg v "$USAGE_EXT" '.result | [.status.state, .metadata[$u].session, .metadata[$u].round, .metadata[$u].by, .metadata[$u].state, (.metadata[$v].totals | map("\(.model):\(.totalTokens)") | join(","))] | join(" ")')" \
   "TASK_STATE_COMPLETED task-m1-s1 1 agent closed glm-5.3-mini:450"

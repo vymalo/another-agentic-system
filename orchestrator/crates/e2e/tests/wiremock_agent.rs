@@ -44,6 +44,8 @@ const PR_URL: &str = "https://github.com/example/sandbox/pull/1";
 /// An orchestrator serving one agent per configured mock, plus a chat client for it.
 struct Rig {
     chat: Chat,
+    /// What this process did not apply of the news about sessions.
+    child_session_drops: Box<dyn Fn() -> orch_app::ChildSessionStats>,
     _instance: TestInstance,
 }
 
@@ -57,6 +59,11 @@ fn mock(var: &str) -> Option<String> {
 }
 
 async fn rig(agents: &[(&str, &str)]) -> Rig {
+    rig_polling(agents, A2aConfig::default().child_sessions_poll).await
+}
+
+/// A rig whose A2A client reads the parent task for its sessions every `poll` while it streams.
+async fn rig_polling(agents: &[(&str, &str)], poll: Duration) -> Rig {
     let entries = agents
         .iter()
         .map(|(id, base)| AgentEntry {
@@ -70,6 +77,7 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
         .collect();
     let client = A2aAgentClient::new(A2aConfig {
         use_system_proxy: false,
+        child_sessions_poll: poll,
         ..A2aConfig::default()
     })
     .unwrap();
@@ -119,9 +127,11 @@ async fn rig(agents: &[(&str, &str)]) -> Rig {
         sse_keepalive: Duration::from_millis(150),
         ..ApiConfig::default()
     };
+    let stats = Arc::clone(&app);
     let instance = TestInstance::spawn(app, api, fast_dispatcher(), "orch-mock").await;
     Rig {
         chat: instance.chat("dev@example.com"),
+        child_session_drops: Box::new(move || stats.child_session_stats()),
         _instance: instance,
     }
 }
@@ -682,9 +692,9 @@ async fn the_usage_mock_reports_each_call_once_and_the_totals_are_read_from_the_
     );
 }
 
-/// The requests of `method` the WireMock at `base` received, each as whether it activated
-/// `child-sessions/v1` by its `A2A-Extensions` header, and the id of the task it named.
-async fn requests_of(base: &str, method: &str) -> Vec<(bool, String)> {
+/// Every JSON-RPC call the WireMock at `base` got: its method, whether its `A2A-Extensions` header
+/// names `child-sessions/v1`, and the id of the task it named.
+async fn rpc_calls(base: &str) -> Vec<(String, bool, String)> {
     let journal: serde_json::Value =
         reqwest::get(format!("{}/__admin/requests", base.trim_end_matches('/')))
             .await
@@ -699,40 +709,84 @@ async fn requests_of(base: &str, method: &str) -> Vec<(bool, String)> {
         .filter_map(|r| {
             let body: serde_json::Value =
                 serde_json::from_str(r["request"]["body"].as_str()?).ok()?;
-            (body["method"] == method).then_some(())?;
+            let method = body["method"].as_str()?.to_owned();
             let activated = r["request"]["headers"].as_object()?.iter().any(|(k, v)| {
                 k.eq_ignore_ascii_case("a2a-extensions")
                     && v.to_string().contains(CHILD_SESSIONS_EXTENSION)
             });
-            Some((
-                activated,
-                body["params"]["id"].as_str().unwrap_or_default().to_owned(),
-            ))
+            let task = body["params"]["id"].as_str().unwrap_or_default().to_owned();
+            Some((method, activated, task))
         })
         .collect()
 }
 
-#[tokio::test]
-async fn the_sessions_mock_is_one_child_thread_followed_by_task_and_counted_once() {
-    // child-sessions/v1 (ADR 0072): the card lists it, so every call about a task activates it; the
-    // parent's GetTask names one closed session whose only round is over, the orchestrator makes the
-    // child thread and follows that round with SubscribeToTask, sending the agent nothing
-    let Some(url) = mock(SESSIONS_URL) else {
-        return;
-    };
-    // only this test talks to `mock-sessions`: its journal is read whole
+async fn reset_journal(base: &str) {
     reqwest::Client::new()
-        .delete(format!("{}/__admin/requests", url.trim_end_matches('/')))
+        .delete(format!("{}/__admin/requests", base.trim_end_matches('/')))
         .send()
         .await
         .unwrap();
-    let rig = rig(&[("mock-sessions", &url)]).await;
-    let id = rig
-        .chat
-        .create_thread("mock-sessions", "delegate the plan", None)
-        .await;
+}
+
+/// One run of `mock-sessions` with `text`, to the end of the parent and of its child; returns the
+/// rig, the parent's id and its log, the child's id and its log.
+async fn run_sessions(
+    url: &str,
+    text: &str,
+    poll: Duration,
+) -> (
+    Rig,
+    String,
+    Vec<serde_json::Value>,
+    String,
+    Vec<serde_json::Value>,
+) {
+    // only the tests of this mock talk to it, one at a time (see below): its journal is read whole
+    reset_journal(url).await;
+    let rig = rig_polling(&[("mock-sessions", url)], poll).await;
+    let id = rig.chat.create_thread("mock-sessions", text, None).await;
     rig.chat.wait_state(&id, "done").await;
-    let parent = rig.chat.events(&id).await;
+    // the helper works on after the parent ended (the mock holds its round for 2.5 s): the
+    // parent's `reported` and `closed` come from the round's own object
+    let parent = eventually_events(&rig, &id, |e| {
+        e.iter().any(|x| x["kind"] == "child_session_closed")
+    })
+    .await;
+    let child = parent
+        .iter()
+        .find(|e| e["kind"] == "child_session_opened")
+        .map(|e| e["data"]["thread"].as_str().unwrap().to_owned())
+        .expect("the parent opened a session");
+    rig.chat.wait_state(&child, "done").await;
+    let child_log = rig.chat.events(&child).await;
+    (rig, id, parent, child, child_log)
+}
+
+async fn eventually_events(
+    rig: &Rig,
+    id: &str,
+    done: impl Fn(&[serde_json::Value]) -> bool,
+) -> Vec<serde_json::Value> {
+    for _ in 0..200 {
+        let events = rig.chat.events(id).await;
+        if done(&events) {
+            return events;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the log never had what the test waits for");
+}
+
+/// What both ways of learning a session end in (the events of the stream, or the reads of the task):
+/// one child thread followed by task, the parent's three events once each, the usage counted once.
+async fn assert_one_child_followed_by_task(
+    url: &str,
+    rig: &Rig,
+    id: &str,
+    parent: &[serde_json::Value],
+    child: &str,
+    log: &[serde_json::Value],
+) {
     let of = |events: &[serde_json::Value], kind: &str| {
         events
             .iter()
@@ -740,69 +794,184 @@ async fn the_sessions_mock_is_one_child_thread_followed_by_task_and_counted_once
             .map(|e| e["data"].clone())
             .collect::<Vec<_>>()
     };
-    let opened = of(&parent, "child_session_opened");
-    assert_eq!(opened.len(), 1, "{:?}", shape(&parent));
+    // the parent: its own `completed` first (the helper works on in the background), then the
+    // round's own object reports it
+    assert_eq!(
+        shape(parent)
+            .into_iter()
+            .filter(|k| k.starts_with("child_session") || k == "agent_status:completed")
+            .collect::<Vec<_>>(),
+        [
+            "child_session_opened",
+            "agent_status:completed",
+            "child_session_reported",
+            "child_session_closed"
+        ]
+    );
+    let opened = of(parent, "child_session_opened");
     assert_eq!(opened[0]["agent"], "planner");
     assert_eq!(opened[0]["description"], "Plan the migration");
     assert_eq!(opened[0]["keepOpen"], false);
     assert_eq!(opened[0]["round"], 1);
-    let child = opened[0]["thread"].as_str().unwrap().to_owned();
-    let reported = of(&parent, "child_session_reported");
-    assert_eq!(reported.len(), 1);
+    let reported = of(parent, "child_session_reported");
     assert_eq!(reported[0]["report"], "done");
-    assert_eq!(of(&parent, "child_session_closed").len(), 1);
+    assert_eq!(reported[0]["round"], 1);
+    assert_eq!(reported[0]["thread"], child);
 
-    rig.chat.wait_state(&child, "done").await;
-    let thread = rig.chat.thread(&child).await;
-    assert_eq!(thread["childOf"]["threadId"], id.as_str());
+    let thread = rig.chat.thread(child).await;
+    assert_eq!(thread["childOf"]["threadId"], id);
     assert_eq!(thread["childOf"]["agent"], "planner");
     assert_eq!(thread["childOf"]["state"], "closed");
-    assert_eq!(thread["nestedUnder"], id.as_str());
-    let log = rig.chat.events(&child).await;
-    assert_eq!(log[0]["kind"], "job_started");
-    assert_eq!(log[0]["data"]["round"]["number"], 1);
-    assert!(log.iter().all(|e| e["kind"] != "user_message"));
-    assert!(
-        log.iter()
-            .any(|e| e["kind"] == "agent_status" && e["data"]["detail"] == "planner: done"),
-        "{log:#?}"
+    assert_eq!(thread["nestedUnder"], id);
+    assert_eq!(
+        shape(log),
+        [
+            "job_started",
+            "agent_step",
+            "model_usage",
+            "agent_step",
+            "model_usage_total",
+            "agent_status:completed",
+            "thread_state:done"
+        ]
     );
-    // the helper's tokens are logged and not counted: the parent's totals are
+    assert_eq!(log[0]["data"]["round"]["number"], 1);
+    assert_eq!(log[5]["data"]["detail"], "planner: done");
+    // the helper's tokens are logged and not counted
     let uncounted: Vec<_> = log
         .iter()
         .filter(|e| e["kind"] == "model_usage" || e["kind"] == "model_usage_total")
         .collect();
-    assert_eq!(uncounted.len(), 2, "{:?}", shape(&log));
+    assert_eq!(uncounted.len(), 2);
     assert!(
         uncounted.iter().all(|e| e["data"]["counted"] == false),
         "{uncounted:?}"
     );
+    // the month: the parent's totals, which hold the helper's tokens (adam counts a round its model
+    // started in the parent's), once. A regression that also counts the helper's own `counted: false`
+    // totals makes glm-5.3-mini 900.
     let (status, month) = rig.chat.get("/api/me/usage").await;
     assert_eq!(status, 200, "{month}");
     assert_eq!(month["tasks"], 1, "{month}");
-    assert_eq!(month["models"].as_array().unwrap().len(), 1, "{month}");
-    assert_eq!(month["models"][0]["totalTokens"], 1100, "{month}");
+    let models = month["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2, "{month}");
+    let tokens = |name: &str| {
+        models.iter().find(|m| m["model"] == name).map(|m| {
+            (
+                m["inputTokens"].clone(),
+                m["outputTokens"].clone(),
+                m["totalTokens"].clone(),
+            )
+        })
+    };
+    assert_eq!(
+        tokens("glm-5.3"),
+        Some((1000.into(), 100.into(), 1100.into())),
+        "{month}"
+    );
+    assert_eq!(
+        tokens("glm-5.3-mini"),
+        Some((400.into(), 50.into(), 450.into())),
+        "{month}"
+    );
 
-    // one message was sent, activated by the header and by the message; the round was only read
+    // nothing was sent for the child: the agent got one message, the parent's, and was otherwise
+    // only asked about tasks, every call activated
+    let calls = rpc_calls(url).await;
+    let methods: std::collections::BTreeSet<&str> = calls.iter().map(|c| c.0.as_str()).collect();
+    assert_eq!(
+        methods,
+        ["GetTask", "SendStreamingMessage", "SubscribeToTask"].into(),
+        "{calls:?}"
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.0 == "SendStreamingMessage")
+            .count(),
+        1
+    );
+    assert!(
+        calls.iter().any(|c| c.0 == "GetTask"),
+        "the parent task is read: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .filter(|c| c.0 != "SendStreamingMessage")
+            .all(|c| c.1),
+        "every read of a task activated the extension: {calls:?}"
+    );
+    let subscribes: Vec<_> = calls.iter().filter(|c| c.0 == "SubscribeToTask").collect();
+    assert!(
+        !subscribes.is_empty() && subscribes.iter().all(|c| c.2.ends_with("-s1")),
+        "{calls:?}"
+    );
+    // the parent's context is not the session's: the real values meet the adapter's check, so nothing
+    // the agent said of sessions was dropped
+    assert!(
+        (rig.child_session_drops)()
+            .dropped
+            .iter()
+            .all(|(_, n)| *n == 0),
+        "{:?}",
+        (rig.child_session_drops)().dropped
+    );
+}
+
+// The mock's tests share its request journal and one task id space: they run one after the other.
+static SESSIONS_MOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn the_sessions_mock_is_one_child_thread_followed_by_task_and_counted_once() {
+    // child-sessions/v1 (ADR 0072), as adam serves it: the first task of the stream says its
+    // sessions ([]), the session is opened by an event while the parent works, the parent ends with
+    // the helper still running, and the round (held 2.5 s by the mock) reports and closes it
+    let Some(url) = mock(SESSIONS_URL) else {
+        return;
+    };
+    let _one = SESSIONS_MOCK.lock().await;
+    // a poll shorter than the parent's stream (the mock dribbles it over 2 s), longer than the time
+    // to the first event: a stream whose agent sends events is not polled, so the parent is read once
+    let (rig, id, parent, child, log) =
+        run_sessions(&url, "delegate the plan", Duration::from_millis(1000)).await;
+    assert_one_child_followed_by_task(&url, &rig, &id, &parent, &child, &log).await;
+    let reads = rpc_calls(&url)
+        .await
+        .into_iter()
+        .filter(|c| c.0 == "GetTask" && !c.2.ends_with("-s1"))
+        .count();
+    assert_eq!(reads, 1, "the parent is read once, at its end, not polled");
     let sends = activations(&url).await;
     assert_eq!(sends.len(), 1, "{sends:?}");
     assert!(sends[0].0.contains(CHILD_SESSIONS_EXTENSION));
     assert!(sends[0].1.iter().any(|e| e == CHILD_SESSIONS_EXTENSION));
-    let subscribes = requests_of(&url, "SubscribeToTask").await;
+}
+
+#[tokio::test]
+async fn the_sessions_mock_with_no_events_is_followed_by_reading_the_parent_task() {
+    // an agent that sends no events and no sessions object: the orchestrator reads the task, every
+    // second while the stream is open and once more at its end; the result is the same
+    let Some(url) = mock(SESSIONS_URL) else {
+        return;
+    };
+    let _one = SESSIONS_MOCK.lock().await;
+    let (rig, id, parent, child, log) = run_sessions(
+        &url,
+        "delegate the plan [mock:sessions-poll]",
+        Duration::from_millis(1000),
+    )
+    .await;
+    assert_one_child_followed_by_task(&url, &rig, &id, &parent, &child, &log).await;
+    let reads = rpc_calls(&url)
+        .await
+        .into_iter()
+        .filter(|c| c.0 == "GetTask" && !c.2.ends_with("-s1"))
+        .count();
     assert!(
-        !subscribes.is_empty()
-            && subscribes
-                .iter()
-                .all(|(activated, task)| *activated && task.ends_with("-s1")),
-        "{subscribes:?}"
+        reads > 1,
+        "the parent task is polled while it streams: {reads}"
     );
-    assert!(
-        requests_of(&url, "GetTask")
-            .await
-            .iter()
-            .all(|(activated, _)| *activated)
-    );
-    assert!(requests_of(&url, "SendStreamingMessage").await.len() == 1);
 }
 
 #[tokio::test]

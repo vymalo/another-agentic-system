@@ -48,10 +48,10 @@ name: Coder E2E
 #              dev/orchestrator.yaml, an unpriced model named, the same answer after one thread is deleted, another user's month empty),
 #              the access tier (dev/tier-e2e.sh: `mock-tiered`, a WireMock agent that lists access-tier/v1; a message that names a tier is logged with it and sent
 #              under the extension's URI, the tier the agent echoes is logged, a tier the plain agent does not list is refused before anything is written),
-#              child sessions (dev/child-sessions-e2e.sh, ADR 0072: `mock-sessions`, a WireMock agent that lists child-sessions/v1, names one closed session of its helper
-#              on its parent task; the helper is one child thread nested under the parent whose log is its round, read by task with nothing sent for it, the parent's log
-#              says it opened, reported and closed once each, the helper's tokens are logged `counted: false` and the month counts the parent's totals alone, and the AG-UI
-#              stream has the subagent and the session card),
+#              child sessions (dev/child-sessions-e2e.sh, ADR 0072: `mock-sessions`, a WireMock agent that lists child-sessions/v1, opens a session of its helper
+#              and ends before it does; the helper is one child thread nested under the parent whose log is its round, read by task with nothing sent for it, the parent's log
+#              says it opened, then reported and closed once each, the helper's tokens are logged `counted: false` and the month counts the parent's totals once (exact
+#              tokens per model), and the AG-UI stream has the subagent and the session card),
 #              sharing a thread by a revocable link (dev/share-e2e.sh, ADR 0040: through the real edge, another signed-in user reads the link and every write by them is refused, a revoked link is a 404 and ends an open stream, an anonymous curl reads a public link with no e-mail and no step input or output, a fork is private, the cap `internal` makes a public link a 404, and the edge lets through the public link and nothing wider),
 #              the coder asking with Choices, the researcher answering with cards and a graph, forking a thread (the first message of the fork reaches the mock agent with the conversation it continues), the person's own list of threads (dev/rail-e2e.sh: pin, order, archive and eject, a fork nested under its parent, none of it in the log), the platform's agent registry (an agent added
 #              to the mock registry shows up with no restart, a registry that is down leaves the static agents, and an agent's audience decides who is listed it and who is told it does not exist), the coder twice, with OpenCode and NO_OPENCODE=1, the verification gate, the verifier, MCP through
@@ -229,10 +229,10 @@ jobs:
         # The access tier (dev/tier-e2e.sh, ADR 0061): `mock-tiered` lists access-tier/v1 and echoes the tier it is told; a message that names one is logged
         # with it and sent under the extension's URI (the header and `message.extensions`), each message names its own, one that names none activates nothing,
         # a word that is not a tier is 400 and a tier for `mock-coder`, whose card does not list it, is 422 with no thread written.
-        # Child sessions (dev/child-sessions-e2e.sh, ADR 0072): `mock-sessions` lists child-sessions/v1 and, read with GetTask by a request that activates it, names one closed
-        # session of its helper `planner` whose round is served by SubscribeToTask; the helper is one child thread nested under the parent (`childOf`, `nestedUnder`) whose log
+        # Child sessions (dev/child-sessions-e2e.sh, ADR 0072): `mock-sessions` lists child-sessions/v1 opens a session of its helper `planner` by an event and ends before it does;
+        # its round is served by SubscribeToTask; the helper is one child thread nested under the parent (`childOf`, `nestedUnder`) whose log
         # is the round (nothing sent for it), the parent's log has `child_session_opened`, `child_session_reported` and `child_session_closed` once each, the helper's usage is
-        # `counted: false` and GET /api/me/usage counts the parent's totals alone, and the AG-UI stream has the `planner` subagent and the `vymalo.session` card.
+        # `counted: false` and GET /api/me/usage counts the parent's totals once (the helper's tokens are in them), and the AG-UI stream has the `planner` subagent and the `vymalo.session` card.
         # The MCP servers people add themselves (dev/user-tools-e2e.sh, ADR 0046): `tool-maker` holds `tools.user.add` (no other role does) and adds a server with no authentication, one with a
         # bearer token and one with an API key, lists, renames (on the revision the listing gave; a stale one is 409), re-keys, moves (a new URL revokes the credential) and deletes them;
         # a URL the guard refuses is 400 `url_refused`, the ninth server 409, another person's server a 404 and a user without the permission 403; the secrets are sealed in `user_secrets`

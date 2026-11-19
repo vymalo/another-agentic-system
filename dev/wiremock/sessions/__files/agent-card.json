@@ -1,6 +1,6 @@
 {
   "name": "mock-sessions",
-  "description": "WireMock stand-in for an A2A 1.0 agent that runs a helper as a session (child-sessions/v1, ADR 0072; local development only). Its parent task names one session whose only round is already over; the round is served by task to a client that activates the extension, and refused (InvalidParams) to one that does not.",
+  "description": "WireMock stand-in for an A2A 1.0 agent that runs a helper as a session (child-sessions/v1, ADR 0072; local development only). Its parent task opens one session and ends while the helper works; the round is served by task to a client that activates the extension, and refused (InvalidParams) to one that does not.",
   "version": "0.0.0-mock",
   "supportedInterfaces": [
     {

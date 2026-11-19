@@ -128,8 +128,8 @@
   name: Mock sessions
   cardUrl: http://mock-sessions:8080/.well-known/agent-card.json
   tokenEnv: MOCK_AGENT_TOKEN
-  # A WireMock agent that runs a helper as a session (child-sessions/v1, ADR 0072, dev/child-sessions-e2e.sh): its parent task names one
-  # closed session of the helper `planner`, whose round the orchestrator follows by task into a child thread of its own.
+  # A WireMock agent that runs a helper as a session (child-sessions/v1, ADR 0072, dev/child-sessions-e2e.sh): its parent task opens one
+  # session of the helper `planner` and ends before it does; the orchestrator follows the round by task into a child thread of its own.
 - id: mock-tiered
   name: Mock tiered
   cardUrl: http://mock-tiered:8080/.well-known/agent-card.json
