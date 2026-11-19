@@ -103,6 +103,7 @@ accepted, not built). The application brings the model client.
 | Approvals: hooks H1 and H8 ([adam ADR 0050](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0050-hooks-around-the-agent-loop-compiled-first-and-programs-second.md)) and ADR 0047 slice 5 over them; the access tiers decide what is asked | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) slices 2, 12; new ticket for slice 5 | yes runs the same call once; a replay never asks twice |
 | The tools as a library (slice 6), the person's directory and a local agent (slice 7), the local sandbox (slice 9) | adam | new tickets | each slice's proof in ADR 0047 |
 | Windows (slice 8, the Windows half) | adam | new ticket | the same tests on a hosted Windows runner |
+| Agent-team, the core (ADR 0074, being drafted, and its epic): several agents in one chat hand off with `@name`, at most a fixed number of hand-offs per message of the person, every member reads the whole thread, a hand-off waits for the person's yes, a risky action asks through the approval hooks above, and the person can interrupt at any time | sys, adam | new epic | a `dev/` scenario with two mock agents: a hand-off waits for the yes, one past the cap is refused with a reason, an interrupt stops the active agent |
 | Over the limit pauses in the engine too (R1's adam change, reused) | adam | covered by R1 | an engine test with a scripted refusal |
 | The benchmark gate: the bench on the host's container runtime, then a smoke test on six of our own tasks, then the comparison of [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 8 and the [ADR 0048](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0048-a-benchmark-harness-for-adam-coder-and-opencode.md) run | adam `bench/` | [sys#365](https://github.com/vymalo/another-agentic-system/issues/365), sys#345 slice 8 | the bench reports, with intervals |
 
@@ -115,7 +116,7 @@ accepted, not built). The application brings the model client.
 4. A person outside the maintainers runs a local agent in a folder of their own, approves one command, kills the
    application mid-run, sees the run resume, and reads what it used.
 
-**Not in R2:** macOS (after R2); adam as an ACP agent (later); the other hooks (later); the store service of
+**Not in R2:** agent-team's saved teams and declared checkpoints (later); macOS (after R2); adam as an ACP agent (later); the other hooks (later); the store service of
 [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) (R3, only if the load test asks for it); memory
 (after R2).
 
