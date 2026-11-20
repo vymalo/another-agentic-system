@@ -2115,6 +2115,11 @@ pub enum AuthPermission {
     /// `userToolServers.enabled`.
     #[serde(rename = "tools.user.add")]
     ToolsUserAdd,
+    /// Share a prompt of one's own with roles (ADR 0070): any write of a prompt whose result is
+    /// shared. It takes no scope and **no role holds it unless the file lists it: `admin` does not
+    /// imply it**. Saving, rendering, unsharing and deleting one's own prompts are not gated by it.
+    #[serde(rename = "prompts.share")]
+    PromptsShare,
 }
 
 impl AuthPermission {
@@ -2130,6 +2135,7 @@ impl AuthPermission {
             AuthPermission::ArtifactRead => "artifact.read",
             AuthPermission::Admin => "admin",
             AuthPermission::ToolsUserAdd => "tools.user.add",
+            AuthPermission::PromptsShare => "prompts.share",
         }
     }
 }
@@ -2304,7 +2310,7 @@ pub struct ToolServer {
     /// refuses `initialize`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ToolServerProtocol>,
-    /// Sign every request to the server, in place of a bearer (ADR 0067,
+    /// Sign every request to the server, in place of a bearer (ADR 0080,
     /// `docs/api/signed-tool-requests-v1.md`): each HTTP request carries one header that binds it to its
     /// thread and the thread's owner. Refused together with `bearer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2332,7 +2338,7 @@ pub const DEFAULT_TOOL_SIGNING_TTL_SECS: u64 = 30;
 /// The longest `toolServers[].signing.ttlSecs`, and the longest an object of the contract lives.
 pub const MAX_TOOL_SIGNING_TTL_SECS: u64 = 60;
 
-/// How the requests to one tool server are signed (ADR 0067).
+/// How the requests to one tool server are signed (ADR 0080).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolServerSigning {

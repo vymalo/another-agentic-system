@@ -36,7 +36,9 @@ pub const ACTIVITY_CI: &str = "vymalo.ci";
 /// data, `{attempt, maxAttempts, findings: [{source, findings}]}`, plus `at`.
 pub const ACTIVITY_REWORK: &str = "vymalo.rework";
 /// Activity type of the start of a thread's next job (`vymalo.job`, ADR 0020): the content is
-/// `{job, at}`, the number of the job that started (from 2), and its id is `job-<job>`.
+/// `{job, round?, at}`, the number of the job that started (from 2; 1 for a child thread's first
+/// round) and, for a job that follows a round of a child session (ADR 0072), `round: {number, by?}`;
+/// its id is `job-<job>`.
 pub const ACTIVITY_JOB: &str = "vymalo.job";
 /// Activity type of the start of a fork (`vymalo.fork`, ADR 0029): the content is `{from: {threadId,
 /// seq}, kind, title, target: {agentId, release?}, at}`, and its id is `fork-<seq>` of the
@@ -65,6 +67,22 @@ pub const ACTIVITY_STEP: &str = "vymalo.step";
 /// outcome (`completed`, `input_required`, `auth_required`, `failed`, `rejected`, `canceled`,
 /// `timed_out`). `text`, `answer`, `question` and `error` come from agents and are untrusted text.
 pub const ACTIVITY_ASK: &str = "vymalo.ask";
+
+/// Activity type of a child session (`vymalo.session`, ADR 0072): its id is `session-<seq>`, the
+/// seq of the `child_session_opened`, and every later event of the session says it again with
+/// `replace`. The content is `{session, threadId, agent, description, keepOpen, state, round?,
+/// report?, at}`: `state` is `working` while a round runs or waits for the person (a `blocked`
+/// report), `idle` when a round ended and none runs (also a session opened with no round), and
+/// `closed` once the session was; `round` is the newest round the log names and `report` how it
+/// ended (`done`, `failed`, `canceled`, `blocked`). `agent` and `description` are an agent's words
+/// (untrusted text).
+pub const ACTIVITY_SESSION: &str = "vymalo.session";
+
+/// Metadata member of a session's `SUBAGENT_STARTED`: the id of the child thread that holds its log.
+pub const CHILD_THREAD_KEY: &str = "vymalo.childThread";
+
+/// Metadata member of a session's `SUBAGENT_STARTED`: the session's id, the agent's own.
+pub const SESSION_KEY: &str = "vymalo.session";
 
 /// `CUSTOM` name of the tokens of one model call (`vymalo.usage`, ADR 0056): the value is the
 /// `model_usage` event's data (`{job, agent, task, call, path, provider?, model, inputTokens,
@@ -137,6 +155,9 @@ pub const CODE_DELIVERY_FAILED: &str = "delivery_failed";
 /// `SUBAGENT_ERROR.code` of the verifier's invocation when the verification is held because the
 /// verifier could not be used or did not answer in time.
 pub const CODE_VERIFIER_FAILED: &str = "verifier_failed";
+/// `SUBAGENT_ERROR.code` of a session whose round failed.
+pub const CODE_SESSION_FAILED: &str = "session_failed";
+
 /// `RUN_ERROR.code` for a job whose work did not pass the verification gate in its last attempt.
 pub const CODE_CHECKS_FAILED: &str = "checks_failed";
 

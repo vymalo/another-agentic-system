@@ -1,4 +1,4 @@
-//! Signing the requests to a server that takes signed requests (`docs/api/signed-tool-requests-v1.md`, ADR 0067).
+//! Signing the requests to a server that takes signed requests (`docs/api/signed-tool-requests-v1.md`, ADR 0080).
 //!
 //! A server whose endpoint has [`signing`](orch_ports::ToolServerEndpoint::signing) is sent **no bearer**: each HTTP request
 //! carries the header `Tool-Request-Claims`, made just before the bytes leave, over those very bytes, for the thread the call

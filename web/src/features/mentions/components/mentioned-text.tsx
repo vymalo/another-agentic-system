@@ -21,16 +21,31 @@ export function MentionsProvider({ store, agents, children }: Known & { children
  * stream does not echo a message to the run that sent it).
  */
 export function useMessageMentions(text: string): Mention[] {
-  const { store } = useContext(Context);
   const id = useAuiState((s) => s.message.id);
   const custom = useAuiState((s) => s.message.metadata?.custom?.mentions);
+  const source = useMentionSource(id, custom);
+  return source ? parseMentions(source, text) : [];
+}
+
+/**
+ * Whether the message with this `id` mentions an agent: what the log carried (`custom`, its
+ * `metadata.custom.mentions`) or what this page sent with it. For a message other than the one
+ * being drawn (the one a turn answers).
+ */
+export function useMentionsAny(id: string | undefined, custom: unknown): boolean {
+  const source = useMentionSource(id, custom);
+  return Array.isArray(source) && source.length > 0;
+}
+
+function useMentionSource(id: string | undefined, custom: unknown) {
+  const { store } = useContext(Context);
   useSyncExternalStore(
     store?.subscribe ?? NO_SUBSCRIBE,
     store?.getVersion ?? ZERO,
     store?.getVersion ?? ZERO,
   );
-  const source = Array.isArray(custom) ? custom : store?.sentOf(id);
-  return source ? parseMentions(source, text) : [];
+  if (Array.isArray(custom)) return custom;
+  return id === undefined ? undefined : store?.sentOf(id);
 }
 
 const NO_SUBSCRIBE = () => () => {};

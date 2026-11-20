@@ -1,7 +1,15 @@
 "use client";
 
-import { ChevronsUpDownIcon, LogOutIcon } from "lucide-react";
+import {
+  ChartNoAxesColumnIcon,
+  ChevronsUpDownIcon,
+  LogOutIcon,
+  ScrollTextIcon,
+  WrenchIcon,
+} from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
+import { ThemeMenu, ThemeRadioGroup } from "@/components/theme/theme-menu";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -12,12 +20,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePromptsConfig } from "@/features/chat/hooks/use-ui-config";
 import { useMe } from "@/features/me/hooks/use-me";
+import { holds } from "@/features/me/lib/access";
 import { canSignOut, signOutNow } from "@/lib/api/session";
 import { useBrowserAuth } from "@/lib/auth/use-browser-auth";
 
 /** The words, one place: the menu, the no-access screen and the tests read them. */
 export const SIGN_OUT_LABEL = "Sign out";
+export const USAGE_LABEL = "Usage";
+export const TOOL_SERVERS_LABEL = "My tool servers";
+export const PROMPTS_LABEL = "My prompts";
 
 /** Whether this deployment has a sign-in to end; it is known once the page has asked (`useBrowserAuth`). */
 export function useCanSignOut(): boolean {
@@ -26,24 +39,38 @@ export function useCanSignOut(): boolean {
 }
 
 /**
- * The person at the foot of the sidebar: who they are (`GET /api/me`) and a menu with **Sign out**. In
+ * The person at the foot of the sidebar: who they are (`GET /api/me`) and a menu with **Usage** (the page of what they used this month, ADR 0065),
+ * **My tool servers** (the MCP servers they add for themselves, ADR 0046; only for a person whose roles hold `tools.user.add`, as `GET /api/me`
+ * says; the page answers for itself when it is opened by its address without it) and **Sign out**. In
  * browser mode it revokes the refresh token, deletes this browser's key and session and ends the
- * issuer's session (ADR 0054, decision 11); with an edge it goes to oauth2-proxy's sign-out. Nothing
- * when there is neither a person to show nor a sign-in to end (a local run without an edge).
+ * issuer's session (ADR 0054, decision 11); with an edge it goes to oauth2-proxy's sign-out. The **Theme** group
+ * (System, Light, Dark; this device's choice, `lib/theme.ts`) is in it. With neither a person to show nor a sign-in to
+ * end (a local run without an edge) the footer holds the theme button alone.
  */
 export function AccountMenu() {
   const me = useMe();
   const signOut = useCanSignOut();
+  // the library is offered when the deployment has one (`prompts` of the configuration): owning prompts needs no permission
+  const hasPrompts = usePromptsConfig() !== undefined;
   const [leaving, setLeaving] = useState(false);
   const person = me.status === "ready" ? me.me : null;
   // while `/api/me` is on its way: nothing, rather than a placeholder that turns into the person
-  if (me.status === "loading" || (!person && !signOut)) return null;
+  if (me.status === "loading") return null;
+  // nobody to show and no sign-in to end (a local run): the one thing left to offer is the theme
+  if (!person && !signOut) {
+    return (
+      <div data-slot="theme" className="flex shrink-0 justify-end border-t px-2 py-2">
+        <ThemeMenu />
+      </div>
+    );
+  }
   const email = person?.email ?? person?.user;
   const title = person?.name ?? email ?? "Your account";
   const initial = (title.trim()[0] ?? "?").toUpperCase();
   return (
     <div data-slot="account" className="shrink-0 border-t px-2 py-2">
-      <DropdownMenu>
+      {/* not modal: axe reports the buttons around a modal menu as aria-hidden yet focusable (DESIGN.md "Which menus are modal") */}
+      <DropdownMenu modal={false}>
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
@@ -83,9 +110,35 @@ export function AccountMenu() {
               <DropdownMenuLabel className="truncate font-normal">
                 Signed in as <span className="font-medium text-foreground">{email}</span>
               </DropdownMenuLabel>
-              {signOut ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuSeparator />
             </>
           ) : null}
+          {/* no permission gates it: the route answers for the person who asks, and for nobody else (ADR 0065) */}
+          <DropdownMenuItem asChild>
+            <Link href="/usage" className="text-foreground no-underline">
+              <ChartNoAxesColumnIcon aria-hidden="true" />
+              {USAGE_LABEL}
+            </Link>
+          </DropdownMenuItem>
+          {hasPrompts ? (
+            <DropdownMenuItem asChild>
+              <Link href="/prompts" className="text-foreground no-underline">
+                <ScrollTextIcon aria-hidden="true" />
+                {PROMPTS_LABEL}
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
+          {person && holds(person, "tools.user.add") ? (
+            <DropdownMenuItem asChild>
+              <Link href="/tools" className="text-foreground no-underline">
+                <WrenchIcon aria-hidden="true" />
+                {TOOL_SERVERS_LABEL}
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuSeparator />
+          <ThemeRadioGroup />
+          {signOut ? <DropdownMenuSeparator /> : null}
           {signOut ? (
             <DropdownMenuItem
               disabled={leaving}

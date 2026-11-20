@@ -160,6 +160,69 @@ only draws it (`features/threads/`, `GET /api/threads?order=rail`).
 
 Not built yet (ADR 0042): dragging a row to move it (and its keyboard path, Move up, Move down and Move to top), and a fork as a draft until its first message.
 
+## Search
+
+*Added 2026-11-15 (slice 7b of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md); the API, the contract and the rules are
+[ADR 0068](../docs/decisions/0068-a-person-searches-their-own-threads.md) and [`docs/api/thread-search-v1.md`](../docs/api/thread-search-v1.md)).* The box is
+under "New chat" in the list (`features/search/`). While it holds a query its results take the rail's place, and Escape gives the rail back. It finds the
+person's **own** chats and nobody else's: the web only asks the API and draws the answer.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-search.png">
+  <img src="e2e/__screens__/desktop-light-search.png" alt="The sidebar with the search box holding “plan”. Under it the results replace the list: the chats that matched, each with its title and its hits, the word “plan” marked in green in every one." width="720">
+</picture>
+
+*The results for “plan”: a title, a description and messages, and an archived chat; from the web's mock server.*
+
+- **The box.** A rounded field with a search icon, the placeholder "Search chats" and, while it is empty, the shortcut (⌘K on an Apple platform, Ctrl K elsewhere); with text in it
+  the shortcut gives way to a Clear button. It is drawn only when `GET /api/config` has `search` (its presence is the capability: an orchestrator without a search shows no
+  box), and its `maxQueryLength` is the field's `maxlength` (UTF-16 units in the field, scalar values on the wire: the web sends at most that many scalar values). When more words
+  are typed than `maxTerms` the box says "Only the first 8 words are used." It is a `<search>` landmark with an `input type="search"` that has `role="combobox"`,
+  `aria-autocomplete="list"`, `aria-expanded`, `aria-controls` the listbox and `aria-keyshortcuts="Control+K Meta+K"` (`Meta+K` alone on an Apple platform). The list is wired to the keys only while it is drawn for the text in the box
+  and holds hits: after an error, within the 250 ms of a new text and on "no match" `aria-expanded` is false and the arrows and Enter do nothing. On a desktop the sidebar's box and the phone sheet's box are two boxes
+  with **separate queries**.
+- **Requests.** The query goes in the **body of a POST** (`searchThreads`) and nowhere else: never a URL, never `localStorage` or `sessionStorage`, never a log line. A request goes out
+  250 ms after the last key; each has an `AbortController`, and a counter drops an answer that is not for the latest text (a request that was already answered cannot be taken
+  back). The page is 20 threads; "Show more chats" sends the `next` cursor, and is offered only while the page drawn is for the text in the box and nothing is pending. A text change aborts the request in flight at once.
+  An answer that is not the contract's shape is an error, and a thread that comes on two pages is drawn once. A blank box (the contract's four whitespace characters) sends nothing and shows the rail.
+- **The results.** One group per chat that matched, in the server's order: the chat's title (a hit, with its words marked, when the title matched; otherwise a plain heading), then
+  its description hit and up to three message hits (newest first), each with who said it ("You" or "Agent") and the day, then "and 2 more messages" when more match than are shown. An
+  archived chat says "Archived". A snippet is two lines at most, with "…" where the document goes on. The hits are a `listbox` of `option`s; each option is a **link**
+  (`<a role="option">`), so a middle click or "Copy link address" works, and a plain click opens it.
+- **Highlighting.** The snippet's `matches` are offsets in UTF-16 code units into its `text`, which is what a JavaScript string counts (an emoji is two). The web cuts the text there into
+  plain and marked runs and draws each as a **text node**, the marked ones in a `<mark>` (a green wash, `--brand` at 20 %, over the text colour). It **never** uses
+  `dangerouslySetInnerHTML`: a message that holds `<img onerror=…>` is drawn as those characters. An offset that is out of order or inside a surrogate pair is skipped, and the text is
+  still drawn whole.
+- **Keys.** The focus stays in the box. **Down** and **Up** walk the hits (`aria-activedescendant`; they wrap, and Down from nothing is the first); **Enter** opens the one
+  walked to, the first when none is; the **first Escape** clears the box and brings the rail back, the **second** gives the focus back to where it was when the shortcut was pressed
+  (or leaves the box). On a phone the first Escape clears a query and does not close the sheet.
+- **The shortcut.** **Ctrl or ⌘ with K**, from anywhere (the composer included), opens the sidebar when it is collapsed, or the phone's sheet, and focuses the box with its text selected. It
+  does nothing from inside a dialog other than the list's own sheet. On an Apple platform only ⌘ counts, because Ctrl+K is the text field's own "delete to the end of the line". It
+  clashes with no shortcut of the web (the others are Ctrl or ⌘ with Shift and the period, which toggles the panel, and Enter with Ctrl or ⌘). Against the browsers' own it is
+  **unverified**: the tests send the key to the page, so they say nothing of what a browser keeps for itself. *Reported, not checked here:* Firefox on Windows and Linux binds Ctrl+K to its search
+  bar and Chromium browsers on Windows and Linux to a search from the address bar, and a page that calls `preventDefault` on the key takes it from both, as other sites do; Safari's ⌘K has no
+  browser meaning. If a browser keeps the key for itself, the box is one click away.
+- **Opening a hit.** A title or a description hit opens `/threads/<id>`. A message hit opens `/threads/<id>#m-<seq>`, and the page does what it does for any `#m-<seq>` link: waits for
+  the message, scrolls to the middle and puts the focus on it. Only a **person's** message has an element with that id, so for an agent's answer (and, the same code, for **any** `#m-<seq>` with no element: a shared link, a link to an edited or deleted message) the page waits until the transcript has
+  been still for 600 ms and goes to the last person's message at or before the `seq`, the one that started the turn (`useScrollToMessage`). When the hit is in the open thread, only
+  the hash changes and the page goes again. A phone's sheet closes.
+- **States**, in plain words: while the next answer is fetched the last results are dimmed (`opacity` 60 %, `aria-busy`) and, with none yet, three skeleton rows say "Searching…";
+  "No chats match “zebra”."; "Search needs words of at least two letters or digits." (a query that keeps no term: the server answers 200 with `terms: []`); an error, "Could not search your
+  chats.", with **Retry**; **429**, "You are searching too fast. Trying again shortly." (the web waits the `Retry-After`, in seconds or as an HTTP date, at most 30 s, and sends the same request again, at most three times in a row;
+  then "Search is still limited. Try again in a moment." with Retry; "Retry now" does it at once; no number is shown, so none has to count down); **503**, "Search is busy right now. Try again in a moment." with Retry, which is never tried by itself. A **failed "Show more"** keeps the hits already shown and puts the alert under them; Retry sends the same page again (the same text and cursor). Errors are `role="alert"`.
+- **The live region.** A polite `status` in the box's landmark says "3 chats found" (or "20 or more chats found" when another page follows) and the "No chats match" line, and says nothing while a
+  request is in flight; the visible lines are not live regions of their own, except the errors.
+- **Words.** Every string is in `features/search/lib/text.ts`, so that a later slice can translate them. French is not in this slice.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-search-empty.png">
+  <img src="e2e/__screens__/desktop-light-search-empty.png" alt="The sidebar with the search box holding “kiwi”. Under it the line “No chats match “kiwi”.” in muted text, and nothing else." width="720">
+</picture>
+
+*A query with no match; from the web's mock server.*
+
+On a phone the box is at the top of the list's sheet, and the shortcut (a keyboard on a tablet) opens the sheet with the box focused.
+
 ## Agent picker
 
 Choosing the agent is like choosing a model in ChatGPT, not a form field (owner, 2026-10-01: "a little more
@@ -351,6 +414,119 @@ spent counted apart. LibreChat puts its ring by the input, where the next call's
 - **Nothing when there is nothing**: no ring for a thread with no usage, for an agent that does not report it, or where there is no
   composer (a read-only view).
 
+## Usage page
+
+*Added 2026-11-14 ([ADR 0065](../docs/decisions/0065-a-usage-ledger-per-person.md)); the first slice of the owner's "LibreChat-grade" ask.* What a person used in a month, on a page of its own, `/usage`,
+reached from the account menu's **Usage** item (no permission gates it). A page, not a popover: it is read once in a while, and it has tables.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-usage-page.png">
+  <img src="e2e/__screens__/mobile-light-usage-page.png" alt="The Usage page on a phone, November 2026: Back to chat, the heading, a month switch with two arrow buttons, a card with the total, at least 3.391593 EUR, and what it leaves out, three figures (tasks, tokens, sandbox time), then the models and the sandbox as two tables." width="320">
+</picture>
+
+*The page on a phone, from the web's mock server.*
+
+- **One column**, the reading column's 768 px (`max-w-3xl`), 16 px gutters on a phone and 24 px from `md`; no sidebar (it is a page, as "No access" is), with **Back to chat** above the heading. The heading is the page's `h1`; the sections are `h2`s.
+- **Top to bottom:** the month switch (two 36 px outline icon buttons, **Previous month** and **Next month**, the month in words between them, tabular figures); **Total**, a card (`--card`, 12 px radius, a border and no shadow); three figures on
+  `--muted` tiles (Tasks, Tokens, Sandbox time); **Models** and **Sandbox**, two compact tables (14 px, numbers in tabular figures, a row per line, a hairline between rows). A table has two or three columns so that a phone needs no sideways scroll:
+  the name with what qualifies it under it (provider; size), the counts stacked (in, cached, out, reasoning), the cost on the right.
+- **The total is the one big number on the page** (28 px, weight 500). **With `complete: false` it reads "At least" in front, in the body's size**, and a line under it says it is the sum of the priced lines, with a list of what is left out. The words are the meaning;
+  nothing is coloured, so nothing depends on a colour. A line with no price says **Not priced** in `--muted-foreground`; a price of zero is written `0.000000 EUR`, never left blank.
+- **Amounts are drawn as the API wrote them**, six decimals and the currency after: a string is never turned into a number (no rounding, no loss), and a long one wraps (`break-all`) rather than overflow. A deployment with no currency has **no money anywhere**: no cost column, no "Not priced", one line under Total that says so.
+  Tokens and sandbox time are always shown.
+- **Empty is a sentence, not a hero:** a month with nothing is complete at `0.000000`, with "No model usage this month." and "No sandbox time this month." where the tables would be. Loading is the skeleton rows, a failure the destructive line with **Try again**.
+- **Keyboard and screen reader:** the month switch is a `fieldset` named Month, the month is a polite live region (a change is announced), the buttons keep the focus while a month loads, **Next month** is `aria-disabled` (dimmed, still focusable, its handler guarded) on the current month, so that the focus it has when it gets there is not dropped; one line under the switch says months are UTC ones; tables have captions (visually hidden: the headings name them), column headers and row headers.
+
+## My tool servers
+
+*Added 2026-11-14 ([ADR 0046](../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)); slice 4 of the owner's "LibreChat-grade" ask.* A person's own MCP servers, on a page of their own, `/tools`, reached from the account menu's **My tool servers** item (shown only to a person whose roles hold `tools.user.add`) and from the Tools menu of a chat. A page, not a popover: a server has a form, a status and a few things to do.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-tools-page.png">
+  <img src="e2e/__screens__/mobile-light-tools-page.png" alt="The My tool servers page on a phone: Back to chat, the heading, a sentence, Your servers 3 of 8, and the three rows (Notes, Team search, Wiki), each a bordered card with its kind and host, its status in words with an icon, and its buttons." width="320">
+</picture>
+
+*The page on a phone, from the web's mock server.*
+
+- **Same frame as Usage:** one column in the reading column's 768 px (`max-w-3xl`), 16 px gutters on a phone and 24 px from `md`, no sidebar, **Back to chat** above the `h1`, the sections `h2`s.
+- **A row is a card** (`--card`, 12 px radius, a border, no shadow, as the Total card of Usage): the name (`h3`, 16 px, weight 500, it wraps), under it the kind of authentication and **the host only** (12 px, `--muted-foreground`; a server's address can hold a secret in its path, so the path is in the edit form and nowhere else), then **the status** (14 px): an icon and a bold word, then the sentence that says what to do. **Never a colour alone:** `ready` is the check icon and "Ready." in
+  `--success`, `needs_auth` the alert icon and "Needs a key." or "Needs a sign-in." in `--warning`, `unavailable` the ban icon and "Not available." in `--muted-foreground`. Below, the buttons (small, 32 px): the one thing the server needs first as the **solid** button (Connect, or Add key), then Edit and Replace key as **outline**, **Delete** as a ghost button. Every button names its server in its accessible name ("Edit Search").
+- **Forms are the page's own controls,** not a new pattern: a label above each field, the help line under it in 12 px `--muted-foreground` and wired by `aria-describedby`, the select the native one (`NativeSelect`), the **secret a password field**. The fields change with the kind (the header of an API key, the scopes and the client of OAuth). The add form is behind **Add a server** once the list has a server, and open when it is empty; it goes away at the limit and the page says why in a sentence.
+  The change form sits inside the row, on `--muted` at half strength, and says before it is sent what a new address or kind will make the server forget (a `--warning-soft` line).
+- **Connect is a dialog that is about where you are being sent.** It names the host in bold, writes the issuer out in monospace, says the sign-in service was chosen by the server the person added and not by the deployment, and says how long the link works. The destination is the host of the link itself (and both hosts when it is not the issuer's). Its primary button is a real link that says where it goes ("Continue to login.example"); a link that is not `https` is never offered, and the dialog says the server gave one that cannot be opened. Nothing opens before it is pressed. After it, the row says "Waiting for you to finish signing in" (true whether or not a window opened) with **Check now** and **Open the sign-in page again**, and the list reads itself again when the window regains focus.
+- **A refusal is a destructive line** under what was asked (`role="alert"`), in words from the status and the `code`; a deployment with the feature off, a person without the permission and a list that cannot be read are quiet lines at the top, not a hero.
+- **In the Tools menu** a person's own server carries a small **Yours** badge after its name. One that is not ready is not a checkbox: it is a link item that says what it needs ("Needs a key or a sign-in. Open My tool servers to set it up.") and leads to the page. Links in a menu item are drawn as the item is (the foreground colour, no underline): the global link style (brand colour, underlined) is for links in text.
+- **Keyboard and screen reader:** every row action is a button in tab order after its row's text; the dialogs are `alertdialog`s that trap the focus and return it; the failure is announced; the status is read as text.
+
+## My prompts
+
+*Added 2026-11-15 ([ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md)); slice P1 of the "LibreChat-grade" plan, and the sharing control of slice P4 added 2026-11-18.* A person's prompts, on a page of their own, `/prompts`, reached from the account menu's **My prompts** item (shown wherever the configuration has a library; owning prompts needs no permission).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/mobile-dark-prompts-page.png">
+  <img src="e2e/__screens__/mobile-light-prompts-page.png" alt="The My prompts page on a phone: Back to chat, the heading, a sentence, Your prompts 3 of 100 with three bordered cards (the shared one carries Stop sharing), a New prompt button, and Shared with you with two cards." width="320">
+</picture>
+
+*The page on a phone, from the web's mock server.*
+
+- **Same frame as My tool servers:** one column in `max-w-3xl`, 16 px gutters on a phone, **Back to chat** above the `h1`, `h2` sections "Your prompts (3 of 100)" and "Shared with you".
+- **A row is a card:** the title (`h3`, wraps), `/name` in monospace, the description clamped to two lines, "Asks 2 questions", and "Shared with: …" on an own shared prompt. A shared prompt carries a "Shared with you" badge and **no author**. Buttons are small and name their prompt (`Edit “T”`, `Delete “T”`, `View “T”`, `Copy to my prompts: “T”`); the form, the reading view and the delete dialog replace or cover the list, and the focus moves to the form's or view's heading and returns to the button that opened it.
+- **The form** uses the page's own controls: a label above, help under, native selects and checkboxes, a plain `textarea` for the text with its size in bytes against the configuration's limit. Each question is a card with Move up, Move down and Remove buttons (no dragging); a question the page cannot edit is a dashed card that says so and is kept.
+- **A refusal** is a destructive line at the field it is about (`role="alert"`, `aria-invalid`, `aria-describedby`, focus); the text's braces are selected for a bad reference; a stale edit is a warning at the top of the form with **Load the current version**.
+- **Sharing** is one control on an own prompt's row, the one the person may use: **Share** (private) or **Change sharing** (shared with roles) when `getMe` lists `prompts.share`, and **Stop sharing** alone on a prompt they shared before they lost it (it says "Stopping…" while the write is in flight). A prompt shared with the person offers none, and nothing is offered while `me` is unknown (the server decides). The row's "Shared with: …" (Everyone for `*`) comes from the summary and is replaced by the prompt a save answers with.
+- **The share dialog** is the house `Dialog` (32 rem, over the blurred page), not an alert: its title is `Share “T”` with `/name` in monospace under it, the focus starts in the field, and Cancel is ghost, **Stop sharing** outline (after a 403) and **Save** primary (it says "Saving…" while a write is in flight). The field is **Roles who can read it**, one comma-separated line of role values; under it a help line ("You can name a role you do not hold. Type * alone for everyone; leave it empty so that only you can read it.") and a sentence: "Everyone can read it.", "Only you can read it.", "Everyone with one of these roles can read it: user, prompt-team.", or, for `*` beside a role, that the server will refuse it. A stored role that holds a comma — the contract allows one, and the field separates roles with it — is kept as it is while the field is untouched, with a line under it that says a change would replace it. When it closes, the focus returns to the row's sharing control, else its Edit button, else the list's heading.
+- **A refusal in the dialog**: `bad_audience` is a destructive line under the field with `aria-invalid`, `aria-describedby` and the focus, and the roles typed stay; everything else is an `InlineStatus` above the footer, the stale one carrying **Load the current version** (which reads the prompt again and shows the audience it has now) and the 403 leaving **Stop sharing** in the footer. A 404 closes the dialog with the page's notice, the list is read again, and the list's heading takes the focus.
+- **Phone:** one column, options and buttons wrap, no sideways scroll with a long title, name or question, nor with a long list of roles in the dialog (`e2e/prompts.spec.ts`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-share.png">
+  <img src="e2e/__screens__/desktop-light-prompts-share.png" alt="The share dialog over the My prompts page: Share “Write my standup”, /standup, the field Roles who can read it holding “user”, the help line, “Everyone with one of these roles can read it: user.”, and Cancel and Save." width="720">
+</picture>
+
+*The share dialog on a desktop, from the web's mock server.*
+
+## Prompts in the message box
+
+*Added 2026-11-18 (slice P2's web of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), on the library of [ADR 0070](../docs/decisions/0070-a-persons-prompt-library.md)).* A message that is one `/name` opens the person's prompts above the box; a pick fills one into the box, never sends it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-menu.png">
+  <img src="e2e/__screens__/desktop-light-prompts-menu.png" alt="A new chat with “/rev” in the message box and, above it, one row: “/review Review a change” and its description, “Reviews a change for one concern, at the depth you pick.”" width="640">
+</picture>
+
+*The list after `/rev`, from the web's mock server.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-prompts-fill.png">
+  <img src="e2e/__screens__/desktop-light-prompts-fill.png" alt="The fill form over the chat: the heading “Review a change”, “/review — Reviews a change for one concern, at the depth you pick.”, the question “What should the review focus on?” with Security and Speed, “How deep? (in levels)” with a number box, “2 questions are not answered yet.”, Cancel and a disabled Use prompt." width="640">
+</picture>
+
+*The form that fills the prompt's questions, from the web's mock server.*
+
+- **The trigger is the first character.** `/` then a name with no white space (`/` alone lists all); a slash inside a message, or a message with a space, is a message. The matches put the name first and the title after it, fold accents, and tie by name then id. The list is read **when the box becomes one `/name`**, and again after it stops being one and becomes one again; a query that changes while the list is open only narrows it, and a thread that never types `/` asks `/api/prompts` nothing.
+- **The menu is the mentions' listbox**, above the box, as wide as it: `--popover`, 16 px radius, the composer's shadow, at most 18 rem and it scrolls. A quiet label at its top says **"Your prompts"** (the agent's own commands open on the same trigger, and their menu says "Agent commands"), and it is the listbox's accessible name; it is a sibling of the list, never an option. A row has `/name` (12 px monospace, muted), the title (14 px, weight 500), and one line: the description, else "Asks 2 questions". A shared prompt carries a small **Shared** badge and names no author. The active row is on `--accent`; the focus stays in the textarea and `aria-activedescendant` names the row. **↓ ↑** move, **Enter** or **Tab** pick, **Escape** closes the list until the query changes, a click picks; Enter with nothing matching sends the message, and Enter while the list is still being read does nothing.
+- **The form is a dialog, not a surface.** Its title is the prompt's title (the focus moves there), `/name — description` under it, and the questions are the catalog's own `Choices`, with the conversation's renderer and its controls. A prompt cannot use `images` or `show`; a kind this client cannot draw is not offered and says so. The defaults are the form's start. **Use prompt** is held until every required question is answered, with "N questions are not answered yet." in words and `aria-describedby`; Cancel closes and puts the command back in the box.
+- **A refusal is in words at the form.** A stale prompt (409) keeps the answers and offers **Load the current version**, which reads it again and keeps the answers whose questions still exist: the form never overwrites. A 404 reads the list again; a 422 `invalid_answer` names the question and the rule and moves the focus there; `rendered_too_long` gives the limit in KiB; a 503, 401, 403 and 429 say their own words. A failed read of the prompt puts `/query` back in the box.
+- **Nothing is sent.** The text `renderPrompt` answers with goes into the box, the caret after it, and the person edits and sends it as any message.
+- **Phone and both schemes:** the menu is as wide as the box and its rows truncate; the dialog is `min(32rem, 100vw - 2rem)` and scrolls; axe (WCAG AA) reports no serious or critical violations on the list with a match, the list with no match and the form, in both schemes, on a phone and a desktop (`e2e/prompt-composer.spec.ts`), and no sideways scroll appears. *Verified 2026-11-18*: the Playwright spec passes on `chromium` and `mobile` (six tests each); the unit suite passes (233 files, 4,456 tests at `--maxWorkers=8`).
+
+## The agent's own commands in the message box
+
+*Added 2026-11-19 (slice 11 of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), on [ADR 0079](../docs/decisions/0079-an-agents-own-commands-listed-from-its-card.md); the contract is [`commands-v1.md`](../docs/api/commands-v1.md).)* The agent's own prompt templates, listed from its live card, in a `/` menu of their own. The trigger is the prompts' trigger, so **one `/` menu opens at a time** and each says which one it is: a quiet label, "Agent commands" or "Your prompts", at the top of the box and as the list's accessible name.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-commands-menu.png">
+  <img src="e2e/__screens__/desktop-light-commands-menu.png" alt="A new chat with “/” in the message box and, above it, the menu labelled “Agent commands” with three rows: “/explain” and “Explains a file, in words a newcomer can follow.”, “/review <repo>” and “Reviews a change and reports what it finds.”, and “/test” and “Runs the project's tests and reports what failed.” The first row is the active one." width="640">
+</picture>
+
+*The agent's commands after a bare `/`, from the web's mock server.*
+
+- **The same frame as the prompts' menu**, above the box and as wide as it (`--popover`, 16 px radius, the composer's shadow, at most 18 rem, it scrolls), because it is the same listbox of the same combobox. A row has `/name` (14 px, weight 500, monospace), the `argumentHint` beside it in the quiet type (12 px, muted, monospace) and the description under it (12 px, muted). The card's words are drawn as text and are never an instruction.
+- **The label** is a muted 12 px line at the top of the menu, a sibling of the listbox (ARIA's listbox holds options and nothing else), and the listbox's `aria-label` is the same two words: "Agent commands", "Your prompts". It is what makes a switch between the two lists legible: a bare `/` is the agent's commands when it serves any, and the person's prompts when it serves none.
+- **The keys are the box's** (`aria-activedescendant`, no focus steal): **↓ ↑** move and wrap, **Enter** or **Tab** insert, **Escape** closes the list until the query changes, a click inserts. Enter with the list open is a pick, never a send.
+- **A pick writes text and nothing else:** `/name ` (the space only when the command takes arguments, its hint being what says so) or `/name`, the caret at the end, and the list closes — for a command with no arguments the text is still one `/word`, so the pick is what closes it. No extension is activated, no `metadata` is added, no field of the message changes: the text form is the invocation.
+- **Phone and both schemes:** the menu is as wide as the box and its rows truncate; axe (WCAG AA) reports no serious or critical violations on the open menu and on the box after a pick, in both schemes, on a phone and a desktop (`e2e/commands.spec.ts`), and no sideways scroll appears.
+
 ## Mentions
 
 *Added 2026-10-03 ([ADR 0026](../docs/decisions/0026-agent-mentions-as-structured-references.md), PR-18 of plan 11).* A person who wants
@@ -428,7 +604,8 @@ chip for each mention and, when the agent that reads the message cannot use them
 
 The right side of a thread was unused (owner, 2026-10-01: "the right side of the page is usually unused … add a
 collapsible right panel to show the sources; the agents (and sub-agents) work better with a cleaner interface").
-The panel is the thread's second surface, `features/panel/`: two tabs, **Activity** and **Sources**.
+The panel is the thread's second surface, `features/panel/`: two tabs, **Activity** and **Sources**, and a third, **Plan**, only while
+the thread has a plan (an agent's surface whose id starts with `plan-`, [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md#the-plan)).
 
 | Docked, on a desktop | A sheet, on a phone |
 |---|---|
@@ -469,6 +646,14 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   weight 500, underlined when it is a link, an arrow after it), a muted line (the kind and a host, a
   provider or a type) and the Turn buttons (28 px, outlined). An empty tab is the panda at 96 px, what the
   tab is for, and why it is empty.
+- **Plan** pins the latest plan of the thread, so that it is findable beside the conversation, where it also stands once, in its first
+  place, and changes in place. It is the existing pattern (a tab of the panel, no new surface) and it only reads: the tab is named
+  "Plan" with its progress in muted text after it (`2/5`: the checklists of the plan together, a dropped step in neither number), it is
+  there only while the thread has a plan, and the panel's remembered tab falls back to Activity in a thread that has none. Its content is
+  the newest copy of the plan, drawn as in the conversation (a checklist with its bar, each state in words beside its icon, a dropped step
+  struck through and said "Dropped", a note under its label); it announces nothing (the plan in the conversation holds the polite
+  status region that says "Plan updated: 2 of 5 done" once it has been quiet for 0.8 s). On a phone the panel is a sheet that is never
+  open by itself, so the plan is found in the conversation first and in the sheet's **Plan** tab second.
 - **Resizing.** The edge between the chat and the panel is a window splitter: a vertical `separator` the
   keyboard can focus (Left widens by 16 px, Right narrows, Home and End go to the limits; its value is the
   width in px) and a pointer can drag (the width does not animate while it is dragged).
@@ -548,10 +733,23 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   Show in the side panel". It is a real button (`aria-controls` the panel, `aria-expanded` while the panel
   shows this turn), so Enter and Space open it.
 - **Turn actions** under a turn (`components/assistant-ui/elements/turn-actions.tsx`): **Copy** (the agent's
-  words) and **Fork from here** (`SplitIcon`). They show on hover and while the focus is inside the turn, and
+  words), **Quote** (where there is a composer), **Read aloud** (`Volume2Icon`, the device's own voice), **Regenerate**
+  (`RefreshCwIcon`, the newest turn only) and **Fork from here** (`SplitIcon`). They show
+  on hover and while the focus is inside the turn, and
   always on a touch screen (no hover there). Fork from here is `aria-disabled` while the turn is going on
   (the newest turn of a working thread), with a tooltip that says why; it is not offered before the page knows
-  where the turn ends in the log. An earlier turn can be forked while a later one runs. See "Fork and branch".
+  where the turn ends in the log. An earlier turn can be forked while a later one runs. Regenerate waits the same
+  way (`aria-disabled`, tooltip "Regenerate (once the agent has finished this turn)"). See "Fork and branch".
+- **Read aloud** (ADR 0067 S1) is one answer at a time across the page: while its answer is read the button is **pressed**
+  (`aria-pressed="true"`, the icon a `SquareIcon`, the tooltip "Stop reading"; its name stays "Read aloud", as Copy keeps
+  "Copy" and shows "Copied"), and starting another answer cuts the first. It is not drawn in a browser without
+  `speechSynthesis`, nor for a turn with no words to say — a turn that is only a surface (`[Interface: …]`, a placeholder
+  for Copy) or only a rule has none; it *is* drawn on a shared link and for a person who may only read, where Copy is. A
+  refusal is a line of words under that answer, in the same quiet type as Copy's, and it cuts whatever the device still
+  had queued. **Esc** stops it, unless a dialog is open (that one closes, as it always did) — and only when nothing else
+  claims Esc: a menu, the search box's own clear. Nothing is stored, nothing plays by itself, and the words are the ones
+  on the screen (code is its content, a formula is the word "formula", a link is its label, and a surface says nothing).
+  A read stops when its turn leaves the page. The deployment's voice is S2/S3, behind `ui.speech`, not built.
 - **Before the first event** a shimmering "Coder is starting…" line under the avatar.
 - **A draft: the words as they are written** (2026-10-01, sys #65: "I want to see the agent's words as they
   are written"). While the model writes its reply the turn shows what it has so far, after the parts the turn
@@ -646,6 +844,22 @@ words and everything after them stay in the first chat, which is the message's o
 - **The list** shows a conversation once: the edits are left out (`GET /api/threads` without
   `branches=include`), and while an edit is open the row of the conversation's first thread is highlighted like
   the open chat, with `aria-current="true"` (`"page"` stays with the address that is open).
+- **Regenerate** (*added 2026-11-14*): a turn action under the **newest** turn, `RefreshCwIcon`, a real button named
+  "Regenerate". It is an edit with the same words: `fork({replace: <seq of the message that began the turn>, text,
+  messageId})` (`ForkProvider.regenerate`), so the answer is a new version and the picker above goes between the two.
+  It sends **no access tier**, so the server keeps the tier of the message it replaces (the contract of `forkThread`
+  says it). It is `aria-disabled` while the turn is going on (tooltip "Regenerate (once the agent has finished this
+  turn)") or a fork is made (tooltip "Regenerating…"). **What begins a turn** is a message of the person: the
+  transcript message right before the agent's must be the person's, with a known `seq` (`regenerableFrom`,
+  `features/threads/lib/regenerate.ts`). It is therefore not drawn on an earlier turn, to a person who may only read,
+  on a shared link (no `ForkProvider`), for a turn that began with a form answer (an action in the agent's own
+  message: no message of the person precedes it), **while a question waits for its answer** (the edit would drop the
+  question), for a message that mentioned an agent (the edit route carries no mentions, so the new version would lose
+  them), or for a message sent while the agent worked (steer or interrupt, `metadata.delivery`): that turn is more than
+  the one message, the agent's earlier work stays before it, so replacing only it would not be "again" (Edit on that
+  message stays as it is). Each regenerate has a message id of its own: kept for a retry after a refusal, dropped on
+  success, and keyed by thread. A refusal is the line under the top bar ("Could not regenerate the answer: …. You can
+  edit the message instead.").
 
 ## A thread's description
 
@@ -876,7 +1090,33 @@ and an icon). The working badge is neutral ink: the green says "alive", the word
 | `--verifying` | `#6b3fa0` | `#cfb6f7` |
 
 `--brand` as text is at least 4.5:1 on every surface it sits on (5.6:1 on white; 6.9:1 or better in
-dark). Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11y.spec.ts`.
+dark). Every text colour is checked by axe (WCAG AA) in both schemes by `e2e/a11y.spec.ts`, and with each theme
+forced on a device of the other scheme.
+
+### Theme
+
+The person chooses **System** (the default), **Light** or **Dark**, on this device (decision 2026-11-14; ADR 0011 amended). The rule is one
+sentence: **a component reads the page's theme, never the device's.** The page's theme is `<html data-theme="light|dark">`, set before the
+first paint by a head script (allowed by its hash in the page's `<meta>` policy, which voids the header's `'unsafe-inline'`: `lib/csp.ts`) and kept by `lib/theme.ts`; the tokens above are
+`:root` and `:root[data-theme="dark"]`, `dark:` is a variant of that attribute, and `color-scheme` follows it so native controls
+and scrollbars match. Anything that draws apart from CSS (a diagram, a canvas, a chart's colours read into script) takes
+`usePageTheme()` and draws again when it changes; a dark diagram on a light page is the bug this prevents. No new
+`prefers-color-scheme` in a stylesheet or `matchMedia` in a component: `lib/theme.ts` is the one place that asks the device, and only
+while System is chosen.
+
+**Print is always light.** Paper is white and Chromium drops backgrounds when printing, so a dark theme would print light text on nothing. The dark
+tokens, `color-scheme: dark`, the `dark:` variant and the highlighter's dark colours are therefore `@media screen` only: under `print` the page
+uses the light tokens whatever is chosen (`e2e/theme.spec.ts` emulates print on a forced dark theme). A drawn diagram is a picture and prints as it was
+drawn.
+
+**Two limits, stated and not built.** The theme is the page's: the desktop app's window chrome and title bar follow the operating system, not an
+in-app choice. And another tab's choice (and a cleared storage) is followed through the `storage` event, which is proven in the browser by one
+spec with two pages of one context (`e2e/theme.spec.ts`), not across separate browsers or profiles, which share no storage anyway.
+
+The control is a **Theme** group of three radio items (System, Light, Dark) in the account menu: the current one is checked,
+the arrows move, Enter chooses, and the menu stays open so the change is seen. The group has the same size in every state, so
+nothing moves. Where there is no account menu (the sign-in screen, a shared conversation, a local run with nobody signed in)
+the same group opens from a **Theme** icon button.
 
 ## Motion
 
@@ -913,6 +1153,26 @@ focusable though hidden), and axe is run with the picker's menu open and with th
 in both schemes. The tools picker is the same kind of menu (checkbox items, not modal) and its chips are a labelled
 list of native buttons; axe is run with it open, with chips, with the flag for an agent that cannot use them, and on a thread
 whose steps carry a server's icon, in both schemes (`e2e/tools.spec.ts`), and the whole of it works from the keyboard alone.
+
+**Which menus are modal.** A Radix menu is modal by default: while it is open it puts `aria-hidden` on the rest of the page, locks scrolling and
+swallows a click outside it. In this layout that is wrong for the menus that sit inside the sidebar or beside a field, and axe says so: with the
+account menu modal, `aria-hidden-focus` (serious) was reported on the open menu, because the buttons around it (Close sidebar, the threads' menu
+buttons, the Archived toggle, the Account button itself) are in the hidden subtree and still reachable by Tab (*observed 2026-11-14* in
+`e2e/a11y.spec.ts`, Chromium). **Not modal** (`modal={false}`): the agent picker, the Send split's menu, the tools picker, the access-tier
+chip's menu, the **account menu** and the **Theme** button's menu. **Modal** (Radix default): a thread's overflow menu (`thread-menu.tsx`) and a
+thread row's menu (`thread-row.tsx`). What a non-modal menu gives up: the rest of the page is not hidden from assistive technology while it is
+open (a screen reader can leave the menu by browsing), nothing locks the scroll, and a click outside closes the menu and reaches what is under it.
+The focus still goes into the menu when it opens, the arrows move in it, and Escape closes it and gives the focus back to its button. The two
+modal menus are not changed here; if axe is ever run with one of them open it will say the same.
+
+**The keyboard help sheet** (`features/shortcuts/`, ADR 0067 S1) is a modal dialog like the share and delete ones: `aria-modal`, a title
+("Keyboard shortcuts"), the focus moved into it on open and given back where it was on close (Radix has no trigger to return to here, so the
+element is remembered when the sheet opens), and Esc closes it. It lists the page's keys as a definition list, each key in a `<kbd>`, and a
+row that takes two chords draws them joined by "or" — its own two openers are a row, so the description promises nothing the page does not
+do. The modifier is the platform's own (⌘ on Apple, Ctrl elsewhere, one `isApple()` for the whole web). It opens on `?` and on Ctrl/⌘+`/`,
+**in a box, but not over a dialog that is already open** — a popover is a `role="dialog"` to Radix too, and holds Esc as well; the Shift is
+not part of the `/` chord, since on AZERTY `/` is the shifted character of its key (*unverified* against the browsers' own bindings, like
+the search shortcut above). No other binding was added, and the list is the same array the README quotes.
 
 ## A surface that needs a newer version of the app
 
@@ -981,7 +1241,8 @@ quiet as the rest of the page: no colour of their own, nothing that moves, nothi
   quiet disclosure, "Diagram source" (12 px muted, a triangle), that opens the graph's text in the page's code block (12 px radius
   corners at 6, `--muted` fill, monospace, scrolls and takes focus). The picture is drawn **in the page's own tokens**, so a graph is a
   neighbour of the cards and not a screenshot of another app: nodes `--muted` with a `--input` border, text `--foreground`, lines
-  `--muted-foreground`, the surface's `--card` behind; dark mode is the dark tokens (`prefers-color-scheme`, as everywhere). **Plain
+  `--muted-foreground`, the surface's `--card` behind; dark mode is the dark tokens of **the page's theme** (`<html data-theme>`, "Theme" under Colour; the graph is drawn again when the theme changes, and it is
+a picture, so it prints as it was drawn). **Plain
   shapes**: mermaid's `classic` look, no drop shadows, no gradients, no hand-drawn style. At most its natural size and never wider than
   the card: on a phone it scales down with its text, and the source is the way to read it at full size.
 - **A graph that cannot be drawn** is the same figure with a destructive-toned callout in place of the picture: a circle-alert icon,
@@ -992,4 +1253,31 @@ quiet as the rest of the page: no colour of their own, nothing that moves, nothi
   source disclosure is already there.
 - Accessibility: the picture is an `<img>` named by the title (else the caption, else "Diagram"); the source disclosure is its text
   alternative; cards are a list of list items; every link says it opens a new tab; the focus ring is the page's.
+
+## Code and math in an answer
+
+How the Markdown of an answer draws a fenced block and a formula (the build, the engine and the lazy loading are in
+[README.md](README.md#code-and-math-in-answers)).
+
+- **A fenced block** is the page's code box (12 px corners, `--muted` at 40 %, 13 px monospace, scrolls sideways) under a header with
+  the language in lowercase and a **Copy** button. The words are on the screen at once, in `--foreground`; the colours arrive once, when the
+  answer is final and the highlighter has loaded, in place, with no change of size: a block being written stays plain the whole time,
+  so nothing flickers. A block over 20,000 characters or 500 lines stays plain too. A language the page has no grammar for, and a block with none, stay in `--foreground`: plain is a complete
+  state, not an error.
+- **The colours** are GitHub's high-contrast pair, light in the light scheme and dark in the dark one, following the system like every
+  other colour (no toggle, so no class). They were chosen over the default pair for their contrast on `--muted`: axe (WCAG AA) passes on a
+  highlighted answer in both schemes (`e2e/code-math.spec.ts`). A token is text in a code block, so meaning is never in the colour
+  alone: the colour only helps a reader scan.
+- **A formula** is KaTeX's own type (its fonts are bundled), in the colour of the text around it. A display formula (`$$` on lines of
+  its own, or `$$...$$` as a paragraph by itself) is centred in the column; one wider than the column scrolls inside its own box, and only
+  then is it a tab stop (`tabindex="0"`, so a keyboard reaches what a pointer scrolls). `$$` inside a sentence is text, and `\(...\)`
+  and `\[...\]` are not read. A formula over 5,000 characters is shown as a block of code. A formula KaTeX cannot read is shown as its source in
+  `--destructive` (KaTeX's own `#cc0000` is not checked on the dark canvas, the token is), never an error banner and never a thrown
+  error.
+- **Its name**: a screen reader reads KaTeX's MathML, the formula itself, never the `aria-hidden` picture and never raw TeX; a formula
+  that scrolls is a group named "Formula".
+- **Prices**: a single dollar is never math, so "$5 or $10" is a sentence. Only `$$` on lines of its own is a formula.
+- **Languages**: Rust, TypeScript, TSX, JavaScript, JSX, JSON, Bash, Python, SQL, Go, diff, Dockerfile, HTML and CSS. YAML and TOML stay plain (no
+  verified licence for their grammars).
+- **Not here**: the `Code` of a surface (the UI catalog) is not highlighted, and no theme switch exists.
 

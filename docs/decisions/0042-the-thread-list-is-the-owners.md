@@ -20,6 +20,8 @@
   own decision, [ADR 0043](0043-deleting-a-thread-erases-it.md). Extends [ADR 0029](0029-forking-a-thread-copies-its-log.md)
   and amends the wording of invariant 3 and of [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 1).
 
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** a thread is also nested under another when it is a **child session** of it (`child_of`), not only when it is a fork; the person's own pins, order and archive apply to it as to any thread.
+
   Status note (2026-10-03, later): **decisions 8 and 9 are built on the backend** (not the web, not the columns of decisions
   1 to 7): `forwardedProps["vymalo.fork"] = {from, after}` on the AG-UI run that creates the thread
   ([`agui.md`](../api/agui.md#a-fork-made-with-its-first-message)), `forkThread` with `after` and `text`

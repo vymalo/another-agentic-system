@@ -1,0 +1,99 @@
+{
+  "name": "Only final answers are searched",
+  "about": "A partial message and working text are not the agent's words: `controller` (working) and `will` (partial) hit nothing; `redirect` hits the description, the person's message and the final message.",
+  "steps": [
+    {
+      "request": {
+        "q": "controller"
+      },
+      "expect": {
+        "terms": [
+          "controller"
+        ],
+        "results": [],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "will look"
+      },
+      "expect": {
+        "terms": [
+          "will",
+          "look"
+        ],
+        "results": [],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "redirect"
+      },
+      "expect": {
+        "terms": [
+          "redirect"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000002",
+            "rank": 1,
+            "hits": [
+              {
+                "field": "description",
+                "snippet": {
+                  "text": "Redirect loop after sign-in",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 8
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 4,
+                "role": "agent",
+                "at": "2026-11-14T10:04:00Z",
+                "snippet": {
+                  "text": "Fixed: the login redirect is gone",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 17,
+                      "end": 25
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "The login page redirects forever",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 15,
+                      "end": 24
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 2
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

@@ -328,6 +328,27 @@ test.describe("the owner shares a thread", () => {
 });
 
 test.describe("the page of a link", () => {
+  test("has the Theme button (there is no account menu here): Dark is chosen, shown and kept after a reload", async ({
+    page,
+    join,
+  }) => {
+    const owner = await join({ sharing: "public" });
+    const id = await threadOf(owner, `Fix the redirect loop ${uuidv7().slice(-8)}`);
+    const token = await shareAs(owner, id, "internal");
+    await join({ me: "admin", sharing: "public" });
+    await page.emulateMedia({ colorScheme: "light" });
+
+    await page.goto(`/s/${token}`);
+    await expect(banner(page)).toHaveText("Shared conversation, read only");
+    await page.getByRole("button", { name: "Theme" }).click();
+    await page.getByRole("menuitemradio", { name: "Dark" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await page.reload();
+    await expect(banner(page)).toHaveText("Shared conversation, read only");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(page.getByRole("button", { name: "Theme" })).toBeVisible();
+  });
+
   test("a signed-in reader has the conversation and nothing that acts, and not the owner's address", async ({
     page,
     join,
@@ -404,6 +425,39 @@ test.describe("the page of a link", () => {
     await expect(banner(page)).toBeVisible();
     await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
     await expect(conversation(page).locator('[data-slot="file-card"]')).toHaveCount(0);
+  });
+
+  test("a plan in a shared thread: the signed-in reader and anybody see its drawing and the Plan tab, and nothing in it sends", async ({
+    page,
+    join,
+  }) => {
+    const owner = await join({ sharing: "public" });
+    const id = await threadOf(owner, "plan now", "reviewer");
+    const token = await shareAs(owner, id, "public");
+
+    const sees = async () => {
+      await page.goto(`/s/${token}`);
+      await expect(banner(page)).toBeVisible();
+      const plan = conversation(page).getByRole("region", { name: "Plan from reviewer" });
+      await expect(plan).toContainText("1 of 4 done");
+      await expect(plan.getByRole("button")).toHaveCount(0);
+      await expect(plan.getByRole("textbox")).toHaveCount(0);
+      // the details panel is there for a reader, and the plan is pinned in it
+      const toggle = page.getByRole("button", { name: "Thread details" });
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+      await expect(page.getByRole("tab", { name: /^Plan/ })).toBeVisible();
+      await expectNoHorizontalScroll(page);
+    };
+
+    await join({ me: "admin", sharing: "public" });
+    await page.goto("/");
+    await page.evaluate(() => window.localStorage.setItem("another-agentic.had-session", "1"));
+    await sees();
+
+    // anybody: no sign-in at all
+    await join({ me: "user", sharing: "public", signedIn: false });
+    await page.evaluate(() => window.localStorage.clear());
+    await sees();
   });
 
   test("images in the answer that mean shared files: the link's own route for a signed-in reader, a placeholder for anybody", async ({

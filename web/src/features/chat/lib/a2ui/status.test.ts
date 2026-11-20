@@ -8,7 +8,45 @@ describe("the words of a state", () => {
       doing: "In progress",
       todo: "To do",
       failed: "Failed",
+      dropped: "Dropped",
     });
+  });
+});
+
+describe("progressOf with dropped items (catalog version 8)", () => {
+  it("counts a dropped item in neither number", () => {
+    expect(
+      progressOf([
+        { state: "done" },
+        { state: "dropped" },
+        { state: "doing" },
+        { state: "done" },
+        { state: "dropped" },
+      ]),
+    ).toEqual({ done: 2, total: 3, percent: 67 });
+  });
+
+  it("is zero of zero when every item is dropped", () => {
+    expect(progressOf([{ state: "dropped" }, { state: "dropped" }])).toEqual({
+      done: 0,
+      total: 0,
+      percent: 0,
+    });
+  });
+
+  it("reads a note and a dropped state, and keeps a timeline to its four states", () => {
+    expect(
+      readItems([
+        { label: "Port it", state: "dropped", note: "Out of scope" },
+        { label: "Plain", state: "todo", note: "" },
+      ]),
+    ).toEqual([
+      { label: "Port it", state: "dropped", note: "Out of scope" },
+      { label: "Plain", state: "todo" },
+    ]);
+    expect(readEvents([{ time: "t", title: "x", state: "dropped" }]).map((e) => e.state)).toEqual([
+      "done",
+    ]);
   });
 });
 

@@ -1,0 +1,26 @@
+{
+  "name": "A query that keeps no term is an answer with none",
+  "about": "`a` and `!!` have no term: 200, `terms: []`, no result.",
+  "steps": [
+    {
+      "request": {
+        "q": "a"
+      },
+      "expect": {
+        "terms": [],
+        "results": [],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "!!"
+      },
+      "expect": {
+        "terms": [],
+        "results": [],
+        "hasNext": false
+      }
+    }
+  ]
+}

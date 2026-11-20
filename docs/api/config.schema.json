@@ -352,7 +352,8 @@
         "thread.share",
         "thread.delete",
         "admin",
-        "tools.user.add"
+        "tools.user.add",
+        "prompts.share"
       ],
       "type": "string"
     },
@@ -1328,7 +1329,7 @@
         },
         "signing": {
           "$ref": "#/$defs/ToolServerSigning",
-          "description": "Sign every request to the server, in place of a bearer (ADR 0067, `docs/api/signed-tool-requests-v1.md`): each HTTP request carries one header that binds it to its thread and the thread's owner. Refused together with `bearer`."
+          "description": "Sign every request to the server, in place of a bearer (ADR 0080, `docs/api/signed-tool-requests-v1.md`): each HTTP request carries one header that binds it to its thread and the thread's owner. Refused together with `bearer`."
         },
         "timeoutSecs": {
           "default": 120,
@@ -1369,7 +1370,7 @@
     },
     "ToolServerSigning": {
       "additionalProperties": false,
-      "description": "How the requests to one tool server are signed (ADR 0067).",
+      "description": "How the requests to one tool server are signed (ADR 0080).",
       "properties": {
         "audience": {
           "description": "The name the tool server calls itself, 1 to 256 characters of one line: the `aud` of every signed request, compared by exact string equality. By convention the URL of its MCP endpoint.",

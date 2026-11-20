@@ -2,8 +2,18 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* Dark mode follows the system setting (no toggle, no `.dark` class). */
-@custom-variant dark (@media (prefers-color-scheme: dark));
+/*
+ * The theme is the page's, not the device's: `<html data-theme="light|dark">`, set before the first paint by the head
+ * script and kept by lib/theme.ts (System follows the device there, and only there). Nothing below asks
+ * `prefers-color-scheme`: web/DESIGN.md "Theme".
+ */
+@custom-variant dark {
+  @media screen {
+    &:where([data-theme="dark"], [data-theme="dark"] *) {
+      @slot;
+    }
+  }
+}
 
 /*
  * web/DESIGN.md is the brief: a warm neutral canvas, ink for the actions, one bamboo green for what
@@ -49,11 +59,14 @@
   --ring: var(--brand);
   --radius: 0.75rem;
   --composer-shadow: 0 1px 2px rgb(26 29 26 / 0.05), 0 6px 24px -4px rgb(26 29 26 / 0.1);
-  color-scheme: light dark;
+  /* native controls, scrollbars and the date input follow the page's theme */
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+/* only on a screen: paper is white, so a page printed from a dark theme prints with the light tokens (web/DESIGN.md "Theme") */
+@media screen {
+  :root[data-theme="dark"] {
+    color-scheme: dark;
     --brand: #8dc58b;
     --background: #141614;
     --foreground: #e8e9e4;
@@ -220,6 +233,32 @@ html[data-panel-dragging] {
 }
 html[data-panel-dragging] [data-slot="panel"] {
   transition: none;
+}
+
+/*
+ * Highlighted code (src/lib/highlight.ts): a token carries both colours of the two themes as custom properties, and
+ * the page's theme (`<html data-theme>`) picks one. The block's own background is ours, never the theme's.
+ */
+.aui-md-pre [data-token] {
+  color: var(--shiki-light);
+  font-style: var(--shiki-light-font-style, inherit);
+  font-weight: var(--shiki-light-font-weight, inherit);
+  text-decoration: var(--shiki-light-text-decoration, inherit);
+}
+@media screen {
+  :root[data-theme="dark"] .aui-md-pre [data-token] {
+    color: var(--shiki-dark);
+    font-style: var(--shiki-dark-font-style, inherit);
+    font-weight: var(--shiki-dark-font-weight, inherit);
+    text-decoration: var(--shiki-dark-text-decoration, inherit);
+  }
+}
+
+/* A display formula wider than the column scrolls inside its own box (a tab stop only while it overflows: markdown-text.tsx). */
+.aui-md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.25rem;
 }
 
 @layer utilities {

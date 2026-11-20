@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
 import { uuidv7 } from "../src/lib/uuid";
+import { COMMANDS_URI, readCommands } from "./commands";
 import { FILES, fileHeaders } from "./files";
 import {
   AGENTS,
@@ -43,6 +44,7 @@ import {
 import { type BrowserAuthOptions, createIssuer } from "./issuer";
 import { LiveOverlay, type LivePiece } from "./live";
 import { checkAgainstText, checkAgents, type MentionRef, readMentions } from "./mentions";
+import { answerFor, type MyUsage, parseAnswers, readQuery } from "./my-usage";
 import {
   type Audience,
   type CatalogRef,
@@ -52,7 +54,26 @@ import {
   Projector,
   surfacesOf,
 } from "./projection";
+import {
+  addShared,
+  handlePrompts,
+  MAX_PROMPTS,
+  newShelf,
+  MAX_BODY_BYTES as PROMPT_MAX_BODY_BYTES,
+  MAX_RENDERED_BYTES as PROMPT_MAX_RENDERED_BYTES,
+  MAX_VARIABLES as PROMPT_MAX_VARIABLES,
+  type Shelf,
+} from "./prompts";
 import { cancelSteps, longThreadTurn, nextMessageId, type Step, scriptFor } from "./scripts";
+import {
+  type LogEvent,
+  MAX_QUERY_LENGTH,
+  MAX_TERMS,
+  readRequest,
+  type Searchable,
+  searchableMessages,
+  searchThreads,
+} from "./search";
 import {
   type CardTiers,
   readOffer,
@@ -63,6 +84,22 @@ import {
   TIERS,
   type Tier,
 } from "./tier";
+import {
+  approvalRedirect,
+  authorizeUserToolServer,
+  CALLBACK_PATH,
+  configure as configureUserTools,
+  createUserToolServer,
+  deleteUserToolServer,
+  finishAuthorization,
+  listUserToolServers,
+  newUserTools,
+  notReady,
+  ownToolServers,
+  type Reply,
+  type UserTools,
+  updateUserToolServer,
+} from "./user-tools";
 
 type Thread = components["schemas"]["Thread"];
 type Event = components["schemas"]["Event"];
@@ -191,7 +228,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 type Run = {
   timer: NodeJS.Timeout | undefined;
   pending: Step[];
-  resume: ((answer: string) => Step[]) | undefined;
+  resume: ((answer: string, context?: Record<string, unknown>) => Step[]) | undefined;
   /** Set while the run waits at a `{ pause: "release" }` step: goes on with the steps after it. */
   release?: () => void;
   /**
@@ -378,8 +415,20 @@ export function createMockServer(options: MockOptions = {}): http.Server {
      * message is sent. An agent with no entry lists nothing, so the web draws no chip for it.
      */
     tiers: Map<string, CardTiers>;
+    /**
+     * What each agent's card says under `commands/v1` (ADR 0079), by agent id, as a test sets it
+     * (`POST /__mock/commands`): the raw params of the extension. An agent with no entry lists no
+     * command, so the web draws no commands menu for it.
+     */
+    commands: Map<string, unknown>;
     /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
     toolServers: ToolServer[];
+    /** What `GET /api/me/usage` answers (ADR 0065) by month, `"*"` for any other: as a test sets it (`POST /__mock/my-usage`). */
+    myUsage: Record<string, MyUsage>;
+    /** The person's own MCP servers and the deployment's rules for them (ADR 0046; `user-tools.ts`, `POST /__mock/user-tools`). */
+    userTools: UserTools;
+    /** The person's prompt library, and the shared prompts "of somebody else" a test puts beside it (ADR 0070; `prompts.ts`). */
+    prompts: Shelf;
     /** The deployment's cap on sharing (`sharing.mode`, ADR 0040); what `/api/me` says is the cap for a role that may share. */
     sharing: Sharing;
     /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
@@ -410,7 +459,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         },
         me: "user",
         tiers: new Map(),
+        commands: new Map(),
         toolServers: [...TOOL_SERVERS],
+        myUsage: {},
+        userTools: newUserTools(),
+        prompts: newShelf(),
         sharing: "internal",
         signedIn: true,
         stale: false,
@@ -532,6 +585,24 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       "application/problem+json",
     );
 
+  /** An answer of `user-tools.ts`: JSON or a problem, or the callback's page; a 204 and a 405 have no body. */
+  const reply = (res: http.ServerResponse, r: Reply) => {
+    const type = r.type ?? "application/json";
+    res.writeHead(r.status, { "Content-Type": type, "Cache-Control": "no-store", ...r.headers });
+    if (r.status === 204 || r.status === 405) return void res.end();
+    res.end(typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? {}));
+  };
+  /** A request's JSON body, or `undefined` when it is none or not JSON (the routes answer 400 to both). */
+  const readBody = (req: http.IncomingMessage): Promise<unknown> =>
+    readJson(req).catch(() => undefined);
+
+  const readBytes = (req: http.IncomingMessage): Promise<Buffer> =>
+    new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => resolve(Buffer.concat(chunks)));
+      req.on("error", reject);
+    });
   const readJson = (req: http.IncomingMessage): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
@@ -1006,15 +1077,24 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     ids: readonly string[],
     agentId: string,
     attached: ReadonlySet<string>,
-  ): string | undefined {
-    if (new Set(ids).size > MAX_SERVERS) return `more than ${MAX_SERVERS} servers`;
-    const listed = registryOf(sessionOf(req)).toolServers;
+  ): { detail: string; code?: string } | undefined {
+    if (new Set(ids).size > MAX_SERVERS) return { detail: `more than ${MAX_SERVERS} servers` };
+    const registry = registryOf(sessionOf(req));
+    const can = holds(meOf(req), "tools.user.add");
+    const listed = [...registry.toolServers, ...ownToolServers(registry.userTools, can)];
     const offered = offeredFor(req, agentId);
     for (const id of ids) {
       if (attached.has(id)) continue;
-      if (!listed.some((t) => t.id === id)) return `the server ${id} is not offered`;
-      if (!offered.some((t) => t.id === id)) {
-        return `the server ${id} is not offered for the agent ${agentId}`;
+      if (!listed.some((t) => t.id === id)) return { detail: `the server ${id} is not offered` };
+      // one of the person's own that is not `ready` (ADR 0046): a call to action, or a cause that clears
+      const own = notReady(registry.userTools, can, id);
+      if (own) {
+        const body = own.body as { detail: string; code: string };
+        return { detail: body.detail, code: body.code };
+      }
+      // a person's own server has no `agents` list: it is offered for every agent
+      if (!id.startsWith("u-") && !offered.some((t) => t.id === id)) {
+        return { detail: `the server ${id} is not offered for the agent ${agentId}` };
       }
     }
     return undefined;
@@ -1083,7 +1163,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return problem(res, 400, "Bad Request", "a server id is lower-case letters, digits and -");
     }
     const refused = refusedServers(req, ids, thread.target.agentId, new Set(thread.tools ?? []));
-    if (refused !== undefined) return problem(res, 422, "Unprocessable", refused);
+    if (refused !== undefined) {
+      return problem(res, 422, "Unprocessable", refused.detail, refused.code);
+    }
     setTools(thread, ids, { type: "user", name: meOf(req).user });
     return sendJson(res, 200, { servers: thread.tools ?? [] });
   }
@@ -1505,6 +1587,72 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       else tiers.set(body.agent, body.params);
       return void res.writeHead(204).end();
     }
+    // What the card of an agent lists under `commands/v1` (ADR 0079), as a test sets it for its own
+    // session: `{ agent, params }`, where `params` is taken as given (a malformed one is a card that
+    // lists nothing), and `null` takes the listing away. An agent nobody set lists no command.
+    if (path === "/__mock/commands" && method === "POST") {
+      const body = await readJson(req);
+      if (!isRecord(body) || typeof body.agent !== "string" || !("params" in body)) {
+        return problem(res, 400, "Bad Request", "the body is { agent, params }");
+      }
+      const commands = registryOf(session).commands;
+      if (body.params === null) commands.delete(body.agent);
+      else commands.set(body.agent, body.params);
+      return void res.writeHead(204).end();
+    }
+    // What `GET /api/me/usage` answers for this session (ADR 0065): `{ "<YYYY-MM>": MyUsage, "*": MyUsage }`, the body
+    // taken whole (see `my-usage.ts`); a month it names none for is an empty, complete one.
+    if (path === "/__mock/my-usage" && method === "POST") {
+      const answers = parseAnswers(await readJson(req));
+      if (!answers) {
+        return problem(
+          res,
+          400,
+          "Bad Request",
+          "the body is an object of `YYYY-MM` (or `*`) to MyUsage",
+        );
+      }
+      registryOf(url.searchParams.has("session") ? session : sessionOf(req)).myUsage = answers;
+      return void res.writeHead(204).end();
+    }
+    // The person's own MCP servers (ADR 0046) as a test sets the deployment's rules for its own session: `enabled`,
+    // `credentials`, `issuer`, `denyHosts`, `authorize` and `mark` (see `user-tools.ts`).
+    // Prompts "of somebody else" for the session's library (ADR 0070): a list of `{name, title, description?, body, variables?,
+    // audience}`; the session's roles decide which it sees. 400 for one the rules refuse, with the reason.
+    if (path === "/__mock/prompts/shared" && method === "POST") {
+      const refusal = addShared(
+        registryOf(url.searchParams.has("session") ? session : sessionOf(req)).prompts,
+        await readBody(req),
+        new Date(),
+      );
+      if (refusal) return problem(res, 400, "Bad Request", refusal);
+      return void res.writeHead(204).end();
+    }
+    if (path === "/__mock/user-tools" && method === "POST") {
+      const refusal = configureUserTools(
+        registryOf(url.searchParams.has("session") ? session : sessionOf(req)).userTools,
+        await readJson(req).catch(() => undefined),
+      );
+      if (refusal) return problem(res, 400, "Bad Request", refusal);
+      return void res.writeHead(204).end();
+    }
+    // A stand-in for the authorization server's consent page: the browser of the person is sent here by `authorizeUrl`,
+    // and on to the callback as the real one would (`?decline=1`: the person said no).
+    if (path === "/__mock/oauth/approve" && method === "GET") {
+      const state = url.searchParams.get("state") ?? "";
+      const issuer = [...registries.values()].find((r) => r.userTools.flows.has(state))?.userTools
+        .config.issuer;
+      res.writeHead(302, {
+        Location: approvalRedirect(
+          state,
+          issuer ?? "https://auth.mock-issuer.example",
+          url.searchParams.get("decline") === "1",
+        ),
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+      });
+      return void res.end();
+    }
     if (path === "/__mock/registry/agents" && method === "POST") {
       const agent = (await readJson(req)) as Agent;
       registryOf(session).agents.push({ ...agent, source: "registry" });
@@ -1512,7 +1660,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     // A session that is not signed in (`?signedIn=false`): every route but the public ones is the 401
     // the edge's identity layer gives (the public routes are outside it, ADR 0040)
-    const publicRoute = path.startsWith("/api/public/") || path.startsWith("/agui/public/");
+    const publicRoute =
+      path.startsWith("/api/public/") || path.startsWith("/agui/public/") || path === CALLBACK_PATH;
     // which kind of deployment this is (ADR 0054, decision 7): the issuer the web signs in at, or none
     if (path === "/api/public/auth" && method === "GET") {
       res.setHeader("Cache-Control", "no-store");
@@ -1558,10 +1707,28 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         ...(what?.startsWith("artifacts/") ? { sha256: decodeURIComponent(shared[5] ?? "") } : {}),
       });
     }
+    // `finishUserToolAuthorization` (ADR 0046): outside the identity layer, the person found by the `state` alone.
+    if (path === CALLBACK_PATH) {
+      const found = (state: string) => {
+        for (const r of registries.values()) {
+          const flow = r.userTools.flows.get(state);
+          if (flow) return { tools: r.userTools, flow };
+        }
+        return undefined;
+      };
+      return reply(res, finishAuthorization(found, method, url.searchParams, Date.now()));
+    }
     // `GET /api/me` (`getMe`, ADR 0033): who the session is and what its roles let it do; the one
     // route that answers a person whose roles grant nothing. Every other route of the APIs refuses
     // such a person (`no_access`).
     if (path === "/api/me" && method === "GET") return sendJson(res, 200, meOf(req));
+    // `GET /api/me/usage` (`getMyUsage`, ADR 0065): the caller's own month. No permission gates it, so a person whose roles
+    // grant nothing reads their own too, and there is no `owner`: it, like any other key, is a 400. Never cached (`sendJson`).
+    if (path === "/api/me/usage" && method === "GET") {
+      const asked = readQuery(url.searchParams);
+      if ("error" in asked) return problem(res, 400, "Bad Request", asked.error);
+      return sendJson(res, 200, answerFor(registryOf(sessionOf(req)).myUsage, asked.month));
+    }
     if (
       (path.startsWith("/api/") || path.startsWith("/agui/")) &&
       meOf(req).permissions.length === 0
@@ -1574,6 +1741,58 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         "no_access",
       );
     }
+    // People's own MCP servers (ADR 0046): `tools.user.add` for a change, no permission to read or to delete.
+    if (path === "/api/user-tool-servers" && (method === "GET" || method === "POST")) {
+      const tools = registryOf(sessionOf(req)).userTools;
+      const can = holds(meOf(req), "tools.user.add");
+      return reply(
+        res,
+        method === "GET"
+          ? listUserToolServers(tools, can)
+          : createUserToolServer(tools, can, await readBody(req)),
+      );
+    }
+    const own = /^\/api\/user-tool-servers\/(u-[a-z0-9]{10})(\/authorize)?$/.exec(path);
+    if (own) {
+      const tools = registryOf(sessionOf(req)).userTools;
+      const can = holds(meOf(req), "tools.user.add");
+      const id = own[1] ?? "";
+      if (!own[2] && method === "PATCH") {
+        return reply(res, updateUserToolServer(tools, can, id, await readBody(req)));
+      }
+      if (!own[2] && method === "DELETE") return reply(res, deleteUserToolServer(tools, id));
+      if (own[2] && method === "POST") {
+        const port = (server.address() as { port: number } | null)?.port ?? 4010;
+        return reply(
+          res,
+          authorizeUserToolServer(tools, can, id, `http://127.0.0.1:${port}`, Date.now()),
+        );
+      }
+    }
+    // A person's prompt library (ADR 0070): no permission to own prompts, `prompts.share` to share one (`prompts.ts`).
+    if (path === "/api/prompts" || path.startsWith("/api/prompts/")) {
+      const me = meOf(req);
+      const raw = await readBytes(req);
+      let body: string;
+      try {
+        body = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+      } catch {
+        body = "\u0000"; // not UTF-8: not JSON, but the media type is judged first
+      }
+      const answered = handlePrompts(
+        registryOf(sessionOf(req)).prompts,
+        { roles: me.roles, canShare: holds(me, "prompts.share") },
+        {
+          method,
+          rest: path.slice("/api/prompts".length),
+          search: url.searchParams,
+          contentType: req.headers["content-type"],
+          body,
+        },
+        new Date(),
+      );
+      if (answered) return reply(res, answered);
+    }
     if (path === "/api/agents" && method === "GET") {
       if (!holds(meOf(req), "agent.read")) return forbid(res, "agent.read");
       return sendJson(res, 200, listedAgents(req));
@@ -1582,6 +1801,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (path === "/api/config" && method === "GET") {
       const { showDescriptions, history } = registryOf(sessionOf(req));
       return sendJson(res, 200, {
+        // the capability: this server serves `searchThreads` (ADR 0068)
+        search: { maxQueryLength: MAX_QUERY_LENGTH, maxTerms: MAX_TERMS },
+        // the capability: this server serves the prompt library (ADR 0070)
+        prompts: {
+          limit: MAX_PROMPTS,
+          maxVariables: PROMPT_MAX_VARIABLES,
+          maxBodyBytes: PROMPT_MAX_BODY_BYTES,
+          maxRenderedBytes: PROMPT_MAX_RENDERED_BYTES,
+        },
         ui: {
           showDescriptions,
           ...(history
@@ -1614,10 +1842,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // deployment's order. It takes `thread.write`, as attaching does; never cached.
     if (path === "/api/tool-servers" && method === "GET") {
       if (!holds(meOf(req), "thread.write")) return forbid(res, "thread.write");
-      return sendJson(res, 200, registryOf(sessionOf(req)).toolServers);
+      const registry = registryOf(sessionOf(req));
+      return sendJson(res, 200, [
+        ...registry.toolServers,
+        ...ownToolServers(registry.userTools, holds(meOf(req), "tools.user.add")),
+      ]);
     }
 
     if (path === "/api/threads" && method === "GET") return listThreads(req, res, url);
+    if (path === "/api/search/threads" && method === "POST") return searchThreadsRoute(req, res);
 
     const run = /^\/agui\/agents\/([^/]+)$/.exec(path);
     if (run && method === "POST") return runAgent(req, res, decodeURIComponent(run[1] ?? ""));
@@ -1852,6 +2085,103 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       200,
       all.slice(0, limit).map((t) => viewOf(t, { cap, link: false })),
     );
+  }
+
+  /**
+   * `POST /api/search/threads` (`searchThreads`, ADR 0068): the caller's own threads and nobody else's, found by
+   * `search.ts`, the second implementation of docs/api/thread-search-v1.md. A person searches in a burst of 20
+   * and then twice a second (a token bucket, 429 with `Retry-After`).
+   */
+  const searchBuckets = new Map<string, { tokens: number; at: number }>();
+  const SEARCH_BURST = 20;
+  const SEARCH_REFILL_MS = 500;
+  async function searchThreadsRoute(req: http.IncomingMessage, res: http.ServerResponse) {
+    const me = meOf(req);
+    const now = Date.now();
+    // a session is a person here, so a test that searches a lot does not limit the next one
+    const who = sessionOf(req);
+    const bucket = searchBuckets.get(who) ?? { tokens: SEARCH_BURST, at: now };
+    bucket.tokens = Math.min(SEARCH_BURST, bucket.tokens + (now - bucket.at) / SEARCH_REFILL_MS);
+    bucket.at = now;
+    searchBuckets.set(who, bucket);
+    if (bucket.tokens < 1) {
+      res.setHeader("Retry-After", "1");
+      return problem(
+        res,
+        429,
+        "Too Many Requests",
+        "too many searches: try again shortly",
+        "rate_limited",
+      );
+    }
+    bucket.tokens -= 1;
+    if (!holds(me, "thread.read")) return forbid(res, "thread.read");
+    // the request as docs/api/thread-search-v1.md reads it: media type, shape, then (in `searchThreads`) the query, the limit, the
+    // filters and the cursor, in that order
+    const bytes = await readBytes(req);
+    let raw: string;
+    try {
+      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      raw = "\u0000"; // not UTF-8: not JSON, but the media type is judged first
+    }
+    const read = readRequest(req.headers["content-type"], raw);
+    if (!read.ok) {
+      return read.status === 415
+        ? problem(res, 415, "Unsupported Media Type", "the body is application/json")
+        : problem(res, 400, "Bad Request", "the body is not a search request", "bad_request");
+    }
+    const mine: Searchable[] = [...threads.values()]
+      .filter((t) => t.owner === me.user)
+      .map((t) => ({
+        id: t.id,
+        title: t.title,
+        description: t.description ?? null,
+        archived: railOf(t.id).archivedAt !== undefined,
+        edit: isEdit(t.id),
+        ...(t.forkedFrom?.threadId !== undefined ? { copiedThrough: t.forkedFrom.seq } : {}),
+        messages: searchableMessages(
+          (events.get(t.id) ?? []).flatMap((e): LogEvent[] => {
+            const data = e.data as Record<string, unknown>;
+            if (e.kind !== "user_message" && e.kind !== "agent_message") return [];
+            return [
+              {
+                seq: e.seq,
+                at: e.at,
+                kind: e.kind,
+                text: typeof data.text === "string" ? data.text : "",
+                ...(typeof data.messageId === "string" ? { messageId: data.messageId } : {}),
+                ...(typeof data.final === "boolean" ? { final: data.final } : {}),
+                ...(typeof data.purpose === "string" ? { purpose: data.purpose } : {}),
+              },
+            ];
+          }),
+        ),
+      }));
+    const found = searchThreads(mine, read.request);
+    if (!found.ok) {
+      const detail =
+        found.code === "query_empty"
+          ? "the query is empty"
+          : found.code === "query_too_long"
+            ? `the query is longer than ${MAX_QUERY_LENGTH} characters`
+            : found.code === "bad_cursor"
+              ? "not a cursor of this request"
+              : "limit is 1 to 50";
+      return problem(res, 400, "Bad Request", detail, found.code);
+    }
+    const cap = capOf(req);
+    const { terms, results, next } = found.page;
+    sendJson(res, 200, {
+      query: { terms },
+      results: results.map((h) => ({
+        thread: viewOf(threads.get(h.id) as Thread, { cap, link: false }),
+        rank: h.rank,
+        hits: h.hits,
+        messageHits: h.messageHits,
+      })),
+      ...(next !== undefined ? { next } : {}),
+    });
   }
 
   /**
@@ -2352,6 +2682,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // with the person's cap on this agent beside them (the mock has one role: the same for every agent)
     const card = readOffer(registryOf(sessionOf(req)).tiers.get(agent.id));
     const offered = card && { ...card, ...(me.maxTier ? { maxTier: me.maxTier } : {}) };
+    // the card's commands, only when well formed (a card that lists the extension badly does not list it)
+    const commands = readCommands(registryOf(sessionOf(req)).commands.get(agent.id));
     sendJson(res, 200, {
       identity: {
         name: agent.name,
@@ -2371,11 +2703,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       THREAD_TOOLS_AGENTS.has(agent.id) ||
       STEER_AGENTS.has(agent.id) ||
       MENTIONS_AGENTS.has(agent.id) ||
-      offered
+      offered ||
+      commands
         ? {
             custom: {
               ...(agent.releases ? { [RELEASE_CHANNELS_URI]: agent.releases } : {}),
               ...(offered ? { [TIER_URI]: offered } : {}),
+              ...(commands ? { [COMMANDS_URI]: { commands } } : {}),
               ...(THREAD_TOOLS_AGENTS.has(agent.id) ? { [THREAD_TOOLS_URI]: {} } : {}),
               ...(STEER_AGENTS.has(agent.id) ? { [STEER_URI]: {} } : {}),
               ...(MENTIONS_AGENTS.has(agent.id) ? { [MENTIONS_URI]: {} } : {}),
@@ -2947,7 +3281,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         if (!ok) return problem(res, 400, "Unknown release", `No release "${release}"`);
       }
       const refused = refusedServers(req, tools, agent.id, new Set());
-      if (refused !== undefined) return problem(res, 422, "Unprocessable", refused);
+      if (refused !== undefined) {
+        return problem(res, 422, "Unprocessable", refused.detail, refused.code);
+      }
       const now = new Date().toISOString();
       const created: Thread = {
         id: threadId,
@@ -3275,7 +3611,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;
-    if (resumeScript) play(thread, resumeScript(`ui-action ${strings.name}${chosen(context)}`));
+    if (resumeScript) {
+      play(thread, resumeScript(`ui-action ${strings.name}${chosen(context)}`, context));
+    }
     return startViewer(res, thread, {
       fromSeq: from,
       end: "first-close",

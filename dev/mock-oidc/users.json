@@ -48,14 +48,45 @@
         "tool-maker"
       ]
     },
+    "search@example.com": {
+      "name": "Search E2E",
+      "roles": [
+        "user"
+      ]
+    },
     "usage-ledger@example.com": {
       "name": "Usage Ledger",
       "roles": [
         "user"
       ]
     },
+    "child-sessions@example.com": {
+      "name": "Child Sessions",
+      "roles": [
+        "user"
+      ]
+    },
     "usage-bystander@example.com": {
       "name": "Usage Bystander",
+      "roles": [
+        "user"
+      ]
+    },
+    "prompts@example.com": {
+      "name": "Prompts Sharer",
+      "roles": [
+        "prompt-sharer"
+      ]
+    },
+    "prompts-team@example.com": {
+      "name": "Prompts Team",
+      "roles": [
+        "user",
+        "prompt-team"
+      ]
+    },
+    "prompts-outsider@example.com": {
+      "name": "Prompts Outsider",
       "roles": [
         "user"
       ]

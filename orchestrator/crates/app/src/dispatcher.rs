@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
 use crate::app::sandbox_rejection;
-use crate::{App, AppError, ApplyOutcome, LateSource, UsageDrop};
+use crate::{App, AppError, ApplyOutcome, ChildSessionDrop, LateSource, UsageDrop};
 
 mod ask;
 mod description;
@@ -128,6 +128,10 @@ enum DispatchError {
     /// A write was refused because the row was claimed again: the late result is dropped.
     #[error("lease lost")]
     Fenced,
+    /// The agent answered a round with a task of another context than the child thread's: nothing
+    /// of it was applied (ADR 0072).
+    #[error("the round's task is of another context")]
+    ForeignContext,
 }
 
 type Done = Result<(), DispatchError>;
@@ -200,6 +204,10 @@ struct Ctx {
     revision: Option<String>,
     /// What the delegation has kept of the agent's files so far (ADR 0032).
     files: files::Budget,
+    /// For the row that follows a child session's round: the context the child thread adopted.
+    /// Nothing of another context may be applied to the child (fail closed against an agent that
+    /// names the parent's task, or another conversation's, as a round).
+    expected_context: Option<String>,
 }
 
 /// What a request tells the adapter of the cap it holds: the cap only when the message goes out
@@ -226,7 +234,9 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::Step(_)
             | AgentUpdate::Usage(_)
             | AgentUpdate::UsageRejected(_)
-            | AgentUpdate::TierRejected,
+            | AgentUpdate::TierRejected
+            | AgentUpdate::ChildSessions(_)
+            | AgentUpdate::ChildSessionsRejected(_),
         )
         | None => None,
     })
@@ -273,6 +283,37 @@ pub struct Dispatcher<P: Ports> {
     app: Arc<App<P>>,
     cfg: DispatcherConfig,
     owner: String,
+    /// The rounds of each parent's child sessions this process follows now (see
+    /// [`MAX_OBSERVED_PER_PARENT`]).
+    observing: std::sync::Mutex<std::collections::HashMap<ThreadId, usize>>,
+}
+
+/// The most rounds of one parent's child sessions a dispatcher follows at once (ADR 0072). Each
+/// followed round holds a worker for as long as the round runs, and an agent chooses how many
+/// sessions it opens, so without a bound one agent could take every worker of the process. A row
+/// beyond it **waits** (it is tried again with backoff and never dropped or dead-lettered for it).
+pub const MAX_OBSERVED_PER_PARENT: usize = 8;
+
+/// One followed round of a parent, counted until it is dropped (a finished, failed or aborted
+/// worker alike).
+struct ObservingSlot<'a> {
+    map: &'a std::sync::Mutex<std::collections::HashMap<ThreadId, usize>>,
+    parent: ThreadId,
+}
+
+impl Drop for ObservingSlot<'_> {
+    fn drop(&mut self) {
+        let mut map = self
+            .map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = map.get_mut(&self.parent) {
+            *n -= 1;
+            if *n == 0 {
+                map.remove(&self.parent);
+            }
+        }
+    }
 }
 
 impl<P: Ports> Dispatcher<P> {
@@ -282,6 +323,7 @@ impl<P: Ports> Dispatcher<P> {
             app,
             cfg,
             owner: owner.into(),
+            observing: std::sync::Mutex::default(),
         })
     }
 
@@ -419,6 +461,11 @@ impl<P: Ports> Dispatcher<P> {
 
     async fn process(&self, row: OutboxItem) -> Done {
         match row.kind {
+            // A round of a child session is followed, never sent (ADR 0072): a path of its own, so
+            // that the frame of a delegation is not under it
+            OutboxKind::Delegate if matches!(row.payload, OutboxPayload::Observe { .. }) => {
+                self.observe(row).await
+            }
             OutboxKind::Delegate => self.delegate(row).await,
             OutboxKind::Steer => self.steer(row).await,
             OutboxKind::Cancel => self.cancel(row).await,
@@ -570,6 +617,8 @@ impl<P: Ports> Dispatcher<P> {
             endpoint: entry.endpoint.clone(),
             revision: binding.revision.clone(),
             files: files::Budget::default(),
+            expected_context: matches!(row.payload, OutboxPayload::Observe { .. })
+                .then(|| binding.context_id.clone().unwrap_or_default()),
         };
         Ok(Some(Loaded {
             ctx,
@@ -642,6 +691,17 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                 ),
+                // taken before this function (`process`): it is followed, never sent
+                OutboxPayload::Observe { .. } => {
+                    return self
+                        .finish(
+                            &row,
+                            OutboxFinal::Dead {
+                                error: "payload does not match kind".to_owned(),
+                            },
+                        )
+                        .await;
+                }
                 OutboxPayload::Steer { .. }
                 | OutboxPayload::Cancel { .. }
                 | OutboxPayload::Verify { .. }
@@ -878,6 +938,185 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
+    /// Follows the round of a child thread's session (`Command::Observe`, ADR 0072) without sending
+    /// anything: the job of the thread is the round's (`RoundStarted`, once, under the claim of
+    /// this row), the row records the round's task as the one it reached, and the task is followed
+    /// like any other: resubscribe, else poll. The agent is never sent a message for it. When the
+    /// round ends, the parent hears of it before the row ends.
+    ///
+    /// A claim that lapsed after the round started finds the row sent and follows the task again.
+    /// A thread that works on another round (an earlier one still going) is tried again later, and
+    /// so is a round past [`MAX_OBSERVED_PER_PARENT`]. A row that can never be followed (another
+    /// session's, round 0) is dead-lettered at once; one whose thread was stopped, or whose task
+    /// the thread already holds as over, is skipped. A task of another context than the child's is
+    /// refused, counted, and fails the follow (fail closed).
+    async fn observe(&self, row: OutboxItem) -> Done {
+        let OutboxPayload::Observe {
+            session,
+            round,
+            task_id,
+            by,
+        } = row.payload.clone()
+        else {
+            return self
+                .finish(
+                    &row,
+                    OutboxFinal::Dead {
+                        error: "payload does not match kind".to_owned(),
+                    },
+                )
+                .await;
+        };
+        let Some(Loaded {
+            mut ctx,
+            state,
+            binding,
+            ..
+        }) = self.load(&row).await?
+        else {
+            return Ok(());
+        };
+        let Some(child) = self.store().get_thread(None, row.thread_id).await? else {
+            return self.finish(&row, OutboxFinal::Skipped).await;
+        };
+        // a session that is no child's of this thread, or round 0, can never be followed
+        if round == 0
+            || child
+                .job
+                .child
+                .as_ref()
+                .is_none_or(|c| c.session != session)
+        {
+            return self
+                .finish(
+                    &row,
+                    OutboxFinal::Dead {
+                        error: format!("the thread is not the child of session {session}"),
+                    },
+                )
+                .await;
+        }
+        // held for as long as the round is followed: one parent's rounds take at most
+        // `MAX_OBSERVED_PER_PARENT` of this process's workers
+        let _slot = match child.child_of.as_ref().map(|of| of.thread) {
+            Some(parent) => match self.observing_slot(parent) {
+                Some(slot) => Some(slot),
+                None => {
+                    return self
+                        .retry(
+                            &row,
+                            self.backoff(row.attempts),
+                            format!("{MAX_OBSERVED_PER_PARENT} rounds of its parent are followed already"),
+                        )
+                        .await;
+                }
+            },
+            None => None,
+        };
+        if row.sent_at.is_none() {
+            // stopped before it began, or a task the thread has seen end: nothing to follow
+            let over = binding.task_id.as_deref() == Some(task_id.as_str())
+                && binding.task_state.is_some_and(AgentTaskState::is_terminal);
+            if state == ThreadState::Cancelled || over {
+                return self.finish(&row, OutboxFinal::Skipped).await;
+            }
+            let lease = self.lease(&row);
+            let input = Input::RoundStarted {
+                session,
+                number: round,
+                task_id: task_id.clone(),
+                by,
+            };
+            match self
+                .app
+                .apply(
+                    row.thread_id,
+                    input,
+                    Some(format!("observe:{}", row.id)),
+                    None,
+                    Some(&lease),
+                )
+                .await
+            {
+                Ok(ApplyOutcome::Fenced) => return Err(DispatchError::Fenced),
+                // written before, and its row not marked: mark it now
+                Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => {}
+                Err(AppError::Transition(TransitionError::InvalidInState { state, .. })) => {
+                    if row.attempts >= self.cfg.max_attempts {
+                        return self
+                            .finish(
+                                &row,
+                                OutboxFinal::Dead {
+                                    error: format!(
+                                        "the child thread was {state:?} and could not follow round {round}"
+                                    ),
+                                },
+                            )
+                            .await;
+                    }
+                    return self
+                        .retry(
+                            &row,
+                            self.backoff(row.attempts),
+                            format!("the child thread is {state:?}"),
+                        )
+                        .await;
+                }
+                Err(AppError::NotFound) => return self.finish(&row, OutboxFinal::Skipped).await,
+                Err(e) => return Err(e.into()),
+            }
+            if !self
+                .store()
+                .mark_sent(
+                    &ctx.lease,
+                    sent_binding(task_id.clone(), None, None, None),
+                    self.now(),
+                )
+                .await?
+            {
+                return Ok(());
+            }
+            // the job is the round's now: what the follow names (its uploads) is read after the start
+            if let Some(started) = self.store().get_thread(None, row.thread_id).await? {
+                ctx.job = started.job.number;
+            }
+        }
+        match self.follow_task(&ctx, task_id).await {
+            Err(DispatchError::ForeignContext) => {
+                let why = "the agent answered the round with a task of another context".to_owned();
+                self.give_up(&row, why.clone(), why, false).await
+            }
+            other => other,
+        }
+    }
+
+    /// A place among the rounds of `parent` this process follows, or `None` when
+    /// [`MAX_OBSERVED_PER_PARENT`] are followed.
+    fn observing_slot(&self, parent: ThreadId) -> Option<ObservingSlot<'_>> {
+        let mut map = self
+            .observing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = map.entry(parent).or_insert(0);
+        if *n >= MAX_OBSERVED_PER_PARENT {
+            return None;
+        }
+        *n += 1;
+        Some(ObservingSlot {
+            map: &self.observing,
+            parent,
+        })
+    }
+
+    /// The task of this row ended its turn: a round of a child session tells the parent before the
+    /// row ends, and then the row is delivered.
+    async fn delivered(&self, ctx: &Ctx) -> Done {
+        if matches!(ctx.row.payload, OutboxPayload::Observe { .. }) {
+            self.app.report_round_over(ctx.thread).await?;
+        }
+        self.finish(&ctx.row, OutboxFinal::Delivered).await
+    }
+
     /// The agent made a task of its own for the message of this delegation. If the thread ended
     /// meanwhile (`done`, `failed`, or `verifying` the first task), the message is applied as a
     /// redelivery that was sent: the next job starts, and the dispatcher goes on with this task.
@@ -1020,10 +1259,18 @@ impl<P: Ports> Dispatcher<P> {
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;
-            match stream.next().await {
-                Some(first) => first.map(Some),
-                None => Ok(None),
+            // The agent's first event is the task (steer/v1 section 3), and the adapter says what
+            // that one event holds as several envelopes: a parent task's `sessions` object
+            // (child-sessions/v1, which a steer activates when the card offers it, ADR 0072) comes
+            // before its status, and says no state. What names the task and says no state is
+            // read past; the first envelope that says a state, or names another task, is the answer.
+            while let Some(next) = stream.next().await {
+                let env = next?;
+                if env.task_id != task_id || env_state(&env).is_some() {
+                    return Ok(Some(env));
+                }
             }
+            Ok(None)
         })
         .await
         .unwrap_or_else(|_| {
@@ -1108,7 +1355,7 @@ impl<P: Ports> Dispatcher<P> {
         };
         match self.app.ports().agents().resubscribe(&handle).await {
             Ok(stream) => match self.consume(ctx, stream, false, None, false).await? {
-                Flow::Reached => return self.finish(&ctx.row, OutboxFinal::Delivered).await,
+                Flow::Reached => return self.delivered(ctx).await,
                 Flow::Lost => return Ok(()),
                 Flow::Disconnected | Flow::Failed(_) => {}
             },
@@ -1130,7 +1377,7 @@ impl<P: Ports> Dispatcher<P> {
                     let ends = snap.state.ends_turn();
                     self.apply_snapshot(ctx, &snap).await?;
                     if ends {
-                        return self.finish(&ctx.row, OutboxFinal::Delivered).await;
+                        return self.delivered(ctx).await;
                     }
                 }
                 Err(AgentError::TaskNotFound(m)) => {
@@ -1297,6 +1544,13 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn apply_envelope(&self, ctx: &Ctx, env: &AgentEnvelope) -> Done {
+        if let Some(expected) = &ctx.expected_context
+            && &env.context_id != expected
+        {
+            self.app
+                .child_session_dropped(ChildSessionDrop::ForeignContext, ctx.thread);
+            return Err(DispatchError::ForeignContext);
+        }
         // A usage report that broke the contract (ADR 0056) is never applied: it is counted, and
         // the turn goes on.
         if let Some(AgentUpdate::UsageRejected(why)) = &env.update {
@@ -1309,6 +1563,28 @@ impl<P: Ports> Dispatcher<P> {
         if matches!(env.update, Some(AgentUpdate::TierRejected)) {
             self.app.tier_echo_dropped(ctx.thread);
             return Ok(());
+        }
+        // What an agent says of its sessions (`child-sessions/v1`, ADR 0072) is the application's:
+        // a thread for each session and the parent's events. A report the adapter refused is
+        // counted, and the task goes on.
+        match &env.update {
+            Some(AgentUpdate::ChildSessionsRejected(_)) => {
+                self.app
+                    .child_session_dropped(ChildSessionDrop::Rejected, ctx.thread);
+                return Ok(());
+            }
+            Some(AgentUpdate::ChildSessions(news)) => {
+                return if self
+                    .app
+                    .child_sessions_news(ctx.thread, Some(&ctx.lease), news.clone())
+                    .await?
+                {
+                    Ok(())
+                } else {
+                    Err(DispatchError::Fenced)
+                };
+            }
+            _ => {}
         }
         let key = match &env.key {
             IdemKey::Task(k) => k.clone(),
@@ -1513,6 +1789,11 @@ impl<P: Ports> Dispatcher<P> {
             .await?
             .iter()
             .filter(|r| r.kind == OutboxKind::Delegate)
+            // a round of a child session that has not begun is no delegation in flight: it is
+            // skipped when it is claimed (the thread is stopped), and nothing was sent for it
+            .filter(|r| {
+                !(matches!(r.payload, OutboxPayload::Observe { .. }) && r.sent_at.is_none())
+            })
             .count();
         if skipped > 0 || in_flight == 0 {
             self.apply_quiet(

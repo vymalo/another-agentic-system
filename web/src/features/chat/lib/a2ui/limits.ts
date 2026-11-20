@@ -118,5 +118,14 @@ export const OUTPUT_NAMES: ReadonlyMap<string, string> = new Map([
   ["Audio", AUDIO],
 ]);
 
+/**
+ * A surface whose `surfaceId` starts with this is an agent's **plan** (docs/api/ui-catalog-v1.md,
+ * "Version 8"): one surface that the agent sends again each time the plan changes, which the web draws
+ * once, where it first stood, and pins in the thread's panel. It holds nothing the person can answer.
+ */
+export const PLAN_PREFIX = "plan-";
+export const isPlanSurface = (surfaceId: string): boolean =>
+  surfaceId.startsWith(PLAN_PREFIX) && surfaceId.length > PLAN_PREFIX.length;
+
 /** The marker that stands for "the current value of this input" in an action's context. */
 export const FIELD = "$field";

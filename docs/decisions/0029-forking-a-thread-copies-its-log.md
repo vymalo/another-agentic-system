@@ -13,6 +13,7 @@
   "continue with another agent" in the agent menu are built ([`web/DESIGN.md`](../../web/DESIGN.md), "Fork
   and branch"), and so is editing a message into a branch with `‹ 1/2 ›` between the versions (the
   same section, "Edit a message, and the versions of it").
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** a fork takes none of the parent's child sessions; they stay the parent's.
 
   Status note (2026-10-03): [ADR 0042](0042-the-thread-list-is-the-owners.md) (proposed) changes how a fork is made from the
   web, and where it is listed: "Fork from here" and "Continue with another agent" open a draft that writes nothing, and the
@@ -36,6 +37,19 @@
   person spoke in; a history nobody addressed (a caller that does not say) is told as it always was. The agent ids are cleaned
   like every label (letters, digits, `-_.`), so a name cannot break the line. Decision 5 otherwise stands: derived when the
   task is sent, never stored, fenced as a record.
+
+  **Amended 2026-11-14 (Regenerate is an edit with the same words):** the owner asked for the system to be made
+  "LibreChat-grade", and a regenerate of the last answer is the first thing missing. No new route and no new event: the
+  web's **Regenerate** under the newest finished turn calls `POST /api/threads/{id}/fork` with `replace` (the message of
+  the person that began the turn), the same `text` and a `messageId`, so the answer is a new version of that message and
+  the picker `‹ 2/2 ›` goes between the two. It sends **no `tier`**: an edit that names none is sent under the tier of the
+  message it replaces, lowered to what the roles and the agent's live card allow (`chat-api.yaml`, `forkThread`; ADR 0061),
+  so a regenerate never raises the tier. A turn begins with a message of the person, and Regenerate is not offered when
+  the edit could not say what the turn was: a turn that began with a form answer or an action (no message of the person
+  precedes it), one that waits for the answer to a question (the edit would drop it), a message that mentioned an agent
+  (the route carries none, so the new version would lose them) or that was sent while the agent worked (steer or
+  interrupt: the turn is more than that message), to a person who may only read, or on a share link. Decisions 1 to 6 stand; nothing
+  changed on the server. See [`web/DESIGN.md`](../../web/DESIGN.md), "Edit a message, and the versions of it".
 
 ## Context
 

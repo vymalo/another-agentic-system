@@ -1,4 +1,4 @@
-//! The relay and a tool server that takes signed requests (ADR 0067, `docs/api/signed-tool-requests-v1.md`), all of it real
+//! The relay and a tool server that takes signed requests (ADR 0080, `docs/api/signed-tool-requests-v1.md`), all of it real
 //! but the agent: the real relay, the real MCP client over HTTP, and a `FakeToolServer` that speaks only MCP `2026-07-28` and
 //! verifies every request. What only the three together show: the request is signed **for the thread's owner and the thread
 //! the agent is working on**, by whichever agent calls; a server that is not configured for signing is sent a bearer and

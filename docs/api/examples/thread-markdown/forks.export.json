@@ -1,0 +1,139 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "someone@example.com",
+    "title": "Forks",
+    "target": {
+      "agentId": "adam"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 6
+  },
+  "job": {
+    "number": 1,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "adam",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "a"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "adam"
+      },
+      "data": {
+        "messageId": "m-306653",
+        "final": true,
+        "text": "b"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_forked",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "kind": "fork",
+        "from": {
+          "threadId": "00000000-0000-4000-8000-000000000002",
+          "seq": 2
+        },
+        "target": {
+          "agentId": "adam"
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "c"
+      }
+    },
+    {
+      "seq": 5,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_forked",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "kind": "edit",
+        "title": "Parent *chat*",
+        "from": {
+          "threadId": "00000000-0000-4000-8000-000000000002",
+          "seq": 2
+        },
+        "target": {
+          "agentId": "adam"
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "someone@example.com"
+      },
+      "data": {
+        "text": "d"
+      }
+    }
+  ],
+  "eventsTruncated": false,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "adam",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

@@ -643,7 +643,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 26] = [
+    let auth_ops: [(&str, reqwest::Method, String); 33] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("getMyUsage", reqwest::Method::GET, "/api/me/usage".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
@@ -679,7 +679,34 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             reqwest::Method::POST,
             "/api/user-tool-servers/u-abcdefghij/authorize".into(),
         ),
+        ("listPrompts", reqwest::Method::GET, "/api/prompts".into()),
+        ("createPrompt", reqwest::Method::POST, "/api/prompts".into()),
+        (
+            "getPrompt",
+            reqwest::Method::GET,
+            "/api/prompts/p-abcdefghijkl".into(),
+        ),
+        (
+            "updatePrompt",
+            reqwest::Method::PATCH,
+            "/api/prompts/p-abcdefghijkl".into(),
+        ),
+        (
+            "deletePrompt",
+            reqwest::Method::DELETE,
+            "/api/prompts/p-abcdefghijkl".into(),
+        ),
+        (
+            "renderPrompt",
+            reqwest::Method::POST,
+            "/api/prompts/p-abcdefghijkl/render".into(),
+        ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
+        (
+            "searchThreads",
+            reqwest::Method::POST,
+            "/api/search/threads".into(),
+        ),
         (
             "getThread",
             reqwest::Method::GET,
@@ -850,17 +877,21 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     );
     assert_eq!(r.cache_control, "no-store");
 
-    // getConfig: exactly `{ui}` with every key at its effective value, behind the identity layer
+    // getConfig: `{ui, search}` with every key at its effective value, behind the identity layer
     // like every /api route (the 401 is checked with the others above)
     let r = h.get("/api/config", Some(ALICE)).await;
     assert_eq!(r.status, 200);
     c.check("getConfig", &r);
     assert_eq!(
         r.json(),
-        json!({"ui": {
-            "showDescriptions": true,
-            "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
-        }})
+        json!({
+            "search": {"maxQueryLength": 200, "maxTerms": 8},
+            "prompts": {"limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768},
+            "ui": {
+                "showDescriptions": true,
+                "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
+            }
+        })
     );
 
     // listToolServers (ADR 0024): the deployment's list, in its order, with no URL, header,
@@ -1152,6 +1183,90 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         .await;
     assert_eq!(r.status, 400);
     c.check("getArtifact", &r);
+
+    // searchThreads (ADR 0068): the person's own threads found by their words, and a refusal
+    let r = h
+        .post("/api/search/threads", Some(ALICE), Some(r#"{"q": "list"}"#))
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("searchThreads", &r);
+    let r = h
+        .post("/api/search/threads", Some(ALICE), Some(r#"{"q": " "}"#))
+        .await;
+    assert_eq!(r.status, 400);
+    c.check("searchThreads", &r);
+
+    // the prompt library (ADR 0070): saved, listed as summaries, read, rendered (nothing written), edited
+    // with the revision, refused, deleted
+    let saved = r#"{"name":"greet","title":"Greet","body":"Hello {{who}}","variables":[{"id":"who","question":"Who?","type":"text"}]}"#;
+    let r = h.post("/api/prompts", Some(ALICE), Some(saved)).await;
+    assert_eq!(r.status, 201);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("createPrompt", &r);
+    let prompt = r.json();
+    let prompt_id = prompt["id"].as_str().unwrap().to_owned();
+    let revision = prompt["revision"].as_str().unwrap().to_owned();
+    assert_eq!(prompt["own"], true);
+    let r = h.post("/api/prompts", Some(ALICE), Some("{}")).await;
+    assert_eq!(r.status, 400);
+    c.check("createPrompt", &r);
+    let r = h.get("/api/prompts", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.cache_control, "no-store");
+    c.check("listPrompts", &r);
+    let listed = r.json();
+    assert_eq!(listed["held"], 1);
+    assert_eq!(listed["items"][0]["variableCount"], 1);
+    assert!(listed["items"][0].get("body").is_none());
+    let r = h.get("/api/prompts?scope=everything", Some(ALICE)).await;
+    assert_eq!(r.status, 400);
+    c.check("listPrompts", &r);
+    let one = format!("/api/prompts/{prompt_id}");
+    let r = h.get(&one, Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    c.check("getPrompt", &r);
+    let r = h.get("/api/prompts/p-zzzzzzzzzzzz", Some(ALICE)).await;
+    assert_eq!(r.status, 404);
+    c.check("getPrompt", &r);
+    let answers = r#"{"answers":[{"id":"who","values":[],"text":"there"}]}"#;
+    let r = h
+        .post(&format!("{one}/render"), Some(ALICE), Some(answers))
+        .await;
+    assert_eq!(r.status, 200);
+    c.check("renderPrompt", &r);
+    assert_eq!(
+        r.json(),
+        json!({"text": "Hello there", "revision": revision})
+    );
+    let r = h
+        .post(
+            &format!("{one}/render"),
+            Some(ALICE),
+            Some(r#"{"answers":[]}"#),
+        )
+        .await;
+    assert_eq!(r.status, 422);
+    c.check("renderPrompt", &r);
+    assert_eq!(r.json()["rule"], "unknown");
+    let edit = format!(r#"{{"revision":"{revision}","title":"Greeting"}}"#);
+    let r = h.patch(&one, Some(ALICE), Some(&edit)).await;
+    assert_eq!(r.status, 200);
+    c.check("updatePrompt", &r);
+    let r = h.patch(&one, Some(ALICE), Some(&edit)).await;
+    assert_eq!(r.status, 409);
+    c.check("updatePrompt", &r);
+    let r = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("{one}?revision={revision}"),
+            Some(ALICE),
+        )
+        .await;
+    assert_eq!(r.status, 409);
+    c.check("deletePrompt", &r);
+    let r = h.send(reqwest::Method::DELETE, &one, Some(ALICE)).await;
+    assert_eq!(r.status, 204);
+    c.check("deletePrompt", &r);
 
     // listThreads
     for i in 0..3 {
@@ -2254,6 +2369,72 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     assert_eq!(r.status, 204);
     let r = h.get("/api/threads", Some(DEL)).await;
     assert_eq!(r.json(), json!([]));
+
+    // A helper session's thread (ADR 0072): the thread of a session an agent runs says whose child it
+    // is, is nested under its parent's row, and is never forked.
+    const KID: &str = "dana@example.com";
+    let parent = h
+        .create(
+            KID,
+            Some("With a helper"),
+            "plain",
+            None,
+            "sessions planner",
+        )
+        .await;
+    h.wait_state(KID, &parent, "done").await;
+    let child = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let r = h.get("/api/threads?order=rail", Some(KID)).await;
+            c.check("listThreads", &r);
+            let found = r
+                .json()
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t.get("childOf").is_some())
+                .cloned();
+            if let Some(found) = found {
+                break found;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the helper's thread was not made"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let child_id = child["id"].as_str().unwrap().to_owned();
+    h.wait_state(KID, &child_id, "done").await;
+    let r = h.get(&format!("/api/threads/{child_id}"), Some(KID)).await;
+    c.check("getThread", &r);
+    let child = r.json();
+    assert_eq!(child["nestedUnder"], parent.as_str());
+    assert_eq!(child["childOf"]["threadId"], parent.as_str());
+    assert_eq!(child["childOf"]["agent"], "planner");
+    assert_eq!(child["childOf"]["state"], "closed");
+    assert!(child["childOf"]["session"].as_str().is_some());
+    let r = h.get(&format!("/api/threads/{parent}"), Some(KID)).await;
+    assert!(r.json().get("childOf").is_none());
+    // the helper's events validate against the log's contract
+    for event in h.events(KID, &child_id).await {
+        c.contract.validate_component("Event", &event);
+    }
+    for event in h.events(KID, &parent).await {
+        c.contract.validate_component("Event", &event);
+    }
+    // it is never forked: well formed, and what it names cannot be done
+    let r = h
+        .post(
+            &format!("/api/threads/{child_id}/fork"),
+            Some(KID),
+            Some(r#"{"after":1}"#),
+        )
+        .await;
+    assert_eq!(r.status, 422);
+    c.check("forkThread", &r);
+    assert_eq!(r.json()["code"], "child_thread");
 
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());

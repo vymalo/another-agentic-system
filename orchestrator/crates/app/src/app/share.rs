@@ -172,6 +172,11 @@ impl<P: Ports> App<P> {
         level: ShareLevel,
     ) -> Result<ShareView, AppError> {
         let thread = self.owned_for_sharing(&self.access(who), id).await?;
+        // The thread of a helper session is shared with the thread it belongs to, never alone
+        // (ADR 0072).
+        if thread.child_of.is_some() {
+            return Err(AppError::child_thread());
+        }
         let mode = self.sharing_enabled()?;
         if !mode.allows(level) {
             return Err(AppError::OverCap { cap: mode });

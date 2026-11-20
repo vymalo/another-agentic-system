@@ -696,7 +696,7 @@ impl Checker<'_> {
         self.auth(cfg);
     }
 
-    /// `toolServers[].signing` (ADR 0067): no bearer beside it, a header of its own that no `headers` entry takes, an audience
+    /// `toolServers[].signing` (ADR 0080): no bearer beside it, a header of its own that no `headers` entry takes, an audience
     /// the contract can carry. The lifetime's bounds are a shape error (`range`), checked before this runs.
     fn tool_server_signing(&mut self, at: &str, server: &ToolServer, signing: &ToolServerSigning) {
         let here = format!("{at}.signing");
@@ -2022,7 +2022,7 @@ fn is_client_metadata_url(raw: &str) -> bool {
 /// serve at the same origin (the edge's probe, the well-known documents, the web's pages, its
 /// runtime configuration and its files). A test of the binary reads the chart's and the dev stack's
 /// Caddyfiles and the web's routes, and fails when one of their paths is missing here.
-pub const CLIENT_METADATA_RESERVED_PATHS: [&str; 25] = [
+pub const CLIENT_METADATA_RESERVED_PATHS: [&str; 28] = [
     // the orchestrator, and oauth2-proxy's own routes
     "/api",
     "/agui",
@@ -2043,6 +2043,9 @@ pub const CLIENT_METADATA_RESERVED_PATHS: [&str; 25] = [
     "/auth",
     "/signed-in",
     "/threads",
+    "/usage",
+    "/tools",
+    "/prompts",
     "/_next",
     "/_not-found",
     "/brand",

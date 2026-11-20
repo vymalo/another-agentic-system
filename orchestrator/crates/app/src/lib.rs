@@ -12,6 +12,7 @@ mod error;
 mod gate_config;
 mod inbox;
 pub mod mentions;
+mod prompts;
 mod purge;
 pub mod reader;
 mod share_link;
@@ -24,9 +25,9 @@ mod user_tools;
 
 pub use app::{
     AGENT_NAME_WAIT, AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView,
-    Branches, Creation, DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem,
-    FirstMessage, ForkAt, ForkRequest, Forked, Inbound, NewThread, Received, SharedRead,
-    SiblingView, ThreadExport,
+    Branches, ChildSessionDrop, ChildSessionStats, Creation, DEFAULT_MAX_EXPORT_BYTES,
+    DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt, ForkRequest, Forked, Inbound,
+    NewThread, Received, SharedRead, SiblingView, ThreadExport,
 };
 pub use app::{
     DEFAULT_USAGE_RETENTION_MONTHS, DeleteStats, DownloadMode, DownloadModeError, HistorySettings,
@@ -41,7 +42,9 @@ pub use authz::{
 };
 pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schemas};
 pub use directory::{AgentDirectory, AgentEntry};
-pub use dispatcher::{Dispatcher, DispatcherConfig, FileLimits, MAX_FILES_PER_JOB};
+pub use dispatcher::{
+    Dispatcher, DispatcherConfig, FileLimits, MAX_FILES_PER_JOB, MAX_OBSERVED_PER_PARENT,
+};
 pub use error::AppError;
 pub use gate_config::{
     CiLayer, DEFAULT_MAX_ATTEMPTS_CAP, GateError, GateLayer, GateRules, Layer,
@@ -52,6 +55,7 @@ pub use inbox::{
     InboxConfig, InboxWorker,
 };
 pub use mentions::THREAD_MENTIONS_KEY;
+pub use prompts::{EditPrompt, PromptRefusal, RenderPrompt, RenderedPrompt};
 pub use purge::{DEFAULT_PURGE_LEASE_SECS, DEFAULT_PURGE_POLL_SECS, PurgeConfig, PurgeWorker};
 pub use reader::{
     ReaderAudience, ReaderRules, SharedThreadView, THE_OWNER, inert, reader_event, reader_thread,

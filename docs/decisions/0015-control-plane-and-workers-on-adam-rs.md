@@ -4,6 +4,10 @@
   (the job ledger includes a local agent's journal) and
   [ADR 0007](0007-protocol-only-dependencies.md) (a worker may host adam agents in-process, behind a
   Cargo feature). Both carry a dated note that points here.
+  *Amended (2026-11-19) by [ADR 0076](0076-the-orchestrator-as-a-library-in-an-application.md):* when the orchestrator
+  is embedded as a library in an application, a local agent runs adam in process through `adam-engine` on adam's
+  SQLite store, not `adam-store-postgres`, and its run state is adam's file, not `orch_agent_*` tables; in a server
+  build decision 6 stands.
 
 ## Context
 

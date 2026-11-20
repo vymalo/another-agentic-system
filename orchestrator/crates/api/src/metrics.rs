@@ -9,7 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use orch_app::{DeleteStats, HistoryStats, SharingStats, TierStats, UsageStats};
+use orch_app::{ChildSessionStats, DeleteStats, HistoryStats, SharingStats, TierStats, UsageStats};
 use orch_ports::{OutboxStats, Ports};
 
 use crate::ApiState;
@@ -133,6 +133,25 @@ pub(crate) fn render_tier(stats: &TierStats) -> String {
     )
 }
 
+/// What the child sessions count (ADR 0072): `child_sessions_dropped_total{reason}`, the news about
+/// sessions this process did not apply, by a closed set of reasons (`rejected`: the adapter refused
+/// what the agent said; `malformed`: it failed the core's bounds; `ledger_full`: the parent notes
+/// 256 sessions; `child_deleted`: the session's thread was deleted; `refused`: the thread cannot
+/// have it; `foreign_context`: a followed round answered with a task of another context). It names no thread, no session and no agent.
+pub(crate) fn render_child_sessions(stats: &ChildSessionStats) -> String {
+    let mut out = String::from(
+        "# HELP child_sessions_dropped_total News about child sessions (child-sessions/v1) that was not applied, by why.\n\
+         # TYPE child_sessions_dropped_total counter\n",
+    );
+    for (reason, n) in stats.dropped {
+        out.push_str(&format!(
+            "child_sessions_dropped_total{{reason=\"{}\"}} {n}\n",
+            reason.as_str()
+        ));
+    }
+    out
+}
+
 /// What the history reads of this process cost (ADR 0059): pages answered, log events folded for
 /// them and the time that took. `rate(history_fold_seconds_total) / rate(history_pages_total)` is
 /// the mean cost of a page. They name no thread and no person.
@@ -173,6 +192,7 @@ pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Respons
             text.push_str(&render_deleting(&state.app.delete_stats(), pending));
             text.push_str(&render_usage(&state.app.usage_stats()));
             text.push_str(&render_tier(&state.app.tier_stats()));
+            text.push_str(&render_child_sessions(&state.app.child_session_stats()));
             text.push_str(&render_history(&state.app.history_stats()));
             let mut response = text.into_response();
             response
@@ -396,6 +416,31 @@ shared_reads_total{visibility=\"public\"} 9
              # HELP usage_tasks_swept_total Tasks of the usage ledger removed by this process's retention sweep (ADR 0065).\n\
              # TYPE usage_tasks_swept_total counter\n\
              usage_tasks_swept_total 17\n"
+        );
+    }
+
+    #[test]
+    fn the_child_session_counter_says_each_reason() {
+        let text = render_child_sessions(&ChildSessionStats {
+            dropped: [
+                (orch_app::ChildSessionDrop::Rejected, 4),
+                (orch_app::ChildSessionDrop::Malformed, 0),
+                (orch_app::ChildSessionDrop::LedgerFull, 1),
+                (orch_app::ChildSessionDrop::ChildDeleted, 2),
+                (orch_app::ChildSessionDrop::Refused, 3),
+                (orch_app::ChildSessionDrop::ForeignContext, 5),
+            ],
+        });
+        assert_eq!(
+            text,
+            "# HELP child_sessions_dropped_total News about child sessions (child-sessions/v1) that was not applied, by why.\n\
+             # TYPE child_sessions_dropped_total counter\n\
+             child_sessions_dropped_total{reason=\"rejected\"} 4\n\
+             child_sessions_dropped_total{reason=\"malformed\"} 0\n\
+             child_sessions_dropped_total{reason=\"ledger_full\"} 1\n\
+             child_sessions_dropped_total{reason=\"child_deleted\"} 2\n\
+             child_sessions_dropped_total{reason=\"refused\"} 3\n\
+             child_sessions_dropped_total{reason=\"foreign_context\"} 5\n"
         );
     }
 }

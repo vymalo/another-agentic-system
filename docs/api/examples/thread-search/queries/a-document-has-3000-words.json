@@ -1,0 +1,43 @@
+{
+  "name": "Only the first 3000 words of a document are searched (a message here; a title or a description is cut the same way)",
+  "about": "Only the first 3000 words of a document are searched (a message here; a title or a description is cut the same way): `tailword` is the 3000th word of the message of `Just inside` and the 3001st of the one of `Capped message`.",
+  "steps": [
+    {
+      "request": {
+        "q": "tailword"
+      },
+      "expect": {
+        "terms": [
+          "tailword"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000017",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "w w w w w w tailword",
+                  "cutStart": true,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 12,
+                      "end": 20
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

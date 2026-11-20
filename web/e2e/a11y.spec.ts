@@ -8,11 +8,15 @@ import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
   animationsDone,
+  aPerson,
   BASE_URL,
   badge,
   closeAgentMenu,
   conversation,
+  MOCK_URL,
+  makeThread,
   openAgentMenu,
+  openThreadList,
   startThread,
 } from "./helpers";
 
@@ -52,6 +56,33 @@ for (const scheme of ["light", "dark"] as const) {
     test("axe: new thread page has no serious violations", async ({ page }) => {
       await page.goto("/");
       await expect(agentPicker(page)).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: the search results (with a hit in each field, an archived thread and a mark) and the empty state have no serious violations", async ({
+      page,
+    }, info) => {
+      const person = await aPerson(page, info);
+      const first = await makeThread(person, "talk lantern alpha");
+      await makeThread(person, "talk lantern bravo");
+      const archive = await fetch(`${MOCK_URL}/api/threads/${first}/rail`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Cookie: person.cookie },
+        body: JSON.stringify({ archived: true }),
+      });
+      expect(archive.ok).toBe(true);
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await openThreadList(page);
+      const box = page.getByRole("combobox", { name: "Search chats" });
+      await box.fill("lantern");
+      await expect(page.getByRole("option").first()).toBeVisible();
+      // a hit that is walked to has the selected colours
+      await box.press("ArrowDown");
+      await expect(page.getByRole("option").first()).toHaveAttribute("aria-selected", "true");
+      expect(await axeViolations(page)).toEqual([]);
+      await box.fill("qqqzzzvvv");
+      await expect(page.getByText("No chats match “qqqzzzvvv”.").first()).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
 
@@ -251,6 +282,86 @@ for (const scheme of ["light", "dark"] as const) {
       expect(await axeViolations(page)).toEqual([]);
     });
 
+    test("axe: the five kinds of question of version 7 (open, with answers held back, answered, and read back) have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "choices-v7 now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      await expect(page.getByRole("radiogroup", { name: "Delete the old branch?" })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      // a number that is out of range, with its words under it, and the held button
+      const budget = page.getByRole("textbox", { name: /What is the monthly budget/ });
+      await budget.fill("1500");
+      await expect(page.getByText("The most is 1000 EUR.")).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      // a day out of range, a point of the scale chosen, a rank moved
+      await page.getByLabel(/When should it ship/).fill("2027-01-02");
+      await expect(page.getByText("The latest day is 2026-12-31.")).toBeVisible();
+      await page.getByText("7", { exact: true }).click();
+      await page.getByRole("button", { name: "Move Risk up" }).click();
+      expect(await axeViolations(page)).toEqual([]);
+      // all valid, sent, and read back: the form as it was answered and the person's answer
+      await budget.fill("250.5");
+      await page.getByLabel(/When should it ship/).fill("2026-12-15");
+      await page.getByRole("button", { name: "Send answers" }).click();
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator('[data-slot="answer-bubble"]')).toBeVisible();
+      await expect(page.locator('[data-slot="answer-rank"]')).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a question that shows a picture, a diagram, cards and a chart has no serious violations (open, and answered)", async ({
+      page,
+    }) => {
+      await startThread(page, "choices-v8 now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      const group = page.getByRole("radiogroup", { name: "Which layout should I keep?" });
+      await expect(group.getByRole("img", { name: /^The people screen today/ })).toBeVisible();
+      await expect(group.locator('[data-slot="mermaid-image"]')).toBeVisible();
+      await expect(
+        page.getByRole("radiogroup", { name: "Ship the list behind a flag?" }).getByText("Data", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+      // answered: the form no longer takes input and what it showed is still there to read
+      await group.getByText("The list", { exact: true }).click();
+      await page.getByRole("button", { name: "Send answers" }).click();
+      await expect(badge(page)).toHaveText("Done", { timeout: 15_000 });
+      await expect(group.getByRole("img", { name: /^The people screen today/ })).toBeVisible();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
+    test("axe: a plan (one checklist, a dropped step with its note, the Plan tab) and a surface refused by version 8 have no serious violations", async ({
+      page,
+    }) => {
+      await startThread(page, "plan now", "Reviewer");
+      await expect(badge(page)).toHaveText("Your turn");
+      await expect(page.getByRole("region", { name: "Plan from reviewer" }).last()).toContainText(
+        "1 of 4 done",
+      );
+      expect(await axeViolations(page)).toEqual([]);
+      await page.getByLabel("Message", { exact: true }).fill("carry on");
+      await page.getByRole("button", { name: "Send" }).click();
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      // the person wrote in between: two drawings, the first as they saw it, and axe reads both
+      await expect(page.getByRole("region", { name: "Plan from reviewer" })).toHaveCount(2);
+      const plan = page.getByRole("region", { name: "Plan from reviewer" }).last();
+      await expect(plan).toContainText("2 of 5 done");
+      await expect(plan.locator('li[data-state="dropped"]')).toContainText("Dropped");
+      expect(await axeViolations(page)).toEqual([]);
+      // the same plan pinned in the panel (a sheet on a phone, docked beside the chat elsewhere)
+      const toggle = page.getByRole("button", { name: "Thread details" });
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+      await page.getByRole("tab", { name: /^Plan/ }).click();
+      await expect(page.getByRole("tabpanel")).toContainText("2 of 5 done");
+      expect(await axeViolations(page)).toEqual([]);
+      await startThread(page, "choices-v8-bad now", "Reviewer");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator("[data-rule]")).toHaveCount(2);
+      expect(await axeViolations(page)).toEqual([]);
+    });
+
     test("axe: an answer of words, cards and a graph has no serious violations (the graph drawn, its source open)", async ({
       page,
     }) => {
@@ -326,6 +437,46 @@ for (const scheme of ["light", "dark"] as const) {
       await ui.getByRole("button", { name: "Go" }).click();
       await expect(badge(page)).toHaveText("Done");
       await expect(ui.getByRole("button", { name: "Go" })).toBeDisabled();
+      expect(await axeViolations(page)).toEqual([]);
+    });
+  });
+}
+
+/*
+ * The theme is the person's choice, FORCED (not only emulated through the media feature): "dark chosen on a light device"
+ * and "light chosen on a dark device" must pass axe on the main screens, with the account menu (and its Theme group) open.
+ */
+for (const [device, chosen] of [
+  ["light", "dark"],
+  ["dark", "light"],
+] as const) {
+  test.describe(`accessibility (${chosen} chosen on a ${device} device)`, () => {
+    test.use({ colorScheme: device, contextOptions: { reducedMotion: "reduce" } });
+    test.beforeEach(async ({ page }) => {
+      await page.addInitScript((value) => localStorage.setItem("chat.theme", value), chosen);
+    });
+
+    test("axe: a new thread, a finished thread and the account menu have no serious violations", async ({
+      page,
+      isMobile,
+    }) => {
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", chosen);
+      expect(await axeViolations(page)).toEqual([]);
+
+      await startThread(page, "Implement the thing");
+      await expect(badge(page)).toHaveText("Done");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", chosen);
+      expect(await axeViolations(page)).toEqual([]);
+
+      if (isMobile) {
+        await page.getByRole("button", { name: "Threads", exact: true }).click();
+        await expect(page.getByRole("dialog", { name: "Threads" })).toBeVisible();
+      }
+      await page.getByRole("button", { name: /^Account: / }).click();
+      await expect(page.getByRole("group", { name: "Theme" })).toBeVisible();
+      await expect(page.getByRole("menuitemradio", { name: "System" })).toBeVisible();
       expect(await axeViolations(page)).toEqual([]);
     });
   });

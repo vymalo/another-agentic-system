@@ -14,7 +14,7 @@
 //! | files | yes (the route asks `artifact.read`) | no, unless `sharing.public.files` |
 //! | the owner's e-mail (the thread's owner, the actor of a message) | no: "the owner" | no: "the owner" |
 //! | where the work was on the agent's disk (`/work/workspaces/<id>/` in an artifact's text, a check's or a rework's findings, a step's label) | as written | `…/` |
-//! | fork markers, the parent's id, the UI catalog, the sharing events themselves | no | no |
+//! | fork markers, the parent's id, the UI catalog, the sharing events themselves, the child sessions (`child_session_*`, ADR 0072) | no | no |
 //!
 //! **An event a reader may not see is not dropped: it is replaced by an inert one with the same
 //! `seq`** ([`inert`]), so the log's numbering and a client's resume cursor stay valid and a stream
@@ -222,8 +222,12 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
             }
             EventBody::Artifact(artifact)
         }
-        // The person's screen and the thread's branching and sharing are the owner's business.
+        // The person's screen, the thread's branching and sharing, and the child threads it made
+        // (the owner's alone, ADR 0072) are the owner's business.
         EventBody::UiCatalog(_)
+        | EventBody::ChildSessionOpened(_)
+        | EventBody::ChildSessionReported(_)
+        | EventBody::ChildSessionClosed(_)
         | EventBody::ThreadForked(_)
         | EventBody::ThreadShared(_)
         | EventBody::ThreadUnshared(_) => return inert(event),
@@ -454,6 +458,37 @@ mod tests {
                     parent_step_id: None,
                 }),
             ),
+            ev(
+                11,
+                coder(),
+                EventBody::ChildSessionOpened(orch_core::ChildSessionOpenedData {
+                    session: "s1".into(),
+                    thread: tid(),
+                    agent: "planner".into(),
+                    description: "plan".into(),
+                    keep_open: true,
+                    by: None,
+                    round: Some(1),
+                }),
+            ),
+            ev(
+                12,
+                coder(),
+                EventBody::ChildSessionReported(orch_core::ChildSessionReportedData {
+                    session: "s1".into(),
+                    thread: tid(),
+                    round: 1,
+                    report: orch_core::SessionOutcome::Done,
+                }),
+            ),
+            ev(
+                13,
+                coder(),
+                EventBody::ChildSessionClosed(orch_core::ChildSessionClosedData {
+                    session: "s1".into(),
+                    thread: tid(),
+                }),
+            ),
         ]
     }
 
@@ -497,6 +532,9 @@ mod tests {
                     | EventBody::ThreadForked(_)
                     | EventBody::ThreadShared(_)
                     | EventBody::ThreadUnshared(_)
+                    | EventBody::ChildSessionOpened(_)
+                    | EventBody::ChildSessionReported(_)
+                    | EventBody::ChildSessionClosed(_)
             );
             assert_eq!(is_inert(&out), expect_inert, "{:?}", event.kind());
             if !expect_inert {
@@ -735,6 +773,7 @@ mod tests {
             pinned_at: None,
             archived_at: None,
             rail_parent: None,
+            child_of: None,
             rail_rank: "i".to_owned(),
             last_seq: 12,
             created_at: Timestamp::from_second(1_790_000_000).unwrap(),
@@ -781,6 +820,7 @@ mod tests {
             pinned_at: None,
             archived_at: None,
             rail_parent: None,
+            child_of: None,
             rail_rank: "i".to_owned(),
             last_seq: 12,
             created_at: at,
@@ -828,6 +868,7 @@ mod tests {
             pinned_at: None,
             archived_at: None,
             rail_parent: None,
+            child_of: None,
             rail_rank: "i".to_owned(),
             last_seq: 12,
             created_at: at,
@@ -837,6 +878,7 @@ mod tests {
             pinned_at: Some(at),
             archived_at: Some(at),
             rail_parent: Some(parent),
+            child_of: None,
             rail_rank: "0000000000zz".to_owned(),
             ..plain.clone()
         };

@@ -1,22 +1,35 @@
 "use client";
 
-import type { TextMessagePartProps } from "@assistant-ui/react";
+import { type TextMessagePartProps, useMessagePartText } from "@assistant-ui/react";
 import {
   type CodeHeaderProps,
   MarkdownTextPrimitive,
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
-import { CheckIcon, CopyIcon, ImageIcon } from "lucide-react";
-import { createContext, type FC, memo, useContext, useMemo, useRef } from "react";
+import { CheckIcon, CopyIcon, ImageIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  type ComponentProps,
+  type ComponentPropsWithoutRef,
+  createContext,
+  type FC,
+  memo,
+  type RefObject,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import remarkGfm from "remark-gfm";
 
+import { SyntaxHighlighter } from "@/components/assistant-ui/elements/syntax-highlighter";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { FileImage } from "@/features/chat/components/cards/kept-file-card";
 import { useSharedImage } from "@/features/chat/hooks/use-inline-images";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { plainName } from "@/features/chat/lib/files";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { COPY_FAILED, useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
@@ -37,7 +50,104 @@ const useShallowStable = <T extends Record<string, unknown> | undefined>(value: 
   return ref.current;
 };
 
+type PrimitiveProps = ComponentProps<typeof MarkdownTextPrimitive>;
+type Remark = NonNullable<PrimitiveProps["remarkPlugins"]>;
+type Rehype = NonNullable<PrimitiveProps["rehypePlugins"]>;
+type MathModule = typeof import("@/lib/math");
+
+const NO_REHYPE: Rehype = [];
+const GFM: Remark = [remarkGfm];
+
+/**
+ * Whether a text can have display math in it: a line that starts with `$$` (after the marks of a quote or a list item).
+ * `$$` in the middle of a sentence is text (src/lib/remark-display-math.ts), and a single dollar is a price.
+ */
+const DISPLAY_MATH = /^[ \t>*+-]*(?:\d+[.)])?[ \t]*\$\$/m;
+const hasMath = (text: string) => DISPLAY_MATH.test(text);
+
+let loadedMath: MathModule | undefined;
+
+/**
+ * Math is its own chunk: KaTeX is 77 KB gzipped and most threads have no formula. It is fetched when a text first
+ * holds `$$`, and until it is there (or if it never comes) the text is shown as it was written.
+ */
+function useMath(text: string): MathModule | undefined {
+  const [math, setMath] = useState(loadedMath);
+  const wanted = !math && hasMath(text);
+  useEffect(() => {
+    if (!wanted) return;
+    let current = true;
+    import("@/lib/math").then(
+      (module) => {
+        loadedMath = module;
+        if (current) setMath(module);
+      },
+      () => {
+        // the text stays text
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [wanted]);
+  return math;
+}
+
+/**
+ * A display formula wider than the column scrolls sideways inside its own box. It is a tab stop (and named, for a screen
+ * reader that lands on it) only while it overflows: a formula that fits has nothing to scroll, and a tab stop with
+ * nothing to do is noise. Its width changes with the column and when KaTeX's fonts arrive, so it is measured again then.
+ */
+const INNER = ".katex-display > .katex";
+
+function useScrollableFormulas(root: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const sync = () => {
+      for (const formula of el.querySelectorAll<HTMLElement>(".katex-display")) {
+        if (formula.scrollWidth > formula.clientWidth) {
+          formula.setAttribute("tabindex", "0");
+          formula.setAttribute("role", "group");
+          formula.setAttribute("aria-label", "Formula");
+        } else {
+          formula.removeAttribute("tabindex");
+          formula.removeAttribute("role");
+          formula.removeAttribute("aria-label");
+        }
+      }
+    };
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
+    const watch = () => {
+      sync();
+      if (resize) for (const inner of el.querySelectorAll(INNER)) resize.observe(inner);
+    };
+    resize?.observe(el);
+    watch();
+    const mutate = new MutationObserver(watch);
+    mutate.observe(el, { childList: true, subtree: true });
+    document.fonts?.ready.then(sync, () => {});
+    return () => {
+      resize?.disconnect();
+      mutate.disconnect();
+    };
+  }, [root]);
+}
+
+/** The box of the markdown (`.aui-md`): a div, which also watches its formulas. */
+const MarkdownContainer: FC<ComponentPropsWithoutRef<"div">> = (props) => {
+  const root = useRef<HTMLDivElement>(null);
+  useScrollableFormulas(root);
+  return <div {...props} ref={root} />;
+};
+
 const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
+  const math = useMath(useMessagePartText().text);
+  const remarkPlugins = useMemo(
+    () => (math ? [remarkGfm, ...math.remarkPlugins] : GFM) as Remark,
+    [math],
+  );
+  const rehypePlugins = (math?.rehypePlugins ?? NO_REHYPE) as Rehype;
   const stableComponents = useShallowStable(components);
   const markdownComponents = useMemo(() => {
     if (!stableComponents) return defaultComponents;
@@ -49,7 +159,9 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
 
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
+      containerComponent={MarkdownContainer}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
       className="aui-md"
       components={markdownComponents}
       smooth={false}
@@ -61,21 +173,35 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
 export const MarkdownText = memo(MarkdownTextImpl);
 
 const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const { isCopied, failed, copyToClipboard } = useCopyToClipboard();
   const onCopy = () => {
     if (!code || isCopied) return;
     copyToClipboard(code);
   };
 
   return (
-    <div className="aui-code-header-root border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
+    <div className="aui-code-header-root select-none border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>
-      <TooltipIconButton tooltip="Copy" onClick={onCopy}>
-        {!isCopied && <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />}
-        {isCopied && <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />}
-      </TooltipIconButton>
+      <span className="flex items-center gap-1">
+        <span
+          aria-live="polite"
+          data-slot="copy-note"
+          className={failed ? "text-xs text-foreground" : "sr-only"}
+        >
+          {failed ? COPY_FAILED : ""}
+        </span>
+        <TooltipIconButton tooltip={failed ? COPY_FAILED : "Copy"} onClick={onCopy}>
+          {failed ? <TriangleAlertIcon /> : null}
+          {!isCopied && !failed && (
+            <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
+          )}
+          {isCopied && (
+            <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
+          )}
+        </TooltipIconButton>
+      </span>
     </div>
   );
 };
@@ -83,7 +209,26 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
 /** Whether a markdown element sits inside a link (an image there must not be a link too). */
 const InLink = createContext(false);
 
-const defaultComponents = memoizeMarkdownComponents({
+/*
+ * The box of a code block. It is NOT memoized with the others: `memoizeMarkdownComponents` compares the hast node and
+ * ignores the children, and the syntax highlighter changes a block's children (plain text, then coloured tokens)
+ * without the node ever changing, so a memoized box would keep showing the first.
+ */
+const CodePre: FC<ComponentPropsWithoutRef<"pre"> & { node?: unknown }> = ({
+  className,
+  node: _node,
+  ...props
+}) => (
+  <pre
+    className={cn(
+      "aui-md-pre border-border bg-muted/40 text-foreground mb-4 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 font-mono text-[13px] leading-relaxed last:mb-0",
+      className,
+    )}
+    {...props}
+  />
+);
+
+const memoizedComponents = memoizeMarkdownComponents({
   h1: ({ className, ...props }) => (
     <h1
       className={cn(
@@ -266,15 +411,6 @@ const defaultComponents = memoizeMarkdownComponents({
   sup: ({ className, ...props }) => (
     <sup className={cn("aui-md-sup [&>a]:text-xs [&>a]:no-underline", className)} {...props} />
   ),
-  pre: ({ className, ...props }) => (
-    <pre
-      className={cn(
-        "aui-md-pre border-border bg-muted/40 text-foreground mb-4 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 font-mono text-[13px] leading-relaxed last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
   code: function Code({ className, ...props }) {
     const isCodeBlock = useIsMarkdownCodeBlock();
     return (
@@ -289,4 +425,7 @@ const defaultComponents = memoizeMarkdownComponents({
     );
   },
   CodeHeader,
+  SyntaxHighlighter,
 });
+
+const defaultComponents = { ...memoizedComponents, pre: CodePre };

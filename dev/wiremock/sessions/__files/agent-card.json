@@ -1,0 +1,74 @@
+{
+  "name": "mock-sessions",
+  "description": "WireMock stand-in for an A2A 1.0 agent that runs a helper as a session (child-sessions/v1, ADR 0072; local development only). Its parent task opens one session and ends while the helper works; the round is served by task to a client that activates the extension, and refused (InvalidParams) to one that does not.",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1",
+        "description": "Runs its helpers as sessions a client can open, talk to and close.",
+        "required": false,
+        "params": {
+          "agents": [
+            {
+              "name": "planner",
+              "description": "Breaks a request into steps."
+            }
+          ],
+          "maxOpen": 4
+        }
+      },
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/steps/v1",
+        "description": "Reports the steps of its work.",
+        "required": false
+      },
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/usage/v1",
+        "description": "Reports the tokens of each model call and the task's totals.",
+        "required": false
+      }
+    ]
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "delegate",
+      "name": "Delegate",
+      "description": "Hands a request to a planner helper, as a session, and reports what it found.",
+      "tags": [
+        "mock",
+        "child-sessions"
+      ],
+      "examples": [
+        "Plan the migration."
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "name": "A thread that matches in all three places",
+  "about": "`report` is in the title, the description and a message of one thread: rank 2, the hits in the order title, description, message.",
+  "steps": [
+    {
+      "request": {
+        "q": "report"
+      },
+      "expect": {
+        "terms": [
+          "report"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-00000000000d",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Quarterly report",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 10,
+                      "end": 16
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "description",
+                "snippet": {
+                  "text": "report for the board",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 6
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 2,
+                "role": "agent",
+                "at": "2026-11-14T10:02:00Z",
+                "snippet": {
+                  "text": "The report is ready",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 4,
+                      "end": 10
+                    }
+                  ]
+                }
+              },
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "is the report ready?",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 7,
+                      "end": 13
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 2
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

@@ -79,11 +79,17 @@ pub enum Permission {
     /// servers are not gated by it, so a person whose permission is taken away can still remove what
     /// they added.
     ToolsUserAdd,
+    /// `prompts.share`: share a prompt of one's own with roles (ADR 0070): any write whose result
+    /// is shared. It takes no scope (a person's prompts are the person's own), and **it is granted
+    /// to no role by default: `admin` does not imply it**, and a deployment lists it for the roles
+    /// it chooses. Saving, reading, rendering, unsharing and deleting one's own prompts are not
+    /// gated by it, so a person whose permission is taken away can still withdraw what they shared.
+    PromptsShare,
 }
 
 impl Permission {
     /// Every permission, in the order they are listed.
-    pub const ALL: [Permission; 9] = [
+    pub const ALL: [Permission; 10] = [
         Permission::AgentRead,
         Permission::AgentInvoke,
         Permission::ThreadRead,
@@ -93,6 +99,7 @@ impl Permission {
         Permission::ArtifactRead,
         Permission::Admin,
         Permission::ToolsUserAdd,
+        Permission::PromptsShare,
     ];
 
     /// The name used in the configuration and by `GET /api/me`.
@@ -107,6 +114,7 @@ impl Permission {
             Permission::ArtifactRead => "artifact.read",
             Permission::Admin => "admin",
             Permission::ToolsUserAdd => "tools.user.add",
+            Permission::PromptsShare => "prompts.share",
         }
     }
 
@@ -715,6 +723,8 @@ impl<'p> Access<'p> {
             (Permission::Admin, Resource::Anything) => true,
             // Adding a server is not about anyone's: it is a server of the person's own.
             (Permission::ToolsUserAdd, Resource::Anything) => true,
+            // Sharing a prompt is not about anyone's: it is a prompt of the person's own.
+            (Permission::PromptsShare, Resource::Anything) => true,
             // A permission asked of a resource it is not about.
             _ => false,
         }
@@ -1196,6 +1206,51 @@ mod tests {
         );
         assert_eq!(Permission::ToolsUserAdd.to_string(), "tools.user.add");
         assert!(Permission::ALL.contains(&Permission::ToolsUserAdd));
+    }
+
+    /// ADR 0070: `prompts.share` is granted to no role by default, `admin` does not imply it, and a
+    /// role that lists it holds it, with no scope and no agents.
+    #[test]
+    fn prompts_share_is_held_by_no_built_in_role() {
+        let policy = Policy::default();
+        let a = principal("alice@x.io", &["user"]);
+        let root = principal("root@x.io", &["admin"]);
+        for who in [&a, &root] {
+            assert!(!policy.access(who).has(Permission::PromptsShare));
+            assert_eq!(
+                policy.check(who, Permission::PromptsShare, &Resource::Anything),
+                Err(Denied::Permission(Permission::PromptsShare))
+            );
+        }
+        for grant in [RoleGrant::user(), RoleGrant::admin()] {
+            assert!(!grant.permissions.contains(&Permission::PromptsShare));
+        }
+        let sharer = Policy::new(
+            BTreeMap::from([
+                (Role::new("user"), RoleGrant::user()),
+                (
+                    Role::new("sharer"),
+                    RoleGrant {
+                        permissions: BTreeSet::from([Permission::PromptsShare]),
+                        ..RoleGrant::none()
+                    },
+                ),
+            ]),
+            Some(Role::new("user")),
+        )
+        .unwrap();
+        let s = principal("sharer@x.io", &["sharer"]);
+        assert!(sharer.allows(&s, Permission::PromptsShare, &Resource::Anything));
+        assert!(!sharer.allows(&a, Permission::PromptsShare, &Resource::Anything));
+        assert_eq!(sharer.access(&s).scope(Permission::PromptsShare), None);
+        assert_eq!(
+            Permission::parse("prompts.share"),
+            Some(Permission::PromptsShare)
+        );
+        assert_eq!(Permission::PromptsShare.to_string(), "prompts.share");
+        assert!(Permission::ALL.contains(&Permission::PromptsShare));
+        assert!(!Permission::PromptsShare.is_scoped());
+        assert!(!Permission::PromptsShare.is_over_agents());
     }
 
     #[test]

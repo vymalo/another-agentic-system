@@ -4,6 +4,9 @@ use serde_json::Value;
 
 use crate::access_tier::AccessTier;
 use crate::ask::{AskFinishedData, AskStartedData};
+use crate::child_sessions::{
+    ChildSessionClosedData, ChildSessionOpenedData, ChildSessionReportedData, SessionBy,
+};
 use crate::description::ThreadDescribedData;
 use crate::fork::ThreadForkedData;
 use crate::gate::{CheckResult, CiReport, ReworkData};
@@ -78,6 +81,13 @@ pub enum EventKind {
     ModelUsage,
     /// A task's token totals, as it ended or paused (`usage/v1`, ADR 0056).
     ModelUsageTotal,
+    /// A helper session the agent started became a child thread (`child-sessions/v1`, ADR 0072):
+    /// once per session, in the parent's log.
+    ChildSessionOpened,
+    /// A round of a child session ended (ADR 0072): once per round, in the parent's log.
+    ChildSessionReported,
+    /// A child session closed (ADR 0072): once per session, in the parent's log.
+    ChildSessionClosed,
 }
 
 impl EventKind {
@@ -110,6 +120,9 @@ impl EventKind {
             EventKind::ThreadUnshared => "thread_unshared",
             EventKind::ModelUsage => "model_usage",
             EventKind::ModelUsageTotal => "model_usage_total",
+            EventKind::ChildSessionOpened => "child_session_opened",
+            EventKind::ChildSessionReported => "child_session_reported",
+            EventKind::ChildSessionClosed => "child_session_closed",
         }
     }
 }
@@ -514,12 +527,27 @@ pub struct ErrorData {
     pub retryable: bool,
 }
 
+/// The round of a child session a job follows, on the `job_started` that starts it (ADR 0072).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobRound {
+    /// The round's number, from 1.
+    pub number: u32,
+    /// Who started the round, when the agent said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<SessionBy>,
+}
+
 /// `data` of a `job_started`: the thread's next job began (ADR 0020). The first job of a thread
-/// has no such event; it starts with the thread.
+/// has no such event; it starts with the thread, except a child thread's first job, which is a
+/// round the orchestrator follows (`round`, ADR 0072) and says so with a `job_started` of job 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobStartedData {
-    /// The number of the job that started, from 2.
+    /// The number of the job that started, from 2 (1 for a child's first round).
     pub job: u32,
+    /// The round of a child session this job follows without having sent it (ADR 0072); absent
+    /// for a job a message started, and in every log written before the member existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<JobRound>,
 }
 
 /// The kind-specific payload of an event (contract `EventData`).
@@ -578,6 +606,12 @@ pub enum EventBody {
     ModelUsage(Box<ModelUsageData>),
     /// See [`ModelUsageTotalData`].
     ModelUsageTotal(ModelUsageTotalData),
+    /// See [`ChildSessionOpenedData`].
+    ChildSessionOpened(ChildSessionOpenedData),
+    /// See [`ChildSessionReportedData`].
+    ChildSessionReported(ChildSessionReportedData),
+    /// See [`ChildSessionClosedData`].
+    ChildSessionClosed(ChildSessionClosedData),
 }
 
 impl EventBody {
@@ -610,6 +644,9 @@ impl EventBody {
             EventBody::ThreadUnshared(_) => EventKind::ThreadUnshared,
             EventBody::ModelUsage(_) => EventKind::ModelUsage,
             EventBody::ModelUsageTotal(_) => EventKind::ModelUsageTotal,
+            EventBody::ChildSessionOpened(_) => EventKind::ChildSessionOpened,
+            EventBody::ChildSessionReported(_) => EventKind::ChildSessionReported,
+            EventBody::ChildSessionClosed(_) => EventKind::ChildSessionClosed,
         }
     }
 
@@ -642,6 +679,9 @@ impl EventBody {
             EventBody::ThreadUnshared(d) => serde_json::to_value(d),
             EventBody::ModelUsage(d) => serde_json::to_value(d),
             EventBody::ModelUsageTotal(d) => serde_json::to_value(d),
+            EventBody::ChildSessionOpened(d) => serde_json::to_value(d),
+            EventBody::ChildSessionReported(d) => serde_json::to_value(d),
+            EventBody::ChildSessionClosed(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -676,6 +716,15 @@ impl EventBody {
             EventKind::ThreadUnshared => EventBody::ThreadUnshared(serde_json::from_value(data)?),
             EventKind::ModelUsage => EventBody::ModelUsage(serde_json::from_value(data)?),
             EventKind::ModelUsageTotal => EventBody::ModelUsageTotal(serde_json::from_value(data)?),
+            EventKind::ChildSessionOpened => {
+                EventBody::ChildSessionOpened(serde_json::from_value(data)?)
+            }
+            EventKind::ChildSessionReported => {
+                EventBody::ChildSessionReported(serde_json::from_value(data)?)
+            }
+            EventKind::ChildSessionClosed => {
+                EventBody::ChildSessionClosed(serde_json::from_value(data)?)
+            }
         })
     }
 }

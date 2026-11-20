@@ -13,6 +13,7 @@
   not verified). Builds on [ADR 0021](0021-context-across-a2a-tasks.md) and
   [ADR 0008](0008-platform-integration-via-a2a-extension.md). The extension's wire contract is
   [`api/steer-v1.md`](../api/steer-v1.md).
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** steering also applies in a child thread, into its session's working round, under the same `steer/v1`.
 
 ## Context
 

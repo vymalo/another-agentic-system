@@ -1,14 +1,17 @@
 "use client";
 
 import { PlugIcon, XIcon } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { Hint } from "@/components/hint";
 import { InlineStatus } from "@/components/inline-status";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -17,6 +20,7 @@ import type { AgentCapabilities } from "@/features/agents/hooks/use-agent-capabi
 import type { ApiToolServer } from "@/lib/api/types";
 import type { ToolServersView } from "../hooks/use-tool-servers";
 import { MAX_ATTACHED, nameOf, offeredFor, THREAD_TOOLS_URI, withServer } from "../lib/servers";
+import { attachable, isOwn, standing } from "../lib/user-servers";
 import { ServerIcon } from "./server-icon";
 
 type Props = {
@@ -101,19 +105,34 @@ export function ToolsPicker({
               No tools are offered for this agent.
             </p>
           ) : (
-            offered.map((server) => (
-              <DropdownMenuCheckboxItem
-                key={server.id}
-                checked={chosen.includes(server.id)}
-                // a choice does not close the menu: several are made in one visit
-                onSelect={(event) => event.preventDefault()}
-                onCheckedChange={(on) => onChange(withServer(chosen, server.id, on === true))}
-                textValue={server.name}
-                disabled={busy || (full && !chosen.includes(server.id))}
-              >
-                <ServerLabel server={server} />
-              </DropdownMenuCheckboxItem>
-            ))
+            offered.map((server) =>
+              attachable(server) ? (
+                <DropdownMenuCheckboxItem
+                  key={server.id}
+                  checked={chosen.includes(server.id)}
+                  // a choice does not close the menu: several are made in one visit
+                  onSelect={(event) => event.preventDefault()}
+                  onCheckedChange={(on) => onChange(withServer(chosen, server.id, on === true))}
+                  textValue={server.name}
+                  disabled={busy || (full && !chosen.includes(server.id))}
+                >
+                  <ServerLabel server={server} />
+                </DropdownMenuCheckboxItem>
+              ) : (
+                // one of the person's own that cannot be attached (it needs a key or a sign-in, or is unavailable):
+                // it cannot be checked, and says why with the way to My tool servers, where it is given what it needs
+                <DropdownMenuItem key={server.id} asChild textValue={server.name}>
+                  <Link
+                    href="/tools"
+                    data-slot="tool-needs-setup"
+                    data-server={server.id}
+                    className="text-foreground no-underline"
+                  >
+                    <ServerLabel server={server} />
+                  </Link>
+                </DropdownMenuItem>
+              ),
+            )
           )}
           {view.error ? (
             <>
@@ -167,16 +186,35 @@ export function ToolsPicker({
   );
 }
 
-/** A server in the menu: its icon, its name and, in one line, what it is for. */
+/**
+ * A server in the menu: its icon, its name and, in one line, what it is for. One of the person's own is marked
+ * **Yours** and, while it is not ready, says what it needs in words (the picker's list does not say which kind of
+ * authentication it has, so it names both) and where to give it: My tool servers.
+ */
 function ServerLabel({ server }: { server: ApiToolServer }) {
+  const own = isOwn(server);
+  const setup = own && !attachable(server) ? standing(server) : null;
   return (
     <>
       <ServerIcon server={server} className="mt-0.5 size-5" />
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-sm leading-5 font-medium">{server.name}</span>
+        <span className="flex items-center gap-1.5 text-sm leading-5 font-medium">
+          {server.name}
+          {own ? (
+            <Badge variant="secondary" data-slot="own-mark">
+              Yours
+            </Badge>
+          ) : null}
+        </span>
         {server.description ? (
           <span className="line-clamp-2 text-xs leading-4 text-muted-foreground">
             {server.description}
+          </span>
+        ) : null}
+        {setup ? (
+          <span className="text-xs leading-4 text-muted-foreground">
+            {setup.label}.{" "}
+            {setup.tone === "action" ? "Open My tool servers to set it up." : setup.hint}
           </span>
         ) : null}
       </span>

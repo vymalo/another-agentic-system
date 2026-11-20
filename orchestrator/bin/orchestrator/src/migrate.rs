@@ -27,6 +27,8 @@ pub enum Command {
     Secrets(crate::secrets::SecretsArgs),
     /// Operations on the usage ledger of the people (ADR 0065).
     Usage(crate::usage::UsageArgs),
+    /// Operations on the search index of the people's threads (ADR 0068).
+    Search(crate::search::SearchArgs),
 }
 
 /// `orchestrator artifacts ...`

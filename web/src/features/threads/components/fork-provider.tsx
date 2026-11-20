@@ -1,12 +1,21 @@
 "use client";
 
 import { XIcon } from "lucide-react";
-import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { InlineStatus } from "@/components/inline-status";
 import type { ThreadAgent } from "@/features/chat/lib/agui/thread-agent";
 import { type ForkTarget, useFork } from "@/features/threads/hooks/use-fork";
 import type { Tier } from "@/features/tier/lib/tier";
 import { isActive, type ThreadState } from "@/lib/api/types";
+import { uuidv7 } from "@/lib/uuid";
 
 /** What the chat needs to fork the open thread (ADR 0029); the defaults are those of a page with no thread. */
 export type ThreadFork = {
@@ -23,8 +32,8 @@ export type ThreadFork = {
   busy: boolean;
   /** Why the last fork was refused, in words (`TURN_OPEN_MESSAGE` for a turn that was not over). */
   error: string | null;
-  /** What the refused request was: "fork" (from here, another agent) or "edit" (a message said again). */
-  errorKind: "fork" | "edit";
+  /** What the refused request was: "fork" (from here, another agent), "edit" (a message said again) or "regenerate". */
+  errorKind: "fork" | "edit" | "regenerate";
   clearError: () => void;
   /** "Fork from here" on the turn that is the run `runId`; false when that run's end is not known (yet). */
   canForkRun: (runId: string | undefined) => boolean;
@@ -39,6 +48,13 @@ export type ThreadFork = {
    * after a dropped connection is the same request. Resolves `false`, with `error`, when it was refused.
    */
   editMessage: (seq: number, text: string, messageId: string) => Promise<boolean>;
+  /**
+   * Regenerate: says the message at `seq` again with the same `text` (an edit with the same words),
+   * sent with no access tier, so the server keeps the one of the message it replaces. The answer is
+   * a new version the page goes to. A repeat of the same request (after a dropped connection) is
+   * the same request. Resolves `false`, with `error`, when it was refused.
+   */
+  regenerate: (seq: number, text: string) => Promise<boolean>;
 };
 
 const NONE: ThreadFork = {
@@ -54,6 +70,7 @@ const NONE: ThreadFork = {
   continueWith: async () => false,
   seqOfMessage: () => undefined,
   editMessage: async () => false,
+  regenerate: async () => false,
 };
 
 const Context = createContext<ThreadFork>(NONE);
@@ -90,7 +107,7 @@ export function ForkProvider({
 }) {
   const forker = useFork(threadId);
   const { fork, busy, error, clearError } = forker;
-  const [errorKind, setErrorKind] = useState<"fork" | "edit">("fork");
+  const [errorKind, setErrorKind] = useState<"fork" | "edit" | "regenerate">("fork");
   const turnOpen = isActive(state);
 
   const canForkRun = useCallback(
@@ -121,6 +138,22 @@ export function ForkProvider({
     },
     [fork, tier],
   );
+  // one id for each regenerate, kept only until it succeeds: a retry after a refusal is the same request
+  // (the same fork id and message id), and the next regenerate, of this thread or another, is a new one
+  const regenerating = useRef<{ key: string; id: string } | null>(null);
+  const regenerate = useCallback(
+    async (seq: number, text: string) => {
+      const key = `${threadId}\n${seq}\n${text}`;
+      if (regenerating.current?.key !== key) regenerating.current = { key, id: uuidv7() };
+      const attempt = regenerating.current;
+      setErrorKind("regenerate");
+      // no tier: the server keeps the tier of the message it replaces
+      const made = await fork({ replace: seq, text, messageId: attempt.id });
+      if (made && regenerating.current === attempt) regenerating.current = null;
+      return made;
+    },
+    [fork, threadId],
+  );
   // `lastSeq` is what makes the answer new: a message's `seq` is known once its group was read
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const seqOfMessage = useCallback((id: string) => agent.seqOfUser(id), [agent, lastSeq]);
@@ -139,6 +172,7 @@ export function ForkProvider({
       continueWith,
       seqOfMessage,
       editMessage,
+      regenerate,
     }),
     [
       readOnly,
@@ -152,6 +186,7 @@ export function ForkProvider({
       continueWith,
       seqOfMessage,
       editMessage,
+      regenerate,
     ],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
@@ -168,7 +203,15 @@ export function ForkError() {
         role="alert"
         action={{ label: "Dismiss", icon: XIcon, onClick: clearError }}
       >
-        {errorKind === "edit" ? "Could not edit the message" : "Could not fork the chat"}: {error}
+        {errorKind === "edit"
+          ? "Could not edit the message"
+          : errorKind === "regenerate"
+            ? "Could not regenerate the answer"
+            : "Could not fork the chat"}
+        :{" "}
+        {errorKind === "regenerate"
+          ? `${error.replace(/[.\s]+$/, "")}. You can edit the message instead.`
+          : error}
       </InlineStatus>
     </div>
   );

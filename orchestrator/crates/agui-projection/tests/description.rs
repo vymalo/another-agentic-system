@@ -309,7 +309,10 @@ fn a_fork_has_the_parents_description_from_its_marker_on() {
         ev(
             6,
             Actor::system(),
-            EventBody::JobStarted(JobStartedData { job: 2 }),
+            EventBody::JobStarted(JobStartedData {
+                job: 2,
+                round: None,
+            }),
         ),
     ];
     let frames = project(&events);

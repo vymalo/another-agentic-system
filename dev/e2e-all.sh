@@ -79,6 +79,16 @@
 #                     names none activates nothing; a word that is not a tier is 400 and
 #                     a tier for mock-coder, whose card does not list it, is 422, with no
 #                     thread written
+#   child-sessions    child sessions (ADR 0072): mock-sessions (a WireMock agent that  child-sessions-e2e.sh
+#                     lists child-sessions/v1) opens a session of its helper `planner`
+#                     and ends before it does; the helper is a child thread, nested
+#                     under the parent, whose log is its round (read by task, nothing
+#                     sent for it); the parent's log says it opened, then reported and
+#                     closed, once each; the child's tokens are logged `counted: false`
+#                     and GET /api/me/usage counts the parent's totals (the helper's
+#                     tokens in them) once; the AG-UI stream has the subagent `planner`
+#                     and the vymalo.session card; the agent was asked with the
+#                     extension activated on every call, and for nothing for the child
 #   title             a thread is titled by the orchestrator's model after the        title-e2e.sh
 #                     agent's first reply; none or a failing model keeps the first
 #                     words; a person's rename is final
@@ -97,6 +107,28 @@
 #                     is left out and brought back where it was, a fork is nested under
 #                     its parent and ejected on request; none of it is in the log, and
 #                     another person's request is a 404
+#   search            a person searches their own threads (ADR 0068): `POST              search-e2e.sh
+#                     /api/search/threads` finds a thread by a word of its title, its
+#                     description or a message, by a prefix, with accents folded and the
+#                     agent's final answer included; every term in one document; a
+#                     title ranks first; archived threads are in by default and out when
+#                     asked; a fork's copied messages are its parent's; another person
+#                     (the administrator) finds none of it; text that looks like SQL is
+#                     words; the refusals carry their codes; a deleted thread is gone at
+#                     once; no word of a query is in the orchestrator's log
+#   prompts           a person's prompt library (ADR 0070): `/api/prompts` saves a      prompts-e2e.sh
+#                     prompt with variables that are questions of the UI catalog (a
+#                     select and a scale), lists summaries without bodies, renders the
+#                     text on the server from the answers (the option's label, nothing
+#                     sent) and refuses what the contract says (an undeclared or an
+#                     unused variable, spaces in a reference, an images question, a
+#                     stale revision); the owner shares it with a role (`prompts.share`,
+#                     held by the role `prompt-sharer` only): that role lists, reads and
+#                     renders it, never sees who wrote it and cannot change it, and a
+#                     person outside the audience, the administrator included, gets 404;
+#                     a person without the permission is 403 for sharing and can still
+#                     unshare; the limit of 100; a delete with a stale revision is 409;
+#                     no word of a prompt is in the orchestrator's log
 #   delete            deleting a thread erases it (ADR 0043): a thread that works is   delete-e2e.sh
 #                     refused (409 thread_active), a cancelled one is deleted (204);
 #                     another person's delete is a 404 that changes nothing; the owner's
@@ -158,7 +190,6 @@
 #                     `tool_server_needs_auth`, and a new key makes it work with the new token
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #                     (the work as a tree of steps, the answer shown as it is written)
-#   coder-no-opencode the same, the check command makes the change (no OpenCode)    NO_OPENCODE=1 coder-e2e.sh
 #   workspace         the coder needs no repository to start: a scratch project, a      workspace-e2e.sh
 #                     repository it creates only after the person says yes (and none
 #                     after no), a second repository that joins the workspace only
@@ -190,8 +221,7 @@
 # `share` restarts the orchestrator, and only it, twice: once on a copy of dev/orchestrator.yaml whose `sharing.mode` says `public`, once on the stack's
 # own file again (also when it fails or is interrupted); it needs `docker compose` too and is SKIPPED without it. A stack it was killed on, at `public`, is
 # put back with `docker compose --profile app up -d --no-build --no-deps orchestrator`.
-# The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither is dev/devcontainer-e2e.sh, which
-# needs the stack WITH -f dev/compose.devcontainer.yaml (a rootless Podman service beside the coder: dev/README.md, "Devcontainers"); nor
+# The split roles (dev/split-e2e.sh) need another shape of the stack and are not part of this list; neither
 # is dev/browser-auth-e2e.sh (the web's own sign-in, ADR 0054), which needs the stack WITH -f dev/compose.browser-auth.yaml (dev/README.md, "Tokens in the browser"),
 # nor dev/chat-browser-e2e.sh (the chat's browser sub-agent, ADR 0057), which needs the stack WITH -f dev/compose.chat-browser.yaml (dev/README.md, "The browser agent").
 # Nor is dev/kagent-e2e.sh: it needs a kind cluster with kagent and Agent Substrate (dev/kagent/up.sh) and the stack WITH -f dev/compose.kagent.yaml
@@ -214,7 +244,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier title description fork rail delete share registry rbac user-tools user-tools-relay coder coder-no-opencode workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -248,7 +278,7 @@ agents=$(curl -fsS --max-time 30 -H "$id_header" "$base/api/agents" 2>/dev/null 
 echo "stack: $base, agents: ${agents:-none}"
 for s in "$@"; do
   case $s in
-    greeting | choices | coder | coder-no-opencode | workspace | folder)
+    greeting | choices | coder | workspace | folder)
       case " $agents " in
         *" adam "*) ;;
         *) echo "scenario $s needs the agent 'adam', which GET /api/agents does not list: is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
@@ -265,6 +295,13 @@ for s in "$@"; do
         *" mock-coder "*) ;;
         *) echo "scenario $s needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
+    search)
+      for a in mock-coder chat; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario search needs the agents mock-coder and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     artifact | delete)
       for a in coder-share chat; do
         case " $agents " in
@@ -320,6 +357,11 @@ for s in "$@"; do
           *) echo "scenario tier needs the agents mock-tiered and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    child-sessions)
+      case " $agents " in
+        *" mock-sessions "*) ;;
+        *) echo "scenario child-sessions needs the agent 'mock-sessions', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
     tools)
       for a in chat mock-coder; do
         case " $agents " in
@@ -399,10 +441,13 @@ for s in "$@"; do
     usage) run usage sh "$here/usage-e2e.sh" ;;
     usage-ledger) run usage-ledger sh "$here/usage-ledger-e2e.sh" ;;
     tier) run tier sh "$here/tier-e2e.sh" ;;
+    child-sessions) run child-sessions sh "$here/child-sessions-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
     fork) run fork sh "$here/fork-e2e.sh" ;;
     rail) run rail sh "$here/rail-e2e.sh" ;;
+    search) run search sh "$here/search-e2e.sh" ;;
+    prompts) run prompts sh "$here/prompts-e2e.sh" ;;
     delete) run delete sh "$here/delete-e2e.sh" ;;
     share) run share sh "$here/share-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;
@@ -410,7 +455,6 @@ for s in "$@"; do
     user-tools) run user-tools sh "$here/user-tools-e2e.sh" ;;
     user-tools-relay) run user-tools-relay sh "$here/user-tools-relay-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
-    coder-no-opencode) run coder-no-opencode env NO_OPENCODE=1 sh "$here/coder-e2e.sh" ;;
     workspace) run workspace sh "$here/workspace-e2e.sh" ;;
     artifact) run artifact sh "$here/artifact-e2e.sh" ;;
     verify) run verify sh "$here/verify-e2e.sh" ;;

@@ -1,0 +1,722 @@
+{
+  "about": "docs/api/thread-search-v1.md, 'The snippet'. `text` is a string or {repeat, times, suffix?}. `terms` are folded terms of a query. `expect` is the snippet of that text for those terms, or null when no word of the text starts with a term. Offsets are UTF-16 code units into `expect.text`.",
+  "cases": [
+    {
+      "name": "a short text is whole",
+      "text": "Fix the login bug",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "Fix the login bug",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 8,
+            "end": 13
+          }
+        ]
+      }
+    },
+    {
+      "name": "a match in the first word",
+      "text": "login is broken",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "login is broken",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "six words of context in front, nothing after",
+      "text": "one two three four five six seven eight nine ten login",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "five six seven eight nine ten login",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 30,
+            "end": 35
+          }
+        ]
+      }
+    },
+    {
+      "name": "whitespace runs are one space, the ends are trimmed",
+      "text": "  a  b\n\nc\tlogin \r\n",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "a b c login",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 6,
+            "end": 11
+          }
+        ]
+      }
+    },
+    {
+      "name": "every word that starts with a term is marked",
+      "text": "Fix the login bug today",
+      "terms": [
+        "fix",
+        "login"
+      ],
+      "expect": {
+        "text": "Fix the login bug today",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 3
+          },
+          {
+            "start": 8,
+            "end": 13
+          }
+        ]
+      }
+    },
+    {
+      "name": "a term is a prefix of the word",
+      "text": "Logging in is hard",
+      "terms": [
+        "log"
+      ],
+      "expect": {
+        "text": "Logging in is hard",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 7
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word is marked in every place it is",
+      "text": "login login Login",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "login login Login",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          },
+          {
+            "start": 6,
+            "end": 11
+          },
+          {
+            "start": 12,
+            "end": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "accents: the text is as written",
+      "text": "Un café très chaud",
+      "terms": [
+        "cafe"
+      ],
+      "expect": {
+        "text": "Un café très chaud",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 3,
+            "end": 7
+          }
+        ]
+      }
+    },
+    {
+      "name": "a ligature",
+      "text": "Cœur de lion",
+      "terms": [
+        "coeur"
+      ],
+      "expect": {
+        "text": "Cœur de lion",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 4
+          }
+        ]
+      }
+    },
+    {
+      "name": "an emoji counts two units",
+      "text": "🎉 party login",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "🎉 party login",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 9,
+            "end": 14
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word of letters outside the BMP",
+      "text": "𝒜𝒷cd e",
+      "terms": [
+        "ab"
+      ],
+      "expect": {
+        "text": "𝒜𝒷cd e",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 6
+          }
+        ]
+      }
+    },
+    {
+      "name": "punctuation next to the text is kept when it is short",
+      "text": "“login” is bad",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "“login” is bad",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 1,
+            "end": 6
+          }
+        ]
+      }
+    },
+    {
+      "name": "the full stop at the end is kept",
+      "text": "Fix login. Really?",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "Fix login. Really?",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 4,
+            "end": 9
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word that is not in the text",
+      "text": "Fix the login bug",
+      "terms": [
+        "logout"
+      ],
+      "expect": null
+    },
+    {
+      "name": "no word starts with the term in the middle of a word",
+      "text": "relogin again",
+      "terms": [
+        "login"
+      ],
+      "expect": null
+    },
+    {
+      "name": "a CJK run is one word: its start matches",
+      "text": "今日は東京タワーに行きました",
+      "terms": [
+        "今日"
+      ],
+      "expect": {
+        "text": "今日は東京タワーに行きました",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 14
+          }
+        ]
+      }
+    },
+    {
+      "name": "a CJK run is one word: the middle does not",
+      "text": "今日は東京タワーに行きました",
+      "terms": [
+        "東京"
+      ],
+      "expect": null
+    },
+    {
+      "name": "a match deep in a text: six words in front, the rest up to 200 units",
+      "text": "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega",
+      "terms": [
+        "sigma"
+      ],
+      "expect": {
+        "text": "mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 24,
+            "end": 29
+          }
+        ]
+      }
+    },
+    {
+      "name": "a match after 30 words: the window starts six words before it and stops by 200 units",
+      "text": "lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 lorem10 lorem11 lorem12 lorem13 lorem14 lorem15 lorem16 lorem17 lorem18 lorem19 lorem20 lorem21 lorem22 lorem23 lorem24 lorem25 lorem26 lorem27 lorem28 lorem29 needle ipsum0 ipsum1 ipsum2 ipsum3 ipsum4 ipsum5 ipsum6 ipsum7 ipsum8 ipsum9 ipsum10 ipsum11 ipsum12 ipsum13 ipsum14 ipsum15 ipsum16 ipsum17 ipsum18 ipsum19 ipsum20 ipsum21 ipsum22 ipsum23 ipsum24 ipsum25 ipsum26 ipsum27 ipsum28 ipsum29 ipsum30 ipsum31 ipsum32 ipsum33 ipsum34 ipsum35 ipsum36 ipsum37 ipsum38 ipsum39 ipsum40 ipsum41 ipsum42 ipsum43 ipsum44 ipsum45 ipsum46 ipsum47 ipsum48 ipsum49 ipsum50 ipsum51 ipsum52 ipsum53 ipsum54 ipsum55 ipsum56 ipsum57 ipsum58 ipsum59",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "lorem24 lorem25 lorem26 lorem27 lorem28 lorem29 needle ipsum0 ipsum1 ipsum2 ipsum3 ipsum4 ipsum5 ipsum6 ipsum7 ipsum8 ipsum9 ipsum10 ipsum11 ipsum12 ipsum13 ipsum14 ipsum15 ipsum16 ipsum17 ipsum18",
+        "cutStart": true,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 48,
+            "end": 54
+          }
+        ]
+      }
+    },
+    {
+      "name": "context never reaches more than 100 units back: long words in front",
+      "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz wwwwwwwwwwwwwwwwwwwwwwwwwwwwww vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu needle after it",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwww vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu needle after it",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 93,
+            "end": 99
+          }
+        ]
+      }
+    },
+    {
+      "name": "a match at the very end of a long text",
+      "text": "lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 lorem10 lorem11 lorem12 lorem13 lorem14 lorem15 lorem16 lorem17 lorem18 lorem19 lorem20 lorem21 lorem22 lorem23 lorem24 lorem25 lorem26 lorem27 lorem28 lorem29 lorem30 lorem31 lorem32 lorem33 lorem34 lorem35 lorem36 lorem37 lorem38 lorem39 lorem40 lorem41 lorem42 lorem43 lorem44 lorem45 lorem46 lorem47 lorem48 lorem49 lorem50 lorem51 lorem52 lorem53 lorem54 lorem55 lorem56 lorem57 lorem58 lorem59 lorem60 lorem61 lorem62 lorem63 lorem64 lorem65 lorem66 lorem67 lorem68 lorem69 lorem70 lorem71 lorem72 lorem73 lorem74 lorem75 lorem76 lorem77 lorem78 lorem79 needle",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "lorem74 lorem75 lorem76 lorem77 lorem78 lorem79 needle",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 48,
+            "end": 54
+          }
+        ]
+      }
+    },
+    {
+      "name": "a match in the first word of a long text",
+      "text": "needle lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 lorem10 lorem11 lorem12 lorem13 lorem14 lorem15 lorem16 lorem17 lorem18 lorem19 lorem20 lorem21 lorem22 lorem23 lorem24 lorem25 lorem26 lorem27 lorem28 lorem29 lorem30 lorem31 lorem32 lorem33 lorem34 lorem35 lorem36 lorem37 lorem38 lorem39 lorem40 lorem41 lorem42 lorem43 lorem44 lorem45 lorem46 lorem47 lorem48 lorem49 lorem50 lorem51 lorem52 lorem53 lorem54 lorem55 lorem56 lorem57 lorem58 lorem59 lorem60 lorem61 lorem62 lorem63 lorem64 lorem65 lorem66 lorem67 lorem68 lorem69 lorem70 lorem71 lorem72 lorem73 lorem74 lorem75 lorem76 lorem77 lorem78 lorem79",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "needle lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 lorem10 lorem11 lorem12 lorem13 lorem14 lorem15 lorem16 lorem17 lorem18 lorem19 lorem20 lorem21 lorem22 lorem23 lorem24",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 6
+          }
+        ]
+      }
+    },
+    {
+      "name": "the first match decides the window; later ones that fall in it are marked",
+      "text": "lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 needle one lorem0 lorem1 lorem2 lorem3 lorem4 needle two lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 lorem10 lorem11 lorem12 lorem13 lorem14 lorem15 lorem16 lorem17 lorem18 lorem19 lorem20 lorem21 lorem22 lorem23 lorem24 lorem25 lorem26 lorem27 lorem28 lorem29 lorem30 lorem31 lorem32 lorem33 lorem34 lorem35 lorem36 lorem37 lorem38 lorem39",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 needle one lorem0 lorem1 lorem2 lorem3 lorem4 needle two lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 lorem10 lorem11 lorem12 lorem13",
+        "cutStart": true,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 42,
+            "end": 48
+          },
+          {
+            "start": 88,
+            "end": 94
+          }
+        ]
+      }
+    },
+    {
+      "name": "a text that is longer than 3000 words: a match after the 3000th is not found",
+      "text": {
+        "repeat": "a ",
+        "times": 3000,
+        "suffix": "needle"
+      },
+      "terms": [
+        "needle"
+      ],
+      "expect": null
+    },
+    {
+      "name": "a match among the first 3000 words of a longer text",
+      "text": "needle a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a ",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "needle a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 6
+          }
+        ]
+      }
+    },
+    {
+      "name": "a matching word longer than the window",
+      "text": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqx",
+      "terms": [
+        "qq"
+      ],
+      "expect": null
+    },
+    {
+      "name": "leading text that is not a word is not kept when it is long",
+      "text": "---------------------------------------- needle",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "needle",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 6
+          }
+        ]
+      }
+    },
+    {
+      "name": "emoji around the window are left out whole",
+      "text": "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉 lorem0 lorem1 lorem2 lorem3 lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 needle 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 🎉 end",
+      "terms": [
+        "needle"
+      ],
+      "expect": {
+        "text": "lorem4 lorem5 lorem6 lorem7 lorem8 lorem9 needle",
+        "cutStart": true,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 42,
+            "end": 48
+          }
+        ]
+      }
+    },
+    {
+      "name": "only four characters are whitespace: a no-break space and a line separator stay",
+      "text": "fix\u00a0\u00a0login\u2028\u3000now",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "fix\u00a0\u00a0login\u2028\u3000now",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 5,
+            "end": 10
+          }
+        ]
+      }
+    },
+    {
+      "name": "runs of the four whitespace characters collapse, others in the run stay",
+      "text": "login \t\r\n \u00a0 \n bug",
+      "terms": [
+        "login"
+      ],
+      "expect": {
+        "text": "login \u00a0 bug",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "exactly 20 units left after the last word are kept",
+      "text": "zebra!!!!!!!!!!!!!!!!!!!!",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra!!!!!!!!!!!!!!!!!!!!",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "21 units left after the last word are not",
+      "text": "zebra!!!!!!!!!!!!!!!!!!!!!",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "exactly 20 units in front of the first word are kept",
+      "text": "!!!!!!!!!!!!!!!!!!!!zebra",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "!!!!!!!!!!!!!!!!!!!!zebra",
+        "cutStart": false,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 20,
+            "end": 25
+          }
+        ]
+      }
+    },
+    {
+      "name": "21 units in front of the first word are not",
+      "text": "!!!!!!!!!!!!!!!!!!!!!zebra",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word exactly 100 units before the match is in the context",
+      "text": "start aa--------------------------------------------------------------------------------------------------zebra tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "aa--------------------------------------------------------------------------------------------------zebra tail",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 100,
+            "end": 105
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word 101 units before the match is not",
+      "text": "start aa---------------------------------------------------------------------------------------------------zebra tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra tail",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word that ends exactly 200 units after the start is in the window",
+      "text": "zebra------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------abc tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------abc",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "a word that ends 201 units after the start is not",
+      "text": "zebra-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------abc tail",
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "zebra",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 0,
+            "end": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "the window reaches the 3000th word of a text of 3000 words: the text's end is kept",
+      "text": {
+        "repeat": "w ",
+        "times": 2999,
+        "suffix": "zebra"
+      },
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "w w w w w w zebra",
+        "cutStart": true,
+        "cutEnd": false,
+        "matches": [
+          {
+            "start": 12,
+            "end": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "the window reaches the 3000th word of a longer text: a word beyond is not a word, and the end is not the text's",
+      "text": {
+        "repeat": "w ",
+        "times": 2999,
+        "suffix": "zebra x"
+      },
+      "terms": [
+        "zebra"
+      ],
+      "expect": {
+        "text": "w w w w w w zebra",
+        "cutStart": true,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 12,
+            "end": 17
+          }
+        ]
+      }
+    },
+    {
+      "name": "the window never ends before the end of the first match, a word of 120 units that starts 100 after the window",
+      "text": "aa--------------------------------------------------------------------------------------------------𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜 tail",
+      "terms": [
+        "aaaaa"
+      ],
+      "expect": {
+        "text": "aa--------------------------------------------------------------------------------------------------𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜𝒜",
+        "cutStart": false,
+        "cutEnd": true,
+        "matches": [
+          {
+            "start": 100,
+            "end": 220
+          }
+        ]
+      }
+    }
+  ]
+}

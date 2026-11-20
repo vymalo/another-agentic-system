@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { type BrowserContext, expect, type Page, test } from "@playwright/test";
 import { uuidv7 } from "../src/lib/uuid";
 import {
   agentPicker,
@@ -39,7 +39,7 @@ async function resetMock() {
   await fetch(`${MOCK_URL}/__mock/reset`, { method: "POST" });
 }
 
-async function shot(page: Page, name: string, { hovering = false } = {}) {
+async function shot(page: Page, name: string, { hovering = false, full = false } = {}) {
   const device = test.info().project.name;
   const dark = await page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches);
   const scheme = dark ? "dark" : "light";
@@ -52,6 +52,7 @@ async function shot(page: Page, name: string, { hovering = false } = {}) {
   await page.screenshot({
     path: `${DIR}/${device}-${scheme}-${name}.png`,
     animations: "disabled",
+    fullPage: full,
     caret: "hide",
     // one pixel per CSS pixel keeps the files small; the phone renders at 2x and is scaled down
     scale: "css",
@@ -502,6 +503,369 @@ for (const scheme of ["light", "dark"] as const) {
       await shot(page, "account-menu");
     });
 
+    // the usage page (ADR 0065): a month with a model and a sandbox shape the deployment does not price, so the total reads "at least"
+    test("usage page", async ({ page, context }) => {
+      const session = `screens-usage-${uuidv7()}`;
+      const price = (model: string, input: number, output: number, price: string | null) => ({
+        provider: "zai",
+        model,
+        inputTokens: input,
+        outputTokens: output,
+        totalTokens: input + output,
+        price,
+      });
+      const hook = await fetch(`${MOCK_URL}/__mock/my-usage?session=${session}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          "*": {
+            month: "x",
+            currency: "EUR",
+            prices: "sha256:0123456789abcdef",
+            tasks: 12,
+            models: [
+              { ...price("glm-5.3", 1_250_000, 310_500, "3.141593"), cachedInputTokens: 400_000 },
+              price("glm-5.3-mini", 48_200, 9_100, null),
+            ],
+            sandbox: [
+              {
+                environment: "kubernetes",
+                cpuMillis: 2000,
+                memoryBytes: 4 * 2 ** 30,
+                commands: 41,
+                milliseconds: 4_320_000,
+                price: "0.250000",
+              },
+            ],
+            unmeasured: [],
+            total: {
+              amount: "3.391593",
+              currency: "EUR",
+              complete: false,
+              unpriced: {
+                models: [{ provider: "zai", model: "glm-5.3-mini" }],
+                sandbox: 0,
+                unmeasured: 0,
+              },
+            },
+          },
+        }),
+      });
+      expect(hook.status).toBe(204);
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      await page.goto("/usage");
+      await expect(page.getByRole("region", { name: "Total" })).toContainText("At least");
+      await shot(page, "usage-page");
+    });
+
+    // the person's own MCP servers (ADR 0046): one ready, one that wants a sign-in, one whose address the deployment now refuses
+    test("my tool servers: the page, Connect and the picker", async ({ page, context }) => {
+      const session = `screens-tools-${uuidv7()}`;
+      const origin = "http://127.0.0.1:3000";
+      const hook = (path: string, body?: unknown) =>
+        fetch(`${MOCK_URL}${path}${path.includes("?") ? "&" : "?"}session=${session}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      expect((await hook("/__mock/config?me=tool-maker")).status).toBe(204);
+      expect(
+        (await hook("/__mock/user-tools", { issuer: "https://login.notion-mcp.example" })).status,
+      ).toBe(204);
+      await context.addCookies([{ name: "mock-registry", value: session, url: origin }]);
+      const add = async (body: unknown) => {
+        const res = await fetch(`${MOCK_URL}/api/user-tool-servers`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: `mock-registry=${session}` },
+          body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(201);
+      };
+      await add({
+        name: "Team search",
+        url: "https://search.example.com/mcp",
+        auth: { kind: "bearer" },
+        secret: "FAKE-not-a-real-token-0000",
+      });
+      await add({
+        name: "Notes",
+        url: "https://notes.example.com/mcp",
+        auth: { kind: "oauth2", scopes: ["read"] },
+      });
+      await add({
+        name: "Wiki",
+        url: "https://wiki.example.com/mcp",
+        auth: { kind: "api_key", header: "X-Api-Key" },
+        secret: "FAKE-not-a-real-key-0000",
+      });
+      expect((await hook("/__mock/user-tools", { denyHosts: ["wiki.example.com"] })).status).toBe(
+        204,
+      );
+
+      await page.goto("/tools");
+      await expect(page.locator('[data-slot="server-row"]')).toHaveCount(3);
+      await shot(page, "tools-page");
+
+      await page.getByRole("button", { name: "Connect Notes" }).click();
+      await expect(page.getByRole("alertdialog")).toContainText("login.notion-mcp.example");
+      await shot(page, "tools-connect");
+
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await page.getByRole("button", { name: "Tools", exact: true }).click();
+      await expect(page.getByRole("menu")).toContainText("Yours");
+      await shot(page, "tools-picker-own");
+    });
+
+    // the first server: the empty list and the form, with a key's header named and the secret not yet typed
+    test("my tool servers: the form of a first server", async ({ page, context }) => {
+      const session = `screens-tools-form-${uuidv7()}`;
+      await fetch(`${MOCK_URL}/__mock/config?me=tool-maker&session=${session}`, { method: "POST" });
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      await page.goto("/tools");
+      await page.getByLabel("Name", { exact: true }).fill("Docs");
+      await page.getByLabel("Address").fill("https://docs.example.com/mcp");
+      await page.getByLabel("Authentication").selectOption("api_key");
+      await page.getByLabel("Header name").fill("X-Api-Key");
+      await expect(page.getByLabel("API key")).toHaveValue("");
+      await shot(page, "tools-add-form");
+    });
+
+    // a person's prompt library (ADR 0070): a session of its own, as the people's own tool servers have
+    async function promptsSession(context: BrowserContext, me: string) {
+      const session = `screens-prompts-${uuidv7()}`;
+      const hook = (path: string, body?: unknown) =>
+        fetch(`${MOCK_URL}${path}${path.includes("?") ? "&" : "?"}session=${session}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      expect((await hook(`/__mock/config?me=${me}`)).status).toBe(204);
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      const make = async (body: unknown) => {
+        const res = await fetch(`${MOCK_URL}/api/prompts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: `mock-registry=${session}` },
+          body: JSON.stringify(body),
+        });
+        expect(res.status, await res.clone().text()).toBe(201);
+      };
+      const share = async (prompts: unknown[]) =>
+        expect((await hook("/__mock/prompts/shared", prompts)).status).toBe(204);
+      return { hook, make, share };
+    }
+
+    test("my prompts: the page, the empty page and the shared prompt", async ({
+      page,
+      context,
+    }) => {
+      await promptsSession(context, "user");
+      await page.goto("/prompts");
+      await expect(page.getByText("You have no prompts yet.")).toBeVisible();
+      await shot(page, "prompts-empty");
+
+      // a prompt shared by its owner (who holds `prompts.share`), then the person is a plain user: the shelf is the session's
+      const lib = await promptsSession(context, "prompt-sharer");
+      await lib.make({
+        name: "review",
+        title: "Review a change",
+        description: "Reviews a change for one concern, at the depth you pick.",
+        body: "Review this change for {{focus}} at depth {{depth}}.",
+        variables: [
+          {
+            id: "focus",
+            question: "What should the review focus on?",
+            options: [
+              { value: "security", label: "Security" },
+              { value: "speed", label: "Speed" },
+            ],
+          },
+          { id: "depth", question: "How deep?", type: "number", unit: "levels" },
+        ],
+      });
+      await lib.make({
+        name: "standup",
+        title: "Write my standup",
+        description: "A short note of what I did, what is next and what blocks me.",
+        body: "Write my standup from {{notes}}.",
+        variables: [{ id: "notes", question: "Your notes", type: "longText" }],
+        audience: ["user"],
+      });
+      await lib.make({
+        name: "translate",
+        title: "Translate to French",
+        body: "Translate what follows into French, keeping its tone.",
+      });
+      await lib.share([
+        {
+          name: "release-notes",
+          title: "Release notes",
+          description: "Turns merged pull requests into release notes.",
+          body: "Write release notes for {{version}}.",
+          variables: [{ id: "version", question: "Which version?", type: "text" }],
+          audience: ["*"],
+        },
+        {
+          name: "incident",
+          title: "Incident summary",
+          description: "A blameless summary of an incident for the team.",
+          body: "Summarise the incident described below without blaming anyone.",
+          audience: ["*"],
+        },
+      ]);
+      await lib.hook("/__mock/config?me=user");
+      await page.goto("/prompts");
+      await expect(page.locator('[data-slot="prompt-row"]')).toHaveCount(5);
+      await shot(page, "prompts-page");
+
+      await page.getByRole("button", { name: "View “Release notes”" }).click();
+      await expect(page.getByRole("heading", { name: "Release notes", level: 2 })).toBeVisible();
+      await shot(page, "prompts-shared-view");
+
+      // the sharing control (P4): the same session, as the holder of `prompts.share` it is, with the dialog open
+      await lib.hook("/__mock/config?me=prompt-sharer");
+      await page.goto("/prompts");
+      await page.getByRole("button", { name: "Change sharing “Write my standup”" }).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await expect(page.getByLabel("Roles who can read it")).toHaveValue("user");
+      await shot(page, "prompts-share");
+    });
+
+    test("my prompts: the form, and a refusal in the text", async ({ page, context }) => {
+      const lib = await promptsSession(context, "user");
+      await lib.make({
+        name: "trip",
+        title: "Plan a trip",
+        description: "Plans a short trip for a team.",
+        body: "Plan a {{budget}} trip to {{place}} for {{people}} people, starting on {{day}}.",
+        variables: [
+          {
+            id: "place",
+            question: "Where to?",
+            options: [
+              { value: "lisbon", label: "Lisbon" },
+              { value: "prague", label: "Prague" },
+            ],
+          },
+          {
+            id: "people",
+            question: "How many people?",
+            type: "number",
+            minValue: "1",
+            maxValue: "40",
+            unit: "people",
+          },
+          { id: "day", question: "Which day do you start?", type: "date" },
+          // a kind the page keeps and does not edit
+          {
+            id: "budget",
+            question: "How big a budget?",
+            type: "scale",
+            to: 5,
+            fromLabel: "Small",
+            toLabel: "Large",
+          },
+        ],
+      });
+      await page.goto("/prompts");
+      await page.getByRole("button", { name: "Edit “Plan a trip”" }).click();
+      await expect(page.locator('[data-slot="question-editor"]')).toHaveCount(3);
+      await expect(page.locator('[data-slot="kept-question"]')).toHaveCount(1);
+      await shot(page, "prompts-form", { full: true });
+
+      // the text is refused at the braces that do not start a blank, which are selected
+      await page
+        .getByLabel("Text", { exact: true })
+        .fill("Plan a {{budget}} trip to {{place}} for {{ people }} people, starting on {{day}}.");
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await expect(page.getByText(/These braces do not start a blank/)).toBeVisible();
+      await page.getByLabel("Text", { exact: true }).scrollIntoViewIfNeeded();
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shot(page, "prompts-form-refused");
+    });
+
+    test("prompts in the composer: the / menu and the fill form", async ({ page, context }) => {
+      const lib = await promptsSession(context, "user");
+      await lib.make({
+        name: "review",
+        title: "Review a change",
+        description: "Reviews a change for one concern, at the depth you pick.",
+        body: "Review this change for {{focus}} at depth {{depth}}.",
+        variables: [
+          {
+            id: "focus",
+            question: "What should the review focus on?",
+            options: [
+              { value: "security", label: "Security" },
+              { value: "speed", label: "Speed" },
+            ],
+          },
+          { id: "depth", question: "How deep?", type: "number", unit: "levels" },
+        ],
+      });
+      await lib.make({
+        name: "standup",
+        title: "Write my standup",
+        description: "A short note of what I did, what is next and what blocks me.",
+        body: "Write my standup from {{notes}}.",
+        variables: [{ id: "notes", question: "Your notes", type: "longText" }],
+      });
+      await page.goto("/");
+      const box = page.getByLabel("Message", { exact: true });
+      await expect(box).toBeVisible();
+      await box.fill("/rev");
+      await expect(page.getByRole("listbox", { name: "Your prompts" })).toBeVisible();
+      await shot(page, "prompts-menu");
+
+      await page.keyboard.press("Enter");
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await shot(page, "prompts-fill");
+
+      await dialog.getByText("Security", { exact: true }).click();
+      await dialog.getByRole("textbox", { name: /How deep\?/ }).fill("3");
+      await dialog.getByRole("button", { name: "Use prompt" }).click();
+      await expect(box).toHaveValue("Review this change for Security at depth 3.");
+      await shot(page, "prompts-filled");
+    });
+
+    test("the agent's own commands: the / menu", async ({ page, context }) => {
+      const lib = await promptsSession(context, "user");
+      expect(
+        (
+          await lib.hook("/__mock/commands", {
+            agent: "adam",
+            params: {
+              commands: [
+                {
+                  name: "explain",
+                  description: "Explains a file, in words a newcomer can follow.",
+                },
+                {
+                  name: "review",
+                  description: "Reviews a change and reports what it finds.",
+                  argumentHint: "<repo>",
+                },
+                { name: "test", description: "Runs the project's tests and reports what failed." },
+              ],
+            },
+          })
+        ).status,
+      ).toBe(204);
+      await page.goto("/");
+      const box = page.getByLabel("Message", { exact: true });
+      await expect(box).toBeVisible();
+      await box.fill("/");
+      await expect(page.getByRole("listbox", { name: "Agent commands" })).toBeVisible();
+      await shot(page, "commands-menu");
+    });
+
     test("sign-in screen, and the same after a sign-in lapsed (browser mode)", async ({ page }) => {
       // the mock is an edge deployment: the page is told it is a browser-mode one, whose issuer is never reached here
       const issuer = "https://auth.example.com/realms/acme";
@@ -785,6 +1149,9 @@ for (const scheme of ["light", "dark"] as const) {
       if (isMobile && (await panelToggle(page).getAttribute("aria-expanded")) === "true") {
         await hideActivity(page);
       }
+      // the answer's code block is highlighted by a chunk that loads on the first block: a still taken before it is in
+      // shows plain text one run and colours the next
+      await expect(page.locator("pre code [data-token]").first()).toBeVisible();
       await shot(page, "shared-page");
 
       // a link that does not work
@@ -862,6 +1229,37 @@ for (const scheme of ["light", "dark"] as const) {
       await page.getByRole("button", { name: "Cancel" }).click();
     });
 
+    test("search: the hits of a title, a description and messages, and a query with no match", async ({
+      page,
+    }, info) => {
+      const person = await aPerson(page, info, { user: "ada@example.com" });
+      const old = await makeThread(person, "Plan the quarterly dependency upgrade");
+      await makeThread(person, "Review the migration plan for the orders service");
+      // the mock's `Plan …` script: an answer that says "Plan: add a test", and a description a model wrote
+      await makeThread(person, "Plan the session expiry test");
+      await makeThread(person, "Summarize last week's incidents");
+      const archive = await page.request.patch(`${MOCK_URL}/api/threads/${old}/rail`, {
+        data: { archived: true },
+        headers: { Cookie: person.cookie },
+      });
+      expect(archive.ok()).toBe(true);
+
+      await page.goto("/");
+      await expect(agentPicker(page)).toBeVisible();
+      await openThreadList(page);
+      const box = page.getByRole("combobox", { name: "Search chats" });
+      await box.fill("plan");
+      await expect(page.getByRole("option").first()).toBeVisible();
+      await expect(page.locator("mark").first()).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "search");
+
+      await box.fill("kiwi");
+      await expect(page.getByText("No chats match “kiwi”.").first()).toBeVisible();
+      await animationsDone(page);
+      await shot(page, "search-empty");
+    });
+
     // last: its thread is one more row in the list of the screens after it (none are)
     test("inline images: the pictures in the answer, the placeholder, the file that is left as a card", async ({
       page,
@@ -887,6 +1285,14 @@ for (const scheme of ["light", "dark"] as const) {
       // the chat scrolls, not the page: `scrollIntoView` moves every scrollable ancestor
       await page.evaluate(() => document.scrollingElement?.scrollTo(0, 0));
       await shot(page, "inline-images");
+    });
+
+    // last too: its thread is one more row in the list of the screens after it (none are)
+    test("read aloud: the actions under a finished answer", async ({ page }) => {
+      await startThread(page, "Fix the redirect loop after signing in");
+      await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
+      await conversation(page).getByRole("button", { name: "Read aloud" }).hover();
+      await shot(page, "read-aloud", { hovering: true });
     });
   });
 }

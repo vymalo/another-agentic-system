@@ -28,6 +28,9 @@ use orch_ports::{
 };
 use tokio::time::Instant;
 
+#[path = "child_sessions.rs"]
+mod child_sessions;
+pub use child_sessions::{ChildSessionDrop, ChildSessionStats};
 mod delete;
 pub use delete::{DeleteStats, LateSource};
 mod downloads;
@@ -56,6 +59,7 @@ use crate::{
     Access, AgentDirectory, AppError, Denied, GateError, GateLayer, GateRules, Layer, Permission,
     Policy, PublicConfig, Requester, Resource, TaskSettings, check_catalog_schemas,
 };
+use child_sessions::ChildSessionCounters;
 use delete::DeleteCounters;
 use echo::EchoCounters;
 use history::HistoryCounters;
@@ -484,6 +488,7 @@ pub struct App<P: Ports> {
     delete_counters: DeleteCounters,
     usage_counters: UsageCounters,
     echo_counters: EchoCounters,
+    child_session_counters: ChildSessionCounters,
     history_counters: HistoryCounters,
     pub(crate) authorize_locks: AuthorizeLocks,
 }
@@ -601,6 +606,7 @@ impl<P: Ports> App<P> {
             delete_counters: DeleteCounters::default(),
             usage_counters: UsageCounters::default(),
             echo_counters: EchoCounters::default(),
+            child_session_counters: ChildSessionCounters::default(),
             history_counters: HistoryCounters::default(),
             authorize_locks: AuthorizeLocks::default(),
         })
@@ -1129,6 +1135,7 @@ impl<P: Ports> App<P> {
             // the agent assigns the thread's context with its first answer (ADR 0055)
             context_id: None,
             rail_parent: None,
+            child_of: None,
             now,
         };
         match self.ports.store().create_thread(new, commit).await {
@@ -1401,6 +1408,30 @@ impl<P: Ports> App<P> {
         Ok(self.ports.store().list_threads(who.user(), listing).await?)
     }
 
+    /// Searches the person's own threads (ADR 0068), and nobody else's: a thread is a hit only when its
+    /// title, its description or one of its messages holds every term of `request` as the start of a
+    /// word (`docs/api/thread-search-v1.md`). What it returns is always a subset of
+    /// [`list_threads`](Self::list_threads) for the same archived filter and `include_edits`, for every
+    /// role (an administrator finds their own threads too: ADR 0039).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] when the person's roles do not hold `thread.read`; [`AppError::Store`]
+    /// when the store is down or the search took too long.
+    pub async fn search_threads(
+        &self,
+        who: &impl Requester,
+        request: &orch_ports::SearchRequest,
+    ) -> Result<orch_ports::SearchRows, AppError> {
+        let access = self.access(who);
+        if !access.has(Permission::ThreadRead) {
+            return Err(AppError::missing_permission(Permission::ThreadRead));
+        }
+        Ok(
+            orch_ports::ThreadSearch::search_threads(self.ports.store(), who.user(), request)
+                .await?,
+        )
+    }
+
     /// Pins, archives, moves or ejects one of the person's threads in their list (ADR 0042): a
     /// change of the thread's row in no event of its log, which needs the thread to be the
     /// person's and `thread.read`, not `thread.write`: it changes nothing in the conversation and
@@ -1446,6 +1477,23 @@ impl<P: Ports> App<P> {
         parent: &ThreadRecord,
         kind: ForkKind,
     ) -> Result<Option<ThreadId>, AppError> {
+        Ok(self
+            .fork_rail_row(user, parent, kind)
+            .await?
+            .filter(|r| r.archived_at.is_none())
+            .map(|r| r.id))
+    }
+
+    /// The row of the person's list a thread made from `parent` is nested under, archived or not:
+    /// what [`fork_rail_parent`](Self::fork_rail_parent) decides before it leaves out an archived
+    /// row. A child session's thread (ADR 0072) is nested under its parent's row even when the
+    /// parent is archived, where it is archived with the block.
+    async fn fork_rail_row(
+        &self,
+        user: &UserId,
+        parent: &ThreadRecord,
+        kind: ForkKind,
+    ) -> Result<Option<ThreadRecord>, AppError> {
         if kind == ForkKind::Edit {
             return Ok(None);
         }
@@ -1465,12 +1513,11 @@ impl<P: Ports> App<P> {
         let Some(seen) = rail_parent_of_fork(parent, family_root.as_ref()) else {
             return Ok(None);
         };
-        let row = if seen == parent.id {
+        Ok(if seen == parent.id {
             Some(parent.clone())
         } else {
             store.get_thread(Some(user), seen).await?
-        };
-        Ok(row.filter(|r| r.archived_at.is_none()).map(|r| r.id))
+        })
     }
 
     /// Makes a new thread from one of the user's (ADR 0029): the parent's events up to a cut,
@@ -1496,6 +1543,10 @@ impl<P: Ports> App<P> {
         let access = self.access(who);
         // A fork is a thread of the person's own, and a copy of one they may act on.
         let parent = self.writable_thread(&access, parent_id).await?;
+        // The thread of a helper session is one part of its parent's conversation (ADR 0072).
+        if parent.child_of.is_some() {
+            return Err(AppError::child_thread());
+        }
         if let Some(id) = req.id {
             match self.find_own_thread(user, id).await? {
                 Some(existing) if self.is_replay(&existing, parent_id, &req.at).await? => {
@@ -1665,6 +1716,7 @@ impl<P: Ports> App<P> {
             // (ADR 0055)
             context_id: None,
             rail_parent: self.fork_rail_parent(user, &parent, kind).await?,
+            child_of: None,
             now,
         };
         let origin = ForkOrigin {
@@ -2247,6 +2299,16 @@ impl<P: Ports> App<P> {
     ) -> Result<ApplyOutcome, AppError> {
         let access = self.access(who);
         let thread = self.writable_thread(&access, id).await?;
+        // A child session's thread is read-only until a person may talk to its helper (ADR 0072,
+        // S3): no message, steer, Stop & send or action. A cancel is allowed.
+        if thread.child_of.is_some()
+            && matches!(
+                input,
+                Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
+            )
+        {
+            return Err(AppError::child_thread());
+        }
         // What starts the agent's work takes the right to invoke it.
         if matches!(
             input,
@@ -2300,6 +2362,10 @@ impl<P: Ports> App<P> {
             // nonce, which only `share_thread` and its siblings do (ADR 0040).
             | Input::Share { .. }
             | Input::Unshare { .. }
+            // What an agent said of its sessions is the dispatcher's to apply (ADR 0072)
+            | Input::ChildSession { .. }
+            | Input::ChildSessionSaid(_)
+            | Input::RoundStarted { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -2817,6 +2883,23 @@ impl<P: Ports> App<P> {
                 // Said by the commit itself: the store finishes the abandoned job's unsent rows in
                 // the transaction that writes this commit's, so none of those is touched.
                 Command::DropQueued { .. } => skip_unsent_delegates = true,
+                // Follow a round of the thread's child session without sending anything (ADR
+                // 0072): a `delegate` row for the claim, the lease and the per-thread order, which
+                // the dispatcher takes to a follow of the round's task and never to a send.
+                Command::Observe {
+                    session,
+                    round,
+                    task_id,
+                    by,
+                } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::Observe {
+                        session,
+                        round,
+                        task_id,
+                        by,
+                    },
+                }),
                 Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel { job: Some(job) },

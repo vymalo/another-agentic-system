@@ -124,6 +124,12 @@
   tokenEnv: MOCK_AGENT_TOKEN
   # A WireMock agent that reports its token usage (usage/v1, ADR 0056, dev/usage-e2e.sh): three model calls, one under a
   # sub-agent step, and the task's totals on the task; the thread shows the ring beside Send.
+- id: mock-sessions
+  name: Mock sessions
+  cardUrl: http://mock-sessions:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # A WireMock agent that runs a helper as a session (child-sessions/v1, ADR 0072, dev/child-sessions-e2e.sh): its parent task opens one
+  # session of the helper `planner` and ends before it does; the orchestrator follows the round by task into a child thread of its own.
 - id: mock-tiered
   name: Mock tiered
   cardUrl: http://mock-tiered:8080/.well-known/agent-card.json

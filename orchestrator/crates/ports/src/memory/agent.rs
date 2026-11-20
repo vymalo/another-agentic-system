@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, ForkHistory, KnownExtension, LiveChunk, LiveEnd,
-    Releases, StepKind, StepReport, StepState, TierListing, TierOffer, ToolsGrant, UiActionData,
-    UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, CommandsListing, CommandsOffer, ForkHistory,
+    KnownExtension, LiveChunk, LiveEnd, Releases, StepKind, StepReport, StepState, TierListing,
+    TierOffer, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -144,6 +144,9 @@ struct TaskRec {
     tier: Option<orch_core::AccessTier>,
     log: Vec<AgentEnvelope>,
     message_ids: Vec<String>,
+    /// The task is a round of a child session (`sessions` scripts): a poll of it carries the
+    /// session it belongs to and its totals, as a real agent's task does (ADR 0072).
+    of_session: bool,
 }
 
 #[derive(Default)]
@@ -170,6 +173,8 @@ struct State {
     files: Vec<AgentUpdate>,
     /// Whether a message that continues a task begins its stream with the task as it stands.
     snapshot_on_continue: bool,
+    /// Whether the answer to a steer says the task's sessions before its state.
+    steer_lists_sessions: bool,
     /// Contexts the agent assigned, one per conversation it started without being given one.
     next_context: u32,
     /// Every context a task of this agent has, assigned or named.
@@ -231,6 +236,23 @@ struct Shared {
 ///   `stream-abandon` gives up after two pieces and `failed("the model failed")`s;
 /// - `files`: `working`, then the updates given to [`ScriptedAgent::set_files`] (files an adapter
 ///   reports, ADR 0032: `AgentUpdate::File`, or links), each under its own key, `completed`;
+/// - `sessions <helper> [keep] [gate]`: the agent's side of `child-sessions/v1` (ADR 0072): `working`,
+///   then the session `<task>-s1` of the helper in the context `<context>/s/<task>-s1`, listed on the
+///   task (`AgentUpdate::ChildSessions`, `Listed`), whose round 1 is the task `<task>-r1` (a task of its
+///   own, by the agent: the session it belongs to, an artifact `echo`, its totals of 10 tokens in and 5
+///   out, `completed`; **already over when it is first listed**, so a client reads it with a poll),
+///   the parent's own totals (20 in, 10 out, the helper's tokens included), the message `parent: done`,
+///   the listing again (the session `closed`, or `idle` with `keep`) and `completed`. With `gate` the
+///   round stays `working` until [`ScriptedAgent::release_gate`] and the parent completes at once, the
+///   session still `working`;
+/// - `sessions-blocked <helper>`: like `sessions gate`, but the round asks the person (`input-required`)
+///   before it waits for [`ScriptedAgent::release_gate`]; then it goes on in the same task (`working`, an
+///   artifact, its session closed, `completed`);
+/// - `sessions-many <n>`: `n` sessions, each with a round that stays `working` until
+///   [`ScriptedAgent::release_gate`] is called once for it; the parent completes at once;
+/// - `sessions-foreign`: a session whose round is the parent's own task, of another context, with an
+///   artifact on it, as an agent that names a task that is not the session's would;
+/// - `sessions-bad`: `working`, a listing the adapter refused (`ChildSessionsRejected`), `completed`;
 /// - `failed`: `working`, then `failed("scripted failure")`;
 /// - `pushed`: `working`, the artifacts `branch` (a commit pushed to [`PUSHED_REPOSITORY`]) and
 ///   `checks` (a red run), `completed`: what an agent that pushed reports, which only the agent a
@@ -240,7 +262,8 @@ struct Shared {
 ///   stream begins with a snapshot of the finished task;
 /// - a message with [`SendRequest::steer`] goes into the running task when the agent's card lists
 ///   `steer/v1` ([`ScriptedAgent::set_extensions`]): the task says `steered: <text>` as a reply, once
-///   per message id, and its first event is the task as it is; an agent that does not list it, a task
+///   per message id, and its first event is the task as it is (after the task's sessions with
+///   [`ScriptedAgent::set_steer_lists_sessions`]); an agent that does not list it, a task
 ///   that ended and an unknown task refuse it as a real agent does;
 /// - `fail`: `send_stream` fails with `Rejected`; `down`: with `Unreachable`.
 #[derive(Clone)]
@@ -285,6 +308,8 @@ impl ScriptedAgent {
                 ui: None,
                 extensions: BTreeSet::new(),
                 access_tier: TierListing::Absent,
+                commands: CommandsListing::Absent,
+                child_sessions: None,
                 build: std::collections::BTreeMap::new(),
             },
         );
@@ -338,6 +363,28 @@ impl ScriptedAgent {
         card.access_tier = TierListing::Malformed;
     }
 
+    /// Makes `agent`'s card list `commands/v1` with this offer (`None` removes it). Takes effect on
+    /// the next read: nothing is cached.
+    pub fn set_commands(&self, agent: &str, offer: Option<CommandsOffer>) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.commands = offer.map_or(CommandsListing::Absent, CommandsListing::Offered);
+    }
+
+    /// Makes `agent`'s card list `commands/v1` with `params` that cannot be read. Takes effect on
+    /// the next read.
+    pub fn set_commands_malformed(&self, agent: &str) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.commands = CommandsListing::Malformed;
+    }
+
     /// Makes reading `agent`'s card fail.
     pub fn set_card_down(&self, agent: &str, down: bool) {
         let mut st = self.state();
@@ -374,6 +421,14 @@ impl ScriptedAgent {
     /// by default it begins with what the task says next.
     pub fn set_snapshot_on_continue(&self, on: bool) {
         self.state().snapshot_on_continue = on;
+    }
+
+    /// With `true`, the answer to a steer says the running task's sessions (`child-sessions/v1`, ADR
+    /// 0072: an empty listing, with no state) before the task's state, as the adapter maps the first
+    /// event of an agent whose card offers sessions (adam-rs: the `Task` frame of a root task carries
+    /// its `sessions` object, `[]` included). By default the answer is the state alone.
+    pub fn set_steer_lists_sessions(&self, on: bool) {
+        self.state().steer_lists_sessions = on;
     }
 
     /// With `true`, a message that names a context this agent did not assign (a first message that
@@ -455,6 +510,8 @@ fn default_card() -> AgentCardInfo {
         ui: None,
         extensions: BTreeSet::new(),
         access_tier: TierListing::Absent,
+        commands: CommandsListing::Absent,
+        child_sessions: None,
         build: std::collections::BTreeMap::new(),
     }
 }
@@ -1040,6 +1097,22 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             );
             shared.push_status(&task, Failed, Some("the model failed"));
         }
+        "sessions" => sessions(&shared, &task, &text).await,
+        "sessions-blocked" => sessions_blocked(&shared, &task, &text),
+        "sessions-many" => sessions_many(&shared, &task, &text),
+        "sessions-foreign" => sessions_foreign(&shared, &task),
+        "sessions-bad" => {
+            shared.push(
+                &task,
+                None,
+                None,
+                IdemKey::Turn(format!("{task}:sessions:bad")),
+                Some(AgentUpdate::ChildSessionsRejected(
+                    "the session id is empty".to_owned(),
+                )),
+            );
+            shared.push_status(&task, Completed, None);
+        }
         "failed" => shared.push_status(&task, Failed, Some("scripted failure")),
         "pushed" => {
             let json = |name: &str, data: serde_json::Value| {
@@ -1124,6 +1197,358 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_status(&task, Completed, None);
         }
     }
+}
+
+/// The `sessions` script: the parent's task, the session its model started and the round that
+/// session runs (see [`ScriptedAgent`]).
+async fn sessions(shared: &Arc<Shared>, task: &str, text: &str) {
+    use AgentTaskState::{Completed, Working};
+    use orch_core::{RoundReport, SessionBy, SessionNews, SessionReport, SessionState};
+    let mut words = text.split_whitespace().skip(1);
+    let helper = words.next().unwrap_or("helper").to_owned();
+    let options: Vec<&str> = words.collect();
+    let (keep, gate) = (options.contains(&"keep"), options.contains(&"gate"));
+    let session = format!("{task}-s1");
+    let round = format!("{task}-r1");
+    let parent_context = shared
+        .state()
+        .tasks
+        .get(task)
+        .map(|t| t.context_id.clone())
+        .unwrap_or_default();
+    let child_context = format!("{parent_context}/s/{session}");
+    {
+        let mut st = shared.state();
+        st.contexts.insert(child_context.clone());
+        st.tasks.insert(
+            round.clone(),
+            TaskRec {
+                context_id: child_context.clone(),
+                state: Working,
+                detail: None,
+                revision: None,
+                tier: None,
+                log: Vec::new(),
+                message_ids: Vec::new(),
+                of_session: true,
+            },
+        );
+    }
+    let over = if keep {
+        SessionState::Idle
+    } else {
+        SessionState::Closed
+    };
+    let report = |state: SessionState, round_state: AgentTaskState| SessionReport {
+        session: session.clone(),
+        context_id: child_context.clone(),
+        agent: helper.clone(),
+        description: format!("{helper} for {task}"),
+        keep_open: keep,
+        by: Some(SessionBy::Agent),
+        state,
+        closing: false,
+        round: Some(RoundReport {
+            number: 1,
+            task_id: Some(round.clone()),
+            state: Some(round_state),
+        }),
+    };
+    let listed = |n: u32, report: SessionReport| {
+        shared.push(
+            task,
+            None,
+            None,
+            IdemKey::Turn(format!("{task}:sessions:{n}")),
+            Some(AgentUpdate::ChildSessions(SessionNews::Listed(vec![
+                report,
+            ]))),
+        );
+    };
+    let of_round = |n: u32, report: SessionReport| {
+        shared.push(
+            &round,
+            None,
+            None,
+            IdemKey::Turn(format!("{round}:session:{n}")),
+            Some(AgentUpdate::ChildSessions(SessionNews::OfRound(report))),
+        );
+    };
+    let tokens = |input: u64, output: u64| orch_core::TokenCounts {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: input + output,
+        ..orch_core::TokenCounts::default()
+    };
+    let total = |task: &str, input: u64, output: u64| {
+        AgentUpdate::Usage(orch_core::UsageUpdate::Total(orch_core::UsageTotals {
+            task: task.to_owned(),
+            totals: vec![orch_core::ModelTokens {
+                provider: Some("openai".to_owned()),
+                model: "glm-5.3".to_owned(),
+                tokens: tokens(input, output),
+            }],
+            sandbox: None,
+            sandbox_rejected: None,
+        }))
+    };
+    listed(1, report(SessionState::Working, Working));
+    of_round(1, report(SessionState::Working, Working));
+    shared.push_status(&round, Working, None);
+    let finish_round = {
+        let shared = Arc::clone(shared);
+        let round = round.clone();
+        let session_report = report(over, Completed);
+        let totals = total(&round, 10, 5);
+        move || {
+            shared.push(
+                &round,
+                None,
+                None,
+                IdemKey::Task(format!("a2a:{round}:artifact:echo")),
+                Some(AgentUpdate::Artifact {
+                    name: "echo".to_owned(),
+                    mime_type: None,
+                    uri: None,
+                    text: Some("helper: done".to_owned()),
+                }),
+            );
+            shared.push(
+                &round,
+                None,
+                None,
+                IdemKey::Task(format!("a2a:{round}:usage-total")),
+                Some(totals),
+            );
+            shared.push(
+                &round,
+                None,
+                None,
+                IdemKey::Turn(format!("{round}:session:2")),
+                Some(AgentUpdate::ChildSessions(SessionNews::OfRound(
+                    session_report,
+                ))),
+            );
+            shared.push_status(&round, Completed, None);
+        }
+    };
+    if gate {
+        let shared = Arc::clone(shared);
+        tokio::spawn(async move {
+            shared.gate.notified().await;
+            finish_round();
+        });
+    } else {
+        finish_round();
+    }
+    shared.push(
+        task,
+        None,
+        None,
+        IdemKey::Task(format!("a2a:{task}:usage-total")),
+        Some(total(task, 20, 10)),
+    );
+    shared.push(
+        task,
+        None,
+        None,
+        IdemKey::Task(format!("a2a:msg:{task}-said")),
+        Some(AgentUpdate::Message {
+            message_id: format!("{task}-said"),
+            text: "parent: done".to_owned(),
+            is_final: true,
+            purpose: None,
+        }),
+    );
+    if gate {
+        listed(2, report(SessionState::Working, Working));
+    } else {
+        listed(2, report(over, Completed));
+    }
+    shared.push_status(task, Completed, Some("parent: done"));
+}
+
+/// A report about the session `session` of `task`'s context, with round 1 the task `round`.
+fn session_report(
+    session: &str,
+    context: &str,
+    helper: &str,
+    state: orch_core::SessionState,
+    round: &str,
+    round_state: AgentTaskState,
+) -> orch_core::SessionReport {
+    orch_core::SessionReport {
+        session: session.to_owned(),
+        context_id: context.to_owned(),
+        agent: helper.to_owned(),
+        description: format!("{helper} {session}"),
+        keep_open: false,
+        by: Some(orch_core::SessionBy::Agent),
+        state,
+        closing: false,
+        round: Some(orch_core::RoundReport {
+            number: 1,
+            task_id: Some(round.to_owned()),
+            state: Some(round_state),
+        }),
+    }
+}
+
+fn parent_context(shared: &Shared, task: &str) -> String {
+    shared
+        .state()
+        .tasks
+        .get(task)
+        .map(|t| t.context_id.clone())
+        .unwrap_or_default()
+}
+
+/// Makes a round task of a session, working, in the child's context.
+fn add_round(shared: &Shared, round: &str, context: &str) {
+    let mut st = shared.state();
+    st.contexts.insert(context.to_owned());
+    st.tasks.insert(
+        round.to_owned(),
+        TaskRec {
+            context_id: context.to_owned(),
+            state: AgentTaskState::Working,
+            detail: None,
+            revision: None,
+            tier: None,
+            log: Vec::new(),
+            message_ids: Vec::new(),
+            of_session: true,
+        },
+    );
+}
+
+fn list_sessions(shared: &Shared, task: &str, n: u32, reports: Vec<orch_core::SessionReport>) {
+    shared.push(
+        task,
+        None,
+        None,
+        IdemKey::Turn(format!("{task}:sessions:{n}")),
+        Some(AgentUpdate::ChildSessions(orch_core::SessionNews::Listed(
+            reports,
+        ))),
+    );
+}
+
+fn of_round(shared: &Shared, round: &str, n: u32, report: orch_core::SessionReport) {
+    shared.push(
+        round,
+        None,
+        None,
+        IdemKey::Turn(format!("{round}:session:{n}")),
+        Some(AgentUpdate::ChildSessions(orch_core::SessionNews::OfRound(
+            report,
+        ))),
+    );
+}
+
+fn sessions_blocked(shared: &Arc<Shared>, task: &str, text: &str) {
+    use AgentTaskState::{Completed, InputRequired, Working};
+    use orch_core::SessionState;
+    let helper = text
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("helper")
+        .to_owned();
+    let session = format!("{task}-s1");
+    let round = format!("{task}-r1");
+    let context = format!("{}/s/{session}", parent_context(shared, task));
+    add_round(shared, &round, &context);
+    let report = |state, round_state| {
+        session_report(&session, &context, &helper, state, &round, round_state)
+    };
+    list_sessions(
+        shared,
+        task,
+        1,
+        vec![report(SessionState::Working, Working)],
+    );
+    of_round(shared, &round, 1, report(SessionState::Working, Working));
+    shared.push_status(&round, Working, None);
+    shared.push_status(&round, InputRequired, Some("Which branch?"));
+    {
+        let shared = Arc::clone(shared);
+        let (round, closed) = (round.clone(), report(SessionState::Closed, Completed));
+        tokio::spawn(async move {
+            shared.gate.notified().await;
+            shared.push_status(&round, Working, None);
+            shared.push_artifact(&round, "echo", "answered".to_owned());
+            of_round(&shared, &round, 2, closed);
+            shared.push_status(&round, Completed, None);
+        });
+    }
+    shared.push_status(task, Completed, Some("parent: done"));
+}
+
+fn sessions_many(shared: &Arc<Shared>, task: &str, text: &str) {
+    use AgentTaskState::{Completed, Working};
+    use orch_core::SessionState;
+    let n: u32 = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1);
+    let parent = parent_context(shared, task);
+    let mut reports = Vec::new();
+    for i in 0..n {
+        let session = format!("{task}-s{i}");
+        let round = format!("{task}-r{i}");
+        let context = format!("{parent}/s/{session}");
+        add_round(shared, &round, &context);
+        reports.push(session_report(
+            &session,
+            &context,
+            "helper",
+            SessionState::Working,
+            &round,
+            Working,
+        ));
+        let shared = Arc::clone(shared);
+        let done = session_report(
+            &session,
+            &context,
+            "helper",
+            SessionState::Closed,
+            &round,
+            Completed,
+        );
+        tokio::spawn(async move {
+            shared.gate.notified().await;
+            shared.push_artifact(&round, "echo", "helper: done".to_owned());
+            of_round(&shared, &round, 2, done);
+            shared.push_status(&round, Completed, None);
+        });
+    }
+    list_sessions(shared, task, 1, reports);
+    shared.push_status(task, Completed, Some("parent: done"));
+}
+
+fn sessions_foreign(shared: &Arc<Shared>, task: &str) {
+    use AgentTaskState::{Completed, Working};
+    use orch_core::SessionState;
+    let session = format!("{task}-s1");
+    // the round is the parent's own task: another context than the session's
+    let context = format!("{}/s/{session}", parent_context(shared, task));
+    shared.state().contexts.insert(context.clone());
+    shared.push_artifact(task, "secret", "the parent's own".to_owned());
+    list_sessions(
+        shared,
+        task,
+        1,
+        vec![session_report(
+            &session,
+            &context,
+            "helper",
+            SessionState::Working,
+            task,
+            Working,
+        )],
+    );
+    shared.push_status(task, Completed, Some("parent: done"));
 }
 
 impl AgentClient for ScriptedAgent {
@@ -1213,6 +1638,14 @@ impl AgentClient for ScriptedAgent {
             }
             if req.steer {
                 let (envelope, fresh) = steer_into(&mut st, &req)?;
+                let sessions = st.steer_lists_sessions.then(|| AgentEnvelope {
+                    task_state: None,
+                    key: IdemKey::Turn(format!("{}:sessions:1", envelope.task_id)),
+                    update: Some(AgentUpdate::ChildSessions(orch_core::SessionNews::Listed(
+                        Vec::new(),
+                    ))),
+                    ..envelope.clone()
+                });
                 drop(st);
                 // The task reads it at its next step: here, at once, as a reply of its own, which
                 // the stream that started the task reports (a steer opens no stream of results).
@@ -1230,7 +1663,14 @@ impl AgentClient for ScriptedAgent {
                         }),
                     );
                 }
-                return Ok(futures::stream::once(async move { Ok(envelope) }).boxed());
+                return Ok(futures::stream::iter(
+                    sessions
+                        .into_iter()
+                        .chain([envelope])
+                        .map(Ok)
+                        .collect::<Vec<_>>(),
+                )
+                .boxed());
             }
             match script.as_str() {
                 "fail" => return Err(AgentError::Rejected("scripted failure".to_owned())),
@@ -1298,6 +1738,7 @@ impl AgentClient for ScriptedAgent {
                         tier: req.tier,
                         log: Vec::new(),
                         message_ids: vec![req.message_id.clone()],
+                        of_session: false,
                     },
                 );
                 (id, false, 0, None)
@@ -1515,8 +1956,16 @@ fn snapshot(st: &State, task: &str) -> Result<TaskSnapshot, AgentError> {
         .log
         .iter()
         // what a real agent's task holds: its artifacts and its current status. Not the surfaces it
-        // drew, which only a stream carries.
-        .filter(|e| matches!(e.update, Some(AgentUpdate::Artifact { .. })))
+        // drew, which only a stream carries. A round of a child session also says its session
+        // and its totals (`child-sessions/v1`, `usage/v1`).
+        .filter(|e| match &e.update {
+            Some(AgentUpdate::Artifact { .. }) => true,
+            Some(
+                AgentUpdate::ChildSessions(_)
+                | AgentUpdate::Usage(orch_core::UsageUpdate::Total(_)),
+            ) => rec.of_session,
+            _ => false,
+        })
         .cloned()
         .collect();
     envelopes.push(AgentEnvelope {

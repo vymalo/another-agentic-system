@@ -1,0 +1,826 @@
+{
+  "name": "What a request must look like",
+  "about": "Raw requests with the status and `code` they are answered with, by every server of this contract: the media type, the shape of the body, the permission, the revision, and which error wins. Before the cases, a reader makes the `seed` prompts for the person `sharer` (who holds `prompts.share`) with createPrompt, in order; `$idN` and `$revN` in a path or a body are the id and the revision of seed N. `as` is `sharer` (the default) or `plain`, another person with no `prompts.share`. A request with no `headers` member is sent with `content-type: application/json` when it has a body; `headers: {}` sends none. A `body` written as {\"$concat\": [piece, ...]} is the pieces joined, a piece being a string or {\"$repeat\": text, \"times\": n}. `expect.text` and `expect.revision` are checked on a 200 of a render or an update. No case changes a seed, so they run in any order. See docs/api/prompts-v1.md, Errors, and which wins.",
+  "seed": [
+    {
+      "name": "review",
+      "title": "Review",
+      "body": "Review {{focus}}.",
+      "variables": [
+        {
+          "id": "focus",
+          "question": "Focus?",
+          "type": "select",
+          "options": [
+            {
+              "value": "security",
+              "label": "Security"
+            },
+            {
+              "value": "speed",
+              "label": "Speed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hello",
+      "title": "Hello",
+      "body": "Hello."
+    }
+  ],
+  "cases": [
+    {
+      "name": "the default listing",
+      "method": "GET",
+      "path": "/api/prompts",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "scope mine",
+      "method": "GET",
+      "path": "/api/prompts?scope=mine",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "scope shared",
+      "method": "GET",
+      "path": "/api/prompts?scope=shared",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "scope all",
+      "method": "GET",
+      "path": "/api/prompts?scope=all",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "a scope nobody has",
+      "method": "GET",
+      "path": "/api/prompts?scope=everything",
+      "expect": {
+        "status": 400,
+        "code": "bad_scope"
+      }
+    },
+    {
+      "name": "an empty scope",
+      "method": "GET",
+      "path": "/api/prompts?scope=",
+      "expect": {
+        "status": 400,
+        "code": "bad_scope"
+      }
+    },
+    {
+      "name": "a scope with a capital",
+      "method": "GET",
+      "path": "/api/prompts?scope=Mine",
+      "expect": {
+        "status": 400,
+        "code": "bad_scope"
+      }
+    },
+    {
+      "name": "a cursor that is not an id",
+      "method": "GET",
+      "path": "/api/prompts?cursor=x",
+      "expect": {
+        "status": 400,
+        "code": "bad_cursor"
+      }
+    },
+    {
+      "name": "a cursor with capitals",
+      "method": "GET",
+      "path": "/api/prompts?cursor=P-AAAAAAAAAAAA",
+      "expect": {
+        "status": 400,
+        "code": "bad_cursor"
+      }
+    },
+    {
+      "name": "a cursor that is an id nobody has: a position, not a capability",
+      "method": "GET",
+      "path": "/api/prompts?cursor=p-aaaaaaaaaaaa",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "the first seed",
+      "method": "GET",
+      "path": "/api/prompts/$id0",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "an id nobody has",
+      "method": "GET",
+      "path": "/api/prompts/p-zzzzzzzzzzzz",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a path that is not an id",
+      "method": "GET",
+      "path": "/api/prompts/not-an-id",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an id with capitals",
+      "method": "GET",
+      "path": "/api/prompts/p-ABCDEFGHIJKL",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "another person's private prompt is not there",
+      "method": "GET",
+      "path": "/api/prompts/$id0",
+      "as": "plain",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a valid create",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"made\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "a media type with a charset",
+      "method": "POST",
+      "path": "/api/prompts",
+      "headers": {
+        "content-type": "application/json; charset=utf-8"
+      },
+      "body": "{\"name\":\"viacharset\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "a media type in capitals",
+      "method": "POST",
+      "path": "/api/prompts",
+      "headers": {
+        "content-type": "Application/JSON"
+      },
+      "body": "{\"name\":\"incaps\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "no media type",
+      "method": "POST",
+      "path": "/api/prompts",
+      "headers": {},
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "text/plain",
+      "method": "POST",
+      "path": "/api/prompts",
+      "headers": {
+        "content-type": "text/plain"
+      },
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "application/problem+json",
+      "method": "POST",
+      "path": "/api/prompts",
+      "headers": {
+        "content-type": "application/problem+json"
+      },
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "a body that is not JSON",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "not json",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a body that is a list",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "[]",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member nobody has",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"x\",\"owner\":\"me\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a null title",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"title\":null,\"body\":\"x\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a body over 64 KiB",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": {
+        "$concat": [
+          "{\"name\":\"big\",\"title\":\"T\",\"body\":\"",
+          {
+            "$repeat": "a",
+            "times": 65536
+          },
+          "\"}"
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a name taken by a seed",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"review\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 409,
+        "code": "name_taken"
+      }
+    },
+    {
+      "name": "a bad name",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"A\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_name"
+      }
+    },
+    {
+      "name": "sharing without the permission",
+      "method": "POST",
+      "path": "/api/prompts",
+      "as": "plain",
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"x\",\"audience\":[\"*\"]}",
+      "expect": {
+        "status": 403,
+        "code": "forbidden"
+      }
+    },
+    {
+      "name": "a private create without the permission",
+      "method": "POST",
+      "path": "/api/prompts",
+      "as": "plain",
+      "body": "{\"name\":\"plainone\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "the permission is asked before the values",
+      "method": "POST",
+      "path": "/api/prompts",
+      "as": "plain",
+      "body": "{\"name\":\"A\",\"title\":\"T\",\"body\":\"x\",\"audience\":[\"x\"]}",
+      "expect": {
+        "status": 403,
+        "code": "forbidden"
+      }
+    },
+    {
+      "name": "the shape is read before the permission",
+      "method": "POST",
+      "path": "/api/prompts",
+      "as": "plain",
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"x\",\"audience\":[\"x\"],\"owner\":\"me\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an empty audience needs no permission",
+      "method": "POST",
+      "path": "/api/prompts",
+      "as": "plain",
+      "body": "{\"name\":\"plaintwo\",\"title\":\"T\",\"body\":\"x\",\"audience\":[]}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "no revision",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"title\":\"New\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a revision that is a number",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"title\":\"New\",\"revision\":1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a revision of zero",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"title\":\"New\",\"revision\":\"0\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a revision with a leading zero",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"title\":\"New\",\"revision\":\"01\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a revision that is not digits",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"title\":\"New\",\"revision\":\"abc\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "nothing to change",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"revision\":\"$rev0\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member nobody has",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"revision\":\"$rev0\",\"owner\":\"me\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a null member",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"revision\":\"$rev0\",\"title\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a prompt nobody has: 404 before a stale revision",
+      "method": "PATCH",
+      "path": "/api/prompts/p-zzzzzzzzzzzz",
+      "body": "{\"title\":\"New\",\"revision\":\"999999999999\"}",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a stale revision",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"title\":\"New\",\"revision\":\"999999999999\"}",
+      "expect": {
+        "status": 409,
+        "code": "stale_revision"
+      }
+    },
+    {
+      "name": "another person's prompt",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "as": "plain",
+      "body": "{\"title\":\"New\",\"revision\":\"$rev0\"}",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a stale revision comes before the values",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"name\":\"A\",\"revision\":\"999999999999\"}",
+      "expect": {
+        "status": 409,
+        "code": "stale_revision"
+      }
+    },
+    {
+      "name": "the values of the whole prompt as it would be",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"body\":\"none\",\"revision\":\"$rev0\"}",
+      "expect": {
+        "status": 400,
+        "code": "unused_variable"
+      }
+    },
+    {
+      "name": "a rename to a name taken",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"name\":\"hello\",\"revision\":\"$rev0\"}",
+      "expect": {
+        "status": 409,
+        "code": "name_taken"
+      }
+    },
+    {
+      "name": "a change that changes nothing keeps the revision",
+      "method": "PATCH",
+      "path": "/api/prompts/$id1",
+      "body": "{\"title\":\"Hello\",\"revision\":\"$rev1\"}",
+      "expect": {
+        "status": 200,
+        "revision": "$rev1"
+      }
+    },
+    {
+      "name": "a revision that is not digits",
+      "method": "DELETE",
+      "path": "/api/prompts/$id0?revision=x",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a stale revision",
+      "method": "DELETE",
+      "path": "/api/prompts/$id0?revision=999999999999",
+      "expect": {
+        "status": 409,
+        "code": "stale_revision"
+      }
+    },
+    {
+      "name": "a prompt nobody has",
+      "method": "DELETE",
+      "path": "/api/prompts/p-zzzzzzzzzzzz",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "another person's prompt",
+      "method": "DELETE",
+      "path": "/api/prompts/$id0",
+      "as": "plain",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a path that is not an id",
+      "method": "DELETE",
+      "path": "/api/prompts/x",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a render",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}]}",
+      "expect": {
+        "status": 200,
+        "text": "Review Security.",
+        "revision": "$rev0"
+      }
+    },
+    {
+      "name": "a render of a prompt with no variables",
+      "method": "POST",
+      "path": "/api/prompts/$id1/render",
+      "body": "{\"answers\":[]}",
+      "expect": {
+        "status": 200,
+        "text": "Hello.",
+        "revision": "$rev1"
+      }
+    },
+    {
+      "name": "a render that names the current revision",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}],\"revision\":\"$rev0\"}",
+      "expect": {
+        "status": 200,
+        "text": "Review Security."
+      }
+    },
+    {
+      "name": "a render that names a stale revision",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}],\"revision\":\"999999999999\"}",
+      "expect": {
+        "status": 409,
+        "code": "stale_revision"
+      }
+    },
+    {
+      "name": "a revision that is a number",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}],\"revision\":1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member nobody has",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}],\"extra\":1}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a body that is not JSON",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "x",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "no media type",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "headers": {},
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}]}",
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "no answers member",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{}",
+      "expect": {
+        "status": 422,
+        "code": "invalid_answer"
+      }
+    },
+    {
+      "name": "a note",
+      "method": "POST",
+      "path": "/api/prompts/$id1/render",
+      "body": "{\"answers\":[],\"note\":\"x\"}",
+      "expect": {
+        "status": 422,
+        "code": "invalid_answer"
+      }
+    },
+    {
+      "name": "an answer that does not fit",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"zzz\"]}]}",
+      "expect": {
+        "status": 422,
+        "code": "invalid_answer"
+      }
+    },
+    {
+      "name": "a prompt nobody has",
+      "method": "POST",
+      "path": "/api/prompts/p-zzzzzzzzzzzz/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}]}",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "another person's private prompt",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "as": "plain",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}]}",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a path that is not an id",
+      "method": "POST",
+      "path": "/api/prompts/x/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "the shape comes before the 404",
+      "method": "POST",
+      "path": "/api/prompts/p-zzzzzzzzzzzz/render",
+      "body": "x",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"name\":\"b\",\"title\":\"T\",\"body\":\"x\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice inside a variable",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"question\":\"R?\",\"type\":\"text\"}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice inside an option",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"a\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"options\":[{\"value\":\"a\",\"label\":\"A\",\"label\":\"B\"},{\"value\":\"b\",\"label\":\"B\"}]}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice inside an answer",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"],\"values\":[]}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an integer written 5e0",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"made5e0\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"type\":\"scale\",\"to\":5e0}]}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "an integer written 5.0",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"made50\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"type\":\"scale\",\"to\":5.0}]}",
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "an integer written 5.5",
+      "method": "POST",
+      "path": "/api/prompts",
+      "body": "{\"name\":\"made55\",\"title\":\"T\",\"body\":\"{{q}}\",\"variables\":[{\"id\":\"q\",\"question\":\"Q?\",\"type\":\"scale\",\"to\":5.5}]}",
+      "expect": {
+        "status": 400,
+        "code": "bad_variable"
+      }
+    },
+    {
+      "name": "a revision of 19 digits is a revision that is stale",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"revision\":\"9999999999999999999\",\"title\":\"X\"}",
+      "expect": {
+        "status": 409,
+        "code": "stale_revision"
+      }
+    },
+    {
+      "name": "a revision of 20 digits is not a revision",
+      "method": "PATCH",
+      "path": "/api/prompts/$id0",
+      "body": "{\"revision\":\"99999999999999999999\",\"title\":\"X\"}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "null answers",
+      "method": "POST",
+      "path": "/api/prompts/$id0/render",
+      "body": "{\"answers\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a null note",
+      "method": "POST",
+      "path": "/api/prompts/$id1/render",
+      "body": "{\"answers\":[],\"note\":null}",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "the media type comes before the id",
+      "method": "POST",
+      "path": "/api/prompts/nope/render",
+      "headers": {
+        "content-type": "text/plain"
+      },
+      "body": "{}",
+      "expect": {
+        "status": 415
+      }
+    }
+  ]
+}

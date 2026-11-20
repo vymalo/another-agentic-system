@@ -27,6 +27,7 @@ import {
   parseWidth,
   resolveOpen,
 } from "../lib/panel-state";
+import { usePanelShortcut } from "../lib/shortcut";
 import { type StepsPanel, StepsPanelContext } from "./use-steps-panel";
 
 /** What the panel's own components read; the step tree reads the smaller `useStepsPanel()`. */
@@ -214,16 +215,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Ctrl/⌘+Shift+. : `code`, not `key` (the character depends on the layout), never while an IME composes
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing) return;
-      if (e.code !== "Period" || !e.shiftKey || e.altKey || !(e.ctrlKey || e.metaKey)) return;
-      e.preventDefault();
-      toggle();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggle]);
+  usePanelShortcut(toggle);
 
   const controller = useMemo<PanelController>(
     () => ({

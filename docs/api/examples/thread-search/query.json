@@ -1,0 +1,245 @@
+{
+  "about": "docs/api/thread-search-v1.md, 'The query'. `q` is a string or {repeat, times}; `terms` are the terms a server answers in `query.terms`; `error` is the `code` of the 400 it answers instead.",
+  "cases": [
+    {
+      "name": "two words",
+      "q": "hello world",
+      "terms": [
+        "hello",
+        "world"
+      ]
+    },
+    {
+      "name": "trimmed, case folded",
+      "q": "  Hello  ",
+      "terms": [
+        "hello"
+      ]
+    },
+    {
+      "name": "accents and ligatures",
+      "q": "CœUR café",
+      "terms": [
+        "coeur",
+        "cafe"
+      ]
+    },
+    {
+      "name": "duplicates are dropped, the first stays",
+      "q": "Café cafe CAFÉ Café",
+      "terms": [
+        "cafe"
+      ]
+    },
+    {
+      "name": "one letter is dropped",
+      "q": "a",
+      "terms": []
+    },
+    {
+      "name": "a one-letter key is dropped, even when it was an accented letter",
+      "q": "é ab",
+      "terms": [
+        "ab"
+      ]
+    },
+    {
+      "name": "punctuation alone has no word",
+      "q": "!!",
+      "terms": []
+    },
+    {
+      "name": "quotes and operators are punctuation",
+      "q": "\"foo\" OR -bar AND (baz)",
+      "terms": [
+        "foo",
+        "or",
+        "bar",
+        "and",
+        "baz"
+      ]
+    },
+    {
+      "name": "SQL is words",
+      "q": "' OR 1=1 --",
+      "terms": [
+        "or"
+      ]
+    },
+    {
+      "name": "more SQL",
+      "q": "x'); DROP TABLE threads;--",
+      "terms": [
+        "drop",
+        "table",
+        "threads"
+      ]
+    },
+    {
+      "name": "tsquery syntax is punctuation",
+      "q": "foo:* | bar & !baz <-> qux",
+      "terms": [
+        "foo",
+        "bar",
+        "baz",
+        "qux"
+      ]
+    },
+    {
+      "name": "digits",
+      "q": "2026 v1.2",
+      "terms": [
+        "2026",
+        "v1"
+      ]
+    },
+    {
+      "name": "Cyrillic",
+      "q": "Привет мир",
+      "terms": [
+        "привет",
+        "мир"
+      ]
+    },
+    {
+      "name": "a CJK run is one term",
+      "q": "東京タワー",
+      "terms": [
+        "東京タワー"
+      ]
+    },
+    {
+      "name": "an em dash separates",
+      "q": "naïve—test",
+      "terms": [
+        "naive",
+        "test"
+      ]
+    },
+    {
+      "name": "nine terms: the first eight are used",
+      "q": "aa bb cc dd ee ff gg hh ii",
+      "terms": [
+        "aa",
+        "bb",
+        "cc",
+        "dd",
+        "ee",
+        "ff",
+        "gg",
+        "hh"
+      ]
+    },
+    {
+      "name": "duplicates do not count towards the eight",
+      "q": "aa aa bb cc dd ee ff gg hh ii",
+      "terms": [
+        "aa",
+        "bb",
+        "cc",
+        "dd",
+        "ee",
+        "ff",
+        "gg",
+        "hh"
+      ]
+    },
+    {
+      "name": "a no-break space is not blank: no words, no error",
+      "q": " ",
+      "terms": []
+    },
+    {
+      "name": "200 characters are allowed; a long term is cut at 64 code points",
+      "q": {
+        "repeat": "a",
+        "times": 200
+      },
+      "terms": [
+        {
+          "repeat": "a",
+          "times": 64
+        }
+      ]
+    },
+    {
+      "name": "200 emoji are 200 characters (400 UTF-16 units) and no words",
+      "q": {
+        "repeat": "🎉",
+        "times": 200
+      },
+      "terms": []
+    },
+    {
+      "name": "a word of 70 letters is cut at 64",
+      "q": {
+        "repeat": "b",
+        "times": 70
+      },
+      "terms": [
+        {
+          "repeat": "b",
+          "times": 64
+        }
+      ]
+    },
+    {
+      "name": "empty",
+      "q": "",
+      "error": "query_empty"
+    },
+    {
+      "name": "only spaces",
+      "q": "  \t\r\n  ",
+      "error": "query_empty"
+    },
+    {
+      "name": "201 characters",
+      "q": {
+        "repeat": "a",
+        "times": 201
+      },
+      "error": "query_too_long"
+    },
+    {
+      "name": "201 emoji",
+      "q": {
+        "repeat": "🎉",
+        "times": 201
+      },
+      "error": "query_too_long"
+    },
+    {
+      "name": "the query is trimmed before it is counted: 200 letters between blanks",
+      "q": "  \txxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n ",
+      "terms": [
+        {
+          "repeat": "x",
+          "times": 64
+        }
+      ]
+    },
+    {
+      "name": "a vulgar fraction folds to its digits: the query ½ is the term 12",
+      "q": "½",
+      "terms": [
+        "12"
+      ]
+    },
+    {
+      "name": "and so 1/2 is not ½: both digits are one letter long, no term",
+      "q": "1/2",
+      "terms": []
+    },
+    {
+      "name": "two long words that share their first 64 code points are one term",
+      "q": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb",
+      "terms": [
+        {
+          "repeat": "x",
+          "times": 64
+        }
+      ]
+    }
+  ]
+}

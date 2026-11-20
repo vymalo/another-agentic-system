@@ -1065,6 +1065,10 @@ impl ThreadStore for RacyStore {
         purges_pending() -> Result<u64, StoreError>;
         fork_thread(new: orch_ports::NewThreadRecord, origin: orch_ports::ForkOrigin, first: orch_ports::Commit)
             -> Result<(ThreadRecord, Vec<orch_core::Event>), StoreError>;
+        open_child_thread(new: orch_ports::NewThreadRecord, first: orch_ports::Commit)
+            -> Result<orch_ports::ChildThread, StoreError>;
+        child_threads(owner: &orch_core::UserId, parent: ThreadId)
+            -> Result<Vec<ThreadRecord>, StoreError>;
         fork_family(owner: &orch_core::UserId, thread: ThreadId)
             -> Result<Vec<orch_core::ForkNode>, StoreError>;
         thread_by_share_nonce(nonce: &[u8; 16]) -> Result<Option<ThreadRecord>, StoreError>;
@@ -1123,6 +1127,49 @@ impl orch_ports::UsageLedger for RacyStore {
         backfill(after: Option<ThreadId>, limit: u32)
             -> Result<orch_ports::UsageBackfill, StoreError>;
         sweep(before: orch_core::UsageMonth, limit: u32) -> Result<u64, StoreError>;
+    }
+}
+
+/// The search index of a [`ThreadStore`] is the store's own (ADR 0068): this one reads and backfills its
+/// inner store's.
+impl orch_ports::ThreadSearch for RacyStore {
+    delegate! {
+        search_threads(owner: &orch_core::UserId, request: &orch_ports::SearchRequest)
+            -> Result<orch_ports::SearchRows, StoreError>;
+        backfill_search(after: Option<ThreadId>, limit: u32, rebuild: bool)
+            -> Result<orch_ports::SearchBackfill, StoreError>;
+        search_backlog(cap: u32) -> Result<u32, StoreError>;
+    }
+}
+
+/// The prompt library of a [`ThreadStore`] is the store's own (ADR 0070): this one delegates to its inner
+/// store's.
+impl orch_ports::PromptStore for RacyStore {
+    delegate! {
+        insert_prompt(
+            owner: &orch_core::UserId,
+            prompt: &orch_core::prompt::PromptDefinition,
+            at: Timestamp
+        ) -> Result<orch_ports::StoredPrompt, orch_ports::PromptStoreError>;
+        get_prompt(viewer: &orch_ports::PromptViewer, id: &orch_core::prompt::PromptId)
+            -> Result<Option<orch_ports::StoredPrompt>, orch_ports::PromptStoreError>;
+        list_prompts(
+            viewer: &orch_ports::PromptViewer,
+            scope: orch_ports::PromptScope,
+            after: Option<&orch_core::prompt::PromptId>,
+            limit: u32
+        ) -> Result<orch_ports::PromptPage, orch_ports::PromptStoreError>;
+        replace_prompt(
+            owner: &orch_core::UserId,
+            prompt: &orch_core::prompt::PromptDefinition,
+            expected: orch_ports::PromptRevision,
+            at: Timestamp
+        ) -> Result<orch_ports::StoredPrompt, orch_ports::PromptStoreError>;
+        delete_prompt(
+            owner: &orch_core::UserId,
+            id: &orch_core::prompt::PromptId,
+            expected: Option<orch_ports::PromptRevision>
+        ) -> Result<(), orch_ports::PromptStoreError>;
     }
 }
 

@@ -1,0 +1,87 @@
+{
+  "name": "Text that looks like SQL or a tsquery is only words",
+  "about": "None of it is syntax.",
+  "steps": [
+    {
+      "request": {
+        "q": "' OR 1=1 --"
+      },
+      "expect": {
+        "terms": [
+          "or"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000008",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Orphan",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 6
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "orph:* | !zebra"
+      },
+      "expect": {
+        "terms": [
+          "orph",
+          "zebra"
+        ],
+        "results": [],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "\"orphan\""
+      },
+      "expect": {
+        "terms": [
+          "orphan"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000008",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "Orphan",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 6
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

@@ -199,7 +199,10 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
     log.push(ev(
         7,
         Actor::system(),
-        EventBody::JobStarted(JobStartedData { job: 2 }),
+        EventBody::JobStarted(JobStartedData {
+            job: 2,
+            round: None,
+        }),
     ));
     let (_, per_event) = project(&log);
     let message = lines(&per_event[5]);
@@ -223,7 +226,10 @@ fn a_fork_after_job_two_goes_on_with_job_three() {
         ev(
             6,
             Actor::system(),
-            EventBody::JobStarted(JobStartedData { job: 2 }),
+            EventBody::JobStarted(JobStartedData {
+                job: 2,
+                round: None,
+            }),
         ),
         status(7, AgentStatus::Working, None),
         status(8, AgentStatus::Completed, None),

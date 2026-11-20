@@ -88,6 +88,7 @@ fn call(task: &str, id: &str, tokens: TokenCounts) -> NewEvent {
             model: "glm".into(),
             tokens,
             context_window: None,
+            counted: true,
         })),
         idempotency_key: None,
     }
@@ -104,6 +105,7 @@ fn total(task: &str, totals: Vec<ModelTokens>, sandbox: Option<SandboxUsage>) ->
             path: Vec::new(),
             totals,
             sandbox,
+            counted: true,
         }),
         idempotency_key: None,
     }
@@ -146,6 +148,7 @@ async fn open(store: &PgStore, owner: &UserId, events: Vec<NewEvent>) -> (Thread
                 },
                 context_id: None,
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             commit(all),
@@ -244,6 +247,7 @@ async fn a_thread_is_gone_through_up_to_its_last_event_after_every_commit_and_a_
                 },
                 context_id: None,
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             orch_ports::ForkOrigin {

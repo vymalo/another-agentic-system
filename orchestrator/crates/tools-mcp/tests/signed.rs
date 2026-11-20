@@ -1,5 +1,5 @@
 //! A tool server that speaks only MCP `2026-07-28` and takes signed requests
-//! (`docs/api/signed-tool-requests-v1.md`, ADR 0067), against the MCP client: what it opens with, what every request
+//! (`docs/api/signed-tool-requests-v1.md`, ADR 0080), against the MCP client: what it opens with, what every request
 //! carries, what the receiving side's checks say of it, and what the client refuses to send.
 //!
 //! The server is `FakeToolServer` with `modern_only` and `signed`: it verifies each request with the reference verifier

@@ -24,6 +24,7 @@ test("every page has the header half and a meta of its own scripts' hashes, and 
     "/auth/callback",
     "/auth/sign-out",
     "/signed-in",
+    "/prompts",
     "/no-such-page",
   ]) {
     const answer = await request.get(address);
@@ -78,4 +79,40 @@ test("reports no violation on the sign-out page or the callback page", async ({ 
     page.getByRole("heading", { name: /Signing in did not work|Signing you in/ }),
   ).toBeVisible();
   expect(await violations()).toEqual([]);
+});
+
+/*
+ * The theme script is the head script that must run before the first paint (`src/lib/theme.ts`), so the policy has to
+ * allow it without `'unsafe-inline'`: by the SHA-256 of its exact bytes, which the build writes into the page's meta
+ * (`scripts/csp-meta.ts`). A change to the script that its hash does not follow is blocked, and the test shows it.
+ */
+const THEME_MARK = "document.documentElement.dataset.theme=";
+
+test("the theme script is allowed by its hash and runs under the policy, with no violation", async ({
+  page,
+  request,
+}) => {
+  const html = await (await request.get("/")).text();
+  const body = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
+    .filter((m) => !/\ssrc=/.test(m[1] ?? ""))
+    .map((m) => m[2] ?? "")
+    .find((b) => b.includes(THEME_MARK));
+  expect(body, "the theme script is inline in the page").toBeDefined();
+  expect(html).toContain(`'sha256-${await sha256(body ?? "")}'`);
+
+  const violations = await watchCsp(page);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  expect(await violations()).toEqual([]);
+});
+
+test("a theme script whose bytes changed without its hash is blocked", async ({ page }) => {
+  const original = await page.request.get("/");
+  const html = (await original.text()).replace("(function(){var s=null", "( function(){var s=null");
+  expect(html).toContain("( function(){var s=null");
+  await page.route("**/", (route) => route.fulfill({ response: original, body: html }));
+  const violations = await watchCsp(page);
+  await page.goto("/");
+  await expect.poll(async () => (await violations()).some((v) => /script-src/.test(v))).toBe(true);
 });

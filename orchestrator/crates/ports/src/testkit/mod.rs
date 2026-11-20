@@ -1,7 +1,7 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`UsageLedger`](crate::UsageLedger),
+//! [`SecretStore`](crate::SecretStore), [`UsageLedger`](crate::UsageLedger), [`ThreadSearch`](crate::ThreadSearch),
 //! [`UserToolServerStore`](crate::UserToolServerStore),
 //! [`PendingAuthorizations`](crate::PendingAuthorizations) and
 //! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
@@ -19,8 +19,10 @@ pub mod bearer;
 pub mod chat_model;
 pub mod credential_broker;
 pub mod pending_authorizations;
+pub mod prompt_store;
 pub mod registry;
 pub mod secret_store;
+pub mod thread_search;
 pub mod thread_store;
 pub mod tool_server;
 pub mod usage_ledger;
@@ -100,6 +102,21 @@ macro_rules! thread_store_conformance {
             a_version_conflict_deletes_nothing
             purges_are_claimed_under_a_lease_and_finished
             purge_claimers_never_share_a_row
+            a_child_thread_is_made_with_its_first_commit_and_says_whose_child_it_is
+            a_session_has_one_child_and_a_second_open_writes_nothing
+            a_child_is_one_per_parent_and_session_not_per_session_alone
+            concurrent_opens_of_one_session_make_one_thread
+            a_child_is_refused_a_foreign_parent_a_child_parent_and_no_parent
+            only_open_child_thread_makes_a_child_and_a_fork_of_one_is_none
+            child_threads_are_the_parents_children_oldest_first
+            child_threads_lists_at_most_a_thousand
+            children_are_nested_under_their_parent_in_the_rail
+            deleting_a_parent_needs_its_children_named_and_takes_them
+            a_child_is_deleted_alone_and_its_parent_stays
+            a_delete_and_an_open_that_race_leave_no_orphan
+            the_session_events_ledgers_and_observe_rows_round_trip
+            a_commit_with_no_events_creates_a_thread
+            the_skip_of_unsent_delegates_leaves_observe_rows a_session_id_is_bounded
         );
     };
     (@cases $make:path; $($case:ident)*) => {
@@ -565,6 +582,117 @@ macro_rules! usage_ledger_conformance {
     };
 }
 
+/// Generates one `#[tokio::test]` per `ThreadSearch` conformance case (ADR 0068). `$make` is an
+/// `async fn() -> Option<S>` returning a fresh, isolated store that is both a
+/// [`ThreadStore`](crate::ThreadStore) and a [`ThreadSearch`](crate::ThreadSearch) (`None` skips the
+/// suite): the index is written by the commits of the store it is read from. The calling crate needs
+/// `tokio` (with `macros` and `rt`) as a dev-dependency.
+///
+/// Some cases play a log older than the index, so they need a store that can **forget its index**:
+/// `thread_search_conformance!(make, forget = path)` where `path` is an `async fn(&S)` that deletes
+/// the index and marks no thread as gone through (a Postgres adapter deletes `message_terms` and
+/// clears the columns of `threads`; `MemoryStore` has `forget_search_index`). One more plays an index
+/// made under an **older fold version**: `thread_search_conformance!(make, forget = path, age = path)`
+/// where the second `async fn(&S)` marks every thread as indexed under a lower
+/// [`FOLD_VERSION`](orch_core::search::FOLD_VERSION) (a Postgres adapter lowers `search_fold` and may
+/// write keys no query can match; `MemoryStore` has `age_search_index`). Without the hooks those cases
+/// are skipped, and say so.
+#[macro_export]
+macro_rules! thread_search_conformance {
+    ($make:path) => {
+        $crate::thread_search_conformance!(@common $make);
+        $crate::thread_search_conformance!(@skipped
+            a_commit_catches_up_with_the_log_the_index_has_not_been_through
+            backfill_indexes_old_events_and_is_idempotent
+            a_commit_catches_an_old_log_up_in_bounded_steps
+            a_catch_up_does_not_index_a_message_a_later_one_replaced
+            a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again
+        );
+    };
+    ($make:path, forget = $forget:path) => {
+        $crate::thread_search_conformance!(@common $make);
+        $crate::thread_search_conformance!(@forgetting $make, $forget);
+        $crate::thread_search_conformance!(@skipped
+            a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again
+        );
+    };
+    ($make:path, forget = $forget:path, age = $age:path) => {
+        $crate::thread_search_conformance!(@common $make);
+        $crate::thread_search_conformance!(@forgetting $make, $forget);
+        #[tokio::test]
+        async fn a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again() {
+            match $make().await {
+                Some(store) => {
+                    $crate::testkit::thread_search::a_raised_fold_version_makes_a_thread_unindexed_until_it_is_indexed_again(
+                        store, $age,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+            }
+        }
+    };
+    (@skipped $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                eprintln!("skipped: this adapter supplies no hook for it");
+            }
+        )*
+    };
+    (@forgetting $make:path, $forget:path) => {
+        $crate::thread_search_conformance!(@with_forget $make, $forget;
+            a_commit_catches_up_with_the_log_the_index_has_not_been_through
+            backfill_indexes_old_events_and_is_idempotent
+            a_commit_catches_an_old_log_up_in_bounded_steps
+            a_catch_up_does_not_index_a_message_a_later_one_replaced
+        );
+    };
+    (@with_forget $make:path, $forget:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::thread_search::$case(store, $forget).await,
+                    None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+                }
+            }
+        )*
+    };
+    (@common $make:path) => {
+        $crate::thread_search_conformance!(@cases $make;
+            search_finds_title_description_and_message
+            search_is_the_owners
+            deleted_thread_leaves_no_hit
+            fork_copied_events_do_not_hit_until_parent_deleted
+            a_fork_has_the_message_the_parent_later_replaced
+            edits_only_with_branches
+            archived_filters
+            replaced_final_message_hits_once
+            partial_and_working_messages_never_hit
+            the_newest_three_messages_are_shown_and_all_are_counted
+            a_rename_is_searched_from_its_commit
+            keys_roundtrip_cyrillic_cjk_digits
+            paging_is_stable
+            a_limit_of_zero_is_one_and_no_term_matches_nothing
+            a_page_that_holds_every_result_has_no_more
+            a_persons_second_message_does_not_erase_the_first
+            a_title_that_matches_only_some_terms_is_not_a_title_hit
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::thread_search::$case(store).await,
+                    None => eprintln!("skipped: no store available (ORCH_TEST_DATABASE_URL unset)"),
+                }
+            }
+        )*
+    };
+}
+
 /// Generates one `#[tokio::test]` per `UserToolServerStore` conformance case (ADR 0046). `$make` is
 /// an `async fn() -> Option<S>` returning a fresh store (`None` skips the suite). Each case uses
 /// owners of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
@@ -597,6 +725,45 @@ macro_rules! user_tool_server_store_conformance {
                 match $make().await {
                     Some(store) => $crate::testkit::user_tool_server_store::$case(store).await,
                     None => eprintln!("skipped: no user tool server store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `PromptStore` conformance case (ADR 0070): what the API relies on from any store of
+/// people's prompt libraries. `$make` is an `async fn() -> Option<S>` returning a fresh store (`None` skips the suite).
+/// Each case uses owners of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! prompt_store_conformance {
+    ($make:path) => {
+        $crate::prompt_store_conformance!(@cases $make;
+            insert_then_get_round_trips a_missing_prompt_is_none
+            a_private_prompt_is_nobody_elses ids_are_global names_are_unique_per_owner
+            a_rename_to_a_taken_name_is_name_taken_and_changes_nothing
+            mine_lists_only_own_ordered_by_id pages_follow_the_id
+            a_shared_prompt_is_seen_by_its_audience_only everyone_is_everyone
+            roles_match_byte_for_byte own_shared_prompts_are_not_in_shared
+            nothing_of_the_author_reaches_another_viewer unsharing_hides_at_once
+            replace_with_the_current_revision_replaces_whole
+            a_stale_replace_is_a_conflict_and_changes_nothing
+            a_write_after_a_delete_is_not_found_and_brings_nothing_back
+            a_stale_delete_is_a_conflict revisions_are_never_given_twice
+            at_most_a_hundred_per_owner the_order_of_refusals
+            concurrent_inserts_never_pass_the_limit
+            concurrent_inserts_of_one_id_have_one_winner
+            concurrent_replaces_from_one_revision_have_one_winner
+            a_page_is_never_larger_than_the_page_size every_allowed_text_of_a_variable_is_read_back
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::prompt_store::$case(store).await,
+                    None => eprintln!("skipped: no prompt store available"),
                 }
             }
         )*

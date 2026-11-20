@@ -5,12 +5,14 @@ import { CircleAlertIcon, RefreshCwIcon } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { isPlanSurface } from "@/features/chat/lib/a2ui/limits";
 import { prepareSurface } from "@/features/chat/lib/a2ui/prepare";
-import { latestSurface } from "@/features/chat/lib/a2ui/surfaces";
+import { latestSurface, placeOf, planDataOf, surfaceIdOf } from "@/features/chat/lib/a2ui/surfaces";
 import { parseSurface, type SurfaceContent } from "@/features/chat/lib/agui/vymalo";
 import { useThreadFilesList } from "../../hooks/use-thread-files";
 import { ActorLabel } from "../actor-label";
 import { useThreadView } from "../thread-view";
+import { PlanAnnouncer } from "./plan-announcer";
 import { SurfaceView } from "./surface-view";
 import { ThreadFilesContext } from "./thread-files";
 
@@ -129,53 +131,78 @@ export function SurfaceActivity({ data }: { data: unknown }) {
   const prepared = useMemo(() => prepareSurface(operations, options), [operations, options]);
   const key = content?.surface ?? "";
   const messageId = useAuiState((s) => s.message.id);
-  const latest = useAuiState((s) => latestSurface(s.thread.messages, key)?.data);
-  const latestId = useAuiState((s) => latestSurface(s.thread.messages, key)?.messageId);
+  const surfaceId = surfaceIdOf(operations) ?? "";
+  const isPlan = isPlanSurface(surfaceId);
+  // what this copy draws (docs/api/ui-catalog-v1.md, "A surface sent again"): its own operations, one line that
+  // it was updated further down, or, for a plan, the newest copy where the plan first stood and nothing in a
+  // later copy
+  const place = useAuiState((s) => placeOf(s.thread.messages, messageId, key, surfaceId));
+  const latest = useAuiState((s) =>
+    isPlan
+      ? planDataOf(s.thread.messages, messageId, key, surfaceId)
+      : latestSurface(s.thread.messages, key)?.data,
+  );
   const newer = useMemo(() => {
     const ops = parseSurface(latest)?.a2ui_operations;
     return latest === undefined ? undefined : prepareSurface(ops, options);
   }, [latest, options]);
+  const plan = place === "newest" || place === "frozen";
+  const current = plan ? (newer ?? prepared) : prepared;
+  const signature = useMemo(
+    () => (isPlan && current.kind === "surface" ? JSON.stringify(current.spec) : ""),
+    [isPlan, current],
+  );
   if (!content) return null;
+  if (place === "nothing") return null;
 
-  const live = latestId === undefined || latestId === messageId;
-  const label = `Interface from ${content.actor?.name ?? "the agent"}`;
+  const live = place !== "older" && place !== "frozen";
+  const who = content.actor?.name ?? "the agent";
+  const label = isPlan ? `Plan from ${who}` : `Interface from ${who}`;
+  // what is drawn, and the operations it was made from (a plan's are the newest copy's)
+  const shownOperations = plan ? (parseSurface(latest)?.a2ui_operations ?? operations) : operations;
   let body: ReactNode;
-  if (!live) {
+  if (place === "older") {
     // updated (or deleted) in a later run: the newer copy is where the surface is now
     body =
       newer?.kind === "deleted" ? null : (
         <p className="text-xs text-muted-foreground">This interface was updated further down.</p>
       );
-  } else if (prepared.kind === "deleted") {
+  } else if (current.kind === "deleted") {
     body = null;
-  } else if (prepared.kind === "refused") {
+  } else if (current.kind === "refused") {
     return (
       <SurfaceRefused
-        rule={prepared.rule}
-        reason={prepared.reason}
-        operations={operations}
+        rule={current.rule}
+        reason={current.reason}
+        operations={shownOperations}
         actor={content.actor}
       />
     );
-  } else if (prepared.kind === "newer") {
-    return <SurfaceNewer component={prepared.component} actor={content.actor} />;
-  } else if (prepared.kind === "pending") {
+  } else if (current.kind === "newer") {
+    return <SurfaceNewer component={current.component} actor={content.actor} />;
+  } else if (current.kind === "pending") {
     body = <p className="text-xs text-muted-foreground">The interface is not complete yet.</p>;
   } else {
     body = (
       <ThreadFilesContext.Provider value={files}>
         <SurfaceView
-          prepared={prepared}
+          prepared={current}
           live={live}
           fallback={
             <SurfaceRefused
               rule="render"
               reason="the interface failed to draw"
-              operations={operations}
+              operations={shownOperations}
               actor={content.actor}
             />
           }
         />
+        {place === "frozen" ? (
+          <p className="text-xs text-muted-foreground">This plan was updated further down.</p>
+        ) : null}
+        {place === "newest" ? (
+          <PlanAnnouncer surfaceId={surfaceId} signature={signature} progress={current.progress} />
+        ) : null}
       </ThreadFilesContext.Provider>
     );
   }
@@ -183,7 +210,7 @@ export function SurfaceActivity({ data }: { data: unknown }) {
   return (
     <section
       aria-label={label}
-      data-slot="a2ui-surface"
+      data-slot={isPlan ? "plan" : "a2ui-surface"}
       className="flex w-full max-w-xl min-w-0 flex-col gap-1 rounded-lg border bg-card p-3 text-card-foreground"
     >
       {body}

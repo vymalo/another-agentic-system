@@ -1,0 +1,24 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{{#assign 'msgId'}}{{jsonPath request.body '$.params.message.messageId' default='msg-local'}}{{/assign}}{{#assign 'taskId'}}task-{{msgId}}{{/assign}}{{#assign 'fallbackCtx'}}ctx-{{taskId}}{{/assign}}{{#assign 'ctxId'}}{{jsonPath request.body '$.params.message.contextId' default=fallbackCtx}}{{/assign}}id: 1
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"task":{"id":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_SUBMITTED","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/child-sessions/v1":{"sessions":[]}}}}}
+
+id: 2
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-working","role":"ROLE_AGENT","parts":[{"text":"Handing the request to a planner."}]}}}}}
+
+id: 3
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/child-sessions/v1":{"session": "{{taskId}}-s1", "contextId": "ctx-{{taskId}}-s1", "agent": "planner", "description": "Plan the migration", "keepOpen": false, "by": "agent", "event": "opened", "round": {"number": 1, "taskId": "{{taskId}}-s1", "state": "TASK_STATE_WORKING"}}}}}}
+
+id: 4
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-step-1","role":"ROLE_AGENT","parts":[{"text":"Start planner"}],"metadata":{"https://agents.vymalo.com/a2a/extensions/steps/v1":{"id":"tool:s1","kind":"tool","label":"Start planner","state":"running","icon":"agent"}}}}}}}
+
+id: 5
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/usage/v1":{"call": "h1", "stepId": "tool:s1", "provider": "openai", "model": "glm-5.3-mini", "inputTokens": 400, "outputTokens": 50, "totalTokens": 450, "contextWindow": 65536}}}}}
+
+id: 6
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-step-2","role":"ROLE_AGENT","parts":[{"text":"Start planner"}],"metadata":{"https://agents.vymalo.com/a2a/extensions/steps/v1":{"id":"tool:s1","kind":"tool","label":"Start planner","state":"completed","icon":"agent"}}}}}}}
+
+id: 7
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/usage/v1":{"call": "p1", "provider": "openai", "model": "glm-5.3", "inputTokens": 1000, "outputTokens": 100, "totalTokens": 1100, "contextWindow": 131072}}}}}
+
+id: 8
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-completed","role":"ROLE_AGENT","parts":[{"text":"parent: done"}]}}}}}
+

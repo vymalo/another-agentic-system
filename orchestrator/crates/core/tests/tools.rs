@@ -312,6 +312,7 @@ fn a_thread_serialises_its_servers_whatever_its_gate() {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 2,
         created_at: orch_core::Timestamp::UNIX_EPOCH,

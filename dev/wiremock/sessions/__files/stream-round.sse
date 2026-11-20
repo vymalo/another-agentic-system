@@ -1,0 +1,15 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{{#assign 'taskId'}}{{jsonPath request.body '$.params.id'}}{{/assign}}{{#assign 'ctxId'}}ctx-{{taskId}}{{/assign}}id: 1
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"task":{"id":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/child-sessions/v1":{"session":"{{taskId}}","parentContextId":"ctx-{{regexExtract taskId '^task-.*(?=-s1$)'}}","agent":"planner","description":"Plan the migration","keepOpen":false,"round":1,"by":"agent","state":"working","closing":false}}}}}
+
+id: 2
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-step-1","role":"ROLE_AGENT","parts":[{"text":"Reading the plan"}],"metadata":{"https://agents.vymalo.com/a2a/extensions/steps/v1":{"id":"helper:work","kind":"tool","label":"Reading the plan","state":"running","icon":"search"}}}}}}}
+
+id: 3
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/usage/v1":{"call":"h1","provider":"openai","model":"glm-5.3-mini","inputTokens":400,"outputTokens":50,"totalTokens":450,"contextWindow":65536}}}}}
+
+id: 4
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-step-2","role":"ROLE_AGENT","parts":[{"text":"Reading the plan"}],"metadata":{"https://agents.vymalo.com/a2a/extensions/steps/v1":{"id":"helper:work","kind":"tool","label":"Reading the plan","state":"completed","icon":"search"}}}}}}}
+
+id: 5
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-completed","role":"ROLE_AGENT","parts":[{"text":"planner: done"}]}},"metadata":{"https://agents.vymalo.com/a2a/extensions/child-sessions/v1":{"session":"{{taskId}}","parentContextId":"ctx-{{regexExtract taskId '^task-.*(?=-s1$)'}}","agent":"planner","description":"Plan the migration","keepOpen":false,"round":1,"by":"agent","state":"closed","closing":false}}}}}
+

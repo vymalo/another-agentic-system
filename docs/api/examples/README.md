@@ -21,6 +21,7 @@ the log itself, which the AG-UI streams below project.)
 | `verify-verifier-red.events.json` | `verify-reviewed`, the same gate, a verifier that rejects every commit: three attempts, two `rework`s, then the `error` and `thread_state: failed` | `failed`, `checks_failed` |
 | `ci.events.json` | `verify-ci` on the fake agent (it pushes a `branch` artifact and leaves the checking to CI), under a gate that requires CI (`plain` has `gate: {require: [ci]}`), with the test playing the CI system through `App::receive` and the inbox worker: a red `ci/build` for commit `…01` (`ci_result`, `check_result` failed, `rework`), the agent goes again and pushes `…02`, a green `ci/build` for it (ADR 0017) | `done`, attempt 2 of 3 |
 | `a2ui.events.json` | `ui`, on an agent whose card lists the A2UI extension: a surface in two artifacts (`ui_surface` twice), the question, then the user's action through the AG-UI run route (`ui_action`) and the answer | `done` |
+| `a2ui-again.events.json` | `ui-again`, on an agent whose card lists the A2UI extension: the plan `plan-1` made, made again whole with other content, edited, deleted and made once more (five `ui_surface` events), then `completed` (UI catalog version 8, [`ui-catalog-v1.md`](../ui-catalog-v1.md#a-surface-sent-again)); what a viewer is shown is a snapshot of the alive operations only | `done` |
 | `followup.events.json` | `echo hi`, then the follow-up `echo now add tests` on the finished thread: a message on a `done` thread starts job 2 (`user_message`, `job_started`), a new task on the same context (ADR 0020) | `done`, job 2 |
 | `followup-after-cancel.events.json` | `slow work`, Cancel, then the follow-up `echo never mind, do this`: a stopped thread is not closed either | `done`, job 2 |
 | `catalog.events.json` | `echo hi` through the AG-UI run route with the screen's UI catalog, version 1, then `echo again` with version 2 and `echo once more` with version 1 again, each a job of the thread (ADR 0023, MVP slice 3): `ui_catalog` is the first event of the first two jobs (version 1, then 2) and the third writes none, because its digest is known; the log holds the consumer's message and run ids, which a route that carries a catalog has | `done`, job 3 |
@@ -40,6 +41,9 @@ the log itself, which the AG-UI streams below project.)
 | `stop-and-send.events.json` | `slow refactor the parser`, then **Stop & send** (`vymalo.send: "interrupt"`): `user_message` with `delivery: interrupt`, the running task is cancelled (`agent_status: canceled`, **no** `thread_state`: the abandoned job is not judged), and the message starts job 2 (`job_started`) | `done`, job 2 |
 | `reasoning.events.json` | `reasoning go` on the fake agent with `text-stream/v1` in its card ([ADR 0044](../../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)): the model's reasoning as chunks of its own stream (`kind: "reasoning"`), which the adapter collects and the log keeps once as `agent_reasoning` (`messageId` is the reasoning stream's, `<reasoning-id>`), then the reply as one `agent_message` and the status that repeats it | `done` |
 | `usage.events.json` | `usage go` on the fake agent with `usage/v1` and `steps/v1` in its card ([ADR 0056](../../decisions/0056-token-usage-per-model-call.md)): three `model_usage` events, the agent's own call `c1`, `c2` under the sub-agent step `Researcher` (its `path` names the step) and `c3` (its numbers sent as doubles, logged as integers), then the agent's message and the task's totals as one `model_usage_total` before the `completed` status: the update that ended the turn carried none, so the adapter read them from the task (`GetTask`). Task ids are `T` |
+| `sessions.events.json` | **hand-written** (no agent serves [`child-sessions/v1`](../child-sessions-v1.md) yet; S2f replaces it with a real run): a parent with a sub-agent step and two sessions: a round `blocked` and then `done`, the session closed; a kept-open one with rounds `done` and `canceled`; the agent finishes; then a report `blocked`, `done` and a close after it ([ADR 0072](../../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)); each session has its own child thread, `<child-thread-id>` and `<second-child-thread-id>` in the streams | `done` |
+| `sessions-failed.events.json` | hand-written: one helper session whose round fails (`child_session_reported` `failed`), closed; the agent finishes alone | `done` |
+| `sessions-child.events.json` | hand-written: the log of a **child thread**: `job_started` of job 1 and of job 2 name their rounds (`round: {number, by}`), each with a step, a message and `done` | `done`, job 2 |
 
 [`stream.feed.json`](stream.feed.json) is not a transcript of a run: it is a log **and live text** in the order one connection
 heard them (an array of `{"event": …}` as above and `{"live": {agent, messageId, offset, text, end}}`), written by hand because the
@@ -64,6 +68,19 @@ message's `messageId` is `<message-id>` and the task id in front of a step's id 
   `forwardedProps.a2uiAction`), the four `verify-*` scenarios (the gate, with the agent's own checks and with a
   verifier agent; the web renders their cards since MVP slice 4, and the mock plays the verifier as a subagent) and `ci` (the
   mock plays the CI reports too; the web renders the card since MVP slice 8). The web renders the AG-UI goldens, not these event logs: see the next section.
+
+## Thread as Markdown
+
+[`thread-markdown/`](thread-markdown/) holds the conformance vectors of [`../thread-markdown-v1.md`](../thread-markdown-v1.md): each
+`<name>.export.json` is an export (`exportThread`) and `<name>.md` the file a client must write from it, byte for byte. A client in
+another language reads the pairs and compares; `web/mock/thread-markdown.test.ts` is the web's run of them.
+
+## A person's prompt library
+
+[`prompts/`](prompts/) holds the conformance vectors of [`../prompts-v1.md`](../prompts-v1.md): `references.json` (a body to its segments or its
+error), `prompts.json` (a whole save), `render.json` (a prompt, an answer and the text, or the refusal) and `requests.json` (raw requests and the
+status and `code` of each). `orch_core::prompt` and `orch-api`'s tests read them in Rust, `web/mock/prompts.test.ts` is the web's run of them. A string
+written as `{"$concat": [piece, ...]}` is the pieces joined (a piece is a string or `{"$repeat": text, "times": n}`): a reader expands it first.
 
 ## AG-UI streams
 

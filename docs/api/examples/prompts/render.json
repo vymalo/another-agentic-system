@@ -1,0 +1,2767 @@
+{
+  "name": "Render",
+  "about": "A prompt (`body`, `variables`), a request of renderPrompt, and the text, or the first refusal: `{question, rule}` of a 422 `invalid_answer` (`question` is a variable's id or `*`), or `{code: \"rendered_too_long\"}` (422). A reader saves the prompt first (it MUST be accepted) with any name and title. A string value written as {\"$concat\": [piece, ...]} is the pieces joined, a piece being a string or {\"$repeat\": text, \"times\": n}; a reader expands it before use. See docs/api/prompts-v1.md, The answer and Render.",
+  "cases": [
+    {
+      "name": "a prompt with no variable",
+      "prompt": {
+        "body": "Hello.",
+        "variables": []
+      },
+      "request": {
+        "answers": []
+      },
+      "expect": {
+        "text": "Hello."
+      }
+    },
+    {
+      "name": "a choice renders as its label, not its value",
+      "prompt": {
+        "body": "For {{focus}}.",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "security"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "For Security."
+      }
+    },
+    {
+      "name": "a single question's own words",
+      "prompt": {
+        "body": "Mood: {{mood}}",
+        "variables": [
+          {
+            "id": "mood",
+            "question": "Mood?",
+            "type": "single",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "h",
+                "label": "Happy"
+              },
+              {
+                "value": "s",
+                "label": "Sad"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "mood",
+            "values": [],
+            "other": "curious"
+          }
+        ]
+      },
+      "expect": {
+        "text": "Mood: curious"
+      }
+    },
+    {
+      "name": "a single question's option label",
+      "prompt": {
+        "body": "Mood: {{mood}}",
+        "variables": [
+          {
+            "id": "mood",
+            "question": "Mood?",
+            "type": "single",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "h",
+                "label": "Happy"
+              },
+              {
+                "value": "s",
+                "label": "Sad"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "mood",
+            "values": [
+              "h"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Mood: Happy"
+      }
+    },
+    {
+      "name": "several choices in the order of the options",
+      "prompt": {
+        "body": "Tags: {{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "allowOther": true,
+            "required": false,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [
+              "a",
+              "c"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Tags: Alpha, Gamma"
+      }
+    },
+    {
+      "name": "several choices and an Other, which comes last",
+      "prompt": {
+        "body": "Tags: {{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "allowOther": true,
+            "required": false,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [
+              "a"
+            ],
+            "other": "Delta"
+          }
+        ]
+      },
+      "expect": {
+        "text": "Tags: Alpha, Delta"
+      }
+    },
+    {
+      "name": "an Other alone among several",
+      "prompt": {
+        "body": "Tags: {{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "allowOther": true,
+            "required": false,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [],
+            "other": "Delta"
+          }
+        ]
+      },
+      "expect": {
+        "text": "Tags: Delta"
+      }
+    },
+    {
+      "name": "a rank as a numbered list in the person's order",
+      "prompt": {
+        "body": "{{order}}",
+        "variables": [
+          {
+            "id": "order",
+            "question": "In order",
+            "type": "rank",
+            "options": [
+              {
+                "value": "a",
+                "label": "Cost"
+              },
+              {
+                "value": "b",
+                "label": "Speed"
+              },
+              {
+                "value": "c",
+                "label": "Risk"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "order",
+            "values": [
+              "b",
+              "a",
+              "c"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "1. Speed; 2. Cost; 3. Risk"
+      }
+    },
+    {
+      "name": "a number is written as sent",
+      "prompt": {
+        "body": "Budget {{budget}}",
+        "variables": [
+          {
+            "id": "budget",
+            "question": "Budget?",
+            "type": "number",
+            "unit": "EUR",
+            "minValue": "0",
+            "maxValue": "1000",
+            "step": "0.5"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "budget",
+            "values": [
+              "2.50"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Budget 2.50"
+      }
+    },
+    {
+      "name": "a number of zero",
+      "prompt": {
+        "body": "Budget {{budget}}",
+        "variables": [
+          {
+            "id": "budget",
+            "question": "Budget?",
+            "type": "number",
+            "unit": "EUR",
+            "minValue": "0",
+            "maxValue": "1000",
+            "step": "0.5"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "budget",
+            "values": [
+              "0.0"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Budget 0.0"
+      }
+    },
+    {
+      "name": "confirm yes is yes, whatever its label",
+      "prompt": {
+        "body": "{{ship}}",
+        "variables": [
+          {
+            "id": "ship",
+            "question": "Ship it?",
+            "type": "confirm",
+            "yesLabel": "Ship it",
+            "noLabel": "Hold"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "ship",
+            "values": [
+              "yes"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "yes"
+      }
+    },
+    {
+      "name": "confirm no is no, whatever its label",
+      "prompt": {
+        "body": "{{ship}}",
+        "variables": [
+          {
+            "id": "ship",
+            "question": "Ship it?",
+            "type": "confirm",
+            "yesLabel": "Ship it",
+            "noLabel": "Hold"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "ship",
+            "values": [
+              "no"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "no"
+      }
+    },
+    {
+      "name": "a scale is its number",
+      "prompt": {
+        "body": "Depth {{depth}}",
+        "variables": [
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "depth",
+            "values": [
+              "4"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Depth 4"
+      }
+    },
+    {
+      "name": "a date is as sent",
+      "prompt": {
+        "body": "On {{when}}",
+        "variables": [
+          {
+            "id": "when",
+            "question": "When?",
+            "type": "date"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "when",
+            "values": [
+              "2028-02-29"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "On 2028-02-29"
+      }
+    },
+    {
+      "name": "an optional question left alone renders as nothing",
+      "prompt": {
+        "body": "Hi {{name}}!",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text",
+            "required": false
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": []
+          }
+        ]
+      },
+      "expect": {
+        "text": "Hi !"
+      }
+    },
+    {
+      "name": "an optional choice left alone renders as nothing",
+      "prompt": {
+        "body": "[{{tags}}]",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "allowOther": true,
+            "required": false,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": []
+          }
+        ]
+      },
+      "expect": {
+        "text": "[]"
+      }
+    },
+    {
+      "name": "the default is never used for an empty answer",
+      "prompt": {
+        "body": "[{{depth}}]",
+        "variables": [
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5,
+            "required": false,
+            "default": "3"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "depth",
+            "values": []
+          }
+        ]
+      },
+      "expect": {
+        "text": "[]"
+      }
+    },
+    {
+      "name": "a text is verbatim, with its spaces",
+      "prompt": {
+        "body": "[{{name}}]",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": "  two  spaces "
+          }
+        ]
+      },
+      "expect": {
+        "text": "[  two  spaces ]"
+      }
+    },
+    {
+      "name": "a text of one space is an answer",
+      "prompt": {
+        "body": "[{{name}}]",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": " "
+          }
+        ]
+      },
+      "expect": {
+        "text": "[ ]"
+      }
+    },
+    {
+      "name": "a long text keeps its line breaks",
+      "prompt": {
+        "body": "{{notes}}",
+        "variables": [
+          {
+            "id": "notes",
+            "question": "Notes?",
+            "type": "longText"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "notes",
+            "values": [],
+            "text": "a\nb\n\nc"
+          }
+        ]
+      },
+      "expect": {
+        "text": "a\nb\n\nc"
+      }
+    },
+    {
+      "name": "a long text may hold a tab",
+      "prompt": {
+        "body": "{{notes}}",
+        "variables": [
+          {
+            "id": "notes",
+            "question": "Notes?",
+            "type": "longText"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "notes",
+            "values": [],
+            "text": "a\tb"
+          }
+        ]
+      },
+      "expect": {
+        "text": "a\tb"
+      }
+    },
+    {
+      "name": "a value that holds a reference is not read again",
+      "prompt": {
+        "body": "A {{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": "{{y}}"
+          }
+        ]
+      },
+      "expect": {
+        "text": "A {{y}}"
+      }
+    },
+    {
+      "name": "a value that holds an escape is not read again",
+      "prompt": {
+        "body": "A {{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": "\\{{y}}"
+          }
+        ]
+      },
+      "expect": {
+        "text": "A \\{{y}}"
+      }
+    },
+    {
+      "name": "one variable used three times",
+      "prompt": {
+        "body": "{{name}}-{{name}}-{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": "ab"
+          }
+        ]
+      },
+      "expect": {
+        "text": "ab-ab-ab"
+      }
+    },
+    {
+      "name": "an escape in the body writes {{",
+      "prompt": {
+        "body": "Use \\{{name}} for {{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": "x"
+          }
+        ]
+      },
+      "expect": {
+        "text": "Use {{name}} for x"
+      }
+    },
+    {
+      "name": "two variables in two places",
+      "prompt": {
+        "body": "{{focus}} at {{depth}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          },
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "speed"
+            ]
+          },
+          {
+            "id": "depth",
+            "values": [
+              "2"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Speed at 2"
+      }
+    },
+    {
+      "name": "an emoji in a label",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "a",
+                "label": "😀 Fun"
+              },
+              {
+                "value": "b",
+                "label": "Work"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "a"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "😀 Fun"
+      }
+    },
+    {
+      "name": "several choices of a select that takes several",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ],
+            "multiple": true
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "security",
+              "speed"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Security, Speed"
+      }
+    },
+    {
+      "name": "the text is as long as the limit: 32768 bytes",
+      "prompt": {
+        "body": {
+          "$concat": [
+            {
+              "$repeat": "{{t}}",
+              "times": 2000
+            },
+            {
+              "$repeat": "x",
+              "times": 768
+            }
+          ]
+        },
+        "variables": [
+          {
+            "id": "t",
+            "question": "T?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "t",
+            "values": [],
+            "text": "abcdefghijklmnop"
+          }
+        ]
+      },
+      "expect": {
+        "text": {
+          "$concat": [
+            {
+              "$repeat": "abcdefghijklmnop",
+              "times": 2000
+            },
+            {
+              "$repeat": "x",
+              "times": 768
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "one byte over the limit: 32769 bytes is refused before anything is built",
+      "prompt": {
+        "body": {
+          "$concat": [
+            {
+              "$repeat": "{{t}}",
+              "times": 2000
+            },
+            {
+              "$repeat": "x",
+              "times": 769
+            }
+          ]
+        },
+        "variables": [
+          {
+            "id": "t",
+            "question": "T?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "t",
+            "values": [],
+            "text": "abcdefghijklmnop"
+          }
+        ]
+      },
+      "expect": {
+        "code": "rendered_too_long"
+      }
+    },
+    {
+      "name": "four-byte characters count by bytes",
+      "prompt": {
+        "body": {
+          "$concat": [
+            {
+              "$repeat": "{{t}}",
+              "times": 2000
+            },
+            "x"
+          ]
+        },
+        "variables": [
+          {
+            "id": "t",
+            "question": "T?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "t",
+            "values": [],
+            "text": "😀😀😀😀"
+          }
+        ]
+      },
+      "expect": {
+        "text": {
+          "$concat": [
+            {
+              "$repeat": "😀😀😀😀",
+              "times": 2000
+            },
+            "x"
+          ]
+        }
+      }
+    },
+    {
+      "name": "four-byte characters over the limit",
+      "prompt": {
+        "body": {
+          "$concat": [
+            {
+              "$repeat": "{{t}}",
+              "times": 2049
+            }
+          ]
+        },
+        "variables": [
+          {
+            "id": "t",
+            "question": "T?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "t",
+            "values": [],
+            "text": "😀😀😀😀"
+          }
+        ]
+      },
+      "expect": {
+        "code": "rendered_too_long"
+      }
+    },
+    {
+      "name": "a note is refused: a prompt has no free box",
+      "prompt": {
+        "body": "Hello.",
+        "variables": []
+      },
+      "request": {
+        "answers": [],
+        "note": "hi"
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unexpected"
+      }
+    },
+    {
+      "name": "no answers member",
+      "prompt": {
+        "body": "Hello.",
+        "variables": []
+      },
+      "request": {},
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "answers that are not a list",
+      "prompt": {
+        "body": "Hello.",
+        "variables": []
+      },
+      "request": {
+        "answers": "x"
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "an answer for a prompt with no variables",
+      "prompt": {
+        "body": "Hello.",
+        "variables": []
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "security"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "an answer missing",
+      "prompt": {
+        "body": "{{focus}} {{depth}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          },
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "speed"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "answers in the wrong order",
+      "prompt": {
+        "body": "{{focus}} {{depth}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          },
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "depth",
+            "values": [
+              "2"
+            ]
+          },
+          {
+            "id": "focus",
+            "values": [
+              "speed"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "an answer twice",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "speed"
+            ]
+          },
+          {
+            "id": "focus",
+            "values": [
+              "speed"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "an entry that is not an object",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          "x"
+        ]
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "values that are not a list",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": "security"
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "a note and a wrong answer: the note is read first",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "zzz"
+            ]
+          }
+        ],
+        "note": "x"
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unexpected"
+      }
+    },
+    {
+      "name": "a required question left empty",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": []
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "required"
+      }
+    },
+    {
+      "name": "required is true when it is absent, for a text",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": []
+          }
+        ]
+      },
+      "expect": {
+        "question": "name",
+        "rule": "required"
+      }
+    },
+    {
+      "name": "above the most of a scale",
+      "prompt": {
+        "body": "{{depth}}",
+        "variables": [
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "depth",
+            "values": [
+              "6"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "depth",
+        "rule": "above_max"
+      }
+    },
+    {
+      "name": "a value that is not an option",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "zzz"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "not_offered"
+      }
+    },
+    {
+      "name": "a label is not a value",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "Security"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "not_offered"
+      }
+    },
+    {
+      "name": "a value that is not a string",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              1
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "not_offered"
+      }
+    },
+    {
+      "name": "two values for one choice",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "security",
+              "speed"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "too_many"
+      }
+    },
+    {
+      "name": "a value and an Other for one choice",
+      "prompt": {
+        "body": "{{mood}}",
+        "variables": [
+          {
+            "id": "mood",
+            "question": "Mood?",
+            "type": "single",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "h",
+                "label": "Happy"
+              },
+              {
+                "value": "s",
+                "label": "Sad"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "mood",
+            "values": [
+              "h"
+            ],
+            "other": "x"
+          }
+        ]
+      },
+      "expect": {
+        "question": "mood",
+        "rule": "too_many"
+      }
+    },
+    {
+      "name": "an Other where none is allowed",
+      "prompt": {
+        "body": "{{mood}}",
+        "variables": [
+          {
+            "id": "mood",
+            "question": "Mood?",
+            "type": "single",
+            "options": [
+              {
+                "value": "h",
+                "label": "Happy"
+              },
+              {
+                "value": "s",
+                "label": "Sad"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "mood",
+            "values": [],
+            "other": "x"
+          }
+        ]
+      },
+      "expect": {
+        "question": "mood",
+        "rule": "unexpected"
+      }
+    },
+    {
+      "name": "a text member on a choice",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "security"
+            ],
+            "text": "x"
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "unexpected"
+      }
+    },
+    {
+      "name": "an Other on a newer kind",
+      "prompt": {
+        "body": "{{depth}}",
+        "variables": [
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "depth",
+            "values": [
+              "3"
+            ],
+            "other": "x"
+          }
+        ]
+      },
+      "expect": {
+        "question": "depth",
+        "rule": "unexpected"
+      }
+    },
+    {
+      "name": "an empty Other",
+      "prompt": {
+        "body": "{{mood}}",
+        "variables": [
+          {
+            "id": "mood",
+            "question": "Mood?",
+            "type": "single",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "h",
+                "label": "Happy"
+              },
+              {
+                "value": "s",
+                "label": "Sad"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "mood",
+            "values": [],
+            "other": ""
+          }
+        ]
+      },
+      "expect": {
+        "question": "mood",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "an Other of 501 characters",
+      "prompt": {
+        "body": "{{mood}}",
+        "variables": [
+          {
+            "id": "mood",
+            "question": "Mood?",
+            "type": "single",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "h",
+                "label": "Happy"
+              },
+              {
+                "value": "s",
+                "label": "Sad"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "mood",
+            "values": [],
+            "other": {
+              "$repeat": "a",
+              "times": 501
+            }
+          }
+        ]
+      },
+      "expect": {
+        "question": "mood",
+        "rule": "too_long"
+      }
+    },
+    {
+      "name": "an Other of 500 characters",
+      "prompt": {
+        "body": "{{mood}}",
+        "variables": [
+          {
+            "id": "mood",
+            "question": "Mood?",
+            "type": "single",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "h",
+                "label": "Happy"
+              },
+              {
+                "value": "s",
+                "label": "Sad"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "mood",
+            "values": [],
+            "other": {
+              "$repeat": "a",
+              "times": 500
+            }
+          }
+        ]
+      },
+      "expect": {
+        "text": {
+          "$repeat": "a",
+          "times": 500
+        }
+      }
+    },
+    {
+      "name": "several choices out of the order of the options",
+      "prompt": {
+        "body": "{{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "allowOther": true,
+            "required": false,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [
+              "c",
+              "a"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "tags",
+        "rule": "out_of_order"
+      }
+    },
+    {
+      "name": "a choice twice",
+      "prompt": {
+        "body": "{{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "allowOther": true,
+            "required": false,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [
+              "a",
+              "a"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "tags",
+        "rule": "repeated"
+      }
+    },
+    {
+      "name": "fewer than the least",
+      "prompt": {
+        "body": "{{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "min": 2,
+            "max": 2,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [
+              "a"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "tags",
+        "rule": "too_few"
+      }
+    },
+    {
+      "name": "more than the most",
+      "prompt": {
+        "body": "{{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "min": 2,
+            "max": 2,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [
+              "a",
+              "b",
+              "c"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "tags",
+        "rule": "too_many"
+      }
+    },
+    {
+      "name": "exactly the least and the most",
+      "prompt": {
+        "body": "{{tags}}",
+        "variables": [
+          {
+            "id": "tags",
+            "question": "Tags?",
+            "type": "multiple",
+            "min": 2,
+            "max": 2,
+            "options": [
+              {
+                "value": "a",
+                "label": "Alpha"
+              },
+              {
+                "value": "b",
+                "label": "Beta"
+              },
+              {
+                "value": "c",
+                "label": "Gamma"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "tags",
+            "values": [
+              "a",
+              "c"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "text": "Alpha, Gamma"
+      }
+    },
+    {
+      "name": "a text with a line break",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": "a\nb"
+          }
+        ]
+      },
+      "expect": {
+        "question": "name",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "an empty text",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": ""
+          }
+        ]
+      },
+      "expect": {
+        "question": "name",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "a text that is not a string",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": 5
+          }
+        ]
+      },
+      "expect": {
+        "question": "name",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "a text of 501 characters",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": {
+              "$repeat": "a",
+              "times": 501
+            }
+          }
+        ]
+      },
+      "expect": {
+        "question": "name",
+        "rule": "too_long"
+      }
+    },
+    {
+      "name": "a text of 500 characters",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": {
+              "$repeat": "a",
+              "times": 500
+            }
+          }
+        ]
+      },
+      "expect": {
+        "text": {
+          "$repeat": "a",
+          "times": 500
+        }
+      }
+    },
+    {
+      "name": "a long text of 2001 characters",
+      "prompt": {
+        "body": "{{notes}}",
+        "variables": [
+          {
+            "id": "notes",
+            "question": "Notes?",
+            "type": "longText"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "notes",
+            "values": [],
+            "text": {
+              "$repeat": "a",
+              "times": 2001
+            }
+          }
+        ]
+      },
+      "expect": {
+        "question": "notes",
+        "rule": "too_long"
+      }
+    },
+    {
+      "name": "a long text with a NUL",
+      "prompt": {
+        "body": "{{notes}}",
+        "variables": [
+          {
+            "id": "notes",
+            "question": "Notes?",
+            "type": "longText"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "notes",
+            "values": [],
+            "text": "a\u0000b"
+          }
+        ]
+      },
+      "expect": {
+        "question": "notes",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "values on a text question",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [
+              "x"
+            ],
+            "text": "y"
+          }
+        ]
+      },
+      "expect": {
+        "question": "name",
+        "rule": "not_offered"
+      }
+    },
+    {
+      "name": "an Other on a text question",
+      "prompt": {
+        "body": "{{name}}",
+        "variables": [
+          {
+            "id": "name",
+            "question": "Name?",
+            "type": "text"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "name",
+            "values": [],
+            "text": "y",
+            "other": "z"
+          }
+        ]
+      },
+      "expect": {
+        "question": "name",
+        "rule": "unexpected"
+      }
+    },
+    {
+      "name": "a number off its step",
+      "prompt": {
+        "body": "{{budget}}",
+        "variables": [
+          {
+            "id": "budget",
+            "question": "Budget?",
+            "type": "number",
+            "unit": "EUR",
+            "minValue": "0",
+            "maxValue": "1000",
+            "step": "0.5"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "budget",
+            "values": [
+              "250.25"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "budget",
+        "rule": "off_step"
+      }
+    },
+    {
+      "name": "a number above the most",
+      "prompt": {
+        "body": "{{budget}}",
+        "variables": [
+          {
+            "id": "budget",
+            "question": "Budget?",
+            "type": "number",
+            "unit": "EUR",
+            "minValue": "0",
+            "maxValue": "1000",
+            "step": "0.5"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "budget",
+            "values": [
+              "1000.5"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "budget",
+        "rule": "above_max"
+      }
+    },
+    {
+      "name": "a number in the wrong grammar",
+      "prompt": {
+        "body": "{{budget}}",
+        "variables": [
+          {
+            "id": "budget",
+            "question": "Budget?",
+            "type": "number",
+            "unit": "EUR",
+            "minValue": "0",
+            "maxValue": "1000",
+            "step": "0.5"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "budget",
+            "values": [
+              "1e3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "budget",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "a confirm that is not yes or no",
+      "prompt": {
+        "body": "{{ship}}",
+        "variables": [
+          {
+            "id": "ship",
+            "question": "Ship it?",
+            "type": "confirm",
+            "yesLabel": "Ship it",
+            "noLabel": "Hold"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "ship",
+            "values": [
+              "maybe"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "ship",
+        "rule": "not_offered"
+      }
+    },
+    {
+      "name": "a rank that is not every option",
+      "prompt": {
+        "body": "{{order}}",
+        "variables": [
+          {
+            "id": "order",
+            "question": "In order",
+            "type": "rank",
+            "options": [
+              {
+                "value": "a",
+                "label": "Cost"
+              },
+              {
+                "value": "b",
+                "label": "Speed"
+              },
+              {
+                "value": "c",
+                "label": "Risk"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "order",
+            "values": [
+              "a",
+              "b"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "order",
+        "rule": "not_a_permutation"
+      }
+    },
+    {
+      "name": "a day that does not exist",
+      "prompt": {
+        "body": "{{when}}",
+        "variables": [
+          {
+            "id": "when",
+            "question": "When?",
+            "type": "date"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "when",
+            "values": [
+              "2027-02-29"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "when",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "the first refusal wins: two questions are wrong",
+      "prompt": {
+        "body": "{{focus}} {{depth}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          },
+          {
+            "id": "depth",
+            "question": "Depth?",
+            "type": "scale",
+            "to": 5
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "zzz"
+            ]
+          },
+          {
+            "id": "depth",
+            "values": [
+              "9"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "question": "focus",
+        "rule": "not_offered"
+      }
+    },
+    {
+      "name": "a note that is empty is still a note",
+      "prompt": {
+        "body": "{{focus}}",
+        "variables": [
+          {
+            "id": "focus",
+            "question": "Focus?",
+            "type": "select",
+            "options": [
+              {
+                "value": "security",
+                "label": "Security"
+              },
+              {
+                "value": "speed",
+                "label": "Speed"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "focus",
+            "values": [
+              "security"
+            ]
+          }
+        ],
+        "note": ""
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unexpected"
+      }
+    },
+    {
+      "name": "an optional text with a default, left unanswered, renders empty",
+      "prompt": {
+        "body": "[{{q}}]",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "text",
+            "required": false,
+            "default": "d"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": []
+          }
+        ]
+      },
+      "expect": {
+        "text": "[]"
+      }
+    },
+    {
+      "name": "a note with no answers member: the answers come first",
+      "prompt": {
+        "body": "x",
+        "variables": []
+      },
+      "request": {
+        "note": "x"
+      },
+      "expect": {
+        "question": "*",
+        "rule": "unknown"
+      }
+    },
+    {
+      "name": "an other with a control character",
+      "prompt": {
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "other": "a\u0000b"
+          }
+        ]
+      },
+      "expect": {
+        "question": "q",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "an other with a line break",
+      "prompt": {
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "other": "a\nb"
+          }
+        ]
+      },
+      "expect": {
+        "question": "q",
+        "rule": "grammar"
+      }
+    },
+    {
+      "name": "an other with a tab is allowed",
+      "prompt": {
+        "body": "{{q}}",
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "allowOther": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "other": "a\tb"
+          }
+        ]
+      },
+      "expect": {
+        "text": "a\tb"
+      }
+    },
+    {
+      "name": "literal text of two-byte characters counts in bytes",
+      "prompt": {
+        "body": {
+          "$concat": [
+            {
+              "$repeat": "é",
+              "times": 8000
+            },
+            {
+              "$repeat": "{{q}}",
+              "times": 9
+            }
+          ]
+        },
+        "variables": [
+          {
+            "id": "q",
+            "question": "Q?",
+            "type": "longText"
+          }
+        ]
+      },
+      "request": {
+        "answers": [
+          {
+            "id": "q",
+            "values": [],
+            "text": {
+              "$repeat": "x",
+              "times": 2000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "code": "rendered_too_long"
+      }
+    }
+  ]
+}

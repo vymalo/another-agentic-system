@@ -59,6 +59,7 @@ fn call_event(
             model: "glm".into(),
             tokens,
             context_window: None,
+            counted: true,
         })),
     }
 }
@@ -83,6 +84,7 @@ fn total_event(
             path: Vec::new(),
             totals,
             sandbox,
+            counted: true,
         }),
     }
 }

@@ -34,7 +34,7 @@ info:
     Authorization ([ADR 0033](../decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
     [`config.md`](config.md#roles-and-permissions)): who a person is says what they may do. The
     roles of the credential (the token's roles claim) map, by `auth.roles`, to the permissions
-    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin` and `tools.user.add` (granted to no role by default); a role
+    `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`, `tools.user.add` and `prompts.share` (the last two granted to no role by default); a role
     the configuration does not define grants nothing, and a person with no defined role gets
     `auth.defaultRole`. `getMe` says what the caller's roles grant. **Nobody reads another person's
     thread** ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)): every permission
@@ -72,6 +72,13 @@ info:
     response says only whether a credential is kept (`hasCredential`). These bodies are read without echoing a value, so
     even a malformed one never quotes what it held. The URL of a server is the person's own and is shown back to them (so
     that they can edit it); it can hold a secret in its path, so these answers are never cached.
+
+    A person's prompt library ([ADR 0070](../decisions/0070-a-persons-prompt-library.md), [`prompts-v1.md`](prompts-v1.md)):
+    `listPrompts`, `createPrompt`, `getPrompt`, `updatePrompt`, `deletePrompt` and `renderPrompt`. A prompt is its owner's;
+    **a write that leaves it shared with a role needs `prompts.share`**, which no role holds by default and `admin` does
+    not imply; unsharing and deleting need nothing. Another person's prompt, and a shared prompt the caller's roles are outside
+    of, are a **404**, the answer for an id that never existed; an audience member reads and renders a shared prompt and
+    never learns its author. A prompt is in no thread, fork or export.
 
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
@@ -302,8 +309,9 @@ paths:
         sorted by name, each with the URL they typed, the shape of its authentication (never a secret), its `state`, the
         `status` and `reason` the picker shows and the `revision` an edit sends back. Needs no permission of its own
         (`tools.user.add` gates changes, not reading what one added); another person's servers are not here, for any role.
-        `limit` is the most one person holds (8) and `kinds` the kinds of authentication this deployment accepts: `none`
-        only when it keeps no credentials (it has no `secrets` section).
+        `limit` is the most one person holds (8) and `kinds` the kinds of authentication this deployment accepts: all four
+        (`none`, `bearer`, `api_key`, `oauth2`) where it keeps credentials, and **only `none`** where it keeps none (it has no
+        `secrets` section) (`orch_app::user_tool_kinds`, `orchestrator/crates/app/src/user_tools.rs`).
 
         **`status`** is the definition's state and the deployment's rules, with the first of these that holds:
         `unavailable` / `not_permitted` when the caller's roles lack `tools.user.add`; `unavailable` / `egress_refused`
@@ -317,6 +325,64 @@ paths:
         deployment's depends on this. Each server can still be deleted by its id (`deleteUserToolServer` reads nothing of
         the row); the answer cannot name the damaged one, and the orchestrator's log does (one warning per damaged row, by
         its id). A store that is down is a 503. Never cached. 404 when the feature is off.
+
+        **Client recipe: the person's own servers** (what the web's "My tool servers" page does; a client needs nothing
+        else, and the server enforces every step, so a client only offers what the server would accept).
+        1. **Whether to offer the screen.** `getMe` lists `tools.user.add` for a person whose roles hold it. It does not say
+           whether the deployment has the feature on: a holder in a deployment with it off gets a 404 from this route,
+           which the screen says in words ("this deployment does not let people add servers") and offers nothing under.
+           A person without the permission still reads their servers here and deletes them (`deleteUserToolServer` needs
+           none); the screen says that their roles do not let them add or change one, and offers only Delete.
+        2. **Add.** Offer the `kinds` of this answer and no others (a deployment that keeps no credentials lists only
+           `none`). `POST` `{name, url, auth}` and, for `bearer` or `api_key`, `secret`; an `api_key` also names
+           its `auth.header`, an `oauth2` its optional `scopes` and `clientId`. The answer is the server as listed: show its
+           `status`, and for `oauth2` (`needs_auth`, `not_connected`) the **Connect** step below. Hold at most `limit`
+           servers: when the list is that long the client does not offer Add, and the server's 409 `too_many_servers` is
+           the race only. The `secret` is typed once, kept nowhere (not in storage, a URL or a log), cleared when the
+           request is sent, and never filled in from an answer: no answer holds one.
+        3. **Change.** `PATCH` takes any non-empty combination of `name`, `url`, `auth` and `secret`, and the `revision` of the row as
+           listed (`orchestrator/crates/app/src/user_tools.rs`, `edit_user_tool_server`; an edit that names none of the first four is
+           a 400). A client sends **only what differs** from the row the person opened the form on, with **that row's** `revision`
+           (a form that is open while the list is read again keeps its own revision, so a stale edit is a 409 and never overwrites a
+           newer change). What each does: `name`, or the `header` of an `api_key`, is written and the credential kept; `secret`
+           alone (the kind must be `bearer` or `api_key`, else a 400) re-keys it and the server is `connected`, which also brings a
+           `needs_reauth` or `revoked` one back; a new `url`, a new `auth.kind`, other `scopes` or another `clientId` forgets the
+           credential first (the server is `added`, or `connected` if the kind is `none`), and a `secret` in the same request (kind
+           `bearer` or `api_key`) is then kept for the new definition and the server is `connected`; any other combination is those
+           effects together. A client says before it sends that a move forgets the credential. **Delete**: `DELETE` the id; it takes no
+           revision, and a 404 answering it means the server is already gone, which is what was asked. A 409 `stale_revision` is not
+           to be retried: read the list again and let the person decide again.
+        4. **Connect** (an `oauth2` server that is `needs_auth`; and an `oauth2` server that is not, to authorize it again with
+           another account or a wider scope, which the server allows): `POST` `.../authorize` with no body. Show the person where
+           they are being sent, **before** anything opens, and open `authorizeUrl` **only when** it parses, is `https:` (or `http:`
+           on a loopback host, for a development authorization server) and has no user information; `javascript:`, `data:`, a
+           relative or a malformed link is never opened, and the client says the server gave a link that cannot be opened. The
+           orchestrator takes the authorization endpoint from the authorization server's own RFC 8414 metadata and judges its shape
+           (`https`, a public host, no fragment: `orchestrator/crates/credential-broker/src/discovery.rs`, `found_in`), **not** that
+           it is on the issuer's host, so the client shows **the host of `authorizeUrl` itself** as the destination and, when it
+           differs from the `issuer`'s, names both. Open it in a browser the client cannot lose control of: a link the person
+           clicks (`target="_blank"`, no opener, no referrer) on the web, the system browser on the desktop, an in-app tab on mobile.
+           A client cannot know that a window it opened stayed open (a pop-up blocker returns the same as success), so it says
+           "waiting for you to finish signing in", never that a window opened, and offers **Check now** and **Open the sign-in page
+           again** (`authorizeUserToolServer` again: a later call ends the earlier flow). It never logs or keeps the URL. The browser
+           comes back to `finishUserToolAuthorization`, which no client calls. The client learns the outcome by reading this list
+           again: when the person returns to the app (the window regains focus; the web reads at most once in a quarter second, so
+           a focus and a visibility change together are one read) and on the person's request. `ready` is done; anything else after
+           `expiresAt` is "not finished; connect again". A 429 `rate_limited` carries `Retry-After`.
+        5. **Attach.** The picker is `listToolServers`: the person's own servers have `own: true`. Offer a `ready` one
+           like any other and send the whole set with `putThreadTools`. One that is not `ready` is not offered for
+           attaching: `needs_auth` says what to do (give a key, or Connect, on the screen above: `ToolServer` does not
+           say which, so a client takes the kind from this list's `auth.kind` by id), `unavailable` says its `reason`.
+           A 422 `tool_server_needs_auth` or `tool_server_unavailable` from `putThreadTools` is the race only.
+        6. **Errors, by `code`** (a client chooses its words from the status and the `code`, and shows `detail` only where
+           it is a person's own words: a 400's, which never quotes a value): 400 `url_refused` (the address is refused:
+           `detail` says why for a person); 403 `forbidden` (the permission is gone) or `no_access`; 404 (the server is
+           gone, or the feature is off: read the list); 409 `too_many_servers`, `stale_revision`; 422
+           `credentials_not_kept` (add, change and authorize), `egress_refused` and `oauth_not_configured` (**`authorizeUserToolServer` only**: add and
+           change answer a refused address as the 400 `url_refused`, `orchestrator/crates/app/src/user_tools/authorize.rs`); 429 `rate_limited`; 503 `broker_down`,
+           `authorization_unavailable`, or no `code` (the server is being changed: wait `Retry-After` and try again).
+           After **any** failed write whose outcome is unknown (a 500, a 503, a lost connection) the client reads this list
+           again: a write runs to its end on the server whether or not the client waits.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -519,8 +585,9 @@ paths:
         carries neither the app's bearer token nor the web's cookie ([ADR 0047](../decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)),
         so no credential is read (an `Authorization` header or a cookie is ignored) and the person is found by the `state`
         alone: `state` → (who began, which server, until when), kept when the flow began and **taken once**. The edge must let
-        a `GET` of this path through to the orchestrator with no sign-in (the chart's does not yet: see the rollout steps of the
-        ADR).
+        a `GET` of this path through to the orchestrator with no sign-in (the dev stack's and the chart's edges do, since
+        2026-11-14, and nothing else under `/api/user-tool-servers`; the chart still renders no `userToolServers` values: see the rollout steps
+        of the ADR).
 
         The authorization server's redirect is read for `code`, `state`, `iss` (RFC 9207) and `error`, and nothing else
         (`error_description` is never read). A parameter that is one of the four and appears twice makes the request invalid and
@@ -613,6 +680,262 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OAuthClientMetadata" }
         "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
+  /api/search/threads:
+    post:
+      operationId: searchThreads
+      summary: Search the caller's own threads by the words of their titles, descriptions and messages
+      description: |
+        The caller's own threads, and nobody else's ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md),
+        [ADR 0068](../decisions/0068-a-person-searches-their-own-threads.md)): what it finds is always a **subset of what
+        `listThreads` lists** for the same `archived` and `branches`, for every role (an administrator finds their own
+        too). Another person's thread is never a hit, by its title or by its content. The permission is `thread.read`.
+        A `POST`, though it is a safe read that writes nothing: the query is a person's words, and they must not be in a
+        URL, a proxy's access log or a trace. The media type is exactly `application/json` (a parameter such as `charset` is
+        allowed; `application/problem+json` and `application/json-seq` are not): any other is a 415. The checks run in
+        one order, so two errors never leave a client guessing: 401, 429, 403, 415, then the body's shape (400
+        `bad_request`: one JSON object, only the five members, each of its type, none twice, no `null`), `q` (400
+        `query_empty`, `query_too_long`), `limit`'s range, `archived`, `branches`, the cursor (400 `bad_cursor`), and last
+        the store (503). The vectors of `requests.json` hold every case.
+
+        **Every rule is in [`thread-search-v1.md`](thread-search-v1.md), with vectors**: what a word is, how it is folded
+        (`Café`, `cafe` and `CAFÉ` are one word; `cœur` is `coeur`), how the query is read, when a document matches (every
+        term is the start of one word of one title, one description or one message), what is searched (titles,
+        descriptions, a person's messages and an agent's **final** answers; not working text, reasoning, steps, tool
+        results or file names), how the snippet is cut and its offsets, and the order. A second client reads that page and
+        gets the same threads, snippets and order as this server.
+
+        **Order:** `rank` descending (2: the title matches, 1: the description, 0: only messages), then the thread's `id`
+        descending (the newest created first). A page that is read later differs from an earlier one only when a thread was
+        renamed, deleted or written to in between.
+
+        **Client recipe** (the server enforces every rule above; a client only offers the box):
+
+        1. If `getConfig` has no `search`, offer no box.
+        2. Debounce about 250 ms, cancel the request in flight when the text changes, and drop an answer that is not for
+           the latest text.
+        3. Send `{"q": text}`; do not trim, fold or bound it yourself. Draw each result with `thread.title`, and each
+           hit's `snippet.text` split at `matches` (UTF-16 code unit offsets) into plain and marked runs, with an
+           ellipsis where `cutStart` or `cutEnd`. Never interpret the text as markup. Say `messageHits` beyond the hits
+           shown. `query.terms` says what was searched for.
+        4. A message hit opens the thread at its `seq` (`getThreadHistory` with `since=<seq>`, as for a `#m-<seq>` link); a
+           title or description hit opens the thread as usual.
+        5. For more, send the same request with `cursor` set to `next`, until `next` is absent.
+        6. On 429 wait `Retry-After`; on 503 say that the search is unavailable and offer to try again.
+
+        A query that keeps no term (`a`, `!!`) is a 200 with `terms: []` and no result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchThreadsRequest" }
+      responses:
+        "200":
+          description: One page of results
+          headers:
+            Cache-Control: { description: "`no-store`: the page holds a person's words", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ThreadSearchPage" }
+        "400": { description: "`code: query_empty` (nothing is left of `q` after it is trimmed), `query_too_long` (more than 200 characters), `bad_cursor` (`cursor` is not a position of a page of this request: it is checked against the terms, `archived` and `branches` of the request, not the text of `q`, and a position that is not valid is refused); or `code: bad_request`: not JSON, not one object, a member that is not allowed (there is no `owner`: ADR 0039), a member twice, a member of the wrong type (`null` too), a lone surrogate, `limit` out of range or not an integer literal (`20.0` is refused), `archived` or `branches` not one of their words", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json` (parameters such as `charset` are allowed)", $ref: "#/components/responses/Problem" }
+        "429": { description: "`code: rate_limited`: a person searches in bursts of 20 and then twice a second; `Retry-After` says, in seconds, how long to wait", $ref: "#/components/responses/Problem" }
+        "503": { description: "`code: search_unavailable`: the store is down, the whole search took more than 2 seconds, or this process is already running 8 searches (for everybody: it refuses at once and does not queue); `Retry-After` says, in seconds, when to try again", $ref: "#/components/responses/Problem" }
+  /api/prompts:
+    get:
+      operationId: listPrompts
+      summary: The caller's own prompts and the prompts shared with them, as summaries
+      description: |
+        A person's prompt library ([ADR 0070](../decisions/0070-a-persons-prompt-library.md),
+        [`prompts-v1.md`](prompts-v1.md)): the prompts the caller owns and the ones **shared with a role of theirs**. It needs
+        no permission of its own. **Summaries only**: no `body` and no `variables` (`variableCount` says how many), so the
+        answer is small; `getPrompt` has the whole. Ordered by `id`, bytewise, **not by name**: a client sorts for display.
+        `scope` is `all` (the default: the caller's own, and the shared ones), `mine` or `shared` (the caller's own are left
+        out). `held` is how many prompts the caller owns, whatever the scope. A page holds at most `limit` (100); `nextCursor`
+        is there when more follow, and is sent back as `cursor` (a position, never a capability: it is the id of the last
+        prompt of the page before). A shared prompt has no `audience`, no owner and no created time: **it never names its
+        author**. Never cached.
+
+        **Client recipe: using a prompt.** (1) If `getConfig` has no `prompts`, offer no library. (2) List, and page with
+        `nextCursor` until it is absent. (3) `getPrompt` for the one chosen. (4) Draw its `variables` as a `Choices` form with
+        the client's own catalog renderer and collect the catalog's answer (`answers`); **a client that cannot draw a kind of
+        question does not offer the prompt**. With no variables send `answers: []`. (5) `renderPrompt` with the `answers` and
+        the `revision`; a 409 `stale_revision` means read the prompt again. (6) Put the `text` in the message box for the
+        person to edit, and send it as an ordinary message: nothing here sends it. Draw a shared prompt's words as plain
+        text, never as Markdown or HTML.
+      parameters:
+        - name: scope
+          in: query
+          description: "`all` (the default), `mine` or `shared`; anything else is 400 `bad_scope`"
+          schema: { type: string, enum: [all, mine, shared], default: all }
+        - name: cursor
+          in: query
+          description: "The `nextCursor` of the page before: a prompt id; anything else is 400 `bad_cursor`"
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of summaries
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PromptList" }
+        "400": { description: "`code: bad_scope` or `bad_cursor`", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createPrompt
+      summary: Save a prompt of one's own
+      description: |
+        Saves a prompt ([`prompts-v1.md`](prompts-v1.md)): `name` (`^[a-z0-9][a-z0-9-]{0,31}$`, unique for the caller),
+        `title`, `description?`, `body` (text with `{{id}}` references; `\{{` writes `{{`), `variables?` (questions of the UI
+        catalog, version 8, without `show` and without the type `images`: every one declared and used) and `audience?` (role
+        values; `"*"` only alone; empty is private). **Sharing needs `prompts.share`** (no role holds it by default, `admin`
+        included): a request whose audience is not empty without it is 403 `forbidden`, before the values are read. The
+        checks run in one order (the vectors of `requests.json` and `prompts.json` hold them): 401, 403 `no_access`, 415, the
+        shape (400 `bad_request`), 403 `forbidden`, the values (400 `bad_name`, `bad_title`, `bad_description`, `bad_body`,
+        `bad_reference`, `bad_variable`, `undeclared_variable`, `unused_variable`, `bad_audience`, each with `at` and, for
+        a reference, `offset` in UTF-16 code units), and last the store (409 `name_taken`, then `too_many_prompts`). The
+        media type is exactly `application/json`, and the body at most 64 KiB. The caller holds at most 100. The text of a
+        body, a title and an answer is in no log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePromptRequest" }
+      responses:
+        "201":
+          description: The prompt as saved
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+        "400": { description: "`code: bad_request` (not one JSON object of these members, a member twice in any object of it, a member of the wrong type, `null`, a lone surrogate, a body over 64 KiB) or one of the codes above", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "`code: forbidden` (a non-empty `audience` without `prompts.share`) or `no_access`", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: name_taken` (the caller already has that name) or `too_many_prompts` (the caller holds 100)", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+  /api/prompts/{promptId}:
+    parameters: [ { $ref: "#/components/parameters/PromptId" } ]
+    get:
+      operationId: getPrompt
+      summary: One prompt, with its body and variables
+      description: |
+        The caller's own prompt, or one shared with a role of theirs. **Anything else is 404, the same answer as for an id
+        that never existed**: another person's private prompt, a shared prompt the caller's roles are outside of (an
+        administrator included: `admin` reads no prompt that is not its own), an unshared one. A shared prompt's view has
+        `own: false` and no `audience`. An id that is not `p-` and 12 characters of `[a-z0-9]` is 400 `bad_request`.
+        Never cached.
+      responses:
+        "200":
+          description: The prompt
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+        "400": { description: "`code: bad_request`: the id is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt for the caller (it never existed, was deleted, is private to another person, or is shared with roles the caller does not have)", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    patch:
+      operationId: updatePrompt
+      summary: Change a prompt of one's own, or share it, or take its share back
+      description: |
+        Changes the caller's own prompt. **`revision` is required** (the one the last read gave) and at least one other
+        member must follow: a member given **replaces the whole member** (`variables` is the whole list, `audience` the whole
+        set). The checks run in this order: 401, 403 `no_access`, 415, the shape (400 `bad_request`), **404** (the prompt is
+        not the caller's: another person's, shared with them, or not there), **403 `forbidden`** (the **resulting** audience
+        is not empty and the caller lacks `prompts.share`: a person who lost it can still send `audience: []`, and nothing
+        that leaves a share in place), **409 `stale_revision`** (the prompt changed since the `revision`), then the values of
+        the whole prompt as it would be (the codes of `createPrompt`), and last 409 `name_taken`. A request that changes
+        nothing writes nothing and keeps the revision. A write is one statement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePromptRequest" }
+      responses:
+        "200":
+          description: The prompt as it is now
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+        "400": { description: "`code: bad_request` (as `createPrompt`, and no `revision`, a `revision` that is not `^[1-9][0-9]{0,18}$`, or nothing to change) or a code of the values", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "`code: forbidden` or `no_access`", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt of the caller's", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision` or `name_taken`", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deletePrompt
+      summary: Delete a prompt of one's own
+      description: |
+        Deletes the caller's own prompt. **Needs no `prompts.share`**: a person can always withdraw what they shared. With
+        `?revision=N` (optional) it is 409 `stale_revision` when the prompt changed since. Another person's prompt, a
+        shared one and an absent one are all 404. Nothing of a thread is touched: a prompt is in no thread.
+      parameters:
+        - name: revision
+          in: query
+          description: "The revision the caller last read; when it is there and the prompt has another, 409 `stale_revision`. Not `^[1-9][0-9]{0,18}$` is 400 `bad_request`"
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "400": { description: "`code: bad_request`: the id or the `revision` is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt of the caller's", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+  /api/prompts/{promptId}/render:
+    parameters: [ { $ref: "#/components/parameters/PromptId" } ]
+    post:
+      operationId: renderPrompt
+      summary: Fill a prompt's variables and get the text, without sending anything
+      description: |
+        Substitutes the person's `answers` into the prompt's body and returns the text. **It writes nothing**: no message is
+        sent, no thread is touched, and the answer is in no log. Allowed for the caller's own prompts and for the ones
+        shared with them. `answers` is the [Choices answer](ui-catalog-v1.md#choices-answers) to the prompt's variables:
+        **one entry per variable, once each, in variable order**, `{id, values, other?, text?}`; a prompt has no free box,
+        so a `note` is refused. Every rule is in [`prompts-v1.md`](prompts-v1.md) with vectors: a choice renders as its
+        **label**, several as the labels in option order joined by `", "`, a text verbatim, `confirm` as `yes` or `no`, a
+        number, a scale point and a date as sent, a rank as `1. A; 2. B`; an optional variable left alone renders as the empty
+        string (its default is never used); nothing is trimmed and a value is never read again for references. The text is
+        at most 32,768 bytes (422 `rendered_too_long`, decided before anything is built). With `revision` the prompt must
+        still be at it (409 `stale_revision`: read it again). An answer that does not fit is **422 `invalid_answer`** with
+        the first refusal: `question` (a variable's id, or `*` for the whole answer) and `rule` (`unknown`, `unexpected`,
+        `required`, `too_many`, `too_few`, `not_offered`, `repeated`, `out_of_order`, `too_long`, `grammar`, `below_min`,
+        `above_max`, `off_step`, `not_a_permutation`). The checks run in one order: 401, 403 `no_access`, 415, the shape
+        (400 `bad_request`), 404, 409, 422.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenderPromptRequest" }
+      responses:
+        "200":
+          description: The text
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenderedPrompt" }
+        "400": { description: "`code: bad_request`: not one JSON object of `revision` and `answers` (and `note`), a `revision` of the wrong form, a member of the wrong type, or an id that is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such prompt for the caller (as `getPrompt`)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision`", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: invalid_answer` (with `question` and `rule`) or `rendered_too_long`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
       operationId: listThreads
@@ -883,6 +1206,11 @@ paths:
         e-mail address (`thread.owner`, and the `actor` of the owner's messages); it holds no credential the
         orchestrator uses (no bearer token, webhook secret or database URL is ever in the log).
         Read it before sharing it: a person can paste anything into a chat.
+
+        **Client recipe: Export Markdown.** The same document is the input of the Markdown file of
+        [`thread-markdown-v1.md`](thread-markdown-v1.md): a client writes it from this response, with no other
+        request, so that every client writes the same file. Only what this export holds is written, and not a step's
+        `input` or `output`. A share link has no export route, so a reader of a link cannot make that file (a gap the page names).
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
@@ -934,6 +1262,28 @@ paths:
           `listThreads` unless asked for, and `listBranches` finds its siblings. A conversation holds at most 256
           threads, its first thread and the threads made from it this way: the 256th edit is a 409.
 
+        **Regenerate the last answer** is an edit with the same words; the server has no route of its own for it
+        ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md), amended 2026-11-14). A client does this:
+        1. Take the person's message that began the **newest** turn and `POST` `{id, replace: <its seq>, text: <its words,
+           unchanged>, messageId}`. Send **no `tier`**: the server then keeps the replaced message's tier (below). The
+           answer is a new version of that message: `listBranches` finds it, and the client goes to the new thread.
+        2. `id` and `messageId` are new UUIDs for each regenerate and the **same** ones for a retry after a failure
+           (a lost response, a 5xx), so a retry never makes a second thread; the next regenerate, of the same
+           message too, mints new ones.
+        3. Do not offer it when the client can see, from what the API gives it, that the edit would lose something:
+           the thread is `queued`, `working` or `verifying` (the turn is not over); the thread is `blocked` with a
+           question open (the edit would drop it); the newest turn did not begin with a message of a person but with a
+           form answer (`ui_action`, the `vymalo.action` activity: there is no message to replace); the message mentioned
+           agents (`vymalo.mentions` in its `START` metadata: an edit carries none); the message was sent while the agent
+           worked (`vymalo.delivery`, `steer` or `interrupt`: the turn also holds the agent's earlier work, which an
+           edit of that message keeps, so it is not "again"); the caller holds no `thread.write` (`getMe`); or the
+           thread is read through a share link (the owner's routes are a 404 to a reader).
+
+        The server enforces only the caller's `thread.write` (403), ownership (404, a share link's reader included),
+        that `replace` is a message of a person (422) and the tier rules below. Everything else in step 3 is the client's
+        courtesy: a request that ignores it is accepted. The `seq` of a person's message is the resume point (SSE `id:`)
+        of the last frame of that message in the stream ([`agui.md`](agui.md)).
+
         `tier` ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),
         [`access-tier-v1.md`](access-tier-v1.md)) is the access tier of the message the fork carries, one of `plan`, `edits`,
         `auto`, `bypass`, read as `forwardedProps["vymalo.tier"]` is; it goes with `text`. An **edit** that names none is
@@ -972,7 +1322,7 @@ paths:
         "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the target agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or the caller may not read it (one answer for all three)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: turn_open`: the turn to copy is still going on, try again when it has ended; or `id` is another thread's (for `after` with `text`: any thread but the fork this very request made), or the conversation has 256 branches already", $ref: "#/components/responses/Problem" }
-        "422": { description: "`after` or `replace` is not an event of the thread, or `replace` is not a message of a person; a `tier` above what the caller's roles allow or one the agent's live card does not honour, or a tier an edit inherits that cannot be kept", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: child_thread`: the thread is the thread of a helper session (`childOf`, ADR 0072), which is never forked; `after` or `replace` is not an event of the thread, or `replace` is not a message of a person; a `tier` above what the caller's roles allow or one the agent's live card does not honour, or a tier an edit inherits that cannot be kept", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, or the agent registry cannot say whether the target exists, or the agent's live card cannot be read to decide the access tier; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/branches:
@@ -1113,6 +1463,7 @@ paths:
         "403": { description: "No role of the caller holds `thread.share` (`code: forbidden`), or the deployment's cap is `disabled` (`code: sharing_disabled`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The thread is missing, its id is not a UUID, or it is not the caller's (one answer for all three, an administrator's included)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: over_cap`: `visibility` is above the deployment's cap (`public` under `internal`)", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: child_thread`: the thread is the thread of a helper session (`childOf`, ADR 0072), which is shared with the thread it belongs to and never alone", $ref: "#/components/responses/Problem" }
     delete:
       operationId: unshareThread
       summary: Take a link down
@@ -1471,7 +1822,7 @@ paths:
       parameters:
         - { name: before, in: query, description: "An event of the chain the caller holds the page of, normally the `start` of its oldest page: the answer is the turns that precede the chain that holds it. A value beyond the log counts as absent. Not with `after`", schema: { type: integer, minimum: 1 } }
         - { name: limit, in: query, description: "How many turns, 1 to `server.history.maxTurns` (default `ui.history.pageTurns`). Not with `since` or `after`", schema: { type: integer, minimum: 1 } }
-        - { name: since, in: query, description: "Go back at least to the chain that holds this event, never beyond `maxTurns` turns or `maxPageBytes`. Not with `limit` or `after`", schema: { type: integer, minimum: 1 } }
+        - { name: since, in: query, description: "Go back at least to the chain that holds this event, never beyond `maxTurns` turns or `maxPageBytes`. **Inclusive**: the event itself is in the page, with the rest of its turn in front of it (a page starts at a turn's first event, so it may start earlier than `since`), unless a limit stops it first. A hit's `seq` opens the thread with it. Not with `limit` or `after`", schema: { type: integer, minimum: 1 } }
         - { name: after, in: query, description: "A catch-up: the settled chains after the chain that holds this event, to the newest settled point (at most `maxTurns` turns). The answer has `anchor`. Not with `limit`, `since` or `before`", schema: { type: integer, minimum: 1 } }
       responses:
         "200":
@@ -1553,7 +1904,11 @@ paths:
         well-formed params ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)):
         `tiers` lowest first, each of `plan`, `edits`, `auto`, `bypass` at most once, and `default` one of them, plus `maxTier`, the highest
         tier the person asking may use **of this agent** (over the roles that let them invoke it; absent when none caps it); the web draws
-        its tier chip from it.
+        its tier chip from it. `custom[<commands/v1 URI>]` (`https://agents.vymalo.com/a2a/extensions/commands/v1`) is
+        `{commands: [{name, description, argumentHint?}]}` while the card lists that extension with well-formed params
+        ([ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md), [`commands-v1.md`](commands-v1.md)): the agent's
+        own prompt templates, sorted by name and each once, and the web draws its `/` menu from it. A command has no inbound member:
+        it is the text of the message the person sends (`/name <arguments>`), which the orchestrator sends as it stands.
       responses:
         "200":
           description: Capabilities
@@ -1602,6 +1957,12 @@ components:
       required: true
       description: "The id of one of the caller's own servers, `u-` and 10 lowercase letters or digits (`UserToolServer.id`)"
       schema: { type: string, pattern: "^u-[a-z0-9]{10}$" }
+    PromptId:
+      name: promptId
+      in: path
+      required: true
+      description: "The id of a prompt of the caller's or shared with them, `p-` and 12 lowercase letters or digits (`Prompt.id`). Any other string is 400 `bad_request`"
+      schema: { type: string, pattern: "^p-[a-z0-9]{12}$" }
     Sha256:
       name: sha256
       in: path
@@ -1633,9 +1994,13 @@ components:
               title: { type: string }
               status: { type: integer }
               detail: { type: string }
+              at: { type: string, description: "Where a save is refused (`createPrompt`, `updatePrompt`): `name`, `title`, `description`, `body`, `variables`, `variables.<i>`, `variables.<i>.<member>`, `variables.<i>.options.<j>.<member>` or `audience`" }
+              offset: { type: integer, minimum: 0, description: "`bad_reference`, `undeclared_variable`: the UTF-16 code unit offset in `body` of the `{{` concerned" }
+              question: { type: string, description: "`invalid_answer`: the id of the variable whose answer is refused, or `*` for the whole answer" }
+              rule: { type: string, description: "`invalid_answer`: the rule that failed (a closed list, see `renderPrompt`)" }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `searchThreads`: a burst of 20 and then two a second; `Retry-After`); `query_empty`, `query_too_long`, `bad_cursor` (400, `searchThreads`: the query is blank or too long, the cursor is not this request's); `bad_request` (400, `searchThreads`: any other malformed request); `search_unavailable` (503, `searchThreads`: the store is down or the search took too long; `Retry-After`); `bad_scope`, `bad_cursor` (400, `listPrompts`), `bad_name`, `bad_title`, `bad_description`, `bad_body`, `bad_reference`, `bad_variable`, `undeclared_variable`, `unused_variable`, `bad_audience` (400, `createPrompt`, `updatePrompt`: a save the rules of `prompts-v1.md` refuse; the members `at` and `offset` say where), `name_taken` and `too_many_prompts` (409, `createPrompt`, `updatePrompt`), `stale_revision` (409, also `updatePrompt`, `deletePrompt`, `renderPrompt`: the prompt changed since the revision sent), `invalid_answer` (422, `renderPrompt`: the members `question` and `rule` say which answer and which rule) and `rendered_too_long` (422, `renderPrompt`); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
   schemas:
     BrowserAuth:
       type: object
@@ -1663,7 +2028,7 @@ components:
         permissions:
           type: array
           items: { $ref: "#/components/schemas/Permission" }
-          description: "What the roles grant, in the order `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `artifact.read`, `admin`"
+          description: "What the roles grant, in the order `agent.read`, `agent.invoke`, `thread.read`, `thread.write`, `thread.share`, `thread.delete`, `artifact.read`, `admin`, `tools.user.add`, `prompts.share`. `tools.user.add` is listed for a role that holds it whether or not the deployment has people's own MCP servers on (the routes are then a 404). `prompts.share` is the only thing that lets a person share a prompt (no role holds it by default)"
         agents: { $ref: "#/components/schemas/MeAgents" }
         maxTier:
           type: string
@@ -1750,11 +2115,11 @@ components:
       type: object
       required: [permission]
       properties:
-        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin, tools.user.add] }
+        permission: { type: string, enum: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin, tools.user.add, prompts.share] }
         scope:
           type: string
           enum: [own]
-          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` and `thread.delete` (which take no scope: they are over one's own thread), `admin` and `tools.user.add` (a person's servers are the person's own)"
+          description: "How far a permission over threads reaches (`thread.read`, `thread.write`, `artifact.read`): `own`, the person's own threads, for every role and the only scope there is ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Absent for `agent.*`, `thread.share` and `thread.delete` (which take no scope: they are over one's own thread), `admin`, `tools.user.add` and `prompts.share` (a person's servers and prompts are the person's own)"
     MeAgents:
       type: object
       required: [read, invoke]
@@ -1903,8 +2268,24 @@ components:
     PublicConfig:
       type: object
       required: [ui]
-      description: "Exactly `{ui}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it)."
+      description: "`{ui, search, prompts}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`, `prompts`)."
       properties:
+        search:
+          type: object
+          description: "**Its presence is the capability**: this orchestrator serves `searchThreads` ([ADR 0068](../decisions/0068-a-person-searches-their-own-threads.md)). An older one leaves it out, and a client then offers no search box. The numbers are what the server enforces, for a client that wants to bound its input."
+          required: [maxQueryLength, maxTerms]
+          properties:
+            maxQueryLength: { type: integer, minimum: 1, description: "The longest `q`, in Unicode scalar values (200)" }
+            maxTerms: { type: integer, minimum: 1, description: "The most terms of a query that are used (8)" }
+        prompts:
+          type: object
+          description: "**Its presence is the capability**: this orchestrator serves the prompt library ([ADR 0070](../decisions/0070-a-persons-prompt-library.md), [`prompts-v1.md`](prompts-v1.md)). An older one leaves it out, and a client then offers no library. The numbers are what the server enforces. There is no switch: a build has it or not."
+          required: [limit, maxVariables, maxBodyBytes, maxRenderedBytes]
+          properties:
+            limit: { type: integer, minimum: 1, description: "The most prompts a person holds (100). It is not the page size of `listPrompts`, which is `limit` of that answer: two numbers that are equal today and are not promised to stay so" }
+            maxVariables: { type: integer, minimum: 1, description: "The most variables of a prompt (8)" }
+            maxBodyBytes: { type: integer, minimum: 1, description: "The longest body in UTF-8 bytes (16384)" }
+            maxRenderedBytes: { type: integer, minimum: 1, description: "The longest rendered text in UTF-8 bytes (32768)" }
         ui:
           type: object
           description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know."
@@ -1923,6 +2304,204 @@ components:
                 maxTurns: { type: integer, minimum: 1, description: "The most turns a page holds (`server.history.maxTurns`, default 100): the largest `limit` the server accepts, where the pages that grow stop" }
                 projection: { type: integer, minimum: 1, description: "The version of the projection this build writes: the `projection` of a page" }
                 windowed: { type: boolean, description: "Whether the web opens a thread from its history (`ui.history.windowed`); false opens it by replaying the log" }
+    SearchThreadsRequest:
+      type: object
+      required: [q]
+      additionalProperties: false
+      description: "A search of the caller's own threads ([`thread-search-v1.md`](thread-search-v1.md)). There is no `owner`: a person's threads are the only ones there are to search."
+      properties:
+        q: { type: string, description: "The words to look for. Trimmed of U+0020, U+0009, U+000A and U+000D; blank is `query_empty`; more than 200 Unicode scalar values (after the trim) is `query_too_long`. Read as words: quotes, `OR`, `-`, `*` and SQL are punctuation, there is no query syntax. At most 8 terms are used (`maxTerms` of `getConfig`)" }
+        limit: { type: integer, minimum: 1, maximum: 50, default: 20, description: "Threads per page. A JSON integer literal: `20.0` and `2e1` are refused, and so is `null` (as for every member)" }
+        cursor: { type: string, maxLength: 512, description: "The `next` of the page before, sent back with the same terms (the text of `q` may be spelled differently), `archived` and `branches`; anything else is `bad_cursor`. It is a position (rank, thread) and carries no authority; what is in it is the server's own" }
+        archived: { type: string, enum: [exclude, only, include], default: include, description: "`include` (the default): archived threads are searched too (the `thread` says it is archived). `exclude`: the threads that are not archived. `only`: the archived ones" }
+        branches: { type: string, enum: [include], description: "`include`: search the threads made by an edit of a message too, as `listThreads` does. Without it they are left out" }
+    ThreadSearchPage:
+      type: object
+      required: [query, results]
+      properties:
+        query:
+          type: object
+          required: [terms]
+          properties:
+            terms: { type: array, items: { type: string }, description: "The terms the query was read as: folded keys (`Café` is `cafe`), at most 8, of 2 to 64 characters, each looked for as the start of a word. Empty when the query keeps none" }
+        results: { type: array, items: { $ref: "#/components/schemas/ThreadHit" } }
+        next: { type: string, description: "The `cursor` of the next page; absent on the last page" }
+    ThreadHit:
+      type: object
+      required: [thread, rank, hits, messageHits]
+      properties:
+        thread: { $ref: "#/components/schemas/Thread" }
+        rank: { type: integer, enum: [0, 1, 2], description: "2: the title matches. 1: the description does (and the title does not). 0: only messages match. Results are in `rank` order, descending, then newest thread first" }
+        hits: { type: array, items: { $ref: "#/components/schemas/SearchHit" }, description: "The title hit, then the description hit, then at most three message hits, newest first" }
+        messageHits: { type: integer, minimum: 0, description: "How many messages match in all (every one of `hits` that is a message is among them)" }
+    SearchHit:
+      type: object
+      required: [field, snippet]
+      properties:
+        field: { type: string, enum: [title, description, message] }
+        seq: { type: integer, format: int64, minimum: 1, description: "A message hit only: the `seq` of the event, the number to open the thread at (`getThreadHistory` with `since=<seq>`)" }
+        role: { type: string, enum: [person, agent], description: "A message hit only: who said it. `agent` is a final answer" }
+        at: { type: string, format: date-time, description: "A message hit only: when it was said" }
+        snippet: { $ref: "#/components/schemas/SearchSnippet" }
+    SearchSnippet:
+      type: object
+      required: [text, cutStart, cutEnd, matches]
+      description: "A piece of a title, a description or a message around its first match, cut as [`thread-search-v1.md`](thread-search-v1.md#the-snippet) says. `text` is plain text (whitespace flattened) and is never markup."
+      properties:
+        text: { type: string }
+        cutStart: { type: boolean, description: "Something of the document comes before `text`: draw an ellipsis in front" }
+        cutEnd: { type: boolean, description: "Something comes after: draw an ellipsis behind" }
+        matches:
+          type: array
+          description: "The words of `text` that start with a term, in order, as UTF-16 code unit offsets into `text` (what a JavaScript string indexes), never inside a surrogate pair"
+          items:
+            type: object
+            required: [start, end]
+            properties:
+              start: { type: integer, minimum: 0, description: "Inclusive" }
+              end: { type: integer, minimum: 1, description: "Exclusive" }
+    PromptId:
+      type: string
+      pattern: "^p-[a-z0-9]{12}$"
+      description: "`p-` and 12 lowercase letters or digits. Global: the id alone names a prompt"
+    PromptRevision:
+      type: string
+      pattern: "^[1-9][0-9]{0,18}$"
+      description: "Decimal digits. It grows with every write of every prompt and **is never given twice**; a client compares it for equality and never orders by it"
+    ChoicesQuestion:
+      type: object
+      required: [id, question]
+      additionalProperties: false
+      description: "A question of the UI catalog's `Choices`, version 8 ([`ui-catalog-v1.md`](ui-catalog-v1.md)), as a prompt's variable: the same members and bounds, without the type `images`, without `show` and without an option's `image`, and without `min` and `max` on a question that takes one choice ([`prompts-v1.md`](prompts-v1.md#the-variables)). `required` is true when absent, for every kind."
+      properties:
+        id: { type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$", description: "The name of the reference `{{id}}` in the body; unique among the variables" }
+        question: { type: string, minLength: 1, maxLength: 300 }
+        help: { type: string, maxLength: 300 }
+        type: { type: string, enum: [single, multiple, select, text, longText, confirm, number, scale, date, rank], description: "`single` when absent" }
+        options:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [value, label]
+            additionalProperties: false
+            properties:
+              value: { type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$" }
+              label: { type: string, minLength: 1, maxLength: 120 }
+              description: { type: string, maxLength: 300 }
+              icon: { type: string, enum: [agent, read, edit, delete, move, search, execute, think, fetch, web, git, test, file, tool, opencode] }
+              recommended: { type: boolean }
+        multiple: { type: boolean }
+        allowOther: { type: boolean }
+        required: { type: boolean }
+        default:
+          description: "A string, or for several choices and a `rank` a list of option values; never substituted by the server"
+          anyOf:
+            - { type: string, maxLength: 2000 }
+            - { type: array, maxItems: 50, items: { type: string } }
+        min: { type: integer, minimum: 0, maximum: 50 }
+        max: { type: integer, minimum: 1, maximum: 50 }
+        yesLabel: { type: string, minLength: 1, maxLength: 40 }
+        noLabel: { type: string, minLength: 1, maxLength: 40 }
+        minValue: { type: string, pattern: "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }
+        maxValue: { type: string, pattern: "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }
+        step: { type: string, pattern: "^-?(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }
+        unit: { type: string, minLength: 1, maxLength: 20 }
+        from: { type: integer, minimum: 0, maximum: 1 }
+        to: { type: integer, minimum: 2, maximum: 10 }
+        fromLabel: { type: string, minLength: 1, maxLength: 60 }
+        toLabel: { type: string, minLength: 1, maxLength: 60 }
+        minDate: { type: string, pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+        maxDate: { type: string, pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+    PromptAudience:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items: { type: string, minLength: 1, maxLength: 64, pattern: "^[!-~]+$" }
+      description: "Role values of the roles claim, byte for byte; `\"*\"` means everybody and is only allowed alone; empty is private. The server returns the set sorted by bytes"
+    Prompt:
+      type: object
+      required: [id, name, title, description, body, variables, own, revision, updatedAt]
+      description: "A prompt ([`prompts-v1.md`](prompts-v1.md)). **A prompt that is not the caller's has `own: false` and no `audience`**: it never names its author, its audience or when it was created."
+      properties:
+        id: { $ref: "#/components/schemas/PromptId" }
+        name: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$", description: "Unique among the owner's prompts: the `/name` of a command menu" }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        body: { type: string, description: "1 to 16,384 UTF-8 bytes of text with `{{id}}` references. Plain text: a client never draws it as Markdown or HTML" }
+        variables: { type: array, maxItems: 8, items: { $ref: "#/components/schemas/ChoicesQuestion" } }
+        own: { type: boolean, description: "Whether the caller owns it" }
+        audience: { $ref: "#/components/schemas/PromptAudience" }
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        updatedAt: { type: string, format: date-time }
+    PromptSummary:
+      type: object
+      required: [id, name, title, description, variableCount, own, revision, updatedAt]
+      description: "A prompt without its `body` and `variables`. `audience` is the caller's own prompts' only."
+      properties:
+        id: { $ref: "#/components/schemas/PromptId" }
+        name: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        variableCount: { type: integer, minimum: 0, maximum: 8 }
+        own: { type: boolean }
+        audience: { $ref: "#/components/schemas/PromptAudience" }
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        updatedAt: { type: string, format: date-time }
+    PromptList:
+      type: object
+      required: [limit, held, items]
+      properties:
+        limit: { type: integer, minimum: 1, description: "The page size: the most prompts one answer of `listPrompts` holds (100). It is not the cap on what a person owns, which is `prompts.limit` of `getConfig`: two numbers that are equal today and are not promised to stay so" }
+        held: { type: integer, minimum: 0, description: "How many prompts the caller owns, whatever the scope" }
+        items: { type: array, items: { $ref: "#/components/schemas/PromptSummary" } }
+        nextCursor: { type: string, description: "Send it back as `cursor` for the next page; absent on the last" }
+    CreatePromptRequest:
+      type: object
+      required: [name, title, body]
+      additionalProperties: false
+      properties:
+        name: { type: string, description: "`^[a-z0-9][a-z0-9-]{0,31}$`" }
+        title: { type: string }
+        description: { type: string }
+        body: { type: string }
+        variables: { type: array, items: { type: object } }
+        audience: { type: array, items: { type: string } }
+    UpdatePromptRequest:
+      type: object
+      required: [revision]
+      additionalProperties: false
+      description: "`revision` and at least one other member; a member given replaces the whole member"
+      properties:
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        name: { type: string }
+        title: { type: string }
+        description: { type: string }
+        body: { type: string }
+        variables: { type: array, items: { type: object } }
+        audience: { type: array, items: { type: string } }
+    RenderPromptRequest:
+      type: object
+      additionalProperties: false
+      description: "`answers` is the catalog's Choices answer, one entry per variable in variable order. A missing `answers` and a `note` are 422 (`unknown`, `unexpected` for `*`); any other member is 400"
+      properties:
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        answers:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              values: { type: array }
+              other: { type: string }
+              text: { type: string }
+        note: { description: "Always refused, whatever its type except `null`: a prompt has no free box, so a request with a `note` is 422 (`unexpected`, `question: \"*\"`). `null` is the wrong type for any member (400)" }
+    RenderedPrompt:
+      type: object
+      required: [text, revision]
+      properties:
+        text: { type: string, description: "At most 32,768 UTF-8 bytes. Put it in the message box for the person to edit; nothing was sent" }
+        revision: { $ref: "#/components/schemas/PromptRevision" }
     Registry:
       type: object
       required: [sources]
@@ -1988,7 +2567,23 @@ components:
         lastSeq: { type: integer, format: int64, description: "The `seq` of the thread's last event. It may be an event with no frame (a share, a UI catalog), so no frame's `id:` need name it: a connect stream says it has read as far with an `id:` that has no `data:` (`connectThread`)" }
         pinned: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread pinned ([ADR 0042](../decisions/0042-the-thread-list-is-the-owners.md)); absent otherwise. Set with `arrangeThread`. The owner's routes and the export say it; the reader projection of a shared thread never does. Additive" }
         archived: { type: boolean, enum: [true], description: "Present, and `true`, while the owner has the thread archived; absent otherwise. Set with `arrangeThread`. Same readers as `pinned`. Additive" }
-        nestedUnder: { type: string, format: uuid, description: "The thread this one is nested under in the owner's list, one level deep: a fork is made nested under the thread the person sees (its parent; for a fork of a nested fork the same parent; for a fork of an edit the conversation's root). Absent for a thread of the list's own level. Display grouping only: the lineage is `forkedFrom`. `arrangeThread` with `nested: false` ejects it. Same readers as `pinned`. Additive" }
+        nestedUnder: { type: string, format: uuid, description: "The thread this one is nested under in the owner's list, one level deep: a fork is made nested under the thread the person sees (its parent; for a fork of a nested fork the same parent; for a fork of an edit the conversation's root), and a child thread (`childOf`, ADR 0072) under its parent's row. Absent for a thread of the list's own level. Display grouping only: the lineage is `forkedFrom`. `arrangeThread` with `nested: false` ejects it. Same readers as `pinned`. Additive" }
+        childOf:
+          type: object
+          description: |
+            Present only on the thread of a helper session an agent runs ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md),
+            [`child-sessions-v1.md`](child-sessions-v1.md)): a **child thread**. It is made by the orchestrator when the parent's agent
+            says it started the session, never by a request, and is nested under its parent (`nestedUnder` is the parent's row of the list).
+            Its log is the helper's own work, one job for each round of the session the orchestrator follows without sending the agent
+            anything (`job_started` names the `round`). It is neither forked (`forkThread` is 422 `child_thread`) nor shared
+            (`shareThread` is 422 `child_thread`), and deleting its parent deletes it. The reader projection of a shared thread never
+            says it. Additive.
+          required: [threadId, session]
+          properties:
+            threadId: { type: string, format: uuid, description: "The parent thread" }
+            session: { type: string, maxLength: 128, description: "The session's id: the agent's own and opaque" }
+            agent: { type: string, maxLength: 128, description: "The helper's name, as the agent gave it (the agent's text, untrusted, drawn as text)" }
+            state: { type: string, enum: [working, idle, closed], description: "The session as the agent last said it, the contract's and not the thread's: `working` while a round is open, `idle` for a kept-open session between rounds, `closed` once it is over for good" }
         forkedFrom:
           type: object
           description: |
@@ -2026,7 +2621,7 @@ components:
       required: [id, title, target, state, lastSeq, visibility, isOwner, createdAt, updatedAt]
       description: |
         A shared thread as a reader is given it: the reader projection ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md), section 7)
-        of a `Thread`. **No `owner`, no `forkedFrom`, no `tools`, no `share`, and nothing of the owner's list (`pinned`, `archived`, `nestedUnder`)**: the owner's address is nowhere in it, and a reader acts on
+        of a `Thread`. **No `owner`, no `forkedFrom`, no `childOf`, no `tools`, no `share`, and nothing of the owner's list (`pinned`, `archived`, `nestedUnder`)**: the owner's address is nowhere in it, and a reader acts on
         nothing. The thread's events come by `connectSharedThread` / `connectPublicSharedThread`.
       properties:
         id: { type: string, format: uuid, description: "The thread's id: not a capability, and the AG-UI `threadId` of the stream" }
@@ -2093,7 +2688,7 @@ components:
       properties:
         servers: { type: array, maxItems: 8, items: { $ref: "#/components/schemas/UserToolServer" }, description: "The caller's own servers, sorted by name and then id. Empty when `error` is present" }
         limit: { type: integer, minimum: 1, description: "The most servers one person holds" }
-        kinds: { type: array, items: { type: string, enum: [none, bearer, api_key, oauth2] }, description: "The kinds of authentication this deployment accepts for a server of one's own: `none` only when it keeps no credentials. A hint for the screen; the writes check" }
+        kinds: { type: array, items: { type: string, enum: [none, bearer, api_key, oauth2] }, description: "The kinds of authentication this deployment accepts for a server of one's own: all four where it keeps credentials, only `none` where it keeps none (no `secrets` section). A hint for the screen; the writes check" }
         error:
           type: object
           required: [code, detail]
@@ -2387,7 +2982,7 @@ components:
         - ui_action           # data: { surfaceId, name, sourceComponentId, context, version, runId?, tier?, tierCap? }  what the user did on an A2UI surface of the thread (ADR 0013); attributed to the user. Additive.
         - ci_result           # data: { provider: github|generic, repository, sha, branch?, name, conclusion: success|neutral|skipped|failure|cancelled|timed_out|action_required|stale|startup_failure, url?, summary? }  a CI provider reported a completed check on a commit (ADR 0017); attributed to the system. Additive; logged since MVP slice 6 (the CI webhooks).
         - check_result        # data: { source: CheckSource, attempt, status: pending|passed|failed, name?, commit?, summary?, stale?, findings?: [string] }  a source of the verification gate answered (ADR 0018); attributed to the system. `findings` are untrusted text (at most 20 items and 16 KiB). `stale`: the answer was for a verification that is no longer the current one and decided nothing. Additive.
-        - job_started         # data: { job: integer }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
+        - job_started         # data: { job: integer, round?: { number: integer, by?: agent|person } }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); in a **child thread** (ADR 0072) a round the orchestrator follows without having sent it starts a job too, and the event names it in `round` (`job` is 1 for the first round): absent for a job a message started; attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
         - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
         - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail?, input?, output?, ioDropped? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. `input` (with the start) and `output` (with the end) say what the tool was called with and what it returned, cut, redacted and budgeted (ADR 0030). Additive.
@@ -2400,8 +2995,11 @@ components:
         - thread_shared       # data: { visibility: internal|public, nonce_sha256 }  the owner shared the thread, widened or narrowed the share, or made a new link ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)): `nonce_sha256` is the lower-case hex SHA-256 of the nonce the link is built on, which tells one link from another and is useless as a link (the nonce itself is never in the log, because the export carries it). Attributed to the owner. `threads.visibility`, `share_nonce` and this event are one commit. Additive; a build that does not know it cannot read a log that has one, so roll the build out before raising `sharing.mode` above `disabled`. A fork copies it as history; the fork itself is private. No AG-UI frame.
         - thread_unshared     # data: {}  the owner took the link down ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)); the thread is private again and the nonce is gone. Attributed to the owner. Additive. No AG-UI frame.
         - ask_finished        # data: { ask: integer, state: completed|input_required|auth_required|failed|rejected|canceled|timed_out, text?, question?, artifacts?: [{ name, uri?, mimeType? }], error?, form?: true }  the ask ended, exactly once ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)); attributed to the asked agent for what it said, to the orchestrator for a deadline, a cancel (the person stopped the job, or the task that asked ended) or an agent it could not reach. `text` is the answer (untrusted, at most 64 KiB), `question` the question the agent asked back and `error` why it did not complete (at most 4 KiB each), `artifacts` at most 20. `form` is true when the asked agent showed an interface and then waited (`input_required` or `auth_required`): it waits for the **person's** answer to a form that nobody can see, so the ask is over, the task is cancelled, and the agent is not asked again in this job (a model does not answer a form that was shown). It is set when an interface was shown, or when a claim that re-attached saw the task wait (it cannot know what the task drew); an ask is sent the job's UI catalog, so a question with choices is a form, while a question in words that was seen from the start has no `form` and is still the asking agent's to answer. Absent when false and in older logs. Additive.
-        - model_usage         # data: { job, agent, task, call, path: [string], provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow? }  the tokens of one model call an agent made ([ADR 0056](../decisions/0056-token-usage-per-model-call.md), [`usage-v1.md`](usage-v1.md)), once per call (the idempotency key `a2a:<task>:usage:<call>`): `job` is the thread's job, `agent` the agent that made it, `task` its A2A task, `call` the agent's id for it. `path` is the step path it ran under, as `agent_step`'s: empty for the agent's own call, the sub-agent step's path and the step for a call under one, `["ask-<n>"]` for an asked agent's. The counts are AG-UI 1.0's `TokenUsage` accounting (`totalTokens` is the sum of the two totals, the others are parts of them); `contextWindow` is the model's window as the deployment configured it. Labels and numbers only. At most 10 000 per job. Attributed to the agent. Additive.
-        - model_usage_total   # data: { job, agent, task, path?: [string], totals: [{ provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens? }], sandbox?: { environment, usage?: [{ cpuMillis?, memoryBytes?, commands, milliseconds }] } }  a task's token totals when it ended or paused ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)): one entry per provider and model, every call of the task included, its sub-agents' too; the latest of a task is the record (a resumed task reports the totals of all its calls so far). `path` is `["ask-<n>"]` for an asked agent's task and absent for the thread's agent's. `sandbox` is the time the run's commands used in the environment they ran in ([`usage-v1.md`](usage-v1.md) section 5, ADR 0056 amended 2026-10-27), present only when the agent reported a valid one; events written before it existed have none. Attributed to the agent. Additive.
+        - model_usage         # data: { job, agent, task, call, path: [string], provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?, counted?: false }  the tokens of one model call an agent made ([ADR 0056](../decisions/0056-token-usage-per-model-call.md), [`usage-v1.md`](usage-v1.md)), once per call (the idempotency key `a2a:<task>:usage:<call>`): `job` is the thread's job, `agent` the agent that made it, `task` its A2A task, `call` the agent's id for it. `path` is the step path it ran under, as `agent_step`'s: empty for the agent's own call, the sub-agent step's path and the step for a call under one, `["ask-<n>"]` for an asked agent's. The counts are AG-UI 1.0's `TokenUsage` accounting (`totalTokens` is the sum of the two totals, the others are parts of them); `contextWindow` is the model's window as the deployment configured it. Labels and numbers only. At most 10 000 per job. Attributed to the agent. Additive.
+        - model_usage_total   # data: { job, agent, task, path?: [string], totals: [{ provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens? }], sandbox?: { environment, usage?: [{ cpuMillis?, memoryBytes?, commands, milliseconds }] }, counted?: false }  a task's token totals when it ended or paused ([ADR 0056](../decisions/0056-token-usage-per-model-call.md)): one entry per provider and model, every call of the task included, its sub-agents' too; the latest of a task is the record (a resumed task reports the totals of all its calls so far). `path` is `["ask-<n>"]` for an asked agent's task and absent for the thread's agent's. `sandbox` is the time the run's commands used in the environment they ran in ([`usage-v1.md`](usage-v1.md) section 5, ADR 0056 amended 2026-10-27), present only when the agent reported a valid one; events written before it existed have none. Attributed to the agent. Additive.
+        - child_session_opened   # data: { session, thread, agent, description, keepOpen: bool, by?: agent|person, round?: integer }  a helper session the agent started became a child thread ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), [`child-sessions-v1.md`](child-sessions-v1.md)): `session` is the agent's id for it, `thread` the child thread made for it, `agent` and `description` the helper's name and what it was asked to do (the agent's text, untrusted, at most 256 characters), `round` the number of the round the report named when the session was first seen. Once per session, in the **parent's** log, attributed to the parent's agent; the helper's own work is in the child's log. Additive (S2).
+        - child_session_reported # data: { session, thread, round: integer, report: done|failed|canceled|blocked }  a round of a child session ended ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): `blocked` is a round waiting for the person. Once per round a report names, in increasing order, in the parent's log, attributed to the parent's agent: a round that ended unseen between two reports is not reported (the child's log has it), and none is reported after the session closed. Additive (S2).
+        - child_session_closed   # data: { session, thread }  a child session closed ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): once per session, in the parent's log, attributed to the parent's agent. Additive (S2).
     Mention:
       type: object
       description: "An agent a person mentioned in a message, as a structured reference ([`mentions-v1.md`](mentions-v1.md), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)): the identity is `agentId`, never the label."
@@ -2497,11 +3095,12 @@ components:
           description: "ask_started, ask_finished (ADR 0026): the ask's number in the job, from 1."
         agent:
           type: string
-          description: "ask_started: the agent that was asked (an agent id). model_usage, model_usage_total: the agent that spent the tokens."
+          description: "ask_started: the agent that was asked (an agent id). model_usage, model_usage_total: the agent that spent the tokens. child_session_opened: the helper's name, as the agent gave it."
         by:
-          type: string
-          pattern: "^(main|ask:[1-9][0-9]*)$"
-          description: "ask_started: who asked, the addressed agent (`main`) or an earlier ask of the job (`ask:<n>`)."
+          anyOf:
+            - { type: string, pattern: "^(main|ask:[1-9][0-9]*)$" }
+            - { type: string, enum: [agent, person] }
+          description: "ask_started: who asked, the addressed agent (`main`) or an earlier ask of the job (`ask:<n>`). child_session_opened (ADR 0072): who started the session, the parent's model (`agent`) or a person (`person`); absent when the agent did not say."
         depth:
           type: integer
           minimum: 1
@@ -2582,7 +3181,7 @@ components:
         description:
           type: string
           maxLength: 500
-          description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none."
+          description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none. child_session_opened: what the helper was asked to do (the agent's text, untrusted, at most 256 characters)."
         from:
           type: object
           required: [threadId, seq]
@@ -2595,7 +3194,37 @@ components:
         job:
           type: integer
           minimum: 1
-          description: "job_started: the number of the job that started (from 2). model_usage, model_usage_total: the job the tokens were spent in (from 1)."
+          description: "job_started: the number of the job that started (from 2; 1 for the first round a child thread follows). model_usage, model_usage_total: the job the tokens were spent in (from 1)."
+        session:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "child_session_opened, child_session_reported, child_session_closed (ADR 0072): the session's id, the agent's own and opaque, at most 128 UTF-8 bytes (`maxLength` counts characters)."
+        thread:
+          type: string
+          format: uuid
+          description: "child_session_opened, child_session_reported, child_session_closed (ADR 0072): the child thread made for the session. A reader of a shared thread never sees these events."
+        keepOpen:
+          type: boolean
+          description: "child_session_opened: whether the session goes idle after a round instead of closing."
+        round:
+          anyOf:
+            - { type: integer, minimum: 1 }
+            - type: object
+              required: [number]
+              additionalProperties: false
+              properties:
+                number: { type: integer, minimum: 1 }
+                by: { type: string, enum: [agent, person] }
+          description: "child_session_opened: the number of the round the report named when the session was first seen. child_session_reported: the round that ended. job_started (ADR 0072): the round of a child session this job follows, `{number, by?}`; absent for a job a message started."
+        report:
+          type: string
+          enum: [done, failed, canceled, blocked]
+          description: "child_session_reported: how the round ended; `blocked` is a round that waits for the person."
+        counted:
+          type: boolean
+          enum: [false]
+          description: "model_usage, model_usage_total (ADR 0072): `false` when the usage ledger does not count the tokens because they are the parent's, whose totals hold them (a round a child thread follows and a person did not start). Absent when counted, and in every event written before the member existed."
         attempt:
           type: integer
           minimum: 1

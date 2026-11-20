@@ -1,6 +1,12 @@
 # ADR 0013 — A2UI for generative UI
 
-- **Status:** accepted (2026-09-29). Status note (2026-09-29): the orchestrator side is built (surfaces
+- **Status:** accepted (2026-09-29). **Amended (2026-11-19, [ADR 0075](0075-a2ui-v1-0-cutover.md)):** the system moves to
+  A2UI v1.0 as a hard cutover in R1 (the owner's decision): the envelope's `version` is `"1.0"` only, the extension URI
+  `https://a2ui.org/a2a-extension/a2ui/v1.0`, the capabilities `a2uiRendererCapabilities` keyed `"1.0"`, the basic catalog
+  `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`; the media type stays `application/a2ui+json`. The
+  `v0.9`, `v0.9.1` and draft `v1.0` spellings below are retired by that cutover, an action never forwards `userMessage`,
+  and the decision (A2UI, relayed, validated by the web, rules 1 to 7) stands. Nothing of it is built yet.
+  Status note (2026-09-29): the orchestrator side is built (surfaces
   from agents, actions from users, capability detection; the web renderer followed, see the next note). The decision
   stands, with these refinements, all verified against the specification the same day (details in
   [`api/agui.md`](../api/agui.md#a2ui-generative-ui)):

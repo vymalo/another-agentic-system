@@ -12,6 +12,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { OWN_CATALOG } from "@/features/chat/lib/a2ui/catalog";
 import { renderMermaid } from "@/features/chat/lib/a2ui/mermaid-render";
 import { surface } from "@/features/chat/lib/a2ui/testing";
+import { setChoice } from "@/lib/theme";
 import { mountSurfaces, resetSeq, stubLayout, surfaceRun } from "./testing";
 
 // mermaid draws with layout, which jsdom has not: it is stood in for here (its security options
@@ -33,6 +34,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  setChoice("system");
+  document.documentElement.removeAttribute("data-theme");
 });
 
 type Rec = Record<string, unknown>;
@@ -73,22 +76,20 @@ const image = () =>
   document.querySelector('[data-slot="mermaid-image"]') as HTMLImageElement | null;
 const source = () => document.querySelector('[data-slot="mermaid-source"]') as HTMLDetailsElement;
 
-/** A `matchMedia` that says the scheme is `dark`, and can change its mind. */
-function stubScheme(initial: "light" | "dark") {
-  let dark = initial === "dark";
-  const listeners = new Set<() => void>();
+/** The person chooses a theme for the page; returns the way to choose another. A diagram follows the PAGE's theme. */
+function stubTheme(initial: "light" | "dark") {
+  setChoice(initial);
+  return (next: "light" | "dark") => act(() => setChoice(next));
+}
+
+/** A device that says it is dark, whatever the page shows. */
+function darkDevice() {
   vi.stubGlobal("matchMedia", (query: string) => ({
-    get matches() {
-      return query.includes("dark") && dark;
-    },
+    matches: query.includes("dark"),
     media: query,
-    addEventListener: (_: string, l: () => void) => listeners.add(l),
-    removeEventListener: (_: string, l: () => void) => listeners.delete(l),
+    addEventListener: () => {},
+    removeEventListener: () => {},
   }));
-  return (next: "light" | "dark") => {
-    dark = next === "dark";
-    for (const l of listeners) l();
-  };
 }
 
 describe("the Mermaid component", () => {
@@ -208,8 +209,18 @@ describe("the Mermaid component", () => {
     m.agent.stop();
   });
 
-  it("is drawn in the colours of the scheme, and again when the scheme changes, keeping the picture meanwhile", async () => {
-    const setScheme = stubScheme("dark");
+  it("is drawn in the colours of the page's theme, whatever the device says", async () => {
+    darkDevice();
+    stubTheme("light");
+    const m = await mountMermaid();
+    await waitFor(() => expect(image()).not.toBeNull());
+    expect(configOf(0)).toMatchObject({ darkMode: false });
+    expect(configOf(0).themeVariables.background).toBe("#ffffff");
+    m.agent.stop();
+  });
+
+  it("is drawn in the colours of the page's theme, and again when the theme changes, keeping the picture meanwhile", async () => {
+    const setScheme = stubTheme("dark");
     const m = await mountMermaid();
     await waitFor(() => expect(image()).not.toBeNull());
     expect(draw).toHaveBeenCalledTimes(1);
@@ -219,7 +230,7 @@ describe("the Mermaid component", () => {
 
     let finish: (svg: string) => void = () => {};
     draw.mockReturnValue(new Promise((resolve) => (finish = resolve)));
-    act(() => setScheme("light"));
+    setScheme("light");
     await waitFor(() => expect(draw).toHaveBeenCalledTimes(2));
     expect(configOf(1)).toMatchObject({ darkMode: false });
     expect(configOf(1).themeVariables.background).toBe("#ffffff");

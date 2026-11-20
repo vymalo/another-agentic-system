@@ -20,6 +20,8 @@ on:
       - "dev/**"
       - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
+      - "orchestrator/crates/app/**"
+      - "orchestrator/crates/core/**"
       - "orchestrator/crates/e2e/tests/wiremock_agent.rs"
       - ".github/workflows/compose.yml"
   push:
@@ -31,6 +33,8 @@ on:
       - "dev/**"
       - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
+      - "orchestrator/crates/app/**"
+      - "orchestrator/crates/core/**"
       - "orchestrator/crates/e2e/tests/wiremock_agent.rs"
       - ".github/workflows/compose.yml"
 
@@ -65,14 +69,8 @@ jobs:
           # the chat with the browser agent as a remote sub-agent (dev/compose.chat-browser.yaml; the Coder E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.chat-browser.yaml --profile '*' config -q
           sh dev/check-browser-auth-config.sh
-          # the coder's work environments on a rootless Podman service (dev/compose.devcontainer.yaml; the Coder E2E workflow runs it)
-          docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile '*' config -q
           # the orchestrator beside a kagent 1.x agent on a kind cluster (dev/compose.kagent.yaml; the Kagent E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile '*' config -q
-          # ... and that service is given no more than it needs: no `privileged`, no `cap_add`, no `devices`, and no Docker socket anywhere
-          docker compose -f compose.yaml -f dev/compose.devcontainer.yaml --profile '*' config --format json > "$RUNNER_TEMP/compose-devcontainer.json"
-          jq -e '.services.podman | (.privileged // false) == false and ((.cap_add // []) | length) == 0 and ((.devices // []) | length) == 0' "$RUNNER_TEMP/compose-devcontainer.json"
-          jq -e '[.services[] | (.volumes // [])[] | (.source // "") | select(test("docker\\.sock"))] | length == 0' "$RUNNER_TEMP/compose-devcontainer.json"
       - name: The edge's Caddyfile parses without the browser-auth routes, and with them
         # dev/Caddyfile imports /etc/caddy/browser-auth/*.caddy: no such directory (the default stack) matches nothing, and the override's file adds the
         # routes of ADR 0054 (the web's pages with no sign-in, a DPoP request straight to the orchestrator). Both are what Caddy 2.11.4, the edge's pin, accepts.
@@ -97,9 +95,9 @@ jobs:
           # the offline stand-ins go (last, so that this line's status is the step's: `set -e` ignores a negated command)
           ! grep -E '^(mock-openai|mock-github|mock-github-mcp|git-server|mock-ci|mock-model)$' services.txt
       - name: Start the infrastructure and the mocks
-        run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier mock-registry mock-researcher mock-browser mock-usage mock-tiered
+        run: docker compose up -d --wait postgres mock-agent mock-agent-releases mock-verifier mock-registry mock-researcher mock-browser mock-usage mock-tiered mock-sessions
       - name: Every mock scenario answers as documented
-        run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083 http://127.0.0.1:8084 http://127.0.0.1:8086 http://127.0.0.1:8087 http://127.0.0.1:8088 http://127.0.0.1:8089
+        run: dev/check-mocks.sh http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083 http://127.0.0.1:8084 http://127.0.0.1:8086 http://127.0.0.1:8087 http://127.0.0.1:8088 http://127.0.0.1:8089 http://127.0.0.1:8102
       - name: The mock web-search MCP server (built here) and the scripted models of the agents (WireMock) answer as documented
         # `mock-persona` greets from the persona lines of an agent folder, `mock-researcher` calls the search tool and
         # names the first link of the results (dev/wiremock/model, dev/README.md, "Several agents"), and the `[mock:share]` script of
@@ -117,6 +115,7 @@ jobs:
           ORCH_TEST_MOCK_VERIFIER_URL=http://127.0.0.1:8083 \
           ORCH_TEST_MOCK_USAGE_URL=http://127.0.0.1:8088 \
           ORCH_TEST_MOCK_TIERED_URL=http://127.0.0.1:8089 \
+          ORCH_TEST_MOCK_SESSIONS_URL=http://127.0.0.1:8102 \
             cargo test -p orch-e2e --test wiremock_agent --locked
       - name: Logs
         if: failure()

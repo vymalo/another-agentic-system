@@ -11,6 +11,7 @@ import {
   SHOT_MATCHES,
   TONE,
 } from "./files";
+import { receive, refusalText } from "./receiver";
 
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];
@@ -245,6 +246,142 @@ const choicesV5Surface = (): Step => ({
   },
 });
 
+/**
+ * The five questions of the `choices-v7` script, one of each kind of catalog version 7: a yes or no
+ * whose safe answer is no, a number of euros in steps of a half, a scale from 0 to 10 that may be
+ * skipped, a day in December and a list to put in order.
+ */
+const V7_QUESTIONS: Record<string, unknown>[] = [
+  {
+    id: "ship",
+    question: "Delete the old branch?",
+    help: "It cannot be restored.",
+    type: "confirm",
+    yesLabel: "Delete it",
+    noLabel: "Keep it",
+    default: "no",
+  },
+  {
+    id: "budget",
+    question: "What is the monthly budget?",
+    type: "number",
+    unit: "EUR",
+    minValue: "0",
+    maxValue: "1000",
+    step: "0.5",
+  },
+  {
+    id: "nps",
+    question: "How likely are you to recommend it?",
+    type: "scale",
+    from: 0,
+    to: 10,
+    fromLabel: "Not at all",
+    toLabel: "Certainly",
+    required: false,
+  },
+  {
+    id: "when",
+    question: "When should it ship?",
+    type: "date",
+    minDate: "2026-12-01",
+    maxDate: "2026-12-31",
+  },
+  {
+    id: "order",
+    question: "Put these in order of importance",
+    help: "The most important first.",
+    type: "rank",
+    options: [
+      { value: "speed", label: "Speed", icon: "execute" },
+      { value: "cost", label: "Cost" },
+      { value: "risk", label: "Risk", description: "What can go wrong" },
+    ],
+  },
+];
+
+/** A Choices of the given questions under the web's own catalog, as the surface `surfaceId`. */
+const choicesV7Surface = (surfaceId: string, questions: Record<string, unknown>[]): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId,
+          components: [
+            { id: "root", component: "Column", children: ["pick"] },
+            {
+              id: "pick",
+              component: "Choices",
+              title: "Before I ship",
+              description: "Nothing is changed until you answer.",
+              submitLabel: "Send answers",
+              questions,
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+/**
+ * The `choices-v7` script: one form of the five kinds. The agent is the receiver (the orchestrator
+ * relays an answer and does not read it): it checks the answer again with the rules of the contract
+ * (`receive`, written from the page alone). An answer that fails is **not acted on**: the agent says
+ * which question and which rule, in words, and asks again with the same form, each question that
+ * was valid carrying the person's answer as its default. A valid one ends the job.
+ */
+function choicesV7Script(): {
+  start: Step[];
+  resume: (answer: string, context?: Record<string, unknown>) => Step[];
+} {
+  let asked = V7_QUESTIONS;
+  let surfaces = 1;
+  const block: Step[] = [
+    { kind: "agent_status", data: { status: "input_required", detail: "Five questions" } },
+    { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+  ];
+  return {
+    start: [working, choicesV7Surface(`s${surfaces}`, asked), ...block],
+    resume: (answer, context) => {
+      const refusals = receive(asked, context);
+      if (refusals.length === 0) return [working, ...finish(`answered: ${answer}`)];
+      const failed = new Set(refusals.map((r) => r.id));
+      const given = new Map(
+        (Array.isArray(context?.answers) ? context.answers : []).flatMap((a: unknown) => {
+          const r = a as { id?: unknown; values?: unknown };
+          return typeof r.id === "string" && Array.isArray(r.values) && r.values.length > 0
+            ? [[r.id, r.values as string[]] as const]
+            : [];
+        }),
+      );
+      // the valid answers become the defaults of the next form: nothing the person gave is lost
+      asked = asked.map((q) => {
+        const values = given.get(String(q.id));
+        if (failed.has(String(q.id)) || values === undefined) return q;
+        return { ...q, default: q.type === "rank" ? values : values[0] };
+      });
+      surfaces += 1;
+      return [
+        working,
+        {
+          kind: "agent_message",
+          data: {
+            messageId: nextMessageId(),
+            final: true,
+            text: `${refusals.map(refusalText).join(" ")} Please answer again.`,
+          },
+        },
+        choicesV7Surface(`s${surfaces}`, asked),
+        ...block,
+      ];
+    },
+  };
+}
+
 /** The twelve ways to log in of the `choices-deck` list: more than a radio list takes in a chat. */
 const LOGIN_PROVIDERS: [string, string, string][] = [
   ["password", "Password", "A name and a password"],
@@ -333,6 +470,257 @@ const choicesDeckSurface = (): Step => ({
     ],
   },
 });
+
+/**
+ * The surface of the `choices-v8` script (catalog version 8): two questions that SHOW what they ask about. The first
+ * shows a screenshot the agent shared and a diagram of the flow, before its radio buttons; the second, a yes or no,
+ * shows two cards and a chart. What is shown is in the surface (`show` names the ids) and nowhere else.
+ */
+const choicesV8Surface = (): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: UI_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["pick"] },
+            {
+              id: "pick",
+              component: "Choices",
+              title: "Before I build the people screen",
+              description: "I looked at the current screen and at how a request reaches it.",
+              questions: [
+                {
+                  id: "layout",
+                  question: "Which layout should I keep?",
+                  help: "The screenshot is the screen today.",
+                  show: ["shot", "flow"],
+                  options: [
+                    { value: "list", label: "The list", description: "Four rows with an avatar" },
+                    { value: "matches", label: "The matches", recommended: true },
+                  ],
+                },
+                {
+                  id: "ship",
+                  question: "Ship the list behind a flag?",
+                  type: "confirm",
+                  yesLabel: "Behind a flag",
+                  noLabel: "For everyone",
+                  default: "yes",
+                  show: ["choices", "runs"],
+                },
+              ],
+            },
+            {
+              id: "shot",
+              component: "Image",
+              artifact: SHOT_LIST.sha256,
+              alt: "The people screen today: a list of four people with an avatar each",
+              caption: "The people screen today",
+            },
+            {
+              id: "flow",
+              component: "Mermaid",
+              title: "How a request reaches the screen",
+              code: "graph LR\n  Browser --> Orchestrator --> Agent",
+              caption: "The path of one request",
+            },
+            {
+              id: "choices",
+              component: "Cards",
+              title: "The two ways to ship it",
+              cards: [
+                { title: "Behind a flag", body: "Ten percent of people see it first." },
+                { title: "For everyone", body: "One release, no way back." },
+              ],
+            },
+            {
+              id: "runs",
+              component: "Chart",
+              type: "bar",
+              title: "Runs per day",
+              labels: ["Mon", "Tue", "Wed"],
+              series: [{ name: "Passed", values: [30, 42, 38] }],
+              caption: "Last three days",
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+/**
+ * The surfaces of the `choices-v8-bad` script: a question that shows another Choices (rule `schema`, a component
+ * that is not on the list) and one that shows a text that is also placed in the surface (rule `expansion`). The web
+ * refuses each whole, in words, and draws none of its form.
+ */
+const choicesV8BadSurfaces = (): Step[] =>
+  [
+    {
+      id: "bad-list",
+      components: [
+        { id: "root", component: "Column", children: ["ask"] },
+        {
+          id: "ask",
+          component: "Choices",
+          questions: [
+            {
+              id: "a",
+              question: "Shows a form?",
+              options: [
+                { value: "x", label: "X" },
+                { value: "y", label: "Y" },
+              ],
+              show: ["other"],
+            },
+          ],
+        },
+        {
+          id: "other",
+          component: "Choices",
+          questions: [{ id: "b", question: "Hidden?", type: "text" }],
+        },
+      ],
+    },
+    {
+      id: "bad-twice",
+      components: [
+        { id: "root", component: "Column", children: ["ask", "note"] },
+        {
+          id: "ask",
+          component: "Choices",
+          questions: [
+            {
+              id: "a",
+              question: "Shows its note?",
+              options: [
+                { value: "x", label: "X" },
+                { value: "y", label: "Y" },
+              ],
+              show: ["note"],
+            },
+          ],
+        },
+        { id: "note", component: "Text", text: "Placed twice." },
+      ],
+    },
+  ].map(({ id, components }) => ({
+    kind: "ui_surface" as const,
+    data: {
+      operations: [
+        { version: "v0.9.1", createSurface: { surfaceId: id, catalogId: OWN_CATALOG_ID } },
+        { version: "v0.9.1", updateComponents: { surfaceId: id, components } },
+      ],
+    },
+  }));
+
+/** The id of the plan of the `plan` script: it starts with `plan-`, which is what makes a surface a plan. */
+export const PLAN_SURFACE_ID = "plan-run-1";
+
+/** One copy of the plan, the whole surface, as the agent sends it each time the plan changes. */
+const planCopy = (items: { label: string; state: string; note?: string }[]): Step => ({
+  kind: "ui_surface",
+  data: {
+    operations: [
+      {
+        version: "v0.9.1",
+        createSurface: { surfaceId: PLAN_SURFACE_ID, catalogId: OWN_CATALOG_ID },
+      },
+      {
+        version: "v0.9.1",
+        updateComponents: {
+          surfaceId: PLAN_SURFACE_ID,
+          components: [
+            { id: "root", component: "Column", children: ["steps"] },
+            { id: "steps", component: "Checklist", title: "Fix the parser", items },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+const PLAN_STEPS = {
+  read: "Read the failing test",
+  fix: "Fix the parser",
+  port: "Port it to the CLI",
+  pr: "Open the pull request",
+  log: "Update the changelog",
+  tag: "Tag the release",
+};
+
+/**
+ * The `plan` script: an agent whose plan is ONE surface that it sends again, whole and under the same id, each time
+ * the plan changes. In the first run it creates the plan (four steps, the first in progress), checks the first off and
+ * notes the second; then it asks "Carry on?" and waits. After the person's message, in a second run, it checks the
+ * second off, DROPS the third with a note ("Out of scope: the CLI does not parse"), then adds two. Five copies in all: the
+ * page must hold one checklist, whose count leaves the dropped step out.
+ */
+function planScript(): { start: Step[]; resume: (answer: string) => Step[] } {
+  const s = PLAN_STEPS;
+  const said = (text: string): Step => ({
+    kind: "agent_message",
+    data: { messageId: nextMessageId(), final: false, text },
+  });
+  return {
+    start: [
+      working,
+      said("Here is the plan."),
+      planCopy([
+        { label: s.read, state: "doing" },
+        { label: s.fix, state: "todo" },
+        { label: s.port, state: "todo" },
+        { label: s.pr, state: "todo" },
+      ]),
+      planCopy([
+        { label: s.read, state: "done" },
+        { label: s.fix, state: "doing" },
+        { label: s.port, state: "todo" },
+        { label: s.pr, state: "todo" },
+      ]),
+      planCopy([
+        { label: s.read, state: "done" },
+        { label: s.fix, state: "doing", note: "The second branch of parse_group" },
+        { label: s.port, state: "todo" },
+        { label: s.pr, state: "todo" },
+      ]),
+      { kind: "agent_status", data: { status: "input_required", detail: "Carry on?" } },
+      { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+    ],
+    resume: (answer) => {
+      // the reply is written after the plan, piece by piece: what streams must not touch what the plan says
+      const reply = nextMessageId();
+      const parts = ["The plan ", "is now ", "five steps, ", "one dropped."];
+      return [
+        working,
+        planCopy([
+          { label: s.read, state: "done" },
+          { label: s.fix, state: "done" },
+          { label: s.port, state: "dropped", note: "Out of scope: the CLI does not parse" },
+          { label: s.pr, state: "doing" },
+        ]),
+        planCopy([
+          { label: s.read, state: "done" },
+          { label: s.fix, state: "done" },
+          { label: s.port, state: "dropped", note: "Out of scope: the CLI does not parse" },
+          { label: s.pr, state: "doing" },
+          { label: s.log, state: "todo" },
+          { label: s.tag, state: "todo" },
+        ]),
+        ...livePieces(reply, parts),
+        {
+          kind: "agent_message",
+          data: { messageId: reply, final: true, text: parts.join("") },
+        },
+        ...finish(`answered: ${answer}`),
+      ];
+    },
+  };
+}
 
 /** One surface of the web's own catalog, as the fake agent sends it: `createSurface`, then the components. */
 const ownSurface = (components: Record<string, unknown>[]): Step => ({
@@ -945,6 +1333,43 @@ export const DESCRIPTION = "The person wants a plan for a test.";
 /** A description of three sentences: more than a line wide, to be expanded. */
 export const LONG_DESCRIPTION =
   "The person wants a plan for adding a test to the session expiry check, so that a session idle for thirty minutes is refused with a 401. The agent read the repository and proposed one test beside the existing ones. Nothing was changed yet.";
+
+/** A sum of sixty terms: wider than any column, so its box scrolls sideways. */
+const WIDE_FORMULA = Array.from({ length: 60 }, (_, n) => `x_{${n + 1}}`).join(" + ");
+
+/** The answer of the `code-math` script: two fenced blocks, two display formulas (one wider than the column) and prices. */
+export const CODE_MATH_REPLY = [
+  "Here is the function and the rule it follows.",
+  "",
+  "```rust",
+  "fn total(prices: &[u32]) -> u32 {",
+  '    // sum in cents, so "$5" is 500',
+  "    prices.iter().sum()",
+  "}",
+  "```",
+  "",
+  "And a block of a language the page has no grammar for:",
+  "",
+  "```brainfuck",
+  "++++++++[>++++++++<-]>+.",
+  "```",
+  "",
+  "The Gaussian integral is",
+  "",
+  "$$",
+  "\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}",
+  "$$",
+  "",
+  "And a sum that is wider than the column:",
+  "",
+  "$$",
+  WIDE_FORMULA,
+  "$$",
+  "",
+  "In bash, $$ is the process id; print $$ twice.",
+  "",
+  "The two plans cost $5 and $10 a month, and the extra seat is $20 more.",
+].join("\n");
 
 /** The agent finished, with no artifact: an answer of words and a surface only. */
 const finishQuietly: Step[] = [
@@ -1675,6 +2100,19 @@ export const LONG_FAILURE = [
  * - `choices-v5`: a Choices of version 5: a title, a description, a free box and four questions (a radio list with a
  *   help line, a default, an icon and a recommended option; checkboxes with a minimum of 1 and a maximum of 2; a short
  *   text; an optional long text), then done as `ui-action answer db=pg envs=dev name=text:… note:…`.
+ * - `choices-v7`: one form of the five kinds of catalog version 7 (a yes or no, a number, a scale, a day, a rank). The agent
+ *   validates the answer as a receiver does (mock/receiver.ts): a valid one ends the job as `answered: ui-action answer ship=no
+ *   budget=250.5 …`; one that fails is not acted on, the agent names the question and the rule and asks again (a form of its own, `s2`).
+ * - `choices-v8`: the coder shares a screenshot, then asks two questions that SHOW what they ask about (catalog version 8): the
+ *   first a screenshot and a diagram before its radio buttons, the second (a yes or no) two cards and a chart before its
+ *   two choices; the answers resume it to done as `ui-action answer layout=list ship=yes`.
+ * - `choices-v8-bad`: two surfaces the web refuses whole, each by a rule of version 8 (a question that shows another
+ *   Choices, rule `schema`; one whose shown text is also placed, rule `expansion`), then done.
+ * - `plan`: an agent whose plan is ONE surface (`plan-run-1`) that it sends again, whole, each time the plan changes: in the
+ *   first run it creates it (four steps), checks one off and notes another, then asks "Carry on?"; after a message, in a second
+ *   run, it checks the next off, drops the third with a note, adds two, and finishes. Five copies, one checklist.
+ * - `plan-rewrite`: a plan of ORIGINAL words, "Go ahead?", blocked; after the person's message the plan is sent again with REWRITTEN words.
+ * - `plan-burst`: one hundred copies of the plan in one job with no pause, then done.
  * - `choices-deck`: the coder shares two screenshots, then asks with a Choices of an image deck (each option a
  *   picture of a shared file, one recommended) and a searchable list of twelve ways to log in (several, at most
  *   three) and a free box; the answers resume it to done as `ui-action answer layout=matches login=github,passkey`.
@@ -1688,6 +2126,9 @@ export const LONG_FAILURE = [
  *   Checklist, a Timeline, Tabs whose children are components of the surface, and an Accordion, then done.
  * - `components-code`: one answer of text and a surface of the catalog's version 6, group 1: a Code, a Diff, a Terminal whose
  *   output folds, a PullRequest and a FileCard of a kept file (`notes.txt`), then done.
+ * - `code-math`: mock only, one answer in Markdown that shows what the web draws in text: a fenced `rust` block, a fenced
+ *   block of a language the web does not bundle (`brainfuck`, stays plain), two display formulas (`$$` on lines of its own, one of them wider than the column) and a sentence with
+ *   dollar prices that must not be read as math; then done. (The first word is the trigger, as for every script here.)
  * - `verify-pass`, `verify-red-once`, `verify-red`: the verification gate (ADR 0018, requires the
  *   agent's own checks, 3 attempts): the checks pass at once, fail once and then pass, or always fail.
  * - `verify-reviewed`: the gate asks a verifier agent (ADR 0018, requires the `verifier` source, 3
@@ -1798,7 +2239,8 @@ export const LONG_FAILURE = [
  */
 export function scriptFor(text: string): {
   start: Step[];
-  resume?: (answer: string) => Step[];
+  /** The agent's next steps for the person's answer: the words, and for an action its `context`. */
+  resume?: (answer: string, context?: Record<string, unknown>) => Step[];
   /** A newer UI opened the thread: its catalog has this version (the mock records it as current). */
   newerCatalog?: number;
   /** The gate the thread's job runs under; absent: none, and the run ends at `completed`. */
@@ -2752,6 +3194,66 @@ export function scriptFor(text: string): {
         ],
         resume: (answer) => [working, ...finish(`answered: ${answer}`)],
       };
+    case "choices-v7":
+      return choicesV7Script();
+    case "choices-v8":
+      return {
+        start: [
+          working,
+          ...sharedFile(1, SHOT_LIST, "shots/list.png"),
+          choicesV8Surface(),
+          { kind: "agent_status", data: { status: "input_required", detail: "Two questions" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [working, ...finish(`answered: ${answer}`)],
+      };
+    case "choices-v8-bad":
+      return {
+        start: [working, ...choicesV8BadSurfaces(), ...finishQuietly],
+        resume: () => [working, ...finishQuietly],
+      };
+    case "plan":
+      return planScript();
+    case "plan-rewrite":
+      // the plan is shown with ORIGINAL words, the person says "go ahead", and the plan is then sent with REWRITTEN ones
+      return {
+        start: [
+          working,
+          planCopy([
+            { label: "ORIGINAL: delete the cache", state: "todo" },
+            { label: "Ship it", state: "todo" },
+          ]),
+          { kind: "agent_status", data: { status: "input_required", detail: "Go ahead?" } },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (answer) => [
+          working,
+          planCopy([
+            { label: "REWRITTEN: delete the database", state: "todo" },
+            { label: "Ship it", state: "todo" },
+          ]),
+          ...finish(`answered: ${answer}`),
+        ],
+      };
+    case "plan-burst":
+      // one hundred copies of the plan in one job, one after the other with no pause: one drawing, one announcement
+      return {
+        start: [
+          working,
+          ...Array.from({ length: 100 }, (_, k) => ({
+            ...planCopy(
+              Array.from({ length: 20 }, (_, i) => ({
+                label: `Step ${i + 1}`,
+                state: i < Math.floor(k / 5) ? "done" : "todo",
+                ...(i === 0 ? { note: `copy ${k + 1}` } : {}),
+              })),
+            ),
+            quick: true,
+          })),
+          ...finishQuietly,
+        ],
+        resume: () => [working, ...finishQuietly],
+      };
     case "choices-deck":
       return {
         start: [
@@ -2965,6 +3467,18 @@ export function scriptFor(text: string): {
             },
           },
           structureSurface(),
+          ...finishQuietly,
+        ],
+      };
+    // code and math in an answer (web/README.md "Code and math in answers"): Markdown only, no surface
+    case "code-math":
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: { messageId: nextMessageId(), final: true, text: CODE_MATH_REPLY },
+          },
           ...finishQuietly,
         ],
       };

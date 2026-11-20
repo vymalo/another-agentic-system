@@ -172,7 +172,7 @@ struct Prepared {
 
 /// What one pass of [`prepare`](RelayTools::prepare) came to.
 enum Leased {
-    /// Boxed: a server's endpoint carries the room for the signing of a deployment's server (ADR 0067), which a person's own
+    /// Boxed: a server's endpoint carries the room for the signing of a deployment's server (ADR 0080), which a person's own
     /// never use, and the other variant carries nothing.
     Ready(Box<Prepared>),
     /// The definition's revision changed between the read and the lease.

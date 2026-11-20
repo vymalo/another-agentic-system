@@ -12,7 +12,7 @@ to prevent:
 | Where | What it holds |
 |---|---|
 | `dev/coder/UPSTREAM` | `commit=<40-hex>`, the commit the vendored files are copies of |
-| `dev/coder/{agent,wiremock,git-server,podman,coder-agent}/` | byte-for-byte copies (the file list and the upstream path of each are in `UPSTREAM` and `dev/coder/check-vendored.sh`) |
+| `dev/coder/{agent,wiremock,git-server,coder-agent}/` | byte-for-byte copies (the file list and the upstream path of each are in `UPSTREAM` and `dev/coder/check-vendored.sh`) |
 | `compose.yaml`, `x-adam-image` | `ghcr.io/vymalo/another-adam-rs/coder:sha-<7>@sha256:<digest>`, one pin for the coder and for every agent that is only a folder |
 | `orchestrator/Cargo.toml` (+ `Cargo.lock`) | seven `rev = "<40-hex>"` lines (`adam-host`, `adam-core`, `adam-runtime`, `adam-a2a`, `adam-a2a-runtime`, `adam-store-postgres`, `adam-notify-postgres`), used by the off-by-default feature `agent-local` (ADR 0015) |
 
@@ -31,17 +31,17 @@ finds it; `git show <sha>` is the shape of a bump.
 
    ```sh
    git diff --stat A B -- dev bin/adam-coder/agent          # the vendored files: empty means nothing to re-copy
-   git diff A B -- dev/compose.github-app.yaml dev/coder-e2e.sh compose.yaml dev/compose.devcontainer.yaml
+   git diff A B -- dev/compose.github-app.yaml dev/coder-e2e.sh compose.yaml
    git log --format='%h %s' A..B | grep '!:'                # commits that say they break
    ```
 
    The first diff decides step 3. The second lists the files that are **not** vendored on purpose
-   (`dev/coder/UPSTREAM` says which: ours are `compose.yaml`, `dev/compose.devcontainer.yaml`,
-   `dev/coder-e2e.sh`; `dev/compose.github-app.yaml` is a copy with its comments adapted); a
+   (`dev/coder/UPSTREAM` says which: ours are `compose.yaml` and `dev/coder-e2e.sh`;
+   `dev/compose.github-app.yaml` is a copy with its comments adapted); a
    change there is a change to port by hand, or to decide not to.
 3. **Re-copy what changed**, never edit a copy here (`UPSTREAM` says why): `bin/adam-coder/agent/*`
-   to `dev/coder/agent/*`; `dev/git-server`, `dev/podman`, `dev/coder-agent` to the same paths
-   below `dev/coder/` (these three hold *exactly* upstream's files, a file added or removed
+   to `dev/coder/agent/*`; `dev/git-server`, `dev/coder-agent` to the same paths below
+   `dev/coder/` (these two hold *exactly* upstream's files, a file added or removed
    upstream is added or removed here); `dev/wiremock/<mock>/` to `dev/coder/wiremock/<mock>/`
    (a deliberate subset: the mappings of the scripted coder run, and every `bodyFileName` a copied mapping names).
    A mapping the coder starts to need shows up as an unmatched request in `dev/coder-e2e.sh`.

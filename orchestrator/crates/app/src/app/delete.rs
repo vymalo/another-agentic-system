@@ -147,7 +147,9 @@ impl<P: Ports> App<P> {
     }
 
     /// The transaction of [`delete_thread`](Self::delete_thread), decided again on what each
-    /// attempt reads: the thread and its edit descendants, each at the version it was read at.
+    /// attempt reads: the thread, its edit descendants and the children of each (child sessions, ADR
+    /// 0072; a child that works refuses the delete like any thread that works), each at the version
+    /// it was read at.
     /// Returns the threads that were deleted.
     async fn erase(&self, user: &UserId, id: ThreadId) -> Result<Vec<ThreadId>, AppError> {
         let store = self.ports.store();
@@ -159,6 +161,17 @@ impl<P: Ports> App<P> {
                     // a branch that went since the family was read has nothing left to delete
                     None if thread != id => {}
                     None => return Err(AppError::NotFound),
+                }
+            }
+            // The children of what goes (ADR 0072) are erased with it: named here, so that the
+            // store's rule (a child left out is a conflict) never has to send us round again.
+            let named = threads.len();
+            for i in 0..named {
+                let parent = threads[i].id;
+                for child in store.child_threads(user, parent).await? {
+                    if !threads.iter().any(|t| t.id == child.id) {
+                        threads.push(child);
+                    }
                 }
             }
             for thread in &threads {

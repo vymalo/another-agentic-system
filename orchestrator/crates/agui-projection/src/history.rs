@@ -48,11 +48,11 @@ use crate::projector::{Projector, ThreadMeta};
 use crate::route::FileRoute;
 
 /// The version of the projection: it rises whenever the frames written for an event already in a
-/// log could change (a new activity, another id rule). `tests/projection-digests.txt` pins the
+/// log could change (a new activity, another id rule, a snapshot that holds fewer operations). `tests/projection-digests.txt` pins the
 /// frames of every golden under it, and `tools/projection-digests-check.sh` fails a change to a
 /// pinned line that does not raise this number. A client that stored frames of another version
 /// discards them.
-pub const PROJECTION_VERSION: u32 = 1;
+pub const PROJECTION_VERSION: u32 = 2;
 
 /// The most chains the fold keeps for a thread whose turns do not bound it (a thread with no
 /// person's message, a webhook or CI driven one): older chains are dropped.

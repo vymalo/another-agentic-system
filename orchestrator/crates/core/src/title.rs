@@ -286,6 +286,9 @@ pub(crate) fn agent_words(body: &EventBody) -> Option<&str> {
         | EventBody::ThreadUnshared(_)
         | EventBody::ModelUsage(_)
         | EventBody::ModelUsageTotal(_)
+        | EventBody::ChildSessionOpened(_)
+        | EventBody::ChildSessionReported(_)
+        | EventBody::ChildSessionClosed(_)
         | EventBody::ThreadForked(_) => return None,
     };
     (!words.trim().is_empty()).then_some(words)

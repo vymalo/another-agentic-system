@@ -1,0 +1,318 @@
+{
+  "format": "another-agentic-system/thread-export",
+  "version": 1,
+  "exportedAt": "2026-11-14T10:00:00.000Z",
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "owner": "dev@example.com",
+    "title": "talk",
+    "target": {
+      "agentId": "reviewer"
+    },
+    "state": "done",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "updatedAt": "2026-11-14T10:00:00.000Z",
+    "lastSeq": 17
+  },
+  "job": {
+    "number": 2,
+    "attempt": 1
+  },
+  "binding": {
+    "agentId": "reviewer",
+    "contextId": "00000000-0000-4000-8000-000000000001"
+  },
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "dev@example.com"
+      },
+      "data": {
+        "text": "talk",
+        "messageId": "evt-1",
+        "runId": "run-1"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "working"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "working",
+        "detail": "Reading the repository"
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "messageId": "m-1",
+        "final": true,
+        "text": "Plan: add a test"
+      }
+    },
+    {
+      "seq": 5,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "name": "result",
+        "text": "echo: talk",
+        "uri": "https://github.com/acme/demo/pull/1"
+      }
+    },
+    {
+      "seq": 6,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "seq": 7,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "done"
+      }
+    },
+    {
+      "seq": 8,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "dev@example.com"
+      },
+      "data": {
+        "text": "steps go",
+        "messageId": "evt-6",
+        "runId": "run-6"
+      }
+    },
+    {
+      "seq": 9,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "job_started",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "job": 2
+      }
+    },
+    {
+      "seq": 10,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "working"
+      }
+    },
+    {
+      "seq": 11,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_step",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "id": "T/tool:c2",
+        "path": [],
+        "kind": "subagent",
+        "label": "OpenCode",
+        "state": "running",
+        "phase": "start",
+        "icon": "agent"
+      }
+    },
+    {
+      "seq": 12,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_step",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "id": "T/acp:c2:1",
+        "path": [
+          "T/tool:c2"
+        ],
+        "kind": "command",
+        "label": "npm test",
+        "state": "running",
+        "phase": "start",
+        "icon": "execute",
+        "input": {
+          "command": "npm test",
+          "cwd": "web",
+          "env": {
+            "CI": "1",
+            "NPM_TOKEN": "[redacted]"
+          }
+        }
+      }
+    },
+    {
+      "seq": 13,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_step",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "id": "T/acp:c2:1",
+        "path": [
+          "T/tool:c2"
+        ],
+        "kind": "command",
+        "label": "npm test",
+        "state": "failed",
+        "phase": "end",
+        "icon": "execute",
+        "detail": "1 failed",
+        "output": {
+          "text": "FAIL src/sum.test.ts\n  adds two numbers\n1 failed, 12 passed",
+          "error": true
+        }
+      }
+    },
+    {
+      "seq": 14,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_step",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "id": "T/tool:c2",
+        "path": [],
+        "kind": "subagent",
+        "label": "OpenCode",
+        "state": "completed",
+        "phase": "end",
+        "icon": "agent"
+      }
+    },
+    {
+      "seq": 15,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_message",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "messageId": "m-2",
+        "final": true,
+        "text": "Done."
+      }
+    },
+    {
+      "seq": 16,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "reviewer"
+      },
+      "data": {
+        "status": "completed",
+        "detail": "Done."
+      }
+    },
+    {
+      "seq": 17,
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "at": "2026-11-14T10:00:00.000Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "done"
+      }
+    }
+  ],
+  "eventsTruncated": false,
+  "versions": {
+    "orchestrator": {
+      "version": "0.0.0-mock",
+      "revision": "unknown"
+    },
+    "agents": [
+      {
+        "agent": "reviewer",
+        "name": null,
+        "version": "unknown"
+      }
+    ],
+    "web": {
+      "revision": "unknown"
+    }
+  }
+}

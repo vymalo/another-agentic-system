@@ -8,8 +8,13 @@ import { PROFILES } from "../../../../mock/fixtures";
 import { ThreadSidebar } from "./thread-sidebar";
 
 let showDescriptions = true;
+/** What `GET /api/config` says about the search: none leaves the box out (an orchestrator that has no search). */
+let searchConfig: { maxQueryLength: number; maxTerms: number } | undefined;
 vi.mock("@/features/chat/hooks/use-ui-config", () => ({
   useShowDescriptions: () => showDescriptions,
+  useSearchConfig: () => searchConfig,
+  // the account menu at the foot of the sidebar asks whether there is a prompt library; this test has none
+  usePromptsConfig: () => undefined,
 }));
 const router = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({
@@ -25,6 +30,7 @@ vi.mock("@/features/me/hooks/use-me", () => ({ useMe: () => me }));
 afterEach(() => {
   cleanup();
   showDescriptions = true;
+  searchConfig = undefined;
   me = { status: "ready", me: PROFILES.user };
   router.push.mockReset();
   router.replace.mockReset();
@@ -460,5 +466,24 @@ describe("Delete opens the dialog that says what is erased", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(button));
+  });
+});
+
+describe("the search box (ADR 0068)", () => {
+  it("is not drawn, and has no landmark, when the orchestrator does not serve a search", () => {
+    sidebar([thread("c-1", "Chat one")]);
+    expect(screen.queryByRole("combobox", { name: "Search chats" })).toBeNull();
+    expect(document.querySelector("search")).toBeNull();
+    expect(screen.getByRole("link", { name: "Chat one" })).toBeTruthy();
+  });
+
+  it("is drawn under New chat when it does, with the list still in its place", () => {
+    searchConfig = { maxQueryLength: 200, maxTerms: 8 };
+    sidebar([thread("c-1", "Chat one")]);
+    const box = screen.getByRole("combobox", { name: "Search chats" });
+    expect(box.getAttribute("aria-keyshortcuts")).toBe("Control+K Meta+K");
+    expect(box.getAttribute("maxlength")).toBe("200");
+    expect(document.querySelector("search")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "Chat one" })).toBeTruthy();
   });
 });

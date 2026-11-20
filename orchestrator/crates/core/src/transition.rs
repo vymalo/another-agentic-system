@@ -20,6 +20,7 @@ use crate::access_tier::AccessTier;
 use crate::agent::{AgentTaskState, AgentUpdate, FileRefusal};
 use crate::answer::announce;
 use crate::ask::{self, AskLimits, AskRefusal, AskRequest, AskResult};
+use crate::child_sessions::{self, SessionBy, SessionRefusal, SessionReport};
 use crate::description::{DescribedBy, DescriptionSource, ThreadDescribedData, check_description};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
@@ -31,7 +32,7 @@ use crate::gate::{
     MAX_SUMMARY_BYTES, PushedRef, Recognised, Snapshot, Timer, Verdict, WatchKey, add_task_message,
     cap_findings, recognise_artifact, repo_key, truncate_to,
 };
-use crate::ids::{AgentId, UserId};
+use crate::ids::{AgentId, ThreadId, UserId};
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
 use crate::reasoning::{AgentReasoningData, bound_reasoning};
 use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
@@ -426,6 +427,43 @@ pub enum Input {
         /// What it reported.
         usage: UsageUpdate,
     },
+    /// The parent's agent told of a session (`child-sessions/v1`, ADR 0072), and the child thread
+    /// for it exists (`child`). Valid in every state, finished or not, and never moves the
+    /// thread: it writes the session's `child_session_opened`, `child_session_reported` and
+    /// `child_session_closed` that the ledger says are owed, each once, however often and in
+    /// whatever order the reports come. A thread that already notes [`MAX_CHILD_SESSIONS`] sessions
+    /// refuses a new one ([`TransitionError::ChildSessionRefused`]).
+    ///
+    /// [`MAX_CHILD_SESSIONS`]: crate::MAX_CHILD_SESSIONS
+    ChildSession {
+        /// Whose words the events are: the parent's agent.
+        actor: Actor,
+        /// What the agent said, through the adapter's strict read.
+        report: SessionReport,
+        /// The child thread made for the session.
+        child: ThreadId,
+    },
+    /// A child thread is told what its session looks like now (ADR 0072). Valid in every state;
+    /// writes no event. The ledger follows the report, and a round it has not been told to follow
+    /// and that has a task is ordered followed, once ([`Command::Observe`]).
+    ChildSessionSaid(SessionReport),
+    /// The orchestrator began to follow a round of this child thread's session (ADR 0072): the
+    /// job becomes the round's. A fresh thread, or one blocked or over, takes it; the same round
+    /// again changes nothing; a thread that works refuses
+    /// ([`TransitionError::InvalidInState`]) and the dispatcher tries again. A round at or below
+    /// the highest started is a replay and changes nothing; a thread that is not the session's
+    /// child, or round 0, is refused.
+    RoundStarted {
+        /// The session this thread is the child of; another session's round is refused.
+        session: String,
+        /// The round's number, from 1.
+        number: u32,
+        /// The round's A2A task.
+        task_id: String,
+        /// Who started it, when the agent said: a round a person started is counted in this
+        /// thread's usage, any other is not.
+        by: Option<SessionBy>,
+    },
 }
 
 impl Input {
@@ -462,6 +500,9 @@ impl Input {
             Input::AskFinished { .. } => "ask result",
             Input::AskFailed { .. } => "ask failure",
             Input::AskUsage { .. } => "ask usage",
+            Input::ChildSession { .. } => "child session",
+            Input::ChildSessionSaid(_) => "child session said",
+            Input::RoundStarted { .. } => "round started",
         }
     }
 }
@@ -521,6 +562,20 @@ pub enum Command {
         tier: Option<AccessTier>,
         /// The cap that goes with `tier`, as for [`Command::Delegate`].
         tier_cap: Option<AccessTier>,
+    },
+    /// Follow a round of the thread's child session without sending anything (ADR 0072): the
+    /// application writes an `observe` row, and the dispatcher answers with
+    /// [`Input::RoundStarted`] and then follows the task `task_id` to its end.
+    Observe {
+        /// The session's id.
+        session: String,
+        /// The round's number.
+        round: u32,
+        /// The round's A2A task.
+        task_id: String,
+        /// Who started the round, when the report said: the dispatcher passes it to
+        /// [`Input::RoundStarted`].
+        by: Option<SessionBy>,
     },
     /// Finish the thread's **unsent** `delegate` and `steer` rows of the jobs
     /// up to `job` as `skipped`, in the commit that starts the next job (ADR 0036): the message
@@ -690,6 +745,10 @@ pub enum TransitionError {
     /// which is told it as the tool's error. Nothing was written.
     #[error("ask refused: {0}")]
     AskRefused(AskRefusal),
+    /// A report about a child session (`child-sessions/v1`, ADR 0072) was refused. Nothing was
+    /// written; the session stays a step of the parent's task.
+    #[error("child session refused: {0}")]
+    ChildSessionRefused(SessionRefusal),
 }
 
 impl Classify for TransitionError {
@@ -699,6 +758,10 @@ impl Classify for TransitionError {
                 ErrorClass::Rejected
             }
             TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
+            TransitionError::ChildSessionRefused(why) => match why {
+                SessionRefusal::LedgerFull => ErrorClass::Rejected,
+                SessionRefusal::Malformed => ErrorClass::Invalid,
+            },
             TransitionError::AskRefused(why) => match why {
                 AskRefusal::TaskOver
                 | AskRefusal::UnknownCaller { .. }
@@ -951,7 +1014,10 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
 fn job_started(job: &Job) -> Command {
     append(
         Actor::system(),
-        EventBody::JobStarted(JobStartedData { job: job.number }),
+        EventBody::JobStarted(JobStartedData {
+            job: job.number,
+            round: None,
+        }),
     )
 }
 
@@ -1738,6 +1804,18 @@ fn decide(
                 })
             }
         },
+        Input::ChildSession {
+            actor,
+            report,
+            child,
+        } => Ok((state, child_sessions::learn(job, actor, report, *child)?)),
+        Input::ChildSessionSaid(report) => Ok((state, child_sessions::said(state, job, report)?)),
+        Input::RoundStarted {
+            session,
+            number,
+            task_id,
+            by,
+        } => child_sessions::round_started(state, job, session, *number, task_id, *by),
         Input::Rename { user, title } => {
             job.title.written_by(TitledBy::User);
             Ok((
@@ -1909,6 +1987,11 @@ fn agent_input(
         AgentUpdate::UsageRejected(_) => Ok((state, vec![])),
         // counted by the application before the core; a core that is handed one changes nothing
         AgentUpdate::TierRejected => Ok((state, vec![])),
+        // the dispatcher hands sessions to the application, which writes the events through
+        // `Input::ChildSession`; a core that is handed them here changes nothing
+        AgentUpdate::ChildSessions(_) | AgentUpdate::ChildSessionsRejected(_) => {
+            Ok((state, vec![]))
+        }
         // What the model thought: logged as it came, bounded again here (the door is checked at the
         // door, whatever adapter sent it). Not an answer and not a summary: it touches nothing else.
         AgentUpdate::Reasoning {
@@ -2608,6 +2691,8 @@ mod tests {
             TransitionError::TextTooLong { max: 1 },
             TransitionError::AskRefused(AskRefusal::TaskOver),
             TransitionError::AskRefused(AskRefusal::EmptyText),
+            TransitionError::ChildSessionRefused(SessionRefusal::LedgerFull),
+            TransitionError::ChildSessionRefused(SessionRefusal::Malformed),
         ];
         for e in errors {
             // Exhaustive: a new variant forces a class decision.
@@ -2618,6 +2703,12 @@ mod tests {
                 TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
                 TransitionError::AskRefused(AskRefusal::TaskOver) => ErrorClass::Rejected,
                 TransitionError::AskRefused(_) => ErrorClass::Invalid,
+                TransitionError::ChildSessionRefused(SessionRefusal::LedgerFull) => {
+                    ErrorClass::Rejected
+                }
+                TransitionError::ChildSessionRefused(SessionRefusal::Malformed) => {
+                    ErrorClass::Invalid
+                }
             };
             assert_eq!(e.class(), expected);
             assert!(!e.is_retryable());

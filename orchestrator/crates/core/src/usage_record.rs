@@ -235,6 +235,9 @@ pub enum UsageWhat {
 /// is not a usage event.
 pub fn usage_change(owner: &UserId, event: &Event) -> Option<UsageChange> {
     let (agent, task, what) = match &event.body {
+        // a round the thread only follows: its parent's totals hold the tokens (ADR 0072)
+        EventBody::ModelUsage(d) if !d.counted => return None,
+        EventBody::ModelUsageTotal(d) if !d.counted => return None,
         EventBody::ModelUsage(d) => (
             &d.agent,
             &d.task,

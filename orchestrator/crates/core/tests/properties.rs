@@ -195,7 +195,7 @@ proptest! {
                             prop_assert_eq!(&next_snap.job.gate, &snap.job.gate);
                             prop_assert_eq!(next_snap.job.verification, snap.job.verification);
                             let started = cmds.iter().any(|c| matches!(c,
-                                Command::Append(d) if d.body == EventBody::JobStarted(JobStartedData { job: next_snap.job.number })));
+                                Command::Append(d) if d.body == EventBody::JobStarted(JobStartedData { job: next_snap.job.number, round: None })));
                             prop_assert!(started);
                             let delegations = cmds.iter().filter(|c| matches!(c, Command::Delegate { .. })).count();
                             prop_assert_eq!(delegations, 1);

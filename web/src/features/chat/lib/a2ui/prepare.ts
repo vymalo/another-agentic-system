@@ -7,15 +7,17 @@ import type { KeptFile } from "@/features/chat/lib/files";
 import { firstBadUrl, readCards } from "./cards";
 import { OWN_CATALOG, type OwnCatalog } from "./catalog";
 import { type CompiledCatalog, compiledOf } from "./catalog/validate";
-import { duplicateIn, limitsIn, readChoices } from "./choices";
+import { duplicateIn, limitsIn, readChoices, SHOWABLE } from "./choices";
 import {
   ACCORDION,
   BASIC_CATALOG_IDS,
   CARDS,
   CHECK_BOX,
+  CHECKLIST,
   CHOICES,
   FIELD,
   IMAGE,
+  isPlanSurface,
   MAX_BYTES,
   MAX_COMPONENTS,
   MAX_DEPTH,
@@ -36,6 +38,7 @@ import {
   VOCABULARY,
 } from "./limits";
 import { isBinding, resolvePointer, resolveValue } from "./pointer";
+import { progressOf, readItems } from "./status";
 import { safeHttpUrl } from "./url";
 
 /**
@@ -89,6 +92,8 @@ export type Prepared =
       fields: Record<string, unknown>;
       /** Buttons that send an event to the agent (they need a thread that waits for the owner). */
       eventActions: number;
+      /** A plan only (catalog version 8): how far its checklists have got; absent with no checklist. */
+      progress?: { done: number; total: number };
     }
   /** Valid so far, nothing to draw yet: no `root`, or a reference to a component not sent yet. */
   | { kind: "pending" }
@@ -224,6 +229,8 @@ type Ctx = {
   nodes: number;
   dangling: boolean;
   drawn: Set<string>;
+  /** The ids some question of a Choices shows (catalog version 8), each with who shows it: drawn there only. */
+  shown: ReadonlyMap<string, string>;
 };
 
 /**
@@ -250,6 +257,7 @@ function walk(
   depth: number,
   path: Set<string>,
   inTemplate: boolean,
+  viaShow = false,
 ): void {
   if (depth > MAX_DEPTH) refuse("depth", `more than ${MAX_DEPTH} levels deep`);
   if (path.has(id)) refuse("cycle", `component ${clip(id)} contains itself`);
@@ -260,6 +268,13 @@ function walk(
   }
   if (++ctx.nodes > MAX_NODES) {
     refuse("expansion", `more than ${MAX_NODES} nodes after expanding templates and references`);
+  }
+  const by = ctx.shown.get(id);
+  if (!viaShow && by !== undefined) {
+    refuse(
+      "expansion",
+      `component ${clip(id)} is shown by ${by} and is also placed in the surface; it is drawn once, with its question`,
+    );
   }
   if (typeof c.component === "string" && DRAWN_ONCE.has(c.component)) {
     if (ctx.drawn.has(id)) {
@@ -317,6 +332,10 @@ function walk(
       refuse("shape", `component ${clip(id)} has a child that is not an id`);
     walk(ctx, c.child as string, data, depth + 1, path, inTemplate);
   }
+  // what the questions of a Choices show is drawn with them, in the order of the questions
+  if (c.component === "Choices") {
+    for (const kid of shownBy(c)) walk(ctx, kid.id, data, depth + 1, path, inTemplate, true);
+  }
   // the child of each tab, and of each item of an accordion, is a component of the surface too
   for (const key of ["tabs", "items"]) {
     const entries = c[key];
@@ -327,6 +346,42 @@ function walk(
     }
   }
   path.delete(id);
+}
+
+/** The ids the questions of a Choices show, in the order of the questions, each with its question. */
+function shownBy(c: Rec): { id: string; question: string }[] {
+  const out: { id: string; question: string }[] = [];
+  for (const q of Array.isArray(c.questions) ? c.questions : []) {
+    if (!isRecord(q) || !Array.isArray(q.show)) continue;
+    for (const id of q.show) if (typeof id === "string") out.push({ id, question: String(q.id) });
+  }
+  return out;
+}
+
+/**
+ * The operations that are alive. A `createSurface` for a surface that exists starts it over (A2UI's own
+ * rule, which the reducer of the web follows): what came before the last one is dead, so an agent that
+ * sends a plan again whole each time does not count the copies it replaced against the size limit. Only
+ * operations of the very surface the last `createSurface` names are dropped; a payload that mixes
+ * surfaces is left whole, for the shape check to refuse.
+ */
+export function aliveOperations(operations: unknown[]): unknown[] {
+  let last = -1;
+  for (let i = operations.length - 1; i >= 0; i--) {
+    const op = operations[i];
+    if (isRecord(op) && isRecord(op.createSurface)) {
+      last = i;
+      break;
+    }
+  }
+  if (last <= 0) return operations;
+  const id = (operations[last] as { createSurface: Rec }).createSurface.surfaceId;
+  const same = operations.slice(0, last).every((op) => {
+    if (!isRecord(op)) return false;
+    const body = OPERATIONS.map((k) => op[k]).find(isRecord);
+    return body !== undefined && body.surfaceId === id;
+  });
+  return same ? operations.slice(last) : operations;
 }
 
 export type PrepareOptions = {
@@ -583,16 +638,18 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
   const own = options.catalog ?? OWN_CATALOG;
   if (operations === undefined) return { kind: "pending" };
   if (!Array.isArray(operations)) return refuse("shape", "the operations are not a list");
+  // what a later `createSurface` started over is dead: only what is alive is read, and counted
+  const alive = aliveOperations(operations);
 
   // 1. size
-  const size = bytes(JSON.stringify(operations));
+  const size = bytes(JSON.stringify(alive));
   if (size > MAX_BYTES) refuse("size", `${size} bytes of operations; the limit is ${MAX_BYTES}`);
 
   // 2. the shape of every operation, before the reducer sees any
   const normalised: Rec[] = [];
   let surfaceId: string | undefined;
   let deleted = false;
-  for (const [i, op] of operations.entries()) {
+  for (const [i, op] of alive.entries()) {
     if (!isRecord(op)) return refuse("shape", `operation ${i} is not an object`);
     const version = op.version;
     if (typeof version !== "string" || !(VERSIONS as readonly string[]).includes(version)) {
@@ -726,9 +783,16 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
       };
     } else if (mode === "own" && c.component === "Choices") {
       // the converter keeps an unknown component's properties but not its id, which is the
-      // `sourceComponentId` of the answer's action
+      // `sourceComponentId` of the answer's action. What its questions show is its children, in the
+      // order of the questions, and the form draws each with its question (catalog version 8)
       eventActions++;
-      next = { ...next, component: CHOICES, componentId: id };
+      const kids = shownBy(c).map((k) => k.id);
+      next = {
+        ...next,
+        component: CHOICES,
+        componentId: id,
+        ...(kids.length > 0 ? { children: kids } : {}),
+      };
     } else if (mode === "own" && c.component === "Cards") {
       // output only: no action, nothing to send; kept by the converter under its own name
       next = { ...next, component: CARDS };
@@ -765,13 +829,44 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
     if (next !== c) lowered.set(id, next);
   }
 
+  // a plan is read, never answered: nothing of it sends anything or takes an input (catalog version 8)
+  if (isPlanSurface(surfaceId) && (eventActions > 0 || inputs.size > 0)) {
+    return refuse(
+      "action",
+      `the surface ${clip(surfaceId)} is a plan (its id starts with plan-), which holds nothing the person can answer or send`,
+    );
+  }
+
   // 7. the walk: levels, nodes after expansion, cycles, templates, URLs
+  const shown = new Map<string, string>();
+  if (mode === "own") {
+    for (const [id, c] of components) {
+      if (c.component !== "Choices") continue;
+      for (const kid of shownBy(c)) {
+        const by = `the question ${clip(kid.question)} of ${clip(id)} (Choices)`;
+        const other = shown.get(kid.id);
+        if (other !== undefined && other !== by) {
+          return refuse("schema", `component ${clip(kid.id)} is shown by ${other} and by ${by}`);
+        }
+        shown.set(kid.id, by);
+        // only what is on the list is shown (a component that is not here yet is for `pending`)
+        const target = components.get(kid.id);
+        if (target && !(SHOWABLE as readonly string[]).includes(String(target.component))) {
+          return refuse(
+            "schema",
+            `component ${clip(kid.id)} (${clip(String(target.component))}) is shown by ${by}, which may show only ${SHOWABLE.join(", ")}`,
+          );
+        }
+      }
+    }
+  }
   const ctx: Ctx = {
     components,
     templated: new Set(),
     nodes: 0,
     dangling: false,
     drawn: new Set(),
+    shown,
   };
   if (!components.has("root")) return { kind: "pending" };
   walk(ctx, "root", surface.dataModel, 1, new Set(), false);
@@ -787,5 +882,31 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
   });
   if (conversion[0] !== undefined) return refuse("shape", conversion[0]);
   if (!spec) return { kind: "pending" };
-  return { kind: "surface", surfaceId, spec, fields, eventActions };
+  const progress = isPlanSurface(surfaceId) ? progressOfPlan(components) : undefined;
+  return {
+    kind: "surface",
+    surfaceId,
+    spec,
+    fields,
+    eventActions,
+    ...(progress ? { progress } : {}),
+  };
+}
+
+/** How far the checklists of a plan have got, all together; `undefined` when it holds none. */
+function progressOfPlan(
+  components: ReadonlyMap<string, Rec>,
+): { done: number; total: number } | undefined {
+  let done = 0;
+  let total = 0;
+  let any = false;
+  for (const c of components.values()) {
+    const items = c.component === CHECKLIST ? c.items : undefined;
+    if (items === undefined) continue;
+    const p = progressOf(readItems(items));
+    done += p.done;
+    total += p.total;
+    any = true;
+  }
+  return any ? { done, total } : undefined;
 }

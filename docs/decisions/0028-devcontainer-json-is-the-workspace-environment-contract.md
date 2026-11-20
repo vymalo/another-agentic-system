@@ -4,6 +4,8 @@
   environment and the coder uses it (adam-rs ADR 0010, `c0f12dd`), and this repository runs it end to end (see the
   [status note](#status-note-2026-10-02-built-the-stack-and-its-scenario)). The defaults listed under
   [Defaults the owner may revisit](#defaults-the-owner-may-revisit) were chosen by the plan, not by the owner.
+  **Amended (2026-11-19):** the *how* is removed and the *what* stands — the environment is a run pod of an image the
+  repository publishes, on Kubernetes only, and nowhere in this stack ([status note](#status-note-2026-11-19-the-how-is-removed-the-contract-stays), adam ADR 0052).
 
 ## Context
 
@@ -286,6 +288,12 @@ The plan built these defaults. The owner may choose differently.
 
 ## Status note, 2026-10-02: built, the stack and its scenario
 
+> **Marker, 2026-11-19:** every path this note names under `dev/` and `.github/` — the override, the vendored service,
+> the scenario, its workflow step and its compose checks — was removed with the Podman path (epic #359 slice 12,
+> [#372](https://github.com/vymalo/another-agentic-system/issues/372); adam ADR 0052). What the note says about the
+> decision and its proof stands as history; the [note of 2026-11-19](#status-note-2026-11-19-the-how-is-removed-the-contract-stays)
+> says what is true now.
+
 The contract is built on both sides. **adam-rs** (pinned in `compose.yaml` at `c0f12dd`, which contains its #67 and #68): the
 `adam-devcontainer` crate and its ADR 0010 (how adam-rs does it: the policy checked three times, the override file, the
 teardown), the coder's tools routed through the environment, OpenCode inside it, the `rebuild_environment` tool, the
@@ -298,7 +306,7 @@ teardown), the coder's tools routed through the environment, OpenCode inside it,
   `dev/coder/check-vendored.sh`. It has **no `privileged`, no `cap_add` and no `devices`**, and no Docker socket is mounted
   anywhere; its three `security_opt` entries (a pinned seccomp profile file, `systempaths=unconfined`,
   `apparmor=unconfined`) and why each is needed are in `dev/coder/podman/README.md` and
-  [`dev/README.md`](../../dev/README.md#devcontainers). The base stack does not change: without the override the coder
+  `dev/README.md`'s "Devcontainers" section (both removed 2026-11-19: see [the note below](#status-note-2026-11-19-the-how-is-removed-the-contract-stays)). The base stack does not change: without the override the coder
   runs with the runtime off, in its own container. The override also makes `mock-ci` watch `local/devbox`, because the coder's
   gate waits for CI on the pushed commit.
 - `dev/devcontainer-e2e.sh`: through the web's own path (AG-UI), the done-when items of
@@ -324,3 +332,49 @@ under *Unverified* above (the `podman-remote` client, the user-namespace ids) ar
   where the key exists), that the coder's gate (`ci+agent_checks` with `mock-ci`) completes for a repository whose work was
   done in a container, and that DNS to `mock-openai` and the pulls work from a nested container on the runners.
 - Kubernetes is unchanged: the coder stays `Local` there (open question 41).
+
+## Status note, 2026-11-19: the *how* is removed, the contract stays
+
+The owner decided on 2026-11-19 to remove Podman from adam-rs and from the stack around it, as a hard cutover
+([adam ADR 0052](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0052-no-podman-a-repositorys-own-environment-is-a-run-pod-of-its-image.md),
+accepted 2026-11-19, merged as vymalo/another-adam-rs#194). This note records what that does to this decision.
+**The decision above is not rewritten**: the dated notes before it say what was built and checked, and this one says
+what is true after the removal. The 2026-10-02 note carries its own marker for the paths this slice deletes, and the
+one link in it that pointed at the "Devcontainers" section points here.
+
+**The *what* is unchanged.** Decision 1 stands: a repository's `.devcontainer/devcontainer.json` is the contract of
+its work environment — the containers.dev specification, the file read in the order the specification gives, the
+first repository of a workspace deciding, the untrusted-input policy (a refused privilege, no silent fallback, the
+person decides), and nothing of it in the orchestrator. The `workspace` image of another-agentic-images stays the
+default base a repository can name, and the orchestrator and the web still change nothing.
+
+**The *how* is being removed.** Decision 4 (the devcontainer CLI run against a rootless Podman service beside the
+coder, the service as the trust boundary) and decision 8's "Kubernetes waits" no longer describe anything that runs
+once adam ADR 0052's slices land. In adam-rs the `adam-devcontainer` crate, the ten `DEVCONTAINER_*` and
+`CONTAINER_HOST` settings, `rebuild_environment` and the CLI and remote client in the image go with its slices 2 and 3
+(nothing of them is built yet: the pin this stack runs still carries the path). In this repository, epic #359 slice 12
+([#372](https://github.com/vymalo/another-agentic-system/issues/372), numbered slice 6 when it was claimed, adam ADR 0052 slice 4) removed the dev stack's half:
+`dev/compose.devcontainer.yaml`, the vendored `dev/coder/podman/`, `dev/devcontainer-e2e.sh`, its step in
+`.github/workflows/coder-e2e.yml`, its compose checks, `dev/README.md`'s "Devcontainers" section, and the entries of
+`dev/coder/UPSTREAM` and `dev/coder/check-vendored.sh`. Nothing of it was left dormant or behind a flag.
+
+**The *how* is adam ADR 0052.** A repository's own environment is a **run pod of an image the repository publishes**:
+on Kubernetes, when the deployment allows the image's prefix, the coder offers `use_repository_environment` and the
+run's commands run in that pod (adam-rs slice 1, not this repository). **On a desktop and in this development stack
+the tool does not appear at all**: commands run where the coder runs, and one step says the repository's
+configuration is not used. No container engine runs at run time, so the service's least-privilege table, its seccomp
+and AppArmor settings, the socket volume and the "an escape lands in the service" residual risk are history, not
+current guarantees. Where the file cannot be honoured (a desktop, this stack, a deployment without an allowed image),
+the contract is still read and the answer still says so; what a repository gets there is the coder's own environment,
+never a silent fallback.
+
+**What this does not decide.** Whether a cluster deployment may build an image from a repository (it may not: the
+repository's CI publishes it), how a repository names its image in `devcontainer.json` (not here: adam ADR 0052
+decision 6 decides it — `customizations.adam.image`, or a plain `image`; a build is refused in words), and the
+platform's gVisor class for run pods (another-agentic-platform, AD-052). Question 41 keeps its own record in
+[`docs/open-questions.md`](../open-questions.md).
+
+*Verified 2026-11-19*: the paths above are gone from this repository and `git grep -i podman -- dev .github` is
+empty; the compose files and the base and live overrides still parse, and the docs check passes. Adam ADR 0052 was
+read at its merged file: it records that **nothing of adam's side is built yet** (its slices are the epic's adam
+tickets), so no test of it exists and none is claimed here; this note has not read the code that ADR describes.

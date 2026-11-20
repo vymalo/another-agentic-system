@@ -1,5 +1,5 @@
 //! Signed requests to a tool server ([`docs/api/signed-tool-requests-v1.md`](../../../docs/api/signed-tool-requests-v1.md),
-//! [ADR 0067](../../../docs/decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md)).
+//! [ADR 0080](../../../docs/decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)).
 //!
 //! A [`Signer`] turns one HTTP request to a tool server into the value of the header [`HEADER`]: a tagged `COSE_Sign1`
 //! (Ed25519) in the *claim object* profile of `cratestack-cose` 0.17.2, which `cratestack_cose::open_claims` verifies. The

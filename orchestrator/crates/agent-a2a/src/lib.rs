@@ -48,6 +48,15 @@
 //! so when such a stream reaches a status that ends or pauses the task, the adapter reads the task
 //! once (`GetTask`) and passes its totals on before the status; a read that fails passes nothing.
 //!
+//! Child sessions (`child-sessions/v1`, ADR 0072) are activated on a send (a steer too), a
+//! resubscribe, a `GetTask`, a `CancelTask` and a `ListTasks`, each only when the card read for that
+//! very call offers the extension well formed ([`child_sessions_from_card`]); what an agent says of
+//! sessions to a call that did not activate it is dropped. A stream that activated it also reads its
+//! task for its sessions, once for the status that ends or pauses the turn (said after what that
+//! update said itself, and before its status, so that the listing is the last word) and every
+//! [`A2aConfig::child_sessions_poll`] while it runs and has carried no event, and passes them on
+//! (`orch_a2a_mapping`). The reads run inline in the stream's loop.
+//!
 //! Files (ADR 0032): an artifact's `raw` part reaches the worker as `AgentUpdate::File` (the
 //! mapper), and a `url` part on a host of [`A2aConfig::fetch_files`] is read here and reaches it the
 //! same way ([`FileFetch`]); any other `url` part stays a link. A part that names an upload
@@ -62,7 +71,9 @@
 
 mod a2ui;
 mod access_tier;
+mod child_sessions;
 mod client;
+mod commands;
 mod errors;
 mod extensions;
 mod files;
@@ -75,7 +86,9 @@ pub use a2ui::{
     action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
 };
 pub use access_tier::access_tier_from_card;
+pub use child_sessions::child_sessions_from_card;
 pub use client::{A2aAgentClient, A2aConfig, BuildError, install_crypto_provider};
+pub use commands::commands_from_card;
 pub use extensions::{
     build_from_card, extensions_from_card, steps_from_card, text_stream_from_card, usage_from_card,
 };

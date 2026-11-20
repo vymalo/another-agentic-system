@@ -220,6 +220,9 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::ThreadUnshared
                 | EventKind::ModelUsage
                 | EventKind::ModelUsageTotal
+                | EventKind::ChildSessionOpened
+                | EventKind::ChildSessionReported
+                | EventKind::ChildSessionClosed
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -607,6 +610,10 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             // Token counts are not the conversation either (ADR 0056).
             | EventBody::ModelUsage(_)
             | EventBody::ModelUsageTotal(_)
+            // The helper's work is not the parent's conversation (ADR 0072); a fork has no sessions.
+            | EventBody::ChildSessionOpened(_)
+            | EventBody::ChildSessionReported(_)
+            | EventBody::ChildSessionClosed(_)
             | EventBody::ThreadForked(_) => {}
         }
     }

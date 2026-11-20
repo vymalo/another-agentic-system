@@ -7,6 +7,7 @@ import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { PandaMark } from "@/components/brand/panda-mark";
 import { Hint } from "@/components/hint";
 import { InlineStatus, LoadingStatus } from "@/components/inline-status";
+import { ThemeMenu } from "@/components/theme/theme-menu";
 import { Button } from "@/components/ui/button";
 import { DataUIs } from "@/features/chat/components/data-uis";
 import { DeliveryProvider } from "@/features/chat/components/delivery-note";
@@ -167,6 +168,7 @@ function SharedThreadView({ thread, source }: { thread: ApiSharedThread; source:
                       <StateBadge state={state} needsAnswer={false} />
                       <PanelToggle />
                       <CopyLink />
+                      <ThemeMenu />
                     </div>
                   </header>
                   <div className="mx-auto w-full max-w-3xl px-4 pb-2 md:px-6">

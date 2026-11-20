@@ -236,3 +236,72 @@ describe("ToolsWarning", () => {
     expect(text()).toBe("Could not check whether Coder can use attached tools.");
   });
 });
+
+describe("ToolsPicker: the person's own servers (ADR 0046)", () => {
+  const own: ApiToolServer[] = [
+    ...servers.slice(0, 1),
+    { id: "u-aaaaaaaaaa", name: "My search", own: true, status: "ready" },
+    {
+      id: "u-bbbbbbbbbb",
+      name: "My notes",
+      own: true,
+      status: "needs_auth",
+      reason: "not_connected",
+    },
+    {
+      id: "u-cccccccccc",
+      name: "My wiki",
+      own: true,
+      status: "unavailable",
+      reason: "egress_refused",
+    },
+  ];
+
+  it("marks a server of the person's own as theirs, and the deployment's not", async () => {
+    renderPicker({ view: view({ servers: own }) });
+    const menu = await open();
+    const items = within(menu).getAllByRole("menuitemcheckbox");
+    expect(items.map((i) => i.textContent)).toEqual([
+      "Web searchSearch the web.",
+      "My searchYours",
+    ]);
+    expect(within(items[1] as HTMLElement).getByText("Yours")).toBeTruthy();
+    expect(within(items[0] as HTMLElement).queryByText("Yours")).toBeNull();
+  });
+
+  it("attaches a ready one like any other", async () => {
+    const { onChange } = renderPicker({ view: view({ servers: own }) });
+    const menu = await open();
+    fireEvent.click(within(menu).getByRole("menuitemcheckbox", { name: /^My search/ }));
+    expect(onChange).toHaveBeenLastCalledWith(["u-aaaaaaaaaa"]);
+  });
+
+  it("does not let one that needs a key or a sign-in be attached: it links to My tool servers and says what it needs", async () => {
+    const { onChange } = renderPicker({ view: view({ servers: own }) });
+    const menu = await open();
+    const needs = within(menu).getByRole("menuitem", { name: /My notes/ });
+    expect(needs.getAttribute("href")).toBe("/tools");
+    expect(needs.textContent).toContain("Needs a key or a sign-in.");
+    expect(needs.textContent).toContain("Open My tool servers to set it up.");
+    // a link: jsdom has nowhere to navigate to
+    needs.addEventListener("click", (event) => event.preventDefault());
+    fireEvent.click(needs);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(within(menu).queryByRole("menuitemcheckbox", { name: /My notes/ })).toBeNull();
+  });
+
+  it("says why an unavailable one cannot be attached, with the reason's own words", async () => {
+    renderPicker({ view: view({ servers: own }) });
+    const menu = await open();
+    const blocked = within(menu).getByRole("menuitem", { name: /My wiki/ });
+    expect(blocked.textContent).toContain("Not available.");
+    expect(blocked.textContent).toMatch(/no longer allows connections/);
+  });
+
+  it("keeps the chip of one that stopped being ready, so that it can be taken off", () => {
+    const { onChange } = renderPicker({ view: view({ servers: own }), chosen: ["u-bbbbbbbbbb"] });
+    expect(screen.getByRole("listitem").textContent).toBe("My notes");
+    fireEvent.click(screen.getByRole("button", { name: "Remove My notes" }));
+    expect(onChange).toHaveBeenLastCalledWith([]);
+  });
+});

@@ -65,12 +65,22 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > contract [`thread-tools-v1.md`](thread-tools-v1.md#ask_agent)): an agent the thread's agent asked with `ask_agent` is a
 > `SUBAGENT_STARTED` named after it, `sub-ask-<n>`, nested by `parentSubagentRunId` under the one that asked, with a
 > `vymalo.ask` activity; see [Asked agents as subagents](#asked-agents-as-subagents).
+> **Child sessions are subagents** (2026-11-19, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md),
+> slice S2e, contract [`child-sessions-v1.md`](child-sessions-v1.md)): a helper session the agent opened is a `SUBAGENT_STARTED` named
+> after the helper, `sub-session-<seq>`, with a `vymalo.session` card and the child thread named in its metadata; see
+> [Child sessions as subagents](#child-sessions-as-subagents).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 > **Access tier** (2026-10-11, [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), contract
 > [`access-tier-v1.md`](access-tier-v1.md), orchestrator and web built, the agent side is adam-rs's): `forwardedProps["vymalo.tier"]` on
 > the run that carries a message, checked before anything is written, shown on `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the
 > message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default, maxTier?}`; see [Access tier](#access-tier).
+
+> **Commands** (2026-11-19, [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md), contract
+> [`commands-v1.md`](commands-v1.md), the orchestrator's card read and capabilities key built, adam's side built, the web's `/` menu
+> next): the capabilities document's `custom[<commands/v1 URI>] = {commands: [{name, description, argumentHint?}]}` while the live card
+> lists the extension well formed. There is no inbound member: a command is the message's **text** (`/name <arguments>`), which the
+> orchestrator logs and sends as it stands; see [Commands](#commands).
 
 ## Endpoints
 
@@ -146,6 +156,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity; `fork-<seq>` of the `thread_forked` event for the `vymalo.fork` activity. |
 | step activity `messageId` | `step-<seq>` of the first event of the step (the same id for every snapshot of the step; a step that starts again after its end is another run of it, with another seq). |
 | `subagentRunId` of a step | `sub-step-<seq>` of the same event, for a sub-agent step. |
+| session activity `messageId`, `subagentRunId` of a session | `session-<seq>` and `sub-session-<seq>`, the `seq` of the `child_session_opened`; the subagent that follows a later report is `sub-session-<seq>-<seq of that report>`, so no id is used twice in a run (the reference client refuses it). |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
 | SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message **of the log** is open. A live message is not in the log and does not hold it back; a live frame never has one. |
@@ -186,7 +197,10 @@ gets everything.
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) and the agent pushed, or tried to push, or is being reworked | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `agent_status{completed}` | The job is under a gate and the agent pushed nothing (and no earlier attempt of the job pushed a commit): **an answer**, not work to verify, whatever `checks` it reported ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note), 2026-10-04 and 2026-10-07) | The status words, if any → status activity → `SUBAGENT_FINISHED{}`; **no** `verifying` snapshot and no `vymalo.check`: the `thread_state{done}` that follows is `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED` success |
 | `tools_attached{servers}`, `tools_detached{servers}` (ADR 0024) | A person attached MCP servers to the thread, or detached some (`putThreadTools`, or the run that created the thread); a fork that cannot keep a server its agent may not use detaches it; in any state | The set of attached servers is part of every `STATE_SNAPSHOT` (`thread.tools`, the ids, sorted, absent when there are none), so the event is said as one **and as a card**. **Inside a run**: `STATE_SNAPSHOT` with the new set, then `ACTIVITY_SNAPSHOT{messageId:"evt-<seq>", activityType:"vymalo.tools", content:{attached?, detached?, at}}` (the ids that came or went; the creation commit's event comes right after the first message, inside the run it opened). **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → the card → `STATE_SNAPSHOT` → the run's close by the state the thread is in (as for a title), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. Only ids: no name, URL or credential. See [Attaching MCP servers](#attaching-mcp-servers) |
-| `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
+| `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, round?, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}`. On a **child thread** (ADR 0072) the event carries `round: {number, by?}`, the round of the session the job follows (job 1 for the first round, which has no message), and the card says it as `content.round`: nothing else about the job changes |
+| `child_session_opened{session, thread, agent, description, keepOpen, by?, round?}` (ADR 0072) | The agent opened a helper session. A run is opened for it if none is, and the agent's invocation is **not**: a session event never opens or reopens one. One the projection holds already says nothing again | See [Child sessions as subagents](#child-sessions-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-session-<seq>", name:<the helper>, description, parentSubagentRunId:<the open invocation, when there is one>, metadata:{"vymalo.actor", "vymalo.at", "vymalo.childThread", "vymalo.session"}}` → `ACTIVITY_SNAPSHOT{messageId:"session-<seq>", activityType:"vymalo.session", replace:true, content:{session, threadId, agent, description, keepOpen, state:"working" (`"idle"` when the event names no round), round?, at}}`. The thread's state does not move |
+| `child_session_reported{session, thread, round, report}` (ADR 0072) | A round of a session ended: `done`, `failed`, `canceled` or `blocked`. The core says a round again when it was `blocked` and ends otherwise, so a round may be reported twice | The card again (`round`, `report`; `state:"working"` for `blocked`, which waits for the person, else `"idle"`), then the end of the subagent: `SUBAGENT_FINISHED{result:{round, report}}` for `done` and `canceled`, `SUBAGENT_FINISHED{outcome:suspended, result}` for `blocked`, `SUBAGENT_ERROR{code:"session_failed"}` for `failed`. When the subagent is already ended it is started again first (`SUBAGENT_STARTED`, a new id) and the card follows. With no run open the event is a producer-initiated run of its own. Said when the round is newer than the last said or says another outcome of it; the same again, an earlier round and a session the log never opened say nothing |
+| `child_session_closed{session, thread}` (ADR 0072) | The session was closed, once | The card again with `state:"closed"` (the last `round` and `report` stay), then `SUBAGENT_FINISHED{result:{state:"closed"}}` if the subagent is still open |
 | `thread_forked{from:{threadId, seq}, kind, title, description?, target}` (ADR 0029) | Where the copy of the parent's events ends: the events before it are the parent's and say what they said. In any state of the projection | A run the copy left open (a cut before a message sent mid-run) is closed as `thread_state{cancelled}` closes one: `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}`. The projection forgets the finished job as `job_started` does (the interrupt, the A2UI surfaces, the steps, the attempt, the pushed commit) **and the UI catalog**, which the fork's agent was never sent. Then a producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` → `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>", activityType:"vymalo.fork", content:{from, kind, title, target, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"done", thread.title:<the parent's, as it was>, thread.description:<the parent's, when it had one>, thread.forkedFrom}` → `RUN_FINISHED{outcome:{type:"success"}}`. See [Forks](#forks) |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
 | `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
@@ -447,7 +461,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | A new user message on a blocked thread without `resume` | Accepted as the answer (question 13, closed 2026-09-29) |
 | `forwardedProps["vymalo.gate"]` (ADR 0018) on a run | The gate the thread's job runs under, on top of the deployment's and the agent's (`AGENTS_FILE`): `{require?: ["agent-checks"], maxAttempts?}` (a source is `agent-checks` or `agent_checks`). It may **add** sources and change the attempts within `1..=ORCH_MAX_ATTEMPTS_CAP`; a `require` that leaves out a source the layers above require, an attempt outside that range, a source or setting this build cannot honour (`ci`: see [Verification](#verification-the-gate)), `verifier` or `ci` per thread, an unknown member or a malformed value is **400** with the reason in the problem's `detail`, before the stream, and nothing is created. The gate is copied into the thread's job and fixed there. On a run that continues a thread (a follow-up, an answer, the loser of a race to create it) the member is checked the same way and then compared with the thread's gate: one that would change it is **409**, one that says what the thread has (in either spelling of the sources), or none, is served |
 | `forwardedProps["vymalo.tools"]` (ADR 0024) on a run | The MCP servers to attach to the thread the run **creates**, an array of ids (`["websearch"]`; `[]`, `null` or no member attach none). Read on every run, so one that is not an array of strings is **400** before the stream; applied only when the run creates the thread, in the same commit as the first message, after it. An id that is not a server the deployment offers for the target agent, or more than 16 distinct ones, is **422**, and nothing is created. On a run that continues a thread the member is ignored with a warning (use `PUT /api/threads/{threadId}/tools`). See [Attaching MCP servers](#attaching-mcp-servers) |
-| `forwardedProps["vymalo.fork"]` (ADR 0042) on a run | `{from, after}`: the run **creates** its thread as a fork of the thread `from` (a UUID), cut at the end of the turn that holds the event `after`, and its message is the fork's first. Read on every run, so one that is not exactly those two members (a UUID and an integer) is **400** before the stream, and so is one that comes with `vymalo.gate` or `vymalo.tools` (a fork has the deployment's gate and its parent's tools, ADR 0029). `vymalo.mentions` and `vymalo.uiCatalog` apply to the message. A thread that exists already is the **replay** when it is the fork this request made, else **409**. See [A fork made with its first message](#a-fork-made-with-its-first-message) |
+| `forwardedProps["vymalo.fork"]` (ADR 0042) on a run | `{from, after}`: the run **creates** its thread as a fork of the thread `from` (a UUID), cut at the end of the turn that holds the event `after`, and its message is the fork's first. Read on every run, so one that is not exactly those two members (a UUID and an integer) is **400** before the stream, and so is one that comes with `vymalo.gate` or `vymalo.tools` (a fork has the deployment's gate and its parent's tools, ADR 0029). `vymalo.mentions` and `vymalo.uiCatalog` apply to the message. A thread that exists already is the **replay** when it is the fork this request made, else **409**. See [A fork made with its first message](#a-fork-made-with-its-first-message) A `from` that is the thread of a child session (ADR 0072) is **422** `child_thread`, as for `forkThread`; so is a run on a child's own thread (a message, a steer or an action), which S3 opens. |
 | `forwardedProps["vymalo.mentions"]` (ADR 0026) on a run | The agents the message mentions, `[{agentId, label, start, end, cardUrl?}]` (at most 16; `null` or no member: none): `label` is `@` and 1 to 63 more characters and equals the message text at `start`..`end`, **counted in UTF-16 code units** (what a JavaScript string indexes), never beginning or ending inside a surrogate pair; the references are sorted by `start` and do not overlap. Read on every run, so one that is not an array of at most 16 objects with exactly those members of the right types is **400** before the stream. They go with the run's **message** (the one new message of the run, a stop included: they are the message's own) and are checked before it is written: a label that is not the text at its offsets, an offset past the end or inside a surrogate pair, references out of order or overlapping, an `agentId` the live registry does not list (`unknown agent '<id>' in mentions`), a `cardUrl` that is not the registry's (`the card of '<id>' moved; refresh the agent list`), an agent the caller's roles may not invoke (`you may not use '<id>'`) and the thread's own agent (`an agent cannot be mentioned in its own thread`) are **422**; a registry that cannot answer is **503** (`Retry-After`); nothing is written in any of them. Recorded in the `user_message` as sent, shown on the message (`vymalo.mentions`, [Mentions](#mentions)) and told to the addressed agent when its card lists `mentions/v1`. On a run with no message to carry them (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.tier"]` (ADR 0061) on a run | The access tier the person picked for the run's message: one of `plan`, `edits`, `auto`, `bypass`, spelled exactly (`null` or no member: none). Read on every run, so one that is not a string of those four words is **400** before the stream. It goes with the run's **message** (the one new message of the run, a stop and a fork's first message included: it is the message's own) and is checked before anything is written: a tier above what the caller's roles allow (`auth.roles.<role>.maxTier`) is **422** (`the tier 'bypass' is above what your role allows`), and so is one the thread's agent does not honour by its **live** card (`this agent does not take the tier 'plan'`: the card does not list `access-tier/v1`, lists it badly or lists other tiers); a card that cannot be read is **503** (`Retry-After`); nothing is written in any of them. A tier is never silently dropped. A run whose message names none is sent under none, except for a person whose roles cap the tier for this agent: the highest tier the agent offers that is not above the lower of its default and the cap (**422** `this agent has no tier your role allows` when there is none), so the cap holds when the chip is left alone; an answer to a blocked job continues the job's tier, lowered to the cap and rounded down to what the card honours (**422** `start a new chat` when it cannot be kept). Recorded in the `user_message` as sent (the tier the message was sent under, named, continued or decided), shown on the message (`vymalo.tier`, [Access tier](#access-tier)) and sent to the agent when the card read again at the send still honours it. On a run with no message to carry it (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
@@ -927,6 +941,102 @@ agent's invocation `sub-2`, `sub-ask-2` (`researcher`, the ask `coder` made) und
 `completed`, and `sub-ask-3` (`researcher` again) that ends in `SUBAGENT_ERROR ask_failed`. The reference client reads it in
 CI and its `expected/ask-agent.json` records the subagent each one runs in.
 
+## Child sessions as subagents
+
+**Built** (2026-11-19, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slice S2e;
+no released agent serves it yet, see [`child-sessions-v1.md`](child-sessions-v1.md)). A helper the agent runs as a **session** has a
+thread of its own (the child) and, in the parent's stream, a **subagent** named after the helper and a `vymalo.session` card. The
+child's log is the child thread's stream, which is read like any thread's.
+
+```mermaid
+sequenceDiagram
+  participant A as Parent agent (A2A)
+  participant O as Orchestrator
+  participant U as AG-UI consumer
+  A-->>O: a session is opened (child-sessions/v1)
+  O-->>U: SUBAGENT_STARTED sub-session-3 helper (parent sub-2), ACTIVITY_SNAPSHOT vymalo.session session-3 (working)
+  A-->>O: round 1 ended: blocked
+  O-->>U: the card (working, blocked), SUBAGENT_FINISHED sub-session-3 (suspended)
+  A-->>O: round 1 ended: done
+  O-->>U: SUBAGENT_STARTED sub-session-3-5, the card (idle, done), SUBAGENT_FINISHED sub-session-3-5
+  A-->>O: round 2 ended: failed
+  O-->>U: SUBAGENT_STARTED sub-session-3-6, the card, SUBAGENT_ERROR sub-session-3-6 (session_failed)
+  A-->>O: the session was closed
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.session session-3 (closed)
+```
+
+Two lifecycles, the card's and the subagent's. **The card** (`state`) is `working` while a round runs or waits for the person,
+`idle` when a round ended and none runs, and `closed`; it never goes back from `closed`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> working: child_session_opened with a round
+  [*] --> idle: child_session_opened with none
+  working --> idle: reported done, failed or canceled
+  working --> working: reported blocked
+  idle --> working: reported blocked
+  working --> closed: child_session_closed
+  idle --> closed: child_session_closed
+  closed --> [*]
+```
+
+**The subagent** is open from a start to its end, and a session has one per report that follows an end.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Open: child_session_opened (SUBAGENT_STARTED)
+  Open --> Finished: reported done or canceled, or closed
+  Open --> Failed: reported failed (SUBAGENT_ERROR session_failed)
+  Open --> Suspended: reported blocked, or the invocation or the run ends (SUBAGENT_FINISHED, outcome suspended)
+  Finished --> Open: a later report (SUBAGENT_STARTED, a new id)
+  Failed --> Open: a later report
+  Suspended --> Open: a later report
+  Suspended --> Closed: child_session_closed (the card only)
+  Finished --> Closed: child_session_closed (the card only)
+  Failed --> Closed: child_session_closed (the card only)
+  Closed --> [*]
+```
+
+- **Ids.** The first subagent is `sub-session-<seq>`, `seq` of the `child_session_opened`; each one started by a later report is
+  `sub-session-<seq>-<seq of that report>`, whatever the round and whether or not the run is the same, so an id is never used
+  twice in a run (the reference client refuses it). The card is `session-<seq>`, said again with `replace: true` at every event of
+  the session. The subagent's `name` is the helper's and its `description` the words the session was started with.
+- **Metadata of `SUBAGENT_STARTED`.** `vymalo.actor` and `vymalo.at` as every attributed event, `vymalo.childThread` the child
+  thread's id (a UUID: what a screen opens, `GET /api/threads/{id}`) and `vymalo.session` the agent's own id of the session.
+- **Nesting.** `parentSubagentRunId` is the agent's invocation **when one is open** at the event, and absent when none is: a
+  session event never opens, reopens or names an invocation, so a thread that finished, failed or was cancelled gets no agent turn
+  for a late report, and a rework's invocation keeps its own id. The card is not attributed to a subagent: it outlives the round.
+- **What the card says.** `{session, threadId, agent, description, keepOpen, state, round?, report?, at}`; `round` is the newest
+  round the log names and `report` how it ended (`done`, `failed`, `canceled`, `blocked`). `agent` and `description` are an
+  agent's words and **untrusted**: the screen renders them as text.
+- **Blocked is not the end.** A `blocked` round waits for the person: the card says `working` and `blocked`, and the subagent
+  ends as **suspended**, which a screen draws as waiting. When the same round goes on and ends otherwise the core reports it again,
+  and that report starts a subagent of its own.
+- **Failed is an error.** `SUBAGENT_ERROR{code:"session_failed"}`; the card says which round.
+- **A round that outlives its invocation.** A helper may go on after the agent's task ended. The subagents under the invocation end
+  with it (`SUBAGENT_FINISHED`, outcome `suspended`, **not** canceled: the work goes on) and those that started with no invocation
+  end when the run does; the card keeps saying what it said. The report arrives later, with the thread finished, as a run of its own
+  (`run-<seq>`) that holds the subagent, the card and the end, and closes as the thread's state closes a run.
+- **Said once.** A session the log opened already, a report that says what the last said, a report of an earlier round, and a
+  close already said change nothing, and say nothing: no frame and so no resume point. A report or a close of a session the
+  projection never saw opened (a log held from the middle) says nothing either.
+- **A client that joins** while a round runs gets its `SUBAGENT_STARTED` in the preamble, after the invocation's, the steps' and the
+  asks'.
+- **A fork** copies the events and so the cards; at `thread_forked` the open run ends as a cancelled one (with the sessions'
+  subagents suspended) and every card the fork copied that was not closed is said again as `closed` in the fork's own run, since a
+  fork has no session of its own and no later report can come for it.
+- **Not in the state.** `STATE_SNAPSHOT.thread` does not say that a thread is a child (`childOf`): that is slice S4.
+- **`PROJECTION_VERSION` stays.** No released agent serves `child-sessions/v1`, so no log holds a session event, and no frame
+  of an event that exists changes (a session event changes none of another event's: `tests/sessions.rs`).
+
+The child's own stream is an ordinary one, with one difference: its `job_started` names the round it follows (`vymalo.job` with
+`round: {number, by?}`, job 1 for the first round, which no message started). The goldens are hand-written logs, in
+`docs/api/examples/` with the others (no real agent can produce a session yet), and part of every suite that runs on the goldens:
+[`sessions`](examples/agui/sessions.agui.json) (two sessions under a sub-agent step: a blocked round that ends done, a kept-open
+session with rounds done and canceled, a close, a report after the agent finished and a late close),
+[`sessions-failed`](examples/agui/sessions-failed.agui.json) (a failed round, `session_failed`) and
+[`sessions-child`](examples/agui/sessions-child.agui.json) (the child's log, two rounds). The reference client reads them in CI.
+
 ## Token usage
 
 **Built** (2026-10-09, [ADR 0056](../decisions/0056-token-usage-per-model-call.md), the extension
@@ -1164,6 +1274,8 @@ stateDiagram-v2
 - **An edit** (`kind: "edit"`) is the same copy up to just before a person's message, then `thread_forked`, then the
   replacing message in the same commit: the frames above, then the new run (`user_message`, `job_started`, the agent's
   events) with `jobNumber` and `forkedFrom` in every snapshot.
+- **Regenerate the last answer** is an edit of the person's message that began the newest turn with its own words and no
+  `tier`; the recipe, and when a client should not offer it, is in `forkThread` of the [contract](chat-api.yaml).
 
 ### A fork made with its first message
 
@@ -1276,9 +1388,37 @@ POST /agui/agents/coder   forwardedProps: {"vymalo.tier": "plan"}
 TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...}, "vymalo.tier": "plan"}}
 ```
 
+## Commands
+
+**Built** (2026-11-19, [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md); the orchestrator's card read and
+capabilities key, adam-rs's side; the web's `/` menu is the next slice). The contract, with the card, the two invocation forms and
+the expansion, is [`commands-v1.md`](commands-v1.md); this section says what the AG-UI binding does with it.
+
+- **In:** nothing. There is no `forwardedProps` member and no new message field: a command is the **text** of the message the person
+  sends (`/name <arguments>`), and the orchestrator logs it and sends it as typed. The text form needs no activation, so the
+  orchestrator activates nothing for this extension.
+- **Log:** `user_message.text` as the person sent it, the invocation included. The expansion the agent made of it is the agent's and
+  is not in the log; an export shows `/name <arguments>`.
+- **Out:** nothing of the command on the stream. A `TEXT_MESSAGE_START` of the person's message shows its text; there is no
+  `vymalo.command` member, because the text already says it.
+- **Capabilities:** `custom["https://agents.vymalo.com/a2a/extensions/commands/v1"] = {commands: [{name, description,
+  argumentHint?}]}` while the live card lists the extension with well-formed `params`, sorted by name, a hint only where the card
+  has one, and **no key** for a card that lists none or lists it badly (see [Capabilities document](#capabilities-document)). The web
+  draws its `/` menu from it, and draws none without it.
+
+```
+GET /agui/agents/coder/capabilities
+custom: {"https://agents.vymalo.com/a2a/extensions/commands/v1": {"commands": [
+  {"name": "explain", "description": "Explains a file."},
+  {"name": "review", "description": "Reviews a change.", "argumentHint": "<repo>"}]}}
+```
+
 ## The UI catalog
 
 *Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
+**At the A2UI v1.0 cutover** ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), nothing built yet) this section's
+extension becomes `ui-catalog/v2`, whose contract is [`ui-catalog-v2.md`](ui-catalog-v2.md): the `catalog` gains
+`"protocolVersion": "1.0"`, the version continues at 9, and the digests change. Slice S1 rewrites this section.
 Agents are meant to answer and ask through the components the person's screen can show. The web defines
 them as an A2UI **inline catalog**, `{catalogId, components: {<Name>: <JSON Schema>}}`, and sends it with a
 run; the orchestrator records it in the log and tells the agent (which is the business of the A2A adapter:
@@ -1556,6 +1696,15 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   no role of theirs caps it; the document is per person and `no-store`). A card that lists
   the URI badly (a `default` that is not among the `tiers`, a repeated or unknown tier) is a card that does not list it: no key.
   The web draws its tier chip from this key, and shows none without it;
+- `custom["https://agents.vymalo.com/a2a/extensions/commands/v1"] = {commands: [{name, description, argumentHint?}]}` only while the
+  live card lists the extension with well-formed `params` (ADR 0079, [`commands-v1.md`](commands-v1.md)): the agent's own prompt
+  templates, sorted by name and each once, a hint only where the card has one. A card that lists it badly (no `commands`, an empty
+  list, a name that is empty, has whitespace or starts with `/`, a blank description, a hint that is not a string) is a card that does
+  not list it: no key. The web draws its `/` menu from this key and shows none without it;
+- `custom["https://agents.vymalo.com/a2a/extensions/child-sessions/v1"] = {agents: [{name, description}], maxOpen}` only while the
+  live card lists the extension with well-formed `params` (ADR 0072, [`child-sessions-v1.md`](child-sessions-v1.md)): the helpers a
+  person may start a session with, and the most sessions open at once in one thread. A card that lists it badly (no agent, a name
+  twice, a `maxOpen` that is not a whole number of at least 1) has no key;
 - `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
   `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
   open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.
@@ -1572,6 +1721,12 @@ opens the pull request. [ADR 0013](../decisions/0013-a2ui-generative-ui.md) chos
 orchestrator → AG-UI `a2ui-surface` activity → web**, and the user's action the other way. This section
 is what the orchestrator does with it. The renderer, and the rules that only a renderer can enforce
 (vocabulary, expansion, links), are the web's ([ADR 0013](../decisions/0013-a2ui-generative-ui.md#the-web-renderer)).
+
+**This section describes what is built, A2UI v0.9.1.** The hard cutover to A2UI v1.0
+([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), nothing built yet) has its contract in
+[`ui-catalog-v2.md`](ui-catalog-v2.md): the card entry `https://a2ui.org/a2a-extension/a2ui/v1.0`,
+`a2uiRendererCapabilities` keyed `"1.0"`, no surface in a turn without them, and actions with five members only
+([section 5](ui-catalog-v2.md#5-to-the-agent-the-extension)). Slice S1 rewrites this section for v1.0.
 
 ### Facts this rests on
 
@@ -1686,17 +1841,32 @@ inside the run that the question ends.
 
 The projector keeps, per surface, the operations received so far. A snapshot carries all of them, so a
 client that holds only the last snapshot of a surface renders it completely, and a viewer that connects
-late or resumes with a cursor gets the same story. A surface's replayed operations are capped at
-256 KiB; past that the viewer gets one `vymalo.error` line, the surface keeps its last good snapshot and
-its later updates are not shown. The projector also knows which surfaces the thread has and the version
+late or resumes with a cursor gets the same story. A surface keeps only the operations that are **alive**: a `createSurface` for a surface the projector holds starts it over,
+so the operations before it are dropped, and a `deleteSurface` ends the surface. The alive operations are capped at
+256 KiB (`MAX_SURFACE_BYTES`, 262,144 bytes); past that the viewer gets one `vymalo.error` line, the surface keeps its last good snapshot and
+its later updates are not shown, until a `createSurface` starts it over (then it is shown again if the new copy fits). The projector also knows which surfaces the thread has and the version
 each speaks; the inbound side uses that.
+
+**A surface sent again** (an agent's plan: [`ui-catalog-v1.md`](ui-catalog-v1.md#a-surface-sent-again), where the rule is written once).
+The same `surfaceId` is the same surface, under the `messageId` of the event that created it in every run,
+and each snapshot is the whole surface that is alive. A `createSurface` for a surface that exists starts it over (the catalog's rule), so
+the projector drops the operations before it: the snapshot after it holds the create and what follows, never the dead copies, and a plan sent
+200 times is one copy in the buffer and in every replay to a late or reconnecting viewer. The frames keep their kinds, order and ids, and what a client draws is the same; what changed is the **content of a snapshot after a re-create**, on the live stream and in
+every replay alike: it holds the alive operations and not the dead copies before them. A snapshot a client stored before
+(`PROJECTION_VERSION` 1) is therefore not the one this projection writes for the same log, which is why the version rose to 2
+([`history.md`](history.md) rule 7: a client discards what it stored under another version). A payload
+that names several surfaces is cut per surface, so each snapshot names one surface and the client can skip its dead part. A copy in a later run is the live one and the
+earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), whose copies are matched by `surfaceId` and drawn once per
+stretch of the thread between two messages of a person, so that a plan the person answered is never rewritten on the page (rule 4 of the catalog's rule).
 
 ```mermaid
 stateDiagram-v2
   [*] --> Live: first operation for a surfaceId (a2ui-seq is its message id)
   Live --> Live: operation, snapshot of the whole surface
-  Live --> Capped: more than 256 KiB of operations
+  Live --> Live: createSurface, the surface starts over (earlier operations dropped)
+  Live --> Capped: more than 256 KiB of alive operations
   Capped --> Capped: later operations are not shown
+  Capped --> Live: createSurface, and the new copy fits
   Live --> Deleted: deleteSurface (its snapshot ends in the delete)
   Capped --> Deleted: deleteSurface
   Deleted --> Live: a later operation, a new surface under a new message id
@@ -1737,7 +1907,10 @@ in question order (`other` only for a question that allows it, at most 500 chara
 the others, and the `vymalo.action` activity carries the same `context`. A client may show an action whose `context.answers` has
 this shape as **the person's answer** and not as a step: the web draws a right-aligned "Your answers" bubble above the agent's turn,
 with the question and the labels of the options chosen, the words typed and the note, resolved from the surface the action names
-(the question ids and the option values themselves when that surface is not in the transcript).
+(the question ids and the option values themselves when that surface is not in the transcript). The five kinds of question of catalog
+version 7 answer in the same shape (`{"id": "budget", "values": ["250.5"]}`: a yes or no, a decimal string, a whole number, a day
+`YYYY-MM-DD`, or every option of a `rank` in the person's order); the orchestrator does not read them either, the agent that asked
+checks them again ([`ui-catalog-v1.md`](ui-catalog-v1.md#receiving-an-answer)).
 
 ### Threat model
 
@@ -1753,7 +1926,7 @@ The orchestrator's part:
 | A forged action carries a huge or hostile `context` | 16 KiB and the string caps, refused before storage; the context is data for the agent, never executed here |
 | The orchestrator is made to fetch a URL | It never does: URLs in a surface are the renderer's to show or refuse (http(s) only, ADR 0013). The only URLs the orchestrator reads are the configured agent cards |
 | A card that stops advertising A2UI keeps receiving capabilities | Nothing is cached; the card is read for every message, and A2UI-specific parts go out only if it lists the extension |
-| An agent floods the log with surfaces | Each part is at most 64 KiB and a surface is replayed at most 256 KiB, but the log itself is as unbounded as an agent's text messages are: a per-turn budget is not built (open) |
+| An agent floods the log with surfaces | Each part is at most 64 KiB and a surface is replayed at most 256 KiB of alive operations, but the log itself is as unbounded as an agent's text messages are: a per-turn budget is not built (open) |
 | A surface arrives late, after the run | It opens a run of its own and closes it, like any late event (open question 17); it is never dropped silently |
 
 What only the renderer can do (vocabulary, template expansion, depth, actions that never auto-send) is in
@@ -1919,7 +2092,17 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
       "required": ["job", "at"],
       "additionalProperties": false,
       "properties": {
-        "job": { "type": "integer", "minimum": 2 },
+        "job": { "type": "integer", "minimum": 1, "description": "From 2; 1 for the first round of a child thread (ADR 0072)" },
+        "round": {
+          "type": "object",
+          "required": ["number"],
+          "additionalProperties": false,
+          "description": "On a child thread: the round of its session the job follows (ADR 0072)",
+          "properties": {
+            "number": { "type": "integer", "minimum": 1 },
+            "by": { "enum": ["agent", "person"], "description": "Who started the round, when the agent said" }
+          }
+        },
         "at": { "$ref": "#/$defs/at" }
       }
     },
@@ -1966,6 +2149,23 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "at": { "$ref": "#/$defs/at" }
       }
     },
+    "vymalo.session": {
+      "type": "object",
+      "required": ["session", "threadId", "agent", "description", "keepOpen", "state", "at"],
+      "additionalProperties": false,
+      "description": "A child session the agent opened (ADR 0072): the activity's id is session-<seq> of the child_session_opened, said again with replace at every event of the session. agent and description are an agent's words, untrusted",
+      "properties": {
+        "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The session's id, the agent's own" },
+        "threadId": { "type": "string", "format": "uuid", "description": "The child thread that holds the session's log" },
+        "agent": { "type": "string", "description": "The helper's name" },
+        "description": { "type": "string", "description": "What the helper was asked to do" },
+        "keepOpen": { "type": "boolean", "description": "Whether the session goes idle after a round instead of closing" },
+        "state": { "enum": ["working", "idle", "closed"] },
+        "round": { "type": "integer", "minimum": 1, "description": "The newest round the log names" },
+        "report": { "enum": ["done", "failed", "canceled", "blocked"], "description": "How that round ended; absent while it runs" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
     "vymalo.tools": {
       "type": "object",
       "required": ["at"],
@@ -1992,6 +2192,7 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 | Where | Key | Shape |
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
+| A session's `SUBAGENT_STARTED` (ADR 0072) | `metadata["vymalo.childThread"]`, `metadata["vymalo.session"]` | The child thread's id (a UUID) and the agent's id of the session, beside `vymalo.actor` and `vymalo.at`. [Child sessions as subagents](#child-sessions-as-subagents) |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
 | `CUSTOM` `vymalo.usage` (ADR 0056) | `value` | `{job, agent, task, call, path, provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?, by: {kind: "agent" \| "subagent" \| "ask", name}, at}`. [Token usage](#token-usage) |
 | `CUSTOM` `vymalo.usage_total` (ADR 0056) | `value` | `{job, agent, task, path?, totals: [TokenUsage], sandbox?: {environment: "kubernetes" \| "local" \| "devcontainer", usage?: [{cpuMillis?, memoryBytes?, commands, milliseconds}]}, by, at}` |

@@ -1,7 +1,7 @@
 # orch-signed-request
 
 The signed requests to a tool server ([`signed-tool-requests-v1`](../../../docs/api/signed-tool-requests-v1.md),
-[ADR 0067](../../../docs/decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md)): a `Signer` turns one HTTP request
+[ADR 0080](../../../docs/decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)): a `Signer` turns one HTTP request
 to a tool server into the value of the header `Tool-Request-Claims`, a tagged `COSE_Sign1` (Ed25519) in the *claim object* profile of
 `cratestack-cose` 0.17.2, which `cratestack_cose::open_claims` verifies. The protected header carries the CWT claims `aud`, `exp`, `iat` and
 `cti`; the payload binds the request (its method, its path, the SHA-256 of its exact body bytes, the thread and the thread's owner).

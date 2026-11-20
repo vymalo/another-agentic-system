@@ -2,6 +2,13 @@
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI and open question 36 are
   decided in the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
+  Amended (2026-11-14): catalog version 7 adds five kinds of question to `Choices`, see the
+  [status note](#status-note-2026-11-14-version-7-adds-five-kinds-of-question-to-choices).
+  **Amended (2026-11-19, [ADR 0075](0075-a2ui-v1-0-cutover.md)):** with the A2UI v1.0 cutover the extension becomes
+  `ui-catalog/v2`, a new URI and page (`docs/api/ui-catalog-v2.md`), because A2UI v1.0 requires `"protocolVersion": "1.0"`
+  on the catalog, which breaks every v1 reader; the `catalogId` stays and `version` continues at 9 (the owner's decision,
+  2026-11-19). Decisions 1 to 7 stand
+  under v2. Nothing of it is built yet.
 
 ## Context
 
@@ -174,3 +181,127 @@ Every reference to a file is the file's SHA-256 of the thread, and a video or a 
 [ADR 0054](0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md#amendment-2026-10-11-media-plays-from-this-origin-and-blob-and-from-nowhere-else).
 Version 6 is not released (it is not on main); its digest is `RELEASED[6]` in `catalog.test.ts`, and version 5 is Choices' (PR #220).
 
+## Status note, 2026-11-14: version 7 adds five kinds of question to `Choices`
+
+The owner asked for more kinds of question, and for the contract to be the product: adam-rs builds its `ask_user` kinds on it next
+(its ADR 0044, slice 11) and a Flutter client will be written from it, so the web is the first implementation and nothing the web
+does rests on knowledge that is not in [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-7-more-kinds-of-question).
+
+**Decided** (version 7, digest `RELEASED[7]` in `catalog.test.ts`; additive, a Choices of versions 2 to 6 is valid and reads and
+answers as it did):
+
+1. **Five more values of a question's `type`:** `confirm` (a yes or no, with `yesLabel`, `noLabel` and the safe answer as
+   `default`), `number` (`minValue`, `maxValue`, `step`, `unit`), `scale` (a whole number from `from`, 0 or 1, to `to`, with the words
+   `fromLabel` and `toLabel` at the two ends), `date` (a calendar day, `minDate`, `maxDate`) and `rank` (the options put in order).
+   Not a new component: a form of several kinds stays one `Choices` with one submit, so that the version 5 machinery (`required`,
+   `default`, the answer bubble, the 16 KiB of context) carries them.
+2. **The answer keeps its shape.** `{id, values}` with `values` an array of **strings** for every kind, and no `other` and no `text`:
+   `["no"]`, `["250.5"]`, `["7"]`, `["2026-12-15"]`, `["c", "a", "b"]` (a `rank`'s order is the person's, the one place where it is
+   not the options'). A number is **a decimal string with a stated grammar, never a JSON number**: an A2A server holds the numbers of
+   a message's metadata as doubles ([`ui-catalog-v1.md` section 5](../api/ui-catalog-v1.md#5-to-the-agent-the-extension)), and a string comes
+   out as it went in; it is compared as an exact decimal (millionths in an integer), never through floating point. A date is a day
+   and not an instant: no time, no zone. The same shape means a version 6 receiver still reads the answer, and the "no answer" of
+   version 5, an empty `values` for a question that is not required, is the only way a question is left unanswered.
+3. **The orchestrator does not read an answer; the agent validates.** The orchestrator checks the envelope, the size and that the
+   thread has the surface ([`agui.md`](../api/agui.md#actions)) and relays the rest, as it did. The receiver is the agent that asked; the
+   contract gives it ten rules (eight about a question's values: `required`, `too_many`, `not_offered`, `grammar`, `below_min`,
+   `above_max`, `off_step`, `not_a_permutation`; two about the shape of the whole answer: `unknown`, `unexpected`) and the cases that exercise them as **conformance vectors in the
+   page itself**, which the web's tests, the mock's receiver and a test of the page all read. An answer that fails is not acted on and
+   never repaired (no clamping, no rounding, no sorting): the agent names the question and the rule in words and asks again with a new
+   surface whose questions carry the valid answers as their defaults. The client validates first with the same check and holds the
+   button with the reason in words, so a refusal means a stale form, another client or a hand-made action.
+4. **Versions and degradation.** An agent learns what the screen can ask from the thread's catalog, in the two ways it already has: the
+   `version` of the `ui-catalog/v1` metadata (7 or more) and the `type` enum of the `Choices` schema it was given (the better test, which
+   also covers a later version). An agent that knows only version 6 never uses a kind it was not told, so nothing changes for it
+   or for a client of version 6. When an agent wants a kind a screen lacks it asks in the nearest version 6 form (`single` with two
+   options, `text` with the grammar in its help, ...) and validates the text itself. A client that meets a kind it does not know
+   refuses the **whole surface** visibly (rule `schema` in a client of version 6, whose reason names the place of the `type`, `questions.1.type`)
+   and never guesses a control; the person answers in words by a message. The one rule on the agent: **the `question` of every question
+   is a sentence a person can answer in a message, and a message sent while the ask is open is the answer.**
+5. **Accessibility is part of the contract**: a yes or no and a scale are `radiogroup`s of native radio buttons; a number is a text
+   box with `inputmode="decimal"` that takes only the grammar (a browser number box reads locales and exponents); a day is the
+   browser's date control with `min` and `max`; a rank is an ordered list with **Move up** and **Move down** buttons named with the item,
+   operable by keyboard with no drag, that says the new place in words and keeps the keyboard's place; an untouched required rank is
+   not an answer (the agent's order is not the person's ranking). Every error is words linked to the control.
+
+**Also changed:** a form that was sent stays **answered** when the thread waits again. Until now only the newest copy of a surface
+was live while the thread was `blocked`, so a form an agent asked again after refusing an answer would have left two open forms.
+
+**Built:** the web (`choices-kinds.tsx`, `lib/a2ui/choices-kinds.ts`), the catalog (version 7), its lock, the mock script
+`choices-v7` (whose scripted agent is a receiver, `mock/receiver.ts`, written from the page alone and run on the same vectors) and
+the tests (`e2e/choices-v7.spec.ts`, axe in both colour schemes, the contract cases of the mock). **Nothing in the orchestrator
+changes:** it treats the catalog as a document and a Choices answer as an action, and the forms catalog sent to an asked agent
+([`ui-catalog-v1.md`](../api/ui-catalog-v1.md#the-forms-catalog-of-an-ask)) already carries the thread's `Choices` schema unchanged.
+**Not built, and not proven:** an adam-rs agent that asks with the kinds and validates the answer (its slice 11); a second client; a
+live model, a real browser other than Chromium, a screen reader.
+
+**Amended after review (2026-11-14):** two reviews, one of them a validator written in Python from the page alone (it agreed with every
+vector), found the page still left a stranger guessing; the choices are now written in it. `required` is `true` when absent; the rules
+are tried in the table's order; a value that is not a string is `grammar` (`not_offered` for `confirm` and `rank`); a `note` without a
+`freeInput` and `other` or `text` on a kind, even empty, are `unexpected`; the receiver never trims and the client does; a `default` is
+a string, or a list for `rank`, and the other shape is a refused question; **a rank's `default` is the order it starts in and never an
+answer, on a re-ask too** (the person acts once); an optional confirm, scale or rank has a **Clear answer** control; a re-ask is a
+new surface; a form is answered once the person acts after it, by an action or a plain message (this is true of every version); an
+unknown `type` is a `schema` refusal, never the "needs a newer version" placeholder; display follows the locale and the wire form
+never does; the whole catalog is one file and a client need not compute its digest. The vectors grew from 64 to 133 cases, with
+blocks for whole answers, invalid questions and surfaces, and a test fails when one is deleted.
+
+## Status note, 2026-11-14 (second): version 8 lets a question show what it asks about, and makes `Checklist` fit for a live plan
+
+The owner, asked which kinds of question an agent should be able to ask: "Images, graphs,... A2UI is enabled by default so we might as
+well use it". Slices 9 and 10 of [ADR 0067](0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md). Version 7 gave the questions
+their kinds; version 8 lets a question **show** components of its surface, and lets an agent's **plan** be one checklist that updates where
+it stands. As for version 7, the page [`api/ui-catalog-v1.md`](../api/ui-catalog-v1.md#version-8-a-question-that-shows-what-it-asks-about-and-a-plan)
+is the product (a Flutter client and the agent side in adam-rs are written from it alone) and the web is its first implementation.
+
+**Decided** (version 8, digest `RELEASED[8]` in `catalog.test.ts`; additive, and **taking the additions away gives version 7's digest,
+digest for digest**, which a test of the web proves):
+
+1. **`show`, a member of any question of `Choices`: 1 to 4 ids of components of the same surface** (8 in a form), drawn with the question
+   after its words and before its control. **A closed list of seven components may be shown:** `Text`, `Image`, `Mermaid`, `Code`,
+   `Cards`, `Callout`, `Chart`. Each draws something to look at, none asks anything, and none holds other components, so a shown
+   component can never contain the question that shows it: no cycle rule is needed, and a `Choices` shown by a question is refused for
+   its type. A shown component is drawn where its question is and **nowhere else**: also placing it in the surface is refused (rule
+   `expansion`); an id shown twice, a component not on the list, more than 4 or 8 and an `Image` with no `alt` are `schema` (never drawn
+   as decoration); a shown image of a file the thread does not hold is `artifact`; an id the surface does not hold yet leaves it
+   *pending*, as a child does. The picture of an option of an `images` question is a different thing and stays: it is what is chosen,
+   `show` is what the question is about.
+2. **A client of version 7 refuses a surface that has `show`** (rule `schema`, at `questions.N.show`) and never ignores the member, for a
+   form that hides what it asks about is not the form the agent asked. So an agent never sends `show` to one: it reads the thread's
+   version or whether `show` is in the schema it was given, as for the kinds of version 7.
+3. **Accessibility:** what is shown is **inside the question's group**, after its words and `help` and before its control, so a screen
+   reader meets the question, then what it asks about, then the control; a form that no longer takes input still lets the person read, copy
+   and open what it shows (the group is not the disabled `fieldset`: its controls are in an inner one).
+4. **`Checklist` gains the state `dropped` and an item `note`.** A dropped item is struck through and said in words ("Dropped"), is not
+   counted in "N of M done" (neither in M) and, when every item is dropped, the count reads "0 of 0 done" and the bar is not drawn.
+5. **A surface sent again.** Written once, in one place of the page: the same `surfaceId` is the same surface (as A2UI says and the
+   orchestrator already does); a `createSurface` for a surface that exists starts it over (*verified 2026-11-14* in the reducer the web
+   uses), so **a client reads, and counts against the size limit, only the operations from the last `createSurface`**; a copy in a later
+   run of a surface that is not a plan keeps the rule it always had (the newest is live, the older says "updated further down"); a
+   **plan** is matched by its `surfaceId` and **never rewrites what the person saw**: the thread is cut into stretches by the messages of a
+   person, copies of a plan within one stretch are one drawing (where the first stands, from the newest), a copy after a message of a person is a
+   new drawing, and the earlier one stays as it was, under "This plan was updated further down." (amended 2026-11-14 after review: the first
+   build matched copies by activity key, which a new job changes, and drew the plan twice or rewrote the words a person had answered).
+6. **The plan is a surface whose `surfaceId` starts with `plan-`** (and has at least one more character). The hook is the id, not a member
+   of `createSurface`, because the id is the one thing every layer already carries and keys on and no layer has to learn anything; a
+   client never guesses a plan from a component's type. A plan holds nothing the person can answer (a `Choices`, an input or a button
+   is refused, rule `action`), so it never meets the rules of [Answered forms](../api/ui-catalog-v1.md#answered-forms), which stand as they were
+   (a re-ask is a new surface id). It is **found** in the conversation where it first stood, and **pinned** as a **Plan** tab of the
+   thread's panel (the existing pattern: the panel already holds Activity and Sources), present only while the thread has a plan, with its
+   progress in its name; the latest plan sent is the pinned one. It is **announced politely** ("Plan updated: 2 of 5 done", a status
+   region) after it has been quiet for 0.8 s, so a burst is one announcement; never for the first copy, never for the words the agent streams.
+
+**Built:** the catalog and its lock (version 8), the validator (`prepare.ts`: `show`, the plan rule, the dead operations), the components
+(`choices-shown.tsx`, `checklist.tsx`, `plan-announcer.tsx`, the panel's `plan-tab.tsx`), the mock scripts `choices-v8`, `choices-v8-bad`
+and `plan`, and the tests: the vectors of the page (61 cases in four blocks, each run through the web's validator, through a second implementation
+written from the page alone, `mock/surfaces-v8.ts`, and a test that fails when one is deleted), the DOM tests, `e2e/choices-v8.spec.ts`, `e2e/plan.spec.ts`, axe in both colour schemes.
+
+**Found, and not changed here (the orchestrator is not part of this slice):** the projector keeps every operation of a surface, up to
+256 KiB ([`agui.md`](../api/agui.md#surfaces-in-the-projection)), and does not drop the ones a later `createSurface` made dead, so a plan sent
+very many times reaches the cap (about sixty times for a plan of four kilobytes) and its later updates are not shown. The client's rule 5
+keeps its own size limit out of it; compacting the surface at its `createSurface` in the projector is a change to open (*closed 2026-11-14, third note below*). **Not built, and not
+proven:** an adam-rs agent that sends a plan or asks with `show` (the agent side); a second client; a live model; a screen reader.
+
+## Status note, 2026-11-14 (third): the projection keeps only what is alive
+
+The orchestrator's projector now drops the operations before a `createSurface` for a surface it holds, as rule 2 of the contract says a client does, and a `deleteSurface` ends a surface even when it had passed the replay cap. The 256 KiB cap is on the **alive** operations of a surface, so a plan sent whole 200 times stays shown and is replayed as one copy; one copy over the cap still stops with the same error line, and the next `createSurface` whose copy fits shows it again. What the live stream sends does not change in kind (a snapshot after a re-create holds fewer operations). This closes the finding of the second note. Tests: `orchestrator/crates/agui-projection/tests/a2ui.rs`.

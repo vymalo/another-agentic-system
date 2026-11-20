@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::access_tier::AccessTier;
 use crate::answer::AnswerLedger;
 use crate::ask::Ask;
+use crate::child_sessions::{ChildLedger, ObservedRound, SessionLedger};
 use crate::description::DescriptionLedger;
 use crate::ids::{AgentId, ThreadId};
 use crate::mention::Mention;
@@ -440,6 +441,19 @@ pub struct Job {
     /// [`Job::next`] forgets it. A ledger stored before the field existed has none.
     #[serde(skip_serializing_if = "UsageLedger::is_empty")]
     pub usage: UsageLedger,
+    /// The child sessions this thread has noted (`child-sessions/v1`, ADR 0072): what makes the
+    /// parent's `child_session_*` events once each. Belongs to the conversation: [`Job::next`]
+    /// keeps it. A ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "SessionLedger::is_empty")]
+    pub sessions: SessionLedger,
+    /// What this thread knows of its session when it is a child thread (ADR 0072); `None` for any
+    /// other. Belongs to the conversation: [`Job::next`] keeps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child: Option<ChildLedger>,
+    /// The round of its session that this job follows without having sent it (ADR 0072). Belongs
+    /// to the job: [`Job::next`] forgets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed: Option<ObservedRound>,
 }
 
 /// The most bytes of text a stopping job holds for the next one ([`Job::after_stop`]): the
@@ -482,6 +496,9 @@ impl Default for Job {
             tier_cap: None,
             asks: Vec::new(),
             usage: UsageLedger::default(),
+            sessions: SessionLedger::default(),
+            child: None,
+            observed: None,
         }
     }
 }
@@ -525,6 +542,9 @@ impl Job {
     ///
     /// `asks` is **forgotten**: no ask outlives its job's task ([`crate::ask`]), so a new job
     /// starts with none and numbers its own from 1.
+    ///
+    /// `sessions` and `child` are **kept** (they belong to the conversation); `observed` is
+    /// **forgotten** (it is the round this job follows, ADR 0072).
     #[must_use]
     pub fn next(&self) -> Job {
         Job {
@@ -536,6 +556,8 @@ impl Job {
             description: self.description,
             tools: self.tools.clone(),
             builds: self.builds.clone(),
+            sessions: self.sessions.clone(),
+            child: self.child.clone(),
             ..Job::default()
         }
     }

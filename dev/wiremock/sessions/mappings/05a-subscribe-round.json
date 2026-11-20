@@ -1,0 +1,39 @@
+{
+  "name": "SubscribeToTask of a round that activates child-sessions/v1 -> the helper still works for 2.5 s (the parent has ended), then the round streams its step, a call report and completed",
+  "priority": 3,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SubscribeToTask"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.id",
+          "matches": ".*-s1"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-round.sse",
+    "fixedDelayMilliseconds": 2500
+  }
+}

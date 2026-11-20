@@ -1776,7 +1776,7 @@ fn tool_endpoints_of(valid: &Validated) -> Vec<ToolServerEndpoint> {
 }
 
 /// The signing key of each `toolServers[].signing` is an Ed25519 private key (a PKCS#8 PEM block): a process that was given
-/// something else stops at startup, naming the key and never its text, and not at the first call of an agent (ADR 0067).
+/// something else stops at startup, naming the key and never its text, and not at the first call of an agent (ADR 0080).
 #[cfg(feature = "tool-relay")]
 fn tool_server_signing_keys(valid: &Validated) -> Result<(), ConfigError> {
     let errors: Vec<String> = valid
@@ -3236,7 +3236,7 @@ toolServers:
         )
     }
 
-    /// ADR 0067: a server that speaks MCP `2026-07-28` and takes signed requests reaches the relay as such, a server that says
+    /// ADR 0080: a server that speaks MCP `2026-07-28` and takes signed requests reaches the relay as such, a server that says
     /// neither is what it always was, and the key is in no `Debug`.
     #[test]
     fn a_server_that_speaks_2026_07_28_and_takes_signed_requests_reaches_the_relay_so() {
@@ -3265,7 +3265,7 @@ toolServers:
         );
     }
 
-    /// ADR 0067: a signing key that is not an Ed25519 key stops the process at startup, naming the key and never its text.
+    /// ADR 0080: a signing key that is not an Ed25519 key stops the process at startup, naming the key and never its text.
     #[test]
     #[cfg(feature = "tool-relay")]
     fn a_signing_key_that_is_not_an_ed25519_key_stops_the_process_naming_the_key() {
@@ -5171,6 +5171,43 @@ auth:
                 assert!(!can(&policy, &[]), "the default role is plain");
                 assert!(can(&policy, &["plain", "maker"]), "roles are unioned");
             }
+        }
+
+        /// `prompts.share` (ADR 0070): no role holds it by default (the built-in `user` and `admin`
+        /// do not, and `admin` does not imply it); a file that lists it for a role gives it to that
+        /// role and no other. There is no switch: the library is always on.
+        #[test]
+        fn the_permission_to_share_a_prompt_reaches_the_policy_and_no_built_in_role_holds_it() {
+            use orch_app::{Permission, Resource};
+            let user = orch_core::UserId::new("a@example.com");
+            let principal = |roles: &[&str]| orch_ports::Principal {
+                roles: roles.iter().map(|r| orch_ports::Role::new(*r)).collect(),
+                ..orch_ports::Principal::of(user.clone())
+            };
+            let can = |policy: &orch_app::Policy, roles: &[&str]| {
+                policy.allows(
+                    &principal(roles),
+                    Permission::PromptsShare,
+                    &Resource::Anything,
+                )
+            };
+            let built_in = load("").unwrap().config.auth.policy;
+            assert!(!can(&built_in, &[]));
+            assert!(!can(&built_in, &["user"]));
+            assert!(!can(&built_in, &["admin"]), "admin does not imply it");
+            let text = "auth:
+  defaultRole: plain
+  roles:
+    plain: { permissions: [agent.read, agent.invoke, thread.read, thread.write] }
+    sharer: { permissions: [prompts.share] }
+    root: { permissions: [admin] }
+";
+            let policy = load(text).unwrap().config.auth.policy;
+            assert!(can(&policy, &["sharer"]));
+            assert!(!can(&policy, &["plain"]));
+            assert!(!can(&policy, &["root"]));
+            assert!(!can(&policy, &[]), "the default role is plain");
+            assert!(can(&policy, &["plain", "sharer"]), "roles are unioned");
         }
 
         /// A host pattern is written twice, in `orch-config` (what a configuration file is checked

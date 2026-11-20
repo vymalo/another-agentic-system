@@ -113,7 +113,7 @@ impl fmt::Debug for ToolSecret {
 /// <bearer>` when there is a bearer, and each of `headers` as given. A server that takes **signed
 /// requests** ([`signing`](ToolServerEndpoint::signing)) is sent no bearer: every request carries
 /// one header that binds it to the thread and its owner
-/// ([`signed-tool-requests-v1`](../../../../docs/api/signed-tool-requests-v1.md), ADR 0067).
+/// ([`signed-tool-requests-v1`](../../../../docs/api/signed-tool-requests-v1.md), ADR 0080).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToolServerEndpoint {
     /// The server's id in the configuration (`toolServers[].id`), for logs and for the names of
@@ -157,7 +157,7 @@ pub enum ToolProtocol {
     V2026_07_28,
 }
 
-/// How the orchestrator signs the requests to one tool server (ADR 0067): the key, the name the
+/// How the orchestrator signs the requests to one tool server (ADR 0080): the key, the name the
 /// server calls itself, and how long a signed request lives. `Debug` shows the audience and the
 /// lifetime and never the key.
 #[derive(Clone, PartialEq, Eq)]

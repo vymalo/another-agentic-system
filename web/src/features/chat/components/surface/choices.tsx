@@ -1,5 +1,6 @@
 "use client";
 
+import { useAuiState } from "@assistant-ui/react";
 import { CheckIcon, ChevronsUpDownIcon, ImageOffIcon, XIcon } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -24,10 +25,14 @@ import {
   type QuestionState,
   readChoices,
 } from "@/features/chat/lib/a2ui/choices";
+import { isKind } from "@/features/chat/lib/a2ui/choices-kinds";
 import { contextTooLarge } from "@/features/chat/lib/a2ui/context";
 import { MAX_CONTEXT_BYTES } from "@/features/chat/lib/a2ui/limits";
+import { answeredAfter } from "@/features/chat/lib/a2ui/surfaces";
 import type { StepIcon } from "@/features/chat/lib/agui/vymalo";
 import { cn } from "@/lib/utils";
+import { KindQuestion } from "./choices-kinds";
+import { Controls, groupDisabled, groupOf, Shown } from "./choices-shown";
 import { useSurfaceHost } from "./surface-host";
 import { useThreadFiles } from "./thread-files";
 import { useView } from "./view-context";
@@ -35,7 +40,8 @@ import { useView } from "./view-context";
 /*
  * The `Choices` component of the UI catalog (docs/api/ui-catalog-v1.md, version 5): a form of up to
  * 8 questions with a title and a description of why the agent asks, and per question a type: radio
- * buttons, check boxes, a searchable list, a deck of pictures, or a typed answer; optionally an
+ * buttons, check boxes, a searchable list, a deck of pictures, or a typed answer (and, from version
+ * 7, a yes or no, a number, a scale, a day or a list to put in order: `choices-kinds.tsx`); optionally an
  * "Other" of the person's own words per question and a free box for the whole form. One submit sends
  * ONE action, and nothing sends but that click (ADR 0013 rule 7): Enter in a text box does nothing,
  * because there is no form.
@@ -430,14 +436,17 @@ function TypedAnswer({
   enabled,
   onChange,
   describedBy,
+  shown,
 }: {
   question: ChoiceQuestion;
   state: QuestionState;
   enabled: boolean;
   onChange: Patch;
   describedBy: string | undefined;
+  shown?: readonly ReactNode[] | undefined;
 }) {
   const id = useId();
+  const labelId = `${id}-label`;
   const long = question.type === "longText";
   const props = {
     id,
@@ -448,8 +457,13 @@ function TypedAnswer({
     onChange: (e: { target: { value: string } }) => onChange({ text: e.target.value }),
   };
   return (
-    <div data-slot="choices-question" className="flex min-w-0 flex-col gap-1.5">
-      <label htmlFor={id} className="text-sm font-medium [overflow-wrap:anywhere]">
+    <div
+      data-slot="choices-question"
+      // a typed question has no group of its own; with something shown it is one, named by its words
+      {...groupOf(shown, labelId)}
+      className="flex min-w-0 flex-col gap-1.5"
+    >
+      <label id={labelId} htmlFor={id} className="text-sm font-medium [overflow-wrap:anywhere]">
         {question.question}
         {question.required ? null : (
           <span className="font-normal text-muted-foreground"> (optional)</span>
@@ -460,6 +474,7 @@ function TypedAnswer({
           {question.help}
         </p>
       ) : null}
+      <Shown nodes={shown} />
       {long ? <textarea {...props} rows={4} className={TEXTAREA} /> : <Input {...props} />}
     </div>
   );
@@ -477,24 +492,44 @@ function rangeHint(q: ChoiceQuestion): string | undefined {
   return undefined;
 }
 
-function Question({
+/**
+ * One question of a Choices form, drawn by the catalog renderer. Exported for the prompt fill form
+ * (`features/prompts`), which draws a prompt's variables as the catalog's own Choices (the recipe of
+ * `docs/api/prompts-v1.md`) and has no surface to take pictures from: a prompt has no `images`.
+ */
+export function Question({
   question,
   name,
   state,
   enabled,
   onChange,
+  shown,
 }: {
   question: ChoiceQuestion;
   name: string;
   state: QuestionState;
   enabled: boolean;
   onChange: Patch;
+  /** What the question shows (catalog version 8): drawn after its words and before its control. */
+  shown?: readonly ReactNode[];
 }) {
   const legend = useId();
   const notes = useId();
   const typed = isTyping(question.type);
   const range = rangeHint(question);
   const hasNotes = Boolean(question.help || range);
+  if (isKind(question.type)) {
+    return (
+      <KindQuestion
+        question={question}
+        name={name}
+        state={state}
+        enabled={enabled}
+        onChange={onChange}
+        shown={shown}
+      />
+    );
+  }
   if (typed) {
     return (
       <TypedAnswer
@@ -503,6 +538,7 @@ function Question({
         enabled={enabled}
         onChange={onChange}
         describedBy={question.help ? `${notes}-help` : undefined}
+        shown={shown}
       />
     );
   }
@@ -518,7 +554,7 @@ function Question({
       role={radios ? "radiogroup" : undefined}
       aria-labelledby={legend}
       aria-describedby={hasNotes ? notes : undefined}
-      disabled={!enabled}
+      disabled={groupDisabled(enabled, shown)}
       className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0"
     >
       <legend id={legend} className="mb-1 p-0 text-sm font-medium [overflow-wrap:anywhere]">
@@ -537,53 +573,56 @@ function Question({
           {range ? <p className="text-xs text-muted-foreground">{range}</p> : null}
         </div>
       ) : null}
-      {question.type === "select" ? (
-        <SelectBox
-          question={question}
-          state={state}
-          atMax={atMax}
-          labelledBy={legend}
-          describedBy={hasNotes ? notes : undefined}
-          onChange={onChange}
-        />
-      ) : deck ? (
-        <div data-slot="choices-deck" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {question.options.map((option) => (
+      <Shown nodes={shown} />
+      <Controls enabled={enabled} nodes={shown}>
+        {question.type === "select" ? (
+          <SelectBox
+            question={question}
+            state={state}
+            atMax={atMax}
+            labelledBy={legend}
+            describedBy={hasNotes ? notes : undefined}
+            onChange={onChange}
+          />
+        ) : deck ? (
+          <div data-slot="choices-deck" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {question.options.map((option) => (
+              <OptionTile
+                key={option.value}
+                option={option}
+                type={type}
+                name={name}
+                deck
+                checked={state.values.includes(option.value)}
+                disabled={atMax}
+                onChange={() => toggle(option.value)}
+              />
+            ))}
+          </div>
+        ) : (
+          question.options.map((option) => (
             <OptionTile
               key={option.value}
               option={option}
               type={type}
               name={name}
-              deck
               checked={state.values.includes(option.value)}
               disabled={atMax}
               onChange={() => toggle(option.value)}
             />
-          ))}
-        </div>
-      ) : (
-        question.options.map((option) => (
-          <OptionTile
-            key={option.value}
-            option={option}
+          ))
+        )}
+        {question.allowOther ? (
+          <OtherTile
+            question={question}
             type={type}
             name={name}
-            checked={state.values.includes(option.value)}
+            state={state}
             disabled={atMax}
-            onChange={() => toggle(option.value)}
+            onChange={onChange}
           />
-        ))
-      )}
-      {question.allowOther ? (
-        <OtherTile
-          question={question}
-          type={type}
-          name={name}
-          state={state}
-          disabled={atMax}
-          onChange={onChange}
-        />
-      ) : null}
+        ) : null}
+      </Controls>
     </fieldset>
   );
 }
@@ -630,11 +669,27 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
   const spec = readChoices(props);
   const [state, setState] = useState<AnswerState>(() => (spec ? initialState(spec) : new Map()));
   const [note, setNote] = useState("");
+  const answered = useAuiState((s) => answeredAfter(s.thread.messages, s.message.id));
   if (!spec) return null;
 
+  // what the questions show arrives as the component's children, in the order of the questions
+  const shownOf = new Map<string, ReactNode[]>();
+  const children = Array.isArray(props.children)
+    ? (props.children as ReactNode[])
+    : props.children === undefined || props.children === null
+      ? []
+      : [props.children as ReactNode];
+  let at = 0;
+  for (const q of spec.questions) {
+    const n = q.show?.length ?? 0;
+    if (n > 0) shownOf.set(q.id, children.slice(at, at + n));
+    at += n;
+  }
+
   // the answers go to the agent while the thread waits for them, from the newest copy only; once
-  // sent (or in a thread that moved on) the choices stay as they were, and stop taking input
-  const enabled = view.live && host.canSend;
+  // sent (or in a thread that moved on) the choices stay as they were, and stop taking input,
+  // and so does a form that was sent when the thread waits again (the agent asked again)
+  const enabled = view.live && host.canSend && !answered;
   const left = missing(spec, state);
   const patch = (id: string, p: Partial<QuestionState>) =>
     setState((s) => new Map(s).set(id, { ...(s.get(id) ?? EMPTY), ...p }));
@@ -687,6 +742,7 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
           state={state.get(q.id) ?? EMPTY}
           enabled={enabled}
           onChange={(p) => patch(q.id, p)}
+          shown={shownOf.get(q.id)}
         />
       ))}
       {spec.freeInput ? (
@@ -701,8 +757,11 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Button
           type="button"
-          disabled={!enabled || left > 0}
+          disabled={!enabled}
+          // held by words, not by `disabled`: a disabled button cannot be reached by keyboard to read why
+          aria-disabled={enabled && left > 0 ? true : undefined}
           aria-describedby={enabled && left > 0 ? hint : undefined}
+          className="aria-disabled:opacity-50"
           onClick={send}
         >
           {spec.submitLabel ?? "Send answers"}

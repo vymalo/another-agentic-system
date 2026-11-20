@@ -29,8 +29,10 @@ pub mod limiter;
 mod metrics;
 mod oauth;
 mod problem;
+mod prompts;
 mod public_auth;
 mod routes;
+mod search;
 mod shared;
 pub mod sse;
 pub mod trace;
@@ -103,6 +105,9 @@ pub struct ApiConfig {
     /// How often one person may start an OAuth authorization of a server of their own (ADR 0046,
     /// slice 4c): ten a minute by default, per person and per process. See [`AuthorizeLimits`].
     pub authorize_limits: AuthorizeLimits,
+    /// How often one person may search their threads (ADR 0068): a burst of 20 and then two a second
+    /// by default, per person and per process. See [`AuthorizeLimits`] (the same bucket).
+    pub search_limits: AuthorizeLimits,
     /// The Client ID Metadata Document of this orchestrator, served at the path of its client
     /// identifier outside sign-in (ADR 0046, slice 4c): `Some` when `userToolServers.oauth
     /// .clientMetadataUrl` is set and credentials are kept, and no such route is mounted otherwise.
@@ -118,6 +123,10 @@ impl Default for ApiConfig {
             browser_auth: None,
             cors_allowed_origins: Vec::new(),
             authorize_limits: AuthorizeLimits::default(),
+            search_limits: AuthorizeLimits {
+                burst: 20,
+                refill: Duration::from_millis(500),
+            },
             client_metadata: None,
         }
     }
@@ -151,6 +160,10 @@ pub(crate) struct ApiState<P: Ports> {
     pub(crate) app: Arc<App<P>>,
     /// The brake on starting an OAuth authorization (per person, in this process).
     pub(crate) authorize: Arc<AuthorizeLimiter>,
+    /// The brake on searching (per person, in this process).
+    pub(crate) search: Arc<AuthorizeLimiter>,
+    /// The searches this process runs at once, for everybody (`search::MAX_CONCURRENT_SEARCHES`).
+    pub(crate) search_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl<P: Ports> Clone for ApiState<P> {
@@ -158,6 +171,8 @@ impl<P: Ports> Clone for ApiState<P> {
         ApiState {
             app: Arc::clone(&self.app),
             authorize: Arc::clone(&self.authorize),
+            search: Arc::clone(&self.search),
+            search_slots: Arc::clone(&self.search_slots),
         }
     }
 }
@@ -264,6 +279,8 @@ pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
     edge_layers(health_routes(ApiState {
         app,
         authorize: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
+        search: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
+        search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
     }))
 }
 
@@ -286,6 +303,8 @@ pub fn router_with_surfaces<P: Ports>(
     let state = ApiState {
         app,
         authorize: Arc::new(AuthorizeLimiter::new(cfg.authorize_limits)),
+        search: Arc::new(AuthorizeLimiter::new(cfg.search_limits)),
+        search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
     };
     let state_for_me = state.clone();
     let state_for_public = state.clone();
@@ -297,6 +316,7 @@ pub fn router_with_surfaces<P: Ports>(
         .route("/api/config", get(routes::public_config::<P>))
         .route("/api/tool-servers", get(routes::list_tool_servers::<P>))
         .route("/api/threads", get(routes::list_threads::<P>))
+        .route("/api/search/threads", post(search::search_threads::<P>))
         .route(
             "/api/threads/{thread_id}",
             get(routes::get_thread::<P>)
@@ -342,6 +362,24 @@ pub fn router_with_surfaces<P: Ports>(
             post(routes::rotate_share::<P>),
         )
         .with_state(state.clone())
+        .merge(
+            // A person's prompt library (ADR 0070): always on, and every answer, the problems
+            // included, is never kept by a cache (`prompts::no_store_for_prompts`, below). The body of
+            // none of them is ever logged.
+            Router::new()
+                .route(
+                    "/api/prompts",
+                    get(prompts::list::<P>).post(prompts::create::<P>),
+                )
+                .route(
+                    "/api/prompts/{id}",
+                    get(prompts::get::<P>)
+                        .patch(prompts::edit::<P>)
+                        .delete(prompts::delete::<P>),
+                )
+                .route("/api/prompts/{id}/render", post(prompts::render::<P>))
+                .with_state(state.clone()),
+        )
         .merge(
             // People's own MCP servers (ADR 0046): 404 for every route while the feature is off,
             // and the body of none of them is ever logged.
@@ -478,6 +516,9 @@ pub fn router_with_surfaces<P: Ports>(
             .merge(oauth_public)
             .merge(api),
     );
+    // A person's prompts are never kept by a cache, whatever answers: the identity layer's 401, the
+    // guard's `no_access`, a timeout, a 404 or a 405 included (ADR 0070).
+    let router = router.layer(axum::middleware::from_fn(prompts::no_store_for_prompts));
     // Outermost: a preflight is answered before identity (it carries no credentials), and every
     // answer, a refusal included, says which origin may read it.
     match cors::layer(&cfg.cors_allowed_origins) {

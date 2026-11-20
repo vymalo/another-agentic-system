@@ -100,7 +100,7 @@ fn the_only_url_that_may_be_a_reference_is_a_model_endpoints_base_url() {
 /// ADR 0034: "the secrets are the eight values of today that are secrets" and, with ADR 0032, the
 /// two credentials of the S3 store, with ADR 0024, the bearer and the headers of a tool server, and,
 /// with ADR 0046, the keys that seal a person's credentials, with issue 290, the direct connection
-/// string of the database, and, with ADR 0067, the key a tool server's requests are signed with. An
+/// string of the database, and, with ADR 0080, the key a tool server's requests are signed with. An
 /// eighteenth, or a string where one of these is, would be a change of the contract, so it fails
 /// here first.
 #[test]

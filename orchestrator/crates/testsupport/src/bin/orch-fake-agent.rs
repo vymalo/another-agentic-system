@@ -11,6 +11,8 @@
 //! | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | control endpoints, below |
 //! | `FAKE_AGENT_TIERS` | none | comma-separated access tiers (`plan`, `edits`, `auto`, `bypass`) the `coder` agent honours: its card then lists `access-tier/v1` (ADR 0061) with them and `FAKE_AGENT_TIER_DEFAULT` (default `auto`); the `plain` agent never lists it. The script `tiered` echoes the tier a message names |
 //! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`, `usage`, `uploads` |
+//! | `FAKE_AGENT_CHILD_AGENTS` | none | comma-separated helper names: the `coder` agent's card then lists `child-sessions/v1` (ADR 0072) with them (described `The <name> helper.`) and `maxOpen` 16; the scripts `child-sessions`, `child-sessions-send` and `child-sessions-bad` serve sessions (see `orch_testsupport::fake`) |
+//! | `FAKE_AGENT_CHILD_EVENTS` | off | `1` or `true`: the `coder` agent says the events of its sessions (`opened`, `round`, `reported`, `closed`) on its stream, as an agent that has them does; off, the sessions are in the parent task's `sessions` object only |
 //!
 //! Control endpoints (`<agent>` is `coder` or `plain`), so a browser test can drive the `gate`
 //! script and assert what reached the agent:
@@ -75,6 +77,7 @@ fn call_json(c: &Call) -> Value {
         "activatesAccessTier": c.activates_access_tier(),
         "uploads": c.uploads,
         "activatesUploads": c.activates(orch_core::UPLOADS_EXTENSION),
+        "activatesChildSessions": c.activates_child_sessions(),
     })
 }
 
@@ -89,6 +92,24 @@ fn access_tier() -> Option<Value> {
         .collect();
     let default = std::env::var("FAKE_AGENT_TIER_DEFAULT").unwrap_or_else(|_| "auto".to_owned());
     Some(json!({"tiers": tiers, "default": default}))
+}
+
+/// `FAKE_AGENT_CHILD_AGENTS`: the `params` of the `coder` card's `child-sessions/v1` entry, or none
+/// when no helper is named.
+fn child_sessions() -> Option<Value> {
+    let names = std::env::var("FAKE_AGENT_CHILD_AGENTS").ok()?;
+    let agents: Vec<Value> = names
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| json!({"name": name, "description": format!("The {name} helper.")}))
+        .collect();
+    Some(json!({"agents": agents, "maxOpen": 16}))
+}
+
+/// `FAKE_AGENT_CHILD_EVENTS`: whether the `coder` agent says the events of its sessions.
+fn child_events() -> bool {
+    std::env::var("FAKE_AGENT_CHILD_EVENTS").is_ok_and(|v| matches!(v.trim(), "1" | "true"))
 }
 
 /// `FAKE_AGENT_EXTENSIONS`: the extensions the agents list, by short name (default: none).
@@ -157,6 +178,8 @@ async fn main() {
             releases: Some(FakeReleases::sample()),
             bind: Some(addr("FAKE_CODER_ADDR", "127.0.0.1:4021")),
             access_tier: access_tier(),
+            child_sessions: child_sessions(),
+            child_session_events: child_events(),
             ..FakeAgentOptions::default()
         },
         &listed,

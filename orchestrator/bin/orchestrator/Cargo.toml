@@ -88,7 +88,7 @@ orch-surface-mcp = { workspace = true, optional = true }
 orch-surface-thread-tools = { workspace = true, optional = true }
 orch-thread-token = { workspace = true, optional = true }
 orch-tools-mcp = { workspace = true, optional = true }
-# Reads the signing key of a tool server at startup, so that a key that is not one stops the process (`tool-relay`, ADR 0067).
+# Reads the signing key of a tool server at startup, so that a key that is not one stops the process (`tool-relay`, ADR 0080).
 orch-signed-request = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true

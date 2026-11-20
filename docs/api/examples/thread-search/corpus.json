@@ -1,0 +1,541 @@
+{
+  "about": "docs/api/thread-search-v1.md, 'The vectors of the corpus'. One person's threads, in the order of their ids (a newer thread has a greater id). `events` are the events of the log that matter to search: `user_message` and `agent_message` (`text`, `messageId`, `final`, `purpose`); the others carry nothing searched. `archived` is whether the person archived the thread, `edit` whether it was made by an edit of a message (a branch), `copiedThrough` is the seq of the last event copied from a parent that still exists (absent: the thread has no parent, or its parent is gone); `parent` names that parent (absent: the thread of id ...0003), whose first `copiedThrough` events are the fork's. A text is a string or `{repeat, times, suffix?}`. `queries/*.json` ask this corpus.",
+  "threads": [
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000001",
+      "title": "Plan the garden",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "What should I plant first?"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "Start with tomatoes and basil.",
+          "messageId": "m2",
+          "final": true,
+          "purpose": "answer"
+        }
+      ],
+      "description": "Which tomatoes to plant"
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000002",
+      "title": "Fix the login bug",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "The login page redirects forever"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "I will look at the login",
+          "messageId": "a",
+          "final": false
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "agent_message",
+          "text": "Reading the login controller",
+          "messageId": "b",
+          "final": true,
+          "purpose": "working"
+        },
+        {
+          "seq": 4,
+          "at": "2026-11-14T10:04:00Z",
+          "kind": "agent_message",
+          "text": "Fixed: the login redirect is gone",
+          "messageId": "c",
+          "final": true,
+          "purpose": "answer"
+        },
+        {
+          "seq": 5,
+          "at": "2026-11-14T10:05:00Z",
+          "kind": "agent_status"
+        }
+      ],
+      "description": "Redirect loop after sign-in"
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000003",
+      "title": "Notes",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "zebra number 1"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "user_message",
+          "text": "zebra number 2"
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "user_message",
+          "text": "zebra number 3"
+        },
+        {
+          "seq": 4,
+          "at": "2026-11-14T10:04:00Z",
+          "kind": "user_message",
+          "text": "zebra number 4"
+        },
+        {
+          "seq": 5,
+          "at": "2026-11-14T10:05:00Z",
+          "kind": "user_message",
+          "text": "zebra number 5"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000004",
+      "title": "Café menu",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "Le cœur de la carte"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "Voilà le menu du jour",
+          "messageId": "m2",
+          "final": true,
+          "purpose": "answer"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000005",
+      "title": "Old zebra project",
+      "archived": true,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "nothing here"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000006",
+      "title": "Zebra stripes (edit)",
+      "archived": false,
+      "edit": true,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "zebra"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000007",
+      "title": "Notes (copy)",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "zebra number 1"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "user_message",
+          "text": "zebra number 2"
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "user_message",
+          "text": "zebra number 3"
+        },
+        {
+          "seq": 4,
+          "at": "2026-11-14T10:04:00Z",
+          "kind": "user_message",
+          "text": "zebra number 4"
+        },
+        {
+          "seq": 5,
+          "at": "2026-11-14T10:05:00Z",
+          "kind": "user_message",
+          "text": "zebra number 5"
+        },
+        {
+          "seq": 6,
+          "at": "2026-11-14T10:06:00Z",
+          "kind": "user_message",
+          "text": "a new zebra message"
+        }
+      ],
+      "copiedThrough": 5
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000008",
+      "title": "Orphan",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "zebra from a deleted parent"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000009",
+      "title": "Drafts",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "question"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "first draft mentions walrus",
+          "messageId": "m1",
+          "final": true
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "agent_message",
+          "text": "second draft mentions otter",
+          "messageId": "m1",
+          "final": true
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-00000000000a",
+      "title": "Привет мир",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "Как дела?"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-00000000000b",
+      "title": "Release",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "🎉 release party 東京 today"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-00000000000c",
+      "title": "Invoice 2026-11",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "total 120"
+        }
+      ],
+      "description": "v1.2 release"
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-00000000000d",
+      "title": "Quarterly report",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "is the report ready?"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "The report is ready",
+          "messageId": "m2",
+          "final": true,
+          "purpose": "answer"
+        }
+      ],
+      "description": "report for the board"
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-00000000000e",
+      "title": "Nothing",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "nothing at all"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-00000000000f",
+      "title": "Tomatoes",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "hello"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000010",
+      "title": "Seeds",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "tomatoes are red"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "user_message",
+          "text": "basil is green"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000011",
+      "title": "Shopping",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "buy tomatoes today"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000012",
+      "title": "quokka notes",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "quokka and wombat"
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000013",
+      "title": "Answers",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "a question"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "the final answer says ocelot",
+          "messageId": "m1",
+          "final": true,
+          "purpose": "answer"
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "agent_message",
+          "text": "a later partial says lynx",
+          "messageId": "m1",
+          "final": false,
+          "purpose": "working"
+        },
+        {
+          "seq": 4,
+          "at": "2026-11-14T10:04:00Z",
+          "kind": "agent_message",
+          "text": "a later partial of another id says puma",
+          "messageId": "m2",
+          "final": false
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000014",
+      "title": "Gnu draft",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "a question about gnus"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "first draft mentions gnuone",
+          "messageId": "m1",
+          "final": true
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000015",
+      "title": "Gnu draft (copy)",
+      "archived": false,
+      "edit": false,
+      "parent": "0190aaaa-0000-7000-8000-000000000014",
+      "copiedThrough": 2,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "a question about gnus"
+        },
+        {
+          "seq": 2,
+          "at": "2026-11-14T10:02:00Z",
+          "kind": "agent_message",
+          "text": "first draft mentions gnuone",
+          "messageId": "m1",
+          "final": true
+        },
+        {
+          "seq": 3,
+          "at": "2026-11-14T10:03:00Z",
+          "kind": "agent_message",
+          "text": "second draft mentions gnutwo",
+          "messageId": "m1",
+          "final": true
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000016",
+      "title": "Capped message",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": {
+            "repeat": "w ",
+            "times": 3000,
+            "suffix": "tailword"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000017",
+      "title": "Just inside",
+      "archived": false,
+      "edit": false,
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": {
+            "repeat": "w ",
+            "times": 2999,
+            "suffix": "tailword"
+          }
+        }
+      ]
+    },
+    {
+      "id": "0190aaaa-0000-7000-8000-000000000018",
+      "title": "No description",
+      "archived": false,
+      "edit": false,
+      "description": "",
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-11-14T10:01:00Z",
+          "kind": "user_message",
+          "text": "nothing here"
+        }
+      ]
+    }
+  ]
+}

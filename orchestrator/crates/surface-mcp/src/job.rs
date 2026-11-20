@@ -250,6 +250,7 @@ mod tests {
             pinned_at: None,
             archived_at: None,
             rail_parent: None,
+            child_of: None,
             rail_rank: "i".to_owned(),
             last_seq: 9,
             created_at: "2026-09-30T10:00:00Z".parse().unwrap(),

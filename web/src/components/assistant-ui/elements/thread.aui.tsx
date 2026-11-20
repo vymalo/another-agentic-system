@@ -30,6 +30,7 @@ import { TurnCards } from "@/features/chat/components/cards/turn-cards";
 import { DeliveryNote } from "@/features/chat/components/delivery-note";
 import { type EarlierControl, useEarlierControl } from "@/features/chat/components/earlier";
 import { LiveDraft, useLiveDrafts } from "@/features/chat/components/live-drafts";
+import { QuoteButton } from "@/features/chat/components/quote";
 import { TurnSummaryLine } from "@/features/chat/components/steps/turn-summary";
 import { reasoningIdOf, Thinking } from "@/features/chat/components/thinking";
 import { useThreadView } from "@/features/chat/components/thread-view";
@@ -46,11 +47,17 @@ import {
   parseTools,
 } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
+import { turnSource } from "@/features/chat/lib/turn-source";
 import { type TextRole, textRoles } from "@/features/chat/lib/working";
-import { MentionedText, useMessageMentions } from "@/features/mentions/components/mentioned-text";
+import {
+  MentionedText,
+  useMentionsAny,
+  useMessageMentions,
+} from "@/features/mentions/components/mentioned-text";
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
+import { regenerableFrom } from "@/features/threads/lib/regenerate";
 import { MessageTierBadge } from "@/features/tier/components/tier-badge";
 import { ToolsLine } from "@/features/tools/components/tools-line";
 import type { ApiActor } from "@/lib/api/types";
@@ -433,6 +440,10 @@ export const UserMessage: FC = () => {
       {editing ? null : (
         <div className="mt-0.5 flex items-center gap-0.5 text-muted-foreground">
           <MessageBranches seq={seq} />
+          <QuoteButton
+            source={text}
+            className="transition-opacity group-focus-within/user:opacity-100 group-hover/user:opacity-100 focus-visible:opacity-100 [@media(hover:hover)]:opacity-0"
+          />
           {editable ? (
             <TooltipIconButton
               ref={editButton}
@@ -540,6 +551,20 @@ function StartingTurn() {
   );
 }
 
+/**
+ * What Regenerate would say again, for the newest turn only (`regenerableFrom`): the person's message
+ * right before it, with its place in the log. The other turns read nothing.
+ */
+function useRegenerable(isLast: boolean, waiting: boolean) {
+  const prior = useAuiState((s) => (isLast ? s.thread.messages[s.message.index - 1] : undefined));
+  const user = prior?.role === "user" ? prior : undefined;
+  const mentioned = useMentionsAny(user?.id, user?.metadata?.custom?.mentions);
+  const { seqOfMessage } = useThreadFork();
+  const custom = user?.metadata?.custom?.seq;
+  const seq = typeof custom === "number" ? custom : user ? seqOfMessage(user.id) : undefined;
+  return regenerableFrom({ prior, seq, mentioned, waiting });
+}
+
 export const AssistantMessage: FC = () => {
   const actor = useRunActor();
   const runId = useRunId();
@@ -551,6 +576,7 @@ export const AssistantMessage: FC = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
   const isLast = useAuiState((s) => s.message.isLast);
   const messageId = useAuiState((s) => s.message.id);
+  const began = useRegenerable(isLast, waiting);
   // the reply being written belongs to the run's message: the newest one of the agent
   const newest = useAuiState((s) => {
     const all = s.thread.messages;
@@ -589,11 +615,13 @@ export const AssistantMessage: FC = () => {
   if (lastDrawn < 0 && !running && answers.length === 0 && tools.length === 0) return null;
   // the answer and the working text of the turn (ADR 0031); Copy takes the answer
   const roles = textRoles(content, running);
-  const ownWords = content
+  const textWords = content
     .flatMap((p, i) =>
       p.type === "text" && p.text?.trim() && roles.get(i) !== "working" ? [p.text] : [],
     )
     .join("\n\n");
+  // a surface has no text: one line says what was drawn (docs/api/thread-markdown-v1.md, "Client recipe")
+  const ownWords = turnSource(content, roles);
   const writing = newest
     ? drawnDrafts(
         drafts,
@@ -682,8 +710,8 @@ export const AssistantMessage: FC = () => {
         {writing.map((d) => (
           <LiveDraft key={d.id} id={d.id} text={d.text} />
         ))}
-        <TurnCards words={[ownWords, ...writing.map((d) => d.text)].join("\n\n")} />
-        <TurnActions text={ownWords} runId={runId} last={isLast} />
+        <TurnCards words={[textWords, ...writing.map((d) => d.text)].join("\n\n")} />
+        <TurnActions text={ownWords} runId={runId} last={isLast} began={began} />
       </div>
     </MessagePrimitive.Root>
   );

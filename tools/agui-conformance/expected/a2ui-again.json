@@ -1,0 +1,131 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "ui-again make a plan"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "a2ui-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "a2ui-surface",
+      "content": {
+        "a2ui_operations": [
+          {
+            "createSurface": {
+              "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+              "surfaceId": "plan-1"
+            },
+            "version": "v0.9.1"
+          },
+          {
+            "updateComponents": {
+              "components": [
+                {
+                  "component": "Text",
+                  "id": "root",
+                  "text": "Second"
+                }
+              ],
+              "surfaceId": "plan-1"
+            },
+            "version": "v0.9.1"
+          },
+          {
+            "updateComponents": {
+              "components": [
+                {
+                  "component": "Text",
+                  "id": "root",
+                  "text": "Second, edited"
+                }
+              ],
+              "surfaceId": "plan-1"
+            },
+            "version": "v0.9.1"
+          },
+          {
+            "deleteSurface": {
+              "surfaceId": "plan-1"
+            },
+            "version": "v0.9.1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a2ui-7",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "a2ui-surface",
+      "content": {
+        "a2ui_operations": [
+          {
+            "createSurface": {
+              "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+              "surfaceId": "plan-1"
+            },
+            "version": "v0.9.1"
+          },
+          {
+            "updateComponents": {
+              "components": [
+                {
+                  "component": "Text",
+                  "id": "root",
+                  "text": "Third"
+                }
+              ],
+              "surfaceId": "plan-1"
+            },
+            "version": "v0.9.1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "ui-again make a plan"
+    }
+  },
+  "pendingInterrupts": []
+}

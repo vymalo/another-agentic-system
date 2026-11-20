@@ -240,6 +240,7 @@ mod tests {
             model: model.into(),
             tokens: counts(input, output),
             context_window: None,
+            counted: true,
         }
     }
 
@@ -258,6 +259,7 @@ mod tests {
                 })
                 .collect(),
             sandbox: None,
+            counted: true,
         }
     }
 

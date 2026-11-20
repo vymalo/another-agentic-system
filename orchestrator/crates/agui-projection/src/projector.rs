@@ -49,9 +49,10 @@ use orch_agui_proto::{
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentReasoningData, AgentStatus, AgentStatusData,
     AgentStepData, AgentTarget, AnswerVia, ArtifactData, AskFinishedData, AskOutcome,
-    AskStartedData, Caller, CheckResult, CheckSource, CheckStatus, CiReport, Delivery, ErrorData,
-    Event, EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES,
-    MessagePurpose, ModelUsageData, ModelUsageTotalData, Preview, Recognised, ReworkData, StepKind,
+    AskStartedData, Caller, CheckResult, CheckSource, CheckStatus, ChildSessionClosedData,
+    ChildSessionOpenedData, ChildSessionReportedData, CiReport, Delivery, ErrorData, Event,
+    EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose,
+    ModelUsageData, ModelUsageTotalData, Preview, Recognised, ReworkData, SessionOutcome, StepKind,
     StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState,
     ThreadTitledData, ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
     UserMessageData, inspect, recognise_artifact, serialized_len,
@@ -65,10 +66,11 @@ use crate::usage::{UsageFold, ask_number};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK,
     ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
-    ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED,
-    CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_STEP_FAILED,
-    CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, WHEN_KEY, actor_metadata,
-    message_metadata, problem_metadata, response_schema, status_content, user_message_metadata,
+    ACTIVITY_SESSION, ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CHILD_THREAD_KEY,
+    CODE_AGENT_FAILED, CODE_ASK_FAILED, CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED,
+    CODE_DELIVERY_FAILED, CODE_SESSION_FAILED, CODE_STEP_FAILED, CODE_VERIFIER_FAILED,
+    CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, SESSION_KEY, WHEN_KEY, actor_metadata, message_metadata,
+    problem_metadata, response_schema, status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -133,7 +135,8 @@ struct TextRecord {
     text: String,
 }
 
-/// An A2UI surface the thread has: every operation the agent sent for it so far, as sent. The
+/// An A2UI surface the thread has: the operations that are alive, as sent (those from its last
+/// `createSurface`, which starts a surface over). The
 /// whole surface is what each snapshot carries, so the last snapshot of a surface renders it
 /// completely on the live stream, on replay and in history.
 #[derive(Debug, Clone)]
@@ -144,8 +147,9 @@ struct Surface {
     version: UiVersion,
     operations: Vec<Value>,
     bytes: usize,
-    /// It outgrew [`MAX_SURFACE_BYTES`]: nothing more is replayed for it (the viewer keeps the
-    /// last snapshot it got), and the viewer was told once.
+    /// The alive operations outgrew [`MAX_SURFACE_BYTES`]: nothing more is replayed for it (the
+    /// viewer keeps the last snapshot it got), and the viewer was told once. A `createSurface`
+    /// starts the surface over and clears this.
     overflowed: bool,
 }
 
@@ -200,6 +204,43 @@ struct AskView {
     /// Its `SUBAGENT_STARTED` is open in the run that is open. A suspended one is not (the run that
     /// closed it is over), and its end only says its activity again.
     sub_open: bool,
+}
+
+/// A child session of the thread (ADR 0072): a subagent of the agent's invocation while a round
+/// runs and a `vymalo.session` card for as long as the thread lives. Its subagent id and card id
+/// come from the seq of its `child_session_opened`, and a later round reopens the same subagent.
+#[derive(Debug, Clone)]
+struct SessionView {
+    /// `seq` of the `child_session_opened`.
+    seq: i64,
+    /// The session's id, the agent's own.
+    session: String,
+    /// The child thread that holds the session's log.
+    thread: ThreadId,
+    agent: String,
+    description: String,
+    keep_open: bool,
+    /// Who said the session (the thread's agent): the actor of its subagent.
+    actor: Actor,
+    /// `working`, `idle` or `closed`.
+    state: &'static str,
+    /// The newest round the log names, and how it ended once it did.
+    round: Option<u32>,
+    report: Option<SessionOutcome>,
+    /// The round and outcome last projected: a report that says the same, or an earlier round, is
+    /// one already said. The core reports a round twice on purpose (blocked, then how it ended).
+    last: Option<(u32, SessionOutcome)>,
+    closed: bool,
+    /// The subagent is open in the run that is open.
+    sub_open: bool,
+    /// The id of the subagent as it was last started: `sub-session-<opened seq>` for the first,
+    /// `sub-session-<opened seq>-<seq of the report>` for each later start (an id is used once
+    /// in a run, and a report is one event).
+    sub: SubagentRunId,
+    /// The enclosing invocation when the subagent was last started: none when no invocation was
+    /// open (a session event never opens one), and when (RFC 3339).
+    parent: Option<SubagentRunId>,
+    started_at: String,
 }
 
 /// Why the thread (or the last delegation) failed.
@@ -309,6 +350,9 @@ pub struct Projector {
     steps: BTreeMap<String, StepView>,
     /// The asks that have not ended, by number (ADR 0026): each one a subagent of its own.
     asks: BTreeMap<u32, AskView>,
+    /// The child sessions the log has opened, by the agent's id (ADR 0072): they belong to the
+    /// conversation, so a new job keeps them.
+    sessions: BTreeMap<String, SessionView>,
     /// Where the thread was forked from, once its `thread_forked` has been read (ADR 0029): every
     /// `STATE_SNAPSHOT` from then on says so, as the thread's own.
     forked_from: Option<ForkedFrom>,
@@ -456,6 +500,7 @@ impl Projector {
             last_final: None,
             steps: BTreeMap::new(),
             asks: BTreeMap::new(),
+            sessions: BTreeMap::new(),
             forked_from: None,
             tools: BTreeSet::new(),
             now: String::new(),
@@ -589,6 +634,12 @@ impl Projector {
                 out.push(Self::ask_subagent_started(ask).into());
             }
         }
+        // and the sessions whose round runs
+        let mut open: Vec<&SessionView> = self.sessions.values().filter(|v| v.sub_open).collect();
+        open.sort_by_key(|v| v.seq);
+        for view in open {
+            out.push(Self::session_subagent_started(view).into());
+        }
         out.push(self.state_snapshot());
         if let (Some(open), Some(inv)) = (&self.open_text, &self.invocation)
             && let Some(record) = self.texts.get(&open.source_id)
@@ -679,6 +730,20 @@ impl Projector {
             // viewer's screen shows depends on it: the log moves, nothing is said, and an `error`
             // before it still explains the `thread_state` that follows.
             EventBody::ThreadShared(_) | EventBody::ThreadUnshared(_) => {
+                self.pending_error = pending_error;
+            }
+            // A helper session (ADR 0072) is a subagent of the agent's invocation and a card; an
+            // `error` before it still explains the `thread_state` that follows.
+            EventBody::ChildSessionOpened(d) => {
+                self.on_session_opened(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::ChildSessionReported(d) => {
+                self.on_session_reported(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::ChildSessionClosed(d) => {
+                self.on_session_closed(event, d, &mut out);
                 self.pending_error = pending_error;
             }
             // Token usage (ADR 0056) is not the transcript: a `CUSTOM` inside a run, folded for the
@@ -1119,10 +1184,21 @@ impl Projector {
                 bytes: 0,
                 overflowed: false,
             });
-            if surface.overflowed {
+            if info.op == SurfaceOp::Create {
+                // A `createSurface` for a surface that exists starts it over (A2UI): what came
+                // before is dead, so it is neither replayed nor counted, and a surface that had
+                // outgrown the cap is shown again when the new copy fits.
+                surface.operations.clear();
+                surface.bytes = 0;
+                surface.overflowed = false;
+                surface.version = info.version;
+            }
+            // A delete is a few bytes and ends the surface whatever its size, capped or not.
+            let ends = info.op == SurfaceOp::Delete;
+            if surface.overflowed && !ends {
                 continue;
             }
-            if surface.bytes.saturating_add(size) > MAX_SURFACE_BYTES {
+            if !ends && surface.bytes.saturating_add(size) > MAX_SURFACE_BYTES {
                 surface.overflowed = true;
                 overflow.get_or_insert(id);
                 continue;
@@ -1304,6 +1380,16 @@ impl Projector {
             ev,
             false,
         ));
+        // the fork has no sessions of its own (ADR 0072): the cards it copied are closed in it
+        let mut cards: Vec<SessionView> = std::mem::take(&mut self.sessions)
+            .into_values()
+            .filter(|v| !v.closed)
+            .collect();
+        cards.sort_by_key(|v| v.seq);
+        for mut view in cards {
+            view.state = "closed";
+            out.push(self.session_card(&view, ev));
+        }
         self.settle(ev, out);
     }
 
@@ -1323,6 +1409,13 @@ impl Projector {
         let opened = self.ensure_run(ev, out);
         let mut content = Metadata::new();
         content.insert("job".to_owned(), Value::from(d.job));
+        // a child thread's job follows a round of its session (ADR 0072)
+        if let Some(round) = &d.round {
+            content.insert(
+                "round".to_owned(),
+                serde_json::to_value(round).unwrap_or(Value::Null),
+            );
+        }
         out.push(self.activity(format!("job-{}", d.job), ACTIVITY_JOB, content, ev, false));
         if !begun && !opened {
             out.push(self.state_snapshot());
@@ -2105,6 +2198,223 @@ impl Projector {
         }
     }
 
+    // ---- child sessions ----------------------------------------------------------------
+
+    /// A session was opened (ADR 0072): a subagent named after the helper, under the agent's
+    /// invocation, and the `vymalo.session` card. One the log already opened says nothing again.
+    fn on_session_opened(
+        &mut self,
+        ev: &Event,
+        d: &ChildSessionOpenedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        if self.sessions.contains_key(&d.session) {
+            return;
+        }
+        let opened = self.ensure_run(ev, out);
+        let view = SessionView {
+            seq: ev.seq,
+            session: d.session.clone(),
+            thread: d.thread,
+            agent: d.agent.clone(),
+            description: d.description.clone(),
+            keep_open: d.keep_open,
+            actor: ev.actor.clone(),
+            // a session opened with a round is at work; with none it waits (a close may follow)
+            state: if d.round.is_some() { "working" } else { "idle" },
+            round: d.round,
+            report: None,
+            last: None,
+            closed: false,
+            sub_open: true,
+            sub: SubagentRunId::new(format!("sub-session-{}", ev.seq)),
+            parent: self.invocation.as_ref().map(|i| i.id.clone()),
+            started_at: self.now.clone(),
+        };
+        out.push(Self::session_subagent_started(&view).into());
+        out.push(self.session_card(&view, ev));
+        self.sessions.insert(d.session.clone(), view);
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// A round of a session ended: the card says the round and how it ended, then the subagent
+    /// finishes (`suspended` for a blocked round, which goes on once the person answers), or
+    /// errors for a failed round. A report that follows the end of the subagent opens it again
+    /// first, under an id of its own. The core reports a round twice on purpose (blocked, then how
+    /// it ended), so a report is said when its round is newer than the last said or when it says
+    /// another outcome of that round; the same again, and an earlier round, say nothing.
+    fn on_session_reported(
+        &mut self,
+        ev: &Event,
+        d: &ChildSessionReportedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        match self.sessions.get(&d.session) {
+            // a log held from the middle has no session to report: nothing was said of it
+            None => return,
+            Some(view) => match view.last {
+                Some((round, _)) if d.round < round => return,
+                Some((round, outcome)) if d.round == round && d.report == outcome => return,
+                _ => {}
+            },
+        }
+        let opened = self.ensure_run(ev, out);
+        let parent = self.invocation.as_ref().map(|i| i.id.clone());
+        let now = self.now.clone();
+        let Some(mut view) = self.sessions.remove(&d.session) else {
+            return;
+        };
+        if !view.sub_open {
+            view.sub = SubagentRunId::new(format!("sub-session-{}-{}", view.seq, ev.seq));
+            view.parent = parent;
+            view.started_at = now;
+            out.push(Self::session_subagent_started(&view).into());
+        }
+        view.round = Some(d.round);
+        view.report = Some(d.report);
+        view.last = Some((d.round, d.report));
+        if !view.closed {
+            // a blocked round is still the session's work: it waits for the person
+            view.state = if d.report == SessionOutcome::Blocked {
+                "working"
+            } else {
+                "idle"
+            };
+        }
+        out.push(self.session_card(&view, ev));
+        view.sub_open = false;
+        out.push(match d.report {
+            SessionOutcome::Failed => SubagentErrorEvent::new(
+                view.sub.clone(),
+                format!("{} failed round {}", view.agent, d.round),
+                Some(CODE_SESSION_FAILED.to_owned()),
+            )
+            .into(),
+            SessionOutcome::Blocked => {
+                let mut finished = SubagentFinishedEvent::new(
+                    view.sub.clone(),
+                    Some(SubagentFinishedOutcome::Suspended {
+                        interrupt_ids: None,
+                    }),
+                );
+                finished.result = Some(json!({"round": d.round, "report": d.report}));
+                finished.into()
+            }
+            SessionOutcome::Done | SessionOutcome::Canceled => {
+                let mut finished = SubagentFinishedEvent::new(view.sub.clone(), None);
+                finished.result = Some(json!({"round": d.round, "report": d.report}));
+                finished.into()
+            }
+        });
+        self.sessions.insert(d.session.clone(), view);
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// A session was closed (once): the card says so, and the subagent finishes if a round still
+    /// held it open.
+    fn on_session_closed(
+        &mut self,
+        ev: &Event,
+        d: &ChildSessionClosedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        if self.sessions.get(&d.session).is_none_or(|v| v.closed) {
+            return;
+        }
+        let opened = self.ensure_run(ev, out);
+        let Some(mut view) = self.sessions.remove(&d.session) else {
+            return;
+        };
+        view.closed = true;
+        view.state = "closed";
+        out.push(self.session_card(&view, ev));
+        if view.sub_open {
+            view.sub_open = false;
+            let mut finished = SubagentFinishedEvent::new(view.sub.clone(), None);
+            finished.result = Some(json!({"state": "closed"}));
+            out.push(finished.into());
+        }
+        self.sessions.insert(d.session.clone(), view);
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The subagents of the sessions whose round still runs end as suspended, because the helper's
+    /// work goes on (its report, later, opens them again; the card keeps saying `working`): those
+    /// under the invocation that is closing (`under`), or all of them when the run closes
+    /// (`None`).
+    fn suspend_sessions(&mut self, under: Option<&SubagentRunId>, out: &mut Vec<agui::Event>) {
+        let mut open: Vec<&mut SessionView> = self
+            .sessions
+            .values_mut()
+            .filter(|v| v.sub_open && under.is_none_or(|u| v.parent.as_ref() == Some(u)))
+            .collect();
+        open.sort_by_key(|v| v.seq);
+        for view in open.into_iter().rev() {
+            view.sub_open = false;
+            out.push(
+                SubagentFinishedEvent::new(
+                    view.sub.clone(),
+                    Some(SubagentFinishedOutcome::Suspended {
+                        interrupt_ids: None,
+                    }),
+                )
+                .into(),
+            );
+        }
+    }
+
+    /// `SUBAGENT_STARTED` of a session's subagent, named after the helper, with the child thread
+    /// and the session id in its metadata.
+    fn session_subagent_started(view: &SessionView) -> SubagentStartedEvent {
+        let mut started = SubagentStartedEvent::new(view.sub.clone(), view.agent.clone());
+        started.description = Some(view.description.clone()).filter(|d| !d.is_empty());
+        started.parent_subagent_run_id.clone_from(&view.parent);
+        let mut metadata = actor_metadata(&view.actor);
+        metadata.insert(WHEN_KEY.to_owned(), Value::from(view.started_at.clone()));
+        metadata.insert(
+            CHILD_THREAD_KEY.to_owned(),
+            Value::from(view.thread.to_string()),
+        );
+        metadata.insert(SESSION_KEY.to_owned(), Value::from(view.session.clone()));
+        started.base.metadata = Some(metadata);
+        started
+    }
+
+    /// The `vymalo.session` card as the session stands, said again with `replace`.
+    fn session_card(&mut self, view: &SessionView, ev: &Event) -> agui::Event {
+        let mut content = Metadata::new();
+        content.insert("session".to_owned(), Value::from(view.session.clone()));
+        content.insert("threadId".to_owned(), Value::from(view.thread.to_string()));
+        content.insert("agent".to_owned(), Value::from(view.agent.clone()));
+        content.insert(
+            "description".to_owned(),
+            Value::from(view.description.clone()),
+        );
+        content.insert("keepOpen".to_owned(), Value::from(view.keep_open));
+        content.insert("state".to_owned(), Value::from(view.state));
+        if let Some(round) = view.round {
+            content.insert("round".to_owned(), Value::from(round));
+        }
+        if let Some(report) = view.report {
+            content.insert(
+                "report".to_owned(),
+                serde_json::to_value(report).unwrap_or(Value::Null),
+            );
+        }
+        let id = format!("session-{}", view.seq);
+        let mut event = self.activity(id, ACTIVITY_SESSION, content, ev, false);
+        if let agui::Event::ActivitySnapshot(snapshot) = &mut event {
+            snapshot.replace = Some(true);
+        }
+        event
+    }
+
     // ---- steps -------------------------------------------------------------------------
 
     /// A step of the agent's work (ADR 0025, `steps/v1`): its `vymalo.step` activity, said again
@@ -2437,6 +2747,8 @@ impl Projector {
         if self.invocation.is_some() {
             self.close_steps(&how, out);
             self.close_asks(&how, out);
+            let under = self.invocation.as_ref().map(|i| i.id.clone());
+            self.suspend_sessions(under.as_ref(), out);
         }
         let Some(inv) = self.invocation.take() else {
             return;
@@ -2500,6 +2812,8 @@ impl Projector {
             // No interrupt: nothing is asked of the person, the agent is still at work.
             RunClose::Superseded => self.close_invocation(InvocationClose::Suspended(vec![]), out),
         }
+        // a session started with no invocation open ends with the run
+        self.suspend_sessions(None, out);
         out.push(self.state_snapshot());
         let Some(run) = self.run.take() else {
             return;

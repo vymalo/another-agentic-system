@@ -9,7 +9,19 @@
   the chat on a wide window, a sheet on a narrower one, as the thread list is on a phone), built on the
   `Tabs` primitive in `src/components/ui`; the Sources tab reads the links in the agents' words with
   `mdast-util-from-markdown`, `mdast-util-gfm` and `micromark-extension-gfm`, the parser `remark-gfm` already
-  uses for the chat, pinned as direct dependencies. The rest of this decision stands.
+  uses for the chat, pinned as direct dependencies. Also amended (2026-11-14): the theme is the person's to choose
+  (System, the default and still what the app did before, Light or Dark), which reverses the rejection below of
+  "a `.dark` class with a toggle" ("a setting nobody asked for"): the owner asked for it (ADR 0067, slice 5). It is a
+  display preference of **this device and of this client**, kept in `localStorage` and in no API route or field, so a
+  second client of the same API keeps its own and nothing in `docs/api/` changes. The mechanism is not `next-themes` and not
+  a class: one attribute, `<html data-theme="light|dark">`, always the resolved theme, set before the first paint by an
+  inline head script that the page's content security policy allows by its hash (the same mechanism as the sidebar's and the
+  panel's head scripts; the policy is two halves that a browser enforces together, `lib/csp.ts`: the static server's header still lists
+  `'unsafe-inline'` in its `script-src`, and the `<meta>` the build writes into each page names `'self'` and the hashes of that page's
+  inline scripts, which voids the header's `'unsafe-inline'`; no directive of either half got looser) and kept by `lib/theme.ts`; the tokens, the
+  `dark:` variant, the highlighter and the diagrams read the attribute and nothing asks `prefers-color-scheme` but that module
+  (`web/README.md` "Theme", `web/DESIGN.md` "Theme"). The accessibility suite now also forces each theme on a device of the
+  other scheme. The rest of this decision stands.
 
 ## Context
 

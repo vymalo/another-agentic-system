@@ -32,7 +32,7 @@ never one a person or an agent typed.
 The port's `list_tools(&ToolServerEndpoint)` and `call_tool(&ToolServerEndpoint, &ToolCall)` are the whole
 interface; the types are in [`orch-ports`](../ports/README.md#api-at-a-glance).
 
-**A server can speak MCP `2026-07-28` and take signed requests** (ADR 0067). `ToolServerEndpoint::protocol` is `Legacy` (the default) or
+**A server can speak MCP `2026-07-28` and take signed requests** (ADR 0080). `ToolServerEndpoint::protocol` is `Legacy` (the default) or
 `V2026_07_28`: the second opens the session with **`server/discover`** (`rmcp` 3.5.0's `ClientLifecycleMode::Discover`, that revision only) and
 **never falls back** to `initialize`; a server that answers something else is an error, and one that lists other revisions only is
 `Protocol` ("the server does not speak MCP 2026-07-28"). `ToolServerEndpoint::signing` makes the client send **no bearer** and put one header,
@@ -174,7 +174,7 @@ status (the tests of both shapes would fail on a change); a refused connection i
 
 ## Tests
 
-* `tests/signed.rs` (ADR 0067): a real MCP server over HTTP that speaks **only `2026-07-28`** and verifies every request
+* `tests/signed.rs` (ADR 0080): a real MCP server over HTTP that speaks **only `2026-07-28`** and verifies every request
   (`FakeToolServerOptions::modern_only().signed(..)`): the session opens with `server/discover` and no `initialize` is ever sent; every request of a listing and a call
   is accepted (the signature, the audience, the time, the method, the path and the digest of the bytes received) with no `Authorization`, for
   the thread and the owner of the endpoint (trimmed and lower-cased), a `cti` of its own each; a call captured from the wire fails when the

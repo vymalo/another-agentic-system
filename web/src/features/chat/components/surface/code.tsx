@@ -7,8 +7,11 @@ import { CopyButton } from "./copy-button";
 
 /*
  * The `Code` component of the UI catalog (docs/api/ui-catalog-v1.md, version 6): a block of source code
- * in a monospace box, with its title and file name, and a copy button. No highlighting (no highlighter is a
- * dependency of the web), no link, nothing run: the code is React text. The box scrolls sideways and is
+ * in a monospace box, with its title and file name, and a copy button. No highlighting: the catalog says Code
+ * is "never highlighted" (catalog.json, read by the orchestrator's workflow), so drawing colours here is a
+ * change of the catalog, not of this file. The web does have a highlighter now (`src/lib/highlight.ts`, used by
+ * the fenced code of an answer's Markdown, README "Code and math in answers"), which this component can use
+ * when the catalog changes. No link, nothing run: the code is React text. The box scrolls sideways and is
  * reachable by keyboard, so a long line is never lost.
  */
 

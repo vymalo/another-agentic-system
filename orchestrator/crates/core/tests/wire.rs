@@ -95,7 +95,10 @@ fn every_kind_roundtrips_and_never_emits_null() {
             version: UiVersion::V0_9_1,
             run_id: None,
         }),
-        EventBody::JobStarted(JobStartedData { job: 2 }),
+        EventBody::JobStarted(JobStartedData {
+            job: 2,
+            round: None,
+        }),
         EventBody::UiCatalog(note_catalog()),
         EventBody::AgentStep(AgentStepData {
             id: "t/acp:c2:1".into(),
@@ -259,7 +262,10 @@ fn an_agent_step_is_the_agents_event_and_leaves_out_what_it_does_not_say() {
 #[test]
 fn job_started_is_the_systems_word_and_carries_the_number() {
     let e = event(
-        EventBody::JobStarted(JobStartedData { job: 2 }),
+        EventBody::JobStarted(JobStartedData {
+            job: 2,
+            round: None,
+        }),
         Actor::system(),
     );
     assert_eq!(e.kind(), EventKind::JobStarted);
@@ -517,6 +523,7 @@ fn thread_wire_has_the_owner_and_hides_the_version() {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
@@ -562,6 +569,7 @@ fn a_forked_thread_says_where_it_came_from() {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 42,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
@@ -611,6 +619,7 @@ fn a_thread_under_a_gate_carries_its_job_and_one_without_carries_none() {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 2,
         created_at: "2026-09-29T10:00:00Z".parse().unwrap(),
@@ -1231,6 +1240,7 @@ fn a_thread_says_its_description_only_when_it_has_one() {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 2,
         created_at: Timestamp::from_second(1_790_000_000).unwrap(),
@@ -1271,6 +1281,7 @@ fn a_thread_says_what_the_owner_did_to_their_list_only_when_they_did_it() {
         pinned_at: None,
         archived_at: None,
         rail_parent: None,
+        child_of: None,
         rail_rank: "i".to_owned(),
         last_seq: 0,
         created_at: at,

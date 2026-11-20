@@ -104,6 +104,7 @@ async fn create(store: &PgStore, outbox: Vec<NewOutbox>) -> ThreadId {
                 },
                 context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             commit(ThreadState::Queued, vec![event("hi", None)], outbox),
@@ -543,6 +544,7 @@ async fn timestamps_round_trip_at_microsecond_precision() {
                 },
                 context_id: Some("c".into()),
                 rail_parent: None,
+                child_of: None,
                 now: precise,
             },
             first,
@@ -574,6 +576,7 @@ async fn creating_the_same_thread_twice_is_refused_and_writes_nothing() {
                 },
                 context_id: Some("c".into()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             commit(
@@ -2493,6 +2496,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
                 },
                 context_id: Some(id.to_string()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             };
             let data = ThreadForkedData {
@@ -2628,6 +2632,7 @@ async fn forks_made_while_the_parent_is_written_to_copy_exactly_their_cut() {
                 },
                 context_id: Some(id.to_string()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             };
             let forked = NewEvent {
@@ -3315,6 +3320,7 @@ async fn a_delete_leaves_no_row_of_the_thread_but_its_purge_row() {
                 },
                 context_id: Some(format!("ctx-{id}")),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             },
             first,
@@ -3514,6 +3520,7 @@ async fn a_fork_racing_the_delete_of_its_parent_has_the_parent_whole_or_none() {
                 },
                 context_id: Some(id.to_string()),
                 rail_parent: None,
+                child_of: None,
                 now: t0(),
             };
             let forked = NewEvent {
@@ -3633,6 +3640,7 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
             cache_write_input_tokens: None,
         },
         context_window: Some(131_072),
+        counted: true,
     }));
     let totals = EventBody::ModelUsageTotal(orch_core::ModelUsageTotalData {
         job: 1,
@@ -3659,6 +3667,7 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
                 milliseconds: 81_234,
             }]),
         }),
+        counted: true,
     });
     let insert = |seq: i64, kind: &'static str, data: String| {
         sqlx::query(
@@ -3709,4 +3718,350 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
         panic!("{:?}", events[3].body)
     };
     assert_eq!((old.task.as_str(), old.sandbox.as_ref()), ("t0", None));
+}
+
+/// Migration 0027 on a database that has run 0001 to 0026 and holds threads with logs: the old rows
+/// read as no child's, the three `child_session_*` kinds are refused before and taken after (and a kind
+/// nobody knows still is not), a session is one child of a parent whichever way the rows are written,
+/// a child names a parent that exists and that is not itself, and a parent is not deleted from under
+/// its children (ADR 0072).
+#[tokio::test]
+async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.as_str() < "0027" {
+            std::fs::copy(&path, dir.join(&name)).unwrap();
+        }
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let applied = |pool: sqlx::PgPool| async move {
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        n
+    };
+    assert_eq!(applied(pool.clone()).await, embedded_migrations() - 1);
+
+    // two threads and a message as a build of 0026 wrote them
+    let (parent, other) = (ThreadId(Uuid::now_v7()), ThreadId(Uuid::now_v7()));
+    for thread in [parent, other] {
+        sqlx::query(
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at, rail_rank) \
+             VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 1, now(), now(), 'i')",
+        )
+        .bind(thread.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let insert_event = |thread: ThreadId, seq: i64, kind: &'static str, data: String| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"agent\",\"name\":\"coder\"}', $4::jsonb)",
+        )
+        .bind(thread.0)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    insert_event(
+        parent,
+        1,
+        "user_message",
+        EventBody::UserMessage(UserMessageData::new("hi"))
+            .data_value()
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let opened = EventBody::ChildSessionOpened(orch_core::ChildSessionOpenedData {
+        session: "s1".into(),
+        thread: other,
+        agent: "helper".into(),
+        description: "look into it".into(),
+        keep_open: true,
+        by: Some(orch_core::SessionBy::Agent),
+        round: Some(1),
+    });
+    assert!(
+        insert_event(
+            parent,
+            2,
+            "child_session_opened",
+            opened.data_value().to_string()
+        )
+        .execute(&pool)
+        .await
+        .is_err(),
+        "0026 has no `child_session_opened`"
+    );
+    let has_column = |pool: sqlx::PgPool| async move {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = 'threads' \
+             AND column_name IN ('child_of', 'child_session')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        n
+    };
+    assert_eq!(has_column(pool.clone()).await, 0);
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    store.migrate().await.unwrap();
+    assert_eq!(applied(store.pool().clone()).await, embedded_migrations());
+    assert_eq!(has_column(store.pool().clone()).await, 2);
+
+    // the rows of before read as threads that are no child's
+    for thread in [parent, other] {
+        let row = store.get_thread(None, thread).await.unwrap().unwrap();
+        assert_eq!(row.child_of, None);
+    }
+    // the three kinds are taken, as the core writes them, and a kind nobody knows is not
+    let reported = EventBody::ChildSessionReported(orch_core::ChildSessionReportedData {
+        session: "s1".into(),
+        thread: other,
+        round: 1,
+        report: orch_core::SessionOutcome::Done,
+    });
+    let closed = EventBody::ChildSessionClosed(orch_core::ChildSessionClosedData {
+        session: "s1".into(),
+        thread: other,
+    });
+    for (seq, kind, body) in [
+        (2, "child_session_opened", &opened),
+        (3, "child_session_reported", &reported),
+        (4, "child_session_closed", &closed),
+    ] {
+        insert_event(parent, seq, kind, body.data_value().to_string())
+            .execute(store.pool())
+            .await
+            .unwrap();
+    }
+    assert!(
+        insert_event(parent, 5, "nonsense", "{}".into())
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    let events = store.list_events(parent, 0, 10).await.unwrap();
+    assert_eq!(events.len(), 4, "the old event is untouched");
+    assert!(matches!(events[0].body, EventBody::UserMessage(_)));
+    assert_eq!(
+        [&events[1].body, &events[2].body, &events[3].body],
+        [&opened, &reported, &closed]
+    );
+
+    // the rows the store never writes are refused by the table as well
+    let child = |id: Uuid, of: Option<Uuid>, session: Option<&str>| {
+        sqlx::query(
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at, rail_rank, child_of, child_session) \
+             VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 0, now(), now(), 'i', $2, $3)",
+        )
+        .bind(id)
+        .bind(of)
+        .bind(session)
+    };
+    let (c1, c2) = (Uuid::now_v7(), Uuid::now_v7());
+    assert!(
+        child(c1, Some(parent.0), None)
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a parent without a session"
+    );
+    assert!(
+        child(c1, None, Some("s1"))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a session without a parent"
+    );
+    assert!(
+        child(c1, Some(Uuid::now_v7()), Some("s1"))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a parent that is not there"
+    );
+    assert!(
+        child(c1, Some(c1), Some("s1"))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "its own child"
+    );
+    assert!(
+        child(c1, Some(parent.0), Some(""))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "an empty session"
+    );
+    assert!(
+        child(c1, Some(parent.0), Some(&"s".repeat(513)))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a session of 513 characters"
+    );
+    child(c1, Some(parent.0), Some("s1"))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        child(c2, Some(parent.0), Some("s1"))
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "a second child for the session"
+    );
+    child(c2, Some(parent.0), Some("s2"))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    child(Uuid::now_v7(), Some(other.0), Some("s1"))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    // the row reads back whole, and a parent is not deleted from under it
+    let read = store.get_thread(None, ThreadId(c1)).await.unwrap().unwrap();
+    assert_eq!(
+        read.child_of,
+        Some(orch_core::ChildOf {
+            thread: parent,
+            session: "s1".into()
+        })
+    );
+    assert!(
+        sqlx::query("DELETE FROM threads WHERE id = $1")
+            .bind(parent.0)
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the foreign key refuses to leave a child without its parent"
+    );
+}
+
+/// The race `open_child_thread` loses at the index, made deterministic: another transaction holds an
+/// uncommitted child for the session, the call looks, finds nothing, inserts and waits on the unique
+/// index; when the other commits the call reads its thread and answers `Existing`, writing nothing.
+#[tokio::test]
+async fn an_open_that_loses_at_the_unique_index_answers_with_the_winners_thread() {
+    use orch_ports::{ChildThread, Commit};
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let (parent, winner, loser) = (Uuid::now_v7(), Uuid::now_v7(), ThreadId(Uuid::now_v7()));
+    let owner = orch_core::UserId::new("alice@example.com");
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at, rail_rank) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 0, now(), now(), 'i')",
+    )
+    .bind(parent)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    // the winner's transaction: its child is written and not yet committed
+    let mut tx = store.pool().begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at, rail_rank, child_of, child_session) \
+         VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 0, now(), now(), 'i', $2, 's1')",
+    )
+    .bind(winner)
+    .bind(parent)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let now: Timestamp = T0.parse().unwrap();
+    let new = orch_ports::NewThreadRecord {
+        id: loser,
+        owner,
+        title: "helper".into(),
+        description: None,
+        target: orch_core::AgentTarget {
+            agent_id: orch_core::AgentId::new("coder"),
+            release: None,
+        },
+        context_id: None,
+        rail_parent: None,
+        child_of: Some(orch_core::ChildOf {
+            thread: ThreadId(parent),
+            session: "s1".into(),
+        }),
+        now,
+    };
+    let first = Commit {
+        new_state: orch_core::ThreadState::Queued,
+        job: None,
+        events: vec![],
+        outbox: vec![],
+        binding: None,
+        now,
+        lease: None,
+        watches: vec![],
+        timers: vec![],
+        inbox: None,
+        finishes_outbox: None,
+        title: None,
+        description: None,
+        sharing: None,
+        skip_unsent_delegates: false,
+    };
+    let call = {
+        let store = store.clone();
+        tokio::spawn(async move { store.open_child_thread(new, first).await })
+    };
+    // it is waiting on the index: a lock wait of another backend, not a finished call
+    let waiting = async {
+        loop {
+            let (n,): (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+                 AND query LIKE 'INSERT INTO threads%' AND pid <> pg_backend_pid()",
+            )
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+            if n > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the call waits for the other transaction");
+    assert!(!call.is_finished());
+    tx.commit().await.unwrap();
+    match call.await.unwrap().unwrap() {
+        ChildThread::Existing(found) => assert_eq!(found.id, ThreadId(winner)),
+        other => panic!("{other:?}"),
+    }
+    assert!(store.get_thread(None, loser).await.unwrap().is_none());
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM threads WHERE child_of = $1")
+        .bind(parent)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
 }

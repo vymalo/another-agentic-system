@@ -55,8 +55,41 @@ async fn forget_ledger(store: &PgStore) {
         .unwrap_or_else(|e| panic!("mark no thread as gone through: {e}"));
 }
 
+/// The log as a build without the search index left it (ADR 0068): the rows are gone, no title is
+/// indexed and no thread has been gone through.
+async fn forget_index(store: &PgStore) {
+    sqlx::query("DELETE FROM message_terms")
+        .execute(store.pool())
+        .await
+        .unwrap_or_else(|e| panic!("empty the index: {e}"));
+    sqlx::query(
+        "UPDATE threads SET search_through = 0, title_terms = NULL, description_terms = NULL",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap_or_else(|e| panic!("mark no thread as gone through: {e}"));
+}
+
 orch_ports::thread_store_conformance!(make_store);
 orch_ports::usage_ledger_conformance!(make_store, forget = forget_ledger);
+/// An index made under an older fold version (ADR 0068): every thread's stored version is lower and the
+/// keys it holds are ones no query makes, as keys of other rules would be.
+async fn age_index(store: &PgStore) {
+    sqlx::query("UPDATE message_terms SET terms = array_to_tsvector(ARRAY['zzzold'])")
+        .execute(store.pool())
+        .await
+        .unwrap_or_else(|e| panic!("write keys of other rules: {e}"));
+    sqlx::query(
+        "UPDATE threads SET search_fold = search_fold - 1, \
+         title_terms = array_to_tsvector(ARRAY['zzzold']), \
+         description_terms = array_to_tsvector(ARRAY['zzzold'])",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap_or_else(|e| panic!("lower the fold version: {e}"));
+}
+
+orch_ports::thread_search_conformance!(make_store, forget = forget_index, age = age_index);
 orch_ports::wakeup_conformance!(make_wakeup);
 orch_ports::user_tool_server_store_conformance!(make_user_tool_servers);
 orch_ports::pending_authorizations_conformance!(

@@ -1,14 +1,14 @@
 # Signed requests to a tool server (v1)
 
 - **Status:** **proposed (2026-11-02)**, written before the code and implemented by the same change
-  ([ADR 0067](../decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md)). The orchestrator's side is built
+  ([ADR 0080](../decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)). The orchestrator's side is built
   (`orch-signed-request`, `orch-tools-mcp`, the relay and `toolServers[].signing`), proven on mocks and, when it was written, against
   the real `cratestack-cose` 0.17.2 (the [interoperability crate](#how-this-page-is-kept-true), run on 2026-11-02, locally and by its CI job on
   the pull request that brought it, #311). **No tool server verifies it yet**: the receiving side of the first one (vaam-apps, on a cratestack 0.17.2
   MCP endpoint) is written against this page.
 - **Served by:** nobody: this is not an A2A extension and an agent never sees it. **Used by:** the orchestrator's relay when it
   calls a tool server on an agent's behalf, and the tool servers that choose to verify it.
-- **Decided in:** [ADR 0067](../decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md); it extends the relay of
+- **Decided in:** [ADR 0080](../decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md); it extends the relay of
   [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) and replaces, for a server that is configured for it, the
   static bearer of [`config.md`](config.md#toolservers).
 - **Not in this page:** the token the orchestrator gives an *agent* to call the orchestrator
@@ -328,7 +328,7 @@ fails in the check named: `PUT` or `/mcp2` or one more space in the body (5); `a
   server holds that lets it speak *as* the orchestrator to another server: it pins a public key.
 - **Untrusted answers.** What the server answers is untrusted text, as before ([`thread-tools-v1.md`](thread-tools-v1.md)).
 - **Out of scope here.** The static bearer of A2A agents and the HMAC thread-tools token (an agent calling the orchestrator) are
-  unchanged; so is who may reach which route of the orchestrator ([ADR 0067](../decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md),
+  unchanged; so is who may reach which route of the orchestrator ([ADR 0080](../decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md),
   "What is not decided here").
 
 ## How this page is kept true

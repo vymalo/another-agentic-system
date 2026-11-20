@@ -2,7 +2,7 @@
 # Exercises the WireMock stand-in agents of compose.yaml over plain HTTP, one call per scenario,
 # so the mocks cannot rot unnoticed. CI runs it after `docker compose up -d --wait`.
 #
-#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL [RESEARCHER_URL [BROWSER_URL [USAGE_URL [TIERED_URL]]]]]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084, :8086, :8087, :8088, :8089
+#   dev/check-mocks.sh [AGENT_URL [RELEASES_URL [VERIFIER_URL [REGISTRY_URL [RESEARCHER_URL [BROWSER_URL [USAGE_URL [TIERED_URL [SESSIONS_URL]]]]]]]]]   # defaults: http://127.0.0.1:8081, :8082, :8083, :8084, :8086, :8087, :8088, :8089, :8102
 #
 # It also plays the verification scenarios of the first mock (`red-once`, `red-always`; dev/README.md
 # "Verification"): the artifacts `branch` and `checks` an agent reports for the gate, and how the
@@ -23,7 +23,10 @@
 # step, one in doubles, the first said again), an end with no totals on it, and the totals, with the `sandbox` beside them, in the metadata of the task GetTask answers.
 # Last the agent that works under an access tier (`mock-tiered`, access-tier/v1, ADR 0061, dev/tier-e2e.sh): its card with the four tiers and
 # the default, the tier echoed on the task and the `working` update of a request that activates the extension and names one, and the answer of
-# the agent's default for a request that names none or does not activate it.
+# the agent's default for a request that names none or does not activate it. Then the agent that runs a helper as a session
+# (`mock-sessions`, child-sessions/v1, ADR 0072, dev/child-sessions-e2e.sh): its card with the helper and the bound, the parent's stream, the
+# parent task with its sessions only for a request that activates the extension, and the round (a task id ending `-s1`) served by task to
+# a request that activates it and refused with InvalidParams to one that does not.
 #
 # Needs: curl, jq. Exit status 0 when every check passes.
 set -eu
@@ -36,6 +39,8 @@ RESEARCHER=${5:-http://127.0.0.1:8086}
 BROWSER=${6:-http://127.0.0.1:8087}
 USAGE=${7:-http://127.0.0.1:8088}
 TIERED=${8:-http://127.0.0.1:8089}
+SESSIONS=${9:-http://127.0.0.1:8102}
+SESSIONS_EXT=https://agents.vymalo.com/a2a/extensions/child-sessions/v1
 USAGE_EXT=https://agents.vymalo.com/a2a/extensions/usage/v1
 TIER_EXT=https://agents.vymalo.com/a2a/extensions/access-tier/v1
 EXT=https://agents.vymalo.com/a2a/extensions/release-channels/v1
@@ -388,6 +393,62 @@ check "mock-tiered: GetTask -> completed" "$(rpc "$TIERED" GetTask | jq -r '[.re
 check "mock-tiered: CancelTask -> canceled" "$(rpc "$TIERED" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
 check "mock-tiered: SubscribeToTask -> task not found (-32001)" "$(rpc "$TIERED" SubscribeToTask | jq -r .error.code)" "-32001"
 check "mock-tiered: unknown method -> -32601" "$(rpc "$TIERED" 'message/send' | jq -r .error.code)" "-32601"
+
+echo "== the agent that runs a helper as a session: $SESSIONS (mock-sessions)"
+# sessions METHOD TASK_ID ACTIVATE: a GetTask or SubscribeToTask to mock-sessions; ACTIVATE=yes sends the A2A-Extensions header. The raw answer.
+sessions() {
+  _activation=
+  [ "$3" = yes ] && _activation="A2A-Extensions: $SESSIONS_EXT"
+  jq -n --arg m "$1" --arg id "$2" '{jsonrpc: "2.0", id: "check-1", method: $m, params: {id: $id}}' |
+    curl -fsS -X POST "$SESSIONS/a2a" -H 'Authorization: Bearer dev-mock-token' -H 'content-type: application/json' \
+      ${_activation:+-H "$_activation"} --data-binary @-
+}
+card=$(curl -fsS "$SESSIONS/.well-known/agent-card.json")
+check "mock-sessions card: its name, streaming, a JSONRPC interface on the same host" \
+  "$(printf '%s' "$card" | jq -r '[.name, .capabilities.streaming, (.supportedInterfaces[0].url | startswith("'"$SESSIONS"'/")), .supportedInterfaces[0].protocolVersion] | join(",")')" \
+  "mock-sessions,true,true,1.0"
+check "mock-sessions card: it lists child-sessions/v1, steps/v1 and usage/v1, none required" \
+  "$(printf '%s' "$card" | jq -r '[.capabilities.extensions[] | "\(.uri | split("/") | .[-2])=\(.required)"] | join(",")')" "child-sessions=false,steps=false,usage=false"
+check "mock-sessions card: the params of child-sessions/v1 are one helper, planner, and maxOpen 4" \
+  "$(printf '%s' "$card" | jq -r --arg u "$SESSIONS_EXT" '.capabilities.extensions[] | select(.uri == $u) | .params | [(.agents | map(.name) | join("+")), .maxOpen] | join(" ")')" "planner 4"
+check "mock-sessions: no token -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SESSIONS/a2a" -d '{}')" "401"
+check "mock-sessions: any request streams submitted, working, the session opened, the start step, the helper's call, the step done, the parent's call, completed" \
+  "$(frames "$SESSIONS" 'delegate this')" "submitted,working,working,working,working,working,working,completed"
+check "mock-sessions: the first Task says its sessions, none yet, and the one event is opened (round 1 working, no message), as adam sends them" \
+  "$(rpc "$SESSIONS" SendStreamingMessage 'delegate this' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '
+     [.[].result | (.task // .statusUpdate) as $e | $e.metadata[$u] // empty | if has("sessions") then "sessions=\(.sessions | length)" else "\(.event) \(.round.number) \(.round.state) \(.session) \(.by)" end] | join("|")')" \
+  "sessions=0|opened 1 TASK_STATE_WORKING task-check-msg-s1 agent"
+check "mock-sessions: the call of the helper is reported on the parent's task under the start step, and so is the parent's own" \
+  "$(rpc "$SESSIONS" SendStreamingMessage 'delegate this' | sed -n 's/^data: //p' | jq -rs --arg u "$USAGE_EXT" '[.[].result.statusUpdate.metadata[$u] // empty | "\(.call):\(.model):\(.totalTokens):\(.stepId // "-")"] | join(",")')" \
+  "h1:glm-5.3-mini:450:tool:s1,p1:glm-5.3:1100:-"
+check "mock-sessions: [mock:sessions-poll] streams the same states with no sessions object and no event (an agent that says none)" \
+  "$(rpc "$SESSIONS" SendStreamingMessage 'delegate this [mock:sessions-poll]' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '[.[].result | (.task // .statusUpdate) | .metadata[$u] // empty] | length')" "0"
+check "mock-sessions: the stream's context is ctx- and the task's id (the first message of a thread names none)" \
+  "$(CTX='' rpc "$SESSIONS" SendStreamingMessage 'delegate this' | sed -n 's/^data: //p' | jq -r 'select(.result.task) | .result.task.contextId')" "ctx-task-check-msg"
+check "mock-sessions: GetTask of the parent, activated -> its totals (both models) and one session, working, whose round 1 is working" \
+  "$(sessions GetTask task-check-msg yes | jq -r --arg u "$SESSIONS_EXT" --arg v "$USAGE_EXT" '.result | [(.metadata[$u].sessions | map("\(.session) \(.agent) \(.state) \(.keepOpen) \(.round.number) \(.round.taskId) \(.round.state)") | join("|")), (.metadata[$v].totals | map("\(.model):\(.totalTokens)") | join(","))] | join(" ; ")')" \
+  "task-check-msg-s1 planner working false 1 task-check-msg-s1 TASK_STATE_WORKING ; glm-5.3:1100,glm-5.3-mini:450"
+check "mock-sessions: the parent's context is one value: the stream's, the task's and the round's parentContextId" \
+  "$(sessions GetTask task-check-msg yes | jq -r '.result.contextId') $(sessions GetTask task-check-msg-s1 yes | jq -r --arg u "$SESSIONS_EXT" '.result.metadata[$u].parentContextId')" \
+  "ctx-task-check-msg ctx-task-check-msg"
+check "mock-sessions: GetTask of the parent, not activated -> the usage totals and nothing of sessions" \
+  "$(sessions GetTask task-m1 no | jq -r --arg u "$SESSIONS_EXT" --arg v "$USAGE_EXT" '[(.result.metadata | has($u)), (.result.metadata[$v].totals | map(.model) | join(","))] | join(" ")')" "false glm-5.3,glm-5.3-mini"
+check "mock-sessions: the session's context is not the task's" \
+  "$(sessions GetTask task-m1 yes | jq -r --arg u "$SESSIONS_EXT" '.result | (.metadata[$u].sessions[0].contextId != .contextId)')" "true"
+check "mock-sessions: GetTask of the round, activated -> completed, its session object (round 1, by the agent, closed) and its own totals" \
+  "$(sessions GetTask task-m1-s1 yes | jq -r --arg u "$SESSIONS_EXT" --arg v "$USAGE_EXT" '.result | [.status.state, .metadata[$u].session, .metadata[$u].round, .metadata[$u].by, .metadata[$u].state, (.metadata[$v].totals | map("\(.model):\(.totalTokens)") | join(","))] | join(" ")')" \
+  "TASK_STATE_COMPLETED task-m1-s1 1 agent closed glm-5.3-mini:450"
+check "mock-sessions: GetTask of the round, not activated -> InvalidParams (-32602)" "$(sessions GetTask task-m1-s1 no | jq -r .error.code)" "-32602"
+check "mock-sessions: SubscribeToTask of the round, activated -> the task, a step, its call, the step done, completed" \
+  "$(sessions SubscribeToTask task-m1-s1 yes | sed -n 's/^data: //p' | jq -r '.result | (.task // .statusUpdate) | .status.state | sub("TASK_STATE_"; "") | ascii_downcase' | paste -sd, -)" \
+  "working,working,working,working,completed"
+check "mock-sessions: SubscribeToTask of the round, activated -> the round's own context and the object on the ending status" \
+  "$(sessions SubscribeToTask task-m1-s1 yes | sed -n 's/^data: //p' | jq -r --arg u "$SESSIONS_EXT" '.result | (.task // .statusUpdate) | select(.status.state == "TASK_STATE_COMPLETED") | [.contextId, .metadata[$u].session, .metadata[$u].state, .status.message.parts[0].text] | join(" ")')" \
+  "ctx-task-m1-s1 task-m1-s1 closed planner: done"
+check "mock-sessions: SubscribeToTask of the round, not activated -> InvalidParams (-32602)" "$(sessions SubscribeToTask task-m1-s1 no | jq -r .error.code)" "-32602"
+check "mock-sessions: SubscribeToTask of any other task -> task not found (-32001)" "$(sessions SubscribeToTask task-m1 yes | jq -r .error.code)" "-32001"
+check "mock-sessions: CancelTask -> canceled" "$(rpc "$SESSIONS" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
+check "mock-sessions: unknown method -> -32601" "$(rpc "$SESSIONS" 'message/send' | jq -r .error.code)" "-32601"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"

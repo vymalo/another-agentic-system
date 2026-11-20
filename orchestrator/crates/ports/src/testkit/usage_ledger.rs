@@ -82,6 +82,7 @@ fn new_thread(owner: &UserId, n: u128) -> NewThreadRecord {
         },
         context_id: None,
         rail_parent: None,
+        child_of: None,
         now: t0(),
     }
 }
@@ -110,6 +111,7 @@ fn call_at(when: Timestamp, agent: &str, task: &str, id: &str, tokens: TokenCoun
             model: "glm".into(),
             tokens,
             context_window: None,
+            counted: true,
         })),
         idempotency_key: Some(format!("usage:{agent}:{task}:{id}")),
     }
@@ -136,6 +138,7 @@ fn total_at(
             path: Vec::new(),
             totals,
             sandbox,
+            counted: true,
         }),
         idempotency_key: None,
     }

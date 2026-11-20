@@ -703,3 +703,156 @@ async fn a_late_inbox_row_for_a_deleted_thread_is_finished_and_counted() {
     );
     assert_eq!(worker.tick().await, 0, "never claimed again");
 }
+
+/// Makes a child thread of `parent` for `session` straight in the store (the application makes
+/// them from S2d), in `state`.
+async fn child_of(w: &World, parent: ThreadId, session: &str, state: ThreadState) -> ThreadId {
+    let id = ThreadId(uuid::Uuid::now_v7());
+    let now = jiff::Timestamp::now();
+    let new = orch_ports::NewThreadRecord {
+        id,
+        owner: alice(),
+        title: format!("helper {session}"),
+        description: None,
+        target: target("plain"),
+        context_id: Some(format!("ctx/s/{session}")),
+        rail_parent: Some(parent),
+        child_of: Some(orch_core::ChildOf {
+            thread: parent,
+            session: session.to_owned(),
+        }),
+        now,
+    };
+    let first = orch_ports::Commit {
+        new_state: state,
+        job: None,
+        events: vec![],
+        outbox: vec![],
+        binding: None,
+        now,
+        lease: None,
+        watches: vec![],
+        timers: vec![],
+        inbox: None,
+        finishes_outbox: None,
+        title: None,
+        description: None,
+        sharing: None,
+        skip_unsent_delegates: false,
+    };
+    w.store.open_child_thread(new, first).await.unwrap();
+    id
+}
+
+#[tokio::test]
+async fn deleting_a_thread_erases_its_idle_children_and_a_working_child_refuses() {
+    let w = World::new();
+    let files = Files::default();
+    let app = everyone(&w, files.clone());
+    let run = dispatch(&app);
+    let parent = start(&app, &alice(), "echo hi").await;
+    settle(&app, parent, ThreadState::Done).await;
+    run.shutdown().await;
+    let idle = child_of(&w, parent, "s1", ThreadState::Done).await;
+    let other = child_of(&w, parent, "s2", ThreadState::Blocked).await;
+    keep(&files, idle, "child file").await;
+
+    // one child works: the parent's delete is refused and nothing goes
+    let working = child_of(&w, parent, "s3", ThreadState::Working).await;
+    let err = app.delete_thread(&alice(), parent).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AppError::ThreadActive(NotDeletable::Active(ThreadState::Working))
+        ),
+        "{err:?}"
+    );
+    for t in [parent, idle, other, working] {
+        assert!(app.get_thread(&alice(), t).await.is_ok(), "{t} stays");
+    }
+    assert_eq!(w.store.purges_pending().await.unwrap(), 0);
+
+    // it ends: the parent and every child go together, each with its purge row and its files
+    w.store
+        .commit(
+            working,
+            1,
+            orch_ports::Commit {
+                new_state: ThreadState::Done,
+                job: None,
+                events: vec![],
+                outbox: vec![],
+                binding: None,
+                now: jiff::Timestamp::now(),
+                lease: None,
+                watches: vec![],
+                timers: vec![],
+                inbox: None,
+                finishes_outbox: None,
+                title: None,
+                description: None,
+                sharing: None,
+                skip_unsent_delegates: false,
+            },
+        )
+        .await
+        .unwrap();
+    app.delete_thread(&alice(), parent).await.unwrap();
+    for t in [parent, idle, other, working] {
+        assert!(matches!(
+            app.get_thread(&alice(), t).await,
+            Err(AppError::NotFound)
+        ));
+    }
+    assert_eq!(
+        files.calls.load(Ordering::SeqCst),
+        4,
+        "every thread's files"
+    );
+    assert!(
+        w.store
+            .child_threads(&alice(), parent)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // a child can go alone, and its parent stays
+    let parent2 = start(&app, &alice(), "echo again").await;
+    let run = dispatch(&app);
+    settle(&app, parent2, ThreadState::Done).await;
+    run.shutdown().await;
+    let kid = child_of(&w, parent2, "s1", ThreadState::Done).await;
+    app.delete_thread(&alice(), kid).await.unwrap();
+    assert!(app.get_thread(&alice(), parent2).await.is_ok());
+}
+
+#[tokio::test]
+async fn deleting_a_thread_erases_the_children_of_its_edits_too() {
+    let w = World::new();
+    let files = Files::default();
+    let app = everyone(&w, files.clone());
+    let run = dispatch(&app);
+    let parent = start(&app, &alice(), "echo one").await;
+    settle(&app, parent, ThreadState::Done).await;
+    let message = log(&app, &alice(), parent).await[0].seq;
+    let edit = app
+        .fork_thread(&alice(), parent, replace(message, "echo edited"))
+        .await
+        .unwrap()
+        .thread
+        .id;
+    settle(&app, edit, ThreadState::Done).await;
+    run.shutdown().await;
+    let of_parent = child_of(&w, parent, "s1", ThreadState::Done).await;
+    let of_edit = child_of(&w, edit, "s1", ThreadState::Done).await;
+
+    app.delete_thread(&alice(), parent).await.unwrap();
+
+    for gone in [parent, edit, of_parent, of_edit] {
+        assert!(
+            w.store.get_thread(None, gone).await.unwrap().is_none(),
+            "{gone}"
+        );
+    }
+}

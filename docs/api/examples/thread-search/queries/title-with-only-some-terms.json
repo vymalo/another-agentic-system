@@ -1,0 +1,87 @@
+{
+  "name": "A title that holds only some terms",
+  "about": "A title that holds only some terms: documents match one at a time. `quokka wombat` is in no title (`quokka notes` lacks `wombat`) but in one message: the thread is rank 0 with one message hit and no title hit. `quokka notes` is in the title (rank 2), and not in the message, so there is no message hit.",
+  "steps": [
+    {
+      "request": {
+        "q": "quokka wombat"
+      },
+      "expect": {
+        "terms": [
+          "quokka",
+          "wombat"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000012",
+            "rank": 0,
+            "hits": [
+              {
+                "field": "message",
+                "seq": 1,
+                "role": "person",
+                "at": "2026-11-14T10:01:00Z",
+                "snippet": {
+                  "text": "quokka and wombat",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 6
+                    },
+                    {
+                      "start": 11,
+                      "end": 17
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 1
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "request": {
+        "q": "quokka notes"
+      },
+      "expect": {
+        "terms": [
+          "quokka",
+          "notes"
+        ],
+        "results": [
+          {
+            "id": "0190aaaa-0000-7000-8000-000000000012",
+            "rank": 2,
+            "hits": [
+              {
+                "field": "title",
+                "snippet": {
+                  "text": "quokka notes",
+                  "cutStart": false,
+                  "cutEnd": false,
+                  "matches": [
+                    {
+                      "start": 0,
+                      "end": 6
+                    },
+                    {
+                      "start": 7,
+                      "end": 12
+                    }
+                  ]
+                }
+              }
+            ],
+            "messageHits": 0
+          }
+        ],
+        "hasNext": false
+      }
+    }
+  ]
+}

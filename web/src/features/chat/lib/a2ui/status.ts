@@ -5,16 +5,19 @@
  */
 
 export type ItemState = "done" | "doing" | "todo" | "failed";
+/** A checklist item may also be dropped (catalog version 8): given up, no longer part of the plan. */
+export type ChecklistState = ItemState | "dropped";
 
 /** What a state says, in words: the text beside its icon, and what a screen reader reads. */
-export const STATE_WORDS: Record<ItemState, string> = {
+export const STATE_WORDS: Record<ChecklistState, string> = {
   done: "Done",
   doing: "In progress",
   todo: "To do",
   failed: "Failed",
+  dropped: "Dropped",
 };
 
-export type ChecklistItem = { label: string; state: ItemState };
+export type ChecklistItem = { label: string; state: ChecklistState; note?: string };
 export type TimelineEvent = {
   time: string;
   title: string;
@@ -25,8 +28,10 @@ export type TimelineEvent = {
 type Rec = Record<string, unknown>;
 const isRecord = (v: unknown): v is Rec => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
-const isState = (v: unknown): v is ItemState =>
+const isChecklistState = (v: unknown): v is ChecklistState =>
   typeof v === "string" && Object.hasOwn(STATE_WORDS, v);
+/** A timeline's states are the four of version 6: only a checklist can drop an item. */
+const isState = (v: unknown): v is ItemState => isChecklistState(v) && v !== "dropped";
 
 /** The items of a checklist that passed the schema. A state that is not one of the four is to do. */
 export function readItems(v: unknown): ChecklistItem[] {
@@ -36,7 +41,12 @@ export function readItems(v: unknown): ChecklistItem[] {
     if (!isRecord(item)) continue;
     const label = str(item.label);
     if (label === undefined) continue;
-    out.push({ label, state: isState(item.state) ? item.state : "todo" });
+    const note = str(item.note);
+    out.push({
+      label,
+      state: isChecklistState(item.state) ? item.state : "todo",
+      ...(note ? { note } : {}),
+    });
   }
   return out;
 }
@@ -61,13 +71,22 @@ export function readEvents(v: unknown): TimelineEvent[] {
   return out;
 }
 
-/** How many items are done, out of all of them, and the share as a whole percentage (0 with none). */
-export function progressOf(items: readonly { state: ItemState }[]): {
+/**
+ * How many items are done, out of the items that are still part of the plan, and the share as a whole
+ * percentage (0 with none). A dropped item is not part of the plan: it is in neither number
+ * (docs/api/ui-catalog-v1.md, "Version 8").
+ */
+export function progressOf(items: readonly { state: ChecklistState }[]): {
   done: number;
   total: number;
   percent: number;
 } {
-  const total = items.length;
-  const done = items.filter((i) => i.state === "done").length;
+  const kept = items.filter((i) => i.state !== "dropped");
+  const total = kept.length;
+  const done = kept.filter((i) => i.state === "done").length;
   return { done, total, percent: total === 0 ? 0 : Math.round((done * 100) / total) };
 }
+
+/** What a progress says in words, for the count beside the bar and for a screen reader: `2 of 5 done`. */
+export const progressWords = (p: { done: number; total: number }): string =>
+  `${p.done} of ${p.total} done`;

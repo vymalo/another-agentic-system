@@ -8,11 +8,11 @@ use orch_core::{
     ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
 use orch_ports::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ClaimOrder, Commit, CommitOutcome,
-    ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder, NewEvent, NewInbox,
-    NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem, OutboxPayload,
-    OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing,
-    ThreadStore,
+    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
+    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder,
+    NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem,
+    OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE,
+    ThreadListing, ThreadStore,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -22,6 +22,7 @@ use crate::codec::{
     outbox_cols, outbox_from_row, parse_enum, thread_cols, thread_from_row, to_db, ts,
 };
 use crate::error::{is_unique_violation, migrate_err, store_err};
+use crate::search;
 use crate::usage;
 use crate::wakeup::{CHANNEL_INBOX, CHANNEL_OUTBOX, CHANNEL_THREAD};
 
@@ -141,8 +142,78 @@ impl PgStore {
         fork: Option<ForkOrigin>,
         first: Commit,
     ) -> Result<(ThreadRecord, Vec<Event>), StoreError> {
+        // only `open_child_thread` makes a child
+        if new.child_of.is_some() {
+            return Err(StoreError::Refused("child_of"));
+        }
+        match self.insert_thread(new, fork, first, false).await? {
+            ChildThread::Created { thread, events } => Ok((thread, events)),
+            ChildThread::Existing(_) => {
+                Err(StoreError::corrupt("a thread that is no child exists"))
+            }
+        }
+    }
+
+    /// [`ThreadStore::open_child_thread`]: the thread of a session, or the one it has.
+    async fn open_child(
+        &self,
+        new: NewThreadRecord,
+        first: Commit,
+    ) -> Result<ChildThread, StoreError> {
+        let Some(of) = new.child_of.as_ref().filter(|of| of.thread != new.id) else {
+            return Err(StoreError::Refused("child_of"));
+        };
+        if !(1..=orch_ports::MAX_CHILD_SESSION_CHARS).contains(&of.session.chars().count()) {
+            return Err(StoreError::Refused("child_session"));
+        }
+        self.insert_thread(new, None, first, true).await
+    }
+
+    /// The one transaction behind [`create`](Self::create) and [`open_child`](Self::open_child).
+    async fn insert_thread(
+        &self,
+        new: NewThreadRecord,
+        fork: Option<ForkOrigin>,
+        first: Commit,
+        child: bool,
+    ) -> Result<ChildThread, StoreError> {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         let cut = fork.map_or(0, |o| o.cut);
+        if child && let Some(of) = &new.child_of {
+            // KEY SHARE: the parent cannot be deleted under us, and its own commits go on.
+            let parent = sqlx::query(
+                "SELECT child_of IS NOT NULL AS is_child FROM threads \
+                 WHERE id = $1 AND owner = $2 FOR KEY SHARE",
+            )
+            .bind(of.thread.0)
+            .bind(new.owner.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            let Some(parent) = parent else {
+                rollback(tx).await;
+                return Err(StoreError::NotFound);
+            };
+            if parent.try_get::<bool, _>("is_child").map_err(store_err)? {
+                rollback(tx).await;
+                return Err(StoreError::Refused("nested_child"));
+            }
+            let found = sqlx::query(concat!(
+                "SELECT ",
+                thread_cols!(),
+                " FROM threads WHERE child_of = $1 AND child_session = $2"
+            ))
+            .bind(of.thread.0)
+            .bind(&of.session)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            if let Some(found) = found {
+                let record = thread_from_row(&found)?;
+                rollback(tx).await;
+                return Ok(ChildThread::Existing(record));
+            }
+        }
         if let Some(origin) = fork {
             // KEY SHARE: the parent cannot be deleted under us, and its own commits go on.
             let parent: Option<i64> = sqlx::query_scalar(
@@ -193,8 +264,9 @@ impl PgStore {
         let inserted = sqlx::query(
             "INSERT INTO threads (id, owner, title, description, agent_id, release, state, job, \
              version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind, \
-             rail_parent, rail_rank) \
-             VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12, $14, $15)",
+             rail_parent, rail_rank, title_terms, description_terms, child_of, child_session) \
+             VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12, $14, $15, \
+             array_to_tsvector($16::text[]), array_to_tsvector($17::text[]), $18, $19)",
         )
         .bind(new.id.0)
         .bind(new.owner.as_str())
@@ -211,9 +283,38 @@ impl PgStore {
         .bind(new.description.as_deref().filter(|d| !d.is_empty()))
         .bind(new.rail_parent.map(|p| p.0))
         .bind(&rail_rank)
+        .bind(search::keys_of(Some(&new.title)))
+        .bind(search::keys_of(
+            new.description.as_deref().filter(|d| !d.is_empty()),
+        ))
+        .bind(new.child_of.as_ref().map(|of| of.thread.0))
+        .bind(new.child_of.as_ref().map(|of| of.session.as_str()))
         .execute(&mut *tx)
         .await;
         if let Err(e) = inserted {
+            // another caller opened this session between our look and our insert: it won, and the
+            // thread it made is the answer
+            if is_unique_violation(&e, Some("threads_child"))
+                && let Some(of) = &new.child_of
+            {
+                rollback(tx).await;
+                let row = sqlx::query(concat!(
+                    "SELECT ",
+                    thread_cols!(),
+                    " FROM threads WHERE child_of = $1 AND child_session = $2"
+                ))
+                .bind(of.thread.0)
+                .bind(&of.session)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_err)?;
+                return match row {
+                    Some(row) => Ok(ChildThread::Existing(thread_from_row(&row)?)),
+                    // gone again already (the winner and its parent were deleted): as if the
+                    // parent were missing
+                    None => Err(StoreError::NotFound),
+                };
+            }
             return Err(if is_unique_violation(&e, None) {
                 StoreError::corrupt("thread id already exists")
             } else {
@@ -261,19 +362,35 @@ impl PgStore {
         // the usage ledger, in the transaction of the events (ADR 0065); what a fork copied was
         // counted in its parent, so only the events of its own are folded in
         usage::fold_events(&mut tx, &new.owner, &events).await?;
+        // the search index, in the same transaction (ADR 0068): what a fork copied is indexed from the
+        // fork's own log (the parent's rows may no longer hold a message it replaced), then the events
+        // of its own
+        let search_reached = if cut > 0 {
+            search::catch_up_before_commit(&mut tx, new.id, &new.owner, 0, cut).await?
+        } else {
+            0
+        };
+        search::index_events(&mut tx, new.id, &new.owner, &events).await?;
         insert_outbox(&mut tx, new.id, first.outbox, first.now).await?;
         let rearmed =
             insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
                 .await?;
         let last_seq = cut + i64::try_from(events.len()).unwrap_or(i64::MAX - cut);
+        let search_through = if search_reached >= cut {
+            last_seq
+        } else {
+            search_reached
+        };
         let row = sqlx::query(concat!(
-            "UPDATE threads SET last_seq = $2, usage_through = $2, updated_at = $3 \
-             WHERE id = $1 RETURNING ",
+            "UPDATE threads SET last_seq = $2, usage_through = $2, search_through = $4, search_fold = $5, \
+             updated_at = $3 WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(new.id.0)
         .bind(last_seq)
         .bind(to_db(first.now))
+        .bind(search_through)
+        .bind(orch_core::search::FOLD_VERSION)
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -286,7 +403,10 @@ impl PgStore {
             notify_inbox(&mut *tx).await?;
         }
         tx.commit().await.map_err(store_err)?;
-        Ok((record, events))
+        Ok(ChildThread::Created {
+            thread: record,
+            events,
+        })
     }
 }
 
@@ -516,7 +636,7 @@ impl PgStore {
     }
 }
 
-fn archived_name(filter: ArchivedFilter) -> &'static str {
+pub(crate) fn archived_name(filter: ArchivedFilter) -> &'static str {
     match filter {
         ArchivedFilter::Exclude => "exclude",
         ArchivedFilter::Only => "only",
@@ -844,6 +964,18 @@ async fn delete(
     if missed.is_some() {
         return Err(StoreError::VersionConflict);
     }
+    // A child of one that goes that the caller did not name: a session opened since it looked. (One
+    // opened while we hold the locks waits for them, and finds its parent gone.)
+    let unnamed = sqlx::query(
+        "SELECT 1 FROM threads WHERE child_of = ANY($1) AND NOT (id = ANY($1)) LIMIT 1",
+    )
+    .bind(&ids)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_err)?;
+    if unnamed.is_some() {
+        return Err(StoreError::VersionConflict);
+    }
     // The threads nested under one that goes take its place in the owner's list: top-level, with
     // its rank (children are told apart by `id`, newest first, as the list reads them), its pin and
     // its archive. Before the delete, which would only null `rail_parent`.
@@ -1131,6 +1263,7 @@ async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
         "UPDATE outbox SET status = 'skipped', lease_owner = NULL, lease_until = NULL, \
          updated_at = $2 \
          WHERE thread_id = $1 AND kind IN ('delegate', 'steer') AND sent_at IS NULL \
+           AND payload -> 'observe' IS NULL \
            AND (status = 'pending' OR (status = 'inflight' AND lease_until < $2))",
     )
     .bind(thread.0)
@@ -1430,6 +1563,32 @@ impl ThreadStore for PgStore {
         self.create(new, Some(origin), first).await
     }
 
+    async fn open_child_thread(
+        &self,
+        new: NewThreadRecord,
+        first: Commit,
+    ) -> Result<ChildThread, StoreError> {
+        self.open_child(new, first).await
+    }
+
+    async fn child_threads(
+        &self,
+        owner: &UserId,
+        parent: ThreadId,
+    ) -> Result<Vec<ThreadRecord>, StoreError> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM threads WHERE owner = $1 AND child_of = $2 ORDER BY created_at, id LIMIT 1000"
+        ))
+        .bind(owner.as_str())
+        .bind(parent.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        rows.iter().map(thread_from_row).collect()
+    }
+
     async fn fork_family(
         &self,
         owner: &UserId,
@@ -1600,8 +1759,8 @@ impl ThreadStore for PgStore {
         // The row lock serialises every writer of this thread: the seq counter below cannot
         // be raced, so seq has no gaps and no duplicates (READ COMMITTED is enough).
         let locked = sqlx::query(
-            "SELECT version, last_seq, state, owner, usage_through, forked_at FROM threads \
-                 WHERE id = $1 FOR UPDATE",
+            "SELECT version, last_seq, state, owner, usage_through, forked_at, search_through, \
+                 search_fold, title, description FROM threads WHERE id = $1 FOR UPDATE",
         )
         .bind(thread.0)
         .fetch_optional(&mut *tx)
@@ -1718,9 +1877,46 @@ impl ThreadStore for PgStore {
         if behind < last_seq {
             usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
         }
+        // The search index (ADR 0068), the same way, but **bounded**: some of what it has not been through
+        // first (at most COMMIT_CATCH_UP_EVENTS events, the watermark advancing only as far as it got), with
+        // the title and description of the row, then this commit's events, always. A thread stored under
+        // another fold version starts again from nothing.
+        let mut search_through: i64 = locked.try_get("search_through").map_err(store_err)?;
+        let search_fold: i32 = locked.try_get("search_fold").map_err(store_err)?;
+        if search_fold != orch_core::search::FOLD_VERSION {
+            search::delete_index(&mut tx, thread).await?;
+            search_through = 0;
+        }
+        let search_behind =
+            search_through < last_seq || search_fold != orch_core::search::FOLD_VERSION;
+        let (mut title_keys, mut description_keys) = (None, None);
+        let mut search_reached = last_seq;
+        if search_behind {
+            search_reached =
+                search::catch_up_before_commit(&mut tx, thread, &owner, search_through, last_seq)
+                    .await?;
+            let title: String = locked.try_get("title").map_err(store_err)?;
+            let description: Option<String> = locked.try_get("description").map_err(store_err)?;
+            title_keys = Some(search::keys_of(Some(&title)));
+            description_keys = Some(search::keys_of(description.as_deref()));
+        }
         let events = insert_events(&mut tx, thread, last_seq + 1, commit.events).await?;
         usage::fold_events(&mut tx, &owner, &events).await?;
+        search::index_events(&mut tx, thread, &owner, &events).await?;
+        // a title or description this commit writes is the one that is searched
+        if let Some(title) = &commit.title {
+            title_keys = Some(search::keys_of(Some(title)));
+        }
+        if let Some(description) = &commit.description {
+            description_keys = Some(search::keys_of(Some(description)));
+        }
         let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
+        // the index is through the whole log only if the old part was finished; else exactly where it stopped
+        let search_through_after = if search_reached >= last_seq {
+            new_last_seq
+        } else {
+            search_reached
+        };
         // The job is written with the state, under the same lock and version check; a commit
         // without one leaves the stored job alone.
         let job = commit.job.as_ref().map(job_json).transpose()?;
@@ -1733,7 +1929,13 @@ impl ThreadStore for PgStore {
                  ELSE share_nonce END, \
              shared_at = CASE $8::text WHEN 'set' THEN $4 WHEN 'clear' THEN NULL \
                  ELSE shared_at END, \
-             version = version + 1, last_seq = $3, usage_through = $3, updated_at = $4 \
+             version = version + 1, last_seq = $3, usage_through = $3, search_through = $13, \
+             search_fold = $14, \
+             title_terms = CASE WHEN $11::text[] IS NULL THEN title_terms \
+                 ELSE array_to_tsvector($11) END, \
+             description_terms = CASE WHEN $12::text[] IS NULL THEN description_terms \
+                 ELSE array_to_tsvector($12) END, \
+             updated_at = $4 \
              WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
@@ -1747,6 +1949,10 @@ impl ThreadStore for PgStore {
         .bind(sharing_op(commit.sharing))
         .bind(sharing_level(commit.sharing))
         .bind(sharing_nonce(commit.sharing))
+        .bind(title_keys)
+        .bind(description_keys)
+        .bind(search_through_after)
+        .bind(orch_core::search::FOLD_VERSION)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {

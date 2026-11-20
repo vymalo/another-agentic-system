@@ -1,0 +1,37 @@
+{
+  "name": "GetTask of the parent task that activates child-sessions/v1 -> completed, its usage totals (the helper's included) and its sessions: S working, round 1 working",
+  "priority": 5,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "GetTask"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.id",
+          "doesNotMatch": ".*-s1"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "get-task-parent.json"
+  }
+}

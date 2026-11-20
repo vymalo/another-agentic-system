@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3258f823a6e0f5b3d0858bf151d81bad5f25009a916b361b70c1831efa6d9c29 # shrinks to reports = [SessionReport { session: "a", context_id: "ctx/a", agent: "planner", description: "Plan the migration", keep_open: true, by: Some(Agent), state: Working, closing: false, round: Some(RoundReport { number: 2, task_id: Some("t2"), state: Some(InputRequired) }) }, SessionReport { session: "a", context_id: "ctx/a", agent: "planner", description: "Plan the migration", keep_open: true, by: Some(Agent), state: Working, closing: false, round: Some(RoundReport { number: 2, task_id: Some("t2"), state: Some(Completed) }) }], repeat = 1

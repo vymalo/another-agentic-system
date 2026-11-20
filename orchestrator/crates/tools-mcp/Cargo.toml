@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 orch-ports.workspace = true
-# The signed requests to a tool server that takes them (`sign.rs`, ADR 0067).
+# The signed requests to a tool server that takes them (`sign.rs`, ADR 0080).
 orch-signed-request.workspace = true
 # The client side of rmcp, for this crate only (the surfaces use its server side).
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }

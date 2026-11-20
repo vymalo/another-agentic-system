@@ -4,6 +4,7 @@ import { LogInIcon } from "lucide-react";
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { PandaMark } from "@/components/brand/panda-mark";
 import { InlineStatus } from "@/components/inline-status";
+import { ThemeMenu } from "@/components/theme/theme-menu";
 import { Button } from "@/components/ui/button";
 import { cancelLoopback, isClaimed, isLoopback, wasCancelled } from "@/lib/auth/desktop";
 import { cancelClaimed, hereAsReturnTo, startSignIn } from "@/lib/auth/sign-in";
@@ -78,8 +79,11 @@ export function SignInScreen({
   return (
     <main
       data-slot="sign-in"
-      className="flex min-h-dvh flex-col items-center justify-center gap-5 px-6 py-12 text-center"
+      className="relative flex min-h-dvh flex-col items-center justify-center gap-5 px-6 py-12 text-center"
     >
+      <div className="absolute end-3 top-3">
+        <ThemeMenu />
+      </div>
       <PandaMark size={72} />
       <h1 className="text-[1.75rem] leading-tight font-semibold tracking-tight">
         another<span className="text-brand">·</span>agentic

@@ -1,0 +1,139 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-8",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-9",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "job-1",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:01Z",
+        "job": 1,
+        "round": {
+          "by": "agent",
+          "number": 1
+        }
+      }
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "step-3",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.step",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "icon": "execute",
+        "id": "T/acp:c1:1",
+        "input": {
+          "command": "cargo test"
+        },
+        "kind": "command",
+        "label": "cargo test",
+        "output": {
+          "text": "12 passed"
+        },
+        "path": [],
+        "startedAt": "2027-01-15T08:00:03Z",
+        "state": "completed"
+      }
+    },
+    {
+      "id": "msg-5",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Found it."
+    },
+    {
+      "id": "evt-6",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:06Z",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "job": 2,
+        "round": {
+          "by": "agent",
+          "number": 2
+        }
+      }
+    },
+    {
+      "id": "evt-9",
+      "role": "activity",
+      "subagentRunId": "sub-9",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:09Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-10",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-9",
+      "text": "Second round done."
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-9",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:11Z",
+        "status": "completed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "jobNumber": 2,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": ""
+    }
+  },
+  "pendingInterrupts": []
+}

@@ -14,6 +14,7 @@
   an asked agent is told what the person said in the thread, the person's own words under `thread-tools/v1`, written by the
   orchestrator and never by a model, so that it decides what the person named from them
   ([status note](#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)).
+  **Amended (2026-11-18, [ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), proposed):** `ask_agent` stays separate from child sessions: an asked agent is another agent of the deployment, never a session of the asking agent.
 
 ## Context
 
@@ -385,3 +386,28 @@ day ([ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note of 2026-10-18)
 is its record (*verified 2026-10-18* at `ddef35e`: `crates/adam-a2a-runtime/src/person.rs`, `bin/adam-coder/src/agent.rs`
 `carried_sayings`, `bin/adam-coder/README.md` "When another agent asks"). So #271 and #116 are both in the pin, and the two
 halves of this note meet. What stays a gap is this repository's: a person's **form answers** are not carried (above).
+
+## Status note, 2026-11-14: a question that shows is for the addressed agent
+
+**Checked, and nothing changed** ([ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md#status-note-2026-11-14-second-version-8-lets-a-question-show-what-it-asks-about-and-makes-checklist-fit-for-a-live-plan),
+version 8, which lets a question `show` components of its surface). The question was whether the forms catalog an asked agent is sent
+(`UiCatalogData::forms_only`: `Choices` alone, the thread's `Choices` schema unchanged) must keep the display components a question may
+show. It does not, and it must not:
+
+- **What it kept before, and keeps now:** `{catalogId: <id>/forms, components: {Choices}}` and nothing else. The `Choices` schema of version 8
+  has `show` in it, and the seven components it may name (`Text`, `Image`, `Mermaid`, `Code`, `Cards`, `Callout`, `Chart`) are **not** in the
+  forms catalog. What an asked agent's surface that names them does today is not tested here: the schema takes `show`, the ids name nothing the
+  forms catalog has, and what the orchestrator does with such a surface is another slice's to say.
+- **Why that is right.** The person cannot see an asked agent's surfaces (the first note of 2026-10-17: they are read for the answer and
+  dropped, and a form ends the ask), so nobody would see what a question showed. And the third note of 2026-10-17 narrowed the catalog
+  **so that an asked agent can no longer draw a surface that is not a form**, because the fail-closed rule cannot tell surfaces apart: a
+  lone `Text`, `Image` or `Chart` followed by a question in words would end the ask again. Keeping the display components would give that
+  back for no gain.
+- **What `show` is for** is the thread's own agent, the addressed one, which is sent the thread's **whole** catalog.
+- **Tested:** `forms_only_keeps_choices_alone_when_its_schema_can_show` in `orchestrator/crates/core/src/ui_catalog.rs` (a screen's catalog of
+  version 8, whose `Choices` has `show` and which has the seven components: the forms catalog holds `Choices` and no other, the same every
+  time, with the thread's version).
+
+## Status note, 2026-11-14 (third): the forms catalog no longer offers `show`
+
+**Amended**, on the follow-up of the note above (which stands for what it checked). `UiCatalogData::forms_only` no longer sends the thread's `Choices` unchanged: from version 8 it takes `show` out of the question's schema and cuts the sentence of the component's description that offers it, since an asked agent's catalog has none of the seven components `show` may name and nobody sees its surfaces. A `Choices` without `show` (versions 1 to 7) is sent byte for byte as before. The announced `version` is still the thread's, and the `digest` is that of the derived catalog as always; no consumer compares it with the thread's. **No refusal was added:** the orchestrator does not read an asked agent's surface (`Answer::note` records that one was shown and drops it), so a form that names `show` is treated like any form: the ask ends with `form`, `cancel_form` cancels the asked task, and the ledger refuses a further ask of that agent in the job (`AskRefusal::FormPending`). It does not stay pending **because of that cancel**, not because anything checked the form. Test: `forms_only_keeps_choices_alone_and_takes_show_out_of_its_schema` (it replaces `forms_only_keeps_choices_alone_when_its_schema_can_show`, which pinned the old behaviour) in `orchestrator/crates/core/src/ui_catalog.rs`.

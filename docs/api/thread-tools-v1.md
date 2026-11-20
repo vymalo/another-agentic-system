@@ -685,7 +685,7 @@ MCP client and `FakeToolServer`s, on both stores):
   `timeoutSecs` of the tool's `_meta` (the server's plus 5) is an upper bound the agent can wait for.
 - **No credential** is in a step, an event, a frame, the export, any table of the database or a log line: the tests search
   all of them for the bearer and a header value (`tables_mentioning`), and for the thread token.
-- **A server can be signed for, and speak MCP `2026-07-28`** (*2026-11-02*, [ADR 0067](../decisions/0067-requests-to-a-tool-server-are-signed-for-the-person.md)).
+- **A server can be signed for, and speak MCP `2026-07-28`** (*2026-11-02*, [ADR 0080](../decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)).
   A `toolServers` entry with `protocol: "2026-07-28"` is opened with `server/discover`, not `initialize`; one with `signing` is sent
   **no bearer**: every HTTP request the relay makes to it (the handshake, each page of the listing, the call) carries one
   `Tool-Request-Claims` header, a signed object that binds the request and **the thread of the call and the thread's owner**

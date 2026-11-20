@@ -1154,6 +1154,7 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         orch_config::AuthPermission::ArtifactRead => Permission::ArtifactRead,
         orch_config::AuthPermission::Admin => Permission::Admin,
         orch_config::AuthPermission::ToolsUserAdd => Permission::ToolsUserAdd,
+        orch_config::AuthPermission::PromptsShare => Permission::PromptsShare,
     };
     let tier = |t: orch_config::AuthTier| match t {
         orch_config::AuthTier::Plan => orch_core::AccessTier::Plan,

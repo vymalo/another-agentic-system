@@ -10,6 +10,16 @@
   says otherwise (*Open for the owner*, below). It closes the deletion half of open question 46, keeps the rest open, and amends
   the "no deletion" paragraph of [ADR 0040](0040-thread-sharing-by-revocable-link.md) (*GDPR notes*) by a status note.
 
+  *Amended 2026-11-18* ([ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), child sessions): the
+  thread of a helper session (a **child**) is erased **with its parent**, as an edit is. `App::erase` names every child of each thread
+  that goes (`ThreadStore::child_threads`) and the store refuses a set that leaves one (`VersionConflict`, read again), so a child is
+  never left with the log it belongs to gone. A child that works refuses the parent's delete like any thread that works
+  (`409 thread_active`: stop it, or wait for its round to end), and each child has its purge row and its files erased in the same
+  way. A child can also be deleted **alone**: its parent keeps the note of the session, so a later report of that session makes no
+  second thread and is dropped and counted (`child_sessions_dropped_total{reason="child_deleted"}`). *Proven* by the application
+  tests (`crates/app/tests/child_sessions.rs`: the parent's delete refused while a child works, then erasing both) and the store's
+  conformance cases (S2b); no live agent has run it.
+
   Status note (2026-10-27): [ADR 0065](0065-a-usage-ledger-per-person.md) (proposed) makes one exception to "the thread and everything that hangs on it":
   the rows of the usage ledger (what the person used, counts per task and month, no content) are **kept**, and in the same transaction that deletes the
   thread their `thread_id` is cleared, so the person's usage no longer names the erased thread. The erase of the log, the files and the link is unchanged.

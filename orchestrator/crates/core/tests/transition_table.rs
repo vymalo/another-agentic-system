@@ -66,6 +66,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::SetDescription(_)
             | Command::RequestDescription { .. }
             | Command::Ask { .. }
+            | Command::Observe { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -232,7 +233,10 @@ fn row3_user_message_in_terminal_starts_the_next_job() {
             bodies(&cmds),
             [
                 &EventBody::UserMessage(UserMessageData::new("again")),
-                &EventBody::JobStarted(JobStartedData { job: 2 }),
+                &EventBody::JobStarted(JobStartedData {
+                    job: 2,
+                    round: None
+                }),
             ]
         );
         // The job starts after the message it answers, and is the system's word, not the user's.
@@ -309,6 +313,23 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
     .job
     .answer;
     assert!(announced.is_announced());
+    let sessions = orch_core::SessionLedger::of(vec![orch_core::SessionNote {
+        session: "s1".into(),
+        child: orch_core::ThreadId(uuid::Uuid::from_u128(7)),
+        reported: 1,
+        closed: false,
+        outcome: None,
+    }]);
+    let child = orch_core::ChildLedger {
+        session: "s0".into(),
+        agent: "planner".into(),
+        keep_open: true,
+        state: orch_core::SessionState::Idle,
+        closing: false,
+        followed: 1,
+        started: 0,
+        refollow: false,
+    };
     for s in TERMINAL {
         let before = Snapshot {
             state: s,
@@ -369,6 +390,14 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 }],
                 // the finished job's count of its model calls (ADR 0056): the next job counts its own
                 usage: UsageLedger::of(12, 0),
+                // the conversation's child-session ledgers go on, the round followed does not (ADR 0072)
+                sessions: sessions.clone(),
+                child: Some(child.clone()),
+                observed: Some(orch_core::ObservedRound {
+                    number: 1,
+                    task_id: "t1".into(),
+                    by: None,
+                }),
                 after_stop_tier: None,
                 // the cap the finished job kept for an agent that offered no tier (ADR 0061) is
                 // the job's, and so are those its mentions pinned: the next job has its own
@@ -398,14 +427,16 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     Some("0.3.0+abc1234"),
                     [],
                 )],
+                sessions: sessions.clone(),
+                child: Some(child.clone()),
                 ..Job::default()
             }
         );
-        assert!(
-            bodies(&cmds)
-                .iter()
-                .any(|b| **b == EventBody::JobStarted(JobStartedData { job: 4 }))
-        );
+        assert!(bodies(&cmds).iter().any(|b| **b
+            == EventBody::JobStarted(JobStartedData {
+                job: 4,
+                round: None
+            })));
     }
 }
 
@@ -426,7 +457,10 @@ fn a_redelivery_that_was_sent_changes_the_thread_as_one_that_was_not_and_delegat
         // the next job starts, and nothing is delegated: the task is the agent's already
         assert_eq!(
             bodies(&cmds),
-            [&EventBody::JobStarted(JobStartedData { job: 2 })],
+            [&EventBody::JobStarted(JobStartedData {
+                job: 2,
+                round: None
+            })],
             "{s:?}"
         );
         assert_eq!(cmds.len(), 1, "{s:?}");
@@ -475,7 +509,10 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
         // The `user_message` is in the log already: only the boundary and the delegation.
         assert_eq!(
             bodies(&cmds),
-            [&EventBody::JobStarted(JobStartedData { job: 2 })]
+            [&EventBody::JobStarted(JobStartedData {
+                job: 2,
+                round: None
+            })]
         );
         assert_eq!(
             cmds[1],
@@ -1462,6 +1499,7 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::SetDescription(_)
         | Command::RequestDescription { .. }
         | Command::Ask { .. }
+        | Command::Observe { .. }
         | Command::RequestVerification { .. } => None,
     });
     let only = found.next().expect("a delegation");
@@ -1606,7 +1644,10 @@ fn row_cat8_a_message_that_starts_the_next_job_records_its_catalog_before_the_bo
             [
                 &EventBody::UiCatalog(v2.clone()),
                 &EventBody::UserMessage(UserMessageData::new("next")),
-                &EventBody::JobStarted(JobStartedData { job: 2 }),
+                &EventBody::JobStarted(JobStartedData {
+                    job: 2,
+                    round: None
+                }),
             ],
             "{s:?}"
         );
