@@ -200,13 +200,11 @@ describe("the cards across pages and restarts", () => {
   });
 
   it("takes the starts only an older page says even when no session is new", async () => {
+    const isCard = (f: GoldenFrame) => f.event.activityType === "vymalo.session";
     const onlyStarts = {
       ...older,
-      frames: older.frames.filter((f) => f.event.messageId !== "session-1"),
+      frames: (older.frames as GoldenFrame[]).filter((f) => !isCard(f)),
     };
-    onlyStarts.frames = onlyStarts.frames.filter(
-      (f) => f.event.messageId !== "session-2" || f.event.type !== "ACTIVITY_SNAPSHOT",
-    );
     const { agent } = open((q) => (q.before ? onlyStarts : newest));
     agent.start();
     await waitFor(() => expect(agent.takeSeed()).not.toBeNull());
