@@ -600,7 +600,7 @@ export function createSessions(host: SessionsHost) {
   };
 
   /**
-   * `POST /api/threads/{id}/sessions` (`startChildSession`): refused in the contract's order, then
+   * `POST /api/threads/{id}/sessions` (`startChildSession`): refused in the server's order (`start_child_session`), then
    * 202 with the request's id. The request is written at once (`child_session_start_asked`); the
    * outcome comes after a step: the child thread, the parent's `child_session_opened` (by the
    * person) and `child_session_start_ended`, or the agent's refusal.
@@ -618,13 +618,26 @@ export function createSessions(host: SessionsHost) {
     const parent = host.accessible(req, res, id, true);
     if (!parent) return;
     const b = body as Record<string, unknown>;
-    if (!host.mayInvoke(req, parent.target.agentId)) {
-      return host.respond.forbid(res, "agent.invoke", parent.target.agentId);
-    }
-    if (!host.agentOrRefuse(req, res, parent.target.agentId)) return;
+    // the server's order (`start_child_session`): the thread, then each refusal before anything is written
     if (parent.childOf !== undefined) {
       return unprocessable(res, "child_thread", "a helper session cannot start another one");
     }
+    if (!host.mayInvoke(req, parent.target.agentId)) {
+      return host.respond.forbid(res, "agent.invoke", parent.target.agentId);
+    }
+    const text = b.text as string;
+    if (text.trim() === "" || [...text].length > MAX_TEXT) {
+      return problem(
+        res,
+        400,
+        "Bad Request",
+        text.trim() === "" ? "text must not be empty" : `text must be at most ${MAX_TEXT} characters`,
+      );
+    }
+    const description = checkDescription(b.description);
+    if (!description.ok) return unprocessable(res, "bad_description", description.detail);
+    // the agent the registry lists, then its live card
+    if (!host.agentOrRefuse(req, res, parent.target.agentId)) return;
     if (unreadable(req, res)) return;
     const offer = offerOf(req, parent.target.agentId);
     if (!offer) {
@@ -637,30 +650,12 @@ export function createSessions(host: SessionsHost) {
         `no helper \`${String(b.agent)}\`; \`start.agent\` is one of: ${offer.agents.map((a) => a.name).join(", ")}`,
       );
     }
-    const description = checkDescription(b.description);
-    if (!description.ok) return unprocessable(res, "bad_description", description.detail);
-    const text = b.text as string;
-    if (text === "" || text.length > MAX_TEXT) {
-      return problem(res, 422, "Unprocessable", "text must be 1 to 100000 characters");
-    }
     const tier = host.tier(req, res, parent.target.agentId, b.tier);
     if (!tier) return;
     const request = b.id as string;
-    if (requests.has(request)) {
-      return json(res, 202, { request }, { Location: `/api/threads/${parent.id}` });
-    }
     const hasContext = host.log(parent.id).some((e) => e.actor.type === "agent");
     if (!hasContext) {
       return problem(res, 409, "Conflict", "send the agent a message first", "no_context");
-    }
-    if ((waiting.get(parent.id)?.size ?? 0) >= MAX_WAITING_STARTS) {
-      return problem(
-        res,
-        409,
-        "Conflict",
-        "wait for the helpers you started to open",
-        "too_many_starts",
-      );
     }
     if (sessionsOf(parent.id).length >= host.config(req).noted) {
       return problem(
@@ -669,6 +664,19 @@ export function createSessions(host: SessionsHost) {
         "Conflict",
         "this thread has started as many helper sessions as one thread may note",
         "too_many_sessions",
+      );
+    }
+    // the same request again changes nothing (the apply's key), so the limit on waiting starts is not asked of it
+    if (requests.has(request)) {
+      return json(res, 202, { request }, { Location: `/api/threads/${parent.id}` });
+    }
+    if ((waiting.get(parent.id)?.size ?? 0) >= MAX_WAITING_STARTS) {
+      return problem(
+        res,
+        409,
+        "Conflict",
+        "wait for the helpers you started to open",
+        "too_many_starts",
       );
     }
     requests.set(request, parent.id);

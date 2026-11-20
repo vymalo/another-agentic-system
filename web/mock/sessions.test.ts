@@ -458,7 +458,7 @@ describe("a person starts a subagent (`startChildSession`)", () => {
 describe("what a start is refused for", () => {
   const code = async (res: Response) => ((await res.json()) as { code?: string }).code;
 
-  it("is refused in the contract's order, before anything is written", async () => {
+  it("is refused in the server's order, before anything is written", async () => {
     const p = await person();
     const parent = await p.answered();
     const before = (await p.log(parent)).length;
@@ -487,8 +487,9 @@ describe("what a start is refused for", () => {
         422,
         "bad_description",
       ],
-      ["empty text", { ...base, text: "" }, 422, undefined],
-      ["text of 100001 characters", { ...base, text: "x".repeat(100_001) }, 422, undefined],
+      ["empty text", { ...base, text: "" }, 400, undefined],
+      ["blank text", { ...base, text: "  \n" }, 400, undefined],
+      ["text of 100001 characters", { ...base, text: "x".repeat(100_001) }, 400, undefined],
     ];
     for (const [label, body, status, expected] of cases) {
       const res = await p.json("POST", `/api/threads/${parent}/sessions`, body);
@@ -496,6 +497,30 @@ describe("what a start is refused for", () => {
       expect(await code(res), label).toBe(expected);
     }
     expect((await p.log(parent)).length).toBe(before);
+  });
+
+  it("names the server's first refusal when a body has two faults", async () => {
+    const p = await person();
+    const parent = await p.answered();
+    const base = { id: newRequest(), agent: "planner", description: "Plan", text: "Plan it" };
+    const start = (thread: string, body: Record<string, unknown>) =>
+      p.json("POST", `/api/threads/${thread}/sessions`, body);
+    // the text (400) is read before the description (422), which is read before the card's helper
+    let res = await start(parent, { ...base, text: "", description: "", agent: "nobody" });
+    expect([res.status, await code(res)]).toEqual([400, undefined]);
+    res = await start(parent, { ...base, description: "", agent: "nobody" });
+    expect([res.status, await code(res)]).toEqual([422, "bad_description"]);
+    res = await start(parent, { ...base, agent: "nobody", tier: "plan" });
+    expect([res.status, await code(res)]).toEqual([422, "unknown_helper"]);
+    // a helper's own thread is refused before the text is read
+    const { child } = await p.opened(parent);
+    res = await start(child, { ...base, text: "" });
+    expect([res.status, await code(res)]).toEqual([422, "child_thread"]);
+    // the description is read before the card says it offers nothing
+    const off = await person("sessions=off");
+    const offParent = await off.answered();
+    res = await off.json("POST", `/api/threads/${offParent}/sessions`, { ...base, description: "" });
+    expect([res.status, await code(res)]).toEqual([422, "bad_description"]);
   });
 
   it("is 404 for a thread that is not there or not the person's, and 403 without the permission", async () => {
