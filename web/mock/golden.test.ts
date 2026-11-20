@@ -590,7 +590,14 @@ const USAGE = ["usage"];
 const AGAIN = ["a2ui-again"];
 
 /** Child sessions: the mock serves them from S4 (#332). */
-const SESSIONS = ["sessions", "sessions-child", "sessions-failed"];
+const SESSIONS = [
+  "sessions",
+  "sessions-child",
+  "sessions-failed",
+  "sessions-person",
+  "sessions-person-child",
+  "sessions-start-failed",
+];
 
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {

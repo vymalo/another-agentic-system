@@ -49,13 +49,15 @@ use orch_agui_proto::{
 use orch_core::{
     Actor, ActorType, AgentMessageData, AgentReasoningData, AgentStatus, AgentStatusData,
     AgentStepData, AgentTarget, AnswerVia, ArtifactData, AskFinishedData, AskOutcome,
-    AskStartedData, Caller, CheckResult, CheckSource, CheckStatus, ChildSessionClosedData,
-    ChildSessionOpenedData, ChildSessionReportedData, CiReport, Delivery, ErrorData, Event,
-    EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView, MAX_SURFACE_BYTES, MessagePurpose,
-    ModelUsageData, ModelUsageTotalData, Preview, Recognised, ReworkData, SessionOutcome, StepKind,
-    StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState,
-    ThreadTitledData, ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
-    UserMessageData, inspect, recognise_artifact, serialized_len,
+    AskStartedData, Caller, CheckResult, CheckSource, CheckStatus, ChildSessionCloseAskedData,
+    ChildSessionClosedData, ChildSessionOpenedData, ChildSessionReportedData,
+    ChildSessionStartAskedData, ChildSessionStartEndedData, ChildSessionStateData, CiReport,
+    Delivery, ErrorData, Event, EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView,
+    MAX_SURFACE_BYTES, MessagePurpose, ModelUsageData, ModelUsageTotalData, Preview, Recognised,
+    ReworkData, SessionBy, SessionOutcome, SessionState, StartOutcomeKind, StepKind, StepPhase,
+    SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData,
+    ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData,
+    inspect, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -66,11 +68,11 @@ use crate::usage::{UsageFold, ask_number};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK,
     ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
-    ACTIVITY_SESSION, ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, AT_KEY, CHILD_THREAD_KEY,
-    CODE_AGENT_FAILED, CODE_ASK_FAILED, CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED,
-    CODE_DELIVERY_FAILED, CODE_SESSION_FAILED, CODE_STEP_FAILED, CODE_VERIFIER_FAILED,
-    CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, SESSION_KEY, WHEN_KEY, actor_metadata, message_metadata,
-    problem_metadata, response_schema, status_content, user_message_metadata,
+    ACTIVITY_SESSION, ACTIVITY_SESSION_START, ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS,
+    AT_KEY, CHILD_THREAD_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED, CODE_ASK_TIMED_OUT,
+    CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_SESSION_FAILED, CODE_STEP_FAILED,
+    CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, SESSION_KEY, WHEN_KEY, actor_metadata,
+    message_metadata, problem_metadata, response_schema, status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -93,6 +95,18 @@ pub struct ThreadMeta {
     /// gate that requires something keeps the run open while the work is verified and adds
     /// `job` to every `STATE_SNAPSHOT` (ADR 0018); the default requires nothing.
     pub gate: GatePolicy,
+    /// What the thread's ledger knows of the helper session this thread is (ADR 0072), when it is
+    /// a child thread: the child's own `vymalo.session` card says it. `None` for any other thread.
+    pub child: Option<ChildMeta>,
+}
+
+/// The helper a child thread is a session of, as the thread's ledger has it (`ThreadMeta::child`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildMeta {
+    /// The helper's name.
+    pub agent: String,
+    /// Whether the session goes idle after a round instead of closing.
+    pub keep_open: bool,
 }
 
 /// Which way a `tools_attached` or `tools_detached` event moves the thread's set.
@@ -241,6 +255,25 @@ struct SessionView {
     /// open (a session event never opens one), and when (RFC 3339).
     parent: Option<SubagentRunId>,
     started_at: String,
+    /// Who started it, when the event said.
+    by: Option<SessionBy>,
+}
+
+/// A start a person asked for (ADR 0072, S3), kept to say its outcome on the same card.
+#[derive(Debug, Clone)]
+struct StartView {
+    agent: String,
+    description: String,
+    keep_open: bool,
+}
+
+/// What a child thread's own `vymalo.session` card says besides the helper (`ThreadMeta::child`).
+#[derive(Debug, Clone, Copy)]
+struct SelfSession {
+    /// What a `child_session_state` last said; none yet, and then the thread's own state tells.
+    state: Option<SessionState>,
+    closing: bool,
+    close_asked: bool,
 }
 
 /// Why the thread (or the last delegation) failed.
@@ -353,6 +386,10 @@ pub struct Projector {
     /// The child sessions the log has opened, by the agent's id (ADR 0072): they belong to the
     /// conversation, so a new job keeps them.
     sessions: BTreeMap<String, SessionView>,
+    /// The starts a person asked for that the log has not seen end, by request id (ADR 0072, S3).
+    starts: BTreeMap<String, StartView>,
+    /// A child thread's own session, as the log says it now.
+    own_session: SelfSession,
     /// Where the thread was forked from, once its `thread_forked` has been read (ADR 0029): every
     /// `STATE_SNAPSHOT` from then on says so, as the thread's own.
     forked_from: Option<ForkedFrom>,
@@ -501,6 +538,12 @@ impl Projector {
             steps: BTreeMap::new(),
             asks: BTreeMap::new(),
             sessions: BTreeMap::new(),
+            starts: BTreeMap::new(),
+            own_session: SelfSession {
+                state: None,
+                closing: false,
+                close_asked: false,
+            },
             forked_from: None,
             tools: BTreeSet::new(),
             now: String::new(),
@@ -746,13 +789,23 @@ impl Projector {
                 self.on_session_closed(event, d, &mut out);
                 self.pending_error = pending_error;
             }
-            // What a person asked of a session (ADR 0072, S3) is in the log; its frames (the
-            // `vymalo.sessionStart` card, the child's own `vymalo.session` card) are S3e's, so for
-            // now the log moves and nothing is said.
-            EventBody::ChildSessionStartAsked(_)
-            | EventBody::ChildSessionStartEnded(_)
-            | EventBody::ChildSessionCloseAsked(_)
-            | EventBody::ChildSessionState(_) => {
+            // What a person asked of a session (ADR 0072, S3): a card in the parent for a start,
+            // and the child's own card for a close and for the session's state. No subagent, and
+            // an `error` before it still explains the `thread_state` that follows.
+            EventBody::ChildSessionStartAsked(d) => {
+                self.on_start_asked(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::ChildSessionStartEnded(d) => {
+                self.on_start_ended(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::ChildSessionCloseAsked(d) => {
+                self.on_close_asked(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
+            EventBody::ChildSessionState(d) => {
+                self.on_session_state(event, d, &mut out);
                 self.pending_error = pending_error;
             }
             // Token usage (ADR 0056) is not the transcript: a `CUSTOM` inside a run, folded for the
@@ -2239,6 +2292,7 @@ impl Projector {
             sub: SubagentRunId::new(format!("sub-session-{}", ev.seq)),
             parent: self.invocation.as_ref().map(|i| i.id.clone()),
             started_at: self.now.clone(),
+            by: d.by,
         };
         out.push(Self::session_subagent_started(&view).into());
         out.push(self.session_card(&view, ev));
@@ -2407,6 +2461,10 @@ impl Projector {
         );
         content.insert("keepOpen".to_owned(), Value::from(view.keep_open));
         content.insert("state".to_owned(), Value::from(view.state));
+        // only a person's start says who started it: an agent's sessions are what they were
+        if view.by == Some(SessionBy::Person) {
+            content.insert("by".to_owned(), Value::from("person"));
+        }
         if let Some(round) = view.round {
             content.insert("round".to_owned(), Value::from(round));
         }
@@ -2418,6 +2476,176 @@ impl Projector {
         }
         let id = format!("session-{}", view.seq);
         let mut event = self.activity(id, ACTIVITY_SESSION, content, ev, false);
+        if let agui::Event::ActivitySnapshot(snapshot) = &mut event {
+            snapshot.replace = Some(true);
+        }
+        event
+    }
+
+    // ---- what a person asks of a session ---------------------------------------------------
+
+    /// A person asked to start a session (ADR 0072, S3): the `vymalo.sessionStart` card, saying
+    /// `starting`. A run is opened for it outside one, as for a late report. A request the log
+    /// asked already says nothing again.
+    fn on_start_asked(
+        &mut self,
+        ev: &Event,
+        d: &ChildSessionStartAskedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        if self.starts.contains_key(&d.request) {
+            return;
+        }
+        let opened = self.ensure_run(ev, out);
+        let view = StartView {
+            agent: d.agent.clone(),
+            description: d.description.clone(),
+            keep_open: d.keep_open,
+        };
+        out.push(self.start_card(&d.request, &view, "starting", None, ev));
+        self.starts.insert(d.request.clone(), view);
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The start ended: the same card, `opened` with the child thread and the session, or
+    /// `failed` with the agent's words. An outcome for a request the log never asked (a log held
+    /// from the middle) has nothing to say again.
+    fn on_start_ended(
+        &mut self,
+        ev: &Event,
+        d: &ChildSessionStartEndedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        let Some(view) = self.starts.remove(&d.request) else {
+            return;
+        };
+        let opened = self.ensure_run(ev, out);
+        out.push(self.start_card(
+            &d.request,
+            &view,
+            match d.outcome {
+                StartOutcomeKind::Opened => "opened",
+                StartOutcomeKind::Failed => "failed",
+            },
+            Some(d),
+            ev,
+        ));
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The `vymalo.sessionStart` card as the request stands, said again with `replace`.
+    fn start_card(
+        &mut self,
+        request: &str,
+        view: &StartView,
+        state: &str,
+        ended: Option<&ChildSessionStartEndedData>,
+        ev: &Event,
+    ) -> agui::Event {
+        let mut content = Metadata::new();
+        content.insert("request".to_owned(), Value::from(request.to_owned()));
+        content.insert("agent".to_owned(), Value::from(view.agent.clone()));
+        content.insert(
+            "description".to_owned(),
+            Value::from(view.description.clone()),
+        );
+        content.insert("keepOpen".to_owned(), Value::from(view.keep_open));
+        content.insert("state".to_owned(), Value::from(state));
+        if let Some(ended) = ended {
+            if let Some(thread) = ended.thread {
+                content.insert("threadId".to_owned(), Value::from(thread.to_string()));
+            }
+            if let Some(session) = &ended.session {
+                content.insert("session".to_owned(), Value::from(session.clone()));
+            }
+            if let Some(reason) = &ended.reason {
+                content.insert("reason".to_owned(), Value::from(reason.clone()));
+            }
+        }
+        let mut event = self.activity(
+            format!("session-start-{request}"),
+            ACTIVITY_SESSION_START,
+            content,
+            ev,
+            false,
+        );
+        if let agui::Event::ActivitySnapshot(snapshot) = &mut event {
+            snapshot.replace = Some(true);
+        }
+        event
+    }
+
+    /// A person asked to close the session this thread is: its own card, saying so. Only a child
+    /// thread has one (`ThreadMeta::child`).
+    fn on_close_asked(
+        &mut self,
+        ev: &Event,
+        d: &ChildSessionCloseAskedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        if self.meta.child.is_none() {
+            return;
+        }
+        let opened = self.ensure_run(ev, out);
+        self.own_session.close_asked = true;
+        out.push(self.own_session_card(&d.session, ev));
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The session this thread is changed state, or began closing: its own card again.
+    fn on_session_state(
+        &mut self,
+        ev: &Event,
+        d: &ChildSessionStateData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        if self.meta.child.is_none() {
+            return;
+        }
+        let opened = self.ensure_run(ev, out);
+        self.own_session.state = Some(d.state);
+        self.own_session.closing = d.closing;
+        out.push(self.own_session_card(&d.session, ev));
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// The child's own `vymalo.session` card: what a composer reads (`session-self`).
+    fn own_session_card(&mut self, session: &str, ev: &Event) -> agui::Event {
+        let child = self.meta.child.clone().unwrap_or(ChildMeta {
+            agent: String::new(),
+            keep_open: false,
+        });
+        let own = self.own_session;
+        let mut content = Metadata::new();
+        content.insert("session".to_owned(), Value::from(session.to_owned()));
+        content.insert("agent".to_owned(), Value::from(child.agent));
+        content.insert("keepOpen".to_owned(), Value::from(child.keep_open));
+        content.insert(
+            "state".to_owned(),
+            serde_json::to_value(own.state.unwrap_or(if self.state.is_terminal() {
+                SessionState::Idle
+            } else {
+                SessionState::Working
+            }))
+            .unwrap_or(Value::Null),
+        );
+        content.insert("closing".to_owned(), Value::from(own.closing));
+        content.insert("closeAsked".to_owned(), Value::from(own.close_asked));
+        let mut event = self.activity(
+            "session-self".to_owned(),
+            ACTIVITY_SESSION,
+            content,
+            ev,
+            false,
+        );
         if let agui::Event::ActivitySnapshot(snapshot) = &mut event {
             snapshot.replace = Some(true);
         }

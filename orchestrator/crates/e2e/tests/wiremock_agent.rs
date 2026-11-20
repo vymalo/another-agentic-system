@@ -830,13 +830,16 @@ async fn assert_one_child_followed_by_task(
             "agent_step",
             "model_usage",
             "agent_step",
+            // the one-shot session closes after its round: said() writes the state change once,
+            // in the child's own log
+            "child_session_state",
             "model_usage_total",
             "agent_status:completed",
             "thread_state:done"
         ]
     );
     assert_eq!(log[0]["data"]["round"]["number"], 1);
-    assert_eq!(log[5]["data"]["detail"], "planner: done");
+    assert_eq!(log[6]["data"]["detail"], "planner: done");
     // the helper's tokens are logged and not counted
     let uncounted: Vec<_> = log
         .iter()

@@ -33,6 +33,7 @@ pub fn meta_under(gate: GatePolicy) -> orch_agui_projection::ThreadMeta {
             release: None,
         },
         gate,
+        child: None,
     }
 }
 

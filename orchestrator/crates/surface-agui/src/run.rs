@@ -375,6 +375,14 @@ pub(crate) fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
         description: thread.description.clone(),
         target: thread.target.clone(),
         gate: thread.job.gate.clone(),
+        child: thread
+            .job
+            .child
+            .as_ref()
+            .map(|c| orch_agui_projection::ChildMeta {
+                agent: c.agent.clone(),
+                keep_open: c.keep_open,
+            }),
     }
 }
 

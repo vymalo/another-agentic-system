@@ -1038,13 +1038,16 @@ The child's own stream is an ordinary one, with one difference: its `job_started
 [`sessions`](examples/agui/sessions.agui.json) (two sessions under a sub-agent step: a blocked round that ends done, a kept-open
 session with rounds done and canceled, a close, a report after the agent finished and a late close),
 [`sessions-failed`](examples/agui/sessions-failed.agui.json) (a failed round, `session_failed`) and
-[`sessions-child`](examples/agui/sessions-child.agui.json) (the child's log, two rounds). The reference client reads them in CI.
+[`sessions-child`](examples/agui/sessions-child.agui.json) (the child's log, two rounds), and for a person's side
+[`sessions-person`](examples/agui/sessions-person.agui.json) (a start asked, opened by the person, reported, closed),
+[`sessions-person-child`](examples/agui/sessions-person-child.agui.json) (the prompt, a second round, a steer, a close asked, the state `closed`)
+and [`sessions-start-failed`](examples/agui/sessions-start-failed.agui.json) (a start the agent refused, in its words). The reference client reads them in CI.
 
 
 ## A person starts, sends and closes a session
 
-**Contract only** (2026-11-19, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slice S3a: nothing
-emits these frames before S3e). A person starts a helper from the parent (`startChildSession`), talks to it in the child thread
+**Built** (2026-11-20, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slice S3e;
+the contract was S3a). A person starts a helper from the parent (`startChildSession`), talks to it in the child thread
 (`runAgent` on the child, `cancelThread`) and closes it (`closeChildSession`). Three cards carry it; the web (S4) draws them.
 
 ```mermaid
@@ -1073,8 +1076,9 @@ stateDiagram-v2
   `{request, agent, description, keepOpen, state, threadId?, session?, reason?, at}`. `state` is `starting`, `opened` or `failed`;
   `threadId` and `session` come with `opened`, `reason` with `failed`. `agent` and `description` are the person's words, `reason` is
   the agent's and **untrusted**: drawn as text. It holds no prompt: that is the child thread's first message.
-- **`vymalo.session`, in the parent**, as in [Child sessions as subagents](#child-sessions-as-subagents), gains `by` (`agent` or
-  `person`) when the session says who started it. A session a person started is a `SUBAGENT_STARTED` like any other.
+- **`vymalo.session`, in the parent**, as in [Child sessions as subagents](#child-sessions-as-subagents), gains `by: "person"` when a
+  person started the session (absent for the agent's own, so the frames of a log that never had a person's start do not move). A
+  session a person started is a `SUBAGENT_STARTED` like any other.
 - **`vymalo.session`, in the child** (`messageId: session-self`, `replace: true`, said again at each `child_session_close_asked` and
   `child_session_state`): `{session, agent, keepOpen, state, closing, closeAsked, at}`. A composer is hidden when `state` is
   `closed`, says "Closing..." while `closing`, and offers Stop & send only when `keepOpen`.
