@@ -474,6 +474,8 @@ check "mock-sessions: SubscribeToTask of round 2 of a kept-open session -> worki
   "working:working,working,completed:idle"
 check "mock-sessions: GetTask of round 1 of a one-shot session -> completed, the session closed" \
   "$(sessions GetTask ctx-task-parent.keep-false.msg-x yes | jq -r --arg u "$SESSIONS_EXT" '.result | [.status.state, .metadata[$u].round, .metadata[$u].state, .metadata[$u].parentContextId] | join(" ")')" "TASK_STATE_COMPLETED 1 closed ctx-task-parent"
+check "mock-sessions: CancelTask of round 2 of a person's kept-open session -> canceled, in the child's context, the session idle" \
+  "$(sessions CancelTask ctx-task-parent.keep-true.msg-x.r2 yes | jq -r --arg u "$SESSIONS_EXT" '.result | [.status.state, .contextId, .metadata[$u].round, .metadata[$u].state] | join(" ")')" "TASK_STATE_CANCELED ctx-ctx-task-parent.keep-true.msg-x 2 idle"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"
