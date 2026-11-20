@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, configure, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { LiveStream, loadGolden, sse } from "./testing";
+import { LiveStream, loadGolden, sse, THREAD_ID, type GoldenFrame } from "./testing";
 import { mountRuntime, summarize } from "./testing-runtime";
 
 configure({ asyncUtilTimeout: 10_000 });
@@ -114,4 +114,103 @@ describe("the cards of child sessions, in the agent", () => {
     expect(agent.getSnapshot().sessions.size).toBe(2);
     agent.stop();
   });
+});
+
+async function playFrames(frames: GoldenFrame[]) {
+  const stream = new LiveStream();
+  const mounted = mountRuntime(() => sse(stream.body));
+  mounted.agent.start();
+  await act(async () => {
+    stream.frames(frames);
+  });
+  const last = frames.at(-1)?.id;
+  await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(last));
+  for (let i = 0; i < 10; i++)
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+    });
+  return mounted;
+}
+
+const CHILD = "00000000-0000-7000-8000-000000000003";
+const REQ = "00000000-0000-7000-8000-0000000000a1";
+const reply = [
+  { event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+  { event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "hi" } },
+  { event: { type: "TEXT_MESSAGE_END", messageId: "m1" } },
+];
+const runStarted = (id?: number) => ({
+  ...(id ? { id } : {}),
+  event: { type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-1" },
+});
+const runFinished = (id: number) => ({
+  id,
+  event: { type: "RUN_FINISHED", threadId: THREAD_ID, runId: "run-1", outcome: { type: "success" } },
+});
+const sessionCard = (id: number, state: string): GoldenFrame => ({
+  id,
+  event: {
+    type: "ACTIVITY_SNAPSHOT",
+    messageId: "session-2",
+    activityType: "vymalo.session",
+    replace: true,
+    content: { session: "s1", threadId: CHILD, agent: "planner", description: "d", keepOpen: true, state },
+  },
+});
+const startCard = (id: number, state: string): GoldenFrame => ({
+  id,
+  event: {
+    type: "ACTIVITY_SNAPSHOT",
+    messageId: `session-start-${REQ}`,
+    activityType: "vymalo.sessionStart",
+    replace: true,
+    content: {
+      request: REQ,
+      agent: "planner",
+      description: "d",
+      keepOpen: true,
+      state,
+      ...(state === "opened" ? { threadId: CHILD, session: "s1" } : {}),
+      ...(state === "failed" ? { reason: "unknown_helper" } : {}),
+    },
+  },
+});
+
+describe("a card's home across a resume and within one run", () => {
+  it("keeps a session card home when the run is resumed in the middle", async () => {
+    const { agent, messages } = await playFrames([
+      runStarted(1),
+      ...reply,
+      { id: 2, event: { type: "SUBAGENT_STARTED", subagentRunId: "sub-session-2", name: "planner" } },
+      sessionCard(3, "working"),
+      runStarted(),
+      { event: { type: "SUBAGENT_STARTED", subagentRunId: "sub-session-2", name: "planner" } },
+      sessionCard(4, "idle"),
+      {
+        event: { type: "SUBAGENT_FINISHED", subagentRunId: "sub-session-2", outcome: { type: "suspended" } },
+      },
+      runFinished(5),
+    ] as GoldenFrame[]);
+    expect(cards(messages()).map((p) => p.data?.home)).toEqual([true]);
+    agent.stop();
+  });
+
+  for (const outcome of ["opened", "failed"]) {
+    it(`keeps a start line home when its ${outcome} arrives in the same run`, async () => {
+      const { agent, messages } = await playFrames([
+        runStarted(1),
+        ...reply,
+        startCard(2, "starting"),
+        startCard(3, outcome),
+        runFinished(5),
+      ] as GoldenFrame[]);
+      const starts = messages().flatMap((m) =>
+        (m.content as readonly Part[]).filter(
+          (p) => p.type === "data" && p.name?.startsWith("agui-activity/vymalo.sessionStart"),
+        ),
+      );
+      expect(starts.map((p) => [p.data?.state, p.data?.home])).toEqual([[outcome, true]]);
+      agent.stop();
+    });
+  }
 });

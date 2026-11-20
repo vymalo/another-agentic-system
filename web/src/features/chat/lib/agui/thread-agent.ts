@@ -714,11 +714,11 @@ export class ThreadAgent extends AbstractAgent {
     switch (event.type) {
       case EventType.RUN_STARTED: {
         this.openUserText.clear();
-        this.runHomes.clear();
         const runId = str(event.runId) ?? "";
         this.runEnds.set(runId, this.groupSeq);
         if (this.route?.runId === runId) return; // the preamble of a resumed run: already open
         if (this.route) this.finish(this.route, false);
+        this.runHomes.clear();
         this.startedInvocations.clear();
         this.dropDrafts();
         const sink = this.claims.get(runId);
@@ -850,7 +850,8 @@ export class ThreadAgent extends AbstractAgent {
       const card = parseSessionStart(event.content);
       if (!card) return { event, quiet: false };
       this.patch({ sessionStarts: new Map(this.snapshot.sessionStarts).set(card.request, card) });
-      const home = card.state === "starting";
+      if (card.state === "starting") this.runHomes.add(id);
+      const home = this.runHomes.has(id);
       return { event: this.marked(event, id, home), quiet: !home };
     }
     return { event, quiet: false };
