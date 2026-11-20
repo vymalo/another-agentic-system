@@ -3275,12 +3275,9 @@ impl<P: Ports> App<P> {
             }
             let has_outbox = !commit.outbox.is_empty();
             let has_watches = !commit.watches.is_empty();
-            match self
-                .ports
-                .store()
-                .commit(thread, record.version, commit)
-                .await
-            {
+            // boxed: a store's commit is a large future (a transaction of several statements) and
+            // sits under every path that writes
+            match Box::pin(self.ports.store().commit(thread, record.version, commit)).await {
                 Ok(CommitOutcome::Applied { thread: t, events }) => {
                     if !events.is_empty() || t.state != record.state {
                         self.notify(Topic::Thread(thread)).await;
@@ -3467,12 +3464,9 @@ impl<P: Ports> App<P> {
                 sharing: None,
                 skip_unsent_delegates: false,
             };
-            match self
-                .ports
-                .store()
-                .commit(thread, record.version, commit)
-                .await
-            {
+            // boxed: a store's commit is a large future (a transaction of several statements) and
+            // sits under every path that writes
+            match Box::pin(self.ports.store().commit(thread, record.version, commit)).await {
                 Ok(CommitOutcome::Applied { thread, events }) => {
                     return Ok(ApplyOutcome::Applied { thread, events });
                 }

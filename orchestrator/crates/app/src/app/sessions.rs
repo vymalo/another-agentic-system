@@ -300,7 +300,9 @@ impl<P: Ports> App<P> {
                 )
                 .await;
         }
-        let Some((child, created)) = self.open_child(&parent, &report, Some(prompt)).await? else {
+        let Some((child, created)) =
+            Box::pin(self.open_child(&parent, &report, Some(prompt))).await?
+        else {
             // the store refused the thread: the person is told, and the start ends
             return self
                 .end_start(

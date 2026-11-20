@@ -171,7 +171,7 @@ impl<P: Ports> App<P> {
                 }
                 let mut deferred = false;
                 for report in reports {
-                    match self.session_of_parent(thread, lease, report).await? {
+                    match Box::pin(self.session_of_parent(thread, lease, report)).await? {
                         Told::Fenced => return Ok(false),
                         Told::Deferred => deferred = true,
                         Told::Applied => {}
@@ -184,10 +184,12 @@ impl<P: Ports> App<P> {
                 Ok(true)
             }
             SessionNews::Event(_, report) => Ok(!matches!(
-                self.session_of_parent(thread, lease, report).await?,
+                Box::pin(self.session_of_parent(thread, lease, report)).await?,
                 Told::Fenced
             )),
-            SessionNews::OfRound(report) => self.session_of_round(thread, lease, report).await,
+            SessionNews::OfRound(report) => {
+                Box::pin(self.session_of_round(thread, lease, report)).await
+            }
         }
     }
 
@@ -236,7 +238,9 @@ impl<P: Ports> App<P> {
                     self.child_session_dropped(ChildSessionDrop::LedgerFull, parent_id);
                     return Ok(Told::Applied);
                 }
-                let Some((child, created)) = self.open_child(&parent, &report, None).await? else {
+                let Some((child, created)) =
+                    Box::pin(self.open_child(&parent, &report, None)).await?
+                else {
                     return Ok(Told::Applied);
                 };
                 if !created {
@@ -246,7 +250,7 @@ impl<P: Ports> App<P> {
             }
         };
         Ok(
-            if self.tell_parent(parent_id, lease, report, child).await? {
+            if Box::pin(self.tell_parent(parent_id, lease, report, child)).await? {
                 Told::Applied
             } else {
                 Told::Fenced
@@ -292,7 +296,7 @@ impl<P: Ports> App<P> {
             Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => {}
             Err(e) => return Err(e),
         }
-        self.tell_parent(of.thread, None, report, child_id).await
+        Box::pin(self.tell_parent(of.thread, None, report, child_id)).await
     }
 
     /// The child thread `child` hears what its session looks like now. A thread that is gone has

@@ -428,7 +428,7 @@ impl<P: Ports> Dispatcher<P> {
                     tracing::warn!(%id, "lost the lease; worker stopped");
                 }
             }
-            result = self.process(row) => match result {
+            result = Box::pin(self.process(row)) => match result {
                 Ok(()) => {}
                 Err(DispatchError::Fenced) => tracing::warn!(%id, attempt, "lease lost; the late agent result was dropped"),
                 // A helper's message answered from another context (ADR 0072): nothing of it was
@@ -474,14 +474,17 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
+    /// Every arm is boxed: the futures of the paths below are large and nest (a delegation reads a
+    /// stream, applies envelopes, follows sessions), so one boxed boundary per row kind keeps what
+    /// a worker polls on its stack to the size of a pointer, whichever arm runs.
     async fn process(&self, row: OutboxItem) -> Done {
         match row.kind {
             // A round of a child session is followed, never sent (ADR 0072): a path of its own, so
             // that the frame of a delegation is not under it
             OutboxKind::Delegate if matches!(row.payload, OutboxPayload::Observe { .. }) => {
-                self.observe(row).await
+                Box::pin(self.observe(row)).await
             }
-            OutboxKind::Delegate => self.delegate(row).await,
+            OutboxKind::Delegate => Box::pin(self.delegate(row)).await,
             // A person's start and close of a helper session (ADR 0072) share the lane and are
             // never steers
             OutboxKind::Steer if matches!(row.payload, OutboxPayload::SessionStart { .. }) => {
@@ -490,12 +493,12 @@ impl<P: Ports> Dispatcher<P> {
             OutboxKind::Steer if matches!(row.payload, OutboxPayload::SessionClose { .. }) => {
                 Box::pin(self.close_session(row)).await
             }
-            OutboxKind::Steer => self.steer(row).await,
-            OutboxKind::Cancel => self.cancel(row).await,
-            OutboxKind::Verify => self.verify(row).await,
-            OutboxKind::Title => self.title(row).await,
-            OutboxKind::Description => self.description(row).await,
-            OutboxKind::Ask => self.ask(row).await,
+            OutboxKind::Steer => Box::pin(self.steer(row)).await,
+            OutboxKind::Cancel => Box::pin(self.cancel(row)).await,
+            OutboxKind::Verify => Box::pin(self.verify(row)).await,
+            OutboxKind::Title => Box::pin(self.title(row)).await,
+            OutboxKind::Description => Box::pin(self.description(row)).await,
+            OutboxKind::Ask => Box::pin(self.ask(row)).await,
         }
     }
 
@@ -1566,7 +1569,7 @@ impl<P: Ports> Dispatcher<P> {
                     if !seen_working && state.is_some_and(AgentTaskState::is_interrupted) {
                         continue;
                     }
-                    self.apply_envelope(ctx, &env).await?;
+                    Box::pin(self.apply_envelope(ctx, &env)).await?;
                     // The whole text of a reply is in the log: no more of it is relayed.
                     if let Some(
                         AgentUpdate::Message { message_id, .. }
@@ -1665,10 +1668,12 @@ impl<P: Ports> Dispatcher<P> {
                         Err(e) => return Err(e.into()),
                     }
                 }
-                return if self
-                    .app
-                    .child_sessions_news(ctx.thread, Some(&ctx.lease), news.clone())
-                    .await?
+                return if Box::pin(self.app.child_sessions_news(
+                    ctx.thread,
+                    Some(&ctx.lease),
+                    news.clone(),
+                ))
+                .await?
                 {
                     Ok(())
                 } else {
