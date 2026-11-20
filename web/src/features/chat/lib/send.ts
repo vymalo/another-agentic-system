@@ -32,15 +32,32 @@ export const deliveryNote = (mode: SendMode, agent: string, steers: boolean | nu
     ? `Stopped ${agent} · it starts again from here`
     : `Sent while ${agent} was working · read ${readsWhen(steers)}`;
 
-/** A message as the composer's keyboard sends it while a run is open: Enter, or with Ctrl/⌘+Shift. */
-export function modeOfKey(e: {
-  key: string;
-  shiftKey: boolean;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  altKey?: boolean;
-}): SendMode | null {
+/**
+ * What Stop does in a subagent's own thread, which it ends the round of: the session stays open when it
+ * is kept open, and closes with its round otherwise (child-sessions/v1: a canceled round closes a session
+ * that is not kept open). The label of the Stop button there.
+ */
+export const stopRoundHint = (keepOpen: boolean): string =>
+  keepOpen
+    ? "Stops this round, the subagent stays open"
+    : "Stops this round and closes the subagent";
+
+/**
+ * A message as the composer's keyboard sends it while a run is open: Enter, or with Ctrl/⌘+Shift.
+ * `interrupt: false` (a subagent that closes when its round is stopped, which refuses it) has no
+ * Ctrl/⌘+Shift+Enter.
+ */
+export function modeOfKey(
+  e: {
+    key: string;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    altKey?: boolean;
+  },
+  interrupt = true,
+): SendMode | null {
   if (e.key !== "Enter" || e.altKey) return null;
-  if (e.shiftKey) return e.ctrlKey || e.metaKey ? "interrupt" : null; // Shift+Enter is a new line
+  if (e.shiftKey) return interrupt && (e.ctrlKey || e.metaKey) ? "interrupt" : null; // Shift+Enter is a new line
   return e.ctrlKey || e.metaKey ? null : "steer";
 }

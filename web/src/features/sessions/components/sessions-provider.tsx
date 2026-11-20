@@ -17,7 +17,7 @@ import type { ApiThread } from "@/lib/api/types";
 import { type ChildSessions, useChildSessions } from "../hooks/use-child-sessions";
 import type { StartDraft } from "../hooks/use-start-session";
 import { childOf, type SessionCard } from "../lib/cards";
-import { MAX_WAITING_STARTS } from "../lib/children";
+import { type AppliedClose, MAX_WAITING_STARTS } from "../lib/children";
 import { CHILD_SESSIONS_URI, type ChildSessionsOffer, parseChildSessionsOffer } from "../lib/offer";
 import { CloseSessionDialog } from "./close-session-dialog";
 import { NewSubagentDialog } from "./new-subagent-dialog";
@@ -39,6 +39,14 @@ export type SessionsController = {
   canRetry: (request: string) => boolean;
   retry: (request: string, opener: HTMLElement | null) => void;
   askClose: (card: SessionCard, opener: HTMLElement | null) => void;
+  /**
+   * Close is offered for this subagent: it is not closed, and it is not already closing, except that
+   * a close that waits for the round to end (`cancel: false`) can be made stronger, "Stop and close",
+   * until one that stops the round has been asked.
+   */
+  closeOffered: (card: SessionCard) => boolean;
+  /** What a close this page asked said, by child thread: a subagent's own thread reads its own. */
+  applied: ReadonlyMap<string, AppliedClose>;
 };
 
 const Context = createContext<SessionsController | null>(null);
@@ -97,6 +105,10 @@ function Active({
   const offer = withdrawn ? null : offered;
   const isChild = childOf(thread) !== null;
   const canWrite = !readOnly && !isChild;
+  // a subagent's own thread closes it from its banner: the person may write there, though they may not start
+  const mayClose = !readOnly;
+  // the closes this page asked with `cancel: true`: nothing is stronger
+  const [forced, setForced] = useState<ReadonlySet<string>>(new Set());
 
   // the requests this page sent that the stream has not said yet, and what each was (kept until its outcome)
   const [local, setLocal] = useState<readonly string[]>([]);
@@ -142,6 +154,16 @@ function Active({
     setCloseOpen(true);
   }, []);
 
+  const closeOffered = useCallback(
+    (card: SessionCard) =>
+      mayClose &&
+      card.threadId !== undefined &&
+      card.state !== "closed" &&
+      (!(card.closing || card.closeAsked) ||
+        (card.state === "working" && !forced.has(card.threadId))),
+    [mayClose, forced],
+  );
+
   const noRoom =
     offer !== null && kids.openCount >= offer.maxOpen
       ? `${offer.maxOpen} ${offer.maxOpen === 1 ? "subagent is" : "subagents are"} open. Close one to start another.`
@@ -163,8 +185,22 @@ function Active({
       canRetry,
       retry,
       askClose,
+      closeOffered,
+      applied: kids.applied,
     }),
-    [isChild, offer, kids, canWrite, canStart, noRoom, openNew, canRetry, retry, askClose],
+    [
+      isChild,
+      offer,
+      kids,
+      canWrite,
+      canStart,
+      noRoom,
+      openNew,
+      canRetry,
+      retry,
+      askClose,
+      closeOffered,
+    ],
   );
 
   return (
@@ -198,7 +234,8 @@ function Active({
         open={closeOpen}
         onOpenChange={setCloseOpen}
         card={closing}
-        onClosed={(child, state) => {
+        onClosed={(child, state, cancel) => {
+          if (cancel) setForced((f) => new Set(f).add(child));
           kids.apply(child, state);
           refreshRows();
         }}

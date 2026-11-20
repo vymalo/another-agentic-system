@@ -27,3 +27,6 @@ export function isHomeCard(content: unknown): boolean {
     typeof content === "object" && content !== null && (content as { home?: unknown }).home === true
   );
 }
+
+/** Why a subagent's own thread is not forked, shared or handed to another agent: it is part of its parent chat. */
+export const CHILD_PART_OF_PARENT = "A subagent is part of its parent chat";

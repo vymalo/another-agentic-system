@@ -115,9 +115,11 @@ export function ThreadHeader({
           }
           {...(fork.readOnly
             ? { blocked: fork.readOnly }
-            : fork.turnOpen
-              ? { blocked: CONTINUE_BLOCKED }
-              : {})}
+            : fork.childReason
+              ? { blocked: fork.childReason }
+              : fork.turnOpen
+                ? { blocked: CONTINUE_BLOCKED }
+                : {})}
         />
         <div className="flex min-w-0 flex-1 items-center ps-2">
           {thread && renamer.draft !== null ? (
@@ -163,7 +165,9 @@ export function ThreadHeader({
               {...(showDescription ? { describer, hasDescription: !!thread?.description } : {})}
               disabled={thread === null}
               {...(fork.readOnly ? { readOnly: fork.readOnly } : {})}
-              {...(menuOffersShare(cap, thread?.share) ? { share: { sharer, cap } } : {})}
+              {...(menuOffersShare(cap, thread?.share) && !fork.childReason
+                ? { share: { sharer, cap } }
+                : {})}
             />
           </div>
         </div>

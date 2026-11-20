@@ -235,3 +235,146 @@ test("an agent whose card does not list the extension has no Subagents tab and n
   await expect(panelTab(page, "Subagents")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New subagent" })).toHaveCount(0);
 });
+
+/*
+ * A subagent's own thread (S4f): the banner under the top bar, a message box that follows the session
+ * (idle starts the next round, a working one is steered, Stop, and Stop and send only when it is kept
+ * open), Close, and the notice that replaces the box once the session is closed. A first word of `hold`
+ * is the mock's round that waits for a release.
+ */
+
+type Page = import("@playwright/test").Page;
+
+/** Starts a subagent from the parent's chat through the API and goes to its own thread; its id. */
+async function inChild(page: Page, keepOpen: boolean, text: string): Promise<string> {
+  await startThread(page, "hello");
+  await expect(badge(page)).toContainText("Done");
+  const parent = page.url().split("/").pop() ?? "";
+  const started = await page.request.post(`/api/threads/${parent}/sessions`, {
+    data: { id: uuidv7(), agent: "planner", description: "Plan the docs", text, keepOpen },
+  });
+  expect(started.status()).toBe(202);
+  await hideActivity(page);
+  await conversation(page)
+    .locator('[data-slot="start-line"]')
+    .getByRole("link", { name: /^Open/ })
+    .click();
+  await expect(page).not.toHaveURL(new RegExp(`${parent}$`));
+  await expect(page.locator('[data-slot="child-banner"]')).toBeVisible();
+  return page.url().split("/").pop() ?? "";
+}
+
+const bannerOf = (page: Page) => page.locator('[data-slot="child-banner"]');
+const childState = (page: Page) => bannerOf(page).locator('[data-slot="child-state"]');
+const messageBox = (page: Page) => page.getByLabel("Message", { exact: true });
+const release = (child: string) =>
+  fetch(`${MOCK_URL}/__mock/release?thread=${child}`, { method: "POST" });
+
+async function say(page: Page, text: string) {
+  await messageBox(page).fill(text);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+}
+
+test("a kept-open subagent: banner, a message starts the next round, steer, Stop, Stop and send, Close", async ({
+  page,
+}, info) => {
+  await aPerson(page, info);
+  const child = await inChild(page, true, "hold first");
+  await expect(bannerOf(page)).toContainText("Stays open");
+  await expect(bannerOf(page).getByRole("link", { name: /^Back to/ })).toHaveAttribute(
+    "href",
+    /\/threads\/[0-9a-f-]{36}$/,
+  );
+  await expect(childState(page)).toHaveText("Working");
+  await expectNoHorizontalScroll(page);
+
+  // no @, no tools picker in a subagent
+  await expect(page.getByRole("button", { name: "Tools" })).toHaveCount(0);
+
+  // steer: a message while the round works is read by it, in one run
+  await expect(conversation(page)).toContainText("hold first");
+  await say(page, "a note for the round");
+  await expect(conversation(page)).toContainText("a note for the round");
+  await release(child);
+  await expect(childState(page)).toHaveText("Idle");
+
+  // idle: the message starts the next round
+  await say(page, "hold second");
+  await expect(childState(page)).toHaveText("Working");
+  // Stop ends the round; the subagent stays open
+  await page.getByRole("button", { name: "Stop", exact: true }).hover();
+  await expect(page.getByRole("tooltip")).toContainText(
+    "Stops this round, the subagent stays open",
+  );
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(childState(page)).toHaveText("Idle");
+
+  // Stop and send: the round stops and the message starts the next one
+  await say(page, "hold third");
+  await expect(childState(page)).toHaveText("Working");
+  await messageBox(page).fill("instead, this");
+  await page.getByRole("button", { name: "Delivery options" }).click();
+  await page.getByRole("menuitem", { name: /Stop and send/ }).click();
+  await expect(conversation(page)).toContainText("instead, this");
+  await release(child);
+  await expect(childState(page)).toHaveText("Idle");
+
+  // Close: an idle subagent closes at once; the box becomes the notice, with the way back
+  await bannerOf(page).getByRole("button", { name: "Close planner" }).click();
+  await dialog(page, "Close subagent").getByRole("button", { name: "Close subagent" }).click();
+  const notice = page.locator('[data-slot="session-closed-notice"]');
+  await expect(notice).toContainText("This subagent is closed and takes no more messages");
+  await expect(messageBox(page)).toHaveCount(0);
+  await expect(childState(page)).toHaveText("Closed");
+  await expect(bannerOf(page).getByRole("button", { name: /^Close/ })).toHaveCount(0);
+  await notice.getByRole("link", { name: /^Back to/ }).click();
+  await expect(page).not.toHaveURL(new RegExp(child));
+  await expect(page).toHaveURL(THREAD_URL);
+});
+
+test("a subagent that closes when done has no Stop and send, says what Stop does, and closes with its round", async ({
+  page,
+}, info) => {
+  await aPerson(page, info);
+  const child = await inChild(page, false, "hold only");
+  await expect(bannerOf(page)).toContainText("Closes when done");
+  await expect(childState(page)).toHaveText("Working");
+  await messageBox(page).fill("a note");
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delivery options" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Stop", exact: true }).hover();
+  await expect(page.getByRole("tooltip")).toContainText("Stops this round and closes the subagent");
+  // Stop ends the round, and a subagent that is not kept open closes with it
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(page.locator('[data-slot="session-closed-notice"]')).toBeVisible();
+  await expect(childState(page)).toHaveText("Closed");
+  await release(child).catch(() => {});
+});
+
+test("a close that waits for the round can be made stronger from the banner", async ({
+  page,
+}, info) => {
+  await aPerson(page, info);
+  const child = await inChild(page, true, "hold slowly");
+  await bannerOf(page).getByRole("button", { name: "Close planner" }).click();
+  await dialog(page, "Close subagent")
+    .getByRole("button", { name: "Close when this round ends" })
+    .click();
+  await expect(childState(page)).toHaveText("Closing…");
+  await expect(page.getByText(/Closing… this subagent takes no more messages/)).toBeVisible();
+  await bannerOf(page).getByRole("button", { name: "Close planner" }).click();
+  const stronger = dialog(page, "Close subagent");
+  await expect(stronger.getByRole("button", { name: "Close when this round ends" })).toHaveCount(0);
+  await stronger.getByRole("button", { name: "Stop and close" }).click();
+  await expect(page.locator('[data-slot="session-closed-notice"]')).toBeVisible();
+  await release(child).catch(() => {});
+});
+
+test("the banner and the closed notice pass axe, in the page's scheme", async ({ page }, info) => {
+  await aPerson(page, info);
+  await inChild(page, true, "hold axe");
+  await animationsDone(page);
+  expect(
+    (await new AxeBuilder({ page }).include('[data-slot="child-banner"]').analyze()).violations,
+  ).toEqual([]);
+});

@@ -47,7 +47,12 @@ import {
   useSearchShortcut,
 } from "@/features/search/lib/shortcut";
 import { useKeepSessionWarm } from "@/features/session/hooks/use-keep-session-warm";
+import { ChildBanner } from "@/features/sessions/components/child-banner";
+import { type ChildBox, ChildComposerGate } from "@/features/sessions/components/child-composer";
 import { SessionsProvider } from "@/features/sessions/components/sessions-provider";
+import { childOf } from "@/features/sessions/lib/cards";
+import { REFUSAL_CODES, refusalWords } from "@/features/sessions/lib/refusals";
+import { CHILD_PART_OF_PARENT } from "@/features/sessions/lib/words";
 import { BranchesProvider } from "@/features/threads/components/branches-provider";
 import { ForkProvider } from "@/features/threads/components/fork-provider";
 import {
@@ -196,14 +201,19 @@ function Chat({ threadId }: { threadId: string | null }) {
   // the mentions of the message in the box (ADR 0026), asked for by the agent when it sends it
   const [mentionsStore] = useState(() => new MentionsStore());
   const retryAgents = listed.retry;
+  const { refetchSoon: reread } = meta;
   const onSendFailed = useCallback(
-    (message: string, status?: number) => {
-      setSendError(message);
+    (message: string, status?: number, code?: string) => {
+      // a subagent's refusals have the screen's words; the text stays in the box (the send was never made)
+      const subagent = code !== undefined && (REFUSAL_CODES as readonly string[]).includes(code);
+      setSendError(subagent ? refusalWords(code, message) : message);
+      // a session that closed meanwhile: read it again, so that the box says so
+      if (code === "session_closed") reread();
       // an agent that moved or went (422), a registry that did not answer (503): read the list again,
       // so that the next send is checked against what is there now
       if (status === 422 || status === 503) retryAgents();
     },
-    [retryAgents],
+    [retryAgents, reread],
   );
   const onSending = useCallback(() => setSendError(null), []);
   const chat = useChatRuntime({
@@ -324,63 +334,85 @@ function Chat({ threadId }: { threadId: string | null }) {
   const readOnly = access.readOnly ? access.reason : null;
   // a thread has a right-hand panel (its sources, later its activity); the new-chat page has none
   const Panels = threadId === null ? Fragment : PanelProvider;
-  const composer = readOnly ? (
-    <ReadOnlyNotice reason={readOnly} isNew={threadId === null} />
-  ) : (
-    <Composer
-      state={state}
-      job={job}
-      failure={snapshot.failure}
-      isNew={threadId === null}
-      sendError={sendError}
-      onCancel={cancel}
-      sending={{
-        send: (text, mode) => agent.sendWhileWorking(text, mode),
-        onFailed: onSendFailed,
-        agent: toolsAgentName,
-        steers,
-        // the replay has to be on screen: a send before it replaces the turns it has not drawn
-        ready: threadId === null || (loaded && !snapshot.replaying),
-      }}
-      inputRef={composerRef}
-      usage={<UsageRing usage={snapshot.usage} />}
-      mentions={{ agents: mentionable, store: mentionsStore }}
-      commands={commands}
-      toolbar={
-        <>
-          <ToolsPicker
-            view={toolServers}
-            agentId={toolsAgentId}
-            chosen={chosenTools}
-            onChange={threadId === null ? setNewTools : (next) => void attached.set(next)}
-            busy={attached.busy}
-            capabilities={capabilities}
-          />
-          <TierChip view={tier} capabilities={capabilities} agentName={toolsAgentName} />
-        </>
-      }
-      notices={
-        <>
-          <ToolsWarning
-            chosen={chosenTools}
-            capabilities={capabilities}
-            agentName={toolsAgentName}
-          />
-          <MentionsWarning
-            mentioned={boxMentions.length}
-            capabilities={capabilities}
-            agentName={toolsAgentName}
-          />
-          <TierNotice view={tier} agentName={toolsAgentName} />
-          {attached.error ? (
-            <InlineStatus tone="error" role="alert">
-              {attached.error}
-            </InlineStatus>
-          ) : null}
-        </>
-      }
-    />
-  );
+  const composerFor = (child: ChildBox | null) =>
+    readOnly ? (
+      <ReadOnlyNotice reason={readOnly} isNew={threadId === null} />
+    ) : (
+      <Composer
+        state={state}
+        job={job}
+        failure={snapshot.failure}
+        isNew={threadId === null}
+        sendError={sendError}
+        onCancel={cancel}
+        child={child ? { keepOpen: child.keepOpen } : undefined}
+        sending={{
+          send: (text, mode) => agent.sendWhileWorking(text, mode),
+          onFailed: onSendFailed,
+          agent: child?.agent ?? toolsAgentName,
+          steers,
+          // the replay has to be on screen: a send before it replaces the turns it has not drawn
+          ready: threadId === null || (loaded && !snapshot.replaying),
+        }}
+        inputRef={composerRef}
+        usage={<UsageRing usage={snapshot.usage} />}
+        mentions={child ? undefined : { agents: mentionable, store: mentionsStore }}
+        commands={child ? undefined : commands}
+        toolbar={
+          <>
+            {child ? null : (
+              <ToolsPicker
+                view={toolServers}
+                agentId={toolsAgentId}
+                chosen={chosenTools}
+                onChange={threadId === null ? setNewTools : (next) => void attached.set(next)}
+                busy={attached.busy}
+                capabilities={capabilities}
+              />
+            )}
+            <TierChip view={tier} capabilities={capabilities} agentName={toolsAgentName} />
+          </>
+        }
+        notices={
+          <>
+            {child ? null : (
+              <>
+                <ToolsWarning
+                  chosen={chosenTools}
+                  capabilities={capabilities}
+                  agentName={toolsAgentName}
+                />
+                <MentionsWarning
+                  mentioned={boxMentions.length}
+                  capabilities={capabilities}
+                  agentName={toolsAgentName}
+                />
+              </>
+            )}
+            {child?.closing ? (
+              <InlineStatus role="status">
+                Closing… this subagent takes no more messages once it is closed.
+              </InlineStatus>
+            ) : null}
+            <TierNotice view={tier} agentName={toolsAgentName} />
+            {attached.error ? (
+              <InlineStatus tone="error" role="alert">
+                {attached.error}
+              </InlineStatus>
+            ) : null}
+          </>
+        }
+      />
+    );
+  // a subagent's own thread follows its session: the box says what it takes, and is a notice once it is closed
+  const composer =
+    threadId === null ? (
+      composerFor(null)
+    ) : (
+      <ChildComposerGate thread={thread} threadId={threadId} rows={threads.threads}>
+        {composerFor}
+      </ChildComposerGate>
+    );
   const leading = (
     <>
       <ThreadsSheet threads={threads} />
@@ -401,6 +433,7 @@ function Chat({ threadId }: { threadId: string | null }) {
         state={state}
         lastSeq={snapshot.lastSeq}
         readOnly={readOnly}
+        childReason={childOf(thread) !== null ? CHILD_PART_OF_PARENT : null}
         tier={tier.send}
       >
         <BranchesProvider threadId={threadId} refreshKey={state ?? ""}>
@@ -420,6 +453,7 @@ function Chat({ threadId }: { threadId: string | null }) {
       carriedFiles,
       sessions: snapshot.sessions,
       sessionStarts: snapshot.sessionStarts,
+      self: snapshot.self,
     }),
     [
       state,
@@ -433,6 +467,7 @@ function Chat({ threadId }: { threadId: string | null }) {
       carriedFiles,
       snapshot.sessions,
       snapshot.sessionStarts,
+      snapshot.self,
     ],
   );
 
@@ -516,6 +551,11 @@ function Chat({ threadId }: { threadId: string | null }) {
                                       connection={snapshot.connection}
                                       leading={leading}
                                       onRenamed={meta.apply}
+                                    />
+                                    <ChildBanner
+                                      thread={thread}
+                                      threadId={threadId}
+                                      rows={threads.threads}
                                     />
                                     {meta.error ? (
                                       <div className="mx-auto w-full max-w-3xl px-4 md:px-6">

@@ -15,6 +15,8 @@ export type ChildSessions = MergedChildren & {
   waiting: number;
   /** The answer of a close, applied at once, before the rail says it. */
   apply: (child: string, state: AppliedClose) => void;
+  /** What those closes said, by child thread: a subagent's own thread reads its own. */
+  applied: ReadonlyMap<string, AppliedClose>;
 };
 
 /**
@@ -48,6 +50,7 @@ export function useChildSessions(
       openCount: merged.open.length,
       waiting: startsWaiting(starts, local),
       apply,
+      applied,
     };
   }, [parent, rows, sessions, sessionStarts, applied, local, apply]);
 }

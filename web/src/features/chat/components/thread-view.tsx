@@ -36,6 +36,8 @@ export type ThreadView = {
   /** The helper sessions' cards by card id and the starts by request, as the stream said them last (child-sessions/v1). */
   sessions?: ReadonlyMap<string, SessionCard> | undefined;
   sessionStarts?: ReadonlyMap<string, SessionStartCard> | undefined;
+  /** In a subagent's own thread: the live `session-self` card, its state as the stream said it last. */
+  self?: SessionCard | null | undefined;
 };
 
 const Context = createContext<ThreadView>({ state: undefined, waiting: false, agentId: null });

@@ -230,7 +230,7 @@ describe("the rows", () => {
     expect(links.map((l) => l.getAttribute("href"))).toEqual([`/threads/${id(1)}`]);
   });
 
-  it("says 'Closing…' with a spinner for a close that waits, and offers no second Close", () => {
+  it("says 'Closing…' with a spinner for a close that waits, and still offers Close: it can be made stronger", () => {
     mount({
       rows: [
         row(1, "working", {
@@ -248,6 +248,26 @@ describe("the rows", () => {
     const li = screen.getByRole("listitem");
     expect(li.querySelector('[data-slot="subagent-state"]')?.textContent).toBe("Closing…");
     expect(li.querySelector("svg.animate-spin, svg[class*='animate-spin']")).toBeTruthy();
+    expect(within(li).getByRole("button", { name: /^Close/ })).toBeTruthy();
+  });
+
+  it("offers no Close to a close that is on its way and has nothing to wait for", () => {
+    mount({
+      rows: [
+        row(1, "idle", {
+          childOf: {
+            threadId: PARENT,
+            session: "s1",
+            agent: "planner",
+            state: "idle",
+            keepOpen: true,
+            closeAsked: true,
+          },
+        }),
+      ],
+    });
+    const li = screen.getByRole("listitem");
+    expect(li.querySelector('[data-slot="subagent-state"]')?.textContent).toBe("Closing…");
     expect(within(li).queryByRole("button", { name: /^Close/ })).toBeNull();
   });
 

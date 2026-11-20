@@ -66,7 +66,7 @@ describe("an idle subagent", () => {
     expect(dialog.textContent).toContain("Close planner? It takes no more messages.");
     expect(within(dialog).queryByRole("button", { name: "Stop and close" })).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "Close subagent" }));
-    await waitFor(() => expect(onClosed).toHaveBeenCalledWith(child, "closed"));
+    await waitFor(() => expect(onClosed).toHaveBeenCalledWith(child, "closed", false));
     expect(onOpenChange).toHaveBeenCalledWith(false);
     const asked = await page.api.of(child, "child_session_close_asked");
     expect(asked[0]?.data).toMatchObject({ cancel: false });
@@ -96,7 +96,7 @@ describe("a subagent that works", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog.textContent).toContain("It is working on a round now.");
     fireEvent.click(within(dialog).getByRole("button", { name: "Close when this round ends" }));
-    await waitFor(() => expect(onClosed).toHaveBeenCalledWith(child, "closing"));
+    await waitFor(() => expect(onClosed).toHaveBeenCalledWith(child, "closing", false));
     expect((await page.api.of(child, "child_session_close_asked"))[0]?.data).toMatchObject({
       cancel: false,
     });
@@ -108,9 +108,18 @@ describe("a subagent that works", () => {
     const { onClosed } = mount(cardOf(child, { state: "working", keepOpen: true }));
     fireEvent.click(screen.getByRole("button", { name: "Stop and close" }));
     await waitFor(() => expect(onClosed).toHaveBeenCalled());
+    expect(onClosed.mock.calls[0]?.[2]).toBe(true);
     expect((await page.api.of(child, "child_session_close_asked"))[0]?.data).toMatchObject({
       cancel: true,
     });
+  });
+
+  it("a close that already waits for the round has only the stronger way left", async () => {
+    const child = await working();
+    mount(cardOf(child, { state: "working", keepOpen: true, closing: true }));
+    expect(screen.queryByRole("button", { name: "Close when this round ends" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop and close" })).toBeTruthy();
+    expect(screen.getByText(/It closes when its round ends/)).toBeTruthy();
   });
 });
 

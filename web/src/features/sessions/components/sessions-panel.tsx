@@ -111,6 +111,7 @@ function Row({ card }: { card: SessionCard }) {
   const words = subagentStateWords(card);
   const closing = card.state !== "closed" && (card.closing || card.closeAsked);
   const active = card.state === "working" && card.report !== "blocked" && !closing;
+  const offered = sessions?.canWrite === true && sessions.closeOffered(card);
   return (
     <li
       data-slot="subagent-row"
@@ -151,7 +152,7 @@ function Row({ card }: { card: SessionCard }) {
         </span>
         <Mark>{card.keepOpen ? "Stays open" : "Closes when done"}</Mark>
       </p>
-      {href || (sessions?.canWrite && card.state !== "closed" && !closing && card.threadId) ? (
+      {href || offered ? (
         <div className="flex items-center gap-1">
           {href ? (
             <Button asChild variant="ghost" size="sm" className="-ms-2">
@@ -161,7 +162,7 @@ function Row({ card }: { card: SessionCard }) {
               </Link>
             </Button>
           ) : null}
-          {sessions?.canWrite && card.state !== "closed" && !closing && card.threadId ? (
+          {offered ? (
             <Button
               type="button"
               variant="ghost"

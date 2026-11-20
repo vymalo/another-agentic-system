@@ -21,7 +21,8 @@ type Props = {
   /** The subagent to close: its child thread is `threadId`. */
   card: SessionCard | null;
   /** The close was accepted: what the orchestrator's record says now. */
-  onClosed: (child: string, state: AppliedClose) => void;
+  /** The close was accepted; `cancel` says whether it stopped the round. */
+  onClosed: (child: string, state: AppliedClose, cancel: boolean) => void;
   returnTo: { current: HTMLElement | null };
 };
 
@@ -65,13 +66,15 @@ function Body({
   const { close, busy } = useCloseSession();
   const [refused, setRefused] = useState<string | null>(null);
   const working = card.state === "working";
+  // a close already waits for the round to end: the one thing left to offer is the stronger one
+  const waiting = card.closing || card.closeAsked;
   const name = card.agent || "subagent";
 
   async function go(cancel: boolean) {
     if (busy) return;
     const result = await close(child, cancel);
     if (result.ok) {
-      onClosed(child, result.state);
+      onClosed(child, result.state, cancel);
       onOpenChange(false);
     } else {
       setRefused(result.words);
@@ -85,7 +88,11 @@ function Body({
         <DialogDescription>
           Close <em className="not-italic font-medium text-foreground">{name}</em>? It takes no more
           messages.
-          {working ? " It is working on a round now." : ""}
+          {working
+            ? waiting
+              ? " It closes when its round ends."
+              : " It is working on a round now."
+            : ""}
         </DialogDescription>
       </DialogHeader>
       {refused ? (
@@ -99,9 +106,16 @@ function Body({
         </Button>
         {working ? (
           <>
-            <Button type="button" variant="outline" disabled={busy} onClick={() => void go(false)}>
-              Close when this round ends
-            </Button>
+            {waiting ? null : (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void go(false)}
+              >
+                Close when this round ends
+              </Button>
+            )}
             <Button
               type="button"
               variant="destructive"
