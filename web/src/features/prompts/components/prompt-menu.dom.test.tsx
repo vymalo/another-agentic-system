@@ -169,7 +169,7 @@ const box = () => screen.getByLabelText("Message") as HTMLTextAreaElement;
 const type = (text: string) => fireEvent.change(box(), { target: { value: text } });
 const key = (k: string, init: Record<string, unknown> = {}) =>
   fireEvent.keyDown(box(), { key: k, ...init });
-const list = () => screen.queryByRole("listbox", { name: "Prompts" });
+const list = () => screen.queryByRole("listbox", { name: "Your prompts" });
 const posts = (calls: { method: string; body?: unknown }[]) =>
   calls
     .filter((c) => c.method === "POST")
@@ -205,7 +205,7 @@ describe("the / menu", () => {
   it("lists the prompts when a message is one /name, and Escape closes it", async () => {
     mount();
     type("/rev");
-    const menu = await screen.findByRole("listbox", { name: "Prompts" });
+    const menu = await screen.findByRole("listbox", { name: "Your prompts" });
     expect(within(menu).getByText("/review")).toBeTruthy();
     expect(within(menu).getByText("Review a change")).toBeTruthy();
     expect(box().getAttribute("aria-expanded")).toBe("true");
@@ -223,14 +223,14 @@ describe("the / menu", () => {
   it("opens on a slash alone and lists every prompt", async () => {
     mount();
     type("/");
-    const menu = await screen.findByRole("listbox", { name: "Prompts" });
+    const menu = await screen.findByRole("listbox", { name: "Your prompts" });
     await waitFor(() => expect(within(menu).getAllByRole("option")).toHaveLength(3));
   });
 
   it("picks a prompt with Enter, fills its questions and puts the text in the box without sending", async () => {
     const { calls } = mount();
     type("/rev");
-    await screen.findByRole("listbox", { name: "Prompts" });
+    await screen.findByRole("listbox", { name: "Your prompts" });
     key("Enter");
 
     const dialog = await screen.findByRole("dialog");
@@ -258,7 +258,7 @@ describe("the / menu", () => {
     });
     mount();
     type("/notes");
-    await screen.findByRole("listbox", { name: "Prompts" });
+    await screen.findByRole("listbox", { name: "Your prompts" });
     key("Enter");
     await waitFor(() => expect(box().value).toBe("Write the notes."));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -271,12 +271,12 @@ describe("the / menu", () => {
   it("opens the same query again after the command was dismissed and the box cleared", async () => {
     mount();
     type("/notes");
-    await screen.findByRole("listbox", { name: "Prompts" });
+    await screen.findByRole("listbox", { name: "Your prompts" });
     key("Escape");
     expect(list()).toBeNull();
     type("");
     type("/notes");
-    await screen.findByRole("listbox", { name: "Prompts" });
+    await screen.findByRole("listbox", { name: "Your prompts" });
   });
 
   it("uses the same prompt again after its text was put in the box", async () => {
@@ -286,14 +286,14 @@ describe("the / menu", () => {
     });
     mount();
     type("/notes");
-    await screen.findByRole("listbox", { name: "Prompts" });
+    await screen.findByRole("listbox", { name: "Your prompts" });
     key("Enter");
     await waitFor(() => expect(box().value).toBe("Write the notes."));
 
     // the text is the person's; once the box is no longer a command, the same /name opens again
     type("");
     type("/notes");
-    await screen.findByRole("listbox", { name: "Prompts" });
+    await screen.findByRole("listbox", { name: "Your prompts" });
     key("Enter");
     await waitFor(() => expect(box().value).toBe("Write the notes."));
   });
@@ -318,19 +318,19 @@ describe("the / menu", () => {
     });
     mount();
     type("/notes");
-    await screen.findByRole("listbox", { name: "Prompts" });
+    await screen.findByRole("listbox", { name: "Your prompts" });
     key("Enter");
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("32 KiB"));
     expect(box().value).toBe("/notes");
     expect(screen.queryByRole("dialog")).toBeNull();
     // the command is back and the list is open again for it: a second pick is a click away
-    await waitFor(() => expect(screen.getByRole("listbox", { name: "Prompts" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("listbox", { name: "Your prompts" })).toBeTruthy());
   });
 
   it("marks a prompt shared with the person, and names no author", async () => {
     mount();
     type("/release");
-    const menu = await screen.findByRole("listbox", { name: "Prompts" });
+    const menu = await screen.findByRole("listbox", { name: "Your prompts" });
     const option = within(menu).getByRole("option", { name: /Release notes/ });
     expect(within(option).getByText("Shared")).toBeTruthy();
     expect(within(option).queryByText(/@|owner|author/i)).toBeNull();
@@ -339,7 +339,7 @@ describe("the / menu", () => {
   it("sends a message that is a slash command when nothing matches", async () => {
     const { calls } = mount();
     type("/zzz");
-    const menu = await screen.findByRole("listbox", { name: "Prompts" });
+    const menu = await screen.findByRole("listbox", { name: "Your prompts" });
     await waitFor(() => expect(screen.getByText(/No prompt matches/)).toBeTruthy());
     // ARIA's listbox holds options and nothing else: the line is its sibling
     expect(menu.querySelectorAll(":scope > :not([role='option'])")).toHaveLength(0);
@@ -360,7 +360,7 @@ describe("the / menu", () => {
     );
     mount();
     type("/rev");
-    const menu = await screen.findByRole("listbox", { name: "Prompts" });
+    const menu = await screen.findByRole("listbox", { name: "Your prompts" });
     await waitFor(() => expect(screen.getByText(/could not be loaded/)).toBeTruthy());
     expect(within(menu).queryAllByRole("option")).toHaveLength(0);
   });

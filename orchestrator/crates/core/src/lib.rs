@@ -11,6 +11,7 @@ mod answer;
 mod ask;
 mod build;
 mod child_sessions;
+mod commands;
 mod delete;
 mod description;
 mod error;
@@ -65,6 +66,7 @@ pub use child_sessions::{
     SessionOutcome, SessionRefusal, SessionReport, SessionState, child_title, report_of,
     start_child,
 };
+pub use commands::{COMMANDS_EXTENSION, CommandSpec, CommandsListing, CommandsOffer};
 pub use delete::{NotDeletable, deletable};
 pub use description::{
     DEFAULT_DESCRIPTION_CHARS, DEFAULT_MIN_NEW_MESSAGES, DescribedBy, DescriptionError,

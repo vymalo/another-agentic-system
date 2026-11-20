@@ -76,6 +76,12 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > the run that carries a message, checked before anything is written, shown on `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the
 > message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default, maxTier?}`; see [Access tier](#access-tier).
 
+> **Commands** (2026-11-19, [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md), contract
+> [`commands-v1.md`](commands-v1.md), the orchestrator's card read and capabilities key built, adam's side built, the web's `/` menu
+> next): the capabilities document's `custom[<commands/v1 URI>] = {commands: [{name, description, argumentHint?}]}` while the live card
+> lists the extension well formed. There is no inbound member: a command is the message's **text** (`/name <arguments>`), which the
+> orchestrator logs and sends as it stands; see [Commands](#commands).
+
 ## Endpoints
 
 | Operation | Route | Standard? | Status |
@@ -1382,6 +1388,31 @@ POST /agui/agents/coder   forwardedProps: {"vymalo.tier": "plan"}
 TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...}, "vymalo.tier": "plan"}}
 ```
 
+## Commands
+
+**Built** (2026-11-19, [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md); the orchestrator's card read and
+capabilities key, adam-rs's side; the web's `/` menu is the next slice). The contract, with the card, the two invocation forms and
+the expansion, is [`commands-v1.md`](commands-v1.md); this section says what the AG-UI binding does with it.
+
+- **In:** nothing. There is no `forwardedProps` member and no new message field: a command is the **text** of the message the person
+  sends (`/name <arguments>`), and the orchestrator logs it and sends it as typed. The text form needs no activation, so the
+  orchestrator activates nothing for this extension.
+- **Log:** `user_message.text` as the person sent it, the invocation included. The expansion the agent made of it is the agent's and
+  is not in the log; an export shows `/name <arguments>`.
+- **Out:** nothing of the command on the stream. A `TEXT_MESSAGE_START` of the person's message shows its text; there is no
+  `vymalo.command` member, because the text already says it.
+- **Capabilities:** `custom["https://agents.vymalo.com/a2a/extensions/commands/v1"] = {commands: [{name, description,
+  argumentHint?}]}` while the live card lists the extension with well-formed `params`, sorted by name, a hint only where the card
+  has one, and **no key** for a card that lists none or lists it badly (see [Capabilities document](#capabilities-document)). The web
+  draws its `/` menu from it, and draws none without it.
+
+```
+GET /agui/agents/coder/capabilities
+custom: {"https://agents.vymalo.com/a2a/extensions/commands/v1": {"commands": [
+  {"name": "explain", "description": "Explains a file."},
+  {"name": "review", "description": "Reviews a change.", "argumentHint": "<repo>"}]}}
+```
+
 ## The UI catalog
 
 *Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
@@ -1665,6 +1696,11 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   no role of theirs caps it; the document is per person and `no-store`). A card that lists
   the URI badly (a `default` that is not among the `tiers`, a repeated or unknown tier) is a card that does not list it: no key.
   The web draws its tier chip from this key, and shows none without it;
+- `custom["https://agents.vymalo.com/a2a/extensions/commands/v1"] = {commands: [{name, description, argumentHint?}]}` only while the
+  live card lists the extension with well-formed `params` (ADR 0079, [`commands-v1.md`](commands-v1.md)): the agent's own prompt
+  templates, sorted by name and each once, a hint only where the card has one. A card that lists it badly (no `commands`, an empty
+  list, a name that is empty, has whitespace or starts with `/`, a blank description, a hint that is not a string) is a card that does
+  not list it: no key. The web draws its `/` menu from this key and shows none without it;
 - `custom["https://agents.vymalo.com/a2a/extensions/child-sessions/v1"] = {agents: [{name, description}], maxOpen}` only while the
   live card lists the extension with well-formed `params` (ADR 0072, [`child-sessions-v1.md`](child-sessions-v1.md)): the helpers a
   person may start a session with, and the most sessions open at once in one thread. A card that lists it badly (no agent, a name

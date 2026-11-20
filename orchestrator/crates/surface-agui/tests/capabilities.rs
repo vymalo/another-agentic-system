@@ -151,6 +151,54 @@ async fn the_access_tier_is_declared_with_its_tiers_and_default_only_while_the_c
 }
 
 #[tokio::test]
+async fn the_commands_are_declared_sorted_only_while_the_card_lists_them() {
+    // the web draws its `/` menu from this key (ADR 0079); nothing is cached
+    let h = Harness::start().await;
+    let get = || async {
+        let doc = h.get("/agui/agents/plain/capabilities", Some(ALICE)).await;
+        assert_eq!(doc.status, 200);
+        let doc = doc.json();
+        assert_capabilities_json_conforms(&doc);
+        doc
+    };
+    let uri = orch_core::COMMANDS_EXTENSION;
+    assert!(get().await.get("custom").is_none());
+
+    h.agent.set_commands(
+        "plain",
+        orch_core::CommandsOffer::from_params(&json!({"commands": [
+            {"name": "review", "description": "Reviews a change.", "argumentHint": "<repo>"},
+            {"name": "explain", "description": "Explains a file."}
+        ]})),
+    );
+    let doc = get().await;
+    assert_eq!(
+        doc["custom"][uri],
+        json!({"commands": [
+            {"name": "explain", "description": "Explains a file."},
+            {"name": "review", "description": "Reviews a change.", "argumentHint": "<repo>"}
+        ]}),
+        "sorted by name, the hint only where the card has one: {doc}"
+    );
+
+    // the card changes between two reads: the document follows
+    h.agent.set_commands("plain", None);
+    assert!(get().await.get("custom").is_none());
+    // a listing that cannot be read is a card that does not list the extension
+    h.agent.set_commands_malformed("plain");
+    assert!(get().await.get("custom").is_none());
+    // and a card that cannot be read declares nothing
+    h.agent.set_commands(
+        "plain",
+        orch_core::CommandsOffer::from_params(
+            &json!({"commands": [{"name": "a", "description": "d"}]}),
+        ),
+    );
+    h.agent.set_card_down("plain", true);
+    assert!(get().await.get("custom").is_none());
+}
+
+#[tokio::test]
 async fn the_document_says_what_the_person_asking_may_use_of_this_agent() {
     // the web draws its chip from this document, so the cap goes in it per agent: the highest
     // cap of the roles that let the person use *this* agent (`App::max_tier_for`; the per-agent

@@ -13,8 +13,8 @@ use orch_agui_proto::{
     SubagentInfo, TransportCapabilities,
 };
 use orch_core::{
-    ACCESS_TIER_EXTENSION, AccessTier, AgentId, CHILD_SESSIONS_EXTENSION, ChildSessionsOffer,
-    KnownExtension, Releases, TierOffer, UiVersion,
+    ACCESS_TIER_EXTENSION, AccessTier, AgentId, CHILD_SESSIONS_EXTENSION, COMMANDS_EXTENSION,
+    ChildSessionsOffer, CommandsOffer, KnownExtension, Releases, TierOffer, UiVersion,
 };
 
 use crate::vocab::RELEASE_CHANNELS_URI;
@@ -42,6 +42,10 @@ pub struct CardFacts {
     /// on it. It goes in the document beside the card's offer, so that a screen draws a chip that
     /// offers what the message will be given.
     pub max_tier: Option<AccessTier>,
+    /// Present only when the card lists `commands/v1` with well-formed `params` (ADR 0079): the
+    /// prompt templates the agent serves, sorted by name. The web draws its `/` menu from it; the
+    /// orchestrator never sends a command.
+    pub commands: Option<CommandsOffer>,
     /// Present only when the card lists `child-sessions/v1` with well-formed `params` (ADR 0072):
     /// the helpers a person may start a session with, and how many may be open at once.
     pub child_sessions: Option<ChildSessionsOffer>,
@@ -62,7 +66,9 @@ pub struct CardFacts {
 ///   does not list `ui-catalog/v1` is sent no catalog), and `[ACCESS_TIER_EXTENSION]` with
 ///   `{tiers, default}` when the card lists `access-tier/v1` with well-formed params (ADR 0061: the
 ///   web draws its tier chip from it, and a card that lists it badly does not have the key), plus
-///   `maxTier`, the highest tier the person asking may use of this agent, when their roles cap it, and
+///   `maxTier`, the highest tier the person asking may use of this agent, when their roles cap it,
+///   `[COMMANDS_EXTENSION]` with `{commands}` when the card lists `commands/v1` with well-formed
+///   params (ADR 0079: the web draws its `/` menu from it), and
 ///   `[CHILD_SESSIONS_EXTENSION]` with `{agents, maxOpen}` when the card lists `child-sessions/v1`
 ///   with well-formed params (ADR 0072). A card that cannot be read declares none of them.
 pub fn agent_capabilities(id: &AgentId, name: &str, card: Option<&CardFacts>) -> AgentCapabilities {
@@ -91,6 +97,11 @@ pub fn agent_capabilities(id: &AgentId, name: &str, card: Option<&CardFacts>) ->
             entry.insert("maxTier".to_owned(), serde_json::json!(cap.as_str()));
         }
         custom.insert(ACCESS_TIER_EXTENSION.to_owned(), value);
+    }
+    if let Some(offer) = card.and_then(|c| c.commands.as_ref())
+        && let Ok(value) = serde_json::to_value(offer)
+    {
+        custom.insert(COMMANDS_EXTENSION.to_owned(), value);
     }
     if let Some(offer) = card.and_then(|c| c.child_sessions.as_ref())
         && let Ok(value) = serde_json::to_value(offer)
