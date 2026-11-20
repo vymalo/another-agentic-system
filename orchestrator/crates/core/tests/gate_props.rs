@@ -178,6 +178,8 @@ fn appended(cmds: &[Command]) -> impl Iterator<Item = &EventBody> {
         | Command::RequestDescription { .. }
         | Command::Ask { .. }
         | Command::Observe { .. }
+        | Command::StartSession { .. }
+        | Command::CloseSession { .. }
         | Command::RequestVerification { .. } => None,
     })
 }

@@ -1,0 +1,146 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-6",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-2",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-13",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-14",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-8",
+      "name": "plain",
+      "end": "suspended:"
+    },
+    {
+      "id": "sub-8",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "List every place the writers are named"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-3",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Found the writers."
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "evt-6",
+      "role": "user",
+      "text": "Now the editors"
+    },
+    {
+      "id": "job-2",
+      "role": "activity",
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "job": 2
+      }
+    },
+    {
+      "id": "evt-8",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-2",
+      "role": "user",
+      "text": "Include the translators"
+    },
+    {
+      "id": "msg-10",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-8",
+      "text": "Found the editors and the translators."
+    },
+    {
+      "id": "evt-11",
+      "role": "activity",
+      "subagentRunId": "sub-8",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:11Z",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "session-self",
+      "role": "activity",
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "helper",
+        "at": "2027-01-15T08:00:14Z",
+        "closeAsked": true,
+        "closing": false,
+        "keepOpen": true,
+        "session": "s1",
+        "state": "closed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "jobNumber": 2,
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "List every place the writers are named"
+    }
+  },
+  "pendingInterrupts": []
+}

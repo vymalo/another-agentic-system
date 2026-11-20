@@ -1,0 +1,623 @@
+[
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        },
+        "vymalo.at": "2027-01-15T08:00:01Z"
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "List every place the writers are named",
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-1",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 1
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.at": "2027-01-15T08:00:02Z"
+      },
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      },
+      "messageId": "evt-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 2
+  },
+  {
+    "event": {
+      "messageId": "msg-3",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Found the writers.",
+      "messageId": "msg-3",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-3",
+      "subagentRunId": "sub-2",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 3
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "status": "completed"
+      },
+      "messageId": "evt-4",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-2",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-2",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 4
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-1",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 5
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-6",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "queued",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-6",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        },
+        "vymalo.at": "2027-01-15T08:00:06Z"
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Now the editors",
+      "messageId": "evt-6",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "evt-6",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 6
+  },
+  {
+    "event": {
+      "activityType": "vymalo.job",
+      "content": {
+        "at": "2027-01-15T08:00:07Z",
+        "job": 2
+      },
+      "messageId": "job-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "type": "ACTIVITY_SNAPSHOT"
+    },
+    "id": 7
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.at": "2027-01-15T08:00:08Z"
+      },
+      "name": "plain",
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:08Z",
+        "status": "working"
+      },
+      "messageId": "evt-8",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    },
+    "id": 8
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "suspended"
+      },
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-6",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    }
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "working",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-2",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        },
+        "vymalo.at": "2027-01-15T08:00:09Z",
+        "vymalo.delivery": "steer"
+      },
+      "role": "user",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Include the translators",
+      "messageId": "msg-2",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-2",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 9
+  },
+  {
+    "event": {
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.at": "2027-01-15T08:00:10Z"
+      },
+      "name": "plain",
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-10",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "name": "plain",
+      "role": "assistant",
+      "subagentRunId": "sub-8",
+      "type": "TEXT_MESSAGE_START"
+    }
+  },
+  {
+    "event": {
+      "delta": "Found the editors and the translators.",
+      "messageId": "msg-10",
+      "subagentRunId": "sub-8",
+      "type": "TEXT_MESSAGE_CONTENT"
+    }
+  },
+  {
+    "event": {
+      "messageId": "msg-10",
+      "subagentRunId": "sub-8",
+      "type": "TEXT_MESSAGE_END"
+    },
+    "id": 10
+  },
+  {
+    "event": {
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:11Z",
+        "status": "completed"
+      },
+      "messageId": "evt-11",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        }
+      },
+      "subagentRunId": "sub-8",
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "subagentRunId": "sub-8",
+      "type": "SUBAGENT_FINISHED"
+    },
+    "id": 11
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-2",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 12
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-13",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "helper",
+        "at": "2027-01-15T08:00:13Z",
+        "closeAsked": true,
+        "closing": false,
+        "keepOpen": true,
+        "session": "s1",
+        "state": "idle"
+      },
+      "messageId": "session-self",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "alice@example.com",
+          "type": "user"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-13",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 13
+  },
+  {
+    "event": {
+      "protocolVersion": "1.0",
+      "runId": "run-14",
+      "threadId": "<thread-id>",
+      "type": "RUN_STARTED"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "helper",
+        "at": "2027-01-15T08:00:14Z",
+        "closeAsked": true,
+        "closing": false,
+        "keepOpen": true,
+        "session": "s1",
+        "state": "closed"
+      },
+      "messageId": "session-self",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "orchestrator",
+          "type": "system"
+        }
+      },
+      "replace": true,
+      "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "snapshot": {
+        "thread": {
+          "jobNumber": 2,
+          "state": "done",
+          "target": {
+            "agentId": "plain"
+          },
+          "title": "List every place the writers are named"
+        }
+      },
+      "type": "STATE_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "success"
+      },
+      "runId": "run-14",
+      "threadId": "<thread-id>",
+      "type": "RUN_FINISHED"
+    },
+    "id": 14
+  }
+]

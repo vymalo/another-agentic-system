@@ -694,6 +694,116 @@ pub(crate) async fn cancel_thread<P: Ports>(
     Ok(StatusCode::ACCEPTED)
 }
 
+/// The body of `POST /api/threads/{id}/sessions` (contract `ChildSessionStart`).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StartSessionBody {
+    id: ThreadId,
+    agent: String,
+    /// Required by the contract; an absent one is the agent's own refusal, `bad_description`.
+    description: Option<String>,
+    text: String,
+    #[serde(default)]
+    keep_open: bool,
+    /// As `forwardedProps["vymalo.tier"]`: one of the four words, or `null`.
+    tier: Option<serde_json::Value>,
+}
+
+/// The answer to `startChildSession`: the request's id, which the parent's
+/// `child_session_start_ended` names.
+#[derive(Serialize)]
+pub(crate) struct StartSessionAccepted {
+    request: ThreadId,
+}
+
+/// `POST /api/threads/{id}/sessions` (`startChildSession`, ADR 0072): a person starts a helper
+/// session from the thread. Asynchronous: 202 with the request's id, and the outcome is the
+/// parent's `child_session_start_ended`.
+pub(crate) async fn start_child_session<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<StartSessionBody>,
+) -> ApiResult<Response> {
+    let parent = parse_thread_id(&id)?;
+    let tier = match &body.tier {
+        Some(value) => {
+            orch_app::tier::parse(value).map_err(|e| Problem::bad_request(e.to_string()))?
+        }
+        None => None,
+    };
+    state
+        .app
+        .start_child_session(
+            &principal,
+            parent,
+            orch_app::StartChildSession {
+                request: body.id.to_string(),
+                agent: body.agent,
+                description: body.description,
+                text: body.text,
+                keep_open: body.keep_open,
+                tier,
+            },
+        )
+        .await?;
+    let mut response = (
+        StatusCode::ACCEPTED,
+        Json(StartSessionAccepted { request: body.id }),
+    )
+        .into_response();
+    if let Ok(location) = HeaderValue::from_str(&format!("/api/threads/{parent}")) {
+        response.headers_mut().insert(header::LOCATION, location);
+    }
+    Ok(response)
+}
+
+/// The body of `POST /api/threads/{id}/session/close` (contract `ChildSessionClose`), which may be
+/// absent.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct CloseSessionBody {
+    #[serde(default)]
+    cancel: bool,
+}
+
+/// The answer to `closeChildSession`.
+#[derive(Serialize)]
+pub(crate) struct CloseSessionAccepted {
+    state: &'static str,
+}
+
+/// `POST /api/threads/{id}/session/close` (`closeChildSession`, ADR 0072): asks the agent to close
+/// the helper session this thread is. The body may be absent (`cancel` is then false); 202 says
+/// what the orchestrator's record holds after the request.
+pub(crate) async fn close_child_session<P: Ports>(
+    State(state): State<ApiState<P>>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult<(StatusCode, Json<CloseSessionAccepted>)> {
+    let child = parse_thread_id(&id)?;
+    let body: CloseSessionBody = if body.iter().all(u8::is_ascii_whitespace) {
+        CloseSessionBody::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| Problem::bad_request(format!("invalid body: {e}")))?
+    };
+    let closed = state
+        .app
+        .close_child_session(&principal, child, body.cancel)
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CloseSessionAccepted {
+            state: match closed {
+                orch_app::ChildCloseState::Closing => "closing",
+                orch_app::ChildCloseState::Closed => "closed",
+            },
+        }),
+    ))
+}
+
 /// The thread as one downloadable JSON document (see [`crate::export`]). Authorised exactly like
 /// reading the thread: the same identity layer, the same `thread.read`, the same 404 for a thread
 /// the caller may not read or that does not exist.

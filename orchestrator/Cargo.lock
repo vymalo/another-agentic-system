@@ -2693,6 +2693,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-signed-request"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "orch-signed-request",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "orch-store-postgres"
 version = "0.1.0"
 dependencies = [
@@ -2770,6 +2788,7 @@ name = "orch-surface-thread-tools"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "futures",
  "jiff",
  "orch-api",
@@ -2779,6 +2798,7 @@ dependencies = [
  "orch-credential-broker",
  "orch-log-filter",
  "orch-ports",
+ "orch-signed-request",
  "orch-surface-agui",
  "orch-testsupport",
  "orch-thread-token",
@@ -2843,6 +2863,7 @@ dependencies = [
  "orch-app",
  "orch-core",
  "orch-ports",
+ "orch-signed-request",
  "orch-surface-agui",
  "reqwest",
  "rmcp",
@@ -2877,12 +2898,15 @@ name = "orch-tools-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "http",
  "hyper-util",
+ "jiff",
  "orch-core",
  "orch-ports",
+ "orch-signed-request",
  "orch-testsupport",
  "reqwest",
  "rmcp",
@@ -2893,6 +2917,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2922,6 +2947,7 @@ dependencies = [
  "orch-ports",
  "orch-registry-platform",
  "orch-secrets-pg",
+ "orch-signed-request",
  "orch-store-postgres",
  "orch-surface-agui",
  "orch-surface-mcp",

@@ -4,7 +4,7 @@
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md)
   (*"we need to add the capability that opencode has to create child session, and exchange messages with it. At creation, there
   should be a button to auto-close after work is done, so that the child session can further be reused."*), whose decision 11 puts
-  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Built: S1, S2a–S2f** (the contract
+  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Amended (2026-11-19, S3): the person's half is decided, see the note at the end; S3a is this documentation, the code follows in S3b to S3e.** **Built: S1, S2a–S2f** (the contract
   [`child-sessions-v1.md`](../api/child-sessions-v1.md) and the orchestrator's reading of the card; the pure core; the store; the A2A
   client's activation and strict reading of what an agent says; the application and the dispatcher that make the child threads and follow
   their rounds, and the API that says them; the AG-UI projection; the scenario on mocks, [`dev/child-sessions-e2e.sh`](../../dev/child-sessions-e2e.sh), *verified 2026-11-19* by running it twice against the real orchestrator, Postgres and the WireMock agent `mock-sessions` (modelled on adam-rs's `subscribe.rs`, `session_events.rs` and `child_sessions.rs`), without the edge, the web or a real agent; the full stack runs it in CI only). Epic:
@@ -159,6 +159,94 @@ decision 3 and of the consequences that left the choice open.
   A session still open when the invocation (or, with none, the run) ends is suspended, not canceled. A fork closes the cards it copied.
 - **`PROJECTION_VERSION` stays 2.** No released agent serves `child-sessions/v1`, so no log holds a session event, and a session
   event changes no frame of any other event. `childOf` in `STATE_SNAPSHOT` stays S4's.
+
+## Amended (2026-11-19, S3)
+
+The person's half: a person sends, steers, stops, closes and starts. Decisions D1, D3, D4 and D5 are **the owner's** (2026-11-19,
+relayed from the owner's chat); D2, D6, D7 and D8 are **proposed defaults**, accepted with the plan and open to the owner's change. The
+contract side is [`child-sessions-v1.md`](../api/child-sessions-v1.md) (amended the same day) and the routes are in
+[`chat-api.yaml`](../api/chat-api.yaml) (`startChildSession`, `closeChildSession`); the frames are in
+[`agui.md`](../api/agui.md#a-person-starts-sends-and-closes-a-session). **Not built yet:** nothing here runs until S3b to S3e, and
+nothing has run against a real adam (S5).
+
+| # | Question | Decided | By |
+|---|---|---|---|
+| D1 | Start: asynchronous or synchronous | **Asynchronous.** `POST /api/threads/{id}/sessions` is 202 with `{request}`; the outcome is `child_session_start_ended` in the parent's log, written through the outbox, and adam's own words reach the person as its `reason` | the owner |
+| D2 | A start on a parent with no A2A context yet | 409 `no_context` ("send the agent a message first") | proposed |
+| D3 | Stop & send in a child | **Only for a kept-open session**: cancel the round, then the next one. Otherwise 422 `session_closes_on_stop`, since stopping a session that closes when done closes it | the owner |
+| D4 | Who counts a person's answer to a round the agent started and left `blocked` | **The round keeps its starter's `by`**: the usage rule is unchanged and the parent counts it | the owner |
+| D5 | Mentions in a child's message | **Refused**, 422 `child_mentions`: a helper session cannot ask other agents | the owner |
+| D6 | Closing a closed session | 202 and nothing written; so is a close already asked with the same or a stronger `cancel` | proposed |
+| D7 | The text of a start that fails | Not kept in the log (`child_session_start_asked` holds no text); the web keeps the draft until the outcome arrives | proposed |
+| D8 | Starts waiting for their outcome, per parent | 4, then 409 `too_many_starts` | proposed |
+| D9 | A parent that notes its 256 sessions (the ledger's bound, whatever their state) | 409 `too_many_sessions` before anything is written; a start accepted earlier that opens into a ledger that filled meanwhile ends `failed` with a word and makes no thread (counted as `ledger_full`) | proposed |
+
+- **Decision 5 as built (the person talks to a child).** A message in a child thread is the helper's next round when the session is
+  idle, a steer into the round while it works (`vymalo.send: steer`, as ADR 0036) and the answer to the round when the helper asked
+  (`blocked`). The core decides, not the route. The "read-only until S3" note of 2026-11-18 is closed: a message, a steer, a Stop &
+  send and an action are allowed, and refused only for a closed session (409 `session_closed`), a mention (D5) and a Stop & send on
+  a session that does not stay open (D3). A fork and a share of a child stay 422 `child_thread`; a start from a child is 422
+  `child_thread`. Every one of these is the thread owner's only (another person gets 404, ADR 0039).
+- **A start is a request, not a turn.** The API writes `child_session_start_asked` in the parent's log (no text) and an outbox row in the
+  steer lane; the dispatcher sends the start to the parent's context, requires an answer whose round object names a new context and
+  the parent's own as `parentContextId` (else it fails closed), makes the child thread with the person's text as its first message and
+  the first round observed as the person's, and writes `child_session_start_ended`. adam derives the session from the message id, so
+  a resend after a crash finds the same session.
+- **The race rule.** A working parent may report the person's session (`opened`, `by: person`) before the start's answer: the
+  orchestrator holds such a session back while the parent has a pending start, and the answer makes the child. After the outcome, a
+  session left over (adam started it and the answer was lost) is made from the next listing.
+- **Refusals only adam can make** (its open, working and per-session round limits, a closed session the ledger did not know of)
+  arrive after the 202 or the run, with adam's own words: as `reason` of a failed start, and as the error of a message's failed job.
+  They are untrusted text; the web draws them as text.
+- **A close is a request.** `POST /api/threads/{id}/session/close` writes `child_session_close_asked` in the child's log and sends a
+  `close {cancel}` message to the child context. The child's log then says the session's state (`child_session_state`, written only
+  when the state or `closing` changes), and the parent's `child_session_closed` follows from the report. The closing round, which only
+  closes, is not followed as a round of its own.
+- **Visible to the person only as two cards** (S4 draws them): `vymalo.sessionStart` in the parent, and the child's own
+  `vymalo.session`, which the composer reads. `PROJECTION_VERSION` stays 2: no released log holds these kinds.
+- **Four new event kinds** (one migration, S3b): `child_session_start_asked` and `child_session_start_ended` in the parent's log,
+  `child_session_close_asked` and `child_session_state` in the child's. A build that does not know them cannot read a log that has
+  them: roll the build out before the routes are used.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant W as Web
+  participant O as Orchestrator
+  participant A as Agent (child-sessions/v1)
+  W->>O: POST /api/threads/{parent}/sessions {id, agent, description, text}
+  O->>O: card checks, child_session_start_asked (no text), outbox row
+  O-->>W: 202 {request}
+  O->>A: message to the parent context, start {agent, description, keepOpen}
+  A-->>O: round 1's task in a new child context (or an A2A refusal)
+  O->>O: child thread with the person's text, child_session_opened by person, child_session_start_ended (opened, or failed with the agent's words)
+  W->>O: run on the child thread (a message, or vymalo.send steer)
+  O->>A: message to the child context (next round, steer, or the answer)
+  W->>O: POST /api/threads/{child}/cancel
+  O->>A: CancelTask of the round
+  W->>O: POST /api/threads/{child}/session/close {cancel}
+  O->>O: child_session_close_asked
+  O->>A: message to the child context, close {cancel}
+  A-->>O: the closing round, session closed
+  O->>O: child_session_state closed, parent: child_session_closed
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Asked: startChildSession (child_session_start_asked)
+  Asked --> Opened: the agent answered with round 1 (child_session_start_ended opened)
+  Asked --> Failed: the agent refused, or could not be reached (child_session_start_ended failed)
+  Failed --> [*]: nothing was made
+  Opened --> Working: round 1 runs
+  Working --> Idle: a round ends, a kept-open session
+  Idle --> Working: a message (the next round)
+  Working --> Working: a steer, or the answer to a blocked round
+  Working --> Closing: a close asked while the round works
+  Idle --> Closed: a close
+  Working --> Closed: a round ends and the session does not stay open
+  Closing --> Closed: the round ends
+  Closed --> [*]: the thread stays readable, no message is taken
+```
 
 ## Amended (2026-11-19, the pin)
 

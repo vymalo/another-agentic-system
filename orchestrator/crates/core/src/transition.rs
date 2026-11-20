@@ -20,7 +20,7 @@ use crate::access_tier::AccessTier;
 use crate::agent::{AgentTaskState, AgentUpdate, FileRefusal};
 use crate::answer::announce;
 use crate::ask::{self, AskLimits, AskRefusal, AskRequest, AskResult};
-use crate::child_sessions::{self, SessionBy, SessionRefusal, SessionReport};
+use crate::child_sessions::{self, SessionBy, SessionRefusal, SessionReport, SessionStartOutcome};
 use crate::description::{DescribedBy, DescriptionSource, ThreadDescribedData, check_description};
 use crate::error::{Classify, ErrorClass};
 use crate::event::{
@@ -464,6 +464,69 @@ pub enum Input {
         /// thread's usage, any other is not.
         by: Option<SessionBy>,
     },
+    /// A person asks this parent thread to start a session with one of its agent's helpers
+    /// (`child-sessions/v1` section 4, ADR 0072). Valid in every state of a parent and never moves
+    /// it: it writes `child_session_start_asked` (no text) and orders the start
+    /// ([`Command::StartSession`]). The caller has checked the card (the helper is offered), the
+    /// text and the tier. The same `request` again changes nothing; a child, a bad request or
+    /// description, and a fifth start waiting for its outcome are refused
+    /// ([`TransitionError::ChildSessionRefused`]).
+    StartSession {
+        /// The person.
+        user: UserId,
+        /// The id of the request: what makes a repeat change nothing and what the outcome names.
+        request: String,
+        /// The helper, one of the card's.
+        agent: String,
+        /// What the helper is for, 1 to 80 characters on one line.
+        description: String,
+        /// What the helper is asked first. Not written to the log.
+        text: String,
+        /// Whether the session goes idle after a round.
+        keep_open: bool,
+        /// The access tier of the first round, as for [`Input::UserMessage`].
+        tier: Option<AccessTier>,
+        /// The cap that goes with `tier`, as for [`Input::UserMessage`].
+        tier_cap: Option<AccessTier>,
+    },
+    /// A start a person asked for ended (ADR 0072, S3): the session opened and its child thread
+    /// exists, or it did not. Drops the pending start and writes `child_session_start_ended`; a
+    /// request nobody waits for changes nothing.
+    SessionStartEnded {
+        /// The id of the request.
+        request: String,
+        /// How it ended.
+        outcome: SessionStartOutcome,
+    },
+    /// A person asks to close the session this child thread is (ADR 0072, S3). Valid in every
+    /// state of a child, never moves it. Nothing when the session is closed or a close at least as
+    /// strong was asked; else `child_session_close_asked` and [`Command::CloseSession`]. A thread
+    /// that is no child is refused ([`TransitionError::NotAChild`]).
+    CloseSession {
+        /// The person.
+        user: UserId,
+        /// The close cancels the working round first.
+        cancel: bool,
+    },
+    /// The agent refused the close a person asked for (ADR 0072, S3): the ask is cleared, so the
+    /// person may ask again, and the agent's words are logged as an `error` in the child. Nothing
+    /// when no close was asked; a thread that is no child is refused
+    /// ([`TransitionError::NotAChild`]).
+    SessionCloseFailed {
+        /// What the agent said (untrusted; cut to the log's bound).
+        reason: String,
+    },
+    /// The answer to a message this child thread sent names round `number` of its session (ADR
+    /// 0072, S3): the round is followed, never observed again. Moves no state. A thread that is
+    /// no child is refused ([`TransitionError::NotAChild`]).
+    RoundSent {
+        /// The session the thread is the child of; another session's answer changes nothing.
+        session: String,
+        /// The round's number, from 1.
+        number: u32,
+        /// The round's A2A task.
+        task_id: String,
+    },
 }
 
 impl Input {
@@ -503,6 +566,11 @@ impl Input {
             Input::ChildSession { .. } => "child session",
             Input::ChildSessionSaid(_) => "child session said",
             Input::RoundStarted { .. } => "round started",
+            Input::StartSession { .. } => "start session",
+            Input::SessionStartEnded { .. } => "session start ended",
+            Input::CloseSession { .. } => "close session",
+            Input::SessionCloseFailed { .. } => "session close failed",
+            Input::RoundSent { .. } => "round sent",
         }
     }
 }
@@ -576,6 +644,32 @@ pub enum Command {
         /// Who started the round, when the report said: the dispatcher passes it to
         /// [`Input::RoundStarted`].
         by: Option<SessionBy>,
+    },
+    /// Start a session a person asked for (ADR 0072, S3): the application writes a `steer` row (the
+    /// lane beside the delegation in flight, so a start never waits behind a working parent), and
+    /// the dispatcher sends the text to the parent's context with the helper named and answers
+    /// with [`Input::SessionStartEnded`].
+    StartSession {
+        /// The id of the person's request.
+        request: String,
+        /// The helper.
+        agent: String,
+        /// What the helper is for.
+        description: String,
+        /// What the helper is asked first.
+        text: String,
+        /// Whether the session goes idle after a round.
+        keep_open: bool,
+        /// The access tier of the first round, as for [`Command::Delegate`].
+        tier: Option<AccessTier>,
+        /// The cap that goes with `tier`, as for [`Command::Delegate`].
+        tier_cap: Option<AccessTier>,
+    },
+    /// Close the session this child thread is (ADR 0072, S3): the application writes a `steer`
+    /// row, so a close with `cancel` reaches a working round now.
+    CloseSession {
+        /// Cancel the working round first.
+        cancel: bool,
     },
     /// Finish the thread's **unsent** `delegate` and `steer` rows of the jobs
     /// up to `job` as `skipped`, in the commit that starts the next job (ADR 0036): the message
@@ -749,6 +843,20 @@ pub enum TransitionError {
     /// written; the session stays a step of the parent's task.
     #[error("child session refused: {0}")]
     ChildSessionRefused(SessionRefusal),
+    /// The session this thread is closed and takes nothing more (ADR 0072, S3). Nothing was written.
+    #[error("this helper session is closed and takes no more messages")]
+    SessionClosed,
+    /// Stop & send on a session that closes when its round ends: stopping the round is its end
+    /// (ADR 0072, S3). Nothing was written.
+    #[error("a session that closes when done closes when its round is stopped")]
+    SessionClosesOnStop,
+    /// A message to a helper session mentions an agent: a helper cannot ask other agents (ADR 0072,
+    /// S3). Nothing was written.
+    #[error("a helper session cannot ask other agents")]
+    ChildMentions,
+    /// A session was asked of a thread that is no child session's. Nothing was written.
+    #[error("this thread is not a helper session")]
+    NotAChild,
 }
 
 impl Classify for TransitionError {
@@ -757,10 +865,14 @@ impl Classify for TransitionError {
             TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
                 ErrorClass::Rejected
             }
-            TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
+            TransitionError::TextTooLong { .. }
+            | TransitionError::SessionClosesOnStop
+            | TransitionError::ChildMentions
+            | TransitionError::NotAChild => ErrorClass::Invalid,
+            TransitionError::SessionClosed => ErrorClass::Rejected,
             TransitionError::ChildSessionRefused(why) => match why {
-                SessionRefusal::LedgerFull => ErrorClass::Rejected,
-                SessionRefusal::Malformed => ErrorClass::Invalid,
+                SessionRefusal::LedgerFull | SessionRefusal::TooManyStarts => ErrorClass::Rejected,
+                SessionRefusal::Malformed | SessionRefusal::ChildThread => ErrorClass::Invalid,
             },
             TransitionError::AskRefused(why) => match why {
                 AskRefusal::TaskOver
@@ -1320,6 +1432,19 @@ fn decide(
     job: &mut Job,
     input: &Input,
 ) -> Result<(ThreadState, Vec<Command>), TransitionError> {
+    // what a helper session allows its person (ADR 0072, S3)
+    if matches!(
+        input,
+        Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
+    ) {
+        let mentions = match input {
+            Input::UserMessage { mentions, .. } | Input::StopAndSend { mentions, .. } => {
+                !mentions.is_empty()
+            }
+            _ => false,
+        };
+        child_sessions::admits_message(job, matches!(input, Input::StopAndSend { .. }), mentions)?;
+    }
     match input {
         Input::UserMessage {
             user,
@@ -1816,6 +1941,46 @@ fn decide(
             task_id,
             by,
         } => child_sessions::round_started(state, job, session, *number, task_id, *by),
+        Input::StartSession {
+            user,
+            request,
+            agent,
+            description,
+            text,
+            keep_open,
+            tier,
+            tier_cap,
+        } => Ok((
+            state,
+            child_sessions::start_session(
+                job,
+                &child_sessions::Start {
+                    user,
+                    request,
+                    agent,
+                    description,
+                    text,
+                    keep_open: *keep_open,
+                    tier: *tier,
+                    tier_cap: *tier_cap,
+                },
+            )?,
+        )),
+        Input::SessionStartEnded { request, outcome } => {
+            Ok((state, child_sessions::start_ended(job, request, outcome)))
+        }
+        Input::CloseSession { user, cancel } => {
+            Ok((state, child_sessions::close_session(job, user, *cancel)?))
+        }
+        Input::SessionCloseFailed { reason } => {
+            Ok((state, child_sessions::close_failed(job, reason)?))
+        }
+        Input::RoundSent {
+            session, number, ..
+        } => Ok((
+            state,
+            child_sessions::round_sent(state, job, session, *number)?,
+        )),
         Input::Rename { user, title } => {
             job.title.written_by(TitledBy::User);
             Ok((
@@ -2693,6 +2858,12 @@ mod tests {
             TransitionError::AskRefused(AskRefusal::EmptyText),
             TransitionError::ChildSessionRefused(SessionRefusal::LedgerFull),
             TransitionError::ChildSessionRefused(SessionRefusal::Malformed),
+            TransitionError::ChildSessionRefused(SessionRefusal::TooManyStarts),
+            TransitionError::ChildSessionRefused(SessionRefusal::ChildThread),
+            TransitionError::SessionClosed,
+            TransitionError::SessionClosesOnStop,
+            TransitionError::ChildMentions,
+            TransitionError::NotAChild,
         ];
         for e in errors {
             // Exhaustive: a new variant forces a class decision.
@@ -2700,15 +2871,19 @@ mod tests {
                 TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
                     ErrorClass::Rejected
                 }
-                TransitionError::TextTooLong { .. } => ErrorClass::Invalid,
+                TransitionError::TextTooLong { .. }
+                | TransitionError::SessionClosesOnStop
+                | TransitionError::ChildMentions
+                | TransitionError::NotAChild => ErrorClass::Invalid,
+                TransitionError::SessionClosed => ErrorClass::Rejected,
                 TransitionError::AskRefused(AskRefusal::TaskOver) => ErrorClass::Rejected,
                 TransitionError::AskRefused(_) => ErrorClass::Invalid,
-                TransitionError::ChildSessionRefused(SessionRefusal::LedgerFull) => {
-                    ErrorClass::Rejected
-                }
-                TransitionError::ChildSessionRefused(SessionRefusal::Malformed) => {
-                    ErrorClass::Invalid
-                }
+                TransitionError::ChildSessionRefused(
+                    SessionRefusal::LedgerFull | SessionRefusal::TooManyStarts,
+                ) => ErrorClass::Rejected,
+                TransitionError::ChildSessionRefused(
+                    SessionRefusal::Malformed | SessionRefusal::ChildThread,
+                ) => ErrorClass::Invalid,
             };
             assert_eq!(e.class(), expected);
             assert!(!e.is_retryable());

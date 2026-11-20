@@ -340,6 +340,14 @@ pub fn router_with_surfaces<P: Ports>(
             post(routes::cancel_thread::<P>),
         )
         .route(
+            "/api/threads/{thread_id}/sessions",
+            post(routes::start_child_session::<P>),
+        )
+        .route(
+            "/api/threads/{thread_id}/session/close",
+            post(routes::close_child_session::<P>),
+        )
+        .route(
             "/api/threads/{thread_id}/fork",
             post(routes::fork_thread::<P>),
         )

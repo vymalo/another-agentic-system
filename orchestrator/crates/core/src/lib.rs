@@ -58,13 +58,16 @@ pub use build::{
     MAX_BUILDS,
 };
 pub use child_sessions::{
-    CHILD_SESSIONS_EXTENSION, ChildAgent, ChildLedger, ChildOf, ChildSessionClosedData,
-    ChildSessionOpenedData, ChildSessionReportedData, ChildSessionsOffer, MAX_CHILD_SESSIONS,
+    CHILD_SESSIONS_EXTENSION, ChildAgent, ChildLedger, ChildOf, ChildSessionCloseAskedData,
+    ChildSessionClosedData, ChildSessionOpenedData, ChildSessionReportedData,
+    ChildSessionStartAskedData, ChildSessionStartEndedData, ChildSessionStateData,
+    ChildSessionsOffer, MAX_CHILD_SESSIONS, MAX_PENDING_STARTS, MAX_REQUEST_BYTES,
     MAX_SESSION_AGENT_BYTES, MAX_SESSION_CONTEXT_BYTES, MAX_SESSION_DESCRIPTION_CHARS,
-    MAX_SESSION_ID_BYTES, MAX_SESSION_TASK_BYTES, MAX_SESSIONS_LISTED, ObservedRound, RoundReport,
+    MAX_SESSION_ID_BYTES, MAX_SESSION_TASK_BYTES, MAX_SESSIONS_LISTED, MAX_START_DESCRIPTION_CHARS,
+    MAX_START_REASON_BYTES, ObservedRound, PendingStart, PersonPrompt, RoundReport, RoundTrack,
     SessionBy, SessionEvent, SessionInvalid, SessionLedger, SessionNews, SessionNote,
-    SessionOutcome, SessionRefusal, SessionReport, SessionState, child_title, report_of,
-    start_child,
+    SessionOutcome, SessionRefusal, SessionReport, SessionStartOutcome, SessionState,
+    StartOutcomeKind, child_title, report_of, start_child, start_child_for,
 };
 pub use commands::{COMMANDS_EXTENSION, CommandSpec, CommandsListing, CommandsOffer};
 pub use delete::{NotDeletable, deletable};

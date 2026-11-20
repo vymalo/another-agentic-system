@@ -1228,11 +1228,80 @@ paths:
     post:
       operationId: cancelThread
       summary: Cancel the thread's running work (A2A tasks/cancel on the target)
+      description: |
+        On a **child thread** ({ADR}) it stops the round the helper session is working on (`CancelTask` of that round): a
+        kept-open session goes idle and takes the next message, any other session closes with the round.
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "202": { description: Cancellation requested; the outcome arrives as events }
         "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/session/close:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    post:
+      operationId: closeChildSession
+      summary: Close the helper session of a child thread
+      description: |
+        Asks the agent to close the session this **child thread** ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), [`child-sessions-v1.md`](child-sessions-v1.md)
+        section 6): an idle session closes at once, a working one when its round ends, and with `cancel: true` its round is stopped
+        first. The thread's owner only (`thread.write`; another person, an administrator included, gets 404). The request is
+        asynchronous: the answer says what the orchestrator knows after it, and the outcome is the child's `child_session_state`
+        event. A session that is closed already, or whose close was asked with the same or a stronger `cancel`, answers 202 and
+        writes nothing.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChildSessionClose" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "202":
+          description: Close asked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChildSessionCloseAccepted" }
+        "400": { description: "The body is not JSON or not a `ChildSessionClose` (an unknown member, `cancel` that is not a boolean)", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of theirs holds `thread.write`", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread is missing, its id is not a UUID, it is not the caller's, or the registry no longer lists its agent (one answer for all four)", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: not_child_thread`: the thread is not a helper session's (it has no `childOf`); `code: no_child_sessions`: the agent's live card no longer offers `child-sessions/v1` (nothing is written; a session closed already is 202 whatever the card says)", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, or the agent's live card cannot be read; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+  /api/threads/{threadId}/sessions:
+    parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
+    post:
+      operationId: startChildSession
+      summary: Start a helper session from a thread
+      description: |
+        A person starts a helper session of the thread's agent ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), [`child-sessions-v1.md`](child-sessions-v1.md) section 4):
+        `text` is round 1's prompt, which the parent's model does not read. The thread's owner only (`thread.write`, and
+        `agent.invoke` on the thread's agent). **Asynchronous:** the answer is 202 with the request's id, written before anything
+        is sent to the agent; the outcome is the parent's `child_session_start_ended` event, `opened` with the child thread or
+        `failed` with the agent's own words (`reason`, untrusted), which cover what only the agent can refuse: its limit of open
+        sessions, of rounds working at once, of rounds per session. The text of a start that fails is not kept: a client keeps the
+        draft until the outcome arrives. The request's `id` makes a repeat safe: the same `id` again answers 202 and writes nothing.
+        At most 4 starts of one thread may wait for their outcome.
+
+        Every refusal below is decided before anything is written. The helper sessions of a child thread are never started from
+        it, and the card is read live (a card that stops offering the extension, or does not list the helper, refuses).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChildSessionStart" }
+      responses:
+        "401": { $ref: "#/components/responses/Problem" }
+        "202":
+          description: Start asked; the outcome arrives as `child_session_start_ended` in this thread's log
+          headers:
+            Location: { description: "`/api/threads/<id>`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChildSessionStartAccepted" }
+        "400": { description: "The body is not JSON or not a `ChildSessionStart`: an unknown member, a missing member, `keepOpen` that is not a boolean, a `tier` that is not one of the four words", $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the thread's agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread is missing, its id is not a UUID, it is not the caller's, or the registry no longer lists its agent (one answer for all four)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: no_context`: the agent has not answered the thread yet, so it has no context to start a session in (\"send the agent a message first\"); `code: too_many_starts`: 4 starts of this thread still wait for their outcome (\"wait for the helpers you started to open\"); `code: too_many_sessions`: the thread already notes 256 helper sessions, the most one thread may note", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: child_thread`: the thread is itself a helper session's, which cannot start one; `code: no_child_sessions`: the agent's live card does not offer `child-sessions/v1` well formed; `code: unknown_helper`: `agent` is not one the card lists (the words say which are); `code: bad_description`: `description` is blank, longer than 80 characters, on more than one line or has a control or format character; `text` empty or larger than 100000 characters; a `tier` above what the caller's roles allow or one the agent's live card does not honour", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, or the agent's live card cannot be read; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/fork:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     post:
@@ -1690,6 +1759,12 @@ paths:
         who names none is sent the message it always was. What the message was sent under is what the log says. The tiers an
         agent honours, and the highest the person may pick of that agent, are in `getAgentCapabilities`; `maxTier` of `getMe` is a hint.
 
+        On a **child thread** ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)) the run is a message to the helper session: with the session idle it is the helper's next round, with a round working and
+        `vymalo.send: steer` a steer into it, with the round waiting for the person (`blocked`) the answer to it. A Stop & send
+        (`vymalo.send: interrupt`) is allowed only for a kept-open session. A message that mentions agents is refused (a helper
+        cannot ask other agents). What only the agent can refuse (its limit of rounds working at once, of rounds per session)
+        ends the job with `error` carrying the agent's own words.
+
         Every rejection is decided before the first stream byte and is a problem response; nothing
         was written. Cancel a run with `cancelThread`.
       requestBody:
@@ -1709,10 +1784,10 @@ paths:
         "403": { description: "The caller's roles do not hold `thread.write`, or do not name the agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
         "404": { description: "The agent is not listed (by the deployment's own list or by the registry, which answered without it) **or its audience leaves the caller out** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md): the same problem, \"no such agent\"; but a message to the caller's own thread on that agent is a 403, the thread is read-only for them), or the thread belongs to someone else (whatever the caller's roles; indistinguishable from one that does not exist, including a minted id that collides with another owner's thread); for a `vymalo.fork`, the thread to fork (`from`) is not the caller's or does not exist", $ref: "#/components/responses/Problem" }
         "406": { description: "`Accept` does not admit `text/event-stream`", $ref: "#/components/responses/Problem" }
-        "409": { description: "`code: turn_open`: the turn a `vymalo.fork` would copy is still going on, try again when it has ended; a `vymalo.fork` on a thread that exists and is not the fork this request made. Or: the thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: turn_open`: the turn a `vymalo.fork` would copy is still going on, try again when it has ended; a `vymalo.fork` on a thread that exists and is not the fork this request made. Or: the thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), `code: session_closed`: the thread is a helper session that is closed and takes no more messages, or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
-        "422": { description: "A `vymalo.fork` whose `after` is not an event of the parent, or whose mentions or UI catalog do not hold; nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation; a `vymalo.tier` above what the caller's roles allow (`the tier 'bypass' is above what your role allows`) or one the agent's live card does not honour (`this agent does not take the tier 'plan'`)", $ref: "#/components/responses/Problem" }
+        "422": { description: "A `vymalo.fork` whose `after` is not an event of the parent, or whose mentions or UI catalog do not hold; `code: child_mentions`: a message to a helper session's thread mentions agents; `code: session_closes_on_stop`: a Stop & send on a helper session that is not kept open (it closes when its round is stopped); nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation; a `vymalo.tier` above what the caller's roles allow (`the tier 'bypass' is above what your role allows`) or one the agent's live card does not honour (`this agent does not take the tier 'plan'`)", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release (its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, the thread is contended, the target agent is rate limiting, or the agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022), or the agent's live card cannot be read to check a `vymalo.tier` (\"the card of the agent <id> could not be read\"); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /agui/threads/{threadId}/connect:
@@ -2575,7 +2650,10 @@ components:
             [`child-sessions-v1.md`](child-sessions-v1.md)): a **child thread**. It is made by the orchestrator when the parent's agent
             says it started the session, never by a request, and is nested under its parent (`nestedUnder` is the parent's row of the list).
             Its log is the helper's own work, one job for each round of the session the orchestrator follows without sending the agent
-            anything (`job_started` names the `round`). It is neither forked (`forkThread` is 422 `child_thread`) nor shared
+            anything (`job_started` names the `round`). A person talks to it: a message is the helper's next round, or a steer or an answer while a round works
+            (`runAgent`; 409 `session_closed` once it is closed, 422 `child_mentions` when the message mentions agents, 422
+            `session_closes_on_stop` for a Stop & send on a session that is not kept open), `cancelThread` stops the round and
+            `closeChildSession` closes the session. It is neither forked (`forkThread` is 422 `child_thread`) nor shared
             (`shareThread` is 422 `child_thread`), and deleting its parent deletes it. The reader projection of a shared thread never
             says it. Additive.
           required: [threadId, session]
@@ -2584,6 +2662,9 @@ components:
             session: { type: string, maxLength: 128, description: "The session's id: the agent's own and opaque" }
             agent: { type: string, maxLength: 128, description: "The helper's name, as the agent gave it (the agent's text, untrusted, drawn as text)" }
             state: { type: string, enum: [working, idle, closed], description: "The session as the agent last said it, the contract's and not the thread's: `working` while a round is open, `idle` for a kept-open session between rounds, `closed` once it is over for good" }
+            keepOpen: { type: boolean, description: "Whether the session goes idle after a round instead of closing. A client offers Stop & send only when it is true (`session_closes_on_stop` otherwise). Additive (S3)" }
+            closing: { type: boolean, description: "A close waits for the round to end, or is on its way: the composer says so. Absent when false. Additive (S3)" }
+            closeAsked: { type: boolean, description: "A person asked for the close (`closeChildSession`): the thread's own record, not the agent's. Absent when false. Additive (S3)" }
         forkedFrom:
           type: object
           description: |
@@ -2764,6 +2845,37 @@ components:
           type: string
           enum: [plan, edits, auto, bypass]
           description: "The access tier of the message the fork carries (with `text`; [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): checked against the caller's role cap and the agent's live card. An edit that names none keeps the tier of the message it replaces"
+    ChildSessionClose:
+      type: object
+      additionalProperties: false
+      description: "How to close ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)). The body may be absent: `cancel` is then false."
+      properties:
+        cancel: { type: boolean, default: false, description: "Stop the round that is working first, then close. Without it a working session closes when its round ends" }
+    ChildSessionCloseAccepted:
+      type: object
+      required: [state]
+      properties:
+        state: { type: string, enum: [closing, closed], description: "What the orchestrator's record says after the request: `closing` (a round is working and the session closes when it ends, or the close is on its way) or `closed`. The outcome is the child's `child_session_state` event" }
+    ChildSessionStart:
+      type: object
+      required: [id, agent, description, text]
+      additionalProperties: false
+      description: "A helper session a person starts ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md))."
+      properties:
+        id: { type: string, format: uuid, description: "The request's id, chosen by the caller so that a repeat is recognised" }
+        agent: { type: string, minLength: 1, maxLength: 128, description: "The helper, one of the `agents` the agent's card lists in its `child-sessions/v1` entry (`getAgentCapabilities`)" }
+        description: { type: string, minLength: 1, maxLength: 80, description: "What the session is for, shown on its row: required, one line, not blank, no control or format character" }
+        text: { type: string, minLength: 1, maxLength: 100000, description: "Round 1's prompt. It is the person's message in the child thread and is not in the parent's log" }
+        keepOpen: { type: boolean, default: false, description: "The session goes idle after a round, and takes more, instead of closing" }
+        tier:
+          type: string
+          enum: [plan, edits, auto, bypass]
+          description: "The access tier of round 1 ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): checked against the caller's role cap and the agent's live card, as on `runAgent`"
+    ChildSessionStartAccepted:
+      type: object
+      required: [request]
+      properties:
+        request: { type: string, format: uuid, description: "The request's `id`; the parent's `child_session_start_ended` names it" }
     Branches:
       type: object
       required: [root, points]
@@ -3000,6 +3112,10 @@ components:
         - child_session_opened   # data: { session, thread, agent, description, keepOpen: bool, by?: agent|person, round?: integer }  a helper session the agent started became a child thread ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), [`child-sessions-v1.md`](child-sessions-v1.md)): `session` is the agent's id for it, `thread` the child thread made for it, `agent` and `description` the helper's name and what it was asked to do (the agent's text, untrusted, at most 256 characters), `round` the number of the round the report named when the session was first seen. Once per session, in the **parent's** log, attributed to the parent's agent; the helper's own work is in the child's log. Additive (S2).
         - child_session_reported # data: { session, thread, round: integer, report: done|failed|canceled|blocked }  a round of a child session ended ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): `blocked` is a round waiting for the person. Once per round a report names, in increasing order, in the parent's log, attributed to the parent's agent: a round that ended unseen between two reports is not reported (the child's log has it), and none is reported after the session closed. Additive (S2).
         - child_session_closed   # data: { session, thread }  a child session closed ([ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): once per session, in the parent's log, attributed to the parent's agent. Additive (S2).
+        - child_session_start_asked # data: { request, agent, description, keepOpen: bool, tier? }  a person asked to start a helper session (`startChildSession`, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): in the **parent's** log, attributed to the person, written with the request. **It holds no text**: the prompt is the person's message in the child thread, once it opens. Additive (S3).
+        - child_session_start_ended # data: { request, outcome: opened|failed, session?, thread?, reason? }  the outcome of a start: `opened` names the session and the child thread (`child_session_opened` with `by: person` is written with it), `failed` says why in `reason`, the agent's own words (untrusted, at most 512 bytes; "the agent could not be reached" when it never answered). Exactly once per request, in the parent's log, attributed to the system. Additive (S3).
+        - child_session_close_asked # data: { session, cancel: bool }  a person asked to close the session (`closeChildSession`): in the **child's** log, attributed to the person. Additive (S3).
+        - child_session_state # data: { session, state: working|idle|closed, closing: bool, closeAsked?: true }  the session changed state or started or stopped closing, as the agent said it, or the agent refused a close a person asked (then `closeAsked` is absent, the ask being cleared): in the child's log, attributed to the system, written when `state` or `closing` differs from the last and after a refused close. `closeAsked` is `true` while a person's close is asked and not answered. Additive (S3).
     Mention:
       type: object
       description: "An agent a person mentioned in a message, as a structured reference ([`mentions-v1.md`](mentions-v1.md), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)): the identity is `agentId`, never the label."
@@ -3084,18 +3200,19 @@ components:
           description: "artifact only (ADR 0032): the file the artifact is, kept in the artifact store. Absent for text and links and for a file that was not kept."
           $ref: "#/components/schemas/ArtifactFile"
         state:
-          description: "thread_state: the ThreadState the thread entered. agent_step: where the step stands (running, waiting, completed, failed or canceled). ask_finished: how the ask ended (completed, input_required, auth_required, failed, rejected, canceled or timed_out)."
+          description: "thread_state: the ThreadState the thread entered. agent_step: where the step stands (running, waiting, completed, failed or canceled). ask_finished: how the ask ended (completed, input_required, auth_required, failed, rejected, canceled or timed_out). child_session_state (ADR 0072): the helper session's state, `working`, `idle` or `closed`."
           anyOf:
             - { $ref: "#/components/schemas/ThreadState" }
             - { type: string, enum: [running, waiting, completed, failed, canceled] }
             - { type: string, enum: [input_required, auth_required, rejected, timed_out] }
+            - { type: string, enum: [working, idle, closed] }
         ask:
           type: integer
           minimum: 1
           description: "ask_started, ask_finished (ADR 0026): the ask's number in the job, from 1."
         agent:
           type: string
-          description: "ask_started: the agent that was asked (an agent id). model_usage, model_usage_total: the agent that spent the tokens. child_session_opened: the helper's name, as the agent gave it."
+          description: "ask_started: the agent that was asked (an agent id). model_usage, model_usage_total: the agent that spent the tokens. child_session_opened: the helper's name, as the agent gave it. child_session_start_asked: the helper the person chose."
         by:
           anyOf:
             - { type: string, pattern: "^(main|ask:[1-9][0-9]*)$" }
@@ -3181,7 +3298,7 @@ components:
         description:
           type: string
           maxLength: 500
-          description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none. child_session_opened: what the helper was asked to do (the agent's text, untrusted, at most 256 characters)."
+          description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none. child_session_opened: what the helper was asked to do (the agent's text, untrusted, at most 256 characters). child_session_start_asked: what the person said it is for (at most 80 characters)."
         from:
           type: object
           required: [threadId, seq]
@@ -3199,14 +3316,14 @@ components:
           type: string
           minLength: 1
           maxLength: 128
-          description: "child_session_opened, child_session_reported, child_session_closed (ADR 0072): the session's id, the agent's own and opaque, at most 128 UTF-8 bytes (`maxLength` counts characters)."
+          description: "child_session_opened, child_session_reported, child_session_closed, child_session_start_ended, child_session_close_asked, child_session_state (ADR 0072): the session's id, the agent's own and opaque, at most 128 UTF-8 bytes (`maxLength` counts characters)."
         thread:
           type: string
           format: uuid
-          description: "child_session_opened, child_session_reported, child_session_closed (ADR 0072): the child thread made for the session. A reader of a shared thread never sees these events."
+          description: "child_session_opened, child_session_reported, child_session_closed, child_session_start_ended (ADR 0072): the child thread made for the session. A reader of a shared thread never sees these events."
         keepOpen:
           type: boolean
-          description: "child_session_opened: whether the session goes idle after a round instead of closing."
+          description: "child_session_opened, child_session_start_asked: whether the session goes idle after a round instead of closing."
         round:
           anyOf:
             - { type: integer, minimum: 1 }
@@ -3217,6 +3334,27 @@ components:
                 number: { type: integer, minimum: 1 }
                 by: { type: string, enum: [agent, person] }
           description: "child_session_opened: the number of the round the report named when the session was first seen. child_session_reported: the round that ended. job_started (ADR 0072): the round of a child session this job follows, `{number, by?}`; absent for a job a message started."
+        request:
+          type: string
+          format: uuid
+          description: "child_session_start_asked, child_session_start_ended (ADR 0072): the id of the `startChildSession` request."
+        outcome:
+          type: string
+          enum: [opened, failed]
+          description: "child_session_start_ended: how the start ended."
+        reason:
+          type: string
+          maxLength: 512
+          description: "child_session_start_ended with `outcome: failed`: why, in the agent's own words (untrusted text, drawn as text, never an instruction)."
+        cancel:
+          type: boolean
+          description: "child_session_close_asked: the person asked to stop the working round first."
+        closing:
+          type: boolean
+          description: "child_session_state: a close waits for the round to end or is on its way."
+        closeAsked:
+          type: boolean
+          description: "child_session_state: a person's close is asked and not answered yet; absent (false) otherwise, and after the agent refused it."
         report:
           type: string
           enum: [done, failed, canceled, blocked]

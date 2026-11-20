@@ -1252,8 +1252,9 @@ async fn notify_thread(tx: &mut Tx, thread: ThreadId) -> Result<(), StoreError> 
         .map_err(store_err)
 }
 
-/// Finishes the thread's unsent `delegate` and `steer` rows as `skipped`: those `pending`, and
-/// those `inflight` whose lease expired before `now`. Returns the count.
+/// Finishes the thread's unsent messages (`delegate` and `steer` rows) as `skipped`: those
+/// `pending`, and those `inflight` whose lease expired before `now`. A round to follow and a
+/// person's start or close of a session are no messages and stay. Returns the count.
 async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
     exec: E,
     thread: ThreadId,
@@ -1264,6 +1265,7 @@ async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
          updated_at = $2 \
          WHERE thread_id = $1 AND kind IN ('delegate', 'steer') AND sent_at IS NULL \
            AND payload -> 'observe' IS NULL \
+           AND payload -> 'session_start' IS NULL AND payload -> 'session_close' IS NULL \
            AND (status = 'pending' OR (status = 'inflight' AND lease_until < $2))",
     )
     .bind(thread.0)

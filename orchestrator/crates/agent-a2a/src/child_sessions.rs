@@ -4,7 +4,8 @@
 
 use a2a::AgentCard;
 use orch_core::{CHILD_SESSIONS_EXTENSION, ChildSessionsOffer, MAX_CHILD_SESSIONS};
-use serde_json::Value;
+use orch_ports::SendContent;
+use serde_json::{Value, json};
 
 /// The card's `child-sessions/v1` offer: `None` when the card does not list the URI exactly, or
 /// lists it with `params` that are not `{agents, maxOpen}` as the contract has them, or with a
@@ -23,6 +24,24 @@ pub fn child_sessions_from_card(card: &AgentCard) -> Option<ChildSessionsOffer> 
     // a parent notes at most MAX_CHILD_SESSIONS sessions in its life: an offer of more open at once
     // is one no listing could honour (and one that lets a listing pass the bound on listings)
     .filter(|offer| usize::try_from(offer.max_open()).is_ok_and(|n| n <= MAX_CHILD_SESSIONS))
+}
+
+/// What a person's start or close says under the URI in the message's `metadata` (contract sections
+/// 4 and 6): `{start: {agent, description, keepOpen}}` or `{close: {cancel}}`; `None` for any other
+/// content.
+pub(crate) fn session_metadata(content: &SendContent) -> Option<Value> {
+    match content {
+        SendContent::SessionStart {
+            agent,
+            description,
+            keep_open,
+            ..
+        } => Some(json!({"start": {
+            "agent": agent, "description": description, "keepOpen": keep_open,
+        }})),
+        SendContent::SessionClose { cancel } => Some(json!({"close": {"cancel": cancel}})),
+        SendContent::Text(_) | SendContent::UiAction { .. } => None,
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +86,27 @@ mod tests {
                 _ => None,
             }),
         }
+    }
+
+    #[test]
+    fn a_start_and_a_close_say_what_the_contract_has_and_a_message_says_nothing() {
+        let start = SendContent::SessionStart {
+            text: "go".into(),
+            agent: "planner".into(),
+            description: "Plan it".into(),
+            keep_open: false,
+        };
+        assert_eq!(
+            session_metadata(&start),
+            Some(
+                json!({"start": {"agent": "planner", "description": "Plan it", "keepOpen": false}})
+            )
+        );
+        assert_eq!(
+            session_metadata(&SendContent::SessionClose { cancel: true }),
+            Some(json!({"close": {"cancel": true}}))
+        );
+        assert_eq!(session_metadata(&SendContent::Text("x".into())), None);
     }
 
     fn good() -> Value {

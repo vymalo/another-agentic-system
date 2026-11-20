@@ -17,7 +17,7 @@ use serde_json::Value;
 use crate::access_tier::AccessTier;
 use crate::answer::AnswerLedger;
 use crate::ask::Ask;
-use crate::child_sessions::{ChildLedger, ObservedRound, SessionLedger};
+use crate::child_sessions::{ChildLedger, ObservedRound, PendingStart, SessionLedger};
 use crate::description::DescriptionLedger;
 use crate::ids::{AgentId, ThreadId};
 use crate::mention::Mention;
@@ -446,6 +446,11 @@ pub struct Job {
     /// keeps it. A ledger stored before the field existed has none.
     #[serde(skip_serializing_if = "SessionLedger::is_empty")]
     pub sessions: SessionLedger,
+    /// The sessions a person asked this thread to start whose outcome is not known yet (ADR 0072,
+    /// S3), at most [`MAX_PENDING_STARTS`](crate::MAX_PENDING_STARTS). Belongs to the
+    /// conversation: [`Job::next`] keeps it. A ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub session_starts: Vec<PendingStart>,
     /// What this thread knows of its session when it is a child thread (ADR 0072); `None` for any
     /// other. Belongs to the conversation: [`Job::next`] keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -497,6 +502,7 @@ impl Default for Job {
             asks: Vec::new(),
             usage: UsageLedger::default(),
             sessions: SessionLedger::default(),
+            session_starts: Vec::new(),
             child: None,
             observed: None,
         }
@@ -557,6 +563,7 @@ impl Job {
             tools: self.tools.clone(),
             builds: self.builds.clone(),
             sessions: self.sessions.clone(),
+            session_starts: self.session_starts.clone(),
             child: self.child.clone(),
             ..Job::default()
         }

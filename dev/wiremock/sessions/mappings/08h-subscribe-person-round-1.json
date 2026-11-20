@@ -1,0 +1,39 @@
+{
+  "name": "SubscribeToTask of round 1 of a person's session: works for 5 s, then completes",
+  "priority": 4,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SubscribeToTask"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.id",
+          "matches": ".+\\.keep-(true|false)\\.[^.]+"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-person-round-1.sse",
+    "fixedDelayMilliseconds": 5000
+  }
+}

@@ -28,6 +28,7 @@ fn report(session: &str, state: SessionState, round: Option<RoundReport>) -> Ses
         context_id: format!("ctx-1/s/{session}"),
         agent: "planner".into(),
         description: "Plan the migration".into(),
+        parent_context_id: None,
         keep_open: false,
         by: Some(SessionBy::Agent),
         state,
@@ -261,11 +262,13 @@ async fn the_dispatcher_follows_the_round_without_sending_and_the_parent_hears_o
     let kid = wait_state(&app, &alice(), kid.id, ThreadState::Done).await;
     run.shutdown().await;
 
-    // the child's log is the round: a job that nobody sent, its artifact, its totals and its end
+    // the child's log is the session's close, then the round: a job that nobody sent, its artifact,
+    // its totals and its end
     let ev = events(&app, &alice(), kid.id).await;
     assert_eq!(
         shape(&ev),
         [
+            "child_session_state",
             "job_started",
             "artifact",
             "model_usage_total",
@@ -275,7 +278,7 @@ async fn the_dispatcher_follows_the_round_without_sending_and_the_parent_hears_o
         "{ev:?}"
     );
     assert_contiguous(&ev);
-    match &ev[0].body {
+    match &ev[1].body {
         EventBody::JobStarted(started) => {
             assert_eq!(started.job, 1);
             let round = started.round.as_ref().unwrap();
@@ -669,28 +672,28 @@ async fn a_round_that_names_another_contexts_task_is_refused_and_fails_the_follo
 }
 
 #[tokio::test]
-async fn a_child_thread_takes_no_message_steer_stop_and_send_or_action() {
+async fn a_closed_helper_takes_no_message_steer_stop_and_send_or_action() {
     let w = World::new();
     let app = w.app();
     let parent = create(&app, &alice(), "plain", "echo hi").await;
     app.child_sessions_news(
         parent.id,
         None,
-        SessionNews::Listed(vec![report("s1", SessionState::Idle, None)]),
+        SessionNews::Listed(vec![report("s1", SessionState::Closed, None)]),
     )
     .await
     .unwrap();
     let kid = children(&w, parent.id).await.remove(0);
-    let child_thread = |e: AppError| match e {
-        AppError::Arrangement { code, .. } => assert_eq!(code, "child_thread"),
+    let closed = |e: AppError| match e {
+        AppError::Blocked { code, .. } => assert_eq!(code, "session_closed"),
         other => panic!("{other:?}"),
     };
-    child_thread(
+    closed(
         app.post_message(&alice(), kid.id, "hello".into())
             .await
             .unwrap_err(),
     );
-    child_thread(
+    closed(
         app.stop_and_send(&alice(), kid.id, "hello".into())
             .await
             .unwrap_err(),
@@ -705,7 +708,7 @@ async fn a_child_thread_takes_no_message_steer_stop_and_send_or_action() {
         tier: None,
         tier_cap: None,
     };
-    child_thread(
+    closed(
         app.submit(
             &alice(),
             kid.id,
@@ -721,9 +724,12 @@ async fn a_child_thread_takes_no_message_steer_stop_and_send_or_action() {
         .await
         .unwrap_err(),
     );
-    // while it works a message would be a steer: the same refusal (a working child needs a round)
     let log = events(&app, &alice(), kid.id).await;
-    assert!(log.is_empty(), "nothing was written: {:?}", shape(&log));
+    assert!(
+        log.iter().all(|e| e.kind() != EventKind::UserMessage),
+        "nothing was written: {:?}",
+        shape(&log)
+    );
     assert!(w.store.list_open_outbox(kid.id).await.unwrap().is_empty());
 }
 

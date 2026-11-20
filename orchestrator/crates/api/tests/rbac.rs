@@ -694,6 +694,18 @@ async fn threads_belong_to_their_owner_and_not_even_an_administrator_reads_anoth
             None,
         ),
         (
+            reqwest::Method::POST,
+            format!("/api/threads/{alices}/session/close"),
+            None,
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/api/threads/{alices}/sessions"),
+            Some(
+                r#"{"id":"0190bbbb-0000-7000-8000-000000000001","agent":"planner","description":"Plan","text":"go"}"#,
+            ),
+        ),
+        (
             reqwest::Method::PATCH,
             format!("/api/threads/{alices}"),
             Some(r#"{"title":"Mine now"}"#),
@@ -729,6 +741,18 @@ async fn threads_belong_to_their_owner_and_not_even_an_administrator_reads_anoth
             reqwest::Method::POST,
             format!("/api/threads/{alices}/cancel"),
             None,
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/api/threads/{alices}/session/close"),
+            None,
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/api/threads/{alices}/sessions"),
+            Some(
+                r#"{"id":"0190bbbb-0000-7000-8000-000000000001","agent":"planner","description":"Plan","text":"go"}"#,
+            ),
         ),
         (
             reqwest::Method::PATCH,
@@ -902,6 +926,27 @@ async fn files_are_read_by_artifact_read() {
         &format!("/api/threads/{thread}/tools"),
         "alice",
         Some(r#"{"servers":["docs"]}"#),
+        403,
+        Some("forbidden"),
+    )
+    .await;
+    // ...nor start or close a helper session (ADR 0072)
+    h.refused(
+        reqwest::Method::POST,
+        &format!("/api/threads/{thread}/session/close"),
+        "alice",
+        None,
+        403,
+        Some("forbidden"),
+    )
+    .await;
+    h.refused(
+        reqwest::Method::POST,
+        &format!("/api/threads/{thread}/sessions"),
+        "alice",
+        Some(
+            r#"{"id":"0190bbbb-0000-7000-8000-000000000001","agent":"planner","description":"Plan","text":"go"}"#,
+        ),
         403,
         Some("forbidden"),
     )

@@ -14,8 +14,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use orch_core::{
-    Actor, AgentTarget, ChildOf, ForkKind, Input, MAX_CHILD_SESSIONS, RoundReport, SessionNews,
-    SessionReport, ThreadId, ThreadRecord, TransitionError, child_title, start_child,
+    Actor, AgentTarget, ChildOf, ForkKind, Input, MAX_CHILD_SESSIONS, PersonPrompt, RoundReport,
+    SessionBy, SessionNews, SessionReport, ThreadId, ThreadRecord, TransitionError, child_title,
+    start_child_for,
 };
 use orch_ports::{
     ChildThread, Clock, IdGen, Lease, NewThreadRecord, Ports, StoreError, ThreadStore, Topic,
@@ -77,6 +78,17 @@ impl ChildSessionDrop {
             ChildSessionDrop::ForeignContext => 5,
         }
     }
+}
+
+/// What became of a report about a session of a parent.
+enum Told {
+    /// Applied, or dropped and counted.
+    Applied,
+    /// A session a person started, which the parent's start has not answered yet: the start's
+    /// answer makes its thread, so this report waits for it (a later listing says it again).
+    Deferred,
+    /// The claim is no longer ours.
+    Fenced,
 }
 
 /// The most parents whose last listing is remembered (the memory is emptied past it).
@@ -157,16 +169,27 @@ impl<P: Ports> App<P> {
                 if self.listed_last(thread) == Some(key) {
                     return Ok(true);
                 }
+                let mut deferred = false;
                 for report in reports {
-                    if !self.session_of_parent(thread, lease, report).await? {
-                        return Ok(false);
+                    match Box::pin(self.session_of_parent(thread, lease, report)).await? {
+                        Told::Fenced => return Ok(false),
+                        Told::Deferred => deferred = true,
+                        Told::Applied => {}
                     }
                 }
-                self.listed_applied(thread, key);
+                // a listing that left a session waiting is read again
+                if !deferred {
+                    self.listed_applied(thread, key);
+                }
                 Ok(true)
             }
-            SessionNews::Event(_, report) => self.session_of_parent(thread, lease, report).await,
-            SessionNews::OfRound(report) => self.session_of_round(thread, lease, report).await,
+            SessionNews::Event(_, report) => Ok(!matches!(
+                Box::pin(self.session_of_parent(thread, lease, report)).await?,
+                Told::Fenced
+            )),
+            SessionNews::OfRound(report) => {
+                Box::pin(self.session_of_round(thread, lease, report)).await
+            }
         }
     }
 
@@ -176,20 +199,28 @@ impl<P: Ports> App<P> {
         parent_id: ThreadId,
         lease: Option<&Lease>,
         report: SessionReport,
-    ) -> Result<bool, AppError> {
+    ) -> Result<Told, AppError> {
         if report.check().is_err() {
             self.child_session_dropped(ChildSessionDrop::Malformed, parent_id);
-            return Ok(true);
+            return Ok(Told::Applied);
         }
         let store = self.ports.store();
         let Some(parent) = store.get_thread(None, parent_id).await? else {
             self.late_input_dropped(LateSource::Dispatcher, parent_id);
-            return Ok(true);
+            return Ok(Told::Applied);
         };
         // a child has no children of its own
         if parent.child_of.is_some() {
             self.child_session_dropped(ChildSessionDrop::Refused, parent_id);
-            return Ok(true);
+            return Ok(Told::Applied);
+        }
+        // The session a person started is made by the answer to the start, with the person's prompt
+        // before its first round: this report must not make it first, without
+        if report.by == Some(SessionBy::Person)
+            && parent.job.sessions.note(&report.session).is_none()
+            && !parent.job.session_starts.is_empty()
+        {
+            return Ok(Told::Deferred);
         }
         let child = match parent.job.sessions.note(&report.session) {
             Some(note) => match store.get_thread(None, note.child).await? {
@@ -199,16 +230,18 @@ impl<P: Ports> App<P> {
                 }
                 None => {
                     self.child_session_dropped(ChildSessionDrop::ChildDeleted, parent_id);
-                    return Ok(true);
+                    return Ok(Told::Applied);
                 }
             },
             None => {
                 if parent.job.sessions.len() >= MAX_CHILD_SESSIONS {
                     self.child_session_dropped(ChildSessionDrop::LedgerFull, parent_id);
-                    return Ok(true);
+                    return Ok(Told::Applied);
                 }
-                let Some((child, created)) = self.open_child(&parent, &report).await? else {
-                    return Ok(true);
+                let Some((child, created)) =
+                    Box::pin(self.open_child(&parent, &report, None)).await?
+                else {
+                    return Ok(Told::Applied);
                 };
                 if !created {
                     self.tell_child(child.id, &report).await?;
@@ -216,7 +249,13 @@ impl<P: Ports> App<P> {
                 child.id
             }
         };
-        self.tell_parent(parent_id, lease, report, child).await
+        Ok(
+            if Box::pin(self.tell_parent(parent_id, lease, report, child)).await? {
+                Told::Applied
+            } else {
+                Told::Fenced
+            },
+        )
     }
 
     /// A round's own word about the session it belongs to, on the stream of the child thread
@@ -257,12 +296,16 @@ impl<P: Ports> App<P> {
             Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => {}
             Err(e) => return Err(e),
         }
-        self.tell_parent(of.thread, None, report, child_id).await
+        Box::pin(self.tell_parent(of.thread, None, report, child_id)).await
     }
 
     /// The child thread `child` hears what its session looks like now. A thread that is gone has
     /// nobody to hear it.
-    async fn tell_child(&self, child: ThreadId, report: &SessionReport) -> Result<(), AppError> {
+    pub(super) async fn tell_child(
+        &self,
+        child: ThreadId,
+        report: &SessionReport,
+    ) -> Result<(), AppError> {
         match self
             .apply(
                 child,
@@ -305,7 +348,7 @@ impl<P: Ports> App<P> {
 
     /// The parent's three events for `report`, each once: written through the core, whose ledger
     /// decides what is owed. `lease` fences the write when the news came on the parent's own stream.
-    async fn tell_parent(
+    pub(super) async fn tell_parent(
         &self,
         parent: ThreadId,
         lease: Option<&Lease>,
@@ -334,6 +377,9 @@ impl<P: Ports> App<P> {
                     match why {
                         orch_core::SessionRefusal::LedgerFull => ChildSessionDrop::LedgerFull,
                         orch_core::SessionRefusal::Malformed => ChildSessionDrop::Malformed,
+                        // a person's start is refused to the person, never reported by an agent
+                        orch_core::SessionRefusal::TooManyStarts
+                        | orch_core::SessionRefusal::ChildThread => ChildSessionDrop::Refused,
                     },
                     parent,
                 );
@@ -347,12 +393,13 @@ impl<P: Ports> App<P> {
     /// list, in one commit with its first decision (no event, the order to follow the report's
     /// round). `Some((thread, true))` for the thread this call made, `Some((thread, false))` for
     /// one that existed, `None` when the store refused it (counted).
-    async fn open_child(
+    pub(super) async fn open_child(
         &self,
         parent: &ThreadRecord,
         report: &SessionReport,
+        prompt: Option<PersonPrompt>,
     ) -> Result<Option<(ThreadRecord, bool)>, AppError> {
-        let (snapshot, cmds) = start_child(report);
+        let (snapshot, cmds) = start_child_for(report, prompt);
         let now = self.ports.clock().now();
         let target = AgentTarget {
             agent_id: parent.target.agent_id.clone(),
@@ -445,6 +492,7 @@ impl<P: Ports> App<P> {
                 task_id: Some(observed.task_id),
                 state: binding.task_state,
             }),
+            parent_context_id: None,
         };
         if report.check().is_err() {
             self.child_session_dropped(ChildSessionDrop::Malformed, child_id);

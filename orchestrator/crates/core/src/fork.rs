@@ -223,6 +223,10 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::ChildSessionOpened
                 | EventKind::ChildSessionReported
                 | EventKind::ChildSessionClosed
+                | EventKind::ChildSessionStartAsked
+                | EventKind::ChildSessionStartEnded
+                | EventKind::ChildSessionCloseAsked
+                | EventKind::ChildSessionState
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -614,6 +618,10 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             | EventBody::ChildSessionOpened(_)
             | EventBody::ChildSessionReported(_)
             | EventBody::ChildSessionClosed(_)
+            | EventBody::ChildSessionStartAsked(_)
+            | EventBody::ChildSessionStartEnded(_)
+            | EventBody::ChildSessionCloseAsked(_)
+            | EventBody::ChildSessionState(_)
             | EventBody::ThreadForked(_) => {}
         }
     }

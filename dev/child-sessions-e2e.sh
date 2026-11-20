@@ -213,9 +213,9 @@ expect "the parent is a top-level thread of the list: not nested, no childOf" \
   "$(jq -r --arg p "$parent" '[.[] | select(.id == $p) | "\(.nestedUnder) \(.childOf)"] | first // ""' "$tmp/rail.json")" "null null"
 
 api GET "/api/threads/$child/export" >"$tmp/child.export.json" 2>/dev/null || echo '{"events":[]}' >"$tmp/child.export.json"
-expect "the child's log is the round: the job nobody sent, the step, the call, the step done, the totals, completed, done" \
+expect "the child's log is the round: the job nobody sent, the step, the call, the step done, the one state change (the one-shot session closes), the totals, completed, done" \
   "$(jq -r '[.events[] | if .kind == "agent_status" or .kind == "thread_state" then "\(.kind):\(.data.status // .data.state)" else .kind end] | join(",")' "$tmp/child.export.json")" \
-  "job_started,agent_step,model_usage,agent_step,model_usage_total,agent_status:completed,thread_state:done"
+  "job_started,agent_step,model_usage,agent_step,child_session_state,model_usage_total,agent_status:completed,thread_state:done"
 expect "it starts with job 1, round 1, and holds nothing the person sent" \
   "$(jq -r '[(.events[0].data | "\(.job) \(.round.number)"), ([.events[] | select(.kind == "user_message")] | length | tostring)] | join(" | ")' "$tmp/child.export.json")" \
   "1 1 | 0"
@@ -294,5 +294,206 @@ expect "the child's stream: the vymalo.job card says job 1 and round 1" \
 expect "the child's stream: its usage frames, the call and the totals, say counted false" \
   "$(jq -r '[.[] | select(.type == "CUSTOM" and (.name | startswith("vymalo.usage"))) | "\(.name):\(.value.counted)"] | join(",")' "$tmp/child.frames.json")" \
   "vymalo.usage:false,vymalo.usage_total:false"
+
+# =======================================================================================================================
+# A person drives a session (S3 of epic #332): start from the parent, send, steer, stop, close, and the refusals. A second user and a second
+# parent, so the checks above stay as they were. The mock keeps no state (dev/wiremock/sessions, the mappings 08*): the session id is
+# `<parent context>.keep-<true|false>.<message id>`, round 1 is the task of that id, held for 5 s, and a message to the child context is
+# always round 2, held for 8 s; a message that starts `[mock:hold]` moves a WireMock scenario (`sessions-hold`, mapping 08f0) so that
+# every subscription to round 2 is held 60 s and a GetTask of it says working (08g0, 08i0): a steer and a stop meet a round
+# that is still working, however slow the runner is. The scenario is reset before this part and after the stop. A close of an idle
+# session is a round of its own, the next one (adam numbers it so), so the mock's close is round 3.
+# =======================================================================================================================
+echo "== a person drives a session: a second parent, a second user"
+email=${PERSON_EMAIL:-child-sessions-person@example.com}
+id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
+curl -s -o /dev/null --max-time 30 -X DELETE "$mock/__admin/requests" || true
+curl -s -o /dev/null --max-time 30 -X POST "$mock/__admin/scenarios/reset" || true
+
+post() { # post PATH JSON: the HTTP status on stdout, the body in $tmp/post.json
+  curl -sS --max-time 60 -o "$tmp/post.json" -w '%{http_code}' -X POST "$base$1" -H "$id_header" \
+    -H 'content-type: application/json' -d "${2:-}" 2>"$tmp/err" || true
+}
+
+run_props() { # run_props THREAD TEXT PROPS OUT: one run by mock-sessions on the thread, to its end. The HTTP status on stdout, the body in OUT
+  _input=$(jq -n --arg thread "$1" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$2" --argjson props "$3" '{
+    threadId: $thread, runId: $run, state: {}, tools: [], context: [],
+    messages: [{id: $msg, role: "user", content: $text}], forwardedProps: $props}')
+  curl -sS -N --max-time "$timeout" -o "$4" -w '%{http_code}' -X POST "$base/agui/agents/mock-sessions" -H "$id_header" \
+    -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$tmp/err" || true
+}
+
+problem_code() { jq -r '.code // empty' "$1" 2>/dev/null || true; }
+
+# msgs: for each SendStreamingMessage the mock got, `<start|close|msg>|<taskId or ->|<activated by message.extensions>`
+msgs() {
+  curl -s --max-time 30 "$mock/__admin/requests" | jq -r --arg u "$sessions_uri" '
+    .requests[] | (.request.body | fromjson? // {}) | select(.method == "SendStreamingMessage") | .params.message as $m
+    | ($m.metadata // {})[$u] as $x
+    | "\(if $x.start then "start" elif $x.close then "close" else "msg" end)|\($m.taskId // "-")|\(($m.extensions // []) | index($u) != null)"' 2>/dev/null || true
+}
+
+# export_of THREAD FILE: the thread's log in FILE
+export_of() { api GET "/api/threads/$1/export" >"$2" 2>/dev/null || echo '{"events":[]}' >"$2"; }
+
+# wait_for_events THREAD KIND COUNT FILE: waits (up to TIMEOUT seconds) until the thread's log holds COUNT events of KIND; the log is in FILE
+wait_for_events() {
+  _deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    export_of "$1" "$4"
+    _n=$(jq -r --arg k "$2" '[.events[] | select(.kind == $k)] | length' "$4" 2>/dev/null || echo 0)
+    if [ "$_n" -ge "$3" ] || [ "$(date +%s)" -ge "$_deadline" ]; then break; fi
+    sleep 1
+  done
+}
+
+# wait_child_state THREAD STATE: waits until the thread's childOf.state is STATE; prints the last one it saw
+wait_child_state() {
+  _deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    _cs=$(api GET "/api/threads/$1" 2>/dev/null | jq -r '.childOf.state // empty' || true)
+    if [ "$_cs" = "$2" ] || [ "$(date +%s)" -ge "$_deadline" ]; then echo "$_cs"; return 0; fi
+    sleep 1
+  done
+}
+
+parent2=$(uuid)
+code=$(run_agui mock-sessions "$parent2" "plan the second migration ($nonce)")
+expect "the second parent: POST /agui/agents/mock-sessions answers 200" "$code" "200"
+expect "the second parent thread ends done" "$(wait_state "$parent2")" "done"
+wait_for_events "$parent2" child_session_closed 1 "$tmp/parent2.export.json"
+agent_child=$(jq -r '[.events[] | select(.kind == "child_session_opened") | .data.thread] | first // ""' "$tmp/parent2.export.json")
+if [ -n "$agent_child" ]; then ok "the agent's own session of the second parent has a child thread"; else bad "the second parent has no child thread of the agent's own"; fi
+curl -s -o /dev/null --max-time 30 -X DELETE "$mock/__admin/requests" || true
+
+echo "== the refusals that cost the agent nothing (the API decides before anything is written)"
+pnonce=$(uuid)
+good_start=$(jq -n --arg id "$(uuid)" --arg t "List every place the writers are named ($pnonce)" \
+  '{id: $id, agent: "planner", description: "Find the writers", text: $t, keepOpen: true}')
+expect "a start with no description: 422" "$(post "/api/threads/$parent2/sessions" "$(printf '%s' "$good_start" | jq -c 'del(.description)')")" "422"
+expect "  and its code is bad_description" "$(problem_code "$tmp/post.json")" "bad_description"
+expect "a start with a blank description: 422 bad_description" \
+  "$(post "/api/threads/$parent2/sessions" "$(printf '%s' "$good_start" | jq -c '.description = "   "')") $(problem_code "$tmp/post.json")" "422 bad_description"
+expect "a start of a helper the card does not list: 422 unknown_helper" \
+  "$(post "/api/threads/$parent2/sessions" "$(printf '%s' "$good_start" | jq -c '.agent = "nobody"')") $(problem_code "$tmp/post.json")" "422 unknown_helper"
+expect "a start from a child thread: 422 child_thread" \
+  "$(post "/api/threads/$agent_child/sessions" "$good_start") $(problem_code "$tmp/post.json")" "422 child_thread"
+expect "a close of a thread that is no child: 422 not_child_thread" \
+  "$(post "/api/threads/$parent2/session/close" '{}') $(problem_code "$tmp/post.json")" "422 not_child_thread"
+expect "a start with a field the contract does not have: 400" \
+  "$(post "/api/threads/$parent2/sessions" "$(printf '%s' "$good_start" | jq -c '.nope = 1')")" "400"
+expect "another person's start is a 404 (nothing is said of the thread)" \
+  "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$base/api/threads/$parent2/sessions" -H "$(sh "$(dirname "$0")/auth-header.sh" child-sessions@example.com)" -H 'content-type: application/json' -d "$good_start")" "404"
+expect "none of these sent the agent anything" "$(msgs | grep -c . || true)" "0"
+
+echo "== a person starts a session from the parent: 202 and the outcome in the parent's log"
+request=$(printf '%s' "$good_start" | jq -r .id)
+expect "POST /api/threads/{parent}/sessions answers 202" "$(post "/api/threads/$parent2/sessions" "$good_start")" "202"
+expect "  the body names the request" "$(jq -r '.request // empty' "$tmp/post.json")" "$request"
+expect "the same request again is the same answer (202, the same request) and writes nothing" \
+  "$(post "/api/threads/$parent2/sessions" "$good_start") $(jq -r '.request // empty' "$tmp/post.json")" "202 $request"
+wait_for_events "$parent2" child_session_start_ended 1 "$tmp/parent2.export.json"
+expect "the parent's log: the ask, the outcome opened, once each, and the session opened by the person" \
+  "$(jq -r --arg r "$request" '[.events[] | select((.kind == "child_session_start_asked" or .kind == "child_session_start_ended") and .data.request == $r) | .kind] | sort | join(",")' "$tmp/parent2.export.json") $(jq -r '[.events[] | select(.kind == "child_session_opened") | .data.by // "-"] | last' "$tmp/parent2.export.json")" \
+  "child_session_start_asked,child_session_start_ended person"
+expect "the ask says the helper, the description and keepOpen, and the person's text is nowhere in the parent's log" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_start_asked") | .data | "\(.agent) | \(.description) | \(.keepOpen)"] | first // ""' "$tmp/parent2.export.json") | $(jq -r --arg n "$pnonce" 'tostring | contains($n)' "$tmp/parent2.export.json")" \
+  "planner | Find the writers | true | false"
+child2=$(jq -r '[.events[] | select(.kind == "child_session_start_ended") | .data | select(.outcome == "opened") | .thread] | first // ""' "$tmp/parent2.export.json")
+session2=$(jq -r '[.events[] | select(.kind == "child_session_start_ended") | .data | select(.outcome == "opened") | .session] | first // ""' "$tmp/parent2.export.json")
+if [ -n "$child2" ]; then ok "the outcome names a child thread"; else bad "the outcome names no child thread: $(jq -c '[.events[] | select(.kind == "child_session_start_ended")]' "$tmp/parent2.export.json")"; fi
+case $session2 in *.keep-true.*) ok "the session is the mock's: $session2" ;; *) bad "the session is not the mock's (<context>.keep-true.<message>): '$session2'" ;; esac
+expect "the agent was sent exactly one start, activated, and nothing else" "$(msgs | paste -sd, -)" "start|-|true"
+expect "the child thread ends done (round 1)" "$(wait_state "$child2")" "done"
+api GET "/api/threads/$child2" >"$tmp/child2.json" 2>/dev/null || echo '{}' >"$tmp/child2.json"
+expect "childOf: the parent, the session, the helper, kept open, idle, not closing" \
+  "$(jq -r '.childOf | "\(.threadId) | \(.session) | \(.agent) | \(.keepOpen) | \(.state) | \(.closing // false)"' "$tmp/child2.json")" "$parent2 | $session2 | planner | true | idle | false"
+expect "the child is nested under the parent" "$(jq -r '.nestedUnder' "$tmp/child2.json")" "$parent2"
+export_of "$child2" "$tmp/child2.export.json"
+expect "the child's log begins with the person's prompt, by the person, and holds it once" \
+  "$(jq -r --arg n "$pnonce" '[.events[] | select(.kind == "user_message")] | "\(length) \(.[0].actor.name) \(.[0].data.text | contains($n))"' "$tmp/child2.export.json")" "1 $email true"
+expect "the helper's round was followed: the round's task is the session and nobody sent it twice" \
+  "$(calls SubscribeToTask | sort -u | paste -sd, -)" "true|$session2"
+
+echo "== a person sends: the next round, then a steer into it, then stops it"
+bg_status="$tmp/send.status"
+( run_props "$child2" "[mock:hold] now the editors ($nonce)" '{}' "$tmp/send.sse" >"$bg_status" ) &
+send_pid=$!
+_deadline=$(( $(date +%s) + 30 ))
+while [ "$(msgs | grep -c '^msg|-|true$' || true)" -lt 1 ] && [ "$(date +%s)" -lt "$_deadline" ]; do sleep 1; done
+expect "the message to an idle session is a message with no task, activated (the agent starts round 2)" "$(msgs | grep -c '^msg|-|true$' || true)" "1"
+expect "the child works" "$(wait_for_events "$child2" job_started 2 "$tmp/child2.export.json"; api GET "/api/threads/$child2" | jq -r .state)" "working"
+steer_code=$(run_props "$child2" "also the translators ($nonce)" '{"vymalo.send":"steer"}' "$tmp/steer.sse")
+expect "a steer while the round works: the run answers 200" "$steer_code" "200"
+_deadline=$(( $(date +%s) + 30 ))
+while [ "$(msgs | grep -c "^msg|$session2.r2|true$" || true)" -lt 1 ] && [ "$(date +%s)" -lt "$_deadline" ]; do sleep 1; done
+expect "the steer reached the agent as a message naming the round's task ($session2.r2), activated" "$(msgs | grep -c "^msg|$session2.r2|true$" || true)" "1"
+expect "stop the round: POST /api/threads/{child}/cancel answers 202" "$(post "/api/threads/$child2/cancel")" "202"
+wait "$send_pid" || true
+stopped=$(wait_state "$child2")
+expect "the child is stopped: cancelled" "$stopped" "cancelled"
+if [ "$stopped" != cancelled ]; then
+  echo "  the methods the mock got for $session2.r2, in order:"
+  curl -s --max-time 30 "$mock/__admin/requests" | jq -r --arg t "$session2.r2" \
+    '[.requests[] | (.request.body | fromjson? // {}) | select((.params.id // .params.message.taskId // "") == $t) | .method] | reverse | join(" ")' 2>/dev/null | sed 's/^/    /'
+fi
+expect "a kept-open session goes idle when its round is stopped" "$(wait_child_state "$child2" idle)" "idle"
+expect "the agent was asked to cancel the round" "$(curl -s --max-time 30 "$mock/__admin/requests" | jq -r --arg t "$session2.r2" '[.requests[] | (.request.body | fromjson? // {}) | select(.method == "CancelTask" and .params.id == $t)] | length')" "1"
+curl -s -o /dev/null --max-time 30 -X POST "$mock/__admin/scenarios/reset" || true
+
+echo "== the refusals of a send"
+expect "a mention in a child: 422 child_mentions" \
+  "$(run_props "$child2" "@coder what do you think" '{"vymalo.mentions":[{"agentId":"mock-coder","label":"@coder","start":0,"end":6}]}' "$tmp/mention.sse") $(problem_code "$tmp/mention.sse")" "422 child_mentions"
+
+echo "== a session that closes when done: Stop & send is refused (422), and the agent's own refusals reach the person in its words"
+one_shot=$(printf '%s' "$good_start" | jq -c --arg id "$(uuid)" '.id = $id | .keepOpen = false | .description = "Plan the work"')
+expect "start a one-shot session: 202" "$(post "/api/threads/$parent2/sessions" "$one_shot")" "202"
+wait_for_events "$parent2" child_session_start_ended 2 "$tmp/parent2.export.json"
+child3=$(jq -r '[.events[] | select(.kind == "child_session_start_ended") | .data | select(.outcome == "opened") | .thread] | last // ""' "$tmp/parent2.export.json")
+expect "Stop & send on a session that is not kept open: 422 session_closes_on_stop" \
+  "$(run_props "$child3" "stop and go on" '{"vymalo.send":"interrupt"}' "$tmp/stop.sse") $(problem_code "$tmp/stop.sse")" "422 session_closes_on_stop"
+refuse_working=$(printf '%s' "$good_start" | jq -c --arg id "$(uuid)" '.id = $id | .text = "[mock:refuse-working] too many"')
+expect "a start the agent refuses (its working-rounds limit) is still 202" "$(post "/api/threads/$parent2/sessions" "$refuse_working")" "202"
+wait_for_events "$parent2" child_session_start_ended 3 "$tmp/parent2.export.json"
+expect "its outcome is failed, with adam's words" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_start_ended") | .data | select(.outcome == "failed") | .reason] | last // ""' "$tmp/parent2.export.json" | cut -c1-30)" "4 rounds are already working i"
+expect "and no child thread was made for it: two session threads of a person (and the agent's own)" \
+  "$(api GET "/api/threads?order=rail" | jq -r --arg p "$parent2" '[.[] | select(.childOf.threadId == $p)] | length')" "3"
+expect "a message the agent refuses (its round limit) fails the child's job with its words" \
+  "$(wait_state "$child2" >/dev/null; run_props "$child2" "[mock:refuse-rounds] one more" '{}' "$tmp/rounds.sse" >/dev/null; wait_state "$child2")" "failed"
+expect "  and the error is in the child's log in adam's words" \
+  "$(export_of "$child2" "$tmp/child2.export.json"; jq -r '[.events[] | select(.kind == "error") | .data.message] | last // "" | .[0:30]' "$tmp/child2.export.json")" "session S has had 20 rounds, t"
+
+echo "== a person closes the session"
+expect "POST /api/threads/{child}/session/close answers 202 and says the state" \
+  "$(post "/api/threads/$child2/session/close" '{"cancel":false}') $(jq -r '.state // empty' "$tmp/post.json" | sed 's/^closing$/closed-or-closing/; s/^closed$/closed-or-closing/')" "202 closed-or-closing"
+expect "the session ends closed" "$(wait_child_state "$child2" closed)" "closed"
+expect "the close reached the agent once, in a message to the child context, activated" "$(msgs | grep -c '^close|-|true$' || true)" "1"
+expect "closing it again is 202 and writes nothing: the agent got no second close" \
+  "$(post "/api/threads/$child2/session/close" '{}') $(msgs | grep -c '^close|' || true)" "202 1"
+expect "a message to the closed session: 409 session_closed" \
+  "$(run_props "$child2" "anything" '{}' "$tmp/closed.sse") $(problem_code "$tmp/closed.sse")" "409 session_closed"
+export_of "$child2" "$tmp/child2.export.json"
+expect "the child's log has the close asked by the person and the state closed, once each" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_close_asked" or (.kind == "child_session_state" and .data.state == "closed")) | .kind] | join(",")' "$tmp/child2.export.json")" \
+  "child_session_close_asked,child_session_state"
+
+echo "== AG-UI: the start is a card in the parent's stream, the close the child's own card"
+frames "$parent2" "$tmp/parent2.frames.json"
+expect "vymalo.sessionStart: one card per request, starting then opened (and failed for the refused one)" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.sessionStart")] | group_by(.messageId) | map(map(.content.state) | join(">")) | sort | join(" ")' "$tmp/parent2.frames.json")" \
+  "starting>failed starting>opened starting>opened"
+expect "the opened card names the child thread and the session, and no prompt" \
+  "$(jq -r --arg r "$request" '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.sessionStart" and .messageId == "session-start-\($r)")] | last | .content | "\(.threadId) | \(.session) | \(.agent) | \(.description) | \(has("text") or has("prompt"))"' "$tmp/parent2.frames.json")" \
+  "$child2 | $session2 | planner | Find the writers | false"
+expect "the failed card says adam's words" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.sessionStart" and .content.state == "failed")] | last | .content.reason | .[0:30]' "$tmp/parent2.frames.json")" "4 rounds are already working i"
+expect "the person's session is a vymalo.session card that says by person" \
+  "$(jq -r --arg s "$session2" '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.session" and .content.session == $s)] | last | .content.by' "$tmp/parent2.frames.json")" "person"
+frames "$child2" "$tmp/child2.frames.json"
+expect "the child's own card (session-self) ends closed, close asked, not closing" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .messageId == "session-self")] | last | .content | "\(.state) \(.closeAsked) \(.closing) \(.keepOpen) \(.agent)"' "$tmp/child2.frames.json")" \
+  "closed true false true planner"
+
 
 finish

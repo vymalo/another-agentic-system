@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
 use orch_core::{
-    AgentId, AgentTaskState, AgentUpdate, CommandsListing, CommandsOffer, ForkHistory,
-    KnownExtension, LiveChunk, LiveEnd, Releases, StepKind, StepReport, StepState, TierListing,
-    TierOffer, ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    AgentId, AgentTaskState, AgentUpdate, ChildSessionsOffer, CommandsListing, CommandsOffer,
+    ForkHistory, KnownExtension, LiveChunk, LiveEnd, Releases, StepKind, StepReport, StepState,
+    TierListing, TierOffer, ToolsGrant, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -175,6 +175,8 @@ struct State {
     snapshot_on_continue: bool,
     /// Whether the answer to a steer says the task's sessions before its state.
     steer_lists_sessions: bool,
+    /// Answers a message that names a context from another one ([`ScriptedAgent::answer_from_another_context`]).
+    foreign_context: bool,
     /// Contexts the agent assigned, one per conversation it started without being given one.
     next_context: u32,
     /// Every context a task of this agent has, assigned or named.
@@ -182,6 +184,41 @@ struct State {
     /// Refuse a message that names a context the agent did not create, as kagent does
     /// ([`ScriptedAgent::reject_unknown_contexts`]).
     strict_contexts: bool,
+    /// The sessions the agent opened for a person's start (`child-sessions/v1`), by the context
+    /// each one has: what a later round or close says of its session.
+    sessions: HashMap<String, SessionRec>,
+    /// How the report a person's start or close is answered with is wrong
+    /// ([`ScriptedAgent::fault_session_answers`]).
+    answer_fault: Option<AnswerFault>,
+}
+
+/// How a scripted agent gets the session report of the round it makes for a person's start or
+/// close wrong, so a client that checks the report fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerFault {
+    /// A start is answered in the parent's own context, not one of the session's.
+    ParentsOwnContext,
+    /// The report names a context other than the task's.
+    ReportContext,
+    /// The report names another parent context than the one the start was sent in.
+    ParentContext,
+    /// The report says the round is round 2.
+    LaterRound,
+    /// The report names another task for its round.
+    OtherTask,
+    /// The report is about another session.
+    OtherSession,
+    /// The report says the agent began the session, not the person.
+    ByAgent,
+}
+
+/// A session this agent opened for a person.
+#[derive(Clone)]
+struct SessionRec {
+    session: String,
+    agent: String,
+    description: String,
+    keep_open: bool,
 }
 
 struct Shared {
@@ -363,6 +400,20 @@ impl ScriptedAgent {
         card.access_tier = TierListing::Malformed;
     }
 
+    /// Makes `agent`'s card list `child-sessions/v1` with this offer (`None` removes it). Takes
+    /// effect on the next read: nothing is cached. A person's start, a message to a session's
+    /// context and a close are then answered with the round's own word about its session, as an
+    /// agent that offers sessions does (ADR 0072): the session `s-<message id>` of a start, and the
+    /// round `n + 1` of a context that holds `n` rounds.
+    pub fn set_child_sessions(&self, agent: &str, offer: Option<ChildSessionsOffer>) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.child_sessions = offer;
+    }
+
     /// Makes `agent`'s card list `commands/v1` with this offer (`None` removes it). Takes effect on
     /// the next read: nothing is cached.
     pub fn set_commands(&self, agent: &str, offer: Option<CommandsOffer>) {
@@ -429,6 +480,19 @@ impl ScriptedAgent {
     /// its `sessions` object, `[]` included). By default the answer is the state alone.
     pub fn set_steer_lists_sessions(&self, on: bool) {
         self.state().steer_lists_sessions = on;
+    }
+
+    /// Makes the report of the round a person's start or close is answered with wrong in the way
+    /// `fault` says (`None`: right again).
+    pub fn fault_session_answers(&self, fault: Option<AnswerFault>) {
+        self.state().answer_fault = fault;
+    }
+
+    /// With `true`, the task a message that names a context starts says it belongs to another
+    /// context (`ctx-foreign`), as an agent that mixes its conversations up would: a client that
+    /// binds a thread to one context must not take it (ADR 0072).
+    pub fn answer_from_another_context(&self, on: bool) {
+        self.state().foreign_context = on;
     }
 
     /// With `true`, a message that names a context this agent did not assign (a first message that
@@ -1253,6 +1317,7 @@ async fn sessions(shared: &Arc<Shared>, task: &str, text: &str) {
             task_id: Some(round.clone()),
             state: Some(round_state),
         }),
+        parent_context_id: None,
     };
     let listed = |n: u32, report: SessionReport| {
         shared.push(
@@ -1391,6 +1456,7 @@ fn session_report(
             task_id: Some(round.to_owned()),
             state: Some(round_state),
         }),
+        parent_context_id: None,
     }
 }
 
@@ -1579,13 +1645,17 @@ impl AgentClient for ScriptedAgent {
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
         let (text, action) = match &req.content {
             SendContent::Text(t) => (t.clone(), None),
+            // scripted by the text it carries (a start's prompt, `close` for a close)
+            SendContent::SessionStart { .. } | SendContent::SessionClose { .. } => {
+                (req.content.text().unwrap_or_default().to_owned(), None)
+            }
             SendContent::UiAction { action, .. } => (
                 format!("ui-action {}", action.name),
                 Some(Box::new(action.clone())),
             ),
         };
         let script = text.split_whitespace().next().unwrap_or("").to_owned();
-        let (task, resumed, from, stale) = {
+        let (task, resumed, from, stale, session_news) = {
             let mut st = self.state();
             st.calls.push(Call::Send {
                 agent: req.endpoint.id.clone(),
@@ -1703,7 +1773,7 @@ impl AgentClient for ScriptedAgent {
                     }),
                     live: None,
                 });
-                (id, true, from, stale)
+                (id, true, from, stale, None)
             } else {
                 let context = match req.context_id.clone() {
                     Some(named) => {
@@ -1718,6 +1788,21 @@ impl AgentClient for ScriptedAgent {
                         st.next_context += 1;
                         format!("ctx-{}", st.next_context)
                     }
+                };
+                // a start opens the session's own context, and its round 1 is a task of it
+                let parent_context = context.clone();
+                let context = match &req.content {
+                    SendContent::SessionStart { .. }
+                        if st.answer_fault != Some(AnswerFault::ParentsOwnContext) =>
+                    {
+                        format!("{context}/s/s-{}", req.message_id)
+                    }
+                    _ => context,
+                };
+                let context = if st.foreign_context && req.context_id.is_some() {
+                    "ctx-foreign".to_owned()
+                } else {
+                    context
                 };
                 st.contexts.insert(context.clone());
                 st.next_task += 1;
@@ -1741,9 +1826,22 @@ impl AgentClient for ScriptedAgent {
                         of_session: false,
                     },
                 );
-                (id, false, 0, None)
+                let news = session_round(&mut st, &req, &id, &parent_context);
+                (id, false, 0, None, news)
             }
         };
+        // a round of a session says its session first, as the first event of an agent's task does
+        if let Some(report) = session_news {
+            self.shared.push(
+                &task,
+                None,
+                None,
+                IdemKey::Turn(format!("{task}:session:1")),
+                Some(AgentUpdate::ChildSessions(orch_core::SessionNews::OfRound(
+                    report,
+                ))),
+            );
+        }
         // `instant` says nothing before the end: its stream begins with it.
         if !resumed && script != "instant" {
             self.shared
@@ -1900,6 +1998,103 @@ impl AgentClient for ScriptedAgent {
 /// the message is new (a repeat of a `messageId` is answered as the first time and read once).
 /// Refused as the real agent refuses: not listed on the card, an unknown task or another
 /// context, a task that ended.
+/// What the round a new task is says of its session (`child-sessions/v1`, ADR 0072), when it is
+/// one: the task of a person's start (round 1 of a session of its own), of a close (the closing
+/// round, the session `closed`) or of a message to a session's context (round `n + 1`, working).
+/// A context is a session's when the agent opened it for a start or its name has the `/s/` of a
+/// session. Marks the task as a session's, so that a poll carries it.
+fn session_round(
+    st: &mut State,
+    req: &SendRequest,
+    task: &str,
+    parent_context: &str,
+) -> Option<orch_core::SessionReport> {
+    use orch_core::{RoundReport, SessionBy, SessionReport, SessionState};
+    let context = st.tasks.get(task)?.context_id.clone();
+    let rec = match &req.content {
+        SendContent::SessionStart {
+            agent,
+            description,
+            keep_open,
+            ..
+        } => {
+            let rec = SessionRec {
+                session: format!("s-{}", req.message_id),
+                agent: agent.clone(),
+                description: description.clone(),
+                keep_open: *keep_open,
+            };
+            st.sessions.insert(context.clone(), rec.clone());
+            rec
+        }
+        _ => st.sessions.get(&context).cloned().or_else(|| {
+            let (_, session) = context.rsplit_once("/s/")?;
+            Some(SessionRec {
+                session: session.to_owned(),
+                agent: "planner".to_owned(),
+                description: String::new(),
+                keep_open: true,
+            })
+        })?,
+    };
+    let number = 1 + u32::try_from(
+        st.tasks
+            .iter()
+            .filter(|(id, t)| id.as_str() != task && t.context_id == context && t.of_session)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let closing = matches!(req.content, SendContent::SessionClose { .. });
+    st.tasks.get_mut(task)?.of_session = true;
+    let fault = st.answer_fault;
+    let mut report = SessionReport {
+        session: rec.session,
+        context_id: context,
+        agent: rec.agent,
+        description: rec.description,
+        keep_open: rec.keep_open,
+        by: Some(SessionBy::Person),
+        state: if closing {
+            SessionState::Closed
+        } else {
+            SessionState::Working
+        },
+        closing: false,
+        round: Some(RoundReport {
+            number,
+            task_id: Some(task.to_owned()),
+            state: Some(if closing {
+                AgentTaskState::Completed
+            } else {
+                AgentTaskState::Working
+            }),
+        }),
+        // only a round that opened the session names its parent's context
+        parent_context_id: (number == 1 && matches!(req.content, SendContent::SessionStart { .. }))
+            .then(|| parent_context.to_owned()),
+    };
+    match fault {
+        Some(AnswerFault::ReportContext) => report.context_id = "ctx-elsewhere".to_owned(),
+        Some(AnswerFault::ParentContext) => {
+            report.parent_context_id = Some("ctx-elsewhere".to_owned());
+        }
+        Some(AnswerFault::LaterRound) => {
+            if let Some(round) = report.round.as_mut() {
+                round.number = 2;
+            }
+        }
+        Some(AnswerFault::OtherTask) => {
+            if let Some(round) = report.round.as_mut() {
+                round.task_id = Some("task-elsewhere".to_owned());
+            }
+        }
+        Some(AnswerFault::OtherSession) => report.session = "s-elsewhere".to_owned(),
+        Some(AnswerFault::ByAgent) => report.by = Some(SessionBy::Agent),
+        Some(AnswerFault::ParentsOwnContext) | None => {}
+    }
+    Some(report)
+}
+
 fn steer_into(st: &mut State, req: &SendRequest) -> Result<(AgentEnvelope, bool), AgentError> {
     let listed = st
         .cards

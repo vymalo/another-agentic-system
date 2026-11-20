@@ -345,6 +345,11 @@ fn report(object: &Object, shape: &Shape<'_>, own_context: &str) -> Result<Sessi
         state,
         closing,
         round,
+        // only a round's object says it (checked above); a person's start is held to it
+        parent_context_id: match (shape, object.get("parentContextId")) {
+            (Shape::Round { .. }, Some(Value::String(parent))) => Some(parent.clone()),
+            _ => None,
+        },
     })
 }
 
@@ -400,6 +405,7 @@ mod tests {
                     task_id: Some("r1".into()),
                     state: Some(AgentTaskState::Working),
                 }),
+                parent_context_id: None,
             }]
         );
     }
@@ -565,6 +571,7 @@ mod tests {
             panic!("{got:?}")
         };
         assert_eq!(r.context_id, "k1");
+        assert_eq!(r.parent_context_id.as_deref(), Some("c0"));
         assert_eq!(r.by, Some(SessionBy::Person));
         assert!(r.closing);
         assert_eq!(
@@ -706,7 +713,10 @@ mod tests {
         assert!(read(&entry(json!(3)), "r1", "k1", None).is_err());
         // it is optional
         let bare = json!({"session": "s1", "agent": "a", "round": 1, "state": "working"});
-        assert!(read(&bare, "r1", "k1", None).is_ok());
+        let Ok(Some(SessionNews::OfRound(bare))) = read(&bare, "r1", "k1", None) else {
+            panic!("a round")
+        };
+        assert_eq!(bare.parent_context_id, None);
     }
 
     #[test]

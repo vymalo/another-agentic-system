@@ -2638,6 +2638,104 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
     );
 }
 
+fn session_start_row(n: u128) -> NewOutbox {
+    NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::SessionStart {
+            request: format!("req-{n}"),
+            agent: "planner".to_owned(),
+            description: "Find the writers".to_owned(),
+            text: "List every place that writes the ledger".to_owned(),
+            keep_open: true,
+            tier: Some(orch_core::AccessTier::Edits),
+            tier_cap: None,
+        },
+    }
+}
+
+fn session_close_row(n: u128) -> NewOutbox {
+    NewOutbox {
+        id: outbox_id(n),
+        payload: OutboxPayload::SessionClose { cancel: true },
+    }
+}
+
+/// A person's start and close of a session (ADR 0072, S3) are `steer`-lane rows: they read back as
+/// written, are claimed beside the delegation in flight and in order among the thread's steer
+/// rows, and are never a delegation: the claim that holds one cannot requeue it as one, and the
+/// row stays what it is.
+pub async fn session_rows_ride_the_steer_lane_and_are_never_delegations<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await; // delegate 1, claimed below and in flight
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![
+                        session_start_row(101),
+                        session_close_row(102),
+                        delegate(103),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let start = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(start.kind, OutboxKind::Steer);
+    assert_eq!(start.payload, session_start_row(101).payload);
+    assert_eq!(start.sent_at, None);
+    let close = store.get_outbox(outbox_id(102)).await.unwrap().unwrap();
+    assert_eq!(close.kind, OutboxKind::Steer);
+    assert_eq!(close.payload, OutboxPayload::SessionClose { cancel: true });
+
+    // the first of them is claimed with the delegation in flight; the close waits for it
+    let got = claim(&store, "a", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(1), outbox_id(101)]
+    );
+    assert_eq!(got[1].payload, session_start_row(101).payload);
+    assert!(claim(&store, "a", t0()).await.is_empty());
+
+    // never a delegation: the held row is not requeued, and stays a steer-lane row in flight
+    assert!(
+        !store
+            .requeue_as_delegate(&lease(101, "a", 1), at(1))
+            .await
+            .unwrap()
+    );
+    let still = store.get_outbox(outbox_id(101)).await.unwrap().unwrap();
+    assert_eq!(still.kind, OutboxKind::Steer);
+    assert_eq!(still.status, OutboxStatus::Inflight);
+    assert_eq!(still.payload, session_start_row(101).payload);
+
+    // finished, it releases the close behind it
+    assert!(
+        store
+            .complete_outbox(&lease(101, "a", 1), OutboxFinal::Delivered, at(2))
+            .await
+            .unwrap()
+    );
+    let got = claim(&store, "a", at(3)).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(102)]
+    );
+    assert!(
+        !store
+            .requeue_as_delegate(&lease(102, "a", 1), at(3))
+            .await
+            .unwrap()
+    );
+    let close = store.get_outbox(outbox_id(102)).await.unwrap().unwrap();
+    assert_eq!(close.kind, OutboxKind::Steer);
+    assert_eq!(close.payload, OutboxPayload::SessionClose { cancel: true });
+}
+
 /// A steer the agent did not take becomes a delegation (ADR 0036): the same row, kind `delegate`,
 /// with the delegation's payload, pending and due now, and in its old place in the thread's order,
 /// so it waits behind the delegation in flight and in front of the ones written after it. Only the
@@ -3122,6 +3220,9 @@ fn busy_job() -> Job {
         // child_session_* event kinds are accepted by the Postgres store only from migration 0027
         // (S2b); nothing writes them before S2d, so a store of an earlier migration is not asked
         // for them beyond this snapshot's round trip.
+        session_starts: vec![orch_core::PendingStart {
+            request: "r1".to_owned(),
+        }],
         sessions: orch_core::SessionLedger::of(vec![orch_core::SessionNote {
             session: "s1".to_owned(),
             child: orch_core::ThreadId(uuid::Uuid::from_u128(0x77)),
@@ -3138,6 +3239,10 @@ fn busy_job() -> Job {
             followed: 3,
             started: 3,
             refollow: false,
+            // ADR 0072 (S3): a close a person asked for, and the starts they are waiting on
+            close_asked: true,
+            close_cancel: true,
+            track: orch_core::RoundTrack::default(),
         }),
         observed: Some(orch_core::ObservedRound {
             number: 3,
@@ -7429,6 +7534,9 @@ fn child_first(n: u128, session: &str) -> Commit {
             followed: 1,
             started: 0,
             refollow: false,
+            close_asked: false,
+            close_cancel: false,
+            track: orch_core::RoundTrack::default(),
         }),
         ..Job::default()
     });
@@ -8022,6 +8130,38 @@ pub async fn the_session_events_ledgers_and_observe_rows_round_trip<S: ThreadSto
             session: "s1".to_owned(),
             thread: thread_id(2),
         }),
+        // a person's half (S3, migration 0028)
+        EventBody::ChildSessionStartAsked(orch_core::ChildSessionStartAskedData {
+            request: "r1".to_owned(),
+            agent: "helper".to_owned(),
+            description: "look into it".to_owned(),
+            keep_open: true,
+            tier: Some(orch_core::AccessTier::Edits),
+        }),
+        EventBody::ChildSessionStartEnded(orch_core::ChildSessionStartEndedData {
+            request: "r1".to_owned(),
+            outcome: orch_core::StartOutcomeKind::Opened,
+            session: Some("s1".to_owned()),
+            thread: Some(thread_id(2)),
+            reason: None,
+        }),
+        EventBody::ChildSessionStartEnded(orch_core::ChildSessionStartEndedData {
+            request: "r2".to_owned(),
+            outcome: orch_core::StartOutcomeKind::Failed,
+            session: None,
+            thread: None,
+            reason: Some("`max_working` words".to_owned()),
+        }),
+        EventBody::ChildSessionCloseAsked(orch_core::ChildSessionCloseAskedData {
+            session: "s1".to_owned(),
+            cancel: true,
+        }),
+        EventBody::ChildSessionState(orch_core::ChildSessionStateData {
+            session: "s1".to_owned(),
+            state: orch_core::SessionState::Closed,
+            closing: false,
+            close_asked: false,
+        }),
     ];
     let mut c = commit(
         ThreadState::Working,
@@ -8063,7 +8203,12 @@ pub async fn the_session_events_ledgers_and_observe_rows_round_trip<S: ThreadSto
         vec![
             EventKind::ChildSessionOpened,
             EventKind::ChildSessionReported,
-            EventKind::ChildSessionClosed
+            EventKind::ChildSessionClosed,
+            EventKind::ChildSessionStartAsked,
+            EventKind::ChildSessionStartEnded,
+            EventKind::ChildSessionStartEnded,
+            EventKind::ChildSessionCloseAsked,
+            EventKind::ChildSessionState,
         ]
     );
     let again = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
@@ -8213,6 +8358,91 @@ pub async fn the_skip_of_unsent_delegates_leaves_observe_rows<S: ThreadStore>(st
     assert_eq!(status(42).await, OutboxStatus::Skipped);
     assert_eq!(status(41).await, OutboxStatus::Pending);
     assert_eq!(status(2).await, OutboxStatus::Pending);
+}
+
+/// A person's start or close of a session is not a message (ADR 0072, S3): a `Stop` or a `Stop &
+/// send` finishes the thread's unsent messages and leaves these rows, pending and inflight with an
+/// expired lease alike, or the parent's start never drains and a close is never answered.
+pub async fn the_skip_of_unsent_delegates_leaves_session_start_and_close_rows<S: ThreadStore>(
+    store: S,
+) {
+    seed(&store, &alice(), 1).await; // delegate 1
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![
+                        session_start_row(101),
+                        session_close_row(102),
+                        delegate(103),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    // the delegation and the start are in flight; their leases lapse before the skip
+    let got = claim(&store, "a", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(1), outbox_id(101)]
+    );
+    let status = |n: u128| {
+        let store = &store;
+        async move {
+            store
+                .get_outbox(outbox_id(n))
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+        }
+    };
+    assert_eq!(
+        store
+            .skip_unsent_delegates(thread_id(1), at(60))
+            .await
+            .unwrap(),
+        2,
+        "the lapsed delegation and the pending message go"
+    );
+    assert_eq!(status(1).await, OutboxStatus::Skipped);
+    assert_eq!(status(103).await, OutboxStatus::Skipped);
+    assert_eq!(
+        status(101).await,
+        OutboxStatus::Inflight,
+        "an inflight start stays"
+    );
+    assert_eq!(
+        status(102).await,
+        OutboxStatus::Pending,
+        "a pending close stays"
+    );
+    // asked for in a commit it is the same
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![session_start_row(104), delegate(105)],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let mut skip = commit(ThreadState::Working, vec![], vec![]);
+    skip.skip_unsent_delegates = true;
+    applied(store.commit(thread_id(1), 3, skip).await.unwrap());
+    assert_eq!(status(105).await, OutboxStatus::Skipped);
+    assert_eq!(status(104).await, OutboxStatus::Pending);
+    assert_eq!(status(102).await, OutboxStatus::Pending);
 }
 
 /// A session id is 1 to 512 characters: none and more are refused and nothing is written.

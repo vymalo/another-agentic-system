@@ -1,0 +1,125 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-6",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-7",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-8",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-9",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-10",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    },
+    {
+      "id": "sub-session-7",
+      "name": "researcher",
+      "end": "suspended:"
+    },
+    {
+      "id": "sub-session-7-9",
+      "name": "researcher",
+      "end": "success",
+      "result": {
+        "report": "done",
+        "round": 1
+      }
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "survey the options"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-3",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Surveyed; ask a helper to go deeper."
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "session-start-00000000-0000-7000-8000-0000000000a1",
+      "role": "activity",
+      "activityType": "vymalo.sessionStart",
+      "content": {
+        "agent": "researcher",
+        "at": "2027-01-15T08:00:08Z",
+        "description": "Find the writers",
+        "keepOpen": true,
+        "request": "00000000-0000-7000-8000-0000000000a1",
+        "session": "s1",
+        "state": "opened",
+        "threadId": "<child-thread-id>"
+      }
+    },
+    {
+      "id": "session-7",
+      "role": "activity",
+      "activityType": "vymalo.session",
+      "content": {
+        "agent": "researcher",
+        "at": "2027-01-15T08:00:10Z",
+        "by": "person",
+        "description": "Find the writers",
+        "keepOpen": true,
+        "report": "done",
+        "round": 1,
+        "session": "s1",
+        "state": "closed",
+        "threadId": "<child-thread-id>"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "survey the options"
+    }
+  },
+  "pendingInterrupts": []
+}

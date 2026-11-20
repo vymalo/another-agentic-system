@@ -427,6 +427,36 @@ pub enum OutboxPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<orch_core::SessionBy>,
     },
+    /// Start a session a person asked for (`orch_core::Command::StartSession`, ADR 0072): the
+    /// thread is the parent's. It rides the `steer` lane, beside the delegation in flight, so a
+    /// start never waits behind a working parent; it is never sent as a steer and never becomes a
+    /// delegation ([`OutboxPayload::steer_as_delegate`] is `None`). An older build that does not
+    /// know the payload finishes the row dead, as it does an `Observe`.
+    SessionStart {
+        /// The id of the person's request: the outcome names it.
+        request: String,
+        /// The helper.
+        agent: String,
+        /// What the helper is for.
+        description: String,
+        /// What the helper is asked first.
+        text: String,
+        /// Whether the session goes idle after a round.
+        keep_open: bool,
+        /// The access tier of the first round, as for [`OutboxPayload::Delegate`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<orch_core::AccessTier>,
+        /// The cap that goes with `tier`, as for [`OutboxPayload::Delegate`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier_cap: Option<orch_core::AccessTier>,
+    },
+    /// Close the session this child thread is (`orch_core::Command::CloseSession`, ADR 0072): on
+    /// the `steer` lane, so a close with `cancel` reaches a working round now. As
+    /// [`OutboxPayload::SessionStart`], never a delegation.
+    SessionClose {
+        /// Cancel the working round first.
+        cancel: bool,
+    },
 }
 
 impl OutboxPayload {
@@ -440,7 +470,9 @@ impl OutboxPayload {
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
             OutboxPayload::Title { .. } => OutboxKind::Title,
             OutboxPayload::Description { .. } => OutboxKind::Description,
-            OutboxPayload::Steer { .. } => OutboxKind::Steer,
+            OutboxPayload::Steer { .. }
+            | OutboxPayload::SessionStart { .. }
+            | OutboxPayload::SessionClose { .. } => OutboxKind::Steer,
             OutboxPayload::Ask { .. } => OutboxKind::Ask,
         }
     }
@@ -474,6 +506,8 @@ impl OutboxPayload {
             | OutboxPayload::Title { .. }
             | OutboxPayload::Description { .. }
             | OutboxPayload::Observe { .. }
+            | OutboxPayload::SessionStart { .. }
+            | OutboxPayload::SessionClose { .. }
             | OutboxPayload::Ask { .. } => None,
         }
     }
@@ -592,7 +626,8 @@ pub struct Commit {
     /// `None` leaves it as it is. Ignored by [`ThreadStore::create_thread`] and
     /// [`ThreadStore::fork_thread`]: a new thread, a fork included, is private.
     pub sharing: Option<SharingChange>,
-    /// Finish the thread's unsent `delegate` and `steer` rows as `skipped`, in this transaction and
+    /// Finish the thread's unsent messages (`delegate` and `steer` rows, bar a round to follow and a
+    /// person's start or close of a session) as `skipped`, in this transaction and
     /// before this commit's own rows are inserted (the rows
     /// [`skip_unsent_delegates`](ThreadStore::skip_unsent_delegates) finishes: `pending`, or
     /// `inflight` with an expired lease, and never sent). It is how the commit that starts the
@@ -1233,9 +1268,10 @@ pub trait ThreadStore:
         now: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// Marks the thread's not-yet-sent `delegate` and `steer` rows (`sent_at` is null) as
-    /// `skipped`: those `pending`, and those `inflight` whose lease expired before `now`. Returns
-    /// the count.
+    /// Marks the thread's not-yet-sent messages (`delegate` and `steer` rows, `sent_at` is null) as
+    /// `skipped`: those `pending`, and those `inflight` whose lease expired before `now`. A round
+    /// to follow and a person's start or close of a session are no messages and stay. Returns the
+    /// count.
     fn skip_unsent_delegates(
         &self,
         thread: ThreadId,

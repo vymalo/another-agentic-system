@@ -140,6 +140,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestDescription { .. }
             | Command::Ask { .. }
             | Command::Observe { .. }
+            | Command::StartSession { .. }
+            | Command::CloseSession { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()

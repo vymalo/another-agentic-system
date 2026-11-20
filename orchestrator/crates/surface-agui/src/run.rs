@@ -345,7 +345,12 @@ fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::AskUsage { .. }
         | Input::ChildSession { .. }
         | Input::ChildSessionSaid(_)
-        | Input::RoundStarted { .. } => {}
+        | Input::RoundStarted { .. }
+        | Input::StartSession { .. }
+        | Input::SessionStartEnded { .. }
+        | Input::CloseSession { .. }
+        | Input::SessionCloseFailed { .. }
+        | Input::RoundSent { .. } => {}
     }
     input
 }
@@ -370,6 +375,16 @@ pub(crate) fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
         description: thread.description.clone(),
         target: thread.target.clone(),
         gate: thread.job.gate.clone(),
+        // the helper and `keep_open` are fixed when the session opens, so the current ledger gives
+        // the card the same on every replay of the log
+        child: thread
+            .job
+            .child
+            .as_ref()
+            .map(|c| orch_agui_projection::ChildMeta {
+                agent: c.agent.clone(),
+                keep_open: c.keep_open,
+            }),
     }
 }
 
@@ -445,7 +460,12 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::AskUsage { .. }
         | Input::ChildSession { .. }
         | Input::ChildSessionSaid(_)
-        | Input::RoundStarted { .. } => None,
+        | Input::RoundStarted { .. }
+        | Input::StartSession { .. }
+        | Input::SessionStartEnded { .. }
+        | Input::CloseSession { .. }
+        | Input::SessionCloseFailed { .. }
+        | Input::RoundSent { .. } => None,
     }
 }
 

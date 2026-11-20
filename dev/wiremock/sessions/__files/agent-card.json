@@ -35,6 +35,11 @@
         "uri": "https://agents.vymalo.com/a2a/extensions/usage/v1",
         "description": "Reports the tokens of each model call and the task's totals.",
         "required": false
+      },
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/steer/v1",
+        "description": "Takes a message into a working task.",
+        "required": false
       }
     ]
   },

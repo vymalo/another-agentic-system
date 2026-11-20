@@ -203,6 +203,12 @@ impl Serialize for ThreadRecord {
             agent: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
             state: Option<SessionState>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            keep_open: Option<bool>,
+            #[serde(skip_serializing_if = "is_false")]
+            closing: bool,
+            #[serde(skip_serializing_if = "is_false")]
+            close_asked: bool,
         }
         let child = self.job.child.as_ref();
         Wire {
@@ -223,6 +229,9 @@ impl Serialize for ThreadRecord {
                 session: &of.session,
                 agent: child.map(|c| c.agent.as_str()),
                 state: child.map(|c| c.state),
+                keep_open: child.map(|c| c.keep_open),
+                closing: child.is_some_and(|c| c.closing),
+                close_asked: child.is_some_and(|c| c.close_asked),
             }),
             last_seq: self.last_seq,
             created_at: self.created_at,

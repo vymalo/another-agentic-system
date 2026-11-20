@@ -1,0 +1,39 @@
+{
+  "name": "GetTask of round 2 while the hold is on: still working (a stop meets a round that works)",
+  "priority": 2,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "GetTask"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.id",
+          "matches": ".+\\.keep-(true|false)\\..+\\.r2"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "get-task-person-round-2-held.json"
+  },
+  "scenarioName": "sessions-hold",
+  "requiredScenarioState": "held"
+}

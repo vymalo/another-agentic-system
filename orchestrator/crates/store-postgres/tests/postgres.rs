@@ -3754,7 +3754,7 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
             .unwrap();
         n
     };
-    assert_eq!(applied(pool.clone()).await, embedded_migrations() - 1);
+    assert_eq!(applied(pool.clone()).await, 26);
 
     // two threads and a message as a build of 0026 wrote them
     let (parent, other) = (ThreadId(Uuid::now_v7()), ThreadId(Uuid::now_v7()));
@@ -3960,6 +3960,188 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
             .await
             .is_err(),
         "the foreign key refuses to leave a child without its parent"
+    );
+}
+
+/// Migration 0028 on a database that has run 0001 to 0027 and holds a parent with a child and a log:
+/// the four kinds a person's half writes (`child_session_start_asked`, `child_session_start_ended`,
+/// `child_session_close_asked`, `child_session_state`) are refused before and taken after, as the core
+/// writes them; the old rows, the three earlier child kinds and a job stored before the new ledgers
+/// are untouched and read; a kind nobody knows still is not taken (ADR 0072, S3).
+#[tokio::test]
+async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_was_there() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade-0028", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.as_str() < "0028" {
+            std::fs::copy(&path, dir.join(&name)).unwrap();
+        }
+    }
+    sqlx::migrate::Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let applied = |pool: sqlx::PgPool| async move {
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        n
+    };
+    assert_eq!(applied(pool.clone()).await, 27);
+
+    // a parent whose job was written by a build of 0027 (a ledger of sessions, no pending starts)
+    // and a child with a ledger that has no close members
+    let (parent, child) = (ThreadId(Uuid::now_v7()), ThreadId(Uuid::now_v7()));
+    let parent_job = serde_json::json!({
+        "number": 1,
+        "sessions": [{"session": "s1", "child": child.to_string(), "reported": 0, "closed": false}]
+    });
+    let child_job = serde_json::json!({
+        "number": 1,
+        "child": {"session": "s1", "agent": "helper", "keepOpen": true, "state": "idle"}
+    });
+    for (thread, job, of) in [
+        (parent, &parent_job, None),
+        (child, &child_job, Some(parent)),
+    ] {
+        sqlx::query(
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at, rail_rank, job, child_of, child_session) \
+             VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 0, now(), now(), 'i', $2, $3, $4)",
+        )
+        .bind(thread.0)
+        .bind(job)
+        .bind(of.map(|p: ThreadId| p.0))
+        .bind(of.map(|_| "s1"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let insert_event = |thread: ThreadId, seq: i64, kind: &'static str, data: String| {
+        sqlx::query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"system\",\"name\":\"orchestrator\"}', $4::jsonb)",
+        )
+        .bind(thread.0)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    let closed = EventBody::ChildSessionClosed(orch_core::ChildSessionClosedData {
+        session: "s1".into(),
+        thread: child,
+    });
+    insert_event(
+        parent,
+        1,
+        "child_session_closed",
+        closed.data_value().to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let bodies = [
+        EventBody::ChildSessionStartAsked(orch_core::ChildSessionStartAskedData {
+            request: "r1".into(),
+            agent: "helper".into(),
+            description: "look into it".into(),
+            keep_open: true,
+            tier: Some(orch_core::AccessTier::Edits),
+        }),
+        EventBody::ChildSessionStartEnded(orch_core::ChildSessionStartEndedData {
+            request: "r1".into(),
+            outcome: orch_core::StartOutcomeKind::Opened,
+            session: Some("s1".into()),
+            thread: Some(child),
+            reason: None,
+        }),
+        EventBody::ChildSessionCloseAsked(orch_core::ChildSessionCloseAskedData {
+            session: "s1".into(),
+            cancel: false,
+        }),
+        EventBody::ChildSessionState(orch_core::ChildSessionStateData {
+            session: "s1".into(),
+            state: orch_core::SessionState::Closed,
+            closing: false,
+            close_asked: false,
+        }),
+    ];
+    for body in &bodies {
+        assert!(
+            insert_event(
+                parent,
+                2,
+                body.kind().as_str(),
+                body.data_value().to_string()
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "0027 has no `{}`",
+            body.kind().as_str()
+        );
+    }
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    store.migrate().await.unwrap();
+    assert_eq!(applied(store.pool().clone()).await, embedded_migrations());
+
+    for (n, body) in bodies.iter().enumerate() {
+        let seq = i64::try_from(n).unwrap() + 2;
+        insert_event(
+            parent,
+            seq,
+            body.kind().as_str(),
+            body.data_value().to_string(),
+        )
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+    assert!(
+        insert_event(parent, 6, "nonsense", "{}".into())
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    let events = store.list_events(parent, 0, 10).await.unwrap();
+    assert_eq!(events.len(), 5, "the old event is untouched");
+    assert_eq!(events[0].body, closed);
+    assert_eq!(
+        events[1..]
+            .iter()
+            .map(|e| e.body.clone())
+            .collect::<Vec<_>>(),
+        bodies,
+        "read back as the core wrote them"
+    );
+
+    // the jobs of before read, with the new ledgers empty
+    let parent_row = store.get_thread(None, parent).await.unwrap().unwrap();
+    assert!(parent_row.job.session_starts.is_empty());
+    assert_eq!(parent_row.job.sessions.len(), 1);
+    let child_row = store.get_thread(None, child).await.unwrap().unwrap();
+    let ledger = child_row.job.child.expect("the child's ledger reads");
+    assert!(!ledger.close_asked && !ledger.close_cancel);
+    assert_eq!(
+        child_row.child_of,
+        Some(orch_core::ChildOf {
+            thread: parent,
+            session: "s1".into()
+        })
     );
 }
 

@@ -33,6 +33,7 @@ pub fn meta_under(gate: GatePolicy) -> orch_agui_projection::ThreadMeta {
             release: None,
         },
         gate,
+        child: None,
     }
 }
 
@@ -825,6 +826,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                             task_id: None,
                             state,
                         }),
+                        parent_context_id: None,
                     },
                     child: format!("00000000-0000-7000-8000-00000000010{session}")
                         .parse()

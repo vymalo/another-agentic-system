@@ -21,11 +21,15 @@
 //! error text of an unexpected status holds the status and **not the server's body** (a stranger's
 //! words do not go into an error that might be logged); every `reqwest::Error` has its URL taken
 //! out (`without_url`; a person's URL can carry a secret in its path); and the `server/discover`
-//! rejection of a legacy server is not rewritten, because this client never sends it (`serve` opens
-//! with `initialize`).
+//! rejection of a legacy server is not rewritten into a JSON-RPC error: a server configured for MCP
+//! `2026-07-28` that is not one answers the discovery with a status, and that is what the caller is
+//! told (`Protocol`, "the server does not speak …"), never a fallback to `initialize`.
 //!
 //! The deployment's client keeps rmcp's implementation of the same trait, with the URL taken out
-//! of its errors and no bound (its servers are the operator's choice).
+//! of its errors and no bound (its servers are the operator's choice) — **except for a server that takes signed
+//! requests** (`sign.rs`): the header is made over the exact bytes of the body, so the request is built here, where the
+//! body is serialised once and sent as it is, and the response is bounded like a stranger's (rmcp's own implementation
+//! hands the message to the HTTP client to serialise).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -36,6 +40,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use http::{HeaderName, HeaderValue};
+use orch_signed_request::Method;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, WWW_AUTHENTICATE};
 use reqwest::{Response, StatusCode};
 use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage, ServerJsonRpcMessage};
@@ -48,9 +53,15 @@ use rmcp::transport::streamable_http_client::{
 };
 use sse_stream::{Sse, SseStream};
 
+use crate::sign::Signing;
+
 /// What the error of a request says when the answer was over the bound: [`from_http`] in `lib.rs`
 /// knows it by this text.
 pub(crate) const ANSWER_TOO_LARGE: &str = "the server's answer is larger than allowed";
+
+/// What the error of a request says when the request could not be signed: [`from_http`] in `lib.rs` knows it by this text
+/// and tells the caller the server is not set up for use. Nothing was sent.
+pub(crate) const SIGNING_FAILED: &str = "the request could not be signed";
 
 /// The most of an error response's body that is read: a JSON-RPC error is a few hundred bytes, and
 /// the rest of the body is not used. Capped by the bound of the client if that is smaller.
@@ -92,14 +103,46 @@ pub(crate) struct WireClient {
     /// The most bytes of one response; `None` for rmcp's own, unbounded reading.
     max_body: Option<usize>,
     cut: Cut,
+    /// Signs every request, for a server that takes signed requests.
+    signing: Option<Arc<Signing>>,
 }
 
 impl WireClient {
-    pub(crate) fn new(http: reqwest::Client, max_body: Option<usize>) -> Self {
+    /// A backend over `http`. A signed session is always built here and always bounded: `max_body` is at least
+    /// [`crate::MAX_RESPONSE_BYTES`] for it.
+    pub(crate) fn new(
+        http: reqwest::Client,
+        max_body: Option<usize>,
+        signing: Option<Arc<Signing>>,
+    ) -> Self {
+        let max_body = match (&signing, max_body) {
+            (Some(_), None) => Some(crate::MAX_RESPONSE_BYTES),
+            (_, bound) => bound,
+        };
         WireClient {
             http,
             max_body,
             cut: Cut::default(),
+            signing,
+        }
+    }
+
+    /// `request` with the header that signs it, over `body`, when the server takes signed requests.
+    fn signed(
+        &self,
+        request: reqwest::RequestBuilder,
+        method: Method,
+        uri: &str,
+        body: &[u8],
+    ) -> Result<reqwest::RequestBuilder, StreamableHttpError<reqwest::Error>> {
+        match &self.signing {
+            None => Ok(request),
+            Some(signing) => {
+                let (name, value) = signing.header(method, uri, body).map_err(|_| {
+                    StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(SIGNING_FAILED))
+                })?;
+                Ok(request.header(name, value))
+            }
         }
     }
 
@@ -307,7 +350,18 @@ impl StreamableHttpClient for WireClient {
         if let Some(session_id) = session_id {
             request = request.header(HEADER_SESSION_ID, session_id.as_ref());
         }
-        let response = request.json(&message).send().await.map_err(client_error)?;
+        let request = if self.signing.is_some() {
+            // the very bytes that are signed are the ones that are sent
+            let body = serde_json::to_vec(&message).map_err(|_| {
+                StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(SIGNING_FAILED))
+            })?;
+            self.signed(request, Method::Post, &uri, &body)?
+                .header(CONTENT_TYPE, JSON_MIME_TYPE)
+                .body(body)
+        } else {
+            request.json(&message)
+        };
+        let response = request.send().await.map_err(client_error)?;
         if let Some(refusal) = challenge(&response)? {
             return Err(refusal);
         }
@@ -405,6 +459,7 @@ impl StreamableHttpClient for WireClient {
         }
         request = request.header(HEADER_SESSION_ID, session_id.as_ref());
         request = with_custom_headers(request, custom_headers)?;
+        request = self.signed(request, Method::Delete, &uri, b"")?;
         let response = request.send().await.map_err(client_error)?;
         if response.status() == StatusCode::METHOD_NOT_ALLOWED {
             return Ok(());
@@ -469,6 +524,7 @@ impl StreamableHttpClient for WireClient {
             request = request.bearer_auth(token);
         }
         request = with_custom_headers(request, custom_headers)?;
+        request = self.signed(request, Method::Get, &uri, b"")?;
         let response = request.send().await.map_err(client_error)?;
         if response.status() == StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);

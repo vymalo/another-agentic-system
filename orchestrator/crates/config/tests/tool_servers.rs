@@ -465,3 +465,224 @@ fn no_error_carries_a_value() {
         );
     }
 }
+
+const KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIHRocm93YXdheS1lZDI1NTE5LXNlZWQtZG8tbm90LXVz\n-----END PRIVATE KEY-----\n";
+
+fn signing_env() -> Fake {
+    env().env("TOOLS_SIGNING_KEY", KEY_PEM)
+}
+
+#[test]
+fn a_server_says_which_mcp_revision_it_speaks_and_legacy_is_the_default() {
+    use orch_config::ToolServerProtocol;
+    let text = file(
+        "  - id: old
+    name: Old
+    url: https://old.example.com/mcp
+  - id: explicit
+    name: Explicit
+    url: https://explicit.example.com/mcp
+    protocol: legacy
+  - id: modern
+    name: Modern
+    url: https://modern.example.com/mcp
+    protocol: '2026-07-28'
+",
+    );
+    let valid = load(&text, &env()).unwrap();
+    let protocols: Vec<_> = valid
+        .config
+        .tool_servers
+        .iter()
+        .map(|s| s.protocol)
+        .collect();
+    assert_eq!(
+        protocols,
+        [
+            None,
+            Some(ToolServerProtocol::Legacy),
+            Some(ToolServerProtocol::V2026_07_28)
+        ]
+    );
+    // and it is printed as written
+    let printed = serde_norway::to_string(&valid.config.effective()).unwrap();
+    assert!(
+        printed.contains("2026-07-28") && printed.contains("legacy"),
+        "{printed}"
+    );
+    // a revision that is neither is refused, naming the key
+    let bad = file(
+        "  - id: a
+    name: A
+    url: https://a.example.com/mcp
+    protocol: '2025-11-25'
+",
+    );
+    let got = lines(load(&bad, &env()));
+    assert!(
+        got.iter().any(|l| l.starts_with("toolServers[0].protocol")),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn signing_is_a_reference_to_a_key_an_audience_and_a_short_lifetime() {
+    let text = file(
+        "  - id: vaam
+    name: Vaam
+    url: https://api.vaam.store/mcp
+    protocol: '2026-07-28'
+    signing:
+      key: { env: TOOLS_SIGNING_KEY }
+      audience: https://api.vaam.store/mcp
+",
+    );
+    let valid = load(&text, &signing_env()).unwrap();
+    let signing = valid.config.tool_servers[0].signing.as_ref().unwrap();
+    assert_eq!(signing.audience, "https://api.vaam.store/mcp");
+    assert_eq!(signing.ttl_secs, orch_config::DEFAULT_TOOL_SIGNING_TTL_SECS);
+    let secrets = &valid.secrets.tool_servers["vaam"];
+    // a secret is read the way every secret is: the white space around it is cut
+    assert_eq!(
+        secrets.signing_key.as_ref().unwrap().expose(),
+        KEY_PEM.trim()
+    );
+    assert!(secrets.bearer.is_none());
+    // the key is in no Debug and no printed configuration; its reference is
+    let shown = format!("{valid:?} {:?}", valid.secrets);
+    let printed = serde_norway::to_string(&valid.config.effective()).unwrap();
+    for text in [&shown, &printed] {
+        assert!(
+            !text.contains("MC4CAQAw") && !text.contains("BEGIN PRIVATE KEY"),
+            "{text}"
+        );
+        assert!(text.contains("TOOLS_SIGNING_KEY"), "{text}");
+    }
+}
+
+#[test]
+fn a_signing_key_is_a_reference_never_a_string() {
+    let text = file(
+        "  - id: vaam
+    name: Vaam
+    url: https://api.vaam.store/mcp
+    signing:
+      key: not-a-reference
+      audience: https://api.vaam.store/mcp
+",
+    );
+    let got = lines(load(&text, &signing_env()));
+    assert!(
+        got.iter()
+            .any(|l| l.starts_with("toolServers[0].signing.key: a secret is a reference")),
+        "{got:?}"
+    );
+    assert!(!got.join("\n").contains("not-a-reference"));
+    // and one that does not resolve names the variable
+    let unset = file(
+        "  - id: vaam
+    name: Vaam
+    url: https://api.vaam.store/mcp
+    signing:
+      key: { env: NOT_SET }
+      audience: https://api.vaam.store/mcp
+",
+    );
+    let got = lines(load(&unset, &signing_env()));
+    assert!(
+        got.iter()
+            .any(|l| l.contains("toolServers[0].signing.key") && l.contains("NOT_SET")),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn signing_replaces_the_bearer_and_every_mistake_of_the_rules_names_its_key() {
+    let text = file(
+        "  - id: a
+    name: A
+    url: https://a.example.com/mcp
+    bearer: { env: SEARCH_TOKEN }
+    headers: { Tool-Request-Claims: { env: SEARCH_KEY } }
+    signing:
+      key: { env: TOOLS_SIGNING_KEY }
+      audience: https://a.example.com/mcp
+  - id: b
+    name: B
+    url: https://b.example.com/mcp
+    signing:
+      key: { env: TOOLS_SIGNING_KEY }
+      audience: \"line one\\nline two\"
+  - id: c
+    name: C
+    url: https://c.example.com/mcp
+    signing:
+      key: { env: BLANK_KEY }
+      audience: https://c.example.com/mcp
+",
+    );
+    let fake = signing_env().env("BLANK_KEY", "  \n");
+    let got = lines(load(&text, &fake));
+    let has = |key: &str| got.iter().any(|l| l.starts_with(key));
+    for key in [
+        "toolServers[0].signing:",
+        "toolServers[0].headers:",
+        "toolServers[1].signing.audience",
+        "toolServers[2].signing.key",
+    ] {
+        assert!(has(key), "no error for {key}:\n{}", got.join("\n"));
+    }
+    // nothing quotes what was written
+    let shown = got.join("\n");
+    assert!(
+        !shown.contains("line one") && !shown.contains("MC4CAQAw"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn the_shape_of_signing_is_closed_and_its_lifetime_and_audience_are_bounded() {
+    let at = |signing: &str| {
+        file(&format!(
+            "  - id: a\n    name: A\n    url: https://a.example.com/mcp\n    signing:\n      key: {{ env: TOOLS_SIGNING_KEY }}\n{signing}"
+        ))
+    };
+    // the bounds are inclusive
+    for good in [
+        "      audience: x\n      ttlSecs: 1\n".to_owned(),
+        "      audience: x\n      ttlSecs: 60\n".to_owned(),
+        format!("      audience: {}\n", "x".repeat(256)),
+    ] {
+        load(&at(&good), &signing_env()).unwrap_or_else(|e| panic!("{good}: {}", render(&e)));
+    }
+    for (bad, key) in [
+        (
+            "      audience: x\n      ttlSecs: 0\n".to_owned(),
+            "toolServers[0].signing.ttlSecs",
+        ),
+        (
+            "      audience: x\n      ttlSecs: 61\n".to_owned(),
+            "toolServers[0].signing.ttlSecs",
+        ),
+        (
+            "      audience: x\n      ttlSecs: '30'\n".to_owned(),
+            "toolServers[0].signing.ttlSecs",
+        ),
+        (
+            "      audience: ''\n".to_owned(),
+            "toolServers[0].signing.audience",
+        ),
+        (
+            format!("      audience: {}\n", "x".repeat(257)),
+            "toolServers[0].signing.audience",
+        ),
+        ("      ttlSecs: 30\n".to_owned(), "toolServers[0].signing"),
+        (
+            "      audience: x\n      extra: 1\n".to_owned(),
+            "toolServers[0].signing",
+        ),
+    ] {
+        let got = lines(load(&at(&bad), &signing_env()));
+        assert!(got.iter().any(|l| l.contains(key)), "{bad}: {got:?}");
+    }
+}

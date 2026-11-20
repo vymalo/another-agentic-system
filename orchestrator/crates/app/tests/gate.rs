@@ -94,7 +94,9 @@ async fn delegated_texts(w: &World, id: ThreadId) -> Vec<String> {
             | OutboxPayload::Description { .. }
             | OutboxPayload::Ask { .. }
             | OutboxPayload::Observe { .. }
-            | OutboxPayload::Steer { .. } => None,
+            | OutboxPayload::Steer { .. }
+            | OutboxPayload::SessionStart { .. }
+            | OutboxPayload::SessionClose { .. } => None,
         })
         .collect()
 }
