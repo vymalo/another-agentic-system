@@ -300,7 +300,7 @@ expect "the child's stream: its usage frames, the call and the totals, say count
 # parent, so the checks above stay as they were. The mock keeps no state (dev/wiremock/sessions, the mappings 08*): the session id is
 # `<parent context>.keep-<true|false>.<message id>`, round 1 is the task of that id, held for 5 s, and a message to the child context is
 # always round 2, held for 8 s; a message that starts `[mock:hold]` moves a WireMock scenario (`sessions-hold`, mapping 08f0) so that
-# every subscription to round 2 is held 60 s (08g0; the orchestrator subscribes again after a steer): a steer and a stop meet a round
+# every subscription to round 2 is held 60 s and a GetTask of it says working (08g0, 08i0): a steer and a stop meet a round
 # that is still working, however slow the runner is. The scenario is reset before this part and after the stop. A close of an idle
 # session is a round of its own, the next one (adam numbers it so), so the mock's close is round 3.
 # =======================================================================================================================
@@ -430,7 +430,13 @@ while [ "$(msgs | grep -c "^msg|$session2.r2|true$" || true)" -lt 1 ] && [ "$(da
 expect "the steer reached the agent as a message naming the round's task ($session2.r2), activated" "$(msgs | grep -c "^msg|$session2.r2|true$" || true)" "1"
 expect "stop the round: POST /api/threads/{child}/cancel answers 202" "$(post "/api/threads/$child2/cancel")" "202"
 wait "$send_pid" || true
-expect "the child is stopped: cancelled" "$(wait_state "$child2")" "cancelled"
+stopped=$(wait_state "$child2")
+expect "the child is stopped: cancelled" "$stopped" "cancelled"
+if [ "$stopped" != cancelled ]; then
+  echo "  the methods the mock got for $session2.r2, in order:"
+  curl -s --max-time 30 "$mock/__admin/requests" | jq -r --arg t "$session2.r2" \
+    '[.requests[] | (.request.body | fromjson? // {}) | select((.params.id // .params.message.taskId // "") == $t) | .method] | reverse | join(" ")' 2>/dev/null | sed 's/^/    /'
+fi
 expect "a kept-open session goes idle when its round is stopped" "$(wait_child_state "$child2" idle)" "idle"
 expect "the agent was asked to cancel the round" "$(curl -s --max-time 30 "$mock/__admin/requests" | jq -r --arg t "$session2.r2" '[.requests[] | (.request.body | fromjson? // {}) | select(.method == "CancelTask" and .params.id == $t)] | length')" "1"
 curl -s -o /dev/null --max-time 30 -X POST "$mock/__admin/scenarios/reset" || true
