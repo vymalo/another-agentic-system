@@ -46,6 +46,13 @@ export const ACTIVITY = {
    * `a2ui-surface` ({@link A2UI_SURFACE}); see `thread-agent.ts` for why it is renamed.
    */
   surface: "vymalo.a2ui-surface",
+  /**
+   * A helper session the agent opened or a person started (child-sessions/v1, ADR 0072): `session` is the card of
+   * a session (`vymalo.session`), `sessionStart` the request of a person's start. `ThreadAgent` marks the run each
+   * is drawn in (`home`); see `features/sessions`.
+   */
+  session: "vymalo.session",
+  sessionStart: "vymalo.sessionStart",
 } as const;
 
 /** The ecosystem's activity type of an A2UI surface (ADR 0013), the one the orchestrator sends. */

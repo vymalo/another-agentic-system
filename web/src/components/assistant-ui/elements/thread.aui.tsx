@@ -54,6 +54,8 @@ import {
   useMentionsAny,
   useMessageMentions,
 } from "@/features/mentions/components/mentioned-text";
+import { StartLine } from "@/features/sessions/components/start-line";
+import { isHomeCard } from "@/features/sessions/lib/words";
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
@@ -82,6 +84,9 @@ import { uuidv7 } from "@/lib/uuid";
  */
 
 type AnyPart = { type: string; name?: string; data?: unknown; text?: string };
+
+/** A start line is told apart by its request, which the card says again in each run that answers it. */
+const startKey = (data: unknown): string => String((data as { request?: unknown }).request ?? "");
 
 const useCreatedAt = (): Date | undefined => useAuiState((s) => s.message.createdAt);
 
@@ -604,6 +609,11 @@ export const AssistantMessage: FC = () => {
     const data = p.type === "data" && p.name === toolsPart ? parseTools(p.data) : null;
     return data ? [data] : [];
   });
+  // a start a person asked for (child-sessions/v1): a muted line above the turn, in its home run only
+  const startPart = activityPartName(ACTIVITY.sessionStart);
+  const starts = content.flatMap((p) =>
+    p.type === "data" && p.name === startPart && isHomeCard(p.data) ? [p.data] : [],
+  );
   // the marker of a fork (ADR 0029) is a run of its own: a divider, not a turn
   const marker = content.find(
     (p) => p.type === "data" && p.name === activityPartName(ACTIVITY.fork),
@@ -612,7 +622,15 @@ export const AssistantMessage: FC = () => {
     const fork = parseFork(marker.data);
     return fork ? <ForkDivider fork={fork} /> : null;
   }
-  if (lastDrawn < 0 && !running && answers.length === 0 && tools.length === 0) return null;
+  if (
+    lastDrawn < 0 &&
+    !running &&
+    answers.length === 0 &&
+    tools.length === 0 &&
+    starts.length === 0
+  ) {
+    return null;
+  }
   // the answer and the working text of the turn (ADR 0031); Copy takes the answer
   const roles = textRoles(content, running);
   const textWords = content
@@ -646,6 +664,9 @@ export const AssistantMessage: FC = () => {
           content={data}
         />
       ))}
+      {starts.map((data) => (
+        <StartLine key={startKey(data)} data={data} />
+      ))}
     </>
   );
   if (lastDrawn < 0 && !running) {
@@ -666,7 +687,7 @@ export const AssistantMessage: FC = () => {
       data-turn-id={messageId}
       className="group/turn flex min-w-0 motion-safe:animate-turn-in flex-col gap-3"
     >
-      {answers.length > 0 || tools.length > 0 ? (
+      {answers.length > 0 || tools.length > 0 || starts.length > 0 ? (
         <div className="mb-3 flex flex-col gap-3">{answered}</div>
       ) : null}
       <TurnHeader actor={actor} at={createdAt} />
@@ -693,6 +714,7 @@ export const AssistantMessage: FC = () => {
                 if (isAnswerPart(part as AnyPart)) return null;
                 // what was attached is drawn above the turn, with the person's other acts
                 if ((part as AnyPart).name === toolsPart) return null;
+                if ((part as AnyPart).name === startPart) return null;
                 return <div className="w-full empty:hidden">{part.dataRendererUI}</div>;
               case "indicator":
                 // the turn's line says it works; before its first event there is only this

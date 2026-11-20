@@ -1,0 +1,117 @@
+// @vitest-environment jsdom
+import { act, cleanup, configure, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { LiveStream, loadGolden, sse } from "./testing";
+import { mountRuntime, summarize } from "./testing-runtime";
+
+configure({ asyncUtilTimeout: 10_000 });
+afterEach(cleanup);
+
+/*
+ * Child sessions in the parent (docs/api/agui.md, "Child sessions as subagents"): every late event of a
+ * session is a run of its own and says the card again. The agent collects the cards, marks each card's
+ * home run (the one that is drawn), and does not offer a run that is only cards, subagent frames and
+ * state as a turn.
+ */
+
+async function play(name: string) {
+  const stream = new LiveStream();
+  const mounted = mountRuntime(() => sse(stream.body));
+  mounted.agent.start();
+  const frames = loadGolden(name);
+  await act(async () => {
+    stream.frames(frames);
+  });
+  const last = frames.at(-1)?.id;
+  await waitFor(() => expect(mounted.agent.getSnapshot().lastSeq).toBe(last));
+  let seen = -1;
+  for (let i = 0; i < 100; i++) {
+    const count = mounted.messages().length;
+    const running = mounted.runtime().thread.getState().isRunning;
+    if (!running && count === seen) break;
+    seen = count;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+    });
+  }
+  return mounted;
+}
+
+type Part = { type: string; name?: string; data?: Record<string, unknown> };
+const cards = (messages: ReturnType<Awaited<ReturnType<typeof play>>["messages"]>) =>
+  messages.flatMap((m) =>
+    (m.content as readonly Part[]).filter(
+      (p) => p.type === "data" && p.name?.startsWith("agui-activity/vymalo.session"),
+    ),
+  );
+
+describe("the cards of child sessions, in the agent", () => {
+  it("collects each session by its card id, with the latest content", async () => {
+    const { agent } = await play("sessions-person");
+    const { sessions } = agent.getSnapshot();
+    expect([...sessions.keys()]).toEqual(["session-7"]);
+    expect(sessions.get("session-7")).toMatchObject({ session: "s1", state: "closed" });
+    agent.stop();
+  });
+
+  it("collects each start by its request, with the latest state", async () => {
+    const { agent } = await play("sessions-person");
+    const { sessionStarts } = agent.getSnapshot();
+    expect([...sessionStarts.keys()]).toEqual(["00000000-0000-7000-8000-0000000000a1"]);
+    expect(sessionStarts.values().next().value).toMatchObject({ state: "opened", session: "s1" });
+    agent.stop();
+  });
+
+  it("keeps the child's own card apart, and draws nothing of it", async () => {
+    const { agent, messages } = await play("sessions-person-child");
+    expect(agent.getSnapshot().self).toMatchObject({ state: "closed" });
+    expect(agent.getSnapshot().sessions.size).toBe(0);
+    expect(summarize(messages()).flatMap((m) => m.parts)).not.toContain("session");
+    agent.stop();
+  });
+
+  it("marks a card home only in the run that opened it, and offers no late run as a turn", async () => {
+    const { agent, messages } = await play("sessions-person");
+    expect(summarize(messages())).toEqual([
+      { role: "user", parts: ["text:survey the options"] },
+      {
+        role: "assistant",
+        status: "complete",
+        parts: [
+          "actor",
+          "status:working",
+          "text:Surveyed; ask a helper to go deeper.",
+          "status:completed",
+        ],
+      },
+      { role: "assistant", status: "complete", parts: ["sessionStart"] },
+      { role: "assistant", status: "complete", parts: ["actor", "session"] },
+    ]);
+    expect(cards(messages()).map((p) => p.data?.home)).toEqual([true, true]);
+    agent.stop();
+  });
+
+  it("marks the start home where it is starting", async () => {
+    const { agent, messages } = await play("sessions-start-failed");
+    expect(summarize(messages()).map((m) => m.parts)).toEqual([
+      ["text:ask the planner"],
+      ["actor", "status:working", "text:Ready.", "status:completed"],
+      ["sessionStart"],
+    ]);
+    expect(cards(messages()).map((p) => p.data?.home)).toEqual([true]);
+    expect(agent.getSnapshot().sessionStarts.values().next().value).toMatchObject({
+      state: "failed",
+    });
+    agent.stop();
+  });
+
+  it("draws the sessions of an agent's run in it, and its late reports in no turn", async () => {
+    const { agent, messages } = await play("sessions");
+    const turns = summarize(messages());
+    expect(turns).toHaveLength(2);
+    expect(turns[1]?.parts.filter((p) => p === "session")).toHaveLength(2);
+    expect(cards(messages()).every((p) => p.data?.home === true)).toBe(true);
+    expect(agent.getSnapshot().sessions.size).toBe(2);
+    agent.stop();
+  });
+});

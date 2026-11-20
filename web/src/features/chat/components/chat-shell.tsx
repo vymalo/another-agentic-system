@@ -417,6 +417,8 @@ function Chat({ threadId }: { threadId: string | null }) {
       forkedFrom: thread?.forkedFrom,
       turnsBefore,
       carriedFiles,
+      sessions: snapshot.sessions,
+      sessionStarts: snapshot.sessionStarts,
     }),
     [
       state,
@@ -428,6 +430,8 @@ function Chat({ threadId }: { threadId: string | null }) {
       thread?.forkedFrom,
       turnsBefore,
       carriedFiles,
+      snapshot.sessions,
+      snapshot.sessionStarts,
     ],
   );
 
