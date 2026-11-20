@@ -6,7 +6,7 @@ mod support;
 use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_projection::{
-    Audience, InputError, KnownThread, Projector, ThreadView, Translation, Warning,
+    Audience, InputError, KnownThread, Projector, SurfaceDialect, ThreadView, Translation, Warning,
     held_message_ids, release_selector, thread_id_of, translate, translate_with_warnings,
 };
 use orch_agui_proto::RunAgentInput;
@@ -526,7 +526,7 @@ fn only_a_message_is_served_while_a_run_is_open() {
             "name": "go", "surfaceId": "s1", "sourceComponentId": "go", "context": {}}}},
     }));
     let view = KnownThread {
-        surfaces: [("s1".to_owned(), UiVersion::V0_9_1)].into(),
+        surfaces: [("s1".to_owned(), SurfaceDialect::V1_0)].into(),
         ..running()
     };
     assert_eq!(err(&action, view), InputError::RunInProgress);
@@ -630,7 +630,7 @@ fn a_finished_thread_takes_a_message_as_its_next_job_and_refuses_an_action() {
             state,
             run_open: false,
             open_interrupts: vec![],
-            surfaces: [("s1".to_owned(), orch_core::UiVersion::V0_9_1)].into(),
+            surfaces: [("s1".to_owned(), SurfaceDialect::V1_0)].into(),
             ..blocked()
         };
         // A message is the next job's first word (ADR 0020).
@@ -714,11 +714,11 @@ fn tools_and_context_are_ignored_with_a_warning_and_state_silently() {
 
 // ---- A2UI actions (ADR 0013) ---------------------------------------------------------------
 
-/// A blocked thread that has the surface `s1` (spoken in `v0.9.1`) and, deleted or never seen,
+/// A blocked thread that has the surface `s1` (spoken in A2UI `"1.0"`) and, deleted or never seen,
 /// no other.
 fn with_surface() -> KnownThread {
     KnownThread {
-        surfaces: BTreeMap::from([("s1".to_owned(), UiVersion::V0_9_1)]),
+        surfaces: BTreeMap::from([("s1".to_owned(), SurfaceDialect::V1_0)]),
         ..blocked()
     }
 }
@@ -749,7 +749,7 @@ fn expected_action() -> Input {
             name: "go".into(),
             source_component_id: "btn".into(),
             context,
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: Some("run-act".into()),
         },
         catalog: None,
@@ -768,16 +768,35 @@ fn an_action_on_a_surface_of_a_blocked_thread_is_one_ui_action() {
 }
 
 #[test]
-fn an_action_speaks_the_version_of_its_surface() {
-    let view = KnownThread {
-        surfaces: BTreeMap::from([("s1".to_owned(), UiVersion::V1_0)]),
-        ..blocked()
-    };
-    let got = ok(&action_request(go()), view);
+fn an_action_is_a_v1_0_message() {
+    // one dialect (ADR 0075): the action the agent receives is `"1.0"`, whatever the request said
+    let got = ok(&action_request(go()), with_surface());
     let [Input::UiAction { action, .. }] = &got[..] else {
         panic!("{got:?}");
     };
     assert_eq!(action.version, UiVersion::V1_0);
+}
+
+/// ADR 0075, decision 4: an action on a surface whose operations are not `"1.0"` — one of a thread
+/// from before the cutover — is refused with 422 before anything is written.
+#[test]
+fn an_action_on_a_surface_from_before_the_cutover_is_refused_with_422() {
+    let view = KnownThread {
+        surfaces: BTreeMap::from([("s1".to_owned(), SurfaceDialect::Earlier)]),
+        ..blocked()
+    };
+    let e = err(&action_request(go()), view);
+    assert_eq!(
+        e,
+        InputError::EarlierSurface {
+            surface_id: "s1".to_owned()
+        }
+    );
+    assert_eq!(e.http_status(), 422);
+    assert!(
+        e.to_string().contains("earlier version"),
+        "the refusal says why: {e}"
+    );
 }
 
 #[test]

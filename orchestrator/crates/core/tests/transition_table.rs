@@ -1283,7 +1283,7 @@ fn replay_is_deterministic() {
 // ---------------------------------------------------------------- A2UI (ADR 0013)
 
 fn surface_op() -> serde_json::Value {
-    serde_json::json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}})
+    serde_json::json!({"version": "1.0", "createSurface": {"surfaceId": "s1"}})
 }
 fn ui(update: AgentUpdate) -> Input {
     Input::Agent {
@@ -1300,7 +1300,7 @@ fn act() -> UiActionData {
         name: "submit".into(),
         source_component_id: "btn".into(),
         context: serde_json::Map::new(),
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: Some("run-2".into()),
     }
 }

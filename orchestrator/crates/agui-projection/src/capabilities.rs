@@ -28,10 +28,10 @@ pub struct CardFacts {
     pub version: Option<String>,
     /// Present only when the card advertises the release-channels extension (ADR 0008).
     pub releases: Option<Releases>,
-    /// The A2UI extension versions the card advertises (ADR 0013); empty when it advertises none
-    /// this build knows.
+    /// The A2UI extension versions the card advertises (ADR 0013, ADR 0075): `[V1_0]` when it
+    /// lists the v1.0 URI, empty when it advertises none this build knows.
     pub ui: Vec<UiVersion>,
-    /// The extensions of the orchestrator's own the card lists, by exact URI (`ui-catalog/v1`,
+    /// The extensions of the orchestrator's own the card lists, by exact URI (`ui-catalog/v2`,
     /// `thread-tools/v1`, …: ADR 0008); empty when it lists none.
     pub extensions: BTreeSet<KnownExtension>,
     /// Present only when the card lists `access-tier/v1` with well-formed `params` (ADR 0061): the
@@ -63,7 +63,7 @@ pub struct CardFacts {
 ///   extension URI the card lists, `{supportedCatalogIds}` being the catalogs the web renders
 ///   (ADR 0013), and one key (an empty object) per extension of [`KnownExtension`] the card lists:
 ///   the key is the signal, so the web can flag an agent before it sends anything (an agent that
-///   does not list `ui-catalog/v1` is sent no catalog), and `[ACCESS_TIER_EXTENSION]` with
+///   does not list `ui-catalog/v2` is sent no catalog), and `[ACCESS_TIER_EXTENSION]` with
 ///   `{tiers, default}` when the card lists `access-tier/v1` with well-formed params (ADR 0061: the
 ///   web draws its tier chip from it, and a card that lists it badly does not have the key), plus
 ///   `maxTier`, the highest tier the person asking may use of this agent, when their roles cap it,

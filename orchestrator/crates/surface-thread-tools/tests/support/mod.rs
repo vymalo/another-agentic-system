@@ -382,6 +382,7 @@ pub fn catalog(version: u32, tag: &str) -> UiCatalogData {
     let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
     let catalog = json!({
         "catalogId": id,
+        "protocolVersion": "1.0",
         "components": {"Note": {
             "type": "object",
             "title": format!("{tag}-{version}"),
@@ -394,6 +395,19 @@ pub fn catalog(version: u32, tag: &str) -> UiCatalogData {
         digest: catalog_digest(&catalog).unwrap(),
         catalog,
     }
+}
+
+/// A catalog of `ui-catalog/v1`, as a thread from before the A2UI v1.0 cutover keeps it in its log:
+/// the same document without `protocolVersion` (ADR 0075, section 9).
+pub fn catalog_v1(version: u32, tag: &str) -> UiCatalogData {
+    let mut catalog = catalog(version, tag);
+    catalog
+        .catalog
+        .as_object_mut()
+        .unwrap()
+        .remove("protocolVersion");
+    catalog.digest = catalog_digest(&catalog.catalog).unwrap();
+    catalog
 }
 
 pub fn now() -> Timestamp {

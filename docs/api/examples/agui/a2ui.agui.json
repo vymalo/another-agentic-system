@@ -103,10 +103,10 @@
         "a2ui_operations": [
           {
             "createSurface": {
-              "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+              "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
               "surfaceId": "s1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           }
         ]
       },
@@ -130,10 +130,10 @@
         "a2ui_operations": [
           {
             "createSurface": {
-              "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+              "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
               "surfaceId": "s1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           },
           {
             "updateComponents": {
@@ -173,7 +173,7 @@
               ],
               "surfaceId": "s1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           }
         ]
       },

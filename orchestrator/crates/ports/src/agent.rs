@@ -95,8 +95,7 @@ pub struct UiSupport {
 }
 
 impl UiSupport {
-    /// The version to speak when the card lists several: the current release (`v0.9.1`), else
-    /// the candidate (`v1.0`) (open question 22).
+    /// The version to speak: A2UI v1.0, the only dialect this build knows (ADR 0075).
     pub fn preferred(&self) -> Option<UiVersion> {
         self.versions.first().copied()
     }
@@ -203,7 +202,7 @@ pub struct SendRequest {
     /// What to tell the agent of the person's UI catalog (ADR 0023): the catalog itself, or a
     /// reference to the current one. `None` when the thread has no catalog, and for the verifier
     /// (it is told nothing of the author's screen). An adapter sends it only to an agent whose
-    /// live card lists the `ui-catalog/v1` extension.
+    /// live card lists the `ui-catalog/v2` extension (ADR 0075).
     pub ui_catalog: Option<UiDelivery>,
     /// Who the agent is to be given the thread's tools as (`thread-tools/v1`, ADR 0023): the
     /// thread, the job, the agent, the caller and the depth. `None` for the verifier: it works in

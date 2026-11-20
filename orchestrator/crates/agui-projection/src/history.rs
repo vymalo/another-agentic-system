@@ -52,7 +52,12 @@ use crate::route::FileRoute;
 /// frames of every golden under it, and `tools/projection-digests-check.sh` fails a change to a
 /// pinned line that does not raise this number. A client that stored frames of another version
 /// discards them.
-pub const PROJECTION_VERSION: u32 = 2;
+///
+/// 3 (2026-11-20, the A2UI v1.0 cutover, ADR 0075): a surface whose operations are not `"1.0"` is
+/// relayed as the log holds it — so a thread from before the cutover shows it as made by an
+/// earlier version instead of losing it — where 2 skipped the operation. The frames of a log that
+/// already held such a surface therefore changed.
+pub const PROJECTION_VERSION: u32 = 3;
 
 /// The most chains the fold keeps for a thread whose turns do not bound it (a thread with no
 /// person's message, a webhook or CI driven one): older chains are dropped.

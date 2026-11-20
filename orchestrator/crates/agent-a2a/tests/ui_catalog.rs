@@ -1,7 +1,7 @@
-//! The UI catalog through the A2A adapter (ADR 0023, ADR 0008), against an in-process A2A agent
-//! over real HTTP: the catalog is sent only to an agent whose live card lists `ui-catalog/v1`, as
-//! metadata and in the renderer's capabilities, inline only to an agent that takes it, and the card
-//! is read for every message, never remembered.
+//! The UI catalog through the A2A adapter (ADR 0023, ADR 0075, ADR 0008), against an in-process
+//! A2A agent over real HTTP: the catalog is sent only to an agent whose live card lists
+//! `ui-catalog/v2`, as metadata and in the renderer's capabilities of A2UI v1.0 (`"1.0"`), inline
+//! only to an agent that takes it, and the card is read for every message, never remembered.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::time::Duration;
@@ -9,8 +9,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, KnownExtension, THREAD_TOOLS_EXTENSION,
-    UI_CATALOG_EXTENSION, UiCatalogData, UiDelivery, UiVersion, catalog_digest,
+    A2UI_EXTENSION_V1_0, KnownExtension, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
+    UiCatalogData, UiDelivery, UiVersion, catalog_digest,
 };
 use orch_ports::{AgentClient, AgentEndpoint, AgentStream, SendContent, SendRequest};
 use orch_testsupport::{Call, FakeAgent, FakeAgentOptions, integral_numbers};
@@ -38,7 +38,7 @@ async fn agent(ui: &[&str], extensions: &[&str], accepts_inline: bool) -> FakeAg
 }
 
 fn catalog(version: u32) -> UiCatalogData {
-    let catalog = json!({"catalogId": ID, "components": {"Note": {
+    let catalog = json!({"catalogId": ID, "protocolVersion": "1.0", "components": {"Note": {
         "type": "object",
         "title": format!("version {version}"),
         "properties": {"component": {"const": "Note"}},
@@ -87,7 +87,7 @@ async fn send(client: &A2aAgentClient, fake: &FakeAgent, delivery: Option<UiDeli
     fake.executions().pop().unwrap()
 }
 
-/// `metadata[ui-catalog/v1]` as the agent saw it, with `version` read as the number it is: a
+/// `metadata[ui-catalog/v2]` as the agent saw it, with `version` read as the number it is: a
 /// receiver built on protobuf `Struct` (as `a2a-server-lf` is) holds every JSON number as a
 /// double, so `2` arrives as `2.0`.
 fn told(call: &Call) -> Option<Value> {
@@ -114,7 +114,7 @@ fn supported(call: &Call, version: &str) -> Vec<String> {
 }
 
 fn basic() -> Vec<String> {
-    UiVersion::V0_9_1
+    UiVersion::V1_0
         .basic_catalog_ids()
         .iter()
         .map(|id| (*id).to_owned())
@@ -127,40 +127,40 @@ fn is_todays_message(call: &Call) {
     assert_eq!(told(call), None);
     assert!(call.inline_catalogs.is_empty());
     assert!(!call.activates(UI_CATALOG_EXTENSION));
-    assert_eq!(supported(call, "v0.9.1"), basic());
+    assert_eq!(supported(call, "1.0"), basic());
 }
 
 #[tokio::test]
 async fn an_inline_catalog_goes_inline_to_an_agent_that_lists_the_extension_and_takes_it() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], true).await;
-    let v2 = catalog(2);
-    let call = send(&client(), &fake, Some(UiDelivery::Inline(v2.clone()))).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0], &[UI_CATALOG_EXTENSION], true).await;
+    let v9 = catalog(9);
+    let call = send(&client(), &fake, Some(UiDelivery::Inline(v9.clone()))).await;
 
     assert_eq!(
         told(&call),
-        Some(json!({"catalogId": ID, "version": 2, "digest": v2.digest, "inline": true}))
+        Some(json!({"catalogId": ID, "version": 9, "digest": v9.digest, "inline": true}))
     );
-    assert_eq!(inline_of(&call), vec![v2.catalog.clone()]);
+    assert_eq!(inline_of(&call), vec![v9.catalog.clone()]);
     // and an agent can check the digest of what it received
-    assert_eq!(catalog_digest(&inline_of(&call)[0]).unwrap(), v2.digest);
+    assert_eq!(catalog_digest(&inline_of(&call)[0]).unwrap(), v9.digest);
     // ours first, then the basic catalogs, as the A2UI spec lists them
     let mut want = vec![ID.to_owned()];
     want.extend(basic());
-    assert_eq!(supported(&call, "v0.9.1"), want);
+    assert_eq!(supported(&call, "1.0"), want);
     // both extensions are activated, in the header
     assert!(call.activates(UI_CATALOG_EXTENSION));
-    assert!(call.activates(A2UI_EXTENSION_V0_9_1));
+    assert!(call.activates(A2UI_EXTENSION_V1_0));
 }
 
 /// The forms catalog an ask carries (ADR 0026, amended 2026-10-17) travels like any inline
-/// delivery, and everything the agent reads agrees: the `ui-catalog/v1` metadata, the first
+/// delivery, and everything the agent reads agrees: the `ui-catalog/v2` metadata, the first
 /// supported id and the catalog in `inlineCatalogs` all name the derived catalog, which holds
 /// `Choices` alone, and the digest recomputed over what arrived is the one announced; nothing of
 /// the screen's own catalog is in the message.
 #[tokio::test]
 async fn a_forms_catalog_is_delivered_whole_with_choices_alone_and_its_own_id_and_digest() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], true).await;
-    let screen_catalog = json!({"catalogId": ID, "components": {
+    let fake = agent(&[A2UI_EXTENSION_V1_0], &[UI_CATALOG_EXTENSION], true).await;
+    let screen_catalog = json!({"catalogId": ID, "protocolVersion": "1.0", "components": {
         "Note": {"type": "object", "properties": {"component": {"const": "Note"}}},
         "Choices": {
             "type": "object",
@@ -170,7 +170,7 @@ async fn a_forms_catalog_is_delivered_whole_with_choices_alone_and_its_own_id_an
     }});
     let screen = UiCatalogData {
         catalog_id: ID.to_owned(),
-        version: 4,
+        version: 9,
         digest: catalog_digest(&screen_catalog).unwrap(),
         catalog: screen_catalog,
     };
@@ -181,7 +181,7 @@ async fn a_forms_catalog_is_delivered_whole_with_choices_alone_and_its_own_id_an
     let told = told(&call).unwrap();
     assert_eq!(
         told,
-        json!({"catalogId": forms_id, "version": 4, "digest": forms.digest, "inline": true})
+        json!({"catalogId": forms_id, "version": 9, "digest": forms.digest, "inline": true})
     );
     let inline = inline_of(&call);
     assert_eq!(inline, vec![forms.catalog.clone()]);
@@ -197,10 +197,10 @@ async fn a_forms_catalog_is_delivered_whole_with_choices_alone_and_its_own_id_an
     );
     assert_eq!(json!(catalog_digest(&inline[0]).unwrap()), told["digest"]);
     assert_ne!(told["digest"], json!(screen.digest));
-    assert_eq!(supported(&call, "v0.9.1")[0], forms_id);
+    assert_eq!(supported(&call, "1.0")[0], forms_id);
     assert!(call.activates(UI_CATALOG_EXTENSION));
     // nothing of the screen's own catalog: not its id, not its other components
-    assert!(!supported(&call, "v0.9.1").contains(&ID.to_owned()));
+    assert!(!supported(&call, "1.0").contains(&ID.to_owned()));
     assert!(
         !serde_json::to_string(&call.inline_catalogs)
             .unwrap()
@@ -210,17 +210,17 @@ async fn a_forms_catalog_is_delivered_whole_with_choices_alone_and_its_own_id_an
 
 #[tokio::test]
 async fn an_agent_that_does_not_take_a_catalog_inline_is_told_which_one_and_asks_for_it() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], false).await;
-    let v2 = catalog(2);
-    let call = send(&client(), &fake, Some(UiDelivery::Inline(v2.clone()))).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0], &[UI_CATALOG_EXTENSION], false).await;
+    let v9 = catalog(9);
+    let call = send(&client(), &fake, Some(UiDelivery::Inline(v9.clone()))).await;
 
     assert_eq!(
         told(&call),
-        Some(json!({"catalogId": ID, "version": 2, "digest": v2.digest, "inline": false}))
+        Some(json!({"catalogId": ID, "version": 9, "digest": v9.digest, "inline": false}))
     );
     assert!(call.inline_catalogs.is_empty(), "the catalog is not sent");
     assert_eq!(
-        supported(&call, "v0.9.1")[0],
+        supported(&call, "1.0")[0],
         ID,
         "ours is listed all the same"
     );
@@ -228,35 +228,35 @@ async fn an_agent_that_does_not_take_a_catalog_inline_is_told_which_one_and_asks
 
 #[tokio::test]
 async fn a_reference_is_a_reference_and_ours_is_still_listed_first() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], true).await;
-    let v2 = catalog(2);
-    let call = send(&client(), &fake, Some(UiDelivery::Ref(v2.reference()))).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0], &[UI_CATALOG_EXTENSION], true).await;
+    let v9 = catalog(9);
+    let call = send(&client(), &fake, Some(UiDelivery::Ref(v9.reference()))).await;
 
     assert_eq!(
         told(&call),
-        Some(json!({"catalogId": ID, "version": 2, "digest": v2.digest, "inline": false}))
+        Some(json!({"catalogId": ID, "version": 9, "digest": v9.digest, "inline": false}))
     );
     assert!(call.inline_catalogs.is_empty());
-    assert_eq!(supported(&call, "v0.9.1")[0], ID);
+    assert_eq!(supported(&call, "1.0")[0], ID);
 }
 
 #[tokio::test]
 async fn a_card_without_the_uri_gets_exactly_the_message_it_got_before() {
-    let v2 = catalog(2);
-    // a card that speaks A2UI, takes catalogs inline, and does not list ui-catalog/v1
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[THREAD_TOOLS_EXTENSION], true).await;
-    let call = send(&client(), &fake, Some(UiDelivery::Inline(v2.clone()))).await;
+    let v9 = catalog(9);
+    // a card that speaks A2UI, takes catalogs inline, and does not list ui-catalog/v2
+    let fake = agent(&[A2UI_EXTENSION_V1_0], &[THREAD_TOOLS_EXTENSION], true).await;
+    let call = send(&client(), &fake, Some(UiDelivery::Inline(v9.clone()))).await;
     is_todays_message(&call);
 
     // near misses are not the extension
     for near in [
-        "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2",
-        "https://agents.vymalo.com/a2a/extensions/ui-catalog/v1/",
-        "http://agents.vymalo.com/a2a/extensions/ui-catalog/v1",
-        "https://agents.vymalo.com/a2a/extensions/UI-catalog/v1",
+        "https://agents.vymalo.com/a2a/extensions/ui-catalog/v1",
+        "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2/",
+        "http://agents.vymalo.com/a2a/extensions/ui-catalog/v2",
+        "https://agents.vymalo.com/a2a/extensions/UI-catalog/v2",
     ] {
-        let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[near], true).await;
-        let call = send(&client(), &fake, Some(UiDelivery::Inline(v2.clone()))).await;
+        let fake = agent(&[A2UI_EXTENSION_V1_0], &[near], true).await;
+        let call = send(&client(), &fake, Some(UiDelivery::Inline(v9.clone()))).await;
         is_todays_message(&call);
     }
 
@@ -267,17 +267,17 @@ async fn a_card_without_the_uri_gets_exactly_the_message_it_got_before() {
 
 #[tokio::test]
 async fn a_message_with_no_delivery_carries_no_catalog_even_to_an_agent_that_lists_the_extension() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], true).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0], &[UI_CATALOG_EXTENSION], true).await;
     let call = send(&client(), &fake, None).await;
     is_todays_message(&call);
 }
 
 #[tokio::test]
 async fn the_card_is_read_for_every_message() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1], &[UI_CATALOG_EXTENSION], true).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0], &[UI_CATALOG_EXTENSION], true).await;
     let c = client();
-    let v2 = catalog(2);
-    let delivery = || Some(UiDelivery::Inline(v2.clone()));
+    let v9 = catalog(9);
+    let delivery = || Some(UiDelivery::Inline(v9.clone()));
 
     assert!(send(&c, &fake, delivery()).await.ui_catalog.is_some());
     // the agent drops the extension: the next message is plain
@@ -296,37 +296,46 @@ async fn the_card_is_read_for_every_message() {
 #[tokio::test]
 async fn an_agent_that_lists_the_extension_but_not_a2ui_is_told_which_catalog_and_nothing_more() {
     let fake = agent(&[], &[UI_CATALOG_EXTENSION], true).await;
-    let v2 = catalog(2);
-    let call = send(&client(), &fake, Some(UiDelivery::Inline(v2.clone()))).await;
+    let v9 = catalog(9);
+    let call = send(&client(), &fake, Some(UiDelivery::Inline(v9.clone()))).await;
 
     assert_eq!(
         told(&call),
-        Some(json!({"catalogId": ID, "version": 2, "digest": v2.digest, "inline": false}))
+        Some(json!({"catalogId": ID, "version": 9, "digest": v9.digest, "inline": false}))
     );
     assert_eq!(
         call.a2ui_capabilities, None,
         "no renderer capabilities without A2UI"
     );
     assert!(call.activates(UI_CATALOG_EXTENSION));
-    assert!(!call.activates(A2UI_EXTENSION_V0_9_1));
+    assert!(!call.activates(A2UI_EXTENSION_V1_0));
 }
 
+/// ADR 0075: a hard cutover. A card that lists the retired `…/a2ui/v0.9.1` URI — or any other
+/// version — speaks no A2UI this build can use: it is sent no renderer capabilities and the
+/// extension is not activated, so an agent built for the old release draws nothing.
 #[tokio::test]
-async fn the_other_dialect_carries_the_catalog_the_same_way() {
-    let fake = agent(&[A2UI_EXTENSION_V1_0], &[UI_CATALOG_EXTENSION], true).await;
-    let v2 = catalog(2);
-    let call = send(&client(), &fake, Some(UiDelivery::Inline(v2.clone()))).await;
-
-    assert_eq!(inline_of(&call), vec![v2.catalog.clone()]);
-    assert_eq!(supported(&call, "v1.0")[0], ID);
-    assert_eq!(told(&call).unwrap()["inline"], true);
-    assert!(call.activates(A2UI_EXTENSION_V1_0));
+async fn a_card_that_lists_the_retired_uri_speaks_no_a2ui() {
+    let v9 = catalog(9);
+    for retired in [
+        "https://a2ui.org/a2a-extension/a2ui/v0.9.1",
+        "https://a2ui.org/a2a-extension/a2ui/v0.9",
+        "https://a2ui.org/a2a-extension/a2ui/v1.0/",
+    ] {
+        let fake = agent(&[retired], &[UI_CATALOG_EXTENSION], true).await;
+        let call = send(&client(), &fake, Some(UiDelivery::Inline(v9.clone()))).await;
+        assert_eq!(call.a2ui_capabilities, None, "{retired}");
+        assert!(!call.activates(retired), "{retired}");
+        assert!(call.inline_catalogs.is_empty(), "{retired}");
+        // the catalog itself is still announced: it is `ui-catalog/v2`, which the card lists
+        assert_eq!(told(&call).unwrap()["inline"], false, "{retired}");
+    }
 }
 
 #[tokio::test]
 async fn the_card_says_which_extensions_it_lists_and_whether_it_takes_a_catalog_inline() {
     let fake = agent(
-        &[A2UI_EXTENSION_V0_9_1],
+        &[A2UI_EXTENSION_V1_0],
         &[
             UI_CATALOG_EXTENSION,
             THREAD_TOOLS_EXTENSION,

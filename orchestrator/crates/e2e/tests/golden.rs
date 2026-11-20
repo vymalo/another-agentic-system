@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use common::*;
 use orch_app::GateLayer;
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, AgentId, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
+    A2UI_EXTENSION_V1_0, AgentId, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION,
     TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, USAGE_EXTENSION,
 };
 use orch_testsupport::{
@@ -382,13 +382,13 @@ async fn run(world: &World, name: &str) -> Vec<Value> {
             (fork, "done")
         }
         // The UI's catalog (ADR 0023), through the AG-UI run route, which is the only door a
-        // catalog has: the first run of the thread carries version 1; the next job, a message
-        // on the finished thread, version 2; the third job version 1 again, from an older
+        // catalog has: the first run of the thread carries version 9; the next job, a message
+        // on the finished thread, version 10; the third job version 9 again, from an older
         // screen. Each digest is recorded once, first in its commit, and the log names the
         // consumer's message and run ids, which a route that carries a catalog has.
         "catalog" => {
             let id = "00000000-0000-7000-8000-000000000301".to_owned();
-            for (n, (text, version)) in [("echo hi", 1), ("echo again", 2), ("echo once more", 1)]
+            for (n, (text, version)) in [("echo hi", 9), ("echo again", 10), ("echo once more", 9)]
                 .into_iter()
                 .enumerate()
             {
@@ -658,7 +658,7 @@ async fn world_for(name: &str, tool_server: Option<&FakeToolServer>) -> World {
                 Backend::Memory,
                 Setup {
                     plain: FakeAgentOptions {
-                        ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                        ui_extensions: vec![A2UI_EXTENSION_V1_0.to_owned()],
                         ..FakeAgentOptions::default()
                     },
                     ..Setup::default()

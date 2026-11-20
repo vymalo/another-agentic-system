@@ -135,7 +135,7 @@
                   "deleteSurface": {
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -164,7 +164,7 @@
                       "n": 2
                     }
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -372,7 +372,7 @@
                     "catalogId": "c",
                     "surfaceId": "s1"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -405,7 +405,7 @@
                     ],
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -615,7 +615,7 @@
                       "n": 2
                     }
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -862,7 +862,7 @@
                     ],
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -895,7 +895,7 @@
                     ],
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 },
                 {
                   "updateDataModel": {
@@ -904,7 +904,7 @@
                       "n": 2
                     }
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -1090,7 +1090,7 @@
                     "catalogId": "c",
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },

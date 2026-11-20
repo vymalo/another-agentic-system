@@ -749,13 +749,13 @@ struct ScriptedStep {
 }
 
 fn ui_create(surface: &str) -> serde_json::Value {
-    serde_json::json!({"version": "v0.9.1", "createSurface": {
+    serde_json::json!({"version": "1.0", "createSurface": {
         "surfaceId": surface,
-        "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"}})
+        "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"}})
 }
 
 fn ui_components(surface: &str) -> serde_json::Value {
-    serde_json::json!({"version": "v0.9.1", "updateComponents": {
+    serde_json::json!({"version": "1.0", "updateComponents": {
     "surfaceId": surface,
     "components": [
         {"id": "root", "component": "Column", "children": ["title", "go"]},

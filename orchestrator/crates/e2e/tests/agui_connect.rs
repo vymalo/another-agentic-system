@@ -758,10 +758,10 @@ async fn viewer_frames(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame
             chat.wait_state(thread, "done").await;
             inbox.shutdown().await;
         }
-        // The UI's catalog (ADR 0023): three jobs, carrying version 1, 2 and 1 again. A viewer
+        // The UI's catalog (ADR 0023): three jobs, carrying version 9, 10 and 9 again. A viewer
         // reads no frame of its own for a catalog, and every snapshot names the current one.
         "catalog" => {
-            for (n, (text, version)) in [("echo hi", 1), ("echo again", 2), ("echo once more", 1)]
+            for (n, (text, version)) in [("echo hi", 9), ("echo again", 10), ("echo once more", 9)]
                 .into_iter()
                 .enumerate()
             {

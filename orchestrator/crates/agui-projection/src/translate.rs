@@ -48,9 +48,23 @@ pub struct KnownThread {
     pub message_ids: BTreeSet<String>,
     /// Every run id the log already holds.
     pub run_ids: BTreeSet<String>,
-    /// The A2UI surfaces the thread has now, with the version each one speaks. An action is
-    /// accepted only for one of these.
-    pub surfaces: BTreeMap<String, UiVersion>,
+    /// The A2UI surfaces the thread has now, with the dialect each one speaks. An action is
+    /// accepted only for one of these, and only when it is [`SurfaceDialect::V1_0`].
+    pub surfaces: BTreeMap<String, SurfaceDialect>,
+}
+
+/// The A2UI dialect the operations of a surface are written in, as far as the orchestrator cares
+/// (ADR 0075, a hard cutover).
+///
+/// A thread from before the cutover keeps its `v0.9.1` surfaces in the log, and nothing is
+/// migrated: they are relayed to a viewer as they were sent (which draws them as made by an
+/// earlier version), and an action on one is refused with 422 before anything is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceDialect {
+    /// A2UI `"1.0"`, the only dialect this build speaks.
+    V1_0,
+    /// An operation of any other `version` — a surface of a thread from before the cutover.
+    Earlier,
 }
 
 impl ThreadView {
@@ -191,6 +205,17 @@ pub enum InputError {
         /// The surface the action named, cut to a short excerpt.
         surface_id: String,
     },
+    /// The action names a surface whose operations are not A2UI `"1.0"` (422): a surface of a
+    /// thread from before the cutover, shown by the client as made by an earlier version. Nothing
+    /// is written and nothing is sent to the agent (ADR 0075, decision 4).
+    #[error(
+        "the surface {surface_id:?} was made by an earlier version of A2UI and cannot be acted on; \
+         ask the agent again"
+    )]
+    EarlierSurface {
+        /// The surface the action named, cut to a short excerpt.
+        surface_id: String,
+    },
     /// The request carries an action and also a new message, an answer or a cancellation (422):
     /// one thing at a time.
     #[error(
@@ -225,6 +250,7 @@ impl InputError {
             | InputError::RunIdReused { .. }
             | InputError::InvalidAction { .. }
             | InputError::UnknownSurface { .. }
+            | InputError::EarlierSurface { .. }
             | InputError::AmbiguousAction
             | InputError::AmbiguousAnswer => 422,
             InputError::ActionTooLarge { .. } => 413,
@@ -442,12 +468,19 @@ pub fn translate_with_warnings(
             return Err(InputError::AmbiguousAction);
         }
         // Only a surface the thread has: nothing an agent did not send can be acted on.
-        let version = known
+        let dialect = known
             .and_then(|k| k.surfaces.get(&action.surface_id))
             .ok_or_else(|| InputError::UnknownSurface {
                 surface_id: action.surface_id.chars().take(64).collect(),
             })?;
-        action.version = *version;
+        // And only one of this build's dialect: a surface from before the cutover is shown, never
+        // acted on (ADR 0075, decision 4).
+        if *dialect == SurfaceDialect::Earlier {
+            return Err(InputError::EarlierSurface {
+                surface_id: action.surface_id.chars().take(64).collect(),
+            });
+        }
+        action.version = UiVersion::V1_0;
         action.run_id = run_id;
         return finish(
             vec![Input::UiAction {
@@ -617,8 +650,9 @@ fn user_action(input: &RunAgentInput) -> Result<Option<UiActionData>, InputError
         name: text("name")?,
         source_component_id: text("sourceComponentId")?,
         context,
-        // Set from the surface, and the run id from the request, once the surface is known.
-        version: UiVersion::V0_9_1,
+        // Set once the surface is known: A2UI v1.0, the only dialect (ADR 0075), and the request's
+        // run id.
+        version: UiVersion::V1_0,
         run_id: None,
     };
     action.check().map_err(|e| {

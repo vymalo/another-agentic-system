@@ -2185,7 +2185,7 @@ fn delivery_failures_and_cancel_outcomes_while_verifying() {
         name: "go".into(),
         source_component_id: "b".into(),
         context: serde_json::Map::new(),
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: None,
     };
     let (queued, _) = step(

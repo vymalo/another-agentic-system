@@ -9,9 +9,75 @@
       "catalog": {
         "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
         "components": {
+          "Choices": {
+            "additionalProperties": false,
+            "description": "Questions with options, answered with one action.",
+            "properties": {
+              "component": {
+                "const": "Choices"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "questions": {
+                "items": {
+                  "type": "object"
+                },
+                "maxItems": 8,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "component",
+              "questions"
+            ],
+            "type": "object"
+          },
+          "Column": {
+            "additionalProperties": false,
+            "description": "Stacks its children vertically.",
+            "properties": {
+              "align": {
+                "enum": [
+                  "start",
+                  "center",
+                  "end",
+                  "stretch"
+                ]
+              },
+              "children": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              "component": {
+                "const": "Column"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "component",
+              "children"
+            ],
+            "type": "object"
+          },
           "Text": {
             "additionalProperties": false,
-            "description": "Plain text (catalog version 1).",
+            "description": "Plain text (catalog version 9).",
             "properties": {
               "component": {
                 "const": "Text"
@@ -45,11 +111,12 @@
             ],
             "type": "object"
           }
-        }
+        },
+        "protocolVersion": "1.0"
       },
       "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
-      "digest": "sha256:1f266eba8bcaadea6898f093405fc2a4aab363e51226ad24bd1e39265f1df487",
-      "version": 1
+      "digest": "sha256:e201c0451bd33113642fb4db11cc853a8928a76c3b462319fb32fd35a5ff4ef6",
+      "version": 9
     },
     "kind": "ui_catalog",
     "seq": 1,
@@ -134,6 +201,34 @@
       "catalog": {
         "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
         "components": {
+          "Choices": {
+            "additionalProperties": false,
+            "description": "Questions with options, answered with one action.",
+            "properties": {
+              "component": {
+                "const": "Choices"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "questions": {
+                "items": {
+                  "type": "object"
+                },
+                "maxItems": 8,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "component",
+              "questions"
+            ],
+            "type": "object"
+          },
           "Column": {
             "additionalProperties": false,
             "description": "Stacks its children vertically.",
@@ -174,7 +269,7 @@
           },
           "Text": {
             "additionalProperties": false,
-            "description": "Plain text (catalog version 2).",
+            "description": "Plain text (catalog version 10).",
             "properties": {
               "component": {
                 "const": "Text"
@@ -208,11 +303,12 @@
             ],
             "type": "object"
           }
-        }
+        },
+        "protocolVersion": "1.0"
       },
       "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
-      "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
-      "version": 2
+      "digest": "sha256:fa671d142d93867c9e09cd10fb6bec51a821c9aecd4de9828d70f3107a564e22",
+      "version": 10
     },
     "kind": "ui_catalog",
     "seq": 7,

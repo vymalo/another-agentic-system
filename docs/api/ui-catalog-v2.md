@@ -1470,7 +1470,7 @@ The rule is v1's, over the v2 document:
   `"protocolVersion": "1.0"` added (v1's is `sha256:a237e931c3a02fc72b214561e3a52d33eaf0e29c9306bbe0ef7b3da238507293`).
   Every implementation (the orchestrator's core, the web, adam-rs) pins it in a test.
 - **The digest of catalog 9** is `sha256:5f174ee91c50759d59a0d7e91e3a1dc2e7c110b82ee91d858f4a23a944ed72b2`, over a
-  canonical form of 19,411 bytes (computed the same three ways). Taking `protocolVersion` out of catalog 9 gives back
+  canonical form of 19,413 bytes (computed the same three ways). Taking `protocolVersion` out of catalog 9 gives back
   catalog 8's digest, `sha256:22c333102bed676791dc9d47f21fc0a39be6e5062ef2c52f5a599ecca1b8341d`; a test can pin both.
 - To recompute a vector by hand:
 

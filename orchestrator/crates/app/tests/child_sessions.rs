@@ -700,7 +700,7 @@ async fn a_child_thread_takes_no_message_steer_stop_and_send_or_action() {
         name: "go".into(),
         source_component_id: "go".into(),
         context: serde_json::Map::new(),
-        version: orch_core::UiVersion::V0_9_1,
+        version: orch_core::UiVersion::V1_0,
         run_id: None,
         tier: None,
         tier_cap: None,

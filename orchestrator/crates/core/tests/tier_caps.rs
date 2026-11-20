@@ -97,7 +97,7 @@ fn action() -> UiActionData {
         name: "pick".into(),
         source_component_id: "b1".into(),
         context: serde_json::Map::new(),
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: None,
         tier: None,
         tier_cap: None,
@@ -411,7 +411,7 @@ fn the_action_is_logged_with_the_tier_and_the_cap_it_went_out_under() {
     assert_eq!((data.tier, data.tier_cap), (None, Some(Plan)));
     // and an old log, or an action that went out under none, has no member
     let old: UiActionData = serde_json::from_value(json!({
-        "surfaceId": "s", "name": "n", "sourceComponentId": "c", "context": {}, "version": "v0.9.1"
+        "surfaceId": "s", "name": "n", "sourceComponentId": "c", "context": {}, "version": "1.0"
     }))
     .unwrap();
     assert_eq!((old.tier, old.tier_cap), (None, None));

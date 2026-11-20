@@ -17,6 +17,11 @@ use crate::ToolCtx;
 /// What `get_ui_catalog` says of a thread that has none.
 const NO_CATALOG: &str = "this thread has no UI catalog; answer in text";
 
+/// What `get_ui_catalog` says of a thread whose current catalog is a `ui-catalog/v1` document: one
+/// written before the A2UI v1.0 cutover, which a v1.0 reader refuses (ADR 0075, section 4).
+const V1_CATALOG: &str = "this thread's UI catalog was written before A2UI v1.0 and is not served; \
+                          answer in text until the screen sends a new one";
+
 /// What `turn_output` says when the answer cannot be announced any more: the thread is not
 /// working, a later message started another turn, or the token belongs to an earlier job.
 const TURN_OVER: &str = "this turn is over";
@@ -231,6 +236,16 @@ async fn get_ui_catalog<P: Ports>(
         }
     };
     let unchanged = args.known_digest.as_deref() == Some(catalog.digest.as_str());
+    // A v1 document is never served (ADR 0075): a v1.0 reader refuses it, so the agent is told as
+    // for a thread with no catalog and answers in words.
+    if catalog
+        .catalog
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        != Some("1.0")
+    {
+        return Ok(refused(V1_CATALOG));
+    }
     let mut result = json!({
         "catalogId": catalog.catalog_id,
         "version": catalog.version,

@@ -9,7 +9,13 @@
   is a choice (never forwarding an action's `userMessage`), and the owner may change it by a dated note. No question
   of this ADR is open. **Amended (2026-11-19, two more owner decisions):** A2UI over MCP is noted now and built in R2,
   and a richer catalog (versions 10 and up) follows the cutover in R1; see [*Follow-up*](#follow-up).
-  **Nothing is built.** It amends
+  **Nothing is built** as this ADR was accepted. **Amended (2026-11-20, slice S1 built):** the orchestrator's half is
+  built and lands on the `a2ui-v1` branch — a `ui_action` event of a log written before the cutover still **reads**
+  (the log, its export and a fork of an old thread are history), while the orchestrator **writes** `"1.0"` only and
+  an action on an old surface is still refused with 422 (decision 4, below); and the vendored A2UI schemas live in
+  `orchestrator/crates/e2e/tests/a2ui-v1_0/`, not under `crates/core/tests/` (decision 9, below). Slices S2 to S4
+  (the web, `dev/`, the final pin) and the one merge remain.
+  It amends
   [ADR 0013](0013-a2ui-generative-ui.md) (the A2UI version, its URI, its capabilities key and the actions) and
   [ADR 0023](0023-ui-component-catalog-as-an-a2a-extension.md) (the catalog's shape and the extension's URI), and closes
   [open question 22](../open-questions.md#closed). The agent side is adam-rs
@@ -102,6 +108,17 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
    stands (an agent-authored line is put in the message box unsent, and is never sent as the person's words, inside
    an action or outside it), and `ui_action` keeps its fields. **(owner)** An action on a surface whose operations are
    not `"1.0"` (a surface of a thread from before the cutover) is refused with 422 before anything is written.
+
+   > **Amended (2026-11-20, built).** **The read is lenient, the write is strict.** A `ui_action` event written
+   > before the cutover holds `"v0.9"`, `"v0.9.1"` or the draft `"v1.0"`, and it must still deserialise: a thread's
+   > log, its export and a fork of it are history, and the cutover migrates nothing. So `UiActionData.version`
+   > accepts any string on **read** (`version_of_a_logged_action`, `orchestrator/crates/core/src/ui.rs`), and what
+   > the orchestrator **writes** is `"1.0"` only. Nothing about the refusal changes: a *new* action on a surface
+   > whose operations are not `"1.0"` is `InputError::EarlierSurface`, a 422 before anything is written. The two
+   > halves are held by tests: `an_action_logged_before_the_cutover_still_reads` (`core/src/ui.rs`) and
+   > `a_thread_from_before_the_cutover_reads_and_its_surface_takes_no_action`
+   > (`orchestrator/crates/agui-projection/tests/a2ui.rs`), which builds a log holding a `v0.9.1` surface **and** a
+   > `v0.9.1` action, projects it, and refuses a new action on it with 422.
 5. **`ui-catalog/v1` becomes `ui-catalog/v2`, a new URI and a new page.** The repository's rule is that "a breaking
    change is a `v2` URI and a new page, never an edit" ([`extensions.md`](../api/extensions.md)), and this change breaks
    every v1 reader:
@@ -164,7 +181,16 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
    the capabilities against `renderer_capabilities.json` and catalog 9 against `catalog_definition.json`. The web's
    tests read the same copies. At that commit `agent_to_renderer.json` is
    `sha256:2f575f783fdda0e4d175fe5d331661655e4a4901613262322792dae7e823761d` and `renderer_to_agent.json`
-   `sha256:58ecde02101f0f37566b5e238dc6ef6af628c3ff312fce0e17ab7670b7215465`. **The order across the repositories:**
+   `sha256:58ecde02101f0f37566b5e238dc6ef6af628c3ff312fce0e17ab7670b7215465`.
+
+   > **Amended (2026-11-20, built).** The files are vendored under
+   > `orchestrator/crates/e2e/tests/a2ui-v1_0/`, with the `UPSTREAM` record naming the commit and each file's
+   > SHA-256, and the test that reads them is `orchestrator/crates/e2e/tests/a2ui_schemas.rs` — not under
+   > `crates/core/tests/` as this decision says. The reason: what they validate is `orch-e2e`'s (every golden of
+   > `docs/api/examples`, the capabilities document and the card), and `crates/core` was held by another slice when
+   > the cutover landed. Nothing else changes: the same files, the same hashes, the same four checks.
+
+   **The order across the repositories:**
 
    | Step | Where it merges | What | Why there |
    |---|---|---|---|

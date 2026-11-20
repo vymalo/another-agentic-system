@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use orch_agui_projection::{CardFacts, RELEASE_CHANNELS_URI, agent_capabilities};
 use orch_agui_proto::testkit::assert_capabilities_conform;
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, ACCESS_TIER_EXTENSION, AgentId,
-    CHILD_SESSIONS_EXTENSION, COMMANDS_EXTENSION, ChildSessionsOffer, CommandsOffer,
-    KnownExtension, Releases, TierOffer, UiVersion,
+    A2UI_EXTENSION_V1_0, ACCESS_TIER_EXTENSION, AgentId, CHILD_SESSIONS_EXTENSION,
+    COMMANDS_EXTENSION, ChildSessionsOffer, CommandsOffer, KnownExtension, Releases, TierOffer,
+    UiVersion,
 };
 use serde_json::json;
 
@@ -96,33 +96,24 @@ fn an_unreadable_card_gives_the_smaller_document() {
 }
 
 #[test]
-fn a_card_with_a2ui_declares_the_catalogs_the_web_renders_under_each_uri() {
-    for (versions, keys) in [
-        (vec![UiVersion::V0_9_1], vec![A2UI_EXTENSION_V0_9_1]),
-        (vec![UiVersion::V1_0], vec![A2UI_EXTENSION_V1_0]),
-        (
-            vec![UiVersion::V0_9_1, UiVersion::V1_0],
-            vec![A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0],
-        ),
-    ] {
-        let card = CardFacts {
-            ui: versions,
-            ..CardFacts::default()
-        };
-        let doc = agent_capabilities(&AgentId::new("ui"), "UI", Some(&card));
-        assert_capabilities_conform(&doc);
-        let json = serde_json::to_value(&doc).unwrap();
-        let custom = json["custom"].as_object().unwrap();
-        assert_eq!(custom.len(), keys.len(), "{json}");
-        for key in keys {
-            let ids = &custom[key]["supportedCatalogIds"];
-            assert!(
-                ids.as_array().is_some_and(|a| !a.is_empty()),
-                "{key}: {ids}"
-            );
-        }
-        assert!(custom.keys().all(|k| k != RELEASE_CHANNELS_URI));
-    }
+fn a_card_with_a2ui_declares_the_catalogs_the_web_renders_under_the_v1_0_uri() {
+    // one dialect (ADR 0075): the key is the v1.0 URI, and the catalogs are the ones the web
+    // renders under it
+    let card = CardFacts {
+        ui: vec![UiVersion::V1_0],
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("ui"), "UI", Some(&card));
+    assert_capabilities_conform(&doc);
+    let json = serde_json::to_value(&doc).unwrap();
+    let custom = json["custom"].as_object().unwrap();
+    assert_eq!(custom.len(), 1, "{json}");
+    assert_eq!(
+        custom[A2UI_EXTENSION_V1_0]["supportedCatalogIds"],
+        json!(UiVersion::V1_0.basic_catalog_ids()),
+        "the one basic catalog of v1.0"
+    );
+    assert!(custom.keys().all(|k| k != RELEASE_CHANNELS_URI));
 }
 
 #[test]
@@ -163,7 +154,7 @@ fn a_card_that_lists_our_extensions_declares_each_under_its_uri() {
 fn our_extensions_come_beside_the_a2ui_ones_and_the_releases() {
     let card = CardFacts {
         releases: Some(releases()),
-        ui: vec![UiVersion::V0_9_1],
+        ui: vec![UiVersion::V1_0],
         extensions: BTreeSet::from([KnownExtension::UiCatalog]),
         ..CardFacts::default()
     };
@@ -179,7 +170,7 @@ fn our_extensions_come_beside_the_a2ui_ones_and_the_releases() {
     keys.sort_unstable();
     let mut want = vec![
         RELEASE_CHANNELS_URI,
-        A2UI_EXTENSION_V0_9_1,
+        A2UI_EXTENSION_V1_0,
         KnownExtension::UiCatalog.uri(),
     ];
     want.sort_unstable();

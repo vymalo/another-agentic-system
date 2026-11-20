@@ -83,7 +83,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
             retryable: true,
         }),
         EventBody::UiSurface(UiSurfaceData {
-            operations: vec![json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": "s"}})],
+            operations: vec![json!({"version": "1.0", "deleteSurface": {"surfaceId": "s"}})],
         }),
         EventBody::UiAction(UiActionData {
             tier: None,
@@ -92,7 +92,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
             name: "go".into(),
             source_component_id: "b".into(),
             context: serde_json::Map::new(),
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: None,
         }),
         EventBody::JobStarted(JobStartedData {
@@ -155,6 +155,7 @@ fn every_kind_roundtrips_and_never_emits_null() {
 fn note_catalog() -> UiCatalogData {
     let catalog = json!({
         "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "protocolVersion": "1.0",
         "components": {"Note": {"type": "object"}},
     });
     UiCatalogData {
@@ -1048,7 +1049,7 @@ fn auth_required_is_its_own_status_spelling() {
 fn ui_events_use_the_contract_spelling() {
     let surface = event(
         EventBody::UiSurface(UiSurfaceData {
-            operations: vec![json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}})],
+            operations: vec![json!({"version": "1.0", "createSurface": {"surfaceId": "s1"}})],
         }),
         Actor::agent(&AgentId::new("coder"), None),
     );
@@ -1056,7 +1057,7 @@ fn ui_events_use_the_contract_spelling() {
     assert_eq!(v["kind"], "ui_surface");
     assert_eq!(
         v["data"],
-        json!({"operations": [{"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}}]})
+        json!({"operations": [{"version": "1.0", "createSurface": {"surfaceId": "s1"}}]})
     );
     assert_eq!(serde_json::from_value::<Event>(v).unwrap(), surface);
 
@@ -1070,7 +1071,7 @@ fn ui_events_use_the_contract_spelling() {
             name: "submit".into(),
             source_component_id: "btn".into(),
             context,
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: Some("run-2".into()),
         }),
         Actor::user(&UserId::new("a@b.c")),
@@ -1080,7 +1081,7 @@ fn ui_events_use_the_contract_spelling() {
     assert_eq!(
         v["data"],
         json!({"surfaceId": "s1", "name": "submit", "sourceComponentId": "btn",
-               "context": {"email": "a@b.c"}, "version": "v0.9.1", "runId": "run-2"})
+               "context": {"email": "a@b.c"}, "version": "1.0", "runId": "run-2"})
     );
     assert_eq!(serde_json::from_value::<Event>(v).unwrap(), action);
 }

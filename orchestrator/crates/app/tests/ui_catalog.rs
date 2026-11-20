@@ -169,7 +169,7 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
         name: "answer".into(),
         source_component_id: "choices".into(),
         context: serde_json::Map::new(),
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: None,
     };
     app.submit(

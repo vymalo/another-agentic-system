@@ -32,7 +32,7 @@ use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
 use serde_json::{Value, json};
 
 use crate::a2ui::{
-    action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
+    action_part, inline_catalog, renderer_capabilities, ui_catalog_metadata, ui_from_card,
 };
 use crate::access_tier::{access_tier_from_card, check_plain_under_cap, tier_metadata};
 use crate::child_sessions::child_sessions_from_card;
@@ -626,7 +626,7 @@ fn map_stream(
 }
 
 /// What the message tells the agent of the screen's catalog: the request's delivery, and only
-/// when the card read for this very call lists `ui-catalog/v1` (ADR 0008: nothing is remembered,
+/// when the card read for this very call lists `ui-catalog/v2` (ADR 0008: nothing is remembered,
 /// and a card without the extension gets the message it got before it existed).
 fn catalog_for<'r>(
     req: &'r SendRequest,
@@ -695,6 +695,7 @@ fn extensions_of(
         uris.push(uri.to_owned());
     }
     if catalog.is_some() {
+        // `ui-catalog/v2`, activated only when the card lists it (`catalog_for`)
         uris.push(UI_CATALOG_EXTENSION.to_owned());
     }
     // a steer says what it is by the extension (steer/v1 section 2): the request, not the message
@@ -752,15 +753,13 @@ fn user_message(
             json!({ "release": release }),
         );
     }
-    // The renderer's capabilities go with every message, and only to an agent whose live card
-    // lists the extension: without it the message is plain A2A. The screen's own catalog is
-    // listed in them (and carried inline when the agent takes it) only to an agent that also
-    // lists ui-catalog/v1.
+    // The renderer's capabilities (`a2uiRendererCapabilities`, `"1.0"`) go with every message, and
+    // only to an agent whose live card lists the A2UI v1.0 extension: without it the message is
+    // plain A2A. The screen's own catalog is listed in them (and carried inline when the agent
+    // takes it) only to an agent that also lists ui-catalog/v2 (ADR 0075).
     let accepts_inline = ui.is_some_and(|ui| ui.accepts_inline_catalogs);
-    if let Some((key, value)) = ui
-        .and_then(UiSupport::preferred)
-        .and_then(|version| client_capabilities(version, catalog, accepts_inline))
-    {
+    if ui.is_some() {
+        let (key, value) = renderer_capabilities(catalog, accepts_inline);
         metadata.insert(key.to_owned(), value);
     }
     if let Some(delivery) = catalog {

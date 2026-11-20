@@ -328,11 +328,11 @@ fn a_question_the_copy_still_holds_is_not_an_open_interrupt_of_the_fork() {
 #[test]
 fn a_card_of_the_copy_cannot_be_acted_on() {
     let mut operations = vec![json!({
-        "version": "v0.9.1",
+        "version": "1.0",
         "createSurface": {"surfaceId": "s0", "catalogId": "c"},
     })];
     operations.push(json!({
-        "version": "v0.9.1",
+        "version": "1.0",
         "updateComponents": {"surfaceId": "s0", "components": [
             {"id": "root", "component": "Text", "text": "hi"}]},
     }));

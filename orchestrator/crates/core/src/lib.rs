@@ -145,15 +145,16 @@ pub use tools::{
 };
 pub use transition::{Command, EventDraft, Input, TransitionError, start_thread, transition};
 pub use ui::{
-    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, A2UI_MEDIA_TYPE, MAX_ACTION_CONTEXT_BYTES,
-    MAX_ID_BYTES, MAX_OPERATIONS, MAX_OPERATIONS_BYTES, MAX_SURFACE_BYTES, OperationError,
-    OperationInfo, SurfaceOp, UiActionData, UiActionError, UiRejection, UiSurfaceData, UiVersion,
-    check_operation_list, check_operations, inspect, serialized_len,
+    A2UI_EXTENSION_V1_0, A2UI_MEDIA_TYPE, MAX_ACTION_CONTEXT_BYTES, MAX_ID_BYTES, MAX_OPERATIONS,
+    MAX_OPERATIONS_BYTES, MAX_SURFACE_BYTES, OperationError, OperationInfo, SurfaceOp,
+    UiActionData, UiActionError, UiRejection, UiSurfaceData, UiVersion, check_operation_list,
+    check_operations, inspect, serialized_len,
 };
 pub use ui_catalog::{
     Accepted, CatalogError, FORMS_CATALOG_SUFFIX, MAX_CATALOG_BYTES, MAX_CATALOG_COMPONENTS,
     MAX_CATALOG_DEPTH, MAX_CATALOG_ID_BYTES, MAX_CATALOG_VERSION, MAX_SEEN_CATALOGS, Observed,
-    UiCatalogData, UiCatalogLedger, UiCatalogRef, UiDelivery, canonical_json, catalog_digest,
+    PROTOCOL_VERSION, UiCatalogData, UiCatalogLedger, UiCatalogRef, UiDelivery, canonical_json,
+    catalog_digest,
 };
 pub use usage::{
     MAX_SANDBOX_ENTRIES, MAX_TOKEN_COUNT, MAX_USAGE_CALLS_PER_JOB, MAX_USAGE_LABEL_BYTES,

@@ -159,8 +159,8 @@
       "title": "echo hi",
       "uiCatalog": {
         "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
-        "digest": "sha256:4b5451b53e6366350efeaef3d50b635ec29ce9e59f82e2b135d81a7bf217a582",
-        "version": 2
+        "digest": "sha256:fa671d142d93867c9e09cd10fb6bec51a821c9aecd4de9828d70f3107a564e22",
+        "version": 10
       }
     }
   },

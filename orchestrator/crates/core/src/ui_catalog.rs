@@ -1,9 +1,11 @@
 //! The UI catalog (ADR 0023): the components the person's screen can show, as the web defines
 //! them, and what the orchestrator keeps of them for a thread.
 //!
-//! The catalog is an A2UI **inline catalog**, `{catalogId, components: {<Name>: <JSON Schema>}}`,
-//! that the web sends with the first run of a thread and again when its own version is newer than
-//! the thread's. The orchestrator **relays** it, it does not interpret it. What it checks, before
+//! The catalog is an A2UI v1.0 **inline catalog**,
+//! `{catalogId, protocolVersion: "1.0", components: {<Name>: <JSON Schema>}}` (ADR 0075, whose
+//! contract is `docs/api/ui-catalog-v2.md`), that the web sends with the first run of a thread and
+//! again when its own version is newer than the thread's. The orchestrator **relays** it, it does
+//! not interpret it. What it checks, before
 //! anything is stored, is the envelope ([`UiCatalogData::from_json`]): the shape, the limits, the
 //! rules of the schema language we allow, and that the digest the sender claims is the digest of
 //! what it sent. That the schemas are JSON Schema is checked by `orch-app`, which may use a
@@ -89,9 +91,16 @@ pub enum CatalogError {
     /// `catalog.catalogId` is not `catalogId`.
     #[error("catalog.catalogId must be the catalogId")]
     IdMismatch,
-    /// The catalog has a member other than `catalogId` and `components`.
-    #[error("the catalog has a member '{0}'; only catalogId and components are accepted")]
+    /// The catalog has a member other than `catalogId`, `protocolVersion` and `components`.
+    #[error(
+        "the catalog has a member '{0}'; only catalogId, protocolVersion and components are accepted"
+    )]
     UnknownMember(String),
+    /// `catalog.protocolVersion` is missing, or is not the string `"1.0"`.
+    #[error(
+        "the catalog must declare \"protocolVersion\": \"1.0\"; A2UI v1.0 cannot use a v0.9 catalog"
+    )]
+    ProtocolVersion,
     /// `components` is missing, is not an object, or is empty.
     #[error("components must be an object with at least one component")]
     Components,
@@ -148,7 +157,7 @@ pub struct UiCatalogData {
     pub version: u32,
     /// `sha256:` and the lowercase hex digest of the canonical JSON of `catalog`.
     pub digest: String,
-    /// The catalog, `{catalogId, components}`: an A2UI inline catalog.
+    /// The catalog, `{catalogId, protocolVersion, components}`: an A2UI v1.0 inline catalog.
     pub catalog: Value,
 }
 
@@ -220,7 +229,8 @@ impl UiCatalogData {
 
     /// The **forms catalog** derived from this one: what an asked agent is sent (ADR 0026, amended
     /// 2026-10-17), so that it can draw a form and nothing else. It is
-    /// `{catalogId: <this id>/forms, components: {Choices: <this catalog's Choices, without `show`>}}`,
+    /// `{catalogId: <this id>/forms, protocolVersion: "1.0", components: {Choices: <this
+    /// catalog's Choices, without `show`>}}` (a v2 document like the screen's, ADR 0075),
     /// with this catalog's `version` (the agent reads from the version what a `Choices` may hold)
     /// and the digest of the contract computed over the canonical JSON of the derived catalog, as
     /// for any catalog. It is derived at send time and never recorded: the same catalog gives the
@@ -242,6 +252,7 @@ impl UiCatalogData {
         }
         let catalog = serde_json::json!({
             "catalogId": catalog_id,
+            "protocolVersion": PROTOCOL_VERSION,
             "components": {"Choices": without_show(choices)},
         });
         let digest = catalog_digest(&catalog).ok()?;
@@ -278,6 +289,10 @@ fn without_show(choices: &Value) -> Value {
     }
     copy
 }
+
+/// The `protocolVersion` every v2 catalog declares, and the only one this build reads
+/// (ADR 0075: A2UI v1.0 cannot use a v0.9 catalog, and reads a catalog without it as v0.9).
+pub const PROTOCOL_VERSION: &str = "1.0";
 
 /// The members of the object the web sends; anything else in it is refused.
 #[derive(Deserialize)]
@@ -468,9 +483,13 @@ fn check_envelope(catalog: &Value, catalog_id: &str) -> Result<(), CatalogError>
     };
     if let Some(extra) = object
         .keys()
-        .find(|k| !matches!(k.as_str(), "catalogId" | "components"))
+        .find(|k| !matches!(k.as_str(), "catalogId" | "protocolVersion" | "components"))
     {
         return Err(CatalogError::UnknownMember(extra.clone()));
+    }
+    // A2UI v1.0 reads a catalog without this as a v0.9 one, which it cannot use (ADR 0075).
+    if object.get("protocolVersion").and_then(Value::as_str) != Some(PROTOCOL_VERSION) {
+        return Err(CatalogError::ProtocolVersion);
     }
     if object.get("catalogId").and_then(Value::as_str) != Some(catalog_id) {
         return Err(CatalogError::IdMismatch);
@@ -642,11 +661,15 @@ mod tests {
     use super::*;
 
     const ID: &str = "https://agents.vymalo.com/a2ui/catalogs/test";
-    /// The known-answer vector of ADR 0023's contract: the same catalog and digest are pinned in
-    /// the web's tests and in adam's.
-    const KAT_CATALOG: &str = r#"{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"type":"object","properties":{"component":{"const":"Note"},"text":{"type":"string","maxLength":10}},"required":["component","text"]}}}"#;
-    const KAT_CANONICAL: &str = r#"{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"properties":{"component":{"const":"Note"},"text":{"maxLength":10,"type":"string"}},"required":["component","text"],"type":"object"}}}"#;
+    /// The known-answer vector of `ui-catalog/v2` (`docs/api/ui-catalog-v2.md`, section 2): the same
+    /// catalog and digest are pinned in the web's tests and in adam-rs's.
+    const KAT_CATALOG: &str = r#"{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","protocolVersion":"1.0","components":{"Note":{"type":"object","properties":{"component":{"const":"Note"},"text":{"type":"string","maxLength":10}},"required":["component","text"]}}}"#;
+    const KAT_CANONICAL: &str = r#"{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"properties":{"component":{"const":"Note"},"text":{"maxLength":10,"type":"string"}},"required":["component","text"],"type":"object"}},"protocolVersion":"1.0"}"#;
     const KAT_DIGEST: &str =
+        "sha256:9fdab0c5c2094871cfb01d15046f206f3460341960ddcee4767e2bd33ab8e8f8";
+    /// The vector of `ui-catalog/v1`, the same document without `protocolVersion`: taking the member
+    /// out of the v2 vector gives it back (ADR 0075, decision 5).
+    const KAT_V1_DIGEST: &str =
         "sha256:a237e931c3a02fc72b214561e3a52d33eaf0e29c9306bbe0ef7b3da238507293";
 
     fn kat() -> Value {
@@ -664,7 +687,7 @@ mod tests {
     }
 
     fn catalog_with(components: Value) -> Value {
-        json!({"catalogId": ID, "components": components})
+        json!({"catalogId": ID, "protocolVersion": PROTOCOL_VERSION, "components": components})
     }
 
     fn note() -> Value {
@@ -718,7 +741,8 @@ mod tests {
         assert_eq!(forms.version, 5);
         assert_eq!(
             forms.catalog,
-            json!({"catalogId": format!("{ID}/forms"), "components": {"Choices": choices()}})
+            json!({"catalogId": format!("{ID}/forms"), "protocolVersion": PROTOCOL_VERSION,
+                   "components": {"Choices": choices()}})
         );
         // the digest is the contract's: SHA-256 over the canonical form of the derived catalog
         let canonical = canonical_json(&forms.catalog).unwrap();
@@ -803,7 +827,8 @@ mod tests {
             .remove("show");
         assert_eq!(
             forms.catalog,
-            json!({"catalogId": format!("{ID}/forms"), "components": {"Choices": honest}}),
+            json!({"catalogId": format!("{ID}/forms"), "protocolVersion": PROTOCOL_VERSION,
+                   "components": {"Choices": honest}}),
             "the screen's `Choices` without `show` and without the sentence that offers it; the components it names are not here"
         );
         assert_ne!(forms.digest, screen.digest);
@@ -843,11 +868,16 @@ mod tests {
     fn the_known_answer_vector_holds() {
         assert_eq!(canonical_json(&kat()).unwrap(), KAT_CANONICAL);
         assert_eq!(catalog_digest(&kat()).unwrap(), KAT_DIGEST);
+        // `protocolVersion` is a member like the others, so it sorts last, and taking it out gives
+        // back the digest of the v1 vector
+        let mut v1 = kat();
+        v1.as_object_mut().unwrap().remove("protocolVersion");
+        assert_eq!(catalog_digest(&v1).unwrap(), KAT_V1_DIGEST);
     }
 
     #[test]
     fn the_order_the_keys_arrive_in_does_not_change_the_digest() {
-        let shuffled = r#"{"components":{"Note":{"required":["component","text"],"properties":{"text":{"maxLength":10,"type":"string"},"component":{"const":"Note"}},"type":"object"}},"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test"}"#;
+        let shuffled = r#"{"components":{"Note":{"required":["component","text"],"properties":{"text":{"maxLength":10,"type":"string"},"component":{"const":"Note"}},"type":"object"}},"protocolVersion":"1.0","catalogId":"https://agents.vymalo.com/a2ui/catalogs/test"}"#;
         let value: Value = serde_json::from_str(shuffled).unwrap();
         assert_eq!(catalog_digest(&value).unwrap(), KAT_DIGEST);
     }
@@ -964,7 +994,8 @@ mod tests {
             assert_eq!(refused(&value), CatalogError::CatalogId, "{bad}");
         }
         let longest = format!("https://x.test/{}", "a".repeat(MAX_CATALOG_ID_BYTES - 15));
-        let catalog = json!({"catalogId": longest, "components": {"Note": note()}});
+        let catalog = json!({"catalogId": longest, "protocolVersion": PROTOCOL_VERSION,
+                             "components": {"Note": note()}});
         assert!(UiCatalogData::from_json(&envelope(1, &catalog)).is_ok());
     }
 
@@ -1030,7 +1061,7 @@ mod tests {
         not_object["catalog"] = json!([]);
         assert!(matches!(refused(&not_object), CatalogError::Shape(_)));
 
-        for member in ["functions", "theme", "$schema", "anything"] {
+        for member in ["functions", "theme", "$schema", "title", "anything"] {
             let mut catalog = kat();
             catalog[member] = json!([]);
             assert_eq!(
@@ -1039,6 +1070,42 @@ mod tests {
                 "{member}"
             );
         }
+    }
+
+    /// ADR 0075, section 1: `protocolVersion` is required and is exactly `"1.0"`. A v1 document —
+    /// no member at all — is refused with 400 by the route, naming this rule.
+    #[test]
+    fn the_catalog_must_declare_protocol_version_1_0() {
+        let mut v1 = kat();
+        v1.as_object_mut().unwrap().remove("protocolVersion");
+        assert_eq!(refused(&envelope(1, &v1)), CatalogError::ProtocolVersion);
+        for bad in [
+            json!("0.9"),
+            json!("v1.0"),
+            json!("1"),
+            json!(1.0),
+            json!(null),
+            json!(true),
+        ] {
+            // the digest is the vector's, so only the member is wrong
+            let mut value = envelope(1, &kat());
+            value["catalog"]["protocolVersion"] = bad.clone();
+            assert_eq!(refused(&value), CatalogError::ProtocolVersion, "{bad}");
+        }
+        // and it is part of what is hashed: a catalog that lies about its version has the wrong
+        // digest too, whatever the member says
+        let mut catalog = kat();
+        catalog["protocolVersion"] = json!("0.9");
+        assert_eq!(
+            refused(&envelope(1, &catalog)),
+            CatalogError::ProtocolVersion
+        );
+        let mut wrong_digest = envelope(1, &kat());
+        wrong_digest["catalog"]["protocolVersion"] = json!("0.9");
+        assert!(matches!(
+            refused(&wrong_digest),
+            CatalogError::ProtocolVersion | CatalogError::DigestMismatch { .. }
+        ));
     }
 
     #[test]

@@ -2984,7 +2984,7 @@ components:
         - check_result        # data: { source: CheckSource, attempt, status: pending|passed|failed, name?, commit?, summary?, stale?, findings?: [string] }  a source of the verification gate answered (ADR 0018); attributed to the system. `findings` are untrusted text (at most 20 items and 16 KiB). `stale`: the answer was for a verification that is no longer the current one and decided nothing. Additive.
         - job_started         # data: { job: integer, round?: { number: integer, by?: agent|person } }  a message on a finished thread started the thread's next job; `job` is its number, from 2 (ADR 0020); in a **child thread** (ADR 0072) a round the orchestrator follows without having sent it starts a job too, and the event names it in `round` (`job` is 1 for the first round): absent for a job a message started; attributed to the system, right after the `user_message` that caused it (or alone, for a message redelivered to the agent). Additive.
         - rework              # data: { attempt, maxAttempts, findings: [{ source: CheckSource, findings: [string] }] }  the gate failed and the agent was sent back to work; `attempt` is the one that starts now (ADR 0018); attributed to the system. Additive.
-        - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, an A2UI inline catalog (ADR 0023); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
+        - ui_catalog          # data: { catalogId, version: integer, digest, catalog }  the person's screen sent a version of its UI component catalog, a `ui-catalog/v2` A2UI inline catalog (ADR 0023, ADR 0075); attributed to the user, once per digest, appended first in the commit of the message or action that carried it. Additive. It has no AG-UI frame: the thread's current catalog is `thread.uiCatalog` of the state snapshot.
         - agent_step          # data: { id, path: [string], kind: subagent|tool|command|message, label, state: running|waiting|completed|failed|canceled, phase: start|update|end, icon?, detail?, input?, output?, ioDropped? }  a step of the agent's work started, moved or ended (ADR 0025, `steps/v1`); attributed to the agent that reported it, or to the orchestrator for a step it reports itself. `path` is the chain of step ids the step runs under, outermost first (empty at the top). Coalesced: a step logs its start, its end and at most 4 updates, so the log stays bounded. `input` (with the start) and `output` (with the end) say what the tool was called with and what it returned, cut, redacted and budgeted (ADR 0030). Additive.
         - thread_titled       # data: { title, source: model|user }  the thread has a new title: a person renamed it (`patchThread`, `source: user`, attributed to the person) or the orchestrator had a model write one after the agent's first reply (`source: model`, attributed to the orchestrator, [ADR 0005](../decisions/0005-openai-compatible-model-endpoint.md): the model is asked at most twice per thread, and never once a person has renamed it). `threads.title` and this event are one commit, so a listing that says the title has the event in the log. The title the thread starts with (the first words of its first message) has no event. Additive.
         - thread_described    # data: { description, source: model|user }  the thread has a new description ([ADR 0035](../decisions/0035-utility-model-tasks.md)): the orchestrator had a model write one when a job ended or paused for the person (`source: model`, attributed to the orchestrator; at most once per job, and only when the conversation grew by `minNewMessages` since the last one) or a person wrote it (`patchThread`, `source: user`, attributed to the person; an empty `description` is the person clearing it). `threads.description` and this event are one commit. Once a person has written or cleared it, the model never writes it again. Additive.
@@ -3136,7 +3136,7 @@ components:
         retryable: { type: boolean }
         operations:
           type: array
-          description: "ui_surface only: the A2UI messages of one payload, as the agent sent them. Each is an object with a `version` (v0.9, v0.9.1 or v1.0) and exactly one of createSurface, updateComponents, updateDataModel, deleteSurface, whose body names a `surfaceId`. At most 256 messages and 64 KiB per payload."
+          description: "ui_surface only: the A2UI messages of one payload, as the agent sent them. Each is an object with a `version` (`1.0`, the only dialect since the cutover, [ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md); an event written before it keeps `v0.9` or `v0.9.1`, which is relayed as it was sent and never acted on) and exactly one of createSurface, updateComponents, updateDataModel, deleteSurface, whose body names a `surfaceId`. At most 256 messages and 64 KiB per payload."
           items: { type: object, additionalProperties: true }
         surfaceId:
           type: string
@@ -3151,11 +3151,11 @@ components:
         version:
           oneOf:
             - type: string
-              enum: [v0.9, v0.9.1, v1.0]
+              enum: ["1.0"]
             - type: integer
               minimum: 1
               maximum: 1000000
-          description: "ui_action: the A2UI version of the surface (a string, v0.9, v0.9.1 or v1.0), so the agent gets the action in the dialect it spoke. ui_catalog: the version of the catalog (an integer from 1), raised by the UI with every change; the highest is the newest."
+          description: "ui_action: the A2UI version of the surface, always `1.0` (ADR 0075). An event written before the cutover may hold `v0.9` or `v0.9.1`; an action on such a surface is refused with 422, so no new one is written. ui_catalog: the version of the catalog (an integer from 1, 9 for the first v2 catalog), raised by the UI with every change; the highest is the newest."
         catalogId:
           type: string
           maxLength: 256
@@ -3167,7 +3167,7 @@ components:
         catalog:
           type: object
           additionalProperties: true
-          description: "ui_catalog only: the catalog, `{catalogId, components: {<Name>: <JSON Schema of the component>}}`: an A2UI inline catalog, at most 64 KiB and 64 components, with no `$ref`, `$id`, `$anchor` or `$schema` and only integer numbers. Stored, relayed to agents, never interpreted by the orchestrator."
+          description: "ui_catalog only: the catalog, `{catalogId, protocolVersion, components: {<Name>: <JSON Schema of the component>}}` — a `ui-catalog/v2` document, `protocolVersion` exactly `1.0` ([`ui-catalog-v2.md`](ui-catalog-v2.md)): at most 64 KiB and 64 components, with no `$ref`, `$id`, `$anchor` or `$schema` and only integer numbers. An event written before the cutover keeps a v1 document (no `protocolVersion`). Stored, relayed to agents, never interpreted by the orchestrator."
         source:
           description: "check_result: the source that answered. thread_titled: who wrote the title (a person, or the model). thread_described: who wrote the description (a person, or the model)."
           anyOf:

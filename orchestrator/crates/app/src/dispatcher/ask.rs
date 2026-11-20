@@ -1190,7 +1190,7 @@ mod tests {
 
     fn surface() -> AgentEnvelope {
         let mut shown = env(AgentUpdate::Ui {
-            operations: vec![serde_json::json!({"version": "v0.9.1"})],
+            operations: vec![serde_json::json!({"version": "1.0"})],
         });
         shown.task_id = "task-form".to_owned();
         shown

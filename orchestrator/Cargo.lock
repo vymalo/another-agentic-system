@@ -2576,6 +2576,7 @@ dependencies = [
  "bytes",
  "futures",
  "jiff",
+ "jsonschema",
  "orch-agent-a2a",
  "orch-agent-adam",
  "orch-agui-proto",

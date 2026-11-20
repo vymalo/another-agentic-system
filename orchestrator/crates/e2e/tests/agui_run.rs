@@ -738,12 +738,12 @@ async fn responses_of(world: &World, name: &str, thread: &str) -> Vec<Vec<Frame>
             inbox.shutdown().await;
             vec![frames]
         }
-        // The UI's catalog (ADR 0023): the first run carries version 1, the next job version 2,
-        // the third version 1 again (an older screen). No frame of its own: each response is an
+        // The UI's catalog (ADR 0023): the first run carries version 9, the next job version 10,
+        // the third version 9 again (an older screen). No frame of its own: each response is an
         // ordinary run, and the state snapshots say which catalog is current.
         "catalog" => {
             let mut responses = Vec::new();
-            for (n, (text, version)) in [("echo hi", 1), ("echo again", 2), ("echo once more", 1)]
+            for (n, (text, version)) in [("echo hi", 9), ("echo again", 10), ("echo once more", 9)]
                 .into_iter()
                 .enumerate()
             {

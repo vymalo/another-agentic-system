@@ -337,7 +337,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
         actor: Actor::agent(&AgentId::new("coder"), None),
         body: EventBody::UiSurface(orch_core::UiSurfaceData {
             operations: vec![
-                serde_json::json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}}),
+                serde_json::json!({"version": "1.0", "createSurface": {"surfaceId": "s1"}}),
             ],
         }),
         idempotency_key: None,
@@ -462,12 +462,12 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
     assert_eq!(
         data[5],
         serde_json::json!({"operations": [
-            {"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}}]})
+            {"version": "1.0", "createSurface": {"surfaceId": "s1"}}]})
     );
     assert_eq!(
         data[6],
         serde_json::json!({"surfaceId": "s1", "name": "go", "sourceComponentId": "btn",
-                           "context": {"choice": "a"}, "version": "v0.9.1", "runId": "run-3",
+                           "context": {"choice": "a"}, "version": "1.0", "runId": "run-3",
                            "tier": "edits"})
     );
     assert_eq!(
@@ -513,7 +513,7 @@ fn ui_action() -> orch_core::UiActionData {
         name: "go".into(),
         source_component_id: "btn".into(),
         context,
-        version: orch_core::UiVersion::V0_9_1,
+        version: orch_core::UiVersion::V1_0,
         run_id: Some("run-3".into()),
     }
 }

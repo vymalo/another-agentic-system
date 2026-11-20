@@ -195,12 +195,12 @@ mod tests {
     #[test]
     fn a_near_miss_is_not_offered() {
         for near in [
-            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2",
-            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v1/",
-            "http://agents.vymalo.com/a2a/extensions/ui-catalog/v1",
-            "https://agents.vymalo.com/a2a/extensions/UI-catalog/v1",
+            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v1",
+            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2/",
+            "http://agents.vymalo.com/a2a/extensions/ui-catalog/v2",
+            "https://agents.vymalo.com/a2a/extensions/UI-catalog/v2",
             "https://agents.vymalo.com/a2a/extensions/ui-catalog",
-            "https://example.com/a2a/extensions/ui-catalog/v1",
+            "https://example.com/a2a/extensions/ui-catalog/v2",
             "ui-catalog",
         ] {
             assert!(

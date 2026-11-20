@@ -40,7 +40,7 @@
               "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
               "surfaceId": "plan-1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           },
           {
             "updateComponents": {
@@ -53,7 +53,7 @@
               ],
               "surfaceId": "plan-1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           },
           {
             "updateComponents": {
@@ -66,13 +66,13 @@
               ],
               "surfaceId": "plan-1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           },
           {
             "deleteSurface": {
               "surfaceId": "plan-1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           }
         ]
       }
@@ -89,7 +89,7 @@
               "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
               "surfaceId": "plan-1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           },
           {
             "updateComponents": {
@@ -102,7 +102,7 @@
               ],
               "surfaceId": "plan-1"
             },
-            "version": "v0.9.1"
+            "version": "1.0"
           }
         ]
       }

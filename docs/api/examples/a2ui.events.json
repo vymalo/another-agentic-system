@@ -35,10 +35,10 @@
       "operations": [
         {
           "createSurface": {
-            "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+            "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
             "surfaceId": "s1"
           },
-          "version": "v0.9.1"
+          "version": "1.0"
         }
       ]
     },
@@ -92,7 +92,7 @@
             ],
             "surfaceId": "s1"
           },
-          "version": "v0.9.1"
+          "version": "1.0"
         }
       ]
     },
@@ -141,7 +141,7 @@
       "runId": "run-2",
       "sourceComponentId": "go",
       "surfaceId": "s1",
-      "version": "v0.9.1"
+      "version": "1.0"
     },
     "kind": "ui_action",
     "seq": 7,

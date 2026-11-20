@@ -2584,8 +2584,8 @@ mod tests {
 
     fn surface_ops() -> Value {
         json!([
-            {"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "c"}},
-            {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": []}}
+            {"version": "1.0", "createSurface": {"surfaceId": "s1", "catalogId": "c"}},
+            {"version": "1.0", "updateComponents": {"surfaceId": "s1", "components": []}}
         ])
     }
 
@@ -2781,21 +2781,25 @@ mod tests {
 
     #[test]
     fn a_part_that_fails_the_envelope_check_is_refused_and_never_passed_on() {
-        let big = json!([{"version": "v0.9.1", "updateDataModel": {
+        let big = json!([{"version": "1.0", "updateDataModel": {
             "surfaceId": "s", "value": "x".repeat(orch_core::MAX_OPERATIONS_BYTES)}}]);
         let cases: Vec<(Part, &str)> = vec![
-            (ui_part(json!({"version": "v0.9.1"})), "not an array"),
+            (ui_part(json!({"version": "1.0"})), "not an array"),
             (ui_part(json!([])), "no A2UI messages"),
             (
                 ui_part(json!([{"createSurface": {"surfaceId": "s"}}])),
                 "no version",
             ),
             (
-                ui_part(json!([{"version": "v0.8", "createSurface": {"surfaceId": "s"}}])),
+                ui_part(json!([{"version": "v0.9.1", "createSurface": {"surfaceId": "s"}}])),
                 "unsupported version",
             ),
             (
-                ui_part(json!([{"version": "v0.9.1", "explode": {"surfaceId": "s"}}])),
+                ui_part(json!([{"version": "0.9", "createSurface": {"surfaceId": "s"}}])),
+                "unsupported version",
+            ),
+            (
+                ui_part(json!([{"version": "1.0", "explode": {"surfaceId": "s"}}])),
                 "unsupported operation",
             ),
             (ui_part(big), "more than the limit"),

@@ -55,13 +55,13 @@ use orch_core::{
     ModelUsageData, ModelUsageTotalData, Preview, Recognised, ReworkData, SessionOutcome, StepKind,
     StepPhase, SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState,
     ThreadTitledData, ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
-    UserMessageData, inspect, recognise_artifact, serialized_len,
+    UserMessageData, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
 use crate::frame::{Audience, Frame};
 use crate::route::FileRoute;
-use crate::translate::{KnownThread, ThreadView};
+use crate::translate::{KnownThread, SurfaceDialect, ThreadView};
 use crate::usage::{UsageFold, ask_number};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK,
@@ -143,14 +143,68 @@ struct TextRecord {
 struct Surface {
     /// The `messageId` of its snapshots: `a2ui-<seq of the event that created it>`.
     message_id: String,
-    /// The version its operations declare (the first one's).
-    version: UiVersion,
+    /// The dialect its operations are written in (the first one's): this build's, or one from
+    /// before the cutover, which is relayed as it was sent so that a viewer can say it was made by
+    /// an earlier version (ADR 0075, section 9).
+    dialect: SurfaceDialect,
     operations: Vec<Value>,
     bytes: usize,
     /// The alive operations outgrew [`MAX_SURFACE_BYTES`]: nothing more is replayed for it (the
     /// viewer keeps the last snapshot it got), and the viewer was told once. A `createSurface`
     /// starts the surface over and clears this.
     overflowed: bool,
+}
+
+/// What the projection reads of one operation: the surface it addresses, which of the four it is,
+/// and the dialect its `version` declares.
+///
+/// The version is **not** judged against the closed set of [`orch_core::UiVersion`] beyond asking
+/// whether it is one: a surface of a thread from before the cutover is relayed as the log holds
+/// it, so that a viewer can show it as made by an earlier version (ADR 0075, section 9).
+/// Everything else is the envelope's rule — an object, one operation, a `surfaceId` — and the log
+/// holds only payloads that passed it; an operation that does not is skipped, never relayed.
+struct ReadOp<'a> {
+    surface_id: &'a str,
+    op: SurfaceOp,
+    dialect: SurfaceDialect,
+}
+
+/// The four operations the orchestrator relays, by their key in a message. `callRendererFunction`
+/// and `agentFunctionResponse` are not among them (ADR 0075, decision 8).
+fn surface_op(key: &str) -> Option<SurfaceOp> {
+    match key {
+        "createSurface" => Some(SurfaceOp::Create),
+        "updateComponents" => Some(SurfaceOp::UpdateComponents),
+        "updateDataModel" => Some(SurfaceOp::UpdateDataModel),
+        "deleteSurface" => Some(SurfaceOp::Delete),
+        _ => None,
+    }
+}
+
+/// [`ReadOp`] of one operation, or `None` when it is not one the projection relays.
+fn read_op(op: &Value) -> Option<ReadOp<'_>> {
+    let object = op.as_object()?;
+    let dialect = match object.get("version").and_then(Value::as_str) {
+        Some(version) if UiVersion::parse(version).is_some() => SurfaceDialect::V1_0,
+        Some(_) => SurfaceDialect::Earlier,
+        None => return None,
+    };
+    let mut keys = object.keys().filter(|k| k.as_str() != "version");
+    let (Some(key), None) = (keys.next(), keys.next()) else {
+        return None;
+    };
+    let op = surface_op(key)?;
+    let surface_id = object
+        .get(key)?
+        .as_object()?
+        .get("surfaceId")?
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= orch_core::MAX_ID_BYTES)?;
+    Some(ReadOp {
+        surface_id,
+        op,
+        dialect,
+    })
 }
 
 /// A wait for the user that no run has answered yet.
@@ -596,7 +650,7 @@ impl Projector {
             surfaces: self
                 .surfaces
                 .iter()
-                .map(|(id, s)| (id.clone(), s.version))
+                .map(|(id, s)| (id.clone(), s.dialect))
                 .collect(),
         })
     }
@@ -1164,6 +1218,9 @@ impl Projector {
     /// is enough to render the surface. A `deleteSurface` ends its surface: it is sent with the
     /// rest, and a later operation for that id starts a new surface under a new message id.
     ///
+    /// A surface whose operations are not A2UI `"1.0"` — one of a thread from before the cutover —
+    /// is relayed as the log holds it, and an action on it is refused (ADR 0075, section 9).
+    ///
     /// The log holds only payloads that passed the envelope check; an operation that does not
     /// (an event written by something else) is skipped, never relayed.
     fn on_ui_surface(&mut self, ev: &Event, d: &UiSurfaceData, out: &mut Vec<agui::Event>) {
@@ -1172,29 +1229,29 @@ impl Projector {
         let mut touched: Vec<String> = Vec::new();
         let mut overflow: Option<String> = None;
         for op in &d.operations {
-            let Ok(info) = inspect(op) else {
+            let Some(read) = read_op(op) else {
                 continue;
             };
-            let id = info.surface_id.to_owned();
+            let id = read.surface_id.to_owned();
             let size = serialized_len(op);
             let surface = self.surfaces.entry(id.clone()).or_insert_with(|| Surface {
                 message_id: format!("a2ui-{}", ev.seq),
-                version: info.version,
+                dialect: read.dialect,
                 operations: Vec::new(),
                 bytes: 0,
                 overflowed: false,
             });
-            if info.op == SurfaceOp::Create {
+            if read.op == SurfaceOp::Create {
                 // A `createSurface` for a surface that exists starts it over (A2UI): what came
                 // before is dead, so it is neither replayed nor counted, and a surface that had
                 // outgrown the cap is shown again when the new copy fits.
                 surface.operations.clear();
                 surface.bytes = 0;
                 surface.overflowed = false;
-                surface.version = info.version;
+                surface.dialect = read.dialect;
             }
             // A delete is a few bytes and ends the surface whatever its size, capped or not.
-            let ends = info.op == SurfaceOp::Delete;
+            let ends = read.op == SurfaceOp::Delete;
             if surface.overflowed && !ends {
                 continue;
             }
@@ -1208,7 +1265,7 @@ impl Projector {
             if !touched.contains(&id) {
                 touched.push(id.clone());
             }
-            if info.op == SurfaceOp::Delete {
+            if read.op == SurfaceOp::Delete {
                 touched.retain(|t| t != &id);
                 if let Some(gone) = self.surfaces.remove(&id) {
                     out.push(self.surface_activity(ev, &gone));

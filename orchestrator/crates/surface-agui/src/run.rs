@@ -806,7 +806,7 @@ mod tests {
                 name: "go".to_owned(),
                 source_component_id: "b".to_owned(),
                 context: serde_json::Map::new(),
-                version: UiVersion::V0_9_1,
+                version: UiVersion::V1_0,
                 run_id: None,
             },
             catalog: None,

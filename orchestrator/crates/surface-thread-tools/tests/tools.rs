@@ -53,6 +53,36 @@ async fn a_thread_with_no_catalog_answers_with_an_error_to_read() {
     assert_eq!(out.text, "this thread has no UI catalog; answer in text");
 }
 
+/// ADR 0075, section 4: a thread from before the cutover keeps its `ui-catalog/v1` document in the
+/// log, and it is never served — a v1.0 reader refuses a v1 document, so the agent is told to
+/// answer in words, exactly as for a thread that has no catalog.
+#[tokio::test]
+async fn a_catalog_from_before_the_cutover_is_never_served() {
+    let h = Harness::start().await;
+    let thread = h.thread("plain").await;
+    let client = client_for(&h, thread, "plain").await;
+    let old = catalog_v1(8, "before");
+    h.show(thread, &old).await;
+    let out = call(&client, "get_ui_catalog", json!({})).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(out.text.contains("before A2UI v1.0"), "{}", out.text);
+    // even the agent that holds its digest is not served it
+    let out = call(
+        &client,
+        "get_ui_catalog",
+        json!({"knownDigest": old.digest}),
+    )
+    .await;
+    assert!(out.is_error, "{out:?}");
+    // a v2 catalog from the same screen is served as ever
+    let new = catalog(9, "after");
+    h.show(thread, &new).await;
+    let out = call(&client, "get_ui_catalog", json!({})).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(out.value["version"], 9);
+    assert_eq!(out.value["catalog"]["protocolVersion"], "1.0");
+}
+
 #[tokio::test]
 async fn the_newest_catalog_is_given_and_a_known_digest_leaves_it_out() {
     let h = Harness::start().await;

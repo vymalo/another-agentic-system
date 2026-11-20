@@ -10,7 +10,7 @@
 //! | `FAKE_PLAIN_ADDR` | `127.0.0.1:4022` | the `plain` agent, no extension |
 //! | `FAKE_CONTROL_ADDR` | `127.0.0.1:4020` | control endpoints, below |
 //! | `FAKE_AGENT_TIERS` | none | comma-separated access tiers (`plan`, `edits`, `auto`, `bypass`) the `coder` agent honours: its card then lists `access-tier/v1` (ADR 0061) with them and `FAKE_AGENT_TIER_DEFAULT` (default `auto`); the `plain` agent never lists it. The script `tiered` echoes the tier a message names |
-//! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v0.9.1 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`, `usage`, `uploads` |
+//! | `FAKE_AGENT_EXTENSIONS` | none | comma-separated extensions both agents list in their cards: `ui-catalog` (also lists A2UI v1.0 with `acceptsInlineCatalogs: true`, so the catalog arrives inline), `thread-tools`, `steps`, `mentions`, `steer`, `usage`, `uploads` |
 //! | `FAKE_AGENT_CHILD_AGENTS` | none | comma-separated helper names: the `coder` agent's card then lists `child-sessions/v1` (ADR 0072) with them (described `The <name> helper.`) and `maxOpen` 16; the scripts `child-sessions`, `child-sessions-send` and `child-sessions-bad` serve sessions (see `orch_testsupport::fake`) |
 //! | `FAKE_AGENT_CHILD_EVENTS` | off | `1` or `true`: the `coder` agent says the events of its sessions (`opened`, `round`, `reported`, `closed`) on its stream, as an agent that has them does; off, the sessions are in the parent task's `sessions` object only |
 //!
@@ -19,7 +19,7 @@
 //!
 //! - `POST /__control/<agent>/release-gate`: lets one waiting `gate` task continue;
 //! - `GET /__control/<agent>/calls`: JSON array of what the agent's executor saw, in order (with
-//!   `uiCatalog`, the message's `ui-catalog/v1` metadata, `inlineCatalogs`, and `threadTools`, the
+//!   `uiCatalog`, the message's `ui-catalog/v2` metadata, `inlineCatalogs`, and `threadTools`, the
 //!   grant `{url, token, expiresAt}` of the thread's MCP endpoint when the message carried one).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -31,7 +31,7 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use orch_core::{A2UI_EXTENSION_V0_9_1, KnownExtension};
+use orch_core::{A2UI_EXTENSION_V1_0, KnownExtension};
 use orch_testsupport::{Call, CallKind, FakeAgent, FakeAgentOptions, FakeReleases};
 use serde_json::{Value, json};
 
@@ -141,7 +141,7 @@ fn with_extensions(options: FakeAgentOptions, extensions: &[KnownExtension]) -> 
     FakeAgentOptions {
         extensions: extensions.iter().map(|e| e.uri().to_owned()).collect(),
         ui_extensions: if ui {
-            vec![A2UI_EXTENSION_V0_9_1.to_owned()]
+            vec![A2UI_EXTENSION_V1_0.to_owned()]
         } else {
             options.ui_extensions
         },

@@ -71,7 +71,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             revision: None,
             update: AgentUpdate::Ui {
                 operations: vec![
-                    serde_json::json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": "s"}})
+                    serde_json::json!({"version": "1.0", "deleteSurface": {"surfaceId": "s"}})
                 ]
             }
         }),
@@ -90,7 +90,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
                 name,
                 source_component_id: "b".into(),
                 context: serde_json::Map::new(),
-                version: UiVersion::V0_9_1,
+                version: UiVersion::V1_0,
                 run_id: None,
             },
             catalog: None,
@@ -339,7 +339,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
                 name: "go".into(),
                 source_component_id: "b".into(),
                 context: serde_json::Map::new(),
-                version: UiVersion::V0_9_1,
+                version: UiVersion::V1_0,
                 run_id: None,
             },
             catalog,

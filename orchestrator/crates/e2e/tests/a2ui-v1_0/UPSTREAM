@@ -1,0 +1,32 @@
+# Where the files under orchestrator/crates/e2e/tests/a2ui-v1_0/ come from. The test
+# `orch-e2e`'s `tests/a2ui_schemas.rs` reads this file and checks every hash.
+#
+# Each file below is a byte-for-byte copy of the file at the same path in the repository and at the commit
+# named here (Apache-2.0, the repository's LICENSE; nothing of them is copied into docs/).
+#
+# They are the oracle of ADR 0075 (decision 9): every A2UI golden's operation validates against
+# agent_to_renderer.json, every action against renderer_to_agent.json, the renderer's capabilities against
+# renderer_capabilities.json, the card's params against agent_capabilities.json#/properties/1.0, and catalog 9
+# of docs/api/ui-catalog-v2.md against catalog_definition.json.
+#
+# `agent_to_renderer.json` refers to `catalog.json#/$defs/anyComponent`, a document the repository does not
+# publish: it stands for the catalog in use. The test registers that URI for each surface with the components
+# of the catalog the surface's `createSurface` names, so a component of another catalog is refused.
+#
+# Never edit them here: take a new commit from upstream and replace the files, the hashes below and this line
+# together.
+repo=a2ui-project/a2ui
+commit=b4f91c26fcf62abc0720c21a65840220941d0a3f
+
+# specification/v1_0/json/
+agent_to_renderer.json 2f575f783fdda0e4d175fe5d331661655e4a4901613262322792dae7e823761d
+renderer_to_agent.json 58ecde02101f0f37566b5e238dc6ef6af628c3ff312fce0e17ab7670b7215465
+catalog_definition.json 836a48b2deb7ae76c3b68cb4e79c2faa24cba36d4d5396474894796797364d44
+common_types.json c4e78305be1de73eecb37f8179ba169730250611703683af291b18135a6430dc
+agent_capabilities.json 6a4282dfb26af95a73d960572a31b91c5d5c89d1f9e54cbb8d24c599afcbc3a2
+renderer_capabilities.json 3ebd2889764d892df16d034643ecd9e3a3fc02f298fa05577b95d9e287e703de
+agent_to_renderer_list.json 3d3fef882fe5cc22932d3a91713defaeeb329126200954c06bf9f2c56df51c56
+renderer_to_agent_list.json 98899d7d16222207af3bfd9aab12aa7b8f68dc8b5267dcf76d867236235ec5d8
+
+# catalogs/basic/v1/catalog.json
+basic-catalog.json d4ce11f8fff2da8d5fd0b2793db524f6aa7eef541eefb6fe2b71f0efc17cbfa9
