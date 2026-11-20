@@ -3,6 +3,8 @@ import { useThreadView } from "@/features/chat/components/thread-view";
 import type { ApiThread } from "@/lib/api/types";
 import {
   type AppliedClose,
+  type AppliedEntry,
+  liveCloses,
   type MergedChildren,
   mergeChildren,
   startsWaiting,
@@ -13,10 +15,12 @@ export type ChildSessions = MergedChildren & {
   openCount: number;
   /** Starts that wait for their outcome: at most 4 may. */
   waiting: number;
-  /** The answer of a close, applied at once, before the rail says it. */
-  apply: (child: string, state: AppliedClose) => void;
-  /** What those closes said, by child thread: a subagent's own thread reads its own. */
+  /** The answer of a close, applied at once, before the rail says it; `cancel` says it stopped the round. */
+  apply: (child: string, state: AppliedClose, cancel?: boolean) => void;
+  /** What those closes said, by child thread: a subagent's own thread reads its own. A newer row or card ends one. */
   applied: ReadonlyMap<string, AppliedClose>;
+  /** The children whose round a close of this page stopped, still on its way: nothing is stronger. */
+  forced: ReadonlySet<string>;
 };
 
 /**
@@ -30,14 +34,23 @@ export function useChildSessions(
   rows: readonly ApiThread[],
   local: readonly string[],
 ): ChildSessions {
-  const { sessions, sessionStarts } = useThreadView();
-  const [applied, setApplied] = useState<ReadonlyMap<string, AppliedClose>>(new Map());
+  const { sessions, sessionStarts, self } = useThreadView();
+  const [asked, setAsked] = useState<ReadonlyMap<string, AppliedEntry>>(new Map());
   const apply = useCallback(
-    (child: string, state: AppliedClose) => setApplied((m) => new Map(m).set(child, state)),
+    (child: string, state: AppliedClose, cancel = false) =>
+      setAsked((m) => new Map(m).set(child, { state, cancel, at: Date.now() })),
     [],
   );
   return useMemo(() => {
     const starts = sessionStarts ?? new Map();
+    const live = liveCloses(asked, {
+      thread: parent,
+      rows,
+      cards: sessions ?? new Map(),
+      self: self ?? null,
+    });
+    const applied = new Map([...live].map(([child, e]) => [child, e.state] as const));
+    const forced = new Set([...live].filter(([, e]) => e.cancel).map(([child]) => child));
     const merged = mergeChildren({
       parent,
       rows,
@@ -51,6 +64,7 @@ export function useChildSessions(
       waiting: startsWaiting(starts, local),
       apply,
       applied,
+      forced,
     };
-  }, [parent, rows, sessions, sessionStarts, applied, local, apply]);
+  }, [parent, rows, sessions, sessionStarts, self, asked, local, apply]);
 }

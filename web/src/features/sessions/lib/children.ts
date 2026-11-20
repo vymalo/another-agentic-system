@@ -1,5 +1,5 @@
 import type { ApiThread } from "@/lib/api/types";
-import { childOf, type SessionCard, type SessionStartCard } from "./cards";
+import { cardNewer, childOf, type SessionCard, type SessionStartCard } from "./cards";
 
 /**
  * The subagents of a parent thread, as the panel lists them. Three sources say it, and they are merged
@@ -18,6 +18,36 @@ export const MAX_WAITING_STARTS = 4;
 
 /** What a close answered: the state the orchestrator's record has after the request. */
 export type AppliedClose = "closing" | "closed";
+
+/** A close this page asked: what it answered, whether it stopped the round, and when it was answered (ms). */
+export type AppliedEntry = { state: AppliedClose; cancel: boolean; at: number };
+
+/**
+ * The closes still worth applying. The record has the last word: once a row or a card about the child
+ * is newer than the answer, it says the state itself, a refusal (the state said again with no close
+ * asked) included, and the entry is dropped. The child's own card counts for the thread it is on.
+ */
+export function liveCloses(
+  entries: ReadonlyMap<string, AppliedEntry>,
+  evidence: {
+    /** The open thread: the one the child's own card (`self`) is about. */
+    thread: string;
+    rows: readonly ApiThread[];
+    cards: ReadonlyMap<string, SessionCard>;
+    self: SessionCard | null;
+  },
+): ReadonlyMap<string, AppliedEntry> {
+  const after = (time: string | undefined, at: number): boolean => Date.parse(time ?? "") > at;
+  const live = new Map<string, AppliedEntry>();
+  for (const [child, entry] of entries) {
+    const said =
+      evidence.rows.some((r) => same(r.id, child) && after(r.updatedAt, entry.at)) ||
+      [...evidence.cards.values()].some((c) => same(c.threadId, child) && after(c.at, entry.at)) ||
+      (same(evidence.thread, child) && evidence.self !== null && after(evidence.self.at, entry.at));
+    if (!said) live.set(child, entry);
+  }
+  return live;
+}
 
 export type MergedChildren = {
   /** Working or idle (closing ones too), in the rail's order, then the ones only a card says, newest first. */
@@ -62,6 +92,8 @@ export function mergeChildren(input: {
     const card = bySession.get(own.session);
     // the thread says whether it waits for the person, so a card's older "blocked" is not kept against it
     const { report: said, ...rest } = card ?? { report: undefined };
+    // the newer of the row and the card says the state, as a subagent's own page reads it
+    const cardSays = card !== undefined && cardNewer(card, row.updatedAt);
     const report = row.state === "blocked" ? "blocked" : said === "blocked" ? undefined : said;
     merged.push({
       ...rest,
@@ -71,7 +103,7 @@ export function mergeChildren(input: {
       agent: own.agent ?? card?.agent ?? "",
       description: row.title || card?.description || "",
       keepOpen: own.keepOpen,
-      state: own.state ?? card?.state ?? "idle",
+      state: (cardSays ? card.state : own.state) ?? card?.state ?? "idle",
       closing: own.closing,
       closeAsked: own.closeAsked,
     });

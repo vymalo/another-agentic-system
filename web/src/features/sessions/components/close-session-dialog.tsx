@@ -20,8 +20,7 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   /** The subagent to close: its child thread is `threadId`. */
   card: SessionCard | null;
-  /** The close was accepted: what the orchestrator's record says now. */
-  /** The close was accepted; `cancel` says whether it stopped the round. */
+  /** The close was accepted: what the orchestrator's record says now, and whether it stopped the round. */
   onClosed: (child: string, state: AppliedClose, cancel: boolean) => void;
   returnTo: { current: HTMLElement | null };
 };

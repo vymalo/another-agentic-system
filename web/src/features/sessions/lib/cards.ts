@@ -59,6 +59,14 @@ export type SessionCard = {
   at?: string;
 };
 
+/** The card is at least as new as the resource read at `updatedAt`; a resource with no usable time is the older. */
+export function cardNewer(card: Pick<SessionCard, "at">, updatedAt: string | undefined): boolean {
+  const at = Date.parse(card.at ?? "");
+  if (Number.isNaN(at)) return false;
+  const read = Date.parse(updatedAt ?? "");
+  return Number.isNaN(read) || at >= read;
+}
+
 /** A start a person asked for, as the parent's card says it. */
 export type SessionStartCard = {
   request: string;

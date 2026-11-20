@@ -494,4 +494,32 @@ describe("closing from the tab", () => {
     expect(refreshRows).toHaveBeenCalled();
     await page.api.release(child);
   });
+
+  for (const cancel of [false, true]) {
+    it(`stops saying Closing… once the record, newer, says the session again (cancel: ${cancel})`, async () => {
+      page.fake("POST /api/threads/:id/session/close", {
+        status: 202,
+        body: { state: "closing" },
+      });
+      const working = row(1, "working", { updatedAt: "2000-01-01T00:00:00Z" });
+      const view = mount({ rows: [working] });
+      fireEvent.click(screen.getByRole("button", { name: "Close planner" }));
+      const dialog = await screen.findByRole("dialog", { name: "Close subagent" });
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: cancel ? "Stop and close" : "Close when this round ends",
+        }),
+      );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      const state = () =>
+        screen.getByRole("listitem").querySelector('[data-slot="subagent-state"]')?.textContent;
+      expect(state()).toBe("Closing…");
+      // the close was refused: the record says "working" again, with no close asked
+      const said = row(1, "working", { updatedAt: "2999-01-01T00:00:00Z" });
+      view.rerender(tree({ rows: [said] }));
+      expect(state()).not.toBe("Closing…");
+      expect(screen.getByRole("button", { name: "Close planner" })).toBeTruthy();
+      page.fake("POST /api/threads/:id/session/close", null);
+    });
+  }
 });

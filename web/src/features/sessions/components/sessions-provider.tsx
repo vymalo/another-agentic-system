@@ -107,8 +107,6 @@ function Active({
   const canWrite = !readOnly && !isChild;
   // a subagent's own thread closes it from its banner: the person may write there, though they may not start
   const mayClose = !readOnly;
-  // the closes this page asked with `cancel: true`: nothing is stronger
-  const [forced, setForced] = useState<ReadonlySet<string>>(new Set());
 
   // the requests this page sent that the stream has not said yet, and what each was (kept until its outcome)
   const [local, setLocal] = useState<readonly string[]>([]);
@@ -154,6 +152,7 @@ function Active({
     setCloseOpen(true);
   }, []);
 
+  const forced = kids.forced;
   const closeOffered = useCallback(
     (card: SessionCard) =>
       mayClose &&
@@ -235,8 +234,7 @@ function Active({
         onOpenChange={setCloseOpen}
         card={closing}
         onClosed={(child, state, cancel) => {
-          if (cancel) setForced((f) => new Set(f).add(child));
-          kids.apply(child, state);
+          kids.apply(child, state, cancel);
           refreshRows();
         }}
         returnTo={opener}

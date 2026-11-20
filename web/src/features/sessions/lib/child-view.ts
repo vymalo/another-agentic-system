@@ -1,5 +1,5 @@
 import type { ApiThread } from "@/lib/api/types";
-import { childOf, type SessionCard } from "./cards";
+import { cardNewer, childOf, type SessionCard } from "./cards";
 import type { AppliedClose } from "./children";
 
 /**
@@ -21,14 +21,6 @@ export type ChildView = SessionCard & {
   phase: ChildPhase;
 };
 
-/** The live card is at least as new as the resource; a resource with no usable time is the older. */
-function newer(card: SessionCard, thread: ApiThread | null): boolean {
-  const at = Date.parse(card.at ?? "");
-  if (Number.isNaN(at)) return false;
-  const read = Date.parse(thread?.updatedAt ?? "");
-  return Number.isNaN(read) || at >= read;
-}
-
 export function childView(input: {
   thread: ApiThread | null;
   /** This thread's id, so a close can name it. */
@@ -39,7 +31,7 @@ export function childView(input: {
   const { thread, threadId, self, applied } = input;
   const row = childOf(thread);
   if (row === null && self === null) return null;
-  const useSelf = self !== null && (row === null || newer(self, thread));
+  const useSelf = self !== null && (row === null || cardNewer(self, thread?.updatedAt));
   const base: SessionCard = useSelf
     ? self
     : {
