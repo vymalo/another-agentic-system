@@ -37,5 +37,6 @@
     "fixedDelayMilliseconds": 60000
   },
   "scenarioName": "sessions-hold",
-  "requiredScenarioState": "held"
+  "requiredScenarioState": "held",
+  "newScenarioState": "Started"
 }

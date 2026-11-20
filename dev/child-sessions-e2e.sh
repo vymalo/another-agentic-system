@@ -300,12 +300,14 @@ expect "the child's stream: its usage frames, the call and the totals, say count
 # parent, so the checks above stay as they were. The mock keeps no state (dev/wiremock/sessions, the mappings 08*): the session id is
 # `<parent context>.keep-<true|false>.<message id>`, round 1 is the task of that id, held for 5 s, and a message to the child context is
 # always round 2, held for 8 s; a message that starts `[mock:hold]` moves a WireMock scenario (`sessions-hold`, mapping 08f0) so that
-# round 2's subscription is held 60 s (08g0): a steer and a stop meet a round that is still working, however slow the runner is.
+# the next subscription to round 2 is held 60 s, once (08g0 puts the scenario back): a steer and a stop meet a round that is still
+# working, however slow the runner is. The scenario is reset first, so a run that died while it was held does not hold the next one.
 # =======================================================================================================================
 echo "== a person drives a session: a second parent, a second user"
 email=${PERSON_EMAIL:-child-sessions-person@example.com}
 id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 curl -s -o /dev/null --max-time 30 -X DELETE "$mock/__admin/requests" || true
+curl -s -o /dev/null --max-time 30 -X POST "$mock/__admin/scenarios/reset" || true
 
 post() { # post PATH JSON: the HTTP status on stdout, the body in $tmp/post.json
   curl -sS --max-time 60 -o "$tmp/post.json" -w '%{http_code}' -X POST "$base$1" -H "$id_header" \
