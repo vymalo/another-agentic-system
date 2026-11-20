@@ -75,6 +75,12 @@ import {
   searchThreads,
 } from "./search";
 import {
+  CHILD_SESSIONS_URI,
+  createSessions,
+  newSessionsConfig,
+  type SessionsConfig,
+} from "./sessions";
+import {
   type CardTiers,
   readOffer,
   readTierProp,
@@ -288,7 +294,22 @@ const isTerminalEvent = (event: { type?: unknown }) =>
  * that is only a file is not there at all, one that says more (a link, a text) is without the file.
  */
 export function readerEvent(e: Event, reader: Reader): Event {
-  if (["thread_forked", "ui_catalog", "thread_shared", "thread_unshared"].includes(e.kind)) {
+  // (and the helper sessions of the thread, ADR 0072: the child threads are the owner's alone)
+  if (
+    [
+      "thread_forked",
+      "ui_catalog",
+      "thread_shared",
+      "thread_unshared",
+      "child_session_opened",
+      "child_session_reported",
+      "child_session_closed",
+      "child_session_start_asked",
+      "child_session_start_ended",
+      "child_session_close_asked",
+      "child_session_state",
+    ].includes(e.kind)
+  ) {
     return {
       ...e,
       kind: "thread_unshared",
@@ -421,6 +442,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
      * command, so the web draws no commands menu for it.
      */
     commands: Map<string, unknown>;
+    /** The subagents the session's agents offer and how a person's starts end (ADR 0072; `sessions.ts`, `POST /__mock/config`). */
+    sessions: SessionsConfig;
     /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
     toolServers: ToolServer[];
     /** What `GET /api/me/usage` answers (ADR 0065) by month, `"*"` for any other: as a test sets it (`POST /__mock/my-usage`). */
@@ -460,6 +483,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         me: "user",
         tiers: new Map(),
         commands: new Map(),
+        sessions: newSessionsConfig(),
         toolServers: [...TOOL_SERVERS],
         myUsage: {},
         userTools: newUserTools(),
@@ -558,6 +582,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     historyDelays.clear();
     historyCalls.clear();
     registries.clear();
+    sessions.reset();
   };
 
   // ---- helpers -------------------------------------------------------------------------
@@ -629,6 +654,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       ...(t.target.release ? { release: t.target.release } : {}),
     },
     ...(gates.has(t.id) ? { gate: gates.get(t.id) } : {}),
+    // the helper a child thread is a session of (ADR 0072): its own `vymalo.session` card says it
+    ...(sessions.childMeta(t.id) ? { child: sessions.childMeta(t.id) } : {}),
   });
 
   /** What a share is served as under a cap (ADR 0040): the narrower of what it is stored as and the cap. */
@@ -1194,6 +1221,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       }
       if ("live" in step) {
         send(t.id, { ...step.live, agent: agentActor(t).name, end: step.live.end ?? "open" });
+      } else if ("session" in step) {
+        // the scripted agent acts on its helper sessions (mock/sessions.ts)
+        sessions.step(t, step.session);
       } else {
         // a description a person wrote is final: the model's, written after it, is dropped
         if (
@@ -1236,10 +1266,32 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     run.timer = setTimeout(tick, stepMs);
   }
 
+  /**
+   * The number of the thread's next job: one after the newest `job_started` (the first job has none, so
+   * the second is 2). A child thread's rounds are its jobs (ADR 0072), and an agent's round writes its own.
+   */
+  const nextJob = (threadId: string): number =>
+    Math.max(
+      1,
+      ...(events.get(threadId) ?? [])
+        .filter((e) => e.kind === "job_started")
+        .map((e) => Number(e.data.job)),
+    ) + 1;
+
+  /** The script of a message that starts a job: a round when the thread is a helper session's (ADR 0072). */
+  function scriptOf(
+    t: Thread,
+    text: string,
+    interrupted = false,
+  ): { start: Step[]; resume?: ReturnType<typeof scriptFor>["resume"]; steerable?: true } {
+    const round = sessions.nextRound(t, text, interrupted);
+    return round ? { start: round, steerable: true } : scriptFor(text);
+  }
+
   /** The thread's next job starts with `text` (ADR 0020): `job_started`, then the script of the text. */
-  function startNextJob(t: Thread, text: string, before: Step[] = []) {
-    const job = (events.get(t.id) ?? []).filter((e) => e.kind === "job_started").length + 2;
-    const script = scriptFor(text);
+  function startNextJob(t: Thread, text: string, before: Step[] = [], interrupted = false) {
+    const job = nextJob(t.id);
+    const script = scriptOf(t, text, interrupted);
     runs.set(t.id, {
       timer: undefined,
       pending: [],
@@ -1252,6 +1304,59 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       ...script.start,
     ]);
   }
+
+  // ---- helper sessions (ADR 0072, mock/sessions.ts) ---------------------------------------
+
+  const sessions = createSessions({
+    threads,
+    log: (id) => events.get(id) ?? [],
+    append,
+    addThread: (thread, under) => {
+      addThread(thread, under);
+      events.set(thread.id, []);
+    },
+    setState,
+    agentActor,
+    openRun: (thread, run) => {
+      clearTimeout(runs.get(thread.id)?.timer);
+      runs.set(thread.id, {
+        timer: undefined,
+        pending: [],
+        resume: run.resume,
+        steerable: run.steerable,
+      });
+    },
+    halt: (id) => {
+      const run = runs.get(id);
+      if (run) {
+        clearTimeout(run.timer);
+        run.pending = [];
+        run.release = undefined;
+      }
+    },
+    play,
+    stepMs,
+    respond: {
+      json: (res, status, body, headers) => {
+        res.setHeader("Cache-Control", "no-store");
+        for (const [name, value] of Object.entries(headers ?? {})) res.setHeader(name, value);
+        sendJson(res, status, body);
+      },
+      problem: (res, status, title, detail, code) => problem(res, status, title, detail, code),
+      forbid: (res, permission, agentId) => forbid(res, permission, agentId),
+      body: (req) => readJson(req),
+    },
+    accessible,
+    me: (req) => meOf(req),
+    mayInvoke: (req, agentId) => covers(meOf(req).agents.invoke, agentId),
+    agentOrRefuse: (req, res, agentId) => agentOrRefuse(req, res, agentId) !== undefined,
+    config: (req) => registryOf(sessionOf(req)).sessions,
+    tier: (req, res, agentId, named) => {
+      const sent = readTierProp(named);
+      if ("detail" in sent) return void problem(res, 400, "Bad Request", sent.detail);
+      return tierOf(req, res, meOf(req), agentId, sent.tier, undefined);
+    },
+  });
 
   // ---- routes --------------------------------------------------------------------------
 
@@ -1306,10 +1411,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return void res.writeHead(204).end();
     }
     if (path === "/__mock/release" && method === "POST") {
-      const run = runs.get(url.searchParams.get("thread") ?? "");
-      if (!run?.release) return problem(res, 409, "Not held", "no run of that thread is waiting");
-      run.release();
-      return void res.writeHead(204).end();
+      const held = url.searchParams.get("thread") ?? "";
+      const run = runs.get(held);
+      if (run?.release) {
+        run.release();
+        return void res.writeHead(204).end();
+      }
+      // the starts of a thread that wait (`sessionStarts=hold`, mock/sessions.ts) come to their outcome
+      if (sessions.release(held) > 0) return void res.writeHead(204).end();
+      return problem(res, 409, "Not held", "no run of that thread is waiting");
     }
     // History (ADR 0059), for the tests of the web, each for one thread (`thread=<id>`, so tests that run side by side do not
     // spend each other's): `POST /__mock/history-fail?times=<n>&status=<code>` fails the next n requests,
@@ -1367,6 +1477,20 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const signedIn = url.searchParams.get("signedIn");
       const stale = url.searchParams.get("stale");
       const maxTier = url.searchParams.get("maxTier");
+      // the subagents (ADR 0072, mock/sessions.ts): `sessions=off` takes the offer off the card, `sessions=unreadable` makes the card unreadable (a 503),
+      // `sessions=on` puts the default back; `sessionStarts=open|refuse|hold` is how a person's starts end; `sessionsNoted=<n>` the most a thread notes
+      const offer = url.searchParams.get("sessions");
+      const starts = url.searchParams.get("sessionStarts");
+      const noted = url.searchParams.get("sessionsNoted");
+      if (offer !== null && offer !== "on" && offer !== "off" && offer !== "unreadable") {
+        return problem(res, 400, "Bad Request", "sessions is one of on, off, unreadable");
+      }
+      if (starts !== null && !["open", "refuse", "hold"].includes(starts)) {
+        return problem(res, 400, "Bad Request", "sessionStarts is one of open, refuse, hold");
+      }
+      if (noted !== null && !/^[1-9]\d{0,5}$/.test(noted)) {
+        return problem(res, 400, "Bad Request", "sessionsNoted is a whole number from 1");
+      }
       if (maxTier !== null && maxTier !== "none" && !TIERS.some((t) => t === maxTier)) {
         return problem(res, 400, "Bad Request", `maxTier is one of ${TIERS.join(", ")}, none`);
       }
@@ -1381,6 +1505,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         return problem(res, 400, "Bad Request", "sharing is one of disabled, internal, public");
       }
       if (cap !== null) state.sharing = cap as Sharing;
+      if (offer !== null) {
+        state.sessions.offer =
+          offer === "off"
+            ? null
+            : offer === "unreadable"
+              ? "unreadable"
+              : newSessionsConfig().offer;
+      }
+      if (starts !== null) state.sessions.starts = starts as SessionsConfig["starts"];
+      if (noted !== null) state.sessions.noted = Number(noted);
       if (maxTier !== null) state.maxTier = TIERS.find((t) => t === maxTier) ?? null;
       if (signedIn !== null) state.signedIn = signedIn !== "false";
       if (stale !== null) state.stale = stale === "true";
@@ -1902,6 +2036,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (bare && method === "DELETE")
       return deleteThread(req, res, decodeURIComponent(bare[1] ?? ""));
 
+    // a person starts a helper session of a thread, or closes the one a child thread is (ADR 0072)
+    const sessionRoute = /^\/api\/threads\/([^/]+)\/(sessions|session\/close)$/.exec(path);
+    if (sessionRoute) {
+      if (method !== "POST") return problem(res, 404, "Not found");
+      const id = decodeURIComponent(sessionRoute[1] ?? "");
+      return sessionRoute[2] === "sessions"
+        ? sessions.start(req, res, id)
+        : sessions.close(req, res, id);
+    }
+
     const m = /^\/api\/threads\/([^/]+)(?:\/(cancel|export|fork|branches|tools))?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1] ?? "");
@@ -2308,6 +2452,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         }
       }
     }
+    // the helper sessions of what goes are erased with it (ADR 0072); one that works refuses the delete
+    for (const d of [...doomed]) for (const child of sessions.childrenOf(d)) doomed.add(child);
     if ([...doomed].some((d) => isActiveState(threads.get(d)?.state ?? "done"))) {
       return problem(
         res,
@@ -2347,9 +2493,20 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       gates.delete(gone);
       links.delete(gone);
       rail.delete(gone);
+      sessions.forget(gone);
     }
     res.writeHead(204).end();
   }
+
+  /** The 422 `child_thread`: what is never done to the thread of a helper session (a fork, a share). */
+  const childThreadRefusal = (res: http.ServerResponse, what: string) =>
+    problem(
+      res,
+      422,
+      "Unprocessable",
+      `the thread of a helper session is never ${what}: it is part of its parent's conversation`,
+      "child_thread",
+    );
 
   /**
    * `POST /api/threads/{id}/fork` (`forkThread`, ADR 0029): a new thread that begins as a copy of
@@ -2405,6 +2562,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (id !== undefined && (typeof id !== "string" || !UUID.test(id))) {
       return problem(res, 400, "Bad Request", "`id` must be a UUID");
     }
+    // the thread of a helper session is one part of its parent's conversation, never forked (ADR 0072)
+    if (parent.childOf !== undefined) return childThreadRefusal(res, "forked");
 
     let to: Thread["target"] = parent.target;
     if (target !== undefined) {
@@ -2684,6 +2843,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const offered = card && { ...card, ...(me.maxTier ? { maxTier: me.maxTier } : {}) };
     // the card's commands, only when well formed (a card that lists the extension badly does not list it)
     const commands = readCommands(registryOf(sessionOf(req)).commands.get(agent.id));
+    // the helpers the agent runs as sessions, only when well formed (ADR 0072)
+    const helpers = sessions.offerOf(req, agent.id);
     sendJson(res, 200, {
       identity: {
         name: agent.name,
@@ -2704,12 +2865,14 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       STEER_AGENTS.has(agent.id) ||
       MENTIONS_AGENTS.has(agent.id) ||
       offered ||
+      helpers ||
       commands
         ? {
             custom: {
               ...(agent.releases ? { [RELEASE_CHANNELS_URI]: agent.releases } : {}),
               ...(offered ? { [TIER_URI]: offered } : {}),
               ...(commands ? { [COMMANDS_URI]: { commands } } : {}),
+              ...(helpers ? { [CHILD_SESSIONS_URI]: helpers } : {}),
               ...(THREAD_TOOLS_AGENTS.has(agent.id) ? { [THREAD_TOOLS_URI]: {} } : {}),
               ...(STEER_AGENTS.has(agent.id) ? { [STEER_URI]: {} } : {}),
               ...(MENTIONS_AGENTS.has(agent.id) ? { [MENTIONS_URI]: {} } : {}),
@@ -2923,6 +3086,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (!mayChangeShare(req, res)) return;
     const thread = owned(req, res, id);
     if (!thread) return;
+    // shared with the thread it belongs to and never alone (ADR 0072)
+    if (thread.childOf !== undefined) return childThreadRefusal(res, "shared");
     let body: unknown;
     try {
       body = await readJson(req);
@@ -3209,6 +3374,15 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (!Array.isArray(sentMentions)) {
       return problem(res, sentMentions.status, sentMentions.title, sentMentions.detail);
     }
+    // a run on the thread of a helper session (ADR 0072): a closed one takes no message, and a helper cannot ask other agents
+    if (thread && (fresh.length > 0 || resume.length > 0)) {
+      const refused = sessions.guardRun(thread, {
+        mentions: sentMentions.length > 0,
+        message: fresh.length > 0,
+        how: send,
+      });
+      if (refused) return problem(res, refused.status, refused.title, refused.detail, refused.code);
+    }
     let mentions: MentionRef[] = [];
     const carrier =
       fresh.length === 1 ? messageText(fresh[0] as Record<string, unknown>) : undefined;
@@ -3386,12 +3560,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           ...(tier ? { tier } : {}),
         },
       );
-      const job = log.filter((e) => e.kind === "job_started").length + 2;
+      const job = nextJob(thread.id);
       append(thread.id, "job_started", { type: "system", name: "orchestrator" }, { job });
       setState(thread, "queued");
-      // the thread keeps its gate; the script of the new message plays as the new job
-      const script = scriptFor(next);
-      runs.set(thread.id, { timer: undefined, pending: [], resume: script.resume });
+      // the thread keeps its gate; the script of the new message plays as the new job (a helper session's next round, ADR 0072)
+      const script = scriptOf(thread, next);
+      runs.set(thread.id, {
+        timer: undefined,
+        pending: [],
+        resume: script.resume,
+        steerable: script.steerable,
+      });
       play(thread, script.start);
       return startViewer(res, thread, {
         fromSeq: from,
@@ -3527,9 +3706,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     } else {
       const run = runs.get(thread.id);
       if (run) clearTimeout(run.timer);
-      startNextJob(thread, text, [
-        { kind: "agent_status", data: { status: "canceled", detail: "canceled" } },
-      ]);
+      startNextJob(
+        thread,
+        text,
+        [{ kind: "agent_status", data: { status: "canceled", detail: "canceled" } }],
+        true,
+      );
     }
     return startViewer(res, thread, {
       fromSeq: from,
@@ -3630,7 +3812,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const run = runs.get(thread.id);
       if (run) clearTimeout(run.timer);
       // no agent task is open while the work is verified: the thread is cancelled and nothing else
-      play(thread, thread.state === "verifying" ? cancelSteps.slice(1) : cancelSteps);
+      // (a helper session's round that is stopped says how the session goes on, ADR 0072)
+      play(thread, [
+        ...(thread.state === "verifying" ? cancelSteps.slice(1) : cancelSteps),
+        ...(sessions.stopSteps(thread) ?? []),
+      ]);
     }
     res.writeHead(202).end();
   }

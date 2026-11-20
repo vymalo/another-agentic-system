@@ -12,6 +12,7 @@ import {
   TONE,
 } from "./files";
 import { receive, refusalText } from "./receiver";
+import { helpersScript, type SessionAction } from "./sessions";
 
 type ThreadState = components["schemas"]["ThreadState"];
 type EventKind = components["schemas"]["EventKind"];
@@ -39,6 +40,10 @@ export type Step =
        * stays as long as it takes, whatever the speed of the machine.
        */
       pause: "cancel" | "release";
+    }
+  | {
+      /** An action of the scripted agent on its helper sessions (ADR 0072, mock/sessions.ts): played by the server. */
+      session: SessionAction;
     }
   | {
       /**
@@ -2249,6 +2254,9 @@ export function scriptFor(text: string): {
   steerable?: true;
 } {
   const word = text.split(/\s+/).find((w) => w !== "");
+  // helper sessions (ADR 0072): `helpers` and `helpers-fail`, played by mock/sessions.ts
+  const helpers = helpersScript(word);
+  if (helpers) return helpers;
   switch (word) {
     case "Fix":
       return {

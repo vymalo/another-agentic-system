@@ -171,7 +171,9 @@ export function parseSessionStart(content: unknown): SessionStartCard | null {
 }
 
 /** `Thread.childOf` of a thread: the helper it is a session of, or `null` when it is not one. */
-export function childOf(thread: { childOf?: unknown } | null | undefined): ChildOf | null {
+export function childOf(
+  thread: { childOf?: unknown; [member: string]: unknown } | null | undefined,
+): ChildOf | null {
   const row = thread?.childOf;
   if (!isRecord(row)) return null;
   const { session, agent, keepOpen, closing, closeAsked } = row;
