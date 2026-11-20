@@ -8,13 +8,13 @@
 //! after the answer, in the agent's own words.
 
 use orch_core::{
-    AccessTier, Input, MAX_START_DESCRIPTION_CHARS, PersonPrompt, SessionReport,
-    SessionStartOutcome, SessionState, ThreadId,
+    AccessTier, Input, MAX_CHILD_SESSIONS, MAX_START_DESCRIPTION_CHARS, PersonPrompt,
+    SessionReport, SessionStartOutcome, SessionState, ThreadId,
 };
 use orch_ports::{Lease, Ports, ThreadStore};
 
 use super::{App, ApplyOutcome, validate_text};
-use crate::{AppError, Requester};
+use crate::{AppError, ChildSessionDrop, Requester};
 
 /// What a person asks of `startChildSession`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +100,8 @@ impl<P: Ports> App<P> {
     /// `no_child_sessions` (the live card does not offer helpers), `unknown_helper`,
     /// `bad_description`; [`AppError::Unprocessable`] for a tier above the role's cap or one the
     /// card does not honour; [`AppError::Blocked`] `no_context` (the agent has not answered the
-    /// thread) and `too_many_starts` (four starts still wait); [`AppError::CardUnavailable`] when
+    /// thread), `too_many_starts` (four starts still wait) and `too_many_sessions` (the thread
+    /// notes [`MAX_CHILD_SESSIONS`] sessions); [`AppError::CardUnavailable`] when
     /// the card cannot be read.
     pub async fn start_child_session(
         &self,
@@ -159,6 +160,14 @@ impl<P: Ports> App<P> {
             return Err(AppError::blocked(
                 "no_context",
                 "send the agent a message first",
+            ));
+        }
+        // the parent notes a bounded number of sessions in its life: the agent would open one
+        // the parent never records
+        if thread.job.sessions.len() >= MAX_CHILD_SESSIONS {
+            return Err(AppError::blocked(
+                "too_many_sessions",
+                "this thread has started as many helper sessions as one thread may note",
             ));
         }
         let key = format!("start:{}", start.request);
@@ -248,6 +257,26 @@ impl<P: Ports> App<P> {
             return Ok(true);
         };
         let session = report.session.clone();
+        // the ledger filled while the agent opened the session: it is not noted, so no thread is
+        // made for it, and the person is told
+        if parent.job.sessions.note(&session).is_none()
+            && parent.job.sessions.len() >= MAX_CHILD_SESSIONS
+        {
+            self.child_session_dropped(ChildSessionDrop::LedgerFull, parent_id);
+            return self
+                .end_start(
+                    parent_id,
+                    lease,
+                    request,
+                    SessionStartOutcome::Failed {
+                        reason: "this thread has started as many helper sessions as one thread \
+                                 may note"
+                            .to_owned(),
+                    },
+                    end_key,
+                )
+                .await;
+        }
         let Some((child, created)) = self.open_child(&parent, &report, Some(prompt)).await? else {
             // the store refused the thread: the person is told, and the start ends
             return self

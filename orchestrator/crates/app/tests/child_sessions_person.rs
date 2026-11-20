@@ -870,3 +870,86 @@ async fn a_stop_and_send_leaves_a_close_backing_off_in_a_kept_open_helper_to_res
     run.shutdown().await;
     let _ = context;
 }
+
+// --- a parent that notes its limit of sessions ----------------------------------------------------
+
+/// The parent notes 256 sessions the agent listed.
+async fn fill_the_ledger(app: &Arc<TestApp>, parent: ThreadId) {
+    let reports: Vec<SessionReport> = (0..256)
+        .map(|n| SessionReport {
+            session: format!("s{n}"),
+            context_id: format!("ctx-1/s/s{n}"),
+            agent: "planner".into(),
+            description: "Plan".into(),
+            parent_context_id: None,
+            keep_open: false,
+            by: Some(SessionBy::Agent),
+            state: SessionState::Idle,
+            closing: false,
+            round: None,
+        })
+        .collect();
+    for chunk in reports.chunks(64) {
+        app.child_sessions_news(parent, None, SessionNews::Listed(chunk.to_vec()))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_start_for_a_parent_that_notes_its_limit_of_sessions_is_refused_and_writes_nothing() {
+    let w = world();
+    let app = w.app();
+    let parent = answered(&app).await;
+    fill_the_ledger(&app, parent.id).await;
+    let before = events(&app, &alice(), parent.id).await.len();
+    let e = app
+        .start_child_session(&alice(), parent.id, start("req-1", "echo x", false))
+        .await
+        .unwrap_err();
+    assert_eq!(code_of(&e), "too_many_sessions");
+    assert!(matches!(e, AppError::Blocked { .. }), "{e:?}");
+    assert_eq!(events(&app, &alice(), parent.id).await.len(), before);
+    assert!(
+        w.store
+            .list_open_outbox(parent.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_start_that_opens_into_a_ledger_that_filled_meanwhile_ends_failed_and_makes_no_thread() {
+    let w = world();
+    let app = w.app();
+    let parent = answered(&app).await;
+    // accepted while there was room; the ledger fills before the agent opens the session
+    app.start_child_session(&alice(), parent.id, start("req-1", "echo x", false))
+        .await
+        .unwrap();
+    fill_the_ledger(&app, parent.id).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let ev = eventually("the outcome", || async {
+        let ev = events(&app, &alice(), parent.id).await;
+        (count(&ev, EventKind::ChildSessionStartEnded) == 1).then_some(ev)
+    })
+    .await;
+    run.shutdown().await;
+    let ended = ev
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::ChildSessionStartEnded(d) => Some(d.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(ended.outcome, StartOutcomeKind::Failed);
+    assert!(
+        ended.reason.is_some() && ended.thread.is_none(),
+        "{ended:?}"
+    );
+    assert_eq!(children(&w, parent.id).await.len(), 256);
+    let record = app.get_thread(&alice(), parent.id).await.unwrap();
+    assert!(record.job.session_starts.is_empty());
+    assert_eq!(record.job.sessions.len(), 256);
+}

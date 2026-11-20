@@ -173,7 +173,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Rejected` | 409 |
 /// | something well formed that cannot be done: a tool server that is unknown or not offered for the thread's agent, or too many (`AppError::Unprocessable`) | 422 |
 /// | a change of the person's list that cannot be made (`AppError::Arrangement`), a fork or a share of a child session's thread, or what a person asks of a helper session that its state or the card does not allow (ADR 0072) | 422 with `code: bad_anchor`, `code: nested_row`, `code: child_thread`, `child_mentions`, `session_closes_on_stop`, `not_child_thread`, `no_child_sessions`, `unknown_helper` or `bad_description` |
-/// | a helper session that is closed, a start the agent has no context for, or four starts that wait (`AppError::Blocked`) | 409 with `code: session_closed`, `no_context` or `too_many_starts` |
+/// | a helper session that is closed, a start the agent has no context for, or four starts that wait, or a thread that notes 256 sessions (`AppError::Blocked`) | 409 with `code: session_closed`, `no_context`, `too_many_starts` or `too_many_sessions` |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |

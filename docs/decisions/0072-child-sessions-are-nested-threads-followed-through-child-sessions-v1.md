@@ -179,6 +179,7 @@ nothing has run against a real adam (S5).
 | D6 | Closing a closed session | 202 and nothing written; so is a close already asked with the same or a stronger `cancel` | proposed |
 | D7 | The text of a start that fails | Not kept in the log (`child_session_start_asked` holds no text); the web keeps the draft until the outcome arrives | proposed |
 | D8 | Starts waiting for their outcome, per parent | 4, then 409 `too_many_starts` | proposed |
+| D9 | A parent that notes its 256 sessions (the ledger's bound, whatever their state) | 409 `too_many_sessions` before anything is written; a start accepted earlier that opens into a ledger that filled meanwhile ends `failed` with a word and makes no thread (counted as `ledger_full`) | proposed |
 
 - **Decision 5 as built (the person talks to a child).** A message in a child thread is the helper's next round when the session is
   idle, a steer into the round while it works (`vymalo.send: steer`, as ADR 0036) and the answer to the round when the helper asked
