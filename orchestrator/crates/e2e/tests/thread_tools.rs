@@ -175,7 +175,7 @@ async fn the_endpoint_gives_the_newest_catalog_and_any_replica_serves_it(backend
         assert_eq!(
             got,
             json!({
-                "catalogId": v2["catalogId"], "version": 2, "digest": v2["digest"],
+                "catalogId": v2["catalogId"], "version": v2["version"], "digest": v2["digest"],
                 "unchanged": true,
             })
         );
