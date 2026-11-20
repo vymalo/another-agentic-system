@@ -298,12 +298,21 @@ fn a_refused_close_clears_the_ask_and_says_why_in_the_childs_log() {
     assert_eq!(after.state, Working);
     let ledger = after.job.child.as_ref().unwrap();
     assert!(!ledger.close_asked && !ledger.close_cancel);
+    // the error, then the state the session is in with no close asked: what a card reads
     assert_eq!(
         bodies(&cmds),
-        [EventBody::Error(ErrorData {
-            message: "session s1 is closed and takes no more messages".into(),
-            retryable: false,
-        })]
+        [
+            EventBody::Error(ErrorData {
+                message: "session s1 is closed and takes no more messages".into(),
+                retryable: false,
+            }),
+            EventBody::ChildSessionState(ChildSessionStateData {
+                session: ledger.session.clone(),
+                state: ledger.state,
+                closing: ledger.closing,
+                close_asked: false,
+            }),
+        ]
     );
     // the person may ask again
     let (_, cmds) = transition(&after, &close(false)).unwrap();
@@ -846,6 +855,7 @@ fn the_four_events_have_their_kinds_and_data_and_read_back() {
                 session: "s1".into(),
                 state: SessionState::Idle,
                 closing: false,
+                close_asked: false,
             }),
             "child_session_state",
             serde_json::json!({"session": "s1", "state": "idle", "closing": false}),

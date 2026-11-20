@@ -4074,6 +4074,7 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
             session: "s1".into(),
             state: orch_core::SessionState::Closed,
             closing: false,
+            close_asked: false,
         }),
     ];
     for body in &bodies {

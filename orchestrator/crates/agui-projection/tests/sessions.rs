@@ -1207,6 +1207,10 @@ fn close_asked(seq: i64, cancel: bool) -> Event {
 }
 
 fn state_of(seq: i64, state: SessionState, closing: bool) -> Event {
+    state_asked(seq, state, closing, false)
+}
+
+fn state_asked(seq: i64, state: SessionState, closing: bool, close_asked: bool) -> Event {
     ev(
         seq,
         Actor::system(),
@@ -1214,6 +1218,7 @@ fn state_of(seq: i64, state: SessionState, closing: bool) -> Event {
             session: "s1".to_owned(),
             state,
             closing,
+            close_asked,
         }),
     )
 }
@@ -1301,5 +1306,31 @@ fn a_thread_that_is_no_child_says_nothing_of_a_close_or_a_state() {
             .iter()
             .any(|l| l.contains("vymalo.session")),
         "no card without a session this thread is"
+    );
+}
+
+#[test]
+fn a_refused_close_clears_closeasked_on_the_childs_card() {
+    // the core writes the error and then the state with no close asked (`close_failed`)
+    let events = [
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        close_asked(3, false),
+        state_asked(4, SessionState::Working, false, false),
+    ];
+    let mut projector = Projector::new(child_meta());
+    let per_event: Vec<Vec<Frame>> = events
+        .iter()
+        .map(|e| projector.apply(e, Audience::Viewer))
+        .collect();
+    verify::check(&support::flatten(&per_event)).unwrap();
+    assert_eq!(
+        activity(&per_event[2], "vymalo.session")["content"]["closeAsked"],
+        true
+    );
+    assert_eq!(
+        activity(&per_event[3], "vymalo.session")["content"]["closeAsked"],
+        false,
+        "a refused close is not asked any more"
     );
 }

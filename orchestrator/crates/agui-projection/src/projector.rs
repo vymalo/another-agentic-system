@@ -2611,6 +2611,7 @@ impl Projector {
         let opened = self.ensure_run(ev, out);
         self.own_session.state = Some(d.state);
         self.own_session.closing = d.closing;
+        self.own_session.close_asked = d.close_asked;
         out.push(self.own_session_card(&d.session, ev));
         if opened {
             self.settle(ev, out);

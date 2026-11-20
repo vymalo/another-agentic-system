@@ -3115,7 +3115,7 @@ components:
         - child_session_start_asked # data: { request, agent, description, keepOpen: bool, tier? }  a person asked to start a helper session (`startChildSession`, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)): in the **parent's** log, attributed to the person, written with the request. **It holds no text**: the prompt is the person's message in the child thread, once it opens. Additive (S3).
         - child_session_start_ended # data: { request, outcome: opened|failed, session?, thread?, reason? }  the outcome of a start: `opened` names the session and the child thread (`child_session_opened` with `by: person` is written with it), `failed` says why in `reason`, the agent's own words (untrusted, at most 512 bytes; "the agent could not be reached" when it never answered). Exactly once per request, in the parent's log, attributed to the system. Additive (S3).
         - child_session_close_asked # data: { session, cancel: bool }  a person asked to close the session (`closeChildSession`): in the **child's** log, attributed to the person. Additive (S3).
-        - child_session_state # data: { session, state: working|idle|closed, closing: bool }  the session changed state or started or stopped closing, as the agent said it: in the child's log, attributed to the system, written only when `state` or `closing` differs from the last. Additive (S3).
+        - child_session_state # data: { session, state: working|idle|closed, closing: bool, closeAsked?: true }  the session changed state or started or stopped closing, as the agent said it, or the agent refused a close a person asked (then `closeAsked` is absent, the ask being cleared): in the child's log, attributed to the system, written when `state` or `closing` differs from the last and after a refused close. `closeAsked` is `true` while a person's close is asked and not answered. Additive (S3).
     Mention:
       type: object
       description: "An agent a person mentioned in a message, as a structured reference ([`mentions-v1.md`](mentions-v1.md), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)): the identity is `agentId`, never the label."
@@ -3352,6 +3352,9 @@ components:
         closing:
           type: boolean
           description: "child_session_state: a close waits for the round to end or is on its way."
+        closeAsked:
+          type: boolean
+          description: "child_session_state: a person's close is asked and not answered yet; absent (false) otherwise, and after the agent refused it."
         report:
           type: string
           enum: [done, failed, canceled, blocked]

@@ -593,6 +593,10 @@ pub struct ChildSessionStateData {
     pub state: SessionState,
     /// A close waits for the open round to end.
     pub closing: bool,
+    /// A person's close is asked and not answered yet. Said (and absent when false, as it is by
+    /// default) so a refused close, which changes neither `state` nor `closing`, clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub close_asked: bool,
 }
 
 /// What a person's first message to a session they start is: written in the child's first commit,
@@ -823,6 +827,7 @@ pub(crate) fn said(
                 session: child.session.clone(),
                 state: child.state,
                 closing: child.closing,
+                close_asked: child.close_asked,
             }),
         ));
     }
@@ -1013,7 +1018,8 @@ pub(crate) fn close_session(
 }
 
 /// The agent refused the close (`Input::SessionCloseFailed`): the ask is cleared, so a person may
-/// ask again, and the agent's words are the child's `error`. Nothing when no close was asked.
+/// ask again, the agent's words are the child's `error` and the state is said again with no close
+/// asked. Nothing when no close was asked.
 pub(crate) fn close_failed(job: &mut Job, reason: &str) -> Result<Vec<Command>, TransitionError> {
     let child = job.child.as_mut().ok_or(TransitionError::NotAChild)?;
     if !child.close_asked {
@@ -1021,13 +1027,25 @@ pub(crate) fn close_failed(job: &mut Job, reason: &str) -> Result<Vec<Command>, 
     }
     child.close_asked = false;
     child.close_cancel = false;
-    Ok(vec![append(
-        Actor::system(),
-        EventBody::Error(ErrorData {
-            message: truncate_to(reason, MAX_START_REASON_BYTES).to_owned(),
-            retryable: false,
-        }),
-    )])
+    Ok(vec![
+        append(
+            Actor::system(),
+            EventBody::Error(ErrorData {
+                message: truncate_to(reason, MAX_START_REASON_BYTES).to_owned(),
+                retryable: false,
+            }),
+        ),
+        // what a card reads: the session as it was, with no close asked
+        append(
+            Actor::system(),
+            EventBody::ChildSessionState(ChildSessionStateData {
+                session: child.session.clone(),
+                state: child.state,
+                closing: child.closing,
+                close_asked: false,
+            }),
+        ),
+    ])
 }
 
 /// The answer to a message this thread sent names round `number` (`Input::RoundSent`): the round

@@ -8158,6 +8158,7 @@ pub async fn the_session_events_ledgers_and_observe_rows_round_trip<S: ThreadSto
             session: "s1".to_owned(),
             state: orch_core::SessionState::Closed,
             closing: false,
+            close_asked: false,
         }),
     ];
     let mut c = commit(
