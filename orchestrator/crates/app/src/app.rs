@@ -39,6 +39,8 @@ mod echo;
 pub use echo::TierStats;
 mod history;
 pub use history::{HistorySettings, HistoryStats};
+mod sessions;
+pub use sessions::{ChildCloseState, StartChildSession};
 mod share;
 pub use share::{AGENT_NAME_WAIT, SharedRead};
 mod uploads;
@@ -2299,22 +2301,41 @@ impl<P: Ports> App<P> {
     ) -> Result<ApplyOutcome, AppError> {
         let access = self.access(who);
         let thread = self.writable_thread(&access, id).await?;
-        // A child session's thread is read-only until a person may talk to its helper (ADR 0072,
-        // S3): no message, steer, Stop & send or action. A cancel is allowed.
-        if thread.child_of.is_some()
-            && matches!(
-                input,
-                Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
-            )
-        {
-            return Err(AppError::child_thread());
-        }
         // What starts the agent's work takes the right to invoke it.
         if matches!(
             input,
             Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
         ) {
             self.may_invoke(&access, &thread).await?;
+        }
+        // A message to a helper session's thread (ADR 0072, S3) is the helper's next round, a steer
+        // or an answer, and is refused before anything is written when the session cannot take it:
+        // it is closed, it would ask other agents, or it closes when its round is stopped.
+        if let Some(child) = thread
+            .job
+            .child
+            .as_ref()
+            .filter(|_| thread.child_of.is_some())
+        {
+            match &input {
+                Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. } => {
+                    if child.state == orch_core::SessionState::Closed {
+                        return Err(orch_core::TransitionError::SessionClosed.into());
+                    }
+                }
+                _ => {}
+            }
+            match &input {
+                Input::UserMessage { mentions, .. } | Input::StopAndSend { mentions, .. }
+                    if !mentions.is_empty() =>
+                {
+                    return Err(AppError::arrangement("child_mentions"));
+                }
+                Input::StopAndSend { .. } if !child.keep_open => {
+                    return Err(orch_core::TransitionError::SessionClosesOnStop.into());
+                }
+                _ => {}
+            }
         }
         match &input {
             Input::UserMessage { text, catalog, .. } | Input::StopAndSend { text, catalog, .. } => {
@@ -2372,6 +2393,7 @@ impl<P: Ports> App<P> {
             | Input::StartSession { .. }
             | Input::SessionStartEnded { .. }
             | Input::CloseSession { .. }
+            | Input::SessionCloseFailed { .. }
             | Input::RoundSent { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(

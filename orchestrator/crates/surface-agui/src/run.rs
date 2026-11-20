@@ -349,6 +349,7 @@ fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::StartSession { .. }
         | Input::SessionStartEnded { .. }
         | Input::CloseSession { .. }
+        | Input::SessionCloseFailed { .. }
         | Input::RoundSent { .. } => {}
     }
     input
@@ -453,6 +454,7 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::StartSession { .. }
         | Input::SessionStartEnded { .. }
         | Input::CloseSession { .. }
+        | Input::SessionCloseFailed { .. }
         | Input::RoundSent { .. } => None,
     }
 }

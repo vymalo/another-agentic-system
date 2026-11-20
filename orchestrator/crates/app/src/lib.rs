@@ -25,9 +25,10 @@ mod user_tools;
 
 pub use app::{
     AGENT_NAME_WAIT, AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView,
-    Branches, ChildSessionDrop, ChildSessionStats, Creation, DEFAULT_MAX_EXPORT_BYTES,
-    DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt, ForkRequest, Forked, Inbound,
-    NewThread, Received, SharedRead, SiblingView, ThreadExport,
+    Branches, ChildCloseState, ChildSessionDrop, ChildSessionStats, Creation,
+    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt,
+    ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, StartChildSession,
+    ThreadExport,
 };
 pub use app::{
     DEFAULT_USAGE_RETENTION_MONTHS, DeleteStats, DownloadMode, DownloadModeError, HistorySettings,

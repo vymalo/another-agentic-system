@@ -288,6 +288,54 @@ fn a_thread_that_is_no_child_cannot_be_closed() {
     assert_eq!(err, TransitionError::NotAChild);
 }
 
+#[test]
+fn a_refused_close_clears_the_ask_and_says_why_in_the_childs_log() {
+    let (asked, _) = transition(&child(Working, true), &close(true)).unwrap();
+    let failed = Input::SessionCloseFailed {
+        reason: "session s1 is closed and takes no more messages".into(),
+    };
+    let (after, cmds) = transition(&asked, &failed).unwrap();
+    assert_eq!(after.state, Working);
+    let ledger = after.job.child.as_ref().unwrap();
+    assert!(!ledger.close_asked && !ledger.close_cancel);
+    assert_eq!(
+        bodies(&cmds),
+        [EventBody::Error(ErrorData {
+            message: "session s1 is closed and takes no more messages".into(),
+            retryable: false,
+        })]
+    );
+    // the person may ask again
+    let (_, cmds) = transition(&after, &close(false)).unwrap();
+    assert_eq!(kinds(&cmds), ["child_session_close_asked"]);
+}
+
+#[test]
+fn a_close_that_was_not_asked_cannot_fail_and_a_non_child_refuses() {
+    let snap = child(Working, true);
+    let failed = Input::SessionCloseFailed { reason: "x".into() };
+    let (after, cmds) = transition(&snap, &failed).unwrap();
+    assert!(cmds.is_empty());
+    assert_eq!(after, snap);
+    assert_eq!(
+        transition(&Snapshot::new(Working), &failed).unwrap_err(),
+        TransitionError::NotAChild
+    );
+}
+
+#[test]
+fn the_words_of_a_refused_close_are_cut() {
+    let (asked, _) = transition(&child(Working, true), &close(false)).unwrap();
+    let failed = Input::SessionCloseFailed {
+        reason: "é".repeat(600),
+    };
+    let (_, cmds) = transition(&asked, &failed).unwrap();
+    let EventBody::Error(e) = &bodies(&cmds)[0] else {
+        panic!("not an error")
+    };
+    assert!(e.message.len() <= 512, "{}", e.message.len());
+}
+
 // --- starting from the parent ------------------------------------------------------------
 
 #[test]

@@ -508,6 +508,14 @@ pub enum Input {
         /// The close cancels the working round first.
         cancel: bool,
     },
+    /// The agent refused the close a person asked for (ADR 0072, S3): the ask is cleared, so the
+    /// person may ask again, and the agent's words are logged as an `error` in the child. Nothing
+    /// when no close was asked; a thread that is no child is refused
+    /// ([`TransitionError::NotAChild`]).
+    SessionCloseFailed {
+        /// What the agent said (untrusted; cut to the log's bound).
+        reason: String,
+    },
     /// The answer to a message this child thread sent names round `number` of its session (ADR
     /// 0072, S3): the round is followed, never observed again. Moves no state. A thread that is
     /// no child is refused ([`TransitionError::NotAChild`]).
@@ -561,6 +569,7 @@ impl Input {
             Input::StartSession { .. } => "start session",
             Input::SessionStartEnded { .. } => "session start ended",
             Input::CloseSession { .. } => "close session",
+            Input::SessionCloseFailed { .. } => "session close failed",
             Input::RoundSent { .. } => "round sent",
         }
     }
@@ -1951,6 +1960,9 @@ fn decide(
         }
         Input::CloseSession { user, cancel } => {
             Ok((state, child_sessions::close_session(job, user, *cancel)?))
+        }
+        Input::SessionCloseFailed { reason } => {
+            Ok((state, child_sessions::close_failed(job, reason)?))
         }
         Input::RoundSent {
             session, number, ..

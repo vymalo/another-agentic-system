@@ -17,7 +17,9 @@ use serde_json::Value;
 use crate::access_tier::AccessTier;
 use crate::agent::AgentTaskState;
 use crate::description::{DescriptionLedger, DescriptionSource};
-use crate::event::{Actor, EventBody, JobRound, JobStartedData, Origin, UserMessageData};
+use crate::event::{
+    Actor, ErrorData, EventBody, JobRound, JobStartedData, Origin, UserMessageData,
+};
 use crate::gate::{Job, Snapshot, truncate_to};
 use crate::ids::{ThreadId, UserId};
 use crate::thread::ThreadState;
@@ -1008,6 +1010,24 @@ pub(crate) fn close_session(
         ),
         Command::CloseSession { cancel },
     ])
+}
+
+/// The agent refused the close (`Input::SessionCloseFailed`): the ask is cleared, so a person may
+/// ask again, and the agent's words are the child's `error`. Nothing when no close was asked.
+pub(crate) fn close_failed(job: &mut Job, reason: &str) -> Result<Vec<Command>, TransitionError> {
+    let child = job.child.as_mut().ok_or(TransitionError::NotAChild)?;
+    if !child.close_asked {
+        return Ok(Vec::new());
+    }
+    child.close_asked = false;
+    child.close_cancel = false;
+    Ok(vec![append(
+        Actor::system(),
+        EventBody::Error(ErrorData {
+            message: truncate_to(reason, MAX_START_REASON_BYTES).to_owned(),
+            retryable: false,
+        }),
+    )])
 }
 
 /// The answer to a message this thread sent names round `number` (`Input::RoundSent`): the round
