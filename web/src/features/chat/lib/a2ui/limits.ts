@@ -53,8 +53,22 @@ export const BASIC_CATALOG_IDS = [
   "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
 ] as const;
 
-/** The A2UI versions the renderer reads. `v0.9.1` is read as `v0.9`. */
-export const VERSIONS = ["v0.9", "v0.9.1", "v1.0"] as const;
+/**
+ * The one A2UI version the renderer draws, spelled as an operation spells it (ADR 0075: a hard cutover, with
+ * no second dialect). The orchestrator writes it, the web reads it, and the reducer (`reducer.ts`) takes
+ * nothing else.
+ */
+export const A2UI_VERSION = "1.0";
+
+/** The A2UI versions the renderer reads: the one dialect of the cutover. */
+export const VERSIONS = [A2UI_VERSION] as const;
+
+/**
+ * The versions that came before, spelled as an old log holds them (the draft v1.0 took the `v` too). A surface
+ * of one of them is not drawn: it is shown as made by an earlier version, its actions refused (ADR 0075,
+ * decision 6), and the refusal names the version it found.
+ */
+export const EARLIER_VERSIONS = ["v0.9", "v0.9.1", "v1.0"] as const;
 
 /**
  * Action names the renderer gives to what it lowers before conversion (an `openUrl` call, a

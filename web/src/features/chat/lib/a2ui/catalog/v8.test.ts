@@ -143,21 +143,43 @@ describe("the contract page: what a surface may be and hold", () => {
     preview: f.kind === "image" ? ("image" as const) : null,
     mimeType: f.kind === "image" ? "image/png" : "text/plain",
   }));
-  const BASIC = "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json";
-  const operations = (c: Surface) => (c.noCreate ? (c.operationsAfter ?? []) : operationsFull(c));
+  const BASIC = "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json";
+  /**
+   * The page's vectors are written in v1's spelling, because `ui-catalog-v1.md` is the record of v1. Read under
+   * v2 they say `"version": "1.0"` and name the v1.0 basic catalog, and nothing else in them changes
+   * (`ui-catalog-v2.md`, section 1).
+   */
+  const atV1 = (ops: Rec[] = []): Rec[] =>
+    ops.map((op) => ({
+      ...op,
+      version: "1.0",
+      ...(typeof op.createSurface === "object" &&
+      op.createSurface !== null &&
+      (op.createSurface as Rec).catalogId !== undefined
+        ? {
+            createSurface: {
+              ...(op.createSurface as Rec),
+              catalogId: BASIC,
+            },
+          }
+        : {}),
+    }));
+  const operations = (c: Surface) =>
+    c.noCreate
+      ? atV1(c.operationsAfter ?? [])
+      : [...operationsFull(c), ...atV1(c.operationsAfter ?? [])];
   const operationsFull = (c: Surface) => [
     {
-      version: "v0.9.1",
+      version: "1.0",
       createSurface: {
         surfaceId: c.surfaceId ?? "s1",
         catalogId: c.catalog === "basic" ? BASIC : OWN_CATALOG.catalogId,
       },
     },
     {
-      version: "v0.9.1",
+      version: "1.0",
       updateComponents: { surfaceId: c.surfaceId ?? "s1", components: c.components },
     },
-    ...(c.operationsAfter ?? []),
   ];
   const resultOf = (c: Surface): string => {
     const got = prepareSurface(operations(c), {
@@ -239,11 +261,11 @@ describe("the contract page: a surface that is started over", () => {
 
   it("a surface sent again whole many times counts only its last copy against the size limit", () => {
     const create = (s: string) => ({
-      version: "v0.9.1",
+      version: "1.0",
       createSurface: { surfaceId: s, catalogId: OWN_CATALOG.catalogId },
     });
     const update = (s: string, n: number) => ({
-      version: "v0.9.1",
+      version: "1.0",
       updateComponents: {
         surfaceId: s,
         components: [
@@ -293,9 +315,9 @@ describe("the contract page: a surface sent again, and the plan", () => {
                   marker: c.marker,
                   a2ui_operations: [
                     c.deleted
-                      ? { version: "v0.9.1", deleteSurface: { surfaceId: c.surfaceId } }
+                      ? { version: "1.0", deleteSurface: { surfaceId: c.surfaceId } }
                       : {
-                          version: "v0.9.1",
+                          version: "1.0",
                           createSurface: { surfaceId: c.surfaceId, catalogId: "x" },
                         },
                   ],
@@ -371,10 +393,10 @@ describe("the contract page: a surface sent again, and the plan", () => {
       const got = prepareSurface(
         [
           {
-            version: "v0.9.1",
+            version: "1.0",
             createSurface: { surfaceId: "plan-1", catalogId: OWN_CATALOG.catalogId },
           },
-          { version: "v0.9.1", updateComponents: { surfaceId: "plan-1", components } },
+          { version: "1.0", updateComponents: { surfaceId: "plan-1", components } },
         ],
         { threadVersion: 8 },
       );

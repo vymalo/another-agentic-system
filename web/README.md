@@ -2299,12 +2299,14 @@ stateDiagram-v2
 
 **Why the app renames the activity.** `@assistant-ui/react-ag-ui` has an A2UI path of its own (an
 `a2ui-surface` becomes a `present` tool part). It converts the surface in the run aggregator the moment
-it arrives, so no host check can come first; it drops operations that say `v0.9.1`, the version our
-orchestrator relays; and it has no `openUrl`. `ThreadAgent` therefore hands every `a2ui-surface` to the
-runtime as the activity `vymalo.a2ui-surface` (an ordinary data part, drawn by `data-uis.tsx`), with the
-content untouched plus the actor and the surface id. Nothing converts before the validator has run.
-The library's own pure pieces are used after it: `applyA2uiOperations` (reducer),
-`convertSurfaceToUISpec` and `renderGenerativeUI`.
+it arrives, so no host check can come first; it drops operations that say `v0.9.1` (the version this
+system relayed before the cutover); and it has no `openUrl`. `ThreadAgent` therefore hands every
+`a2ui-surface` to the runtime as the activity `vymalo.a2ui-surface` (an ordinary data part, drawn by
+`data-uis.tsx`), with the content untouched plus the actor and the surface id. Nothing converts before
+the validator has run. The library's own pure pieces are used after it: `convertSurfaceToUISpec` and
+`renderGenerativeUI`. **The reducer is the web's own** (`src/features/chat/lib/a2ui/reducer.ts`): the
+package's takes `v0.9`, `v0.9.1` and the draft `v1.0` and no release takes `1.0`, so the app applies
+A2UI 1.0's four operations itself (ADR 0075, amended 2026-11-20).
 
 *Verified 2026-09-29* (read from the installed `@assistant-ui/react-generative-ui` 0.0.21 and
 `@assistant-ui/react-ag-ui` 0.0.62 sources, and run): the reducer accepts `v0.9` and `v1.0` only
@@ -2330,7 +2332,7 @@ converter only ever see operations that passed the ones before them:
 | Rule (`refused.rule`) | Limit or requirement |
 |---|---|
 | `size` | at most **64 KiB** (65,536 bytes of UTF-8) of serialised operations; one byte more is refused |
-| `shape`, `version`, `surfaces` | an array of objects, each with a `version` (`v0.9`, `v0.9.1`, `v1.0`; `v0.9.1` is read as `v0.9`) and exactly one operation (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) with a surface id of 1 to 256 bytes; one surface per activity; anything the reducer had to skip (a component without an id, an update of a surface never created) refuses the surface |
+| `shape`, `version`, `surfaces` | an array of objects, each with `version` exactly `"1.0"` (an operation of an earlier version — `v0.9`, `v0.9.1`, the draft `v1.0` — is refused, rule `version`, and the reason names it: that is a surface of a thread from before the cutover, ADR 0075) and exactly one operation (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) with a surface id of 1 to 256 bytes; one surface per activity; a `createSurface` names a catalog, creates a surface not already live, and its inline `components` and `dataModel` are read; an `updateDataModel` carries a `value`; anything the reducer had to skip (a component without an id, an update of a surface never created) refuses the surface |
 | `catalog`, `schema` | the surface's catalog and, under ours, each instance's schema: see [The UI catalog](#the-ui-catalog) |
 | `components` | at most **400** components once the operations are applied (unreferenced ones count) |
 | `vocabulary` | under the basic catalog, only the components below; an unknown one refuses the surface wherever it is (never skipped) |
@@ -2404,7 +2406,7 @@ A refusal is one line in the `vymalo.error` style: "Interface not shown: <reason
 (`data-rule`), and the raw operations (first 4000 characters) in a disclosure, as text.
 
 The mock plays the orchestrator's `ui` story (`mock/scripts.ts`): `ui pick one` sends a surface (a
-title and a `Go` button, in two payloads, `v0.9.1`), asks "Pick one" and blocks; the action resumes it to
+title and a `Go` button, in two payloads, `1.0`), asks "Pick one" and blocks; the action resumes it to
 `answered: ui-action go`. `mock/golden.test.ts` requires its stream to be `a2ui.agui.json`, frame for
 frame, and its action route refuses what the orchestrator refuses (`422` malformed, unknown surface, an
 action with a message; `413` over the sizes; `409` a run open or the thread finished).

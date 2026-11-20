@@ -41,9 +41,9 @@ const item = (label: string, state: string, note?: string) => ({
 });
 /** The operations of one copy of the plan: the whole surface, under the same id every time. */
 const copy = (items: Rec[], surfaceId = "plan-run-7"): Rec[] => [
-  { version: "v0.9.1", createSurface: { surfaceId, catalogId: OWN_CATALOG.catalogId } },
+  { version: "1.0", createSurface: { surfaceId, catalogId: OWN_CATALOG.catalogId } },
   {
-    version: "v0.9.1",
+    version: "1.0",
     updateComponents: {
       surfaceId,
       components: [
@@ -137,11 +137,11 @@ describe("a plan is one checklist that updates where it stands", () => {
     const m = mount();
     const bad = [
       {
-        version: "v0.9.1",
+        version: "1.0",
         createSurface: { surfaceId: "plan-x", catalogId: OWN_CATALOG.catalogId },
       },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: "plan-x",
           components: [

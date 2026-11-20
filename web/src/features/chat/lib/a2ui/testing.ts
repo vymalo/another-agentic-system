@@ -18,14 +18,14 @@ export const OWN_CATALOG_ID = OWN_CATALOG.catalogId;
 export function surface(
   components: Rec[],
   dataModel?: unknown,
-  version = "v0.9",
+  version = "1.0",
   catalogId: string = BASIC_CATALOG,
 ): Rec[] {
   return [
     { version, createSurface: { surfaceId: SURFACE, catalogId } },
     { version, updateComponents: { surfaceId: SURFACE, components } },
     ...(dataModel !== undefined
-      ? [{ version, updateDataModel: { surfaceId: SURFACE, path: "/", contents: dataModel } }]
+      ? [{ version, updateDataModel: { surfaceId: SURFACE, path: "/", value: dataModel } }]
       : []),
   ];
 }

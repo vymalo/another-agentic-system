@@ -3607,7 +3607,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.id,
       "ui_action",
       { type: "user", name: who },
-      { ...strings, context, version: version as "v0.9" | "v0.9.1" | "v1.0", runId },
+      { ...strings, context, version, runId },
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;

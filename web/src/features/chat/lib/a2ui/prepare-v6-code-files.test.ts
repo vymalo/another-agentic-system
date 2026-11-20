@@ -40,7 +40,7 @@ const pr = (id: string, extra: Rec = {}): Rec => ({
 const fileCard = (id: string, artifact: string): Rec => ({ id, component: "FileCard", artifact });
 
 const ours = (components: Rec[], catalogId = OWN_CATALOG_ID) =>
-  surface(components, undefined, "v0.9.1", catalogId);
+  surface(components, undefined, "1.0", catalogId);
 
 describe("the code and files components, in a surface of our catalog", () => {
   it("are drawn together, with their lowered names the renderer keeps", () => {
@@ -89,7 +89,7 @@ describe("the code and files components, in a surface of our catalog", () => {
   });
 
   it("in the basic catalog none of them is drawn: they are not in its vocabulary", () => {
-    const p = refused(prepareSurface(surface([code("root")], undefined, "v0.9.1", BASIC_CATALOG)));
+    const p = refused(prepareSurface(surface([code("root")], undefined, "1.0", BASIC_CATALOG)));
     expect(p.rule).toBe("catalog");
   });
 });

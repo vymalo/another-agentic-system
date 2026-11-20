@@ -389,8 +389,8 @@ describe("reading an answer back", () => {
 
 describe("the questions of a surface in the transcript", () => {
   const ops = (...components: Rec[]): Rec[] => [
-    { version: "v0.9.1", createSurface: { surfaceId: "s1", catalogId: "https://x.test/c" } },
-    { version: "v0.9.1", updateComponents: { surfaceId: "s1", components } },
+    { version: "1.0", createSurface: { surfaceId: "s1", catalogId: "https://x.test/c" } },
+    { version: "1.0", updateComponents: { surfaceId: "s1", components } },
   ];
 
   it("reads the Choices the action's source names", () => {
@@ -411,7 +411,7 @@ describe("the questions of a surface in the transcript", () => {
     const later = [
       ...ops(component()),
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: "s1",
           components: [
@@ -798,9 +798,9 @@ describe("version 5: a form, typed questions, defaults and a note", () => {
     it("finds the whole form of a surface, with its free box's label", () => {
       const found = choicesOf(
         [
-          { version: "v0.9.1", createSurface: { surfaceId: "s1", catalogId: "https://x.test/c" } },
+          { version: "1.0", createSurface: { surfaceId: "s1", catalogId: "https://x.test/c" } },
           {
-            version: "v0.9.1",
+            version: "1.0",
             updateComponents: {
               surfaceId: "s1",
               components: [

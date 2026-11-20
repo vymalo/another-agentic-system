@@ -48,7 +48,7 @@ export const imageSurface = (components: Record<string, unknown>[]): GoldenFrame
     activityType: "a2ui-surface",
     replace: true,
     content: {
-      a2ui_operations: surface(components, undefined, "v0.9.1", OWN_CATALOG.catalogId),
+      a2ui_operations: surface(components, undefined, "1.0", OWN_CATALOG.catalogId),
     },
     subagentRunId: "sub-2",
     metadata: AGENT,

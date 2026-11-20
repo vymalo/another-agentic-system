@@ -1660,9 +1660,10 @@ v1's [section 7](ui-catalog-v1.md#7-in-ag-ui), unchanged: `ui_catalog` produces 
 v1's [section 8](ui-catalog-v1.md#8-what-the-web-does-with-a-surface), with A2UI v1.0 underneath. Slice S2 builds it.
 
 1. The surface's catalog is its `createSurface.catalogId`. A2UI v1.0 makes `catalogId` optional (a component then
-   names its catalog with `@catalogId`); a surface that mixes catalogs is [out of scope](#out-of-scope). What the web
-   does with a `createSurface` that names no `catalogId` (v1 read it as the basic catalog) is not settled by ADR 0075:
-   S2 settles it and writes it here.
+   names its catalog with `@catalogId`); a surface that mixes catalogs is [out of scope](#out-of-scope). **A
+   `createSurface` that names no `catalogId` is refused, rule `catalog`** (S2's settlement, 2026-11-20): this app
+   draws one catalog per surface, and a surface that names none cannot be checked against one. v1's reading of no id
+   as the basic catalog goes with the cutover.
 2. **Ours.** Every component is a key of the web's catalog, and each instance is validated against its schema and v1's
    rules (uniqueness, URLs, files of the thread, the rules JSON Schema cannot say, plans).
 3. **Ours, but the component is not known here**, and the thread's version is higher than the web's: the visible

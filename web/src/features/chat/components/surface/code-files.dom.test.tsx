@@ -41,8 +41,7 @@ async function feed(m: Mounted, frames: ReturnType<typeof surfaceRun>) {
   await waitFor(() => expect(m.agent.getSnapshot().lastSeq).toBe(last));
 }
 
-const drawn = (components: Rec[]) =>
-  surface(components, undefined, "v0.9.1", OWN_CATALOG.catalogId);
+const drawn = (components: Rec[]) => surface(components, undefined, "1.0", OWN_CATALOG.catalogId);
 
 async function mountSurface(components: Rec[]) {
   const m = mountSurfaces({}, {}, undefined, { catalogVersion: OWN_CATALOG.version });

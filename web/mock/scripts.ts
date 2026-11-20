@@ -61,16 +61,16 @@ const PR_URL = "https://github.com/acme/demo/pull/1";
 /**
  * The surface of the orchestrator's `ui` scenario (`docs/api/examples/a2ui.events.json`): a
  * Column with a title and a Button whose action is an `event`, sent in two payloads the way the
- * fake agent sends them (`v0.9.1`, the version the orchestrator relays).
+ * fake agent sends them (`1.0`, the one dialect the orchestrator relays since the cutover, ADR 0075).
  */
 export const UI_SURFACE_ID = "s1";
-const CATALOG = "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json";
+const CATALOG = "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json";
 const uiCreate = {
-  version: "v0.9.1",
+  version: "1.0",
   createSurface: { surfaceId: UI_SURFACE_ID, catalogId: CATALOG },
 };
 const uiComponents = {
-  version: "v0.9.1",
+  version: "1.0",
   updateComponents: {
     surfaceId: UI_SURFACE_ID,
     components: [
@@ -96,9 +96,9 @@ const gizmoSurface = (): Step => ({
   kind: "ui_surface",
   data: {
     operations: [
-      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      { version: "1.0", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: UI_SURFACE_ID,
           components: [
@@ -121,9 +121,9 @@ const choicesSurface = (): Step => ({
   kind: "ui_surface",
   data: {
     operations: [
-      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      { version: "1.0", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: UI_SURFACE_ID,
           components: [
@@ -179,9 +179,9 @@ const choicesV5Surface = (): Step => ({
   kind: "ui_surface",
   data: {
     operations: [
-      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      { version: "1.0", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: UI_SURFACE_ID,
           components: [
@@ -305,9 +305,9 @@ const choicesV7Surface = (surfaceId: string, questions: Record<string, unknown>[
   kind: "ui_surface",
   data: {
     operations: [
-      { version: "v0.9.1", createSurface: { surfaceId, catalogId: OWN_CATALOG_ID } },
+      { version: "1.0", createSurface: { surfaceId, catalogId: OWN_CATALOG_ID } },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId,
           components: [
@@ -407,9 +407,9 @@ const choicesDeckSurface = (): Step => ({
   kind: "ui_surface",
   data: {
     operations: [
-      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      { version: "1.0", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: UI_SURFACE_ID,
           components: [
@@ -480,9 +480,9 @@ const choicesV8Surface = (): Step => ({
   kind: "ui_surface",
   data: {
     operations: [
-      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      { version: "1.0", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: UI_SURFACE_ID,
           components: [
@@ -612,8 +612,8 @@ const choicesV8BadSurfaces = (): Step[] =>
     kind: "ui_surface" as const,
     data: {
       operations: [
-        { version: "v0.9.1", createSurface: { surfaceId: id, catalogId: OWN_CATALOG_ID } },
-        { version: "v0.9.1", updateComponents: { surfaceId: id, components } },
+        { version: "1.0", createSurface: { surfaceId: id, catalogId: OWN_CATALOG_ID } },
+        { version: "1.0", updateComponents: { surfaceId: id, components } },
       ],
     },
   }));
@@ -627,11 +627,11 @@ const planCopy = (items: { label: string; state: string; note?: string }[]): Ste
   data: {
     operations: [
       {
-        version: "v0.9.1",
+        version: "1.0",
         createSurface: { surfaceId: PLAN_SURFACE_ID, catalogId: OWN_CATALOG_ID },
       },
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: PLAN_SURFACE_ID,
           components: [
@@ -727,8 +727,8 @@ const ownSurface = (components: Record<string, unknown>[]): Step => ({
   kind: "ui_surface",
   data: {
     operations: [
-      { version: "v0.9.1", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
-      { version: "v0.9.1", updateComponents: { surfaceId: UI_SURFACE_ID, components } },
+      { version: "1.0", createSurface: { surfaceId: UI_SURFACE_ID, catalogId: OWN_CATALOG_ID } },
+      { version: "1.0", updateComponents: { surfaceId: UI_SURFACE_ID, components } },
     ],
   },
 });
@@ -3365,7 +3365,7 @@ export function scriptFor(text: string): {
               operations: [
                 uiCreate,
                 {
-                  version: "v0.9.1",
+                  version: "1.0",
                   updateComponents: {
                     surfaceId: UI_SURFACE_ID,
                     components: [

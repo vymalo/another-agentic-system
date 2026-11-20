@@ -239,11 +239,11 @@ describe("the contract page (docs/api/ui-catalog-v1.md, Version 7)", () => {
     expect(cases.length).toBe(5);
     for (const { threadVersion, question, result } of cases) {
       const surface = {
-        version: "v0.9.1",
+        version: "1.0",
         createSurface: { surfaceId: "s1", catalogId: OWN_CATALOG.catalogId },
       };
       const update = {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: {
           surfaceId: "s1",
           components: [

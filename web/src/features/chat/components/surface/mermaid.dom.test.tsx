@@ -59,7 +59,7 @@ const mermaidSurface = (extra: Rec = {}) =>
       { id: "flow", component: "Mermaid", code: CODE, ...extra },
     ],
     undefined,
-    "v0.9.1",
+    "1.0",
     OWN_CATALOG.catalogId,
   );
 
@@ -255,7 +255,7 @@ describe("the Mermaid component", () => {
         { id: "flow", component: "Mermaid", code: "graph LR; X-->Y" },
       ],
       undefined,
-      "v0.9.1",
+      "1.0",
       OWN_CATALOG.catalogId,
     );
     await feed(m, surfaceRun([next], { runId: "run-2", messageId: "a2ui-3", user: false }));

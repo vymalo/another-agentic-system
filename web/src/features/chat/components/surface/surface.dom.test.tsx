@@ -157,7 +157,7 @@ describe("what is drawn", () => {
     cleanup();
     resetSeq();
     const d = mountSurfaces();
-    const deleted = [...complete, { version: "v0.9", deleteSurface: { surfaceId: SURFACE } }];
+    const deleted = [...complete, { version: "1.0", deleteSurface: { surfaceId: SURFACE } }];
     await feed(d, surfaceRun([complete, deleted]));
     await waitFor(() => expect(regions()).toHaveLength(0));
     expect(screen.queryByText("Pick one")).toBeNull();
@@ -357,8 +357,8 @@ describe("actions: a control acts on a click of its own and on nothing else", ()
     const updated = [
       ...many,
       {
-        version: "v0.9",
-        updateDataModel: { surfaceId: SURFACE, path: "/name", contents: "changed" },
+        version: "1.0",
+        updateDataModel: { surfaceId: SURFACE, path: "/name", value: "changed" },
       },
     ];
     await act(async () => {
@@ -538,7 +538,7 @@ describe("a surface of this app's catalog (ADR 0023)", () => {
     surface(
       [column("root", ["t", "g"]), text("t", "Before the gizmo"), { id: "g", component: "Gizmo" }],
       undefined,
-      "v0.9.1",
+      "1.0",
       OWN_CATALOG_ID,
     );
   const NEWER = "This part of the answer needs a newer version of the app.";
@@ -595,7 +595,7 @@ describe("a surface of this app's catalog (ADR 0023)", () => {
             text("t", "Words"),
           ],
           undefined,
-          "v0.9.1",
+          "1.0",
           OWN_CATALOG_ID,
         ),
       ]),

@@ -162,6 +162,25 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
    decides whether to stay on 0.0.21 or move to 0.1.11 for other reasons; it checks npm again before it starts.
    **(owner) A surface of another version in an old thread's history is not drawn and is not migrated**: it is shown
    as a card that says it was made by an earlier version of the app, with its operations folded and no live control.
+
+   > **Amended (2026-11-20, slice S2's first commit: the web's A2UI reducer is ours).** The web no longer applies the
+   > package's A2UI reducer. `web/src/features/chat/lib/a2ui/reducer.ts` applies `createSurface`,
+   > `updateComponents`, `updateDataModel` and `deleteSurface` for A2UI `"1.0"`, and `prepare.ts` imports it instead
+   > of `@assistant-ui/react-generative-ui/a2ui`'s `applyA2uiOperations`. The reason is this decision's own finding,
+   > checked again against npm on 2026-11-20 (`npm pack`, the published tarballs): **no release of the package reads
+   > the released dialect.** 0.0.21 (published 2026-09-24) and 0.0.24 (2026-10-06) each ship a 241-line
+   > `dist/a2ui/reducer.js` whose version check takes `"v0.9"`, `"v0.9.1"` and the draft `"v1.0"` — never `"1.0"` —
+   > so both drop every operation the cutover writes; 0.1.11 (2026-11-18, still `latest`) restructured the subpath to
+   > a 50-byte `export * from "@assistant-ui/generative-ui/a2ui";`, and that dependency (0.0.12) ships a 236-line
+   > reducer with the same three spellings and a converter that reads a binding as `{"path": …}`, never
+   > `{"@path": …}`. **The package is kept for what it does well:** the vocabulary and the React renderer
+   > (`renderGenerativeUI`, `GenerativeUILibrary`), and its `convertSurfaceToUISpec`, which the web still calls on a
+   > surface our reducer built (the converter takes the surface id from a symbol that is private to the package, so
+   > the validator puts it back on every action). The web owns one small, tested piece of the protocol rather than
+   > pinning a package whose reducer refuses its own dialect. The version boundary stays in the validator: `VERSIONS`
+   > is `["1.0"]`, and an operation of an earlier version is refused with the rule `version` and a reason that names
+   > it (`EARLIER_VERSIONS`), which is the earlier-version card. A `createSurface` that names no `catalogId` is
+   > refused, rule `catalog` (S2's settlement of section 8's open question, written in `ui-catalog-v2.md`).
 7. **AG-UI** keeps its shape: `ACTIVITY_SNAPSHOT{activityType: "a2ui-surface", content: {a2ui_operations}}` carries the
    operations as sent, now `"1.0"`. The goldens move with the operations: `docs/api/examples/a2ui.events.json`,
    `a2ui-again.events.json`, `docs/api/examples/agui/a2ui.agui.json`, `a2ui-again.agui.json`, the history and export

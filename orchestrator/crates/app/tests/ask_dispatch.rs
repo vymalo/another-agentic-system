@@ -122,7 +122,7 @@ async fn working_thread<P: orch_ports::Ports>(
 const SCREEN_ID: &str = "https://agents.vymalo.com/a2ui/catalogs/chat";
 
 fn catalog_of(version: u32, components: serde_json::Value) -> UiCatalogData {
-    let catalog = serde_json::json!({"catalogId": SCREEN_ID, "components": components});
+    let catalog = serde_json::json!({"catalogId": SCREEN_ID, "protocolVersion": "1.0", "components": components});
     UiCatalogData {
         catalog_id: SCREEN_ID.to_owned(),
         version,
@@ -135,7 +135,7 @@ fn catalog_of(version: u32, components: serde_json::Value) -> UiCatalogData {
 /// question with choices, beside one that draws cards.
 fn screen_catalog() -> UiCatalogData {
     catalog_of(
-        3,
+        9,
         serde_json::json!({
             "Choices": {
                 "type": "object",
@@ -152,7 +152,7 @@ fn screen_catalog() -> UiCatalogData {
 /// A screen's catalog that has no form component.
 fn screen_catalog_without_choices() -> UiCatalogData {
     catalog_of(
-        2,
+        9,
         serde_json::json!({"Text": {
             "type": "object",
             "properties": {"component": {"const": "Text"}},
