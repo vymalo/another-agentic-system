@@ -14,8 +14,8 @@ use orch_core::{
     SessionBy, SessionEvent, SessionNews, SessionReport, SessionState, StartOutcomeKind, ThreadId,
     ThreadRecord, ThreadState,
 };
-use orch_ports::memory::Call;
-use orch_ports::{AgentError, ThreadStore};
+use orch_ports::memory::{AnswerFault, Call};
+use orch_ports::{AgentError, OutboxPayload, OutboxStatus, ThreadStore};
 use serde_json::json;
 use support::*;
 
@@ -1052,4 +1052,439 @@ async fn a_close_for_an_agent_whose_card_stopped_offering_sessions_is_refused_an
     let record = app.get_thread(&alice(), kid.id).await.unwrap();
     assert!(!record.job.child.unwrap().close_asked);
     assert!(w.store.list_open_outbox(kid.id).await.unwrap().is_empty());
+}
+
+// --- what the agent's answer must be to be applied, and what a start or close is checked for ----
+
+/// The status of the one row of `thread` whose payload `matches`.
+fn row_status(w: &World, thread: ThreadId, matches: fn(&OutboxPayload) -> bool) -> OutboxStatus {
+    let rows: Vec<_> = w
+        .store
+        .outbox_of(thread)
+        .into_iter()
+        .filter(|r| matches(&r.payload))
+        .collect();
+    let [row] = rows.as_slice() else {
+        panic!("{rows:?}")
+    };
+    row.status
+}
+
+fn is_start(p: &OutboxPayload) -> bool {
+    matches!(p, OutboxPayload::SessionStart { .. })
+}
+
+fn is_close(p: &OutboxPayload) -> bool {
+    matches!(p, OutboxPayload::SessionClose { .. })
+}
+
+async fn start_ended(
+    app: &Arc<TestApp>,
+    parent: ThreadId,
+) -> orch_core::ChildSessionStartEndedData {
+    let ev = eventually("the outcome", || async {
+        let ev = events(app, &alice(), parent).await;
+        (count(&ev, EventKind::ChildSessionStartEnded) == 1).then_some(ev)
+    })
+    .await;
+    ev.iter()
+        .find_map(|e| match &e.body {
+            EventBody::ChildSessionStartEnded(d) => Some(d.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_start_answered_with_a_report_that_is_not_the_sessions_ends_failed_and_makes_no_thread() {
+    for fault in [
+        AnswerFault::ParentsOwnContext,
+        AnswerFault::ReportContext,
+        AnswerFault::ParentContext,
+        AnswerFault::LaterRound,
+        AnswerFault::OtherTask,
+    ] {
+        let w = world();
+        let app = w.app();
+        let parent = answered(&app).await;
+        w.agent.fault_session_answers(Some(fault));
+        let run = spawn_dispatcher(&app, fast(), "d1");
+        app.start_child_session(&alice(), parent.id, start("r1", "echo x", false))
+            .await
+            .unwrap();
+        let ended = start_ended(&app, parent.id).await;
+        run.shutdown().await;
+        assert_eq!(ended.outcome, StartOutcomeKind::Failed, "{fault:?}");
+        assert_eq!(
+            ended.reason.as_deref(),
+            Some("the agent did not report the session it started"),
+            "{fault:?}"
+        );
+        assert!(children(&w, parent.id).await.is_empty(), "{fault:?}");
+        assert_eq!(
+            row_status(&w, parent.id, is_start),
+            OutboxStatus::Dead,
+            "{fault:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_start_is_the_persons_whatever_the_agent_says_and_its_row_is_delivered() {
+    let w = world();
+    let app = w.app();
+    let parent = answered(&app).await;
+    w.agent.fault_session_answers(Some(AnswerFault::ByAgent));
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    app.start_child_session(&alice(), parent.id, start("r1", "echo x", false))
+        .await
+        .unwrap();
+    let ended = start_ended(&app, parent.id).await;
+    run.shutdown().await;
+    assert_eq!(ended.outcome, StartOutcomeKind::Opened);
+    let ev = events(&app, &alice(), parent.id).await;
+    let opened = ev
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::ChildSessionOpened(d) => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(opened.by, Some(SessionBy::Person));
+    assert_eq!(row_status(&w, parent.id, is_start), OutboxStatus::Delivered);
+}
+
+#[tokio::test]
+async fn the_first_message_of_a_started_helper_keeps_the_requests_id_and_tier() {
+    let w = world();
+    w.agent.set_access_tier(
+        "plain",
+        Some(
+            orch_core::TierOffer::from_params(
+                &json!({"tiers": ["plan", "edits", "auto"], "default": "auto"}),
+            )
+            .unwrap(),
+        ),
+    );
+    let app = w.app();
+    let parent = answered(&app).await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let mut request = start("req-7", "echo x", false);
+    request.tier = Some(orch_core::AccessTier::Edits);
+    app.start_child_session(&alice(), parent.id, request)
+        .await
+        .unwrap();
+    let kid = the_child(&w, parent.id).await;
+    wait_state(&app, &alice(), kid.id, ThreadState::Done).await;
+    run.shutdown().await;
+    let asked = events(&app, &alice(), parent.id)
+        .await
+        .into_iter()
+        .find_map(|e| match e.body {
+            EventBody::ChildSessionStartAsked(d) => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(asked.tier, Some(orch_core::AccessTier::Edits));
+    let first = events(&app, &alice(), kid.id).await.remove(0);
+    match first.body {
+        EventBody::UserMessage(m) => {
+            assert_eq!(m.message_id.as_deref(), Some("req-7"));
+            assert_eq!(m.tier, Some(orch_core::AccessTier::Edits));
+        }
+        other => panic!("{other:?}"),
+    }
+    let tiers: Vec<_> = w
+        .agent
+        .sends()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Send { text, tier, .. } if text == "echo x" => Some(tier),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tiers, [Some(orch_core::AccessTier::Edits)]);
+}
+
+fn grant_without_invoke(cap: Option<orch_core::AccessTier>, invoke: bool) -> orch_app::AppConfig {
+    use orch_app::{AgentScope, Permission, Policy, RoleGrant};
+    let mut permissions = std::collections::BTreeSet::from([
+        Permission::AgentRead,
+        Permission::ThreadRead,
+        Permission::ThreadWrite,
+    ]);
+    if invoke {
+        permissions.insert(Permission::AgentInvoke);
+    }
+    orch_app::AppConfig {
+        policy: Policy::new(
+            std::collections::BTreeMap::from([(
+                orch_ports::Role::new("careful"),
+                RoleGrant {
+                    permissions,
+                    agents: AgentScope::All,
+                    max_tier: cap,
+                },
+            )]),
+            Some(orch_ports::Role::new("careful")),
+        )
+        .unwrap(),
+        stream_poll: std::time::Duration::from_millis(100),
+        ..orch_app::AppConfig::default()
+    }
+}
+
+#[tokio::test]
+async fn a_start_takes_the_right_to_invoke_the_agent_and_writes_nothing_without_it() {
+    let w = world();
+    let parent = answered(&w.app()).await;
+    let app = w.app_with(grant_without_invoke(None, false));
+    let e = app
+        .start_child_session(&alice(), parent.id, start("r1", "echo x", false))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, AppError::Forbidden { .. }), "{e:?}");
+    assert_eq!(
+        count(
+            &events(&app, &alice(), parent.id).await,
+            EventKind::ChildSessionStartAsked
+        ),
+        0
+    );
+    assert!(
+        w.store
+            .list_open_outbox(parent.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn the_cap_of_a_persons_role_is_pinned_on_the_order_to_start() {
+    let w = world();
+    let parent = answered(&w.app()).await;
+    let app = w.app_with(grant_without_invoke(
+        Some(orch_core::AccessTier::Edits),
+        true,
+    ));
+    app.start_child_session(&alice(), parent.id, start("r1", "echo x", false))
+        .await
+        .unwrap();
+    let rows = w.store.list_open_outbox(parent.id).await.unwrap();
+    let [row] = rows.as_slice() else {
+        panic!("{rows:?}")
+    };
+    let OutboxPayload::SessionStart { tier, tier_cap, .. } = &row.payload else {
+        panic!("{:?}", row.payload)
+    };
+    assert_eq!(
+        (*tier, *tier_cap),
+        (None, Some(orch_core::AccessTier::Edits))
+    );
+}
+
+#[tokio::test]
+async fn a_description_that_reads_as_nothing_is_refused_and_eighty_characters_are_taken() {
+    let w = world();
+    let app = w.app();
+    let parent = answered(&app).await;
+    for description in ["plan\u{200b}ner", "plan\u{202e}ner", "\u{feff}planner"] {
+        let mut s = start("r", "echo x", false);
+        s.description = Some(description.to_owned());
+        let e = app
+            .start_child_session(&alice(), parent.id, s)
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&e), "bad_description", "{description:?}");
+    }
+    let mut s = start("r80", "echo x", false);
+    s.description = Some("x".repeat(80));
+    app.start_child_session(&alice(), parent.id, s)
+        .await
+        .unwrap();
+    let asked = events(&app, &alice(), parent.id)
+        .await
+        .into_iter()
+        .find_map(|e| match e.body {
+            EventBody::ChildSessionStartAsked(d) => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(asked.description.chars().count(), 80);
+}
+
+#[tokio::test]
+async fn a_start_the_agent_cannot_reach_is_tried_as_often_as_allowed_and_no_more() {
+    let w = world();
+    let app = w.app();
+    let parent = answered(&app).await;
+    w.agent
+        .fail_next_sends(100, || AgentError::unreachable("scripted outage"));
+    let mut cfg = fast();
+    cfg.max_attempts = 3;
+    let run = spawn_dispatcher(&app, cfg, "d1");
+    app.start_child_session(&alice(), parent.id, start("r1", "echo x", false))
+        .await
+        .unwrap();
+    let ended = start_ended(&app, parent.id).await;
+    run.shutdown().await;
+    assert_eq!(ended.outcome, StartOutcomeKind::Failed);
+    assert_eq!(sent_to(&w, "ctx-1").len(), 3);
+    assert_eq!(row_status(&w, parent.id, is_start), OutboxStatus::Dead);
+}
+
+/// A kept-open helper whose first round has ended, the dispatcher stopped.
+async fn rested_helper(w: &World, app: &Arc<TestApp>) -> (ThreadRecord, String) {
+    let (_parent, kid, context, run) = idle_helper(w, app).await;
+    run.shutdown().await;
+    (kid, context)
+}
+
+#[tokio::test]
+async fn a_close_with_cancel_asks_the_agent_to_cancel_and_says_so_in_the_log() {
+    let w = world();
+    let app = w.app();
+    let (kid, _context) = rested_helper(&w, &app).await;
+    app.close_child_session(&alice(), kid.id, true)
+        .await
+        .unwrap();
+    let rows = w.store.list_open_outbox(kid.id).await.unwrap();
+    let [row] = rows.as_slice() else {
+        panic!("{rows:?}")
+    };
+    assert!(matches!(
+        row.payload,
+        OutboxPayload::SessionClose { cancel: true }
+    ));
+    let asked = events(&app, &alice(), kid.id)
+        .await
+        .into_iter()
+        .find_map(|e| match e.body {
+            EventBody::ChildSessionCloseAsked(d) => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert!(asked.cancel);
+}
+
+#[tokio::test]
+async fn the_round_a_close_made_is_the_one_its_answer_names_and_its_row_is_delivered() {
+    let w = world();
+    let app = w.app();
+    let (kid, _context) = rested_helper(&w, &app).await;
+    let run = spawn_dispatcher(&app, fast(), "d2");
+    app.close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap();
+    eventually("the session closed", || async {
+        let record = app.get_thread(&alice(), kid.id).await.unwrap();
+        (record.job.child.as_ref().map(|c| c.state) == Some(SessionState::Closed)).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    let ledger = app
+        .get_thread(&alice(), kid.id)
+        .await
+        .unwrap()
+        .job
+        .child
+        .unwrap();
+    assert_eq!(
+        (ledger.followed, ledger.started, ledger.track.close_round),
+        (2, 1, 2)
+    );
+    assert_eq!(row_status(&w, kid.id, is_close), OutboxStatus::Delivered);
+}
+
+#[tokio::test]
+async fn a_close_answered_with_a_report_that_is_not_the_sessions_applies_nothing_of_it() {
+    for fault in [
+        AnswerFault::OtherSession,
+        AnswerFault::ReportContext,
+        AnswerFault::OtherTask,
+    ] {
+        let w = world();
+        let app = w.app();
+        let (kid, _context) = rested_helper(&w, &app).await;
+        w.agent.fault_session_answers(Some(fault));
+        let run = spawn_dispatcher(&app, fast(), "d2");
+        app.close_child_session(&alice(), kid.id, false)
+            .await
+            .unwrap();
+        eventually("the row done", || async {
+            (row_status(&w, kid.id, is_close) == OutboxStatus::Delivered).then_some(())
+        })
+        .await;
+        run.shutdown().await;
+        let ledger = app
+            .get_thread(&alice(), kid.id)
+            .await
+            .unwrap()
+            .job
+            .child
+            .unwrap();
+        // a report of another task's round is still the session's word, but names no round it made
+        if fault != AnswerFault::OtherTask {
+            assert_ne!(ledger.state, SessionState::Closed, "{fault:?}");
+        }
+        assert_eq!(ledger.track.close_round, 0, "{fault:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_close_answered_from_another_context_fails_closed_with_a_word() {
+    let w = world();
+    let app = w.app();
+    let (kid, _context) = rested_helper(&w, &app).await;
+    w.agent.answer_from_another_context(true);
+    let run = spawn_dispatcher(&app, fast(), "d2");
+    app.close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap();
+    let ev = eventually("the error", || async {
+        let ev = events(&app, &alice(), kid.id).await;
+        ev.iter()
+            .any(|e| e.kind() == EventKind::Error)
+            .then_some(ev)
+    })
+    .await;
+    run.shutdown().await;
+    assert!(ev.iter().any(|e| matches!(
+        &e.body,
+        EventBody::Error(d) if d.message == "the agent answered the close with a task of another context"
+    )));
+    assert_eq!(row_status(&w, kid.id, is_close), OutboxStatus::Dead);
+    let ledger = app
+        .get_thread(&alice(), kid.id)
+        .await
+        .unwrap()
+        .job
+        .child
+        .unwrap();
+    assert!(!ledger.close_asked, "the ask is cleared");
+    assert_ne!(ledger.state, SessionState::Closed);
+}
+
+#[tokio::test]
+async fn a_close_the_agent_refuses_leaves_its_row_dead() {
+    let w = world();
+    let app = w.app();
+    let (kid, _context) = rested_helper(&w, &app).await;
+    w.agent
+        .fail_next_sends(1, || AgentError::Unsupported("no".to_owned()));
+    let run = spawn_dispatcher(&app, fast(), "d2");
+    app.close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap();
+    eventually("the error", || async {
+        events(&app, &alice(), kid.id)
+            .await
+            .iter()
+            .any(|e| e.kind() == EventKind::Error)
+            .then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    assert_eq!(row_status(&w, kid.id, is_close), OutboxStatus::Dead);
 }

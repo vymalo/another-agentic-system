@@ -2583,6 +2583,14 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     assert_eq!(r.status, 202);
     c.check("closeChildSession", &r);
     assert_eq!(r.json(), json!({"state": "closing"}));
+    // the body's `cancel` is what the log says was asked
+    let asked = h
+        .events(KID, &opened_thread)
+        .await
+        .into_iter()
+        .find(|e| e["kind"] == "child_session_close_asked")
+        .expect("the close is in the helper's log");
+    assert_eq!(asked["data"]["cancel"], true);
     // every refusal is decided before anything is written
     let n = h.events(KID, &parent).await.len();
     let refused = [

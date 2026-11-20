@@ -1165,6 +1165,23 @@ fn the_outcome_of_a_start_says_the_card_again_opened_or_failed() {
 }
 
 #[test]
+fn a_start_asked_twice_and_an_outcome_twice_are_each_said_once() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        start_asked(3),
+        start_asked(4),
+        start_ended(5, StartOutcomeKind::Failed, Some("x")),
+        start_ended(6, StartOutcomeKind::Failed, Some("x")),
+    ];
+    let cards = all_lines(&events)
+        .iter()
+        .filter(|l| l.contains("vymalo.sessionStart"))
+        .count();
+    assert_eq!(cards, 2, "the ask and its outcome, once each");
+}
+
+#[test]
 fn an_outcome_for_a_start_the_log_never_asked_says_nothing() {
     let events = vec![
         user(1, "go"),

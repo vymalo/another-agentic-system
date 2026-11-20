@@ -333,6 +333,34 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn what_the_core_refuses_of_a_helper_session_has_the_code_a_client_acts_on() {
+        for (refusal, code) in [
+            (TransitionError::SessionClosed, "session_closed"),
+            (
+                TransitionError::SessionClosesOnStop,
+                "session_closes_on_stop",
+            ),
+            (TransitionError::ChildMentions, "child_mentions"),
+            (TransitionError::NotAChild, "not_child_thread"),
+            (
+                TransitionError::ChildSessionRefused(SessionRefusal::TooManyStarts),
+                "too_many_starts",
+            ),
+            (
+                TransitionError::ChildSessionRefused(SessionRefusal::ChildThread),
+                "child_thread",
+            ),
+        ] {
+            match AppError::from(refusal.clone()) {
+                AppError::Arrangement { code: got, .. } | AppError::Blocked { code: got, .. } => {
+                    assert_eq!(got, code, "{refusal}");
+                }
+                other => panic!("{refusal}: {other:?}"),
+            }
+        }
+    }
+
     fn io(msg: &str) -> std::io::Error {
         std::io::Error::other(msg.to_owned())
     }

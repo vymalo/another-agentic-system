@@ -187,6 +187,29 @@ struct State {
     /// The sessions the agent opened for a person's start (`child-sessions/v1`), by the context
     /// each one has: what a later round or close says of its session.
     sessions: HashMap<String, SessionRec>,
+    /// How the report a person's start or close is answered with is wrong
+    /// ([`ScriptedAgent::fault_session_answers`]).
+    answer_fault: Option<AnswerFault>,
+}
+
+/// How a scripted agent gets the session report of the round it makes for a person's start or
+/// close wrong, so a client that checks the report fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerFault {
+    /// A start is answered in the parent's own context, not one of the session's.
+    ParentsOwnContext,
+    /// The report names a context other than the task's.
+    ReportContext,
+    /// The report names another parent context than the one the start was sent in.
+    ParentContext,
+    /// The report says the round is round 2.
+    LaterRound,
+    /// The report names another task for its round.
+    OtherTask,
+    /// The report is about another session.
+    OtherSession,
+    /// The report says the agent began the session, not the person.
+    ByAgent,
 }
 
 /// A session this agent opened for a person.
@@ -457,6 +480,12 @@ impl ScriptedAgent {
     /// its `sessions` object, `[]` included). By default the answer is the state alone.
     pub fn set_steer_lists_sessions(&self, on: bool) {
         self.state().steer_lists_sessions = on;
+    }
+
+    /// Makes the report of the round a person's start or close is answered with wrong in the way
+    /// `fault` says (`None`: right again).
+    pub fn fault_session_answers(&self, fault: Option<AnswerFault>) {
+        self.state().answer_fault = fault;
     }
 
     /// With `true`, the task a message that names a context starts says it belongs to another
@@ -1763,7 +1792,9 @@ impl AgentClient for ScriptedAgent {
                 // a start opens the session's own context, and its round 1 is a task of it
                 let parent_context = context.clone();
                 let context = match &req.content {
-                    SendContent::SessionStart { .. } => {
+                    SendContent::SessionStart { .. }
+                        if st.answer_fault != Some(AnswerFault::ParentsOwnContext) =>
+                    {
                         format!("{context}/s/s-{}", req.message_id)
                     }
                     _ => context,
@@ -2015,7 +2046,8 @@ fn session_round(
     .unwrap_or(u32::MAX);
     let closing = matches!(req.content, SendContent::SessionClose { .. });
     st.tasks.get_mut(task)?.of_session = true;
-    Some(SessionReport {
+    let fault = st.answer_fault;
+    let mut report = SessionReport {
         session: rec.session,
         context_id: context,
         agent: rec.agent,
@@ -2040,7 +2072,27 @@ fn session_round(
         // only a round that opened the session names its parent's context
         parent_context_id: (number == 1 && matches!(req.content, SendContent::SessionStart { .. }))
             .then(|| parent_context.to_owned()),
-    })
+    };
+    match fault {
+        Some(AnswerFault::ReportContext) => report.context_id = "ctx-elsewhere".to_owned(),
+        Some(AnswerFault::ParentContext) => {
+            report.parent_context_id = Some("ctx-elsewhere".to_owned());
+        }
+        Some(AnswerFault::LaterRound) => {
+            if let Some(round) = report.round.as_mut() {
+                round.number = 2;
+            }
+        }
+        Some(AnswerFault::OtherTask) => {
+            if let Some(round) = report.round.as_mut() {
+                round.task_id = Some("task-elsewhere".to_owned());
+            }
+        }
+        Some(AnswerFault::OtherSession) => report.session = "s-elsewhere".to_owned(),
+        Some(AnswerFault::ByAgent) => report.by = Some(SessionBy::Agent),
+        Some(AnswerFault::ParentsOwnContext) | None => {}
+    }
+    Some(report)
 }
 
 fn steer_into(st: &mut State, req: &SendRequest) -> Result<(AgentEnvelope, bool), AgentError> {

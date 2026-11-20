@@ -817,6 +817,118 @@ fn only_the_round_the_close_made_is_the_closing_round() {
     );
 }
 
+fn started(number: u32) -> Input {
+    Input::RoundStarted {
+        session: "s1".into(),
+        number,
+        task_id: format!("t{number}"),
+        by: Some(SessionBy::Person),
+    }
+}
+
+#[test]
+fn a_session_that_closes_when_done_takes_a_plain_message_and_only_refuses_the_stop() {
+    let (next, cmds) = transition(&child(Working, false), &user_message("also this")).unwrap();
+    assert_eq!(next.state, Working);
+    assert!(matches!(cmds.last(), Some(Command::Steer { text, .. }) if text == "also this"));
+    let (next, cmds) = transition(&child(Blocked, false), &user_message("yes")).unwrap();
+    assert_eq!(next.state, Queued);
+    assert!(matches!(cmds.last(), Some(Command::Delegate { text, .. }) if text == "yes"));
+}
+
+#[test]
+fn a_start_says_whether_the_session_is_kept_open_to_the_log_and_to_the_order() {
+    for keep_open in [false, true] {
+        let input = Input::StartSession {
+            user: person(),
+            request: "r".into(),
+            agent: "planner".into(),
+            description: "Find the writers".into(),
+            text: "go".into(),
+            keep_open,
+            tier: None,
+            tier_cap: None,
+        };
+        let (_, cmds) = transition(&Snapshot::new(Done), &input).unwrap();
+        match &bodies(&cmds)[0] {
+            EventBody::ChildSessionStartAsked(d) => assert_eq!(d.keep_open, keep_open),
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            matches!(cmds.last(), Some(Command::StartSession { keep_open: k, .. }) if *k == keep_open)
+        );
+    }
+}
+
+#[test]
+fn the_state_a_close_changes_says_the_close_is_asked() {
+    let (asked, _) = transition(&child(Working, true), &close(false)).unwrap();
+    let working_and_closing = SessionReport {
+        closing: true,
+        ..report("s1", SessionState::Working, true, None)
+    };
+    let (_, cmds) = transition(&asked, &said(working_and_closing)).unwrap();
+    assert_eq!(
+        bodies(&cmds)[0].data_value(),
+        serde_json::json!({"session": "s1", "state": "working", "closing": true, "closeAsked": true})
+    );
+}
+
+#[test]
+fn the_closing_round_of_a_blocked_thread_is_not_followed_again_when_it_works() {
+    // the thread waits for the person; the close makes round 2, which is reported working
+    let (asked, _) = transition(&child(Blocked, true), &close(false)).unwrap();
+    let working = SessionReport {
+        closing: true,
+        ..report(
+            "s1",
+            SessionState::Working,
+            true,
+            round(2, "t2", AgentTaskState::Working),
+        )
+    };
+    let (_, cmds) = transition(&asked, &said(working)).unwrap();
+    assert!(observes(&cmds).is_empty(), "{cmds:?}");
+}
+
+#[test]
+fn a_round_sent_while_no_close_is_asked_does_not_name_the_closing_round_later() {
+    // the answer to a message arrives after its job ended: the round is followed, nothing else
+    let (snap, _) = transition(&child(Done, true), &round_sent(5)).unwrap();
+    let (snap, _) = transition(&snap, &close(false)).unwrap();
+    // the close makes round 6, the one after the newest known
+    let (_, cmds) = transition(
+        &snap,
+        &said(report(
+            "s1",
+            SessionState::Closed,
+            true,
+            round(6, "t6", AgentTaskState::Completed),
+        )),
+    )
+    .unwrap();
+    assert!(observes(&cmds).is_empty(), "{cmds:?}");
+}
+
+#[test]
+fn the_round_the_answer_to_a_close_named_never_starts_a_job() {
+    let (asked, _) = transition(&child(Done, true), &close(false)).unwrap();
+    let (confirmed, _) = transition(&asked, &round_sent(2)).unwrap();
+    let (after, cmds) = transition(&confirmed, &started(2)).unwrap();
+    assert!(cmds.is_empty(), "{cmds:?}");
+    assert_eq!(after, confirmed);
+}
+
+#[test]
+fn only_the_round_a_close_may_have_made_waits_for_its_answer_to_start() {
+    let (asked, _) = transition(&child(Done, true), &close(false)).unwrap();
+    // round 2 may be the closing round: refused, the dispatcher asks again
+    assert!(transition(&asked, &started(2)).is_err());
+    // round 3 is a real round that was missed: it starts a job
+    let (next, _) = transition(&asked, &started(3)).unwrap();
+    assert_eq!(next.state, Working);
+}
+
 #[test]
 fn a_stale_report_does_not_move_the_state_back() {
     let say = |snap: &Snapshot, state, round_no: u32, closing: bool| {

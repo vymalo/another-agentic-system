@@ -15,7 +15,9 @@ mod tools;
 mod user_tools;
 mod wakeup;
 
-pub use agent::{Call, STREAM_PIECES, ScriptedAgent, VerdictScript, stream_id, stream_text};
+pub use agent::{
+    AnswerFault, Call, STREAM_PIECES, ScriptedAgent, VerdictScript, stream_id, stream_text,
+};
 pub use artifacts::{Download, MemoryArtifacts};
 pub use auth::MemoryAuth;
 pub use fixtures::{FixedClock, SeqIds, sample_releases};
