@@ -811,9 +811,17 @@ const withNote = (version: number): OwnCatalog => ({
 describe("catalogs (ADR 0023): the basic one, ours, and no other", () => {
   const hello = [column("root", ["t"]), text("t", "hello")];
 
-  it("the basic catalog's ids are the basic catalog, and a surface that names none is refused", () => {
+  it("the one v1.0 basic id is the basic catalog; the retired spellings are refused, and so is no id", () => {
     for (const id of BASIC_CATALOG_IDS) {
       expect(drawn(prepareSurface(surface(hello, undefined, "1.0", id))).surfaceId).toBe(SURFACE);
+    }
+    for (const retired of [
+      "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+      "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+    ]) {
+      const r = refused(prepareSurface(surface(hello, undefined, "1.0", retired)));
+      expect(r.rule, retired).toBe("catalog");
+      expect(r.reason, retired).toContain("does not have");
     }
     const none = surface(hello).map((op) =>
       "createSurface" in op ? { version: op.version, createSurface: { surfaceId: SURFACE } } : op,

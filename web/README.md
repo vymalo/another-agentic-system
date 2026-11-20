@@ -2413,13 +2413,13 @@ action with a message; `413` over the sizes; `409` a run open or the thread fini
 
 ### The UI catalog
 
-[ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), contract
-[`docs/api/ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md). The web **defines** the components an agent may name
+[ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [ADR 0075](../docs/decisions/0075-a2ui-v1-0-cutover.md),
+contract [`docs/api/ui-catalog-v2.md`](../docs/api/ui-catalog-v2.md). The web **defines** the components an agent may name
 beyond the basic vocabulary, tells every thread about them once, and refuses visibly what it cannot draw.
 
 | Piece | Where | What it is |
 |---|---|---|
-| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures) |
+| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI 1.0 inline catalog, `{catalogId, protocolVersion: "1.0", components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures), version 6 adds the code, structure, data and media components, version 7 more kinds of question, version 8 what a question shows; **version 9 is version 8 as a v2 document** (the same components, `protocolVersion` added), digest `sha256:5f174e…` |
 | The lock | `catalog.lock.json` | `{version, digest}`. **The version is bumped by hand** and orders the catalogs a thread has seen (the highest is the newest); the digest is `sha256:` of the canonical JSON (`digest.ts`: sorted keys, no whitespace, integers only, ASCII keys only; the contract pins a known-answer vector, and `catalog.test.ts` checks it). The app ships the lock's digest and never computes one |
 | The script | `pnpm catalog:lock [<version>]` | Rewrites the lock. It refuses to put a new digest under the version it already had: change `catalog.json`, then `pnpm catalog:lock <next version>`, then add the pair to `RELEASED` in `catalog.test.ts` |
 | The tests | `catalog/catalog.test.ts` | The lock is the digest of `catalog.json` (a change without a new lock fails); the lock's pair is in `RELEASED` (a digest cannot change under a version that shipped); the document obeys the orchestrator's rules (an inline catalog only, no `$ref`/`$id`/`$anchor`/`$schema`, at most 64 components and 64 KiB, names like `Choices`); the send rule |
@@ -2452,9 +2452,9 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Named: the first createSurface names a catalog
-  Named --> Basic: no id, or a basic id: the vocabulary of ten
+  Named --> Basic: a basic id: the one v1.0 spelling, the vocabulary of ten
   Named --> Ours: the id of our catalog
-  Named --> Refused: any other id, an id that is not text, or two catalogs in one surface (rule catalog)
+  Named --> Refused: no id at all, any other id (the retired basic spellings too), an id that is not text, or two catalogs in one surface (rule catalog)
   Ours --> Newer: a component we lack, thread version above ours
   Ours --> Refused: a component we lack otherwise (catalog), or a broken schema (schema)
   Ours --> Drawn: every instance fits
@@ -2470,10 +2470,12 @@ stateDiagram-v2
   `shouldSendCatalog` says so (`catalog/index.ts`): the thread has none (a new thread has no snapshot yet, so the run that
   creates it carries the catalog), or our version is higher, or the version is the same and the digest differs. An older
   build sends nothing. The orchestrator records a digest once, so a run that sends it needlessly costs bytes only.
-- **Which catalog a surface names.** Every `createSurface.catalogId` of the surface; none is the basic catalog, as
-  before. The three spellings of the basic catalog's id (`BASIC_CATALOG_IDS`) and no id are the basic catalog and
-  follow the rules above; our `catalogId` is ours; **any other id refuses the surface** (rule `catalog`: "names the catalog
-  ... which this app does not have"), and so does a surface that names two (a later `createSurface` starts it over).
+- **Which catalog a surface names.** Every `createSurface.catalogId` of the surface; a surface that names none is refused
+  (rule `catalog`, "names no catalog": this app draws one catalog per surface, and A2UI 1.0's `catalogId` is optional
+  only for a component that names its own). The one v1.0 spelling of the basic catalog's id (`BASIC_CATALOG_IDS`) is the
+  basic catalog and follows the rules above; the retired `v0_9` and `v0_9_1` spellings are refused with any other id; our
+  `catalogId` is ours; **any other id refuses the surface** (rule `catalog`: "names the catalog ... which this app does
+  not have"), and so does a surface that names two (a later `createSurface` starts it over).
 - **Ours.** The allowed components are the keys of the catalog, not the vocabulary of ten. Each instance
   is validated against its schema and a violation refuses the surface (rule `schema`; "component "t" (Text) text:
   String is too long (4001 > 4000)": the id, the component and the first rule broken, cut and without control

@@ -11,14 +11,14 @@ import { MAX_BYTES, MAX_COMPONENTS } from "../limits";
 import { OWN_CATALOG } from "./index";
 
 /**
- * The numbers the contract page states about version 8 are tied to the code: each is read from the page and
+ * The numbers the contract page states about catalog 9 are tied to the code: each is read from the page and
  * compared with the constant (or the schema) that the code uses, so that a number cannot be changed in one place
- * only. The page is `docs/api/ui-catalog-v1.md`; a sentence that is reworded breaks the pattern that reads it, and
- * the test says which.
+ * only. The page is `docs/api/ui-catalog-v2.md` ("The numbers of catalog 9"); a sentence that is reworded breaks
+ * the pattern that reads it, and the test says which.
  */
 
 const doc = readFileSync(
-  path.resolve(import.meta.dirname, "../../../../../../../docs/api/ui-catalog-v1.md"),
+  path.resolve(import.meta.dirname, "../../../../../../../docs/api/ui-catalog-v2.md"),
   "utf8",
 );
 const grab = (re: RegExp, what: string): RegExpExecArray => {

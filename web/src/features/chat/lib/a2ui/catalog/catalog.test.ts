@@ -27,7 +27,9 @@ const RELEASED: Record<number, string> = {
   5: "sha256:14ec7c0dff6cb44e0f6c7a3b4793abcadfeacff0c97b3c0db26f11ee008ffadf",
   6: "sha256:f0baf255994b3c80144a5f3db634f06bce37253eb43efb4a85b33c47628c105d",
   7: "sha256:6df9a37d0ae6fa53b8d22145dc1b5674b6d3f228d1c1b83b2ec640d7b3093d49",
+  // 8 is a v1 document; 9 is it with `protocolVersion: "1.0"` (the A2UI v1.0 cutover, ADR 0075)
   8: "sha256:22c333102bed676791dc9d47f21fc0a39be6e5062ef2c52f5a599ecca1b8341d",
+  9: "sha256:5f174ee91c50759d59a0d7e91e3a1dc2e7c110b82ee91d858f4a23a944ed72b2",
 };
 
 describe("the digest", () => {
@@ -44,6 +46,9 @@ describe("the digest", () => {
     },
   };
 
+  /** The same vector as a v2 document (docs/api/ui-catalog-v2.md, section 2). */
+  const KAT_V2 = { ...KAT, protocolVersion: "1.0" };
+
   it("canonical JSON has sorted keys at every level and no whitespace", () => {
     expect(canonicalJson(KAT)).toBe(
       '{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"properties":{"component":{"const":"Note"},"text":{"maxLength":10,"type":"string"}},"required":["component","text"],"type":"object"}}}',
@@ -53,6 +58,15 @@ describe("the digest", () => {
   it("the known-answer vector", async () => {
     expect(await catalogDigest(KAT)).toBe(
       "sha256:a237e931c3a02fc72b214561e3a52d33eaf0e29c9306bbe0ef7b3da238507293",
+    );
+  });
+
+  it("the v2 known-answer vector: v1's with `protocolVersion` added, which sorts last", async () => {
+    expect(canonicalJson(KAT_V2)).toBe(
+      '{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"properties":{"component":{"const":"Note"},"text":{"maxLength":10,"type":"string"}},"required":["component","text"],"type":"object"}},"protocolVersion":"1.0"}',
+    );
+    expect(await catalogDigest(KAT_V2)).toBe(
+      "sha256:9fdab0c5c2094871cfb01d15046f206f3460341960ddcee4767e2bd33ab8e8f8",
     );
   });
 
@@ -112,7 +126,7 @@ describe("the lock", () => {
   });
 });
 
-/** The rules the orchestrator checks on a catalog it is sent (docs/api/ui-catalog-v1.md). */
+/** The rules the orchestrator checks on a catalog it is sent (docs/api/ui-catalog-v2.md, section 1). */
 describe("the catalog document", () => {
   const FORBIDDEN = ["$ref", "$dynamicRef", "$id", "$anchor", "$schema", "$defs", "$comment"];
   const walk = (node: unknown, visit: (key: string) => void, depth = 0): number => {
@@ -126,8 +140,13 @@ describe("the catalog document", () => {
     return deepest;
   };
 
-  it("is an A2UI inline catalog and nothing more: catalogId and components", () => {
-    expect(Object.keys(OWN_CATALOG.catalog).sort()).toEqual(["catalogId", "components"]);
+  it("is an A2UI 1.0 inline catalog and nothing more: catalogId, protocolVersion and components", () => {
+    expect(Object.keys(OWN_CATALOG.catalog).sort()).toEqual([
+      "catalogId",
+      "components",
+      "protocolVersion",
+    ]);
+    expect(OWN_CATALOG.catalog.protocolVersion).toBe("1.0");
     expect(OWN_CATALOG.catalogId).toMatch(/^https:\/\/\S+$/);
     expect(new TextEncoder().encode(OWN_CATALOG.catalogId).length).toBeLessThanOrEqual(256);
   });
@@ -175,26 +194,33 @@ describe("the catalog document", () => {
   });
 });
 
-/** The contract page holds each component's schema as a JSON block; the build's must be those. */
-describe("the contract (docs/api/ui-catalog-v1.md)", () => {
+/**
+ * The contract page holds catalog 9 as one JSON block (`json catalog-9`: `{catalogId, protocolVersion,
+ * components}`); the build's catalog must be that block, component for component and envelope for envelope.
+ * `ui-catalog-v1.md` holds the same schemas one version at a time, which is where a reader of v1 finds them.
+ */
+describe("the contract (docs/api/ui-catalog-v2.md)", () => {
   const doc = readFileSync(
-    path.resolve(import.meta.dirname, "../../../../../../../docs/api/ui-catalog-v1.md"),
+    path.resolve(import.meta.dirname, "../../../../../../../docs/api/ui-catalog-v2.md"),
     "utf8",
   );
-  const blocks = [...doc.matchAll(/```json\n([\s\S]*?)```/g)].flatMap(([, body]) => {
-    try {
-      return [JSON.parse(body ?? "") as Record<string, unknown>];
-    } catch {
-      return []; // an example that is not a bare object of components
-    }
+  const block = (() => {
+    const found = [...doc.matchAll(/```json catalog-9\n([\s\S]*?)```/g)];
+    expect(found.length, "one ```json catalog-9 block in the contract").toBe(1);
+    return JSON.parse(found[0]?.[1] ?? "") as Record<string, unknown>;
+  })();
+
+  it("catalog 9 is this build's catalog: the same id, protocolVersion and every component", () => {
+    expect(block.catalogId).toBe(OWN_CATALOG.catalogId);
+    expect(block.protocolVersion).toBe(OWN_CATALOG.catalog.protocolVersion);
+    expect(Object.keys(block).sort()).toEqual(["catalogId", "components", "protocolVersion"]);
+    expect(block.components).toEqual(OWN_CATALOG.catalog.components);
   });
 
-  it("every component of this build is written in the contract, the same", () => {
-    for (const [name, schema] of Object.entries(OWN_CATALOG.catalog.components)) {
-      const written = blocks.filter((b) => name in b);
-      expect(written.length, `${name} is in one JSON block of the contract`).toBe(1);
-      expect(written[0]?.[name], name).toEqual(schema);
-    }
+  it("the page's digest of catalog 9 is the lock's, and catalog 8 is catalog 9 without protocolVersion", async () => {
+    expect(await catalogDigest(block)).toBe(lock.digest);
+    const { protocolVersion: _p, ...v8 } = block as Record<string, unknown>;
+    expect(await catalogDigest(v8)).toBe(RELEASED[8]);
   });
 });
 

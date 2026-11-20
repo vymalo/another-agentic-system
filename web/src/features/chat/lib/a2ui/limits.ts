@@ -43,13 +43,11 @@ export const VOCABULARY = [
 export type Vocabulary = (typeof VOCABULARY)[number];
 
 /**
- * The ids the basic catalog goes by (the spellings of the three A2UI versions, as the orchestrator
- * lists them in `core/src/ui.rs`): a surface that names one, or none, is drawn with the vocabulary
- * above. Any other id must be this app's own catalog (`catalog/`), or the surface is refused.
+ * The id the basic catalog goes by: the one A2UI 1.0 spelling (ADR 0075: one dialect). A surface that
+ * names one of these, or none, is drawn with the vocabulary above; any other id must be this app's own
+ * catalog (`catalog/`), or the surface is refused.
  */
 export const BASIC_CATALOG_IDS = [
-  "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
-  "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
   "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
 ] as const;
 

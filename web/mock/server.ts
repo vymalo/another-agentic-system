@@ -200,6 +200,13 @@ async function readCatalog(props: unknown): Promise<CatalogSent | undefined> {
   if (!isRecord(catalog) || catalog.catalogId !== catalogId || !isRecord(catalog.components)) {
     throw new BadCatalog(400, "vymalo.uiCatalog.catalog must be a catalog of the same catalogId");
   }
+  // the orchestrator's `UiCatalogData`: A2UI 1.0 only, and a catalog without this is read as a v0.9 one (ADR 0075)
+  if (catalog.protocolVersion !== "1.0") {
+    throw new BadCatalog(
+      400,
+      'vymalo.uiCatalog.catalog.protocolVersion must be "1.0" (ui-catalog/v2)',
+    );
+  }
   if (Buffer.byteLength(JSON.stringify(catalog)) > MAX_CATALOG_BYTES) {
     throw new BadCatalog(413, "vymalo.uiCatalog.catalog is over 64 KiB");
   }

@@ -1,5 +1,5 @@
 /**
- * The digest of a UI catalog (docs/api/ui-catalog-v1.md, "Digest"):
+ * The digest of a UI catalog (docs/api/ui-catalog-v2.md, section 2 "Digest, version and the lock"):
  * `"sha256:" + lowercase hex(SHA-256(UTF-8(canonical(catalog))))`, where canonical is JSON with the
  * keys of every object sorted, no whitespace, strings escaped as `JSON.stringify` does and integers
  * in decimal: RFC 8785 restricted to what a catalog holds. A key that is not ASCII (so that code
