@@ -498,6 +498,13 @@ pub struct Call {
     /// received, so a test can assert what an agent is told, and that an agent whose card does not
     /// list the extension (or the thread tools it rides on) is told nothing.
     pub uploads: Option<Value>,
+    /// `metadata[<child-sessions/v1 URI>]` of the message: `{start: {agent, description, keepOpen}}`
+    /// or `{close: {cancel}}`, a person's request about a session, when it carried one (ADR 0072).
+    /// Recorded as received.
+    pub child_sessions: Option<Value>,
+    /// The `taskId` the message **carried**: `None` for a message that continues no task (a start,
+    /// a close and the first message of a conversation carry none).
+    pub requested_task: Option<String>,
 }
 
 impl Call {
@@ -1302,6 +1309,8 @@ impl Front {
             mentions: mentions_of(Some(message)),
             access_tier: access_tier_of(Some(message)),
             uploads: uploads_of(Some(message)),
+            child_sessions: child_sessions_of(Some(message)),
+            requested_task: message.task_id.clone().filter(|t| !t.is_empty()),
         });
         if message.context_id.as_deref() != Some(stored.context_id.as_str()) {
             return Some(Err(A2AError::task_not_found(&task_id)));
@@ -1463,6 +1472,7 @@ impl RequestHandler for Front {
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
         {
             self.seen("send_streaming_message", params);
+            refuse_person_start(params, &req.message)?;
             if let Some(steer) = self.steer(params, &req).await {
                 return steer;
             }
@@ -2062,6 +2072,45 @@ fn access_tier_of(message: Option<&Message>) -> Option<Value> {
         .cloned()
 }
 
+/// `metadata[child-sessions/v1]` of the message (ADR 0072): a person's `start` or `close`.
+fn child_sessions_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::CHILD_SESSIONS_EXTENSION)
+        .cloned()
+        .map(whole_numbers)
+}
+
+/// The refusals adam-rs gives a person's `start` that the fake can give by what the message says
+/// (`docs/api/child-sessions-v1.md` section 7): no description is `InvalidParams`, and a message
+/// whose text starts `[mock:refuse-working]` meets the agent's limit of working rounds
+/// (`UnsupportedOperation`, with its words). Only a message that activated the extension and
+/// carries a `start`.
+fn refuse_person_start(params: &ServiceParams, message: &Message) -> Result<(), A2AError> {
+    if !activates_sessions(params) {
+        return Ok(());
+    }
+    let Some(start) = child_sessions_of(Some(message)).and_then(|v| v.get("start").cloned()) else {
+        return Ok(());
+    };
+    let described = start
+        .get("description")
+        .and_then(Value::as_str)
+        .is_some_and(|d| !d.trim().is_empty());
+    if !described {
+        return Err(A2AError::invalid_params(
+            "`start.description` is missing: it is a string",
+        ));
+    }
+    if text_of(Some(message)).starts_with("[mock:refuse-working]") {
+        return Err(A2AError::unsupported_operation(
+            "4 rounds are already working in this context; wait for one to finish",
+        ));
+    }
+    Ok(())
+}
+
 /// `metadata[uploads/v1]` of the message (ADR 0058): what the deployment offers for large files.
 fn uploads_of(message: Option<&Message>) -> Option<Value> {
     message?
@@ -2157,6 +2206,12 @@ impl Shared {
             mentions: mentions_of(ctx.message.as_ref()),
             access_tier: access_tier_of(ctx.message.as_ref()),
             uploads: uploads_of(ctx.message.as_ref()),
+            child_sessions: child_sessions_of(ctx.message.as_ref()),
+            requested_task: ctx
+                .message
+                .as_ref()
+                .and_then(|m| m.task_id.clone())
+                .filter(|t| !t.is_empty()),
         });
     }
 

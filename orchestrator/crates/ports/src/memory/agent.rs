@@ -1570,6 +1570,10 @@ impl AgentClient for ScriptedAgent {
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
         let (text, action) = match &req.content {
             SendContent::Text(t) => (t.clone(), None),
+            // scripted by the text it carries (a start's prompt, `close` for a close)
+            SendContent::SessionStart { .. } | SendContent::SessionClose { .. } => {
+                (req.content.text().unwrap_or_default().to_owned(), None)
+            }
             SendContent::UiAction { action, .. } => (
                 format!("ui-action {}", action.name),
                 Some(Box::new(action.clone())),

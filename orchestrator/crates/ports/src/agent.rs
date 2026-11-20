@@ -162,13 +162,35 @@ pub enum SendContent {
         /// When the user acted (the log's own time).
         at: Timestamp,
     },
+    /// Start a session of the agent's own helper in the parent's context (`child-sessions/v1`,
+    /// ADR 0072, `docs/api/child-sessions-v1.md` section 4): `text` is round 1's prompt, not a turn
+    /// of the parent. Sent with no `taskId`; the adapter refuses it (nothing sent) when the card
+    /// read for this call does not offer the extension.
+    SessionStart {
+        /// What the helper is asked first.
+        text: String,
+        /// The helper, one of the card's `agents`.
+        agent: String,
+        /// What the helper is for (1 to 80 characters on one line).
+        description: String,
+        /// Whether the session goes idle after a round instead of closing.
+        keep_open: bool,
+    },
+    /// Close the session whose child context the request names (section 6 of the contract): sent
+    /// with no `taskId`, to the child context; `cancel` cancels a working round first.
+    SessionClose {
+        /// Cancel the working round first.
+        cancel: bool,
+    },
 }
 
 impl SendContent {
-    /// The user's text, when this is a message.
+    /// The user's text, when this is a message (a session start's prompt included; a close says
+    /// `"close"`, the one text part the contract asks for).
     pub fn text(&self) -> Option<&str> {
         match self {
-            SendContent::Text(t) => Some(t),
+            SendContent::Text(t) | SendContent::SessionStart { text: t, .. } => Some(t),
+            SendContent::SessionClose { .. } => Some("close"),
             SendContent::UiAction { .. } => None,
         }
     }
