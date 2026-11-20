@@ -626,7 +626,8 @@ pub struct Commit {
     /// `None` leaves it as it is. Ignored by [`ThreadStore::create_thread`] and
     /// [`ThreadStore::fork_thread`]: a new thread, a fork included, is private.
     pub sharing: Option<SharingChange>,
-    /// Finish the thread's unsent `delegate` and `steer` rows as `skipped`, in this transaction and
+    /// Finish the thread's unsent messages (`delegate` and `steer` rows, bar a round to follow and a
+    /// person's start or close of a session) as `skipped`, in this transaction and
     /// before this commit's own rows are inserted (the rows
     /// [`skip_unsent_delegates`](ThreadStore::skip_unsent_delegates) finishes: `pending`, or
     /// `inflight` with an expired lease, and never sent). It is how the commit that starts the
@@ -1267,9 +1268,10 @@ pub trait ThreadStore:
         now: Timestamp,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// Marks the thread's not-yet-sent `delegate` and `steer` rows (`sent_at` is null) as
-    /// `skipped`: those `pending`, and those `inflight` whose lease expired before `now`. Returns
-    /// the count.
+    /// Marks the thread's not-yet-sent messages (`delegate` and `steer` rows, `sent_at` is null) as
+    /// `skipped`: those `pending`, and those `inflight` whose lease expired before `now`. A round
+    /// to follow and a person's start or close of a session are no messages and stay. Returns the
+    /// count.
     fn skip_unsent_delegates(
         &self,
         thread: ThreadId,

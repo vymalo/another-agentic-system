@@ -8357,6 +8357,91 @@ pub async fn the_skip_of_unsent_delegates_leaves_observe_rows<S: ThreadStore>(st
     assert_eq!(status(2).await, OutboxStatus::Pending);
 }
 
+/// A person's start or close of a session is not a message (ADR 0072, S3): a `Stop` or a `Stop &
+/// send` finishes the thread's unsent messages and leaves these rows, pending and inflight with an
+/// expired lease alike, or the parent's start never drains and a close is never answered.
+pub async fn the_skip_of_unsent_delegates_leaves_session_start_and_close_rows<S: ThreadStore>(
+    store: S,
+) {
+    seed(&store, &alice(), 1).await; // delegate 1
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![
+                        session_start_row(101),
+                        session_close_row(102),
+                        delegate(103),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    // the delegation and the start are in flight; their leases lapse before the skip
+    let got = claim(&store, "a", t0()).await;
+    assert_eq!(
+        got.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![outbox_id(1), outbox_id(101)]
+    );
+    let status = |n: u128| {
+        let store = &store;
+        async move {
+            store
+                .get_outbox(outbox_id(n))
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+        }
+    };
+    assert_eq!(
+        store
+            .skip_unsent_delegates(thread_id(1), at(60))
+            .await
+            .unwrap(),
+        2,
+        "the lapsed delegation and the pending message go"
+    );
+    assert_eq!(status(1).await, OutboxStatus::Skipped);
+    assert_eq!(status(103).await, OutboxStatus::Skipped);
+    assert_eq!(
+        status(101).await,
+        OutboxStatus::Inflight,
+        "an inflight start stays"
+    );
+    assert_eq!(
+        status(102).await,
+        OutboxStatus::Pending,
+        "a pending close stays"
+    );
+    // asked for in a commit it is the same
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                2,
+                commit(
+                    ThreadState::Working,
+                    vec![],
+                    vec![session_start_row(104), delegate(105)],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let mut skip = commit(ThreadState::Working, vec![], vec![]);
+    skip.skip_unsent_delegates = true;
+    applied(store.commit(thread_id(1), 3, skip).await.unwrap());
+    assert_eq!(status(105).await, OutboxStatus::Skipped);
+    assert_eq!(status(104).await, OutboxStatus::Pending);
+    assert_eq!(status(102).await, OutboxStatus::Pending);
+}
+
 /// A session id is 1 to 512 characters: none and more are refused and nothing is written.
 pub async fn a_session_id_is_bounded<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;

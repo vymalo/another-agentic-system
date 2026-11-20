@@ -117,7 +117,8 @@ macro_rules! thread_store_conformance {
             a_delete_and_an_open_that_race_leave_no_orphan
             the_session_events_ledgers_and_observe_rows_round_trip
             a_commit_with_no_events_creates_a_thread
-            the_skip_of_unsent_delegates_leaves_observe_rows a_session_id_is_bounded
+            the_skip_of_unsent_delegates_leaves_observe_rows
+            the_skip_of_unsent_delegates_leaves_session_start_and_close_rows a_session_id_is_bounded
         );
     };
     (@cases $make:path; $($case:ident)*) => {

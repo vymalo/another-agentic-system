@@ -769,3 +769,104 @@ async fn only_a_helper_thread_can_be_closed_and_only_by_its_owner() {
     assert!(matches!(e, AppError::NotFound), "{e:?}");
     run.shutdown().await;
 }
+
+// --- a stop is no end of a person's start or close -----------------------------------------------
+
+/// A dispatcher whose retries wait long enough for a stop to land between two attempts.
+fn slow_retries() -> orch_app::DispatcherConfig {
+    let mut cfg = fast();
+    cfg.backoff_base = std::time::Duration::from_millis(1500);
+    cfg.backoff_max = std::time::Duration::from_millis(1500);
+    cfg
+}
+
+/// Waits until the thread's open row `matches` has been tried once and waits for its retry.
+async fn backing_off(w: &World, thread: ThreadId, matches: fn(&orch_ports::OutboxPayload) -> bool) {
+    eventually("the row backing off", || async {
+        w.store
+            .list_open_outbox(thread)
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| matches(&r.payload) && r.attempts >= 1)
+            .then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stop_and_send_leaves_a_start_backing_off_to_resolve() {
+    let w = world();
+    let app = w.app();
+    let run = spawn_dispatcher(&app, slow_retries(), "d1");
+    let parent = create(&app, &alice(), "plain", "gate one").await;
+    wait_state(&app, &alice(), parent.id, ThreadState::Working).await;
+    eventually("the context", || async {
+        w.store
+            .get_binding(parent.id)
+            .await
+            .unwrap()
+            .and_then(|b| b.context_id)
+    })
+    .await;
+    w.agent
+        .fail_next_sends(1, || AgentError::unreachable("scripted outage"));
+    app.start_child_session(&alice(), parent.id, start("req-s", "echo x", false))
+        .await
+        .unwrap();
+    backing_off(&w, parent.id, |p| {
+        matches!(p, orch_ports::OutboxPayload::SessionStart { .. })
+    })
+    .await;
+    app.stop_and_send(&alice(), parent.id, "echo next".into())
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), parent.id, ThreadState::Done).await;
+    let kid = the_child(&w, parent.id).await;
+    wait_state(&app, &alice(), kid.id, ThreadState::Done).await;
+    let ev = eventually("the start's end", || async {
+        let ev = events(&app, &alice(), parent.id).await;
+        (count(&ev, EventKind::ChildSessionStartEnded) == 1).then_some(ev)
+    })
+    .await;
+    run.shutdown().await;
+    assert_eq!(count(&ev, EventKind::ChildSessionOpened), 1);
+    let record = app.get_thread(&alice(), parent.id).await.unwrap();
+    assert!(
+        record.job.session_starts.is_empty(),
+        "the pending start drained: {:?}",
+        record.job.session_starts
+    );
+}
+
+#[tokio::test]
+async fn a_stop_and_send_leaves_a_close_backing_off_in_a_kept_open_helper_to_resolve() {
+    let w = world();
+    let app = w.app();
+    let (_parent, kid, context, run) = idle_helper(&w, &app).await;
+    run.shutdown().await;
+    let run = spawn_dispatcher(&app, slow_retries(), "d2");
+    app.post_message(&alice(), kid.id, "gate more".into())
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), kid.id, ThreadState::Working).await;
+    w.agent
+        .fail_next_sends(1, || AgentError::unreachable("scripted outage"));
+    app.close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap();
+    backing_off(&w, kid.id, |p| {
+        matches!(p, orch_ports::OutboxPayload::SessionClose { .. })
+    })
+    .await;
+    app.stop_and_send(&alice(), kid.id, "echo last".into())
+        .await
+        .unwrap();
+    eventually("the session closed", || async {
+        let record = app.get_thread(&alice(), kid.id).await.unwrap();
+        (record.job.child.as_ref().map(|c| c.state) == Some(SessionState::Closed)).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    let _ = context;
+}
