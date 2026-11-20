@@ -175,6 +175,8 @@ struct State {
     snapshot_on_continue: bool,
     /// Whether the answer to a steer says the task's sessions before its state.
     steer_lists_sessions: bool,
+    /// Answers a message that names a context from another one ([`ScriptedAgent::answer_from_another_context`]).
+    foreign_context: bool,
     /// Contexts the agent assigned, one per conversation it started without being given one.
     next_context: u32,
     /// Every context a task of this agent has, assigned or named.
@@ -455,6 +457,13 @@ impl ScriptedAgent {
     /// its `sessions` object, `[]` included). By default the answer is the state alone.
     pub fn set_steer_lists_sessions(&self, on: bool) {
         self.state().steer_lists_sessions = on;
+    }
+
+    /// With `true`, the task a message that names a context starts says it belongs to another
+    /// context (`ctx-foreign`), as an agent that mixes its conversations up would: a client that
+    /// binds a thread to one context must not take it (ADR 0072).
+    pub fn answer_from_another_context(&self, on: bool) {
+        self.state().foreign_context = on;
     }
 
     /// With `true`, a message that names a context this agent did not assign (a first message that
@@ -1758,6 +1767,11 @@ impl AgentClient for ScriptedAgent {
                         format!("{context}/s/s-{}", req.message_id)
                     }
                     _ => context,
+                };
+                let context = if st.foreign_context && req.context_id.is_some() {
+                    "ctx-foreign".to_owned()
+                } else {
+                    context
                 };
                 st.contexts.insert(context.clone());
                 st.next_task += 1;

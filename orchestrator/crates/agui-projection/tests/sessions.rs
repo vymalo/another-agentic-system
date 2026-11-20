@@ -1231,7 +1231,7 @@ fn project_child(events: &[Event]) -> Vec<Frame> {
 
 #[test]
 fn a_childs_own_card_follows_the_close_and_the_state_the_composer_reads() {
-    let events = vec![
+    let events = [
         user(1, "go"),
         status(2, AgentStatus::Working),
         close_asked(3, false),

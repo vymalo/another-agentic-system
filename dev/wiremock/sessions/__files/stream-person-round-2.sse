@@ -1,0 +1,9 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{{#assign 'taskId'}}{{jsonPath request.body '$.params.id'}}{{/assign}}{{#assign 'session'}}{{regexExtract taskId '^[^.]+\.keep-(true|false)\.[^.]+'}}{{/assign}}{{#assign 'parentCtx'}}{{regexExtract taskId '^[^.]+(?=\.keep-)'}}{{/assign}}{{#assign 'keep'}}{{regexExtract taskId '(?<=\.keep-)(true|false)'}}{{/assign}}{{#assign 'ctx'}}ctx-{{session}}{{/assign}}id: 1
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"task":{"id":"{{taskId}}","contextId":"{{ctx}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}"},"metadata":{"https://agents.vymalo.com/a2a/extensions/child-sessions/v1":{"session":"{{session}}","parentContextId":"{{parentCtx}}","agent":"planner","description":"Find the writers","keepOpen":{{keep}},"round":2,"by":"person","state":"working","closing":false}}}}}
+
+id: 2
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctx}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-step","role":"ROLE_AGENT","parts":[{"text":"Reading the editors"}],"metadata":{"https://agents.vymalo.com/a2a/extensions/steps/v1":{"id":"helper:work","kind":"tool","label":"Reading the editors","state":"running","icon":"search"}}}}}}}
+
+id: 3
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctx}}","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-m","role":"ROLE_AGENT","parts":[{"text":"planner: round 2 done"}]}},"metadata":{"https://agents.vymalo.com/a2a/extensions/child-sessions/v1":{"session":"{{session}}","parentContextId":"{{parentCtx}}","agent":"planner","description":"Find the writers","keepOpen":{{keep}},"round":2,"by":"person","state":"{{#if (eq keep 'true')}}idle{{else}}closed{{/if}}","closing":false}}}}}
+

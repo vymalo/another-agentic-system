@@ -1,0 +1,38 @@
+{
+  "name": "SendStreamingMessage to a child context (a message or a steer, any text): round 2 of the session, working (the mock keeps no state: the next round is always round 2)",
+  "priority": 4,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.contextId",
+          "matches": "ctx-.+\\.keep-(true|false)\\..+"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-person-send.sse"
+  }
+}

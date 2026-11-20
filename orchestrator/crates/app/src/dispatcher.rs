@@ -416,6 +416,7 @@ impl<P: Ports> Dispatcher<P> {
         let attempt = row.attempts;
         let thread = row.thread_id;
         let lease = self.lease(&row);
+        let kept = row.clone();
         tokio::select! {
             () = token.cancelled() => tracing::debug!(%id, "worker stopped by shutdown"),
             () = self.heartbeat(&lease) => {
@@ -430,6 +431,15 @@ impl<P: Ports> Dispatcher<P> {
             result = self.process(row) => match result {
                 Ok(()) => {}
                 Err(DispatchError::Fenced) => tracing::warn!(%id, attempt, "lease lost; the late agent result was dropped"),
+                // A helper's message answered from another context (ADR 0072): nothing of it was
+                // applied, and sending the same message again would be answered the same way, so
+                // the job fails with a word instead of waiting for a lease to lapse.
+                Err(DispatchError::ForeignContext) => {
+                    let why = "the agent answered with a task of another context than this helper's".to_owned();
+                    if let Err(e) = self.give_up(&kept, why.clone(), why, false).await {
+                        tracing::error!(%id, error = %report(&e), "could not fail a row answered from a foreign context");
+                    }
+                }
                 // The thread was deleted while the worker held a result for it (ADR 0043): drop it,
                 // with a line and a counter. The row went with the thread, so nothing retries it.
                 Err(e) if is_not_found(&e) && self.thread_is_gone(thread).await => {

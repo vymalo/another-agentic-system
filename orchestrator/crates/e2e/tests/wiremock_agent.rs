@@ -978,6 +978,107 @@ async fn the_sessions_mock_with_no_events_is_followed_by_reading_the_parent_task
 }
 
 #[tokio::test]
+async fn the_sessions_mock_takes_a_persons_start_and_close_and_refuses_as_adam_does() {
+    // a person starts a session from the parent (202, the outcome in the parent's log), the mock
+    // refuses a start in adam's words, and a close ends the session
+    let Some(url) = mock(SESSIONS_URL) else {
+        return;
+    };
+    let _one = SESSIONS_MOCK.lock().await;
+    let (rig, id, _parent, _child, _log) =
+        run_sessions(&url, "delegate the plan", Duration::from_millis(1000)).await;
+    reset_journal(&url).await;
+    let start = |text: &str, request: &str| {
+        serde_json::json!({
+            "id": request, "agent": "planner", "description": "Find the writers",
+            "text": text, "keepOpen": true,
+        })
+    };
+    let (status, body) = rig
+        .chat
+        .post(
+            &format!("/api/threads/{id}/sessions"),
+            Some(start(
+                "List every place the writers are named",
+                "00000000-0000-7000-8000-0000000000b1",
+            )),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let after = eventually_events(&rig, &id, |e| {
+        e.iter().any(|x| x["kind"] == "child_session_start_ended")
+    })
+    .await;
+    let ended = after
+        .iter()
+        .find(|e| e["kind"] == "child_session_start_ended")
+        .unwrap();
+    assert_eq!(ended["data"]["outcome"], "opened", "{ended}");
+    let child = ended["data"]["thread"].as_str().unwrap().to_owned();
+    assert!(
+        ended["data"]["session"]
+            .as_str()
+            .unwrap()
+            .contains(".keep-true."),
+        "{ended}"
+    );
+    rig.chat.wait_state(&child, "done").await;
+    let log = rig.chat.events(&child).await;
+    assert_eq!(log[0]["kind"], "user_message");
+    assert_eq!(
+        log[0]["data"]["text"],
+        "List every place the writers are named"
+    );
+
+    // the agent's own limit, in its words, reaches the person as the outcome's reason
+    let (status, body) = rig
+        .chat
+        .post(
+            &format!("/api/threads/{id}/sessions"),
+            Some(start(
+                "[mock:refuse-working] too many",
+                "00000000-0000-7000-8000-0000000000b2",
+            )),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let after = eventually_events(&rig, &id, |e| {
+        e.iter()
+            .filter(|x| x["kind"] == "child_session_start_ended")
+            .count()
+            >= 2
+    })
+    .await;
+    let reason = after
+        .iter()
+        .filter(|e| e["kind"] == "child_session_start_ended")
+        .find(|e| e["data"]["outcome"] == "failed")
+        .map(|e| e["data"]["reason"].as_str().unwrap().to_owned())
+        .expect("a failed outcome");
+    assert!(
+        reason.starts_with("4 rounds are already working in this context"),
+        "{reason}"
+    );
+
+    // a close: 202, and the session ends closed
+    let (status, body) = rig
+        .chat
+        .post(
+            &format!("/api/threads/{child}/session/close"),
+            Some(serde_json::json!({})),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    for _ in 0..200 {
+        if rig.chat.thread(&child).await["childOf"]["state"] == "closed" {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the session never closed");
+}
+
+#[tokio::test]
 async fn an_agent_whose_card_does_not_list_usage_is_not_asked_for_it_and_logs_none() {
     let Some(url) = mock(MOCK_URL) else { return };
     let rig = rig(&[("mock-coder", &url)]).await;

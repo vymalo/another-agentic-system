@@ -8,7 +8,7 @@ mod support;
 
 use std::sync::Arc;
 
-use orch_app::{AppError, ChildCloseState, StartChildSession};
+use orch_app::{AppError, ChildCloseState, ChildSessionDrop, StartChildSession};
 use orch_core::{
     AgentTaskState, ChildSessionsOffer, EventBody, EventKind, KnownExtension, Mention, RoundReport,
     SessionBy, SessionEvent, SessionNews, SessionReport, SessionState, StartOutcomeKind, ThreadId,
@@ -535,6 +535,42 @@ async fn a_message_to_a_working_helper_is_a_steer_into_its_round() {
 }
 
 #[tokio::test]
+async fn an_answer_from_a_foreign_context_to_a_helpers_message_fails_closed() {
+    let w = world();
+    let app = w.app();
+    let (_parent, kid, context, run) = idle_helper(&w, &app).await;
+    let log_before = events(&app, &alice(), kid.id).await.len();
+    w.agent.answer_from_another_context(true);
+    app.post_message(&alice(), kid.id, "echo again".into())
+        .await
+        .unwrap();
+    wait_state(&app, &alice(), kid.id, ThreadState::Failed).await;
+    run.shutdown().await;
+    // the message went to the helper's own context; the answer named another, and nothing of it
+    // was applied: no artifact, no text of the agent's, the binding unchanged
+    assert_eq!(sent_to(&w, &context).len(), 1);
+    let ev = events(&app, &alice(), kid.id).await;
+    assert!(
+        ev[log_before..].iter().all(|e| !matches!(
+            e.kind(),
+            EventKind::AgentMessage | EventKind::Artifact | EventKind::AgentStatus
+        )),
+        "{:?}",
+        shape(&ev)
+    );
+    assert_eq!(count(&ev, EventKind::Error), 1, "{:?}", shape(&ev));
+    let dropped = app
+        .child_session_stats()
+        .dropped
+        .iter()
+        .find(|(reason, _)| *reason == ChildSessionDrop::ForeignContext)
+        .map_or(0, |(_, n)| *n);
+    assert!(dropped >= 1);
+    let binding = w.store.get_binding(kid.id).await.unwrap().unwrap();
+    assert_eq!(binding.context_id.as_deref(), Some(context.as_str()));
+}
+
+#[tokio::test]
 async fn stop_and_send_is_only_for_a_session_kept_open() {
     let w = world();
     let app = w.app();
@@ -689,6 +725,31 @@ async fn a_close_the_agent_refuses_says_why_and_may_be_asked_again() {
     })
     .await;
     run.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_close_that_could_not_reach_the_agent_is_tried_again_and_closes_once() {
+    let w = world();
+    let app = w.app();
+    let (_parent, kid, context, run) = idle_helper(&w, &app).await;
+    let before = sent_to(&w, &context).len();
+    w.agent
+        .fail_next_sends(2, || AgentError::unreachable("scripted outage"));
+    app.close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap();
+    eventually("the session closed", || async {
+        let record = app.get_thread(&alice(), kid.id).await.unwrap();
+        (record.job.child.as_ref().map(|c| c.state) == Some(SessionState::Closed)).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    // two attempts failed and the third was the close: once in the log, no error, the row done
+    let ev = events(&app, &alice(), kid.id).await;
+    assert_eq!(count(&ev, EventKind::ChildSessionCloseAsked), 1);
+    assert_eq!(count(&ev, EventKind::Error), 0, "{:?}", shape(&ev));
+    assert_eq!(sent_to(&w, &context).len() - before, 3);
+    assert!(w.store.list_open_outbox(kid.id).await.unwrap().is_empty());
 }
 
 #[tokio::test]

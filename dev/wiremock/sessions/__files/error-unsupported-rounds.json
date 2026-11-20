@@ -1,0 +1,1 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{"jsonrpc":"2.0","id":"{{rpcId}}","error":{"code":-32004,"message":"session S has had 20 rounds, the most it may have","data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"UNSUPPORTED_OPERATION","domain":"a2a-protocol.org"}]}}
