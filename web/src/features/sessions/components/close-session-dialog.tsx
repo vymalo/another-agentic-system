@@ -15,6 +15,14 @@ import { useCloseSession } from "../hooks/use-close-session";
 import type { SessionCard } from "../lib/cards";
 import type { AppliedClose } from "../lib/children";
 
+/** Where the focus lands when the row that held Close is gone: the Subagents tab's panel, else its New button. */
+function stillThere(): HTMLElement | null {
+  const panel = document.querySelector<HTMLElement>('[data-slot="sessions-panel"]');
+  const tab = panel?.closest<HTMLElement>('[role="tabpanel"]');
+  if (tab) return tab;
+  return panel?.querySelector<HTMLElement>("button:not([disabled])") ?? null;
+}
+
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -36,8 +44,9 @@ export function CloseSessionDialog({ open, onOpenChange, card, onClosed, returnT
       <DialogContent
         showCloseButton={false}
         onCloseAutoFocus={(event) => {
-          const target = returnTo.current;
-          if (target?.isConnected) {
+          // what opened the dialog, else, when a close folded its row away, the tab it was in
+          const target = returnTo.current?.isConnected ? returnTo.current : stillThere();
+          if (target) {
             event.preventDefault();
             target.focus();
           }

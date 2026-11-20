@@ -96,7 +96,9 @@ function tree(s: Setup) {
         refreshRows={s.refreshRows ?? (() => {})}
       >
         <Probe />
-        <SessionsPanel />
+        <div role="tabpanel" tabIndex={0} aria-label="Subagents tab">
+          <SessionsPanel />
+        </div>
         {s.extra}
       </SessionsProvider>
     </ThreadViewProvider>
@@ -522,4 +524,24 @@ describe("closing from the tab", () => {
       page.fake("POST /api/threads/:id/session/close", null);
     });
   }
+
+  it("gives the focus to the tab's panel when the close folds the row that held the button away", async () => {
+    const parent = await page.api.answered();
+    const { child } = await page.api.opened(parent, { keepOpen: true });
+    await page.api.until(
+      async () => (await page.api.thread(child)).childOf?.state === "idle",
+      "idle",
+    );
+    const thread = await page.api.thread(child);
+    mount({ parent, rows: [thread] });
+    const close = screen.getByRole("button", { name: "Close planner" });
+    close.focus();
+    fireEvent.click(close);
+    const dialog = await screen.findByRole("dialog", { name: "Close subagent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close subagent" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // the row is now in "1 closed", and the button is gone
+    expect(close.isConnected).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("tabpanel")));
+  });
 });
