@@ -18,6 +18,7 @@ import {
   postRun,
   RELEASE_CHANNELS_URI,
 } from "./agui-client";
+import { PROJECTION_VERSION } from "./history";
 import { createMockServer } from "./server";
 
 /**
@@ -662,7 +663,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       initialTurns: 12,
       pageTurns: 20,
       maxTurns: 100,
-      projection: 2,
+      projection: PROJECTION_VERSION,
       windowed: true,
     };
     const res = await fetch(`${base}/api/config`);

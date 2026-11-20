@@ -606,3 +606,22 @@ describe("a surface of this app's catalog (ADR 0023)", () => {
     m.agent.stop();
   });
 });
+
+describe("a surface of an earlier A2UI version (ADR 0075, decision 6)", () => {
+  it("is not drawn: the card says an earlier version made it, names it, and folds the operations", async () => {
+    const m = mountSurfaces();
+    const ops = surface([column("root", ["t"]), text("t", "From before")], undefined, "v0.9.1");
+    await feed(m, surfaceRun([ops]));
+    // nothing of it is drawn, and no interface stands in its place
+    expect(regions()).toHaveLength(0);
+    const card = document.querySelector('[data-rule="version"]') as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(within(card).getByText(/Interface not shown:/)).toBeTruthy();
+    expect(card.textContent).toContain('A2UI "v0.9.1"');
+    expect(card.textContent).toContain("earlier version");
+    // the operations are folded, as text, with no live control
+    expect(within(card).getByText("Raw operations")).toBeTruthy();
+    expect(within(card).queryByRole("button")).toBeNull();
+    m.agent.stop();
+  });
+});
