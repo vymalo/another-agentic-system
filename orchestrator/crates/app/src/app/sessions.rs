@@ -102,7 +102,7 @@ impl<P: Ports> App<P> {
     /// card does not honour; [`AppError::Blocked`] `no_context` (the agent has not answered the
     /// thread), `too_many_starts` (four starts still wait) and `too_many_sessions` (the thread
     /// notes [`MAX_CHILD_SESSIONS`] sessions); [`AppError::CardUnavailable`] when
-    /// the card cannot be read.
+    /// the card cannot be read; [`AppError::NotFound`] also for an agent the registry no longer lists.
     pub async fn start_child_session(
         &self,
         who: &impl Requester,
@@ -119,12 +119,11 @@ impl<P: Ports> App<P> {
         let description = check_start_description(start.description.as_deref())?;
         // the live card, now: the extension and the helper are the agent's to say
         let agent = self.canonical_agent(&thread.target.agent_id);
+        // an agent the registry no longer lists is one that does not exist
         let entry = self
             .resolve_agent(&agent)
             .await?
-            .ok_or_else(|| AppError::CardUnavailable {
-                agent: agent.clone(),
-            })?;
+            .ok_or(AppError::NotFound)?;
         let card =
             self.live_card(&entry.endpoint)
                 .await
@@ -197,7 +196,8 @@ impl<P: Ports> App<P> {
     /// # Errors
     /// [`AppError::NotFound`] for a thread that is not the person's; [`AppError::Forbidden`]
     /// without `thread.write`; [`AppError::Arrangement`] `not_child_thread` for a thread that is
-    /// not a helper session's.
+    /// not a helper session's and `no_child_sessions` when the live card no longer offers helpers;
+    /// [`AppError::CardUnavailable`] when the card cannot be read.
     pub async fn close_child_session(
         &self,
         who: &impl Requester,
@@ -208,6 +208,29 @@ impl<P: Ports> App<P> {
         let thread = self.writable_thread(&access, child).await?;
         if thread.child_of.is_none() {
             return Err(AppError::arrangement("not_child_thread"));
+        }
+        // the live card, now, as a start reads it: an agent that stopped offering sessions takes
+        // no close, and nothing is written for it. A session closed already is nothing either way.
+        let open = thread
+            .job
+            .child
+            .as_ref()
+            .is_some_and(|c| c.state != SessionState::Closed);
+        if open {
+            let agent = self.canonical_agent(&thread.target.agent_id);
+            let entry = self
+                .resolve_agent(&agent)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            let card =
+                self.live_card(&entry.endpoint)
+                    .await
+                    .ok_or_else(|| AppError::CardUnavailable {
+                        agent: agent.clone(),
+                    })?;
+            if card.child_sessions.is_none() {
+                return Err(AppError::arrangement("no_child_sessions"));
+            }
         }
         // the ledger decides what is written: a repeat, or a close already as strong, is nothing
         let input = Input::CloseSession {

@@ -948,13 +948,17 @@ pub(crate) fn said(
 
 /// What a person's message to a session's thread is allowed by the session (`UserMessage`,
 /// `StopAndSend`, `UiAction`): a closed session takes none, and a session that closes when its
-/// round ends cannot be stopped to send (`stop`), because the stop is its end.
-pub(crate) fn admits_message(job: &Job, stop: bool) -> Result<(), TransitionError> {
+/// round ends cannot be stopped to send (`stop`), because the stop is its end. A helper cannot ask
+/// other agents, so a message that `mentions` any is refused (decision 5).
+pub(crate) fn admits_message(job: &Job, stop: bool, mentions: bool) -> Result<(), TransitionError> {
     let Some(child) = &job.child else {
         return Ok(());
     };
     if child.state == SessionState::Closed {
         return Err(TransitionError::SessionClosed);
+    }
+    if mentions {
+        return Err(TransitionError::ChildMentions);
     }
     if stop && !child.keep_open {
         return Err(TransitionError::SessionClosesOnStop);

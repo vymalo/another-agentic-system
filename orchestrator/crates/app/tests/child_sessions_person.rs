@@ -1024,3 +1024,32 @@ async fn a_round_the_person_sent_reported_before_the_answer_is_not_observed() {
     let rows = w.store.list_open_outbox(kid.id).await.unwrap();
     assert_eq!(observes(&rows), 0, "{rows:?}");
 }
+
+// --- a close checks the live card as a start does ---------------------------------------------------
+
+#[tokio::test]
+async fn a_close_for_an_agent_whose_card_stopped_offering_sessions_is_refused_and_writes_nothing() {
+    let w = world();
+    let app = w.app();
+    let (_parent, kid, _context, run) = idle_helper(&w, &app).await;
+    run.shutdown().await;
+    let before = events(&app, &alice(), kid.id).await.len();
+    w.agent.set_child_sessions("plain", None);
+    let e = app
+        .close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap_err();
+    assert_eq!(code_of(&e), "no_child_sessions");
+    // a card that cannot be read is no answer either
+    w.agent.set_child_sessions("plain", Some(offer()));
+    w.agent.set_card_down("plain", true);
+    let e = app
+        .close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, AppError::CardUnavailable { .. }), "{e:?}");
+    assert_eq!(events(&app, &alice(), kid.id).await.len(), before);
+    let record = app.get_thread(&alice(), kid.id).await.unwrap();
+    assert!(!record.job.child.unwrap().close_asked);
+    assert!(w.store.list_open_outbox(kid.id).await.unwrap().is_empty());
+}

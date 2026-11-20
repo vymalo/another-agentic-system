@@ -850,6 +850,10 @@ pub enum TransitionError {
     /// (ADR 0072, S3). Nothing was written.
     #[error("a session that closes when done closes when its round is stopped")]
     SessionClosesOnStop,
+    /// A message to a helper session mentions an agent: a helper cannot ask other agents (ADR 0072,
+    /// S3). Nothing was written.
+    #[error("a helper session cannot ask other agents")]
+    ChildMentions,
     /// A session was asked of a thread that is no child session's. Nothing was written.
     #[error("this thread is not a helper session")]
     NotAChild,
@@ -863,6 +867,7 @@ impl Classify for TransitionError {
             }
             TransitionError::TextTooLong { .. }
             | TransitionError::SessionClosesOnStop
+            | TransitionError::ChildMentions
             | TransitionError::NotAChild => ErrorClass::Invalid,
             TransitionError::SessionClosed => ErrorClass::Rejected,
             TransitionError::ChildSessionRefused(why) => match why {
@@ -1432,7 +1437,13 @@ fn decide(
         input,
         Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
     ) {
-        child_sessions::admits_message(job, matches!(input, Input::StopAndSend { .. }))?;
+        let mentions = match input {
+            Input::UserMessage { mentions, .. } | Input::StopAndSend { mentions, .. } => {
+                !mentions.is_empty()
+            }
+            _ => false,
+        };
+        child_sessions::admits_message(job, matches!(input, Input::StopAndSend { .. }), mentions)?;
     }
     match input {
         Input::UserMessage {
@@ -2851,6 +2862,7 @@ mod tests {
             TransitionError::ChildSessionRefused(SessionRefusal::ChildThread),
             TransitionError::SessionClosed,
             TransitionError::SessionClosesOnStop,
+            TransitionError::ChildMentions,
             TransitionError::NotAChild,
         ];
         for e in errors {
@@ -2861,6 +2873,7 @@ mod tests {
                 }
                 TransitionError::TextTooLong { .. }
                 | TransitionError::SessionClosesOnStop
+                | TransitionError::ChildMentions
                 | TransitionError::NotAChild => ErrorClass::Invalid,
                 TransitionError::SessionClosed => ErrorClass::Rejected,
                 TransitionError::AskRefused(AskRefusal::TaskOver) => ErrorClass::Rejected,

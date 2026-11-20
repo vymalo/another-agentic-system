@@ -1652,8 +1652,16 @@ impl<P: Ports> Dispatcher<P> {
                     {
                         Ok(ApplyOutcome::Fenced) => return Err(DispatchError::Fenced),
                         Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => {}
-                        // a thread that is no child, or gone: the news says what it says
-                        Err(AppError::Transition(_) | AppError::NotFound) => {}
+                        // a thread that is no child (`NotAChild` is the coded `not_child_thread`),
+                        // or gone: the news says what it says
+                        Err(
+                            AppError::Transition(_)
+                            | AppError::NotFound
+                            | AppError::Arrangement {
+                                code: "not_child_thread",
+                                ..
+                            },
+                        ) => {}
                         Err(e) => return Err(e.into()),
                     }
                 }

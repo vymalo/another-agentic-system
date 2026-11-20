@@ -1262,9 +1262,9 @@ paths:
               schema: { $ref: "#/components/schemas/ChildSessionCloseAccepted" }
         "400": { description: "The body is not JSON or not a `ChildSessionClose` (an unknown member, `cancel` that is not a boolean)", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`", $ref: "#/components/responses/Problem" }
-        "404": { description: "The thread is missing, its id is not a UUID, or it is not the caller's (one answer for all three)", $ref: "#/components/responses/Problem" }
-        "422": { description: "`code: not_child_thread`: the thread is not a helper session's (it has no `childOf`)", $ref: "#/components/responses/Problem" }
-        "503": { description: "Storage is unavailable; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread is missing, its id is not a UUID, it is not the caller's, or the registry no longer lists its agent (one answer for all four)", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: not_child_thread`: the thread is not a helper session's (it has no `childOf`); `code: no_child_sessions`: the agent's live card no longer offers `child-sessions/v1` (nothing is written; a session closed already is 202 whatever the card says)", $ref: "#/components/responses/Problem" }
+        "503": { description: "Storage is unavailable, or the agent's live card cannot be read; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/sessions:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     post:
@@ -1298,7 +1298,7 @@ paths:
               schema: { $ref: "#/components/schemas/ChildSessionStartAccepted" }
         "400": { description: "The body is not JSON or not a `ChildSessionStart`: an unknown member, a missing member, `keepOpen` that is not a boolean, a `tier` that is not one of the four words", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the thread's agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
-        "404": { description: "The thread is missing, its id is not a UUID, or it is not the caller's (one answer for all three)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The thread is missing, its id is not a UUID, it is not the caller's, or the registry no longer lists its agent (one answer for all four)", $ref: "#/components/responses/Problem" }
         "409": { description: "`code: no_context`: the agent has not answered the thread yet, so it has no context to start a session in (\"send the agent a message first\"); `code: too_many_starts`: 4 starts of this thread still wait for their outcome (\"wait for the helpers you started to open\"); `code: too_many_sessions`: the thread already notes 256 helper sessions, the most one thread may note", $ref: "#/components/responses/Problem" }
         "422": { description: "`code: child_thread`: the thread is itself a helper session's, which cannot start one; `code: no_child_sessions`: the agent's live card does not offer `child-sessions/v1` well formed; `code: unknown_helper`: `agent` is not one the card lists (the words say which are); `code: bad_description`: `description` is blank, longer than 80 characters, on more than one line or has a control or format character; `text` empty or larger than 100000 characters; a `tier` above what the caller's roles allow or one the agent's live card does not honour", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, or the agent's live card cannot be read; retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }

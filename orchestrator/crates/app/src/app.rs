@@ -2308,35 +2308,9 @@ impl<P: Ports> App<P> {
         ) {
             self.may_invoke(&access, &thread).await?;
         }
-        // A message to a helper session's thread (ADR 0072, S3) is the helper's next round, a steer
-        // or an answer, and is refused before anything is written when the session cannot take it:
-        // it is closed, it would ask other agents, or it closes when its round is stopped.
-        if let Some(child) = thread
-            .job
-            .child
-            .as_ref()
-            .filter(|_| thread.child_of.is_some())
-        {
-            match &input {
-                Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. } => {
-                    if child.state == orch_core::SessionState::Closed {
-                        return Err(orch_core::TransitionError::SessionClosed.into());
-                    }
-                }
-                _ => {}
-            }
-            match &input {
-                Input::UserMessage { mentions, .. } | Input::StopAndSend { mentions, .. }
-                    if !mentions.is_empty() =>
-                {
-                    return Err(AppError::arrangement("child_mentions"));
-                }
-                Input::StopAndSend { .. } if !child.keep_open => {
-                    return Err(orch_core::TransitionError::SessionClosesOnStop.into());
-                }
-                _ => {}
-            }
-        }
+        // A message to a helper session's thread (ADR 0072, S3) is refused by the core before
+        // anything is written when the session cannot take it: closed, a mention, or a Stop & send
+        // of a session that closes when its round is stopped.
         match &input {
             Input::UserMessage { text, catalog, .. } | Input::StopAndSend { text, catalog, .. } => {
                 validate_text(text)?;

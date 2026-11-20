@@ -232,6 +232,7 @@ impl From<TransitionError> for AppError {
                 "this helper session is closed and takes no more messages",
             ),
             TransitionError::SessionClosesOnStop => AppError::arrangement("session_closes_on_stop"),
+            TransitionError::ChildMentions => AppError::arrangement("child_mentions"),
             TransitionError::NotAChild => AppError::arrangement("not_child_thread"),
             TransitionError::ChildSessionRefused(SessionRefusal::TooManyStarts) => {
                 AppError::blocked(

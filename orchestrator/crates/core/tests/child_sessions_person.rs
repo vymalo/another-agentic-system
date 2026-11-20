@@ -206,6 +206,67 @@ fn stop_and_send_is_only_for_a_session_kept_open() {
 }
 
 #[test]
+fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
+    let mention = Mention {
+        agent_id: AgentId::new("coder"),
+        label: "@coder".into(),
+        start: 4,
+        end: 10,
+        card_url: None,
+        tier_cap: None,
+    };
+    for stop in [false, true] {
+        for state in [Done, Working, Blocked] {
+            let snap = child(state, true);
+            let input = if stop {
+                Input::StopAndSend {
+                    user: person(),
+                    text: "ask @coder".into(),
+                    message_id: None,
+                    run_id: None,
+                    origin: Origin::Agui,
+                    catalog: None,
+                    mentions: vec![mention.clone()],
+                    tier: None,
+                    tier_cap: None,
+                }
+            } else {
+                Input::UserMessage {
+                    user: person(),
+                    text: "ask @coder".into(),
+                    message_id: None,
+                    run_id: None,
+                    origin: Origin::Agui,
+                    catalog: None,
+                    mentions: vec![mention.clone()],
+                    tier: None,
+                    tier_cap: None,
+                }
+            };
+            assert_eq!(
+                transition(&snap, &input).unwrap_err(),
+                TransitionError::ChildMentions,
+                "{state:?} stop={stop}"
+            );
+        }
+    }
+    // a message that mentions nobody is as before, and a thread that is no child takes mentions
+    assert!(transition(&child(Done, true), &user_message("next")).is_ok());
+    let plain = Input::UserMessage {
+        user: person(),
+        text: "ask @coder".into(),
+        message_id: None,
+        run_id: None,
+        origin: Origin::Agui,
+        catalog: None,
+        mentions: vec![mention],
+        tier: None,
+        tier_cap: None,
+    };
+    assert!(transition(&Snapshot::new(Done), &plain).is_ok());
+}
+
+#[test]
 fn the_refusals_are_classed() {
     assert_eq!(TransitionError::SessionClosed.class(), ErrorClass::Rejected);
     assert_eq!(TransitionError::NotAChild.class(), ErrorClass::Invalid);

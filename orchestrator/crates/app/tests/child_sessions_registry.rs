@@ -262,3 +262,31 @@ async fn a_close_for_an_agent_the_registry_dropped_is_refused_with_a_word_and_ma
     let rows = r.w.store.list_open_outbox(kid.id).await.unwrap();
     assert!(rows.is_empty(), "{rows:?}");
 }
+
+#[tokio::test]
+async fn a_start_for_an_agent_the_registry_no_longer_lists_is_not_found_and_writes_nothing() {
+    let r = rig();
+    let parent = r.parent().await;
+    let before = r
+        .app
+        .list_events(&person(), parent, 0, 500)
+        .await
+        .unwrap()
+        .len();
+    r.registry.remove(&AgentId::new("helper"));
+    let e = r
+        .app
+        .start_child_session(&person(), parent, start("req-1", false))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, orch_app::AppError::NotFound), "{e:?}");
+    assert_eq!(
+        r.app
+            .list_events(&person(), parent, 0, 500)
+            .await
+            .unwrap()
+            .len(),
+        before
+    );
+    assert!(r.w.store.list_open_outbox(parent).await.unwrap().is_empty());
+}
