@@ -3268,11 +3268,10 @@ components:
         version:
           oneOf:
             - type: string
-              enum: ["1.0"]
             - type: integer
               minimum: 1
               maximum: 1000000
-          description: "ui_action: the A2UI version of the surface, always `1.0` (ADR 0075). An event written before the cutover may hold `v0.9` or `v0.9.1`; an action on such a surface is refused with 422, so no new one is written. ui_catalog: the version of the catalog (an integer from 1, 9 for the first v2 catalog), raised by the UI with every change; the highest is the newest."
+          description: "ui_action: the A2UI version of the surface. Anything written now is `1.0` (ADR 0075, a hard cutover); an event written before it may hold `v0.9` or `v0.9.1`, which still **reads** (history, export, a fork) while an action on such a surface is refused with 422, so no new one is written — the field is what the log holds, not what a client may send. ui_catalog: the version of the catalog (an integer from 1, 9 for the first v2 catalog), raised by the UI with every change; the highest is the newest."
         catalogId:
           type: string
           maxLength: 256
