@@ -589,7 +589,12 @@ const USAGE = ["usage"];
  */
 const AGAIN = ["a2ui-again"];
 
-/** Child sessions: the mock serves them from S4 (#332). */
+/**
+ * Child sessions (ADR 0072, #332): a helper session as a subagent and a card in the parent, a child
+ * thread's own card, and what a person asks of one (start, close). The mock server serves them
+ * (`mock/sessions.ts`), but the goldens are hand-written logs no real agent produced, so their
+ * projection reads the golden event log and must produce the golden stream.
+ */
 const SESSIONS = [
   "sessions",
   "sessions-child",
@@ -620,6 +625,7 @@ describe("the mock's projection against the AG-UI goldens of a fork, a descripti
     ...ASKS,
     ...USAGE,
     ...AGAIN,
+    ...SESSIONS,
     "description",
   ]) {
     it(`reads the golden log and tells the golden stream: ${name}`, () => {
@@ -629,12 +635,17 @@ describe("the mock's projection against the AG-UI goldens of a fork, a descripti
       const first = log.find((e) => e.kind === "user_message");
       const projector = new Projector({
         threadId: "<thread-id>",
-        title: String(first?.data.text).split("\n")[0] ?? "",
+        title: String(first?.data.text ?? "").split("\n")[0] ?? "",
         target: { agentId: "plain" },
+        // the one golden that is a child thread's own log: the helper it is a session of
+        ...(name === "sessions-person-child" ? { child: { agent: "helper", keepOpen: true } } : {}),
       });
       const told: ProjectedFrame[] = log.flatMap((e) => projector.apply(e));
+      // the child threads the goldens of sessions name, which the Rust test turns into placeholders
       const golden = JSON.parse(
-        readFileSync(path.join(DIR, `${name}.agui.json`), "utf8"),
+        readFileSync(path.join(DIR, `${name}.agui.json`), "utf8")
+          .replaceAll("<second-child-thread-id>", "00000000-0000-7000-8000-000000000004")
+          .replaceAll("<child-thread-id>", "00000000-0000-7000-8000-000000000003"),
       ) as Frame[];
       expect(untimed(told as Frame[])).toEqual(untimed(golden));
       expect(projector.runOpen).toBe(false);

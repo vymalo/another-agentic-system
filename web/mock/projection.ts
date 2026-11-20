@@ -15,6 +15,18 @@ type CheckSource = components["schemas"]["CheckSource"];
 type ArtifactFile = components["schemas"]["ArtifactFile"];
 
 type Ev = Record<string, unknown> & { type: string };
+
+/** The events of a helper session (ADR 0072): they say a card and move neither the thread's state nor its invocation. */
+const SESSION_KINDS: readonly string[] = [
+  "child_session_opened",
+  "child_session_reported",
+  "child_session_closed",
+  "child_session_start_asked",
+  "child_session_start_ended",
+  "child_session_close_asked",
+  "child_session_state",
+];
+const isSessionKind = (kind: string): boolean => SESSION_KINDS.includes(kind);
 export type Frame = { id?: number; event: Ev };
 
 /** The verification gate a thread's job runs under (ADR 0018): `require` is in the order of the sources. */
@@ -33,6 +45,11 @@ export type ThreadInfo = {
   target: { agentId: string; release?: string };
   /** Absent: no gate, so no `job` and a run that ends at the agent's `completed`. */
   gate?: GateInfo;
+  /**
+   * The helper session this thread is, when it is a child thread (ADR 0072): the child's own
+   * `vymalo.session` card says it. Absent for any other thread.
+   */
+  child?: { agent: string; keepOpen: boolean };
 };
 
 /** What `Thread.job` and the `job` of a `STATE_SNAPSHOT` say (docs/api/chat-api.yaml, `ThreadJob`). */
@@ -124,6 +141,39 @@ type AskView = {
   /** Its `SUBAGENT_STARTED` is open in the run that is open. */
   subOpen: boolean;
 };
+/**
+ * A helper session of the thread (ADR 0072): a subagent of the agent's invocation while a round runs
+ * and a `vymalo.session` card for as long as the thread lives (the real projection's `SessionView`).
+ * Its subagent id and card id come from the seq of its `child_session_opened`.
+ */
+type SessionView = {
+  /** `seq` of the `child_session_opened`. */
+  seq: number;
+  session: string;
+  /** The child thread that holds the session's log. */
+  thread: string;
+  agent: string;
+  description: string;
+  keepOpen: boolean;
+  /** Who said the session (the thread's agent): the actor of its subagent. */
+  actor: Event["actor"];
+  state: "working" | "idle" | "closed";
+  round?: number;
+  report?: string;
+  /** The round and outcome last projected: a report that says the same, or an earlier round, is said already. */
+  last?: { round: number; report: string };
+  closed: boolean;
+  /** Its subagent is open in the run that is open. */
+  subOpen: boolean;
+  /** `sub-session-<opened seq>`, then `sub-session-<opened seq>-<seq of the report>` for each later start. */
+  sub: string;
+  /** The invocation open when the subagent was last started: none when none was. */
+  parent?: string;
+  startedAt: string;
+  by?: string;
+};
+/** A start a person asked for (ADR 0072), kept to say its outcome on the same card. */
+type StartView = { agent: string; description: string; keepOpen: boolean };
 type Open = { runId: string };
 
 /** How the verifier's subagent ends: with its verdict, or without one (the round ended elsewhere). */
@@ -402,6 +452,16 @@ export class Projector {
   private readonly steps = new Map<string, StepView>();
   /** The asks that have not ended, by number (ADR 0026): each one a subagent of its own. */
   private readonly asks = new Map<number, AskView>();
+  /** The helper sessions the log has opened, by the agent's id (ADR 0072): they belong to the thread, not to a job. */
+  private readonly sessions = new Map<string, SessionView>();
+  /** The starts a person asked for that have not ended, by request. */
+  private readonly starts = new Map<string, StartView>();
+  /** A child thread's own session, as the log says it now (`session-self`). */
+  private ownSession: {
+    state?: "working" | "idle" | "closed";
+    closing: boolean;
+    closeAsked: boolean;
+  } = { closing: false, closeAsked: false };
   /** The time of the event being applied, for the frames that close what is open. */
   private now = "";
   /** The thread's token usage (ADR 0056), folded for the run's accounting (`usage` of its end). */
@@ -505,6 +565,7 @@ export class Projector {
         this.closeSteps("canceled", out);
         out.push(Projector.canceledSubagent(this.invocation.id));
       }
+      this.suspendSessions(undefined, out);
       out.push(this.snapshot());
       out.push(
         this.withUsage({
@@ -536,6 +597,12 @@ export class Projector {
       },
       metadata: actorMeta(e),
     });
+    // the fork has no sessions of its own (ADR 0072): the cards it copied are closed in it
+    const copied = [...this.sessions.values()]
+      .filter((v) => !v.closed)
+      .sort((a, b) => a.seq - b.seq);
+    this.sessions.clear();
+    for (const view of copied) out.push(this.sessionCard({ ...view, state: "closed" }, e));
     out.push(this.snapshot());
     out.push(
       this.withUsage({ type: "RUN_FINISHED", threadId, runId, outcome: { type: "success" } }),
@@ -576,6 +643,7 @@ export class Projector {
       return;
     }
     out.push(card);
+    this.suspendSessions(undefined, out);
     out.push(this.snapshot());
     out.push(this.runEnd());
     this.run = null;
@@ -628,6 +696,12 @@ export class Projector {
     for (const n of this.openAskSubagents(true)) {
       const ask = this.asks.get(n);
       if (ask) out.push(this.askStarted(ask));
+    }
+    // and the sessions whose round runs
+    for (const view of [...this.sessions.values()]
+      .filter((v) => v.subOpen)
+      .sort((a, b) => a.seq - b.seq)) {
+      out.push(this.sessionStarted(view));
     }
     out.push(this.snapshot());
     return out.map((event) => ({ event }));
@@ -746,6 +820,8 @@ export class Projector {
   private closeSteps(how: "suspended" | "canceled", out: Ev[]) {
     this.closeStepsOnly(how, out);
     this.closeAsks(how, out);
+    // the sessions whose round runs under the invocation that is closing go on without it
+    if (this.invocation) this.suspendSessions(this.invocation.id, out);
   }
 
   private closeStepsOnly(how: "suspended" | "canceled", out: Ev[]) {
@@ -999,10 +1075,276 @@ export class Projector {
   /** Closes a run an ask event opened at once, by the state the thread is in: nothing follows it. */
   private settle(out: Ev[]) {
     if (this.state === "queued" || this.state === "working" || this.state === "verifying") return;
+    this.suspendSessions(undefined, out);
     out.push(this.snapshot());
     out.push(this.runEnd());
     this.run = null;
     this.invocation = null;
+  }
+
+  // ---- helper sessions (ADR 0072, the real projection's `on_session_*`) ---------------------
+
+  /** Opens a producer-initiated run if none is open (the real projection's `ensure_run`); whether it did. */
+  private ensureRun(e: Event, out: Ev[]): boolean {
+    if (this.run) return false;
+    this.openRun(e, out);
+    return true;
+  }
+
+  /** `SUBAGENT_STARTED` of a session's subagent: named after the helper, with the child thread and the session in its metadata. */
+  private sessionStarted(view: SessionView): Ev {
+    return {
+      type: "SUBAGENT_STARTED",
+      subagentRunId: view.sub,
+      name: view.agent,
+      ...(view.description ? { description: view.description } : {}),
+      ...(view.parent ? { parentSubagentRunId: view.parent } : {}),
+      metadata: {
+        ...actorMetaOf(view.actor),
+        "vymalo.at": view.startedAt,
+        "vymalo.childThread": view.thread,
+        "vymalo.session": view.session,
+      },
+    };
+  }
+
+  /** A card said again with `replace`: its id is its own, the event's `at` is in its content. */
+  private card(
+    e: Event,
+    messageId: string,
+    activityType: string,
+    content: Record<string, unknown>,
+  ) {
+    return {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId,
+      activityType,
+      content: { ...content, at: e.at },
+      replace: true,
+      metadata: actorMeta(e),
+    } as Ev;
+  }
+
+  /** The `vymalo.session` card as the session stands. */
+  private sessionCard(view: SessionView, e: Event): Ev {
+    return this.card(e, `session-${view.seq}`, "vymalo.session", {
+      session: view.session,
+      threadId: view.thread,
+      agent: view.agent,
+      description: view.description,
+      keepOpen: view.keepOpen,
+      state: view.state,
+      // only a person's start says who started it: an agent's sessions are what they were
+      ...(view.by === "person" ? { by: "person" } : {}),
+      ...(view.round !== undefined ? { round: view.round } : {}),
+      ...(view.report !== undefined ? { report: view.report } : {}),
+    });
+  }
+
+  /**
+   * A session was opened: a subagent named after the helper, under the agent's invocation (when one
+   * is open: a session event never opens one), and its card. One the log opened already says nothing.
+   */
+  private onSessionOpened(e: Event, out: Ev[]) {
+    const d = e.data;
+    const session = String(d.session);
+    if (this.sessions.has(session)) return;
+    const opened = this.ensureRun(e, out);
+    const round = typeof d.round === "number" ? d.round : undefined;
+    const view: SessionView = {
+      seq: e.seq,
+      session,
+      thread: String(d.thread),
+      agent: String(d.agent),
+      description: str(d.description) ?? "",
+      keepOpen: d.keepOpen === true,
+      actor: e.actor,
+      // a session opened with a round is at work; with none it waits (a close may follow)
+      state: round !== undefined ? "working" : "idle",
+      ...(round !== undefined ? { round } : {}),
+      closed: false,
+      subOpen: true,
+      sub: `sub-session-${e.seq}`,
+      ...(this.invocation ? { parent: this.invocation.id } : {}),
+      startedAt: e.at,
+      ...(d.by === "person" || d.by === "agent" ? { by: d.by } : {}),
+    };
+    out.push(this.sessionStarted(view));
+    out.push(this.sessionCard(view, e));
+    this.sessions.set(session, view);
+    if (opened) this.settle(out);
+  }
+
+  /**
+   * A round of a session ended: the card says the round and how it ended, then the subagent
+   * finishes (`suspended` for a blocked round, which goes on once the person answers) or errors for
+   * a failed one. A report after the end of the subagent opens it again first, under an id of its
+   * own. The core reports a round twice on purpose (blocked, then how it ended), so a report is said
+   * when its round is newer than the last said or says another outcome of it.
+   */
+  private onSessionReported(e: Event, out: Ev[]) {
+    const d = e.data;
+    const found = this.sessions.get(String(d.session));
+    // a log held from the middle has no session to report: nothing was said of it
+    if (!found) return;
+    const round = Number(d.round);
+    const report = String(d.report);
+    if (found.last && round < found.last.round) return;
+    if (found.last && round === found.last.round && report === found.last.report) return;
+    const opened = this.ensureRun(e, out);
+    const view = found;
+    if (!view.subOpen) {
+      view.sub = `sub-session-${view.seq}-${e.seq}`;
+      if (this.invocation) view.parent = this.invocation.id;
+      else view.parent = undefined;
+      view.startedAt = e.at;
+      out.push(this.sessionStarted(view));
+    }
+    view.round = round;
+    view.report = report;
+    view.last = { round, report };
+    if (!view.closed) view.state = report === "blocked" ? "working" : "idle";
+    out.push(this.sessionCard(view, e));
+    view.subOpen = false;
+    if (report === "failed") {
+      out.push({
+        type: "SUBAGENT_ERROR",
+        subagentRunId: view.sub,
+        message: `${view.agent} failed round ${round}`,
+        code: "session_failed",
+      });
+    } else if (report === "blocked") {
+      out.push({
+        type: "SUBAGENT_FINISHED",
+        subagentRunId: view.sub,
+        outcome: { type: "suspended" },
+        result: { round, report },
+      });
+    } else {
+      out.push({ type: "SUBAGENT_FINISHED", subagentRunId: view.sub, result: { round, report } });
+    }
+    if (opened) this.settle(out);
+  }
+
+  /** A session was closed (once): the card says so, and the subagent finishes if a round still held it open. */
+  private onSessionClosed(e: Event, out: Ev[]) {
+    const view = this.sessions.get(String(e.data.session));
+    if (!view || view.closed) return;
+    const opened = this.ensureRun(e, out);
+    view.closed = true;
+    view.state = "closed";
+    out.push(this.sessionCard(view, e));
+    if (view.subOpen) {
+      view.subOpen = false;
+      out.push({ type: "SUBAGENT_FINISHED", subagentRunId: view.sub, result: { state: "closed" } });
+    }
+    if (opened) this.settle(out);
+  }
+
+  /**
+   * The subagents of the sessions whose round still runs end as suspended, because the helper's work
+   * goes on (its report, later, opens them again; the card keeps saying `working`): those under the
+   * invocation that is closing (`under`), or all of them when the run closes (`undefined`).
+   */
+  private suspendSessions(under: string | undefined, out: Ev[]) {
+    const open = [...this.sessions.values()]
+      .filter((v) => v.subOpen && (under === undefined || v.parent === under))
+      .sort((a, b) => a.seq - b.seq);
+    for (const view of open.reverse()) {
+      view.subOpen = false;
+      out.push({
+        type: "SUBAGENT_FINISHED",
+        subagentRunId: view.sub,
+        outcome: { type: "suspended" },
+      });
+    }
+  }
+
+  // ---- what a person asks of a session -------------------------------------------------------
+
+  /** A person asked to start a session: the `vymalo.sessionStart` card, `starting`. A request the log asked already says nothing. */
+  private onStartAsked(e: Event, out: Ev[]) {
+    const d = e.data;
+    const request = String(d.request);
+    if (this.starts.has(request)) return;
+    const opened = this.ensureRun(e, out);
+    const view: StartView = {
+      agent: String(d.agent),
+      description: str(d.description) ?? "",
+      keepOpen: d.keepOpen === true,
+    };
+    out.push(this.startCard(request, view, "starting", undefined, e));
+    this.starts.set(request, view);
+    if (opened) this.settle(out);
+  }
+
+  /** The start ended: the same card, `opened` with the child thread and the session, or `failed` with the agent's words. */
+  private onStartEnded(e: Event, out: Ev[]) {
+    const d = e.data;
+    const request = String(d.request);
+    const view = this.starts.get(request);
+    if (!view) return;
+    this.starts.delete(request);
+    const opened = this.ensureRun(e, out);
+    out.push(this.startCard(request, view, d.outcome === "opened" ? "opened" : "failed", d, e));
+    if (opened) this.settle(out);
+  }
+
+  private startCard(
+    request: string,
+    view: StartView,
+    state: string,
+    ended: Record<string, unknown> | undefined,
+    e: Event,
+  ): Ev {
+    return this.card(e, `session-start-${request}`, "vymalo.sessionStart", {
+      request,
+      agent: view.agent,
+      description: view.description,
+      keepOpen: view.keepOpen,
+      state,
+      ...(typeof ended?.thread === "string" ? { threadId: ended.thread } : {}),
+      ...(typeof ended?.session === "string" ? { session: ended.session } : {}),
+      ...(typeof ended?.reason === "string" ? { reason: ended.reason } : {}),
+    });
+  }
+
+  /** A person asked to close the session this thread is: its own card, saying so. Only a child thread has one. */
+  private onCloseAsked(e: Event, out: Ev[]) {
+    if (!this.info.child) return;
+    const opened = this.ensureRun(e, out);
+    this.ownSession.closeAsked = true;
+    out.push(this.ownSessionCard(String(e.data.session), e));
+    if (opened) this.settle(out);
+  }
+
+  /** The session this thread is changed state, or began closing: its own card again. */
+  private onSessionState(e: Event, out: Ev[]) {
+    if (!this.info.child) return;
+    const d = e.data;
+    const opened = this.ensureRun(e, out);
+    this.ownSession = {
+      state:
+        d.state === "working" || d.state === "idle" || d.state === "closed" ? d.state : undefined,
+      closing: d.closing === true,
+      closeAsked: d.closeAsked === true,
+    };
+    out.push(this.ownSessionCard(String(d.session), e));
+    if (opened) this.settle(out);
+  }
+
+  /** The child's own `vymalo.session` card: what a composer reads (`session-self`). */
+  private ownSessionCard(session: string, e: Event): Ev {
+    const own = this.ownSession;
+    const terminal = this.state === "done" || this.state === "failed" || this.state === "cancelled";
+    return this.card(e, "session-self", "vymalo.session", {
+      session,
+      agent: this.info.child?.agent ?? "",
+      keepOpen: this.info.child?.keepOpen ?? false,
+      state: own.state ?? (terminal ? "idle" : "working"),
+      closing: own.closing,
+      closeAsked: own.closeAsked,
+    });
   }
 
   /** A step of the agent's work: its `vymalo.step` activity and, for a sub-agent step, a subagent of its own. */
@@ -1148,7 +1490,8 @@ export class Projector {
       e.kind !== "ask_started" &&
       e.kind !== "ask_finished" &&
       e.kind !== "model_usage" &&
-      e.kind !== "model_usage_total"
+      e.kind !== "model_usage_total" &&
+      !isSessionKind(e.kind)
     ) {
       this.interrupt = null;
       this.failure = null;
@@ -1264,6 +1607,7 @@ export class Projector {
       this.suspended = inv;
       this.invocation = null;
     }
+    this.suspendSessions(undefined, out);
     out.push(this.snapshot());
     out.push(
       this.withUsage({
@@ -1399,14 +1743,27 @@ export class Projector {
     if (!this.run && finished && e.kind === "user_message") this.beginJob(this.jobNumber + 1);
     if (jobStart !== undefined && jobStart !== this.jobNumber) this.beginJob(jobStart);
     const wasOpen = this.run !== null;
-    if (!this.run && e.kind !== "user_message" && e.kind !== "thread_state") this.openRun(e, out);
+    // (a session event opens a run only when it says something: `ensureRun`, in its own handler)
+    if (
+      !this.run &&
+      e.kind !== "user_message" &&
+      e.kind !== "thread_state" &&
+      !isSessionKind(e.kind)
+    ) {
+      this.openRun(e, out);
+    }
     switch (e.kind) {
       case "job_started": {
         out.push({
           type: "ACTIVITY_SNAPSHOT",
           messageId: `job-${jobStart}`,
           activityType: "vymalo.job",
-          content: { job: jobStart, at: e.at },
+          content: {
+            job: jobStart,
+            // a child thread's job follows a round of its session (ADR 0072)
+            ...(isRecord(e.data.round) ? { round: e.data.round } : {}),
+            at: e.at,
+          },
           metadata: actorMeta(e),
         });
         if (!begunByMessage && wasOpen) out.push(this.snapshot());
@@ -1523,6 +1880,34 @@ export class Projector {
       }
       case "ask_finished": {
         this.onAskFinished(e, wasOpen, out);
+        break;
+      }
+      case "child_session_opened": {
+        this.onSessionOpened(e, out);
+        break;
+      }
+      case "child_session_reported": {
+        this.onSessionReported(e, out);
+        break;
+      }
+      case "child_session_closed": {
+        this.onSessionClosed(e, out);
+        break;
+      }
+      case "child_session_start_asked": {
+        this.onStartAsked(e, out);
+        break;
+      }
+      case "child_session_start_ended": {
+        this.onStartEnded(e, out);
+        break;
+      }
+      case "child_session_close_asked": {
+        this.onCloseAsked(e, out);
+        break;
+      }
+      case "child_session_state": {
+        this.onSessionState(e, out);
         break;
       }
       case "agent_status": {
@@ -1817,6 +2202,7 @@ export class Projector {
           this.state !== "working" &&
           this.state !== "verifying"
         ) {
+          this.suspendSessions(undefined, out);
           out.push(this.runEnd());
           this.run = null;
           this.invocation = null;
@@ -1830,6 +2216,7 @@ export class Projector {
         // a verifier still waited for when the run ends never answered (a timeout, a cancel, or
         // another source decided the round); the run's success is its pass
         this.closeVerifier(this.state === "done" ? { passed: true } : "abandoned", out);
+        this.suspendSessions(undefined, out);
         out.push(this.snapshot());
         out.push(this.runEnd());
         this.run = null;
