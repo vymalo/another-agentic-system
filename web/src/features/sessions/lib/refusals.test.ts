@@ -67,3 +67,10 @@ describe("refusalWords", () => {
     expect(refusalWords("toString", "detail")).toBe("detail");
   });
 });
+
+describe("refusalWords with a detail of white space only", () => {
+  it("is no detail", () => {
+    expect(refusalWords(undefined, "   ")).toBe("The request was refused. Try again.");
+    expect(refusalWords("something_new", "\n\t")).toBe("The request was refused. Try again.");
+  });
+});

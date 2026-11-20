@@ -246,3 +246,43 @@ describe("a card newer than the row", () => {
     expect(m.open.map((i) => i.state)).toEqual(["idle"]);
   });
 });
+
+describe("the merge, further decisions", () => {
+  it("lists the sessions only cards say newest first, the order of the stream reversed", () => {
+    const m = merge({
+      cards: new Map([
+        ["session-1", card("s1", { threadId: A })],
+        ["session-2", card("s2", { threadId: B })],
+        ["session-3", card("s3", { threadId: C })],
+      ]),
+    });
+    expect(m.open.map((i) => i.session)).toEqual(["s3", "s2", "s1"]);
+  });
+
+  it("names a subagent by its thread's title, and by the card's description only when the title is empty", () => {
+    const cards = new Map([["session-1", card("s1", { description: "from the card" })]]);
+    expect(merge({ rows: [row(A, "s1")], cards }).open[0]?.description).toBe("row s1");
+    expect(merge({ rows: [row(A, "s1", { title: "" })], cards }).open[0]?.description).toBe(
+      "from the card",
+    );
+  });
+
+  it("does not mark a closed subagent as closing when a close is applied to it", () => {
+    const m = merge({
+      rows: [row(A, "s1", { childOf: { threadId: PARENT, session: "s1", state: "closed" } })],
+      applied: new Map([[A, "closing"]]),
+    });
+    expect(m.closed[0]).toMatchObject({ state: "closed", closing: false });
+  });
+
+  it("counts an update of a child once whatever the case its thread id is written in", () => {
+    const seen = noteArrivals(NO_ARRIVALS, {
+      thread: PARENT,
+      rows: [row(A.toUpperCase(), "s1")],
+      cards: new Map([["session-1", card("s1", { threadId: A })]]),
+      self: null,
+    });
+    expect(arrivalsOf(seen, A)).toBe(2);
+    expect(arrivalsOf(seen, A.toUpperCase())).toBe(2);
+  });
+});

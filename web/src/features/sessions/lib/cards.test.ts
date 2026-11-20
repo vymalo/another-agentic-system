@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { childOf, parseSession, parseSessionStart } from "./cards";
+import { cardNewer, childOf, parseSession, parseSessionStart } from "./cards";
 
 /*
  * The cards a child session is told by (docs/api/agui.md "Child sessions as subagents" and "A person
@@ -263,5 +263,12 @@ describe("childOf", () => {
   it("is null when childOf is not an object", () => {
     expect(childOf({ id: CHILD, childOf: "s1" })).toBeNull();
     expect(childOf({ id: CHILD, childOf: [row] })).toBeNull();
+  });
+});
+
+describe("cardNewer", () => {
+  it("counts a card stamped the same instant as the resource as newer", () => {
+    expect(cardNewer({ at: "2026-11-20T10:00:00Z" }, "2026-11-20T10:00:00Z")).toBe(true);
+    expect(cardNewer({ at: "2026-11-20T10:00:00Z" }, "2026-11-20T10:00:01Z")).toBe(false);
   });
 });

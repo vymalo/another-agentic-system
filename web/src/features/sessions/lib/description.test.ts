@@ -103,3 +103,19 @@ describe("checkStartDescription", () => {
     expect(checkStartDescription("Trouver les auteurs 作者を探す")).toMatchObject({ ok: true });
   });
 });
+
+describe("the edges of the characters the server refuses or trims", () => {
+  it("refuses the last bidirectional isolate, U+2069", () => {
+    expect(checkStartDescription("a\u2069b")).toEqual({ ok: false, reason: "unreadable" });
+  });
+
+  it("refuses the last bidirectional embedding mark, U+202E, and the first, U+202A", () => {
+    expect(checkStartDescription("a\u202eb")).toEqual({ ok: false, reason: "unreadable" });
+    expect(checkStartDescription("a\u202ab")).toEqual({ ok: false, reason: "unreadable" });
+  });
+
+  it("trims U+0085 and U+1680, which Rust's trim cuts", () => {
+    expect(checkStartDescription("\u0085x\u0085")).toMatchObject({ ok: true, value: "x" });
+    expect(checkStartDescription("\u1680x\u1680")).toMatchObject({ ok: true, value: "x" });
+  });
+});

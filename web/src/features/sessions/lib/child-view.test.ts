@@ -94,3 +94,22 @@ describe("childView", () => {
     expect(v?.parent).toBeUndefined();
   });
 });
+
+describe("childView, further decisions", () => {
+  it("says no report of the live card when the resource is the newer", () => {
+    const v = childView({
+      thread: thread({}, "2026-11-20T11:00:00Z"),
+      threadId: ID,
+      self: self({ report: "failed", at: "2026-11-20T10:00:00Z" }),
+    });
+    expect(v?.report).toBeUndefined();
+    expect(
+      childView({ thread: thread(), threadId: ID, self: self({ report: "failed" }) })?.report,
+    ).toBe("failed");
+  });
+
+  it("keeps the helper's name from the resource when the live card has none", () => {
+    const v = childView({ thread: thread(), threadId: ID, self: self({ agent: "" }) });
+    expect(v?.agent).toBe("planner");
+  });
+});
