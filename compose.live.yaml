@@ -68,7 +68,6 @@ services:
       MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env (an OpenAI-compatible endpoint, with /v1)}"
       MODEL_API_KEY: "${MODEL_API_KEY:-}"
       MODEL: "${MODEL:?set MODEL in .env (the coder's model alias)}"
-      OPENCODE_MODEL: "${OPENCODE_MODEL:-${MODEL}}"
       GITHUB_API_URL: "${GITHUB_API_URL:-https://api.github.com}"
       # The coder's credential: a token OR a GitHub App, never both (the coder exits at startup when both are set or when neither
       # is). Empty is "not set". The App's key is a file: GITHUB_APP_PRIVATE_KEY_FILE is mounted below, and its path in the
@@ -81,6 +80,10 @@ services:
       GITHUB_APP_OWNERS: "${GITHUB_APP_OWNERS:-}"
       GITHUB_APP_INSTALLATION_ID: "${GITHUB_APP_INSTALLATION_ID:-}"
       GITHUB_APP_PRIVATE_KEY_PATH: "${GITHUB_APP_ID:+/run/github-app/key.pem}"
+      # Since adam-rs 3eca052 the coder refuses to start (exit 78) with an App key that is a file while its commands run in this
+      # container, as here: a command could read the key. `true` in .env accepts that risk for a key you can throw away; empty or
+      # `false` keeps the refusal (a token needs no acceptance and ignores it).
+      ALLOW_COMMANDS_NEXT_TO_SECRETS: "${ALLOW_COMMANDS_NEXT_TO_SECRETS:-false}"
       # The owners (users or organisations) the coder may create repositories for, after the person says yes. Empty: it never creates one.
       CREATE_REPO_OWNERS: "${CREATE_REPO_OWNERS:-}"
       ALLOWED_REPO_HOSTS: "${ALLOWED_REPO_HOSTS:-github.com}"

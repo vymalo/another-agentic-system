@@ -72,7 +72,7 @@ const review = (over: Record<string, unknown> = {}) => ({
 });
 
 const composer = (page: Page) => page.getByLabel("Message", { exact: true });
-const menu = (page: Page) => page.getByRole("listbox", { name: "Prompts" });
+const menu = (page: Page) => page.getByRole("listbox", { name: "Your prompts" });
 const dialog = (page: Page) => page.getByRole("dialog");
 
 async function open(page: Page) {

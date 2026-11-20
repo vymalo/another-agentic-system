@@ -746,3 +746,44 @@ and the effect is fail-closed (fewer repositories count, never more). The chart'
 > records (epic #359, [#372](https://github.com/vymalo/another-agentic-system/issues/372)). Those notes stand as the history
 > of what was checked at their pins; in this stack the coder runs commands in its own container, and a repository's
 > `devcontainer.json` is not used here.
+
+### Status note, 2026-11-19: the coder without OpenCode, parallel tool calls, sessions on every adam card (adam-rs 7418467)
+
+The pin moves to adam-rs `7418467`, which is `ddef35e` plus adam-rs #140 to #208 and their bump commits; `7418467` is the newest `main`
+commit whose image is published (`11ff8d3` bumped the chart to it; `sha-790eb01`, the one commit after it, answered 404). What this
+stack sees of it, read as `adam-upgrade` says (`git log --format='%h %s' ddef35e..7418467 | grep '!:'` lists eleven breaking commits):
+
+- **The coder no longer uses OpenCode** (#145, adam-rs ADR 0038): `delegate_to_opencode` is gone and the scripted coder writes `hello.txt`
+  with `write_file`. `OPENCODE_MODEL` is ignored with a warning, so `compose.yaml`, `compose.live.yaml` and `.env.example` drop it;
+  `dev/coder-e2e.sh` asserts a `Write a file` step and no `Hand to OpenCode` sub-agent step, the variant `NO_OPENCODE=1` (scenario
+  `coder-no-opencode`) is gone from the script, `dev/e2e-all.sh` and `coder-e2e.yml`, and `mock-openai` is asked for `mock-coder` only.
+- **The tool calls of a turn run at the same time** (adam-rs ADR 0049), MCP tools included: the browser's `mcp.json` (`dev/agents/browser/agent/`
+  and the chart's `files/browser/`, equal) says `"parallel": false`, since obscura holds one browser session.
+- **A GitHub App key as a file is refused (exit 78)** while the coder's commands run in its own container (adam-rs issue 120, since `3eca052`):
+  `dev/compose.github-app.yaml` sets `ALLOW_COMMANDS_NEXT_TO_SECRETS=true` as upstream's copy does, and `compose.live.yaml` passes the variable
+  from `.env`, `false` by default.
+- **Sessions:** the card of an adam agent whose root has a subagent lists `child-sessions/v1` (#198, adam-rs ADR 0045): the coder's and the
+  chat's here, not the researcher's or the browser's. The orchestrator activates it
+  ([ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)); its S5 can now start.
+- Also: paged tools, a plan, skills, commands and project instructions (adam-rs ADR 0044), compaction of a long history, file bytes out of
+  the run (schema v5 part 1, #204, migrated at startup), credentials per call (adam-rs ADR 0058, #200), static musl binaries (#201), a cheaper
+  runtime (#192, #199). The A2UI v1.0 cutover is a decision (adam-rs ADR 0056, #202), not built: the agents still speak v0.9.1.
+- **Re-copied:** the agent folder (`instructions.md`, `mcp.json`, both `subagents/`, and the new `commands/` and `skills/`), `coder-script.json`
+  and its SSE twin. **Removed**, as upstream removed them: the `devbox` and `devbox-broken` seeds (#208), `opencode-script.json` and its four
+  bodies (#145), and `chat-text.json` and `chat-text.sse`, which only the OpenCode script named; `compose.yaml` no longer mounts the empty
+  `__files` folder of `mock-openai`.
+- **The crates move with it.** The seven `rev` lines name `7418467`; `cargo update -p adam-host --precise` re-resolved ten adam-rs packages
+  (`adam-agent-fs`, now a dependency of `adam-a2a-runtime`, is new) and added the six crates `adam-agent-fs` reads YAML with
+  (`serde-saphyr`, `granit-parser`, `annotate-snippets`, `arraydeque`, `encoding_rs_io`, `unicode-width`). `RunEvent::Artifact` gained `id`,
+  so `orch-agent-adam`'s testkit sets `id: None`; nothing here implements adam's `Store` or `Notifier`.
+- The chart's `chat.image`, the chat's and the browser's image, moves with it (the same tag and digest).
+- *Verified 2026-11-19* (anonymous ghcr API, HTTP 200): `coder:sha-7418467` is one `linux/amd64` OCI manifest (3.13 GB of compressed layers,
+  fourteen layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision`
+  `74184670e082766990aff5393ab84ce7f49829b6`, digest `sha256:980c0ffb...` (the registry's `Docker-Content-Digest` and the sha-256 of the
+  manifest it returned). `dev/coder/check-vendored.sh` passes; `docker compose --profile '*' config -q` is clean, with the GitHub App and
+  live overrides too; `cargo fmt`, both `cargo clippy` runs and `cargo test -p orchestrator --features agent-local` and `-p orch-agent-adam`
+  pass in `orchestrator/`; `docs-check` says `docs OK`.
+- *Unverified where this was written* (no Docker daemon, no helm, no shellcheck): every scenario in containers, first run by the Coder E2E
+  workflow of the pull request that pins it (the coder's new script, the folder agents with skills, plans and parallel calls on their
+  scripted models, the orchestrator activating `child-sessions/v1` on real cards); the chart's render check (`deploy.yml`); the Postgres
+  cases of the orchestrator's tests; the chat on netcup on the new image.

@@ -820,7 +820,7 @@ for (const scheme of ["light", "dark"] as const) {
       const box = page.getByLabel("Message", { exact: true });
       await expect(box).toBeVisible();
       await box.fill("/rev");
-      await expect(page.getByRole("listbox", { name: "Prompts" })).toBeVisible();
+      await expect(page.getByRole("listbox", { name: "Your prompts" })).toBeVisible();
       await shot(page, "prompts-menu");
 
       await page.keyboard.press("Enter");
@@ -833,6 +833,37 @@ for (const scheme of ["light", "dark"] as const) {
       await dialog.getByRole("button", { name: "Use prompt" }).click();
       await expect(box).toHaveValue("Review this change for Security at depth 3.");
       await shot(page, "prompts-filled");
+    });
+
+    test("the agent's own commands: the / menu", async ({ page, context }) => {
+      const lib = await promptsSession(context, "user");
+      expect(
+        (
+          await lib.hook("/__mock/commands", {
+            agent: "adam",
+            params: {
+              commands: [
+                {
+                  name: "explain",
+                  description: "Explains a file, in words a newcomer can follow.",
+                },
+                {
+                  name: "review",
+                  description: "Reviews a change and reports what it finds.",
+                  argumentHint: "<repo>",
+                },
+                { name: "test", description: "Runs the project's tests and reports what failed." },
+              ],
+            },
+          })
+        ).status,
+      ).toBe(204);
+      await page.goto("/");
+      const box = page.getByLabel("Message", { exact: true });
+      await expect(box).toBeVisible();
+      await box.fill("/");
+      await expect(page.getByRole("listbox", { name: "Agent commands" })).toBeVisible();
+      await shot(page, "commands-menu");
     });
 
     test("sign-in screen, and the same after a sign-in lapsed (browser mode)", async ({ page }) => {

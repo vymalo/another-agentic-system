@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
 import type { components } from "../src/lib/api/schema";
 import { uuidv7 } from "../src/lib/uuid";
+import { COMMANDS_URI, readCommands } from "./commands";
 import { FILES, fileHeaders } from "./files";
 import {
   AGENTS,
@@ -414,6 +415,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
      * message is sent. An agent with no entry lists nothing, so the web draws no chip for it.
      */
     tiers: Map<string, CardTiers>;
+    /**
+     * What each agent's card says under `commands/v1` (ADR 0079), by agent id, as a test sets it
+     * (`POST /__mock/commands`): the raw params of the extension. An agent with no entry lists no
+     * command, so the web draws no commands menu for it.
+     */
+    commands: Map<string, unknown>;
     /** The MCP servers the deployment offers (`GET /api/tool-servers`), in its order. */
     toolServers: ToolServer[];
     /** What `GET /api/me/usage` answers (ADR 0065) by month, `"*"` for any other: as a test sets it (`POST /__mock/my-usage`). */
@@ -452,6 +459,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         },
         me: "user",
         tiers: new Map(),
+        commands: new Map(),
         toolServers: [...TOOL_SERVERS],
         myUsage: {},
         userTools: newUserTools(),
@@ -1579,6 +1587,19 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       else tiers.set(body.agent, body.params);
       return void res.writeHead(204).end();
     }
+    // What the card of an agent lists under `commands/v1` (ADR 0079), as a test sets it for its own
+    // session: `{ agent, params }`, where `params` is taken as given (a malformed one is a card that
+    // lists nothing), and `null` takes the listing away. An agent nobody set lists no command.
+    if (path === "/__mock/commands" && method === "POST") {
+      const body = await readJson(req);
+      if (!isRecord(body) || typeof body.agent !== "string" || !("params" in body)) {
+        return problem(res, 400, "Bad Request", "the body is { agent, params }");
+      }
+      const commands = registryOf(session).commands;
+      if (body.params === null) commands.delete(body.agent);
+      else commands.set(body.agent, body.params);
+      return void res.writeHead(204).end();
+    }
     // What `GET /api/me/usage` answers for this session (ADR 0065): `{ "<YYYY-MM>": MyUsage, "*": MyUsage }`, the body
     // taken whole (see `my-usage.ts`); a month it names none for is an empty, complete one.
     if (path === "/__mock/my-usage" && method === "POST") {
@@ -2661,6 +2682,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // with the person's cap on this agent beside them (the mock has one role: the same for every agent)
     const card = readOffer(registryOf(sessionOf(req)).tiers.get(agent.id));
     const offered = card && { ...card, ...(me.maxTier ? { maxTier: me.maxTier } : {}) };
+    // the card's commands, only when well formed (a card that lists the extension badly does not list it)
+    const commands = readCommands(registryOf(sessionOf(req)).commands.get(agent.id));
     sendJson(res, 200, {
       identity: {
         name: agent.name,
@@ -2680,11 +2703,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       THREAD_TOOLS_AGENTS.has(agent.id) ||
       STEER_AGENTS.has(agent.id) ||
       MENTIONS_AGENTS.has(agent.id) ||
-      offered
+      offered ||
+      commands
         ? {
             custom: {
               ...(agent.releases ? { [RELEASE_CHANNELS_URI]: agent.releases } : {}),
               ...(offered ? { [TIER_URI]: offered } : {}),
+              ...(commands ? { [COMMANDS_URI]: { commands } } : {}),
               ...(THREAD_TOOLS_AGENTS.has(agent.id) ? { [THREAD_TOOLS_URI]: {} } : {}),
               ...(STEER_AGENTS.has(agent.id) ? { [STEER_URI]: {} } : {}),
               ...(MENTIONS_AGENTS.has(agent.id) ? { [MENTIONS_URI]: {} } : {}),

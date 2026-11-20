@@ -1,8 +1,7 @@
 #!/usr/bin/env sh
 # System-level test of the default agent: one chat message becomes a pull request.
 #
-#   dev/coder-e2e.sh                  # OpenCode (model mock-opencode) makes the change
-#   NO_OPENCODE=1 dev/coder-e2e.sh    # the check command makes it; OpenCode is not started
+#   dev/coder-e2e.sh                  # the coder lists the branches over MCP, writes hello.txt and opens the pull request
 #   GITHUB_AUTH=app dev/coder-e2e.sh  # the stack runs the coder as a GitHub App (docker compose -f compose.yaml -f dev/compose.github-app.yaml)
 #
 # Start the `app` profile first (the coder image is about 2.9 GB, linux/amd64 only):
@@ -35,14 +34,13 @@
 #     job holds the pushed commit and the agent's checks passed on it, and whose log is not empty;
 #   * the coder's work is a tree of steps (`steps/v1`, adam-rs e1d77be; docs/api/agui.md, "Nested steps"): the calls of
 #     prepare_workspace, run_checks, commit_and_push and open_pull_request are `vymalo.step` activities labelled with each tool's title
-#     (adam-rs ADR 0027, since d804f99: `Prepare the workspace`, `Run the checks`, `Commit and push`, `Open a pull request`), `delegate_to_opencode` is a
-#     sub-agent step labelled `Hand to OpenCode` (a SUBAGENT_STARTED inside the coder's invocation, ended completed, finished once after its
-#     last step) with at least one command or tool step running under it (OpenCode's own bash call), and the log keeps no more than
-#     6 `agent_step` events of any one step (a start, at most four updates, an end). With NO_OPENCODE=1 there is no OpenCode step;
-#     since adam-rs d56dd94 a tool step carries the call (steps/v1, "Input and output"): the start of prepare_workspace, run_checks,
-#     commit_and_push and open_pull_request has the `input` the script sent (the repository, the check command, the commit message, the
-#     title), the end is `completed` with an `output` whose text is not empty and not an error, and so does `github__list_branches`
-#     (an MCP tool, the default variant: its input the repository, its output the branch `main`);
+#     (adam-rs ADR 0027, since d804f99: `Prepare the workspace`, `Run the checks`, `Commit and push`, `Open a pull request`), and so is
+#     the coder's own `write_file` (`Write a file`: since adam-rs 7418467 the coder makes the change itself, there is no OpenCode and no
+#     sub-agent step `Hand to OpenCode`), and the log keeps no more than 6 `agent_step` events of any one step (a start, at most four
+#     updates, an end); since adam-rs d56dd94 a tool step carries the call (steps/v1, "Input and output"): the start of prepare_workspace,
+#     write_file, run_checks, commit_and_push and open_pull_request has the `input` the script sent (the repository, the path, the check
+#     command, the commit message, the title), the end is `completed` with an `output` whose text is not empty and not an error, and so
+#     does `github__list_branches` (an MCP tool: its input the repository, its output the branch `main`);
 #   * the coder's answer is shown as it is written (`text-stream/v1`, adam-rs cf6ddbb; docs/api/agui.md, "Live text"): on the run
 #     stream an assistant message marked `metadata["vymalo.live"]` opens, grows in at least two live deltas from offset 0, and the log's
 #     final message completes the SAME message id (one START, the live deltas, the final delta, one END); what the deltas say, read by
@@ -53,10 +51,9 @@
 #     mounted over its folder's, and GITHUB_MCP_URL names the mock): the file holds no credential, the coder sends the credentials of
 #     each call (adam-rs ADR 0017, D4). The mock's journal, which is not reset (the coder connected the server when it started, listing
 #     the tools with a placeholder bearer, `ghs_adam_listing_only`), holds an `initialize` and a `tools/list`, every `tools/list` carries
-#     the placeholder, and the default script (OpenCode; it reads the repository's branches with `github__list_branches` right after
-#     preparing the workspace) added exactly one `tools/call` of `list_branches`, and the model was given its answer; every `tools/call`
-#     of this run carries the coder's own credentials (the token below, or the installation token of an App); the variant without
-#     OpenCode adds none;
+#     the placeholder, and the script (it reads the repository's branches with `github__list_branches` right after preparing the
+#     workspace) added exactly one `tools/call` of `list_branches`, and the model was given its answer; every `tools/call` of this run
+#     carries the coder's own credentials (the token below, or the installation token of an App);
 #   * the coder's GitHub credential, as the stack was started with it (GITHUB_AUTH): `token` (default): every call the coder made
 #     to mock-github's `/repos/...` carried `Authorization: Bearer dev-github-token`; `app`: the coder holds a GitHub App's key, no
 #     token and no installation ID (GITHUB_APP_OWNERS: dev/compose.github-app.yaml); with EXPECT_INSTALLATION_LOOKUP=1 (the first run
@@ -64,10 +61,9 @@
 #     (`GET /orgs|users/<owner>/installation`), with a JWT, for an owner on the list and no other; and its journal holds a
 #     `POST /app/installations/67890/access_tokens` (the trade of a signed JWT for a token) and every call to `/repos/...`, the
 #     pull request's included, carried the installation token it gave (`Bearer ghs_mockinstallationtoken...`), never the JWT;
-#   * mock-openai matched every request, and saw mock-opencode requests unless NO_OPENCODE=1;
+#   * mock-openai matched every request, and saw no request for a model other than mock-coder (there is no mock-opencode any more);
 #   * git-server has the branch, and hello.txt on it is `hello`.
-# The models are the scripts vendored in dev/coder/wiremock/mock-openai (see dev/coder/UPSTREAM);
-# [mock:no-opencode] in the task selects the variant without OpenCode.
+# The model is the script vendored in dev/coder/wiremock/mock-openai (see dev/coder/UPSTREAM).
 #
 # Environment (defaults match compose.yaml on one machine):
 #   BASE_URL         http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
@@ -78,7 +74,6 @@
 #   MOCK_OPENAI_URL  http://127.0.0.1:${MOCK_OPENAI_PORT:-8091}
 #   GIT_SERVER_URL   http://127.0.0.1:${GIT_SERVER_PORT:-8093}   (from the host)
 #   TIMEOUT          300    seconds to wait for the thread to end
-#   NO_OPENCODE      unset  1 = the [mock:no-opencode] script
 #   GITHUB_AUTH      token  how the stack was started: `token` or `app` (see the assertions above)
 #   EXPECT_INSTALLATION_LOOKUP  (unset)  1 with GITHUB_AUTH=app: assert the coder found the installation (see above)
 #   MOCK_GITHUB_TOKEN dev-github-token   the token of `token` mode (compose.yaml's `${MOCK_GITHUB_TOKEN-dev-github-token}`)
@@ -157,12 +152,6 @@ fi
 agent_id=${default_agent:-adam}
 
 text="In $repo_url (base branch main), add hello.txt containing hello."
-if [ "${NO_OPENCODE:-}" = 1 ]; then
-  text="$text [mock:no-opencode]"
-  echo "variant: no OpenCode ([mock:no-opencode])"
-else
-  echo "variant: OpenCode makes the change"
-fi
 
 # --- reset both journals, then send the task ------------------------------------------
 for m in "$github" "$openai"; do
@@ -188,7 +177,6 @@ model_saw_branches() {
     jq -r '.count' 2>/dev/null || echo '?'
 }
 branches_before=$(mcp_count tools/call list_branches)
-calls_before=$(mcp_count tools/call)
 # When this run began, in the journal's milliseconds: the bearer of a call is checked only for this run's calls (a run before it,
 # as a GitHub App, carried that run's installation token, and may have ended in this very second). Where `date` has no
 # milliseconds, the next whole second: this run's first call comes seconds later.
@@ -340,8 +328,7 @@ fi
 # The orchestrator activates `steps/v1` (the coder's card lists it, read at every send), so what the coder did arrives as
 # agent_step events that carry their path, not as a flood of status lines: every tool call is a step labelled with the tool's title
 # (adam-rs ADR 0027: a title a person reads, not the name the model calls it by; the table is adam-rs bin/adam-coder/README.md),
-# `delegate_to_opencode` is a sub-agent step labelled `Hand to OpenCode`, and what OpenCode did under it (its bash command, its summary) are steps that run under that
-# one. The projection draws the tree with AG-UI's subagents (SUBAGENT_STARTED, nested by parentSubagentRunId) and one
+# and the coder's own `write_file` is one of them (since adam-rs 7418467 there is no OpenCode and no sub-agent step `Hand to OpenCode`). The projection draws the tree with AG-UI's subagents (SUBAGENT_STARTED, nested by parentSubagentRunId) and one
 # `vymalo.step` activity per step (docs/api/agui.md, "Nested steps"; the golden docs/api/examples/agui/steps.agui.json), and the log
 # keeps a bounded number of reports per step: the start, at most four updates and the end (docs/api/steps-v1.md). The frames are the
 # thread's replay ($events), the log is the export.
@@ -349,7 +336,7 @@ fi
 steps_def='def steps: .[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.step"); def under($id): (.content.path // []) | any(. == $id); '
 # The titles have spaces: the labels are joined with `|`.
 top_tools=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool" and ((.content.path // []) | length) == 0) | .content.label] | unique | join("|")' "$events" 2>/dev/null || true)
-for pair in "prepare_workspace:Prepare the workspace" "run_checks:Run the checks" "commit_and_push:Commit and push" "open_pull_request:Open a pull request"; do
+for pair in "prepare_workspace:Prepare the workspace" "write_file:Write a file" "run_checks:Run the checks" "commit_and_push:Commit and push" "open_pull_request:Open a pull request"; do
   tool=${pair%%:*}
   title=${pair#*:}
   case "|$top_tools|" in
@@ -386,77 +373,22 @@ tool_io() {
     bad "steps: the end of $1 is '${_state:-none}' with output text '${_text:-none}' (error: $_err), want completed with a text that is no error"
   fi
 }
-if [ "${NO_OPENCODE:-}" = 1 ]; then checks_command='echo hello > hello.txt && sh ./check.sh'; else checks_command='sh ./check.sh'; fi
 tool_io 'Prepare the workspace' repo_url "$repo_url"
-tool_io 'Run the checks' command "$checks_command"
+tool_io 'Write a file' path hello.txt
+tool_io 'Run the checks' command 'sh ./check.sh'
 tool_io 'Commit and push' message 'feat: add hello.txt'
 tool_io 'Open a pull request' title 'feat: add hello.txt'
-if [ "${NO_OPENCODE:-}" != 1 ]; then
-  # An MCP tool: the mock GitHub server gives no title, so the label is the name the model knows, `<server>__<tool>`; its input is
-  # the script's arguments and its output the mock's list of branches, which names `main`.
-  tool_io github__list_branches repo sandbox
-  branches_text=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool" and .content.label == "github__list_branches")] | last | .content.output.text // empty' "$events" 2>/dev/null || true)
-  case $branches_text in
-    *main*) ok "steps: the output of github__list_branches names the branch main" ;;
-    *) bad "steps: the output of github__list_branches does not name main ('${branches_text:-none}')" ;;
-  esac
-fi
-
-opencode_ids=$(jq -r "$steps_def"'[steps | select(.content.kind == "subagent" and .content.label == "Hand to OpenCode") | .content.id] | unique | join(" ")' "$events" 2>/dev/null || true)
-oid=
-if [ "${NO_OPENCODE:-}" = 1 ]; then
-  if [ -z "$opencode_ids" ]; then
-    ok "steps: no OpenCode step ([mock:no-opencode]: OpenCode is not started)"
-  else
-    bad "steps: an OpenCode step ($opencode_ids) although OpenCode is not started"
-  fi
-else
-  case $opencode_ids in
-    '') bad "steps: no sub-agent step labelled 'Hand to OpenCode' among the thread's vymalo.step activities" ;;
-    *' '*) bad "steps: several OpenCode steps ($opencode_ids), the script delegates once" ;;
-    *)
-      oid=$opencode_ids
-      ok "steps: one sub-agent step labelled Hand to OpenCode ($oid)"
-      oc_state=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(.content.id == $id) | .content.state] | last // empty' "$events" 2>/dev/null || true)
-      if [ "$oc_state" = completed ]; then ok "steps: the OpenCode step ended completed"; else bad "steps: the OpenCode step ended '${oc_state:-none}', want completed"; fi
-      # What runs under it: the activities whose path holds its id, one line per step.
-      children=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(under($id))] | group_by(.content.id) | map(.[0].content | "\(.kind):\(.label)") | join(" | ")' "$events" 2>/dev/null || true)
-      n_children=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(under($id)) | .content.id] | unique | length' "$events" 2>/dev/null || echo 0)
-      if [ "${n_children:-0}" -ge 1 ]; then
-        ok "steps: $n_children step(s) run under OpenCode: $children"
-      else
-        bad "steps: nothing runs under the OpenCode step (no vymalo.step whose path holds $oid)"
-      fi
-      tool_children=$(jq -r --arg id "$oid" "$steps_def"'[steps | select(under($id) and (.content.kind == "command" or .content.kind == "tool")) | .content.id] | unique | length' "$events" 2>/dev/null || echo 0)
-      if [ "${tool_children:-0}" -ge 1 ]; then ok "steps: OpenCode's own tool call is one of them (a command or tool step under it)"; else bad "steps: no command or tool step under OpenCode (children: ${children:-none})"; fi
-      # The tree in subagents: OpenCode is a subagent of the coder's invocation, its steps carry its own subagentRunId, and it ends once.
-      sub=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "Hand to OpenCode")] | first | .subagentRunId // empty' "$events" 2>/dev/null || true)
-      parent=$(jq -r '[.[] | select(.type == "SUBAGENT_STARTED" and .name == "Hand to OpenCode")] | first | .parentSubagentRunId // empty' "$events" 2>/dev/null || true)
-      invocation=$(jq -r --arg a "$agent_id" '[.[] | select(.type == "SUBAGENT_STARTED" and .name == $a and (.parentSubagentRunId == null))] | first | .subagentRunId // empty' "$events" 2>/dev/null || true)
-      if [ -n "$sub" ] && [ -n "$parent" ] && [ "$parent" = "$invocation" ]; then
-        ok "steps: OpenCode is a subagent ($sub) of the $agent_id invocation ($invocation)"
-      else
-        bad "steps: SUBAGENT_STARTED 'Hand to OpenCode' is '${sub:-none}' in '${parent:-none}', want it inside the $agent_id invocation '${invocation:-none}'"
-      fi
-      own=$(jq -r --arg id "$oid" --arg sub "$sub" "$steps_def"'[steps | select(under($id)) | .subagentRunId] | unique | if . == [$sub] then "yes" else "no: \(tostring)" end' "$events" 2>/dev/null || true)
-      if [ -n "$sub" ] && [ "$own" = yes ]; then ok "steps: the steps under OpenCode are attributed to its subagent"; else bad "steps: the steps under OpenCode carry the subagentRunId $own, want $sub"; fi
-      # It ends once, after its last step, and not as an error.
-      closing=$(jq -r --arg sub "$sub" 'to_entries as $e
-        | ([$e[] | select(.value.type == "SUBAGENT_FINISHED" and .value.subagentRunId == $sub)] | map(.key)) as $fin
-        | ([$e[] | select(.value.type == "SUBAGENT_ERROR" and .value.subagentRunId == $sub)] | length) as $err
-        | ([$e[] | select(.value.type == "ACTIVITY_SNAPSHOT" and .value.activityType == "vymalo.step" and .value.subagentRunId == $sub)] | map(.key) | max // -1) as $lastchild
-        | "\($fin | length) \($err) \($lastchild) \($fin | first // -1)"' "$events" 2>/dev/null || true)
-      # closing = <SUBAGENT_FINISHED count> <SUBAGENT_ERROR count> <frame of its last step> <frame of its SUBAGENT_FINISHED>
-      # shellcheck disable=SC2086 # four numbers, split on purpose
-      set -- $closing
-      if [ "$#" = 4 ] && [ "$1" = 1 ] && [ "$2" = 0 ] && [ "$3" -ge 0 ] && [ "$4" -gt "$3" ]; then
-        ok "steps: the OpenCode subagent finished once, after its last step"
-      else
-        bad "steps: the OpenCode subagent: '${closing:-nothing}' (finished, errors, last step frame, finished at frame), want 1 0 and a finish after the last step"
-      fi
-      ;;
-  esac
-fi
+# An MCP tool: the mock GitHub server gives no title, so the label is the name the model knows, `<server>__<tool>`; its input is
+# the script's arguments and its output the mock's list of branches, which names `main`.
+tool_io github__list_branches repo sandbox
+branches_text=$(jq -r "$steps_def"'[steps | select(.content.kind == "tool" and .content.label == "github__list_branches")] | last | .content.output.text // empty' "$events" 2>/dev/null || true)
+case $branches_text in
+  *main*) ok "steps: the output of github__list_branches names the branch main" ;;
+  *) bad "steps: the output of github__list_branches does not name main ('${branches_text:-none}')" ;;
+esac
+# No OpenCode any more (adam-rs 7418467, its ADR 0038): the coder hands its work to no sub-agent.
+handed=$(jq -r "$steps_def"'[steps | select(.content.kind == "subagent" and .content.label == "Hand to OpenCode") | .content.id] | unique | length' "$events" 2>/dev/null || echo '?')
+if [ "$handed" = 0 ]; then ok "steps: no sub-agent step labelled Hand to OpenCode"; else bad "steps: $handed sub-agent step(s) labelled Hand to OpenCode, want none (the pinned coder has no OpenCode)"; fi
 # The log: the same tree, bounded (a retry would start a step again, and the script has none).
 if [ -s "$tmp/export.json" ]; then
   logged=$(jq -r '[.events[] | select(.kind == "agent_step")] | length' "$tmp/export.json" 2>/dev/null || echo 0)
@@ -465,15 +397,6 @@ if [ -s "$tmp/export.json" ]; then
     ok "steps: the log holds $logged agent_step events and no step has more than $most of them (a start, at most four updates, an end: at most 6)"
   else
     bad "steps: the log holds ${logged:-0} agent_step events and one step has $most, want some, and at most 6 of any one step"
-  fi
-  if [ -n "$oid" ]; then
-    shape=$(jq -r --arg id "$oid" '[.events[] | select(.kind == "agent_step" and .data.id == $id) | .data.phase] | "\(first // "none")..\(last // "none")"' "$tmp/export.json" 2>/dev/null || true)
-    in_log=$(jq -r --arg id "$oid" '[.events[] | select(.kind == "agent_step" and (.data.path | any(. == $id))) | .data.id] | unique | length' "$tmp/export.json" 2>/dev/null || echo 0)
-    if [ "$shape" = start..end ] && [ "${in_log:-0}" -ge 1 ]; then
-      ok "steps: the log has the OpenCode step from its start to its end, and $in_log step(s) whose path holds it"
-    else
-      bad "steps: in the log the OpenCode step runs '$shape' with $in_log step(s) under it, want start..end and at least one"
-    fi
   fi
 else
   bad "steps: no export to read the log's agent_step events from"
@@ -569,41 +492,36 @@ lists=$(mcp_count tools/list)
 if [ "$inits" != '?' ] && [ "$inits" -ge 1 ]; then ok "mock-github-mcp saw initialize ($inits)"; else bad "mock-github-mcp saw $inits initialize, want at least 1 (is the stack started with the dev mcp.json mounted over the coder's folder?)"; fi
 if [ "$lists" != '?' ] && [ "$lists" -ge 1 ]; then ok "mock-github-mcp saw tools/list ($lists)"; else bad "mock-github-mcp saw $lists tools/list, want at least 1"; fi
 branches_after=$(mcp_count tools/call list_branches)
-calls_after=$(mcp_count tools/call)
-if [ "${NO_OPENCODE:-}" != 1 ]; then
-  # The default script reads the branches of the repository right after preparing the workspace.
-  if [ "$branches_before" != '?' ] && [ "$branches_after" != '?' ] && [ $((branches_after - branches_before)) -eq 1 ]; then
-    ok "mock-github-mcp saw exactly one tools/call of list_branches in this run"
-  else
-    bad "mock-github-mcp saw $branches_before then $branches_after tools/call of list_branches, want exactly one more"
-  fi
-  # The dev mcp.json holds no credential: the coder gives each call the credentials of that call (adam-rs ADR 0017, D4), the token
-  # of the stack or, as a GitHub App, the installation token it minted. The listing at startup carries a placeholder and no call does.
-  case "$github_auth" in
-    token) want_bearer="Bearer ${MOCK_GITHUB_TOKEN-dev-github-token}"; how=exact ;;
-    app) want_bearer='Bearer ghs_mockinstallationtoken'; how=prefix ;;
-  esac
-  # mcp_wrong_bearers <JSON-RPC method> <wanted bearer> <exact|prefix> [since ms]: how many requests of the journal with that
-  # method (logged at or after `since`, when given) carry another `Authorization` (or none), or ? when the mock does not answer.
-  mcp_wrong_bearers() {
-    patterns=$(jq -nc --arg m "$1" '[{matchesJsonPath: {expression: "$.method", equalTo: $m}}]')
-    curl -s --max-time 30 -X POST "$github_mcp/__admin/requests/find" -H 'Content-Type: application/json' \
-      -d "{\"method\":\"POST\",\"urlPath\":\"/mcp\",\"bodyPatterns\":$patterns}" |
-      jq -r --arg want "$2" --arg how "$3" --argjson since "${4:-0}" '[.requests[] | select((.loggedDate // 0) >= $since) | .headers | with_entries(.key |= ascii_downcase) | (.authorization // "") | select(if $how == "exact" then . != $want else (startswith($want) | not) end)] | length' 2>/dev/null || echo '?'
-  }
-  wrong=$(mcp_wrong_bearers tools/call "$want_bearer" "$how" "$mcp_since")
-  if [ "$wrong" = 0 ]; then ok "every tools/call to mock-github-mcp carried the coder's credentials ('$want_bearer...')"; else bad "$wrong tools/call request(s) to mock-github-mcp did not carry '$want_bearer'"; fi
-  wrong=$(mcp_wrong_bearers tools/list 'Bearer ghs_adam_listing_only' exact)
-  if [ "$wrong" = 0 ]; then ok "every tools/list to mock-github-mcp carried the startup placeholder, not a credential"; else bad "$wrong tools/list request(s) to mock-github-mcp did not carry the placeholder 'Bearer ghs_adam_listing_only'"; fi
-  # And the model was given what it answered: the branch main.
-  saw_after=$(model_saw_branches)
-  if [ "$saw_before" != '?' ] && [ "$saw_after" != '?' ] && [ "$saw_after" -gt "$saw_before" ]; then
-    ok "the model was given the answer of github__list_branches (the branch main)"
-  else
-    bad "the model was not given the answer of github__list_branches ($saw_before then $saw_after requests with it)"
-  fi
+# The default script reads the branches of the repository right after preparing the workspace.
+if [ "$branches_before" != '?' ] && [ "$branches_after" != '?' ] && [ $((branches_after - branches_before)) -eq 1 ]; then
+  ok "mock-github-mcp saw exactly one tools/call of list_branches in this run"
 else
-  if [ "$calls_before" != '?' ] && [ "$calls_after" = "$calls_before" ]; then ok "the variant without OpenCode reads nothing over MCP: mock-github-mcp saw no tools/call"; else bad "mock-github-mcp saw tools/call go from $calls_before to $calls_after, want no change"; fi
+  bad "mock-github-mcp saw $branches_before then $branches_after tools/call of list_branches, want exactly one more"
+fi
+# The dev mcp.json holds no credential: the coder gives each call the credentials of that call (adam-rs ADR 0017, D4), the token
+# of the stack or, as a GitHub App, the installation token it minted. The listing at startup carries a placeholder and no call does.
+case "$github_auth" in
+  token) want_bearer="Bearer ${MOCK_GITHUB_TOKEN-dev-github-token}"; how=exact ;;
+  app) want_bearer='Bearer ghs_mockinstallationtoken'; how=prefix ;;
+esac
+# mcp_wrong_bearers <JSON-RPC method> <wanted bearer> <exact|prefix> [since ms]: how many requests of the journal with that
+# method (logged at or after `since`, when given) carry another `Authorization` (or none), or ? when the mock does not answer.
+mcp_wrong_bearers() {
+  patterns=$(jq -nc --arg m "$1" '[{matchesJsonPath: {expression: "$.method", equalTo: $m}}]')
+  curl -s --max-time 30 -X POST "$github_mcp/__admin/requests/find" -H 'Content-Type: application/json' \
+    -d "{\"method\":\"POST\",\"urlPath\":\"/mcp\",\"bodyPatterns\":$patterns}" |
+    jq -r --arg want "$2" --arg how "$3" --argjson since "${4:-0}" '[.requests[] | select((.loggedDate // 0) >= $since) | .headers | with_entries(.key |= ascii_downcase) | (.authorization // "") | select(if $how == "exact" then . != $want else (startswith($want) | not) end)] | length' 2>/dev/null || echo '?'
+}
+wrong=$(mcp_wrong_bearers tools/call "$want_bearer" "$how" "$mcp_since")
+if [ "$wrong" = 0 ]; then ok "every tools/call to mock-github-mcp carried the coder's credentials ('$want_bearer...')"; else bad "$wrong tools/call request(s) to mock-github-mcp did not carry '$want_bearer'"; fi
+wrong=$(mcp_wrong_bearers tools/list 'Bearer ghs_adam_listing_only' exact)
+if [ "$wrong" = 0 ]; then ok "every tools/list to mock-github-mcp carried the startup placeholder, not a credential"; else bad "$wrong tools/list request(s) to mock-github-mcp did not carry the placeholder 'Bearer ghs_adam_listing_only'"; fi
+# And the model was given what it answered: the branch main.
+saw_after=$(model_saw_branches)
+if [ "$saw_before" != '?' ] && [ "$saw_after" != '?' ] && [ "$saw_after" -gt "$saw_before" ]; then
+  ok "the model was given the answer of github__list_branches (the branch main)"
+else
+  bad "the model was not given the answer of github__list_branches ($saw_before then $saw_after requests with it)"
 fi
 
 # --- the coder's GitHub credential -----------------------------------------------------------------------------
@@ -652,16 +570,9 @@ if [ "$unmatched" = 0 ]; then
 else
   bad "mock-openai saw $unmatched unmatched requests (see $openai/__admin/requests/unmatched)"
 fi
-opencode_requests=$(curl -s --max-time 30 "$openai/__admin/requests" |
-  jq -r '[.requests[].request.body | fromjson? | select(.model == "mock-opencode")] | length' 2>/dev/null || echo '?')
-if [ "${NO_OPENCODE:-}" = 1 ]; then
-  if [ "$opencode_requests" = 0 ]; then ok "mock-openai saw no mock-opencode request"; else bad "mock-openai saw $opencode_requests mock-opencode requests, want none"; fi
-else
-  case $opencode_requests in
-    '' | '?' | 0) bad "mock-openai saw no mock-opencode request (OpenCode did not run)" ;;
-    *) ok "mock-openai saw $opencode_requests mock-opencode requests" ;;
-  esac
-fi
+other_models=$(curl -s --max-time 30 "$openai/__admin/requests" |
+  jq -r '[.requests[].request.body | fromjson? | select(.model != null and .model != "mock-coder") | .model] | unique | join(" ")' 2>/dev/null || echo '?')
+if [ -z "$other_models" ]; then ok "mock-openai saw no request for a model other than mock-coder"; else bad "mock-openai saw requests for '$other_models', want mock-coder only"; fi
 
 # --- git-server ------------------------------------------------------------------------------------
 if [ -n "$branch" ]; then
