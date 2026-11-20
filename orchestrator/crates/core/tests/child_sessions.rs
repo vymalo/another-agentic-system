@@ -617,6 +617,7 @@ fn a_child_thread_starts_queued_with_no_event_and_follows_its_round() {
             refollow: false,
             close_asked: false,
             close_cancel: false,
+            track: RoundTrack::default(),
         })
     );
     // the model is never asked to title or describe it
@@ -1544,6 +1545,7 @@ fn the_child_ledger_is_written_and_read_back_whole() {
         refollow: false,
         close_asked: false,
         close_cancel: false,
+        track: RoundTrack::default(),
     };
     let v = serde_json::to_value(&ledger).unwrap();
     assert!(

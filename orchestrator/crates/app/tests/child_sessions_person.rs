@@ -953,3 +953,74 @@ async fn a_start_that_opens_into_a_ledger_that_filled_meanwhile_ends_failed_and_
     assert!(record.job.session_starts.is_empty());
     assert_eq!(record.job.sessions.len(), 256);
 }
+
+// --- a round of the person's own, reported before the answer names it ------------------------------
+
+/// The parent's stream says round `number` of the helper's session.
+fn round_report(
+    kid: &ThreadRecord,
+    number: u32,
+    closing: bool,
+    state: SessionState,
+) -> SessionReport {
+    let of = kid.child_of.clone().unwrap();
+    SessionReport {
+        session: of.session.clone(),
+        context_id: format!("ctx-{}", of.session),
+        agent: "planner".into(),
+        description: "Find the writers".into(),
+        parent_context_id: None,
+        keep_open: true,
+        by: Some(SessionBy::Person),
+        state,
+        closing,
+        round: Some(orch_core::RoundReport {
+            number,
+            task_id: Some(format!("{}.r{number}", of.session)),
+            state: Some(AgentTaskState::Working),
+        }),
+    }
+}
+
+fn observes(rows: &[orch_ports::OutboxItem]) -> usize {
+    rows.iter()
+        .filter(|r| matches!(r.payload, orch_ports::OutboxPayload::Observe { .. }))
+        .count()
+}
+
+#[tokio::test]
+async fn the_closing_round_reported_before_the_answer_is_not_followed_as_a_job() {
+    let w = world();
+    let app = w.app();
+    let (parent, kid, _context, run) = idle_helper(&w, &app).await;
+    run.shutdown().await;
+    app.close_child_session(&alice(), kid.id, false)
+        .await
+        .unwrap();
+    // no dispatcher: the answer to the close is not applied; the parent's stream is ahead of it
+    let said = round_report(&kid, 2, true, SessionState::Working);
+    app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![said]))
+        .await
+        .unwrap();
+    let rows = w.store.list_open_outbox(kid.id).await.unwrap();
+    assert_eq!(observes(&rows), 0, "{rows:?}");
+    let after = app.get_thread(&alice(), kid.id).await.unwrap();
+    assert_eq!(after.state, ThreadState::Done, "no job was started");
+}
+
+#[tokio::test]
+async fn a_round_the_person_sent_reported_before_the_answer_is_not_observed() {
+    let w = world();
+    let app = w.app();
+    let (parent, kid, _context, run) = idle_helper(&w, &app).await;
+    run.shutdown().await;
+    app.post_message(&alice(), kid.id, "echo again".into())
+        .await
+        .unwrap();
+    let said = round_report(&kid, 2, false, SessionState::Working);
+    app.child_sessions_news(parent.id, None, SessionNews::Listed(vec![said]))
+        .await
+        .unwrap();
+    let rows = w.store.list_open_outbox(kid.id).await.unwrap();
+    assert_eq!(observes(&rows), 0, "{rows:?}");
+}

@@ -3242,6 +3242,7 @@ fn busy_job() -> Job {
             // ADR 0072 (S3): a close a person asked for, and the starts they are waiting on
             close_asked: true,
             close_cancel: true,
+            track: orch_core::RoundTrack::default(),
         }),
         observed: Some(orch_core::ObservedRound {
             number: 3,
@@ -7535,6 +7536,7 @@ fn child_first(n: u128, session: &str) -> Commit {
             refollow: false,
             close_asked: false,
             close_cancel: false,
+            track: orch_core::RoundTrack::default(),
         }),
         ..Job::default()
     });

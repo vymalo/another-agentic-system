@@ -407,6 +407,32 @@ pub struct ChildLedger {
     /// The close that was asked cancels the working round first.
     #[serde(default, skip_serializing_if = "is_false")]
     pub close_cancel: bool,
+    /// Which round is whose, and how new the state is.
+    #[serde(default, skip_serializing_if = "RoundTrack::is_empty")]
+    pub track: RoundTrack,
+}
+
+/// What a child thread remembers to tell the rounds it did not start from the ones it did, and to
+/// keep a stale report from moving its state back. Round 0 is "none".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundTrack {
+    /// The newest round known when the close was asked: the close makes the next one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub close_after: u32,
+    /// The round the answer to the close named: the closing round, once known.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub close_round: u32,
+    /// The newest round a report that moved the state was about.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub state_round: u32,
+}
+
+impl RoundTrack {
+    /// Nothing remembered.
+    pub fn is_empty(&self) -> bool {
+        *self == RoundTrack::default()
+    }
 }
 
 /// The round of a session this thread's current job follows without having sent it (`Job.observed`,
@@ -753,6 +779,7 @@ pub fn start_child_for(
             refollow: false,
             close_asked: false,
             close_cancel: false,
+            track: RoundTrack::default(),
         }),
         title: TitleLedger::of(TitleSource::Model),
         // the helper's words are the agent's, fixed: nothing replaces them
@@ -794,6 +821,32 @@ pub fn start_child_for(
     (Snapshot { state, job }, cmds)
 }
 
+/// Whether `report` is older news than what the ledger holds, which a stale listing can be: a
+/// report of an earlier round, or of the same round with the session further back than it is
+/// (working after idle or closed, a close under way undone). A report that names no round cannot
+/// be told from the newest, and is not stale.
+fn stale(child: &ChildLedger, report: &SessionReport) -> bool {
+    let Some(r) = &report.round else {
+        return false;
+    };
+    let rank = |s: SessionState| match s {
+        SessionState::Working => 0,
+        SessionState::Idle => 1,
+        SessionState::Closed => 2,
+    };
+    match r.number.cmp(&child.track.state_round) {
+        std::cmp::Ordering::Less => child.track.state_round != 0,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => {
+            rank(report.state) < rank(child.state)
+                || (report.state == SessionState::Working
+                    && child.state == SessionState::Working
+                    && child.closing
+                    && !report.closing)
+        }
+    }
+}
+
 /// A child thread is told what its session looks like now (`Input::ChildSessionSaid`): the ledger
 /// follows it and a round not yet followed is ordered followed, once. Writes no event. A thread
 /// that is not this session's child changes nothing.
@@ -808,9 +861,12 @@ pub(crate) fn said(
     };
     let before = (child.state, child.closing);
     // closed is final: a late or reordered report does not reopen the session
-    if child.state != SessionState::Closed {
+    if child.state != SessionState::Closed && !stale(child, report) {
         child.state = report.state;
         child.closing = report.closing;
+        if let Some(r) = &report.round {
+            child.track.state_round = child.track.state_round.max(r.number);
+        }
     }
     child.keep_open = report.keep_open;
     if !report.agent.is_empty() {
@@ -832,16 +888,31 @@ pub(crate) fn said(
         ));
     }
     // The round a person's close made ends the session and has nothing to show: it is marked
-    // followed and never becomes a job.
+    // followed and never becomes a job, whatever it looks like when it is reported (working, with
+    // the close under way, or ended), and also when the report comes before the answer to the
+    // close. Only the round the close made is it: the answer names it, and until then it is the
+    // one after the newest round known when the close was asked.
     let closing_round = child.close_asked
-        && report.state == SessionState::Closed
         && report.round.as_ref().is_some_and(|r| {
-            r.state
-                .and_then(report_of)
-                .is_some_and(|outcome| outcome != SessionOutcome::Blocked)
+            let made = match child.track.close_round {
+                0 => child.track.close_after + 1,
+                named => named,
+            };
+            r.number == made
+                && r.state
+                    .and_then(report_of)
+                    .is_none_or(|outcome| outcome != SessionOutcome::Blocked)
         });
     if closing_round && let Some(r) = &report.round {
         child.followed = child.followed.max(r.number);
+        return Ok(cmds);
+    }
+    // A thread running a job of its own (a message of the person's) is waiting for the answer
+    // that names the round: the report of that round is not a round to follow.
+    let own_round_unnamed = matches!(state, ThreadState::Queued | ThreadState::Working)
+        && job.observed.is_none()
+        && !(job.number == 1 && child.started == 0);
+    if own_round_unnamed {
         return Ok(cmds);
     }
     let order = report
@@ -1003,6 +1074,9 @@ pub(crate) fn close_session(
     {
         return Ok(Vec::new());
     }
+    if !child.close_asked {
+        child.track.close_after = child.followed.max(child.started);
+    }
     child.close_asked = true;
     child.close_cancel |= cancel;
     Ok(vec![
@@ -1066,6 +1140,9 @@ pub(crate) fn round_sent(
     child.followed = child.followed.max(number);
     if matches!(state, ThreadState::Queued | ThreadState::Working) {
         child.started = child.started.max(number);
+    } else if child.close_asked {
+        // no job of this thread is running: the round the close made
+        child.track.close_round = number;
     }
     Ok(Vec::new())
 }
@@ -1096,6 +1173,14 @@ pub(crate) fn round_started(
     }
     if number <= child.started || job.observed.as_ref().is_some_and(|o| o.number == number) {
         return Ok((state, Vec::new()));
+    }
+    // the closing round is never a job; before the answer names it, a round that may be it waits
+    // (the dispatcher asks again)
+    if child.close_asked && child.track.close_round == number {
+        return Ok((state, Vec::new()));
+    }
+    if child.close_asked && child.track.close_round == 0 && number == child.track.close_after + 1 {
+        return Err(refuse);
     }
     let fresh = job.observed.is_none() && job.number == 1 && child.started == 0;
     match state {

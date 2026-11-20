@@ -1063,7 +1063,14 @@ impl<P: Ports> Dispatcher<P> {
             // stopped before it began, or a task the thread has seen end: nothing to follow
             let over = binding.task_id.as_deref() == Some(task_id.as_str())
                 && binding.task_state.is_some_and(AgentTaskState::is_terminal);
-            if state == ThreadState::Cancelled || over {
+            // a round this thread sent itself (its message's, or the close's) is no round to
+            // follow: its job, if any, follows it already
+            let ledger = child.job.child.as_ref();
+            let sent_itself = ledger.is_some_and(|c| {
+                (c.started >= round && child.job.observed.as_ref().map(|o| o.number) != Some(round))
+                    || (c.close_asked && c.track.close_round == round)
+            });
+            if state == ThreadState::Cancelled || over || sent_itself {
                 return self.finish(&row, OutboxFinal::Skipped).await;
             }
             let lease = self.lease(&row);

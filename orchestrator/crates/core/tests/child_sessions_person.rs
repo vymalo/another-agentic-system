@@ -687,6 +687,111 @@ fn a_report_of_the_closing_round_orders_nothing_even_before_the_answer() {
     assert_eq!(observes(&cmds), [2]);
 }
 
+#[test]
+fn the_closing_round_reported_while_it_works_orders_nothing_before_the_answer() {
+    // a close of an idle session makes round 2, which the parent's stream reports working, with the
+    // close under way, before the answer to the close reaches the thread
+    let (snap, _) = transition(&child(Done, true), &close(false)).unwrap();
+    let working = SessionReport {
+        closing: true,
+        ..report(
+            "s1",
+            SessionState::Working,
+            true,
+            round(2, "t2", AgentTaskState::Working),
+        )
+    };
+    let (snap, cmds) = transition(&snap, &said(working)).unwrap();
+    assert!(
+        observes(&cmds).is_empty(),
+        "the closing round is never a job: {cmds:?}"
+    );
+    assert_eq!(snap.state, Done);
+}
+
+#[test]
+fn a_round_the_person_sent_is_not_observed_before_the_answer_names_it() {
+    let (snap, _) = transition(&child(Done, true), &user_message("next")).unwrap();
+    assert_eq!(snap.state, Queued);
+    // the parent's stream reports round 2 before the answer to the message is applied
+    let (snap, cmds) = transition(
+        &snap,
+        &said(report(
+            "s1",
+            SessionState::Working,
+            true,
+            round(2, "t2", AgentTaskState::Working),
+        )),
+    )
+    .unwrap();
+    assert!(observes(&cmds).is_empty(), "{cmds:?}");
+    let (snap, _) = transition(&snap, &round_sent(2)).unwrap();
+    assert_eq!(snap.job.child.as_ref().unwrap().started, 2);
+    assert!(snap.job.observed.is_none());
+}
+
+#[test]
+fn only_the_round_the_close_made_is_the_closing_round() {
+    // the close was asked with round 1 the newest known: it makes round 2
+    let (asked, _) = transition(&child(Done, true), &close(false)).unwrap();
+    let ended = |n: u32| {
+        report(
+            "s1",
+            SessionState::Closed,
+            true,
+            round(n, &format!("t{n}"), AgentTaskState::Completed),
+        )
+    };
+    // a later round that ended is a real round that was missed: it is followed
+    let (_, cmds) = transition(&asked, &said(ended(3))).unwrap();
+    assert_eq!(observes(&cmds), [3]);
+    // once the answer names the closing round, it alone is it
+    let (confirmed, _) = transition(&asked, &round_sent(3)).unwrap();
+    let (after, cmds) = transition(&confirmed, &said(ended(3))).unwrap();
+    assert!(observes(&cmds).is_empty());
+    let (_, cmds) = transition(&after, &said(ended(2))).unwrap();
+    assert!(
+        observes(&cmds).is_empty(),
+        "round 2 is at or below what was followed"
+    );
+}
+
+#[test]
+fn a_stale_report_does_not_move_the_state_back() {
+    let say = |snap: &Snapshot, state, round_no: u32, closing: bool| {
+        let r = SessionReport {
+            closing,
+            ..report(
+                "s1",
+                state,
+                true,
+                round(round_no, &format!("t{round_no}"), AgentTaskState::Working),
+            )
+        };
+        transition(snap, &said(r)).unwrap()
+    };
+    let snap = child(Working, true);
+    let (snap, cmds) = say(&snap, SessionState::Working, 2, false);
+    assert_eq!(kinds(&cmds), ["child_session_state"]);
+    let (snap, cmds) = say(&snap, SessionState::Idle, 2, false);
+    assert_eq!(kinds(&cmds), ["child_session_state"]);
+    // a listing read before the round ended says working again: older news
+    let (snap, cmds) = say(&snap, SessionState::Working, 2, false);
+    assert!(cmds.is_empty(), "flapped back: {cmds:?}");
+    assert_eq!(snap.job.child.as_ref().unwrap().state, SessionState::Idle);
+    // and so does a listing of an earlier round
+    let (snap, cmds) = say(&snap, SessionState::Working, 1, false);
+    assert!(cmds.is_empty(), "{cmds:?}");
+    // the next round is news
+    let (snap, cmds) = say(&snap, SessionState::Working, 3, false);
+    assert_eq!(kinds(&cmds), ["child_session_state"]);
+    // a close under way is not undone by an older report of the same round
+    let (snap, _) = say(&snap, SessionState::Working, 3, true);
+    let (snap, cmds) = say(&snap, SessionState::Working, 3, false);
+    assert!(cmds.is_empty(), "{cmds:?}");
+    assert!(snap.job.child.as_ref().unwrap().closing);
+}
+
 // --- what the child's log says of its session ----------------------------------------------------
 
 #[test]

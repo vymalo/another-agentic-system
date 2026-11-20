@@ -375,6 +375,8 @@ pub(crate) fn meta_of(thread: &ThreadRecord) -> ThreadMeta {
         description: thread.description.clone(),
         target: thread.target.clone(),
         gate: thread.job.gate.clone(),
+        // the helper and `keep_open` are fixed when the session opens, so the current ledger gives
+        // the card the same on every replay of the log
         child: thread
             .job
             .child
