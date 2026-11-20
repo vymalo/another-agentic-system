@@ -451,3 +451,89 @@ describe("the keyboard and the focus", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });
+
+describe("the request the dialog makes", () => {
+  /** The bodies of the start requests the page sends, while `run` goes. */
+  async function posts(run: () => Promise<void>): Promise<Record<string, unknown>[]> {
+    const real = globalThis.fetch;
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (input instanceof Request && input.method === "POST" && input.url.endsWith("/sessions")) {
+        bodies.push(JSON.parse(await input.clone().text()) as Record<string, unknown>);
+      }
+      return real(input, init);
+    }) as typeof fetch;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = real;
+    }
+    return bodies;
+  }
+
+  it("keeps one request id through a refusal and the repeat, whatever the dialog draws in between", async () => {
+    const parent = await page.api.answered();
+    mount(parent);
+    fill("Plan it");
+    const bodies = await posts(async () => {
+      page.fake("POST /api/threads/:id/sessions", { status: 503, body: { title: "Unavailable" } });
+      submit();
+      await screen.findByRole("alert");
+      page.fake("POST /api/threads/:id/sessions", null);
+      submit();
+      await waitFor(() => expect(page.seen.at(-1)).toMatch(/sessions 202$/));
+    });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]?.id).toBe(bodies[0]?.id);
+    expect(typeof bodies[0]?.id).toBe("string");
+  });
+
+  it("sends the description as the server will read it: trimmed", async () => {
+    const parent = await page.api.answered();
+    const spies = mount(parent);
+    fill("  Plan the release  ", "Go.");
+    submit();
+    await waitFor(() => expect(spies.onStarted).toHaveBeenCalled());
+    expect(spies.onStarted.mock.calls[0]?.[1].description).toBe("Plan the release");
+    expect((await asked(parent))[0]?.data.description).toBe("Plan the release");
+  });
+
+  it("counts the prompt in code points: 50,001 emoji are 100,002 UTF-16 units and are sent", async () => {
+    const parent = await page.api.answered();
+    const spies = mount(parent);
+    const prompt = "😀".repeat(50_001);
+    expect(prompt.length).toBeGreaterThan(100_000);
+    fill("Plan it", prompt);
+    submit();
+    await waitFor(() =>
+      expect(spies.onStarted.mock.calls.length + screen.queryAllByRole("alert").length).toBe(1),
+    );
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
+    expect(spies.onStarted).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends once when the form is submitted twice while the first answer is awaited", async () => {
+    const parent = await page.api.answered();
+    mount(parent);
+    fill("Plan it");
+    const release = page.gate("POST /api/threads/:id/sessions");
+    const bodies = await posts(async () => {
+      const form = screen.getByRole("dialog").querySelector("form") as HTMLFormElement;
+      fireEvent.submit(form);
+      await screen.findByRole("button", { name: "Starting…" });
+      fireEvent.submit(form);
+      release();
+      await waitFor(() => expect(page.seen.at(-1)).toMatch(/sessions 202$/));
+    });
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("opens a retry on the first helper when the helper of the draft is no longer listed", () => {
+    mount("00000000-0000-4000-8000-0000000000aa", {
+      initial: { agent: "ghost", description: "Old", text: "Old prompt", keepOpen: false },
+    });
+    expect(screen.getByRole("radio", { name: /planner/ }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+  });
+});

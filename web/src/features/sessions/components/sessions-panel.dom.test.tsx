@@ -558,6 +558,28 @@ describe("closing from the tab", () => {
     });
   }
 
+  it("offers no stronger close once one that stops the round has been asked", async () => {
+    page.fake("POST /api/threads/:id/session/close", { status: 202, body: { state: "closing" } });
+    const working = row(1, "working", {
+      childOf: {
+        threadId: PARENT,
+        session: "s1",
+        agent: "planner",
+        state: "working",
+        keepOpen: true,
+        closing: true,
+      },
+    });
+    mount({ rows: [working] });
+    fireEvent.click(screen.getByRole("button", { name: "Close planner" }));
+    const dialog = await screen.findByRole("dialog", { name: "Close subagent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop and close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // the record still says working and closing: nothing is stronger than the close just asked
+    expect(screen.queryByRole("button", { name: "Close planner" })).toBeNull();
+    page.fake("POST /api/threads/:id/session/close", null);
+  });
+
   it("gives the focus to the tab's panel when the close folds the row that held the button away", async () => {
     const parent = await page.api.answered();
     const { child } = await page.api.opened(parent, { keepOpen: true });
@@ -576,5 +598,111 @@ describe("closing from the tab", () => {
     // the row is now in "1 closed", and the button is gone
     expect(close.isConnected).toBe(false);
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("tabpanel")));
+  });
+});
+
+describe("what the controller says to the rest of the page", () => {
+  function Says({ card }: { card?: SessionCard }) {
+    const s = useSessions();
+    return (
+      <output data-testid="says">
+        {JSON.stringify({
+          canStart: s?.canStart,
+          canWrite: s?.canWrite,
+          mayClose: card ? s?.closeOffered(card) : undefined,
+          waiting: s?.children.waiting,
+        })}
+      </output>
+    );
+  }
+  const says = () => JSON.parse(screen.getByTestId("says").textContent ?? "{}");
+  const card: SessionCard = {
+    session: "s1",
+    threadId: id(1),
+    agent: "planner",
+    description: "d",
+    keepOpen: true,
+    state: "idle",
+    closing: false,
+    closeAsked: false,
+  };
+
+  it("lets nobody start a subagent from a subagent's own thread, though they may close it", () => {
+    mount({ thread: row(1, "idle"), extra: <Says card={card} /> });
+    expect(says()).toMatchObject({ canStart: false, canWrite: false, mayClose: true });
+  });
+
+  it("lets a person who may only read neither start nor close", () => {
+    mount({ readOnly: true, extra: <Says card={card} /> });
+    expect(says()).toMatchObject({ canStart: false, canWrite: false, mayClose: false });
+  });
+
+  it("stops counting a start this page sent once the stream has said it, though the stream forgets it later", async () => {
+    const parent = await page.api.answered();
+    const view = mount({ parent, extra: <Says /> });
+    fireEvent.click(screen.getByRole("button", { name: "New subagent" }));
+    fireEvent.change(await screen.findByLabelText("What it is for"), {
+      target: { value: "Plan it" },
+    });
+    fireEvent.change(screen.getByLabelText("What to ask it"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start subagent" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(says().waiting).toBe(1);
+    const [event] = await page.api.of(parent, "child_session_start_asked");
+    const request = String(event?.data.request);
+    const opened: SessionStartCard = {
+      request,
+      agent: "planner",
+      description: "Plan it",
+      keepOpen: false,
+      state: "opened",
+      threadId: id(77),
+      session: "s1",
+    };
+    view.rerender(tree({ parent, starts: new Map([[request, opened]]), extra: <Says /> }));
+    expect(says().waiting).toBe(0);
+    // a reload of the thread empties the cards: the start this page sent is not waiting again
+    view.rerender(tree({ parent, extra: <Says /> }));
+    expect(says().waiting).toBe(0);
+  });
+
+  it("keeps no draft of a start that was tried again as a new request", async () => {
+    function CanRetry({ request }: { request: string }) {
+      const s = useSessions();
+      return <output data-testid="retry">{String(s?.canRetry(request))}</output>;
+    }
+    const parent = await page.api.answered();
+    const view = mount({ parent });
+    fireEvent.click(screen.getByRole("button", { name: "New subagent" }));
+    fireEvent.change(await screen.findByLabelText("What it is for"), {
+      target: { value: "Plan it" },
+    });
+    fireEvent.change(screen.getByLabelText("What to ask it"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start subagent" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const [event] = await page.api.of(parent, "child_session_start_asked");
+    const request = String(event?.data.request);
+    const failed: SessionStartCard = {
+      request,
+      agent: "planner",
+      description: "Plan it",
+      keepOpen: false,
+      state: "failed",
+      reason: "x",
+    };
+    const extra = (
+      <>
+        <StartLine data={{ ...failed, card: `session-start-${request}`, home: true }} />
+        <CanRetry request={request} />
+      </>
+    );
+    view.rerender(tree({ parent, starts: new Map([[request, failed]]), extra }));
+    expect(screen.getByTestId("retry").textContent).toBe("true");
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    const dialog = await screen.findByRole("dialog", { name: "New subagent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start subagent" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // the new request holds the draft now; the old one's is gone
+    expect(screen.getByTestId("retry").textContent).toBe("false");
   });
 });

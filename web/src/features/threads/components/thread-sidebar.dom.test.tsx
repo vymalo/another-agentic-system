@@ -267,6 +267,19 @@ describe("the sections of the list (ADR 0042): Pinned, Chats, Archived", () => {
     expect(words).toEqual(["Closing…", "Closing…"]);
   });
 
+  it("says nothing of a subagent's state when its thread does not say one", () => {
+    sidebar([
+      thread("p-1", "Parent"),
+      {
+        ...child(thread("h-1", "Plan the migration"), "p-1"),
+        childOf: { session: "s1", agent: "planner", keepOpen: true },
+      } as ApiThread,
+    ]);
+    const row = document.querySelector('[data-thread-id="h-1"]') as HTMLElement;
+    expect(row.querySelector('[data-slot="subagent-mark"]')).toBeTruthy();
+    expect(row.querySelector('[data-slot="subagent-state"]')).toBeNull();
+  });
+
   it("keeps the highlight on the open thread, a child included", () => {
     sidebar([thread("t-1", "Open one"), child(thread("t-9", "A fork"), "t-1")]);
     expect(screen.getByRole("link", { name: "Open one" }).getAttribute("aria-current")).toBe(

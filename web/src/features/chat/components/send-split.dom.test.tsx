@@ -43,4 +43,13 @@ describe("SendSplit", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(onSend).toHaveBeenCalledWith("steer");
   });
+
+  it("rounds the end of Send when it stands alone, and squares it against the menu button otherwise", () => {
+    show({ interrupt: false });
+    expect(screen.getByRole("button", { name: "Send" }).className).toContain("rounded-e-full");
+    expect(screen.getByRole("button", { name: "Send" }).className).not.toContain("rounded-e-none");
+    cleanup();
+    show({});
+    expect(screen.getByRole("button", { name: "Send" }).className).toContain("rounded-e-none");
+  });
 });

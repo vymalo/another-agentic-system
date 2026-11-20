@@ -123,6 +123,15 @@ describe("a subagent that works", () => {
   });
 });
 
+describe("a close a person asked that waits for the round", () => {
+  it("has only the stronger way left, as one that is on its way does", () => {
+    mount(cardOf("00000000-0000-4000-8000-0000000000aa", { state: "working", closeAsked: true }));
+    expect(screen.queryByRole("button", { name: "Close when this round ends" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop and close" })).toBeTruthy();
+    expect(screen.getByText(/It closes when its round ends/)).toBeTruthy();
+  });
+});
+
 describe("a refusal, in words, with the dialog kept", () => {
   it("not_child_thread: the thread is no subagent's", async () => {
     const parent = await page.api.answered();
