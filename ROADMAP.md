@@ -191,7 +191,7 @@ delay a release. An epic with only a decision record or a plan waits for its rel
 
 | Epic | Note |
 |---|---|
-| A subagent in the background, as a session ([sys#332](https://github.com/vymalo/another-agentic-system/issues/332)), with a child session's options ([adam ADR 0054](https://github.com/vymalo/another-adam-rs/pull/195)) | adam's slices 6c, 7 and 8; the system's S3 to S5 |
+| A subagent in the background, as a session ([sys#332](https://github.com/vymalo/another-agentic-system/issues/332)), with a child session's options ([adam ADR 0054](https://github.com/vymalo/another-adam-rs/pull/195)) | adam's slices 6c, 7 and 8; the system's S3 and S4 (built 2026-11-20, on mocks), S5 left |
 | LibreChat-grade ([sys#335](https://github.com/vymalo/another-agentic-system/issues/335)), the slices about agents | its other chat slices are paused (2026-11-19); an agent's own `/` commands finish; attachments are an R2 must |
 | A2UI v1.0 ([sys#380](https://github.com/vymalo/another-agentic-system/issues/380)) | starts now (the owner, 2026-11-19), adam-rs's half first; still on layer 2's list |
 | The rest of the kagent-grade minimum ([sys#344](https://github.com/vymalo/another-agentic-system/issues/344)) | K13 and K14 are R3 musts; K12 waits for adam's approval hooks |

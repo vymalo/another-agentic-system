@@ -255,3 +255,17 @@ note of 2026-11-19), which has adam-rs ADR 0045 slice 6 (#173, #174) and its A6c
 list `child-sessions/v1` when the root has a subagent (the coder and the chat here), so S5's dependency on adam-rs is met. S5 itself (the chat's `planner` kept open in `dev/agents-e2e.sh`) is
 not built by the bump. *Unverified* until the Coder E2E workflow has run on the pin: the orchestrator activating the extension on the
 real cards.
+
+## Amended (2026-11-20, S4)
+
+The web draws it ([`web/README.md`](../../web/README.md#subagents-child-sessions), [`web/DESIGN.md`](../../web/DESIGN.md#subagents); slices S4a to S4g of #332). The owner's decisions for S4:
+
+- **A tab, not a strip.** The list is the right-hand panel's **Subagents** tab; the chat holds only the step cards and the start lines.
+- **The list's source** is the rail's rows with `childOf` merged with the cards in the chat, not a new `?childOf=` filter.
+- **Tools are hidden in a child**: no tools picker, and no `@`, `/` commands, fork, edit, share or agent switch.
+- **"Subagent"** is the UI's word; "helper session" stays in the docs.
+- **Late report runs are not drawn as turns**: a card is drawn once, in the run that opened it, with its live state.
+- **A start takes the tier chip's current tier**; the dialog has no tier control.
+- **The Activity tab's line for a subagent is deferred.**
+
+*Unverified:* a real agent's cards in the web (the mock plays the contract; adam-rs ADR 0045 slice 6 has not been seen in a browser).

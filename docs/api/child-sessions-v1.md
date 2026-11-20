@@ -6,7 +6,7 @@
   decision 11, which puts this contract here); the shape of this page is proposed with
   [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** on the agent's side, adam-rs ADR 0045 slice 6 (adam-rs #173 and #174, merged); on the orchestrator's, the reading of the card (S1), its agent side, activation and the strict read of what an agent says (S2c), and the threads for sessions: a child thread for each session, the parent's three events and the rounds followed without sending anything (S2d), and the AG-UI projection of a session (S2e: [`agui.md`](agui.md#child-sessions-as-subagents)), and the scenario on mocks against a WireMock agent that serves the extension (S2f: `dev/child-sessions-e2e.sh`; a person's messages are S3 and the web S4). Neither half has run against the other.
 - **Amended (2026-11-19, the owner):** the person's half is S3 (sending, steering, stopping, closing and starting, with the refusals of
-  section 7 as adam-rs `9aeb53a` returns them; the web is S4). The refusals adam returns are the contract's: `UnsupportedOperation`
+  section 7 as adam-rs `9aeb53a` returns them; the web is S4, built 2026-11-20: [`web/README.md`](../../web/README.md#subagents-child-sessions)). The refusals adam returns are the contract's: `UnsupportedOperation`
   past the agent's limit of working rounds (a person's new round included) and past its limit of rounds per session, and
   `start.description` is required. A person's round is reported to the parent as having happened and what it produced; the person's
   words stay in the child context.

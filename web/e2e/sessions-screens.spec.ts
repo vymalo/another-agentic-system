@@ -168,7 +168,9 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(page).toHaveURL(THREAD_URL);
       await hideActivity(page);
       await openThreadList(page);
-      await expect(page.getByText("Check the schema").filter({ visible: true }).first()).toBeVisible();
+      await expect(
+        page.getByText("Check the schema").filter({ visible: true }).first(),
+      ).toBeVisible();
       await shot(page, "sessions-rail");
     });
   });

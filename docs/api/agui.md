@@ -1028,7 +1028,7 @@ stateDiagram-v2
 - **A fork** copies the events and so the cards; at `thread_forked` the open run ends as a cancelled one (with the sessions'
   subagents suspended) and every card the fork copied that was not closed is said again as `closed` in the fork's own run, since a
   fork has no session of its own and no later report can come for it.
-- **Not in the state.** `STATE_SNAPSHOT.thread` does not say that a thread is a child (`childOf`): that is slice S4.
+- **Not in the state.** `STATE_SNAPSHOT.thread` does not say that a thread is a child (`childOf`): that is slice S4: the web reads it from `GET /api/threads/{id}`, refetched when the thread's `lastSeq` moves.
 - **`PROJECTION_VERSION` stays.** No released agent serves `child-sessions/v1`, so no log holds a session event, and no frame
   of an event that exists changes (a session event changes none of another event's: `tests/sessions.rs`).
 
@@ -1048,7 +1048,7 @@ and [`sessions-start-failed`](examples/agui/sessions-start-failed.agui.json) (a 
 
 **Built** (2026-11-20, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slice S3e;
 the contract was S3a). A person starts a helper from the parent (`startChildSession`), talks to it in the child thread
-(`runAgent` on the child, `cancelThread`) and closes it (`closeChildSession`). Three cards carry it; the web (S4) draws them.
+(`runAgent` on the child, `cancelThread`) and closes it (`closeChildSession`). Three cards carry it; the web draws them (S4, built 2026-11-20: [`web/README.md`](../../web/README.md#subagents-child-sessions)).
 
 ```mermaid
 sequenceDiagram
@@ -1084,7 +1084,7 @@ stateDiagram-v2
   `closed`, says "Closing..." while `closing`, and offers Stop & send only when `keepOpen`.
 - **The person's messages in a child** (the start's prompt, later rounds, steers) are the ordinary text frames of the child's stream.
 - **`PROJECTION_VERSION` stays 2.** No released log has these kinds and no frame of an existing event changes. `STATE_SNAPSHOT.thread.childOf`
-  keeps the members `chat-api.yaml` gives it (S4 reads them).
+  keeps the members `chat-api.yaml` gives it (the web reads them, S4).
 
 ## Token usage
 
