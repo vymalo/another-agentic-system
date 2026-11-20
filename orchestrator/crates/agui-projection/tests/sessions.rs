@@ -1240,8 +1240,8 @@ fn a_childs_own_card_follows_the_close_and_the_state_the_composer_reads() {
         user(1, "go"),
         status(2, AgentStatus::Working),
         close_asked(3, false),
-        state_of(4, SessionState::Working, true),
-        state_of(5, SessionState::Closed, false),
+        state_asked(4, SessionState::Working, true, true),
+        state_asked(5, SessionState::Closed, false, true),
     ];
     let mut projector = Projector::new(child_meta());
     let per_event: Vec<Vec<Frame>> = events
