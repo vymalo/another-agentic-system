@@ -285,8 +285,8 @@ section *Working on this epic without colliding* that names the paths it owns. *
 Milestones, then epics, then tickets.
 
 - A **milestone** is a step to launch: M1, M2, M4 and M5 (M3 is not in these repositories). Its label is `launch-m1` to `launch-m5`.
-  M6 to M11 are milestones of capability, not of launch; they have no label and no epic yet.
-- An **epic** is the parent issue of a milestone. All five are in sys, and each holds the live list of its tickets.
+  M6 to M11 are milestones of capability, not of launch; they have no label, and each has an epic ([sys#402](https://github.com/vymalo/another-agentic-system/issues/402) to [sys#407](https://github.com/vymalo/another-agentic-system/issues/407)).
+- An **epic** is the parent issue of a milestone. All are in sys, and each holds the live list of its tickets.
 - A **ticket** is one piece of work: a GitHub issue in the repository that owns the code, and a sub-issue of its epic.
   Size is S, M or L, a rough guide to the effort.
 - A **decision** is an ADR: `docs/decisions/` in [sys](docs/decisions) and in
@@ -496,7 +496,7 @@ the four repositories on 2026-11-20; what is already built is left out. *Source:
 
 **The order is M6, M7, M8, M9, M10, M11: the recommended priority.** None is on a release's list yet, so by
 [the rules above](#production-in-two-layers-then-two-releases) none is started until the owner puts it on one. Where no
-open issue covers a gap, the epic is to be opened.
+open issue covers a gap, the epic's checklist holds it until a ticket is opened.
 
 | Status | Meaning |
 |---|---|
@@ -509,78 +509,78 @@ open issue covers a gap, the epic is to be opened.
 **Goal.** adam's runtime offers the building blocks of a durable workflow: timers, combinators, retries, versions and
 schedules that survive a restart.
 
-**Epic:** epic to be opened.
+**Epic:** [M6: Durable work primitives](https://github.com/vymalo/another-agentic-system/issues/402).
 
 | Gap | Status | Repo | Ticket |
 |---|---|---|---|
-| Timers and waits. A run parks on a durable timer or a message, whichever comes first (`Transition::Park { wake_at }`), and a child has a deadline. Missing: a sleep that a folder agent's model can call, and named queues (a run has one inbox) | Partial | adam | epic to be opened |
-| Combinators. Join (`Ctx::step_all`), loops (`Transition::Continue`) and try (a recorded `Err` is replayed) are built. Missing: race, and a rollback to a checkpoint (the coder's `snapshot` and `revert_to`, [adam ADR 0050](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0050-hooks-around-the-agent-loop-compiled-first-and-programs-second.md) slice H11, planned) | Partial | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) (H11); race: epic to be opened |
-| Retries with backoff. A failed transition is retried with exponential backoff and a `Retry-After` hint, under one policy per runtime. Missing: a policy per step | Partial | adam | epic to be opened |
-| Versions, so code can change while runs are in flight. A deploy that changes which steps run fails those runs with `NonDeterminism` ([adam ADR 0004](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0004-agent-folders-at-run-time.md), decision 4). The state envelope is versioned for a mixed fleet; the steps are not | Missing | adam | epic to be opened |
-| Schedules (after, at, five-field cron) that survive restarts. An agent folder's `schedules/*.md` (cron, time zone, prompt) is read and validated, and `Runtime::start_with_id` gives one run per tick, but nothing runs a schedule: `adam-agent` warns that it does not | Partial | adam | epic to be opened |
+| Timers and waits. A run parks on a durable timer or a message, whichever comes first (`Transition::Park { wake_at }`), and a child has a deadline. Missing: a sleep that a folder agent's model can call, and named queues (a run has one inbox) | Partial | adam | no ticket yet, tracked by [sys#402](https://github.com/vymalo/another-agentic-system/issues/402) |
+| Combinators. Join (`Ctx::step_all`), loops (`Transition::Continue`) and try (a recorded `Err` is replayed) are built. Missing: race, and a rollback to a checkpoint (the coder's `snapshot` and `revert_to`, [adam ADR 0050](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0050-hooks-around-the-agent-loop-compiled-first-and-programs-second.md) slice H11, planned) | Partial | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) (H11); race: no ticket yet, tracked by [sys#402](https://github.com/vymalo/another-agentic-system/issues/402) |
+| Retries with backoff. A failed transition is retried with exponential backoff and a `Retry-After` hint, under one policy per runtime. Missing: a policy per step | Partial | adam | no ticket yet, tracked by [sys#402](https://github.com/vymalo/another-agentic-system/issues/402) |
+| Versions, so code can change while runs are in flight. A deploy that changes which steps run fails those runs with `NonDeterminism` ([adam ADR 0004](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0004-agent-folders-at-run-time.md), decision 4). The state envelope is versioned for a mixed fleet; the steps are not | Missing | adam | no ticket yet, tracked by [sys#402](https://github.com/vymalo/another-agentic-system/issues/402) |
+| Schedules (after, at, five-field cron) that survive restarts. An agent folder's `schedules/*.md` (cron, time zone, prompt) is read and validated, and `Runtime::start_with_id` gives one run per tick, but nothing runs a schedule: `adam-agent` warns that it does not | Partial | adam | no ticket yet, tracked by [sys#402](https://github.com/vymalo/another-agentic-system/issues/402) |
 
 ## M7: Sleep and wake
 
 **Goal.** An agent with nothing to do costs nothing, and the next request wakes it with its state, on any machine.
 
-**Epic:** epic to be opened.
+**Epic:** [M7: Sleep and wake](https://github.com/vymalo/another-agentic-system/issues/403).
 
 | Gap | Status | Repo | Ticket |
 |---|---|---|---|
-| Sleep when idle. A parked run holds no process, and any worker resumes it from the store. The workload does not scale to zero: the operator has only `spec.suspend` ([plat AD-023](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/11-decisions.md)), and the lease-based design ([plat §21](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/05-runtime.md), AD-010) is not built | Partial | plat, adam | epic to be opened |
+| Sleep when idle. A parked run holds no process, and any worker resumes it from the store. The workload does not scale to zero: the operator has only `spec.suspend` ([plat AD-023](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/11-decisions.md)), and the lease-based design ([plat §21](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/05-runtime.md), AD-010) is not built | Partial | plat, adam | no ticket yet, tracked by [sys#403](https://github.com/vymalo/another-agentic-system/issues/403) |
 | Lifecycle hooks. An agent has `init`, `init_continuing` and `on_cancelled`. Missing: a hook when a run parks, wakes or moves to another worker (the events `run.parked` and `run.ended` are adam ADR 0050 slice H4) | Partial | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) (H4) |
-| Live connections that survive sleep. A dropped stream resumes: A2A `SubscribeToTask`, else `GetTask`, and AG-UI's `Last-Event-ID`. Missing: a stream held open while the agent's workload is at zero, which needs the first row | Partial | sys, adam | epic to be opened |
+| Live connections that survive sleep. A dropped stream resumes: A2A `SubscribeToTask`, else `GetTask`, and AG-UI's `Last-Event-ID`. Missing: a stream held open while the agent's workload is at zero, which needs the first row | Partial | sys, adam | no ticket yet, tracked by [sys#403](https://github.com/vymalo/another-agentic-system/issues/403) |
 
 ## M8: Inspector and developer tools
 
 **Goal.** A developer sees inside a run, its state, its journal and its store, and can replay it.
 
-**Epic:** epic to be opened.
+**Epic:** [M8: Inspector and developer tools](https://github.com/vymalo/another-agentic-system/issues/404).
 
 | Gap | Status | Repo | Ticket |
 |---|---|---|---|
-| An inspector. The web shows the tree of steps with each step's input and output ([ADR 0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md), [ADR 0030](docs/decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)), and a thread exports as JSON (`dev/export-thread.sh`). Missing: a run's state, its journal and inbox, its connections, a replay from a step, and a view of the store | Partial | sys, adam | epic to be opened |
-| An MCP server to search and act on the system. Six tools start, follow, answer and cancel jobs ([ADR 0019](docs/decisions/0019-mcp-server-over-streamable-http.md)). Missing: search, which is HTTP only ([ADR 0068](docs/decisions/0068-a-person-searches-their-own-threads.md)) | Partial | sys | epic to be opened |
+| An inspector. The web shows the tree of steps with each step's input and output ([ADR 0025](docs/decisions/0025-nested-steps-events-carry-their-source-path.md), [ADR 0030](docs/decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)), and a thread exports as JSON (`dev/export-thread.sh`). Missing: a run's state, its journal and inbox, its connections, a replay from a step, and a view of the store | Partial | sys, adam | no ticket yet, tracked by [sys#404](https://github.com/vymalo/another-agentic-system/issues/404) |
+| An MCP server to search and act on the system. Six tools start, follow, answer and cancel jobs ([ADR 0019](docs/decisions/0019-mcp-server-over-streamable-http.md)). Missing: search, which is HTTP only ([ADR 0068](docs/decisions/0068-a-person-searches-their-own-threads.md)) | Partial | sys | no ticket yet, tracked by [sys#404](https://github.com/vymalo/another-agentic-system/issues/404) |
 
 ## M9: Agent conversations
 
 **Goal.** A conversation with an agent is durable end to end: checkpoints, hooks, teams, approvals, schedules and
 traces.
 
-**Epic:** epic to be opened.
+**Epic:** [M9: Agent conversations](https://github.com/vymalo/another-agentic-system/issues/405).
 
 | Gap | Status | Repo | Ticket |
 |---|---|---|---|
 | Durable tasks with checkpoints, and a hook on each answer. Tasks are durable (the journal). Missing: a hook on each answer (adam ADR 0050 slices H1c and H2) and declared checkpoints ([ADR 0074](docs/decisions/0074-agent-team.md)) | Partial | adam, sys | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333), [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) |
 | Subagents, swarms and forks. Subagents, child sessions (6 of 8 slices of [adam ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md); [ADR 0072](docs/decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md)) and forks (`dev/fork-e2e.sh`) are built. Left: the coder's own sessions and asking from a child; agent-team is decided and nothing of it is built | Partial | adam, sys | [sys#332](https://github.com/vymalo/another-agentic-system/issues/332), [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) |
 | Approvals. Questions and forms (`ask_user`) are built. Missing: an approval of a tool call (adam ADR 0050 slice H8) and the orchestrator's gate for a hand-off | Partial | adam, sys | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) (H8), [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) |
-| Scheduled agents. A folder declares schedules (M6) and nothing runs them; a scheduled run's thread in the chat is not designed | Partial | adam, sys | epic to be opened |
-| OpenTelemetry traces of agents. The platform's operator and API export OTLP (plat K5). adam and the orchestrator export no traces, and the outbox carries no trace context | Partial | adam, sys | [sys#170](https://github.com/vymalo/another-agentic-system/issues/170) (trace context); adam: epic to be opened |
+| Scheduled agents. A folder declares schedules (M6) and nothing runs them; a scheduled run's thread in the chat is not designed | Partial | adam, sys | no ticket yet, tracked by [sys#405](https://github.com/vymalo/another-agentic-system/issues/405) |
+| OpenTelemetry traces of agents. The platform's operator and API export OTLP (plat K5). adam and the orchestrator export no traces, and the outbox carries no trace context | Partial | adam, sys | [sys#170](https://github.com/vymalo/another-agentic-system/issues/170) (trace context); adam: no ticket yet, tracked by [sys#405](https://github.com/vymalo/another-agentic-system/issues/405) |
 
 ## M10: Sandboxed execution
 
 **Goal.** Every agent's commands run in a sandbox of the deployment's choice.
 
-**Epic:** epic to be opened.
+**Epic:** [M10: Sandboxed execution](https://github.com/vymalo/another-agentic-system/issues/406).
 
 | Gap | Status | Repo | Ticket |
 |---|---|---|---|
 | A sandbox per agent. Run pods that see one run, the egress proxy and the git sandbox are built ([adam ADR 0041](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0041-a-run-pod-sees-only-its-own-run.md), [0042](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0042-run-pods-reach-the-internet-through-an-egress-proxy.md); plat D15a to D15d). gVisor's runtime class in the operator's chart, the operator and the admission policy are merged (K14a, [plat#64](https://github.com/vymalo/another-agentic-platform/pull/64)). Left: the proof on a node with gVisor (K14b to K14d) | Partial | plat | [plat#54](https://github.com/vymalo/another-agentic-platform/issues/54), [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) |
-| Pluggable sandboxes (E2B, Daytona, Docker). adam's `Environment` port has three adapters: the process itself, a devcontainer on Podman (which [adam ADR 0052](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0052-no-podman-a-repositorys-own-environment-is-a-run-pod-of-its-image.md) removes) and run pods. Missing: E2B, Daytona or a Docker host. The local sandbox of adam ADR 0047 slice 9 is planned | Partial | adam | [sys#387](https://github.com/vymalo/another-agentic-system/issues/387) (slice 9), [sys#359](https://github.com/vymalo/another-agentic-system/issues/359); E2B, Daytona, Docker: epic to be opened |
+| Pluggable sandboxes (E2B, Daytona, Docker). adam's `Environment` port has three adapters: the process itself, a devcontainer on Podman (which [adam ADR 0052](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0052-no-podman-a-repositorys-own-environment-is-a-run-pod-of-its-image.md) removes) and run pods. Missing: E2B, Daytona or a Docker host. The local sandbox of adam ADR 0047 slice 9 is planned | Partial | adam | [sys#387](https://github.com/vymalo/another-agentic-system/issues/387) (slice 9), [sys#359](https://github.com/vymalo/another-agentic-system/issues/359); E2B, Daytona, Docker: no ticket yet, tracked by [sys#406](https://github.com/vymalo/another-agentic-system/issues/406) |
 
 ## M11: Operations
 
 **Goal.** A deployment replicates, upgrades, observes and spreads itself like a managed one.
 
-**Epic:** epic to be opened.
+**Epic:** [M11: Operations](https://github.com/vymalo/another-agentic-system/issues/407).
 
 | Gap | Status | Repo | Ticket |
 |---|---|---|---|
 | Replicated writes. The chart self-hosts with files in S3; three database instances and a pooler are values, off by default, proven on renders. The coder's database is one instance | Partial | sys, adam | [sys#290](https://github.com/vymalo/another-agentic-system/issues/290), [adam#127](https://github.com/vymalo/another-adam-rs/issues/127) |
-| Metrics and traces. The platform has both (K4, K5). The orchestrator's `/metrics` is its outbox queue, with no traces; adam has neither | Partial | sys, adam | [sys#292](https://github.com/vymalo/another-agentic-system/issues/292), [sys#170](https://github.com/vymalo/another-agentic-system/issues/170); adam: epic to be opened |
-| Rolling upgrades with versions. A mixed fleet steps a run safely, the card says which build answers ([adam ADR 0028](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0028-the-card-says-which-build-answers.md)), and the orchestrator reads release channels. Missing: an agent that serves them (the platform's v0 has none), and a run kept on the version that started it (M6's versions) | Partial | adam, plat | epic to be opened |
-| An embedded SQLite per agent, replicated on every commit. adam's SQLite store ([adam ADR 0053](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0053-sqlite-a-store-service-a-database-per-agent-and-a-static-coder.md)) and the orchestrator on SQLite ([ADR 0076](docs/decisions/0076-the-orchestrator-as-a-library-in-an-application.md), accepted) are planned; nothing replicates a SQLite store | Planned | adam, sys | [sys#362](https://github.com/vymalo/another-agentic-system/issues/362), [sys#382](https://github.com/vymalo/another-agentic-system/issues/382); replication: epic to be opened |
-| Several regions | Missing | sys, plat | epic to be opened |
+| Metrics and traces. The platform has both (K4, K5). The orchestrator's `/metrics` is its outbox queue, with no traces; adam has neither | Partial | sys, adam | [sys#292](https://github.com/vymalo/another-agentic-system/issues/292), [sys#170](https://github.com/vymalo/another-agentic-system/issues/170); adam: no ticket yet, tracked by [sys#407](https://github.com/vymalo/another-agentic-system/issues/407) |
+| Rolling upgrades with versions. A mixed fleet steps a run safely, the card says which build answers ([adam ADR 0028](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0028-the-card-says-which-build-answers.md)), and the orchestrator reads release channels. Missing: an agent that serves them (the platform's v0 has none), and a run kept on the version that started it (M6's versions) | Partial | adam, plat | no ticket yet, tracked by [sys#407](https://github.com/vymalo/another-agentic-system/issues/407) |
+| An embedded SQLite per agent, replicated on every commit. adam's SQLite store ([adam ADR 0053](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0053-sqlite-a-store-service-a-database-per-agent-and-a-static-coder.md)) and the orchestrator on SQLite ([ADR 0076](docs/decisions/0076-the-orchestrator-as-a-library-in-an-application.md), accepted) are planned; nothing replicates a SQLite store | Planned | adam, sys | [sys#362](https://github.com/vymalo/another-agentic-system/issues/362), [sys#382](https://github.com/vymalo/another-agentic-system/issues/382); replication: no ticket yet, tracked by [sys#407](https://github.com/vymalo/another-agentic-system/issues/407) |
+| Several regions | Missing | sys, plat | no ticket yet, tracked by [sys#407](https://github.com/vymalo/another-agentic-system/issues/407) |
 | Clients in TypeScript, React, Rust and Swift. The web and the desktop app have their own client; Rust has clients of A2A (adam) and of the Platform API (plat). Missing: a published client of the chat API, and Swift | Partial | sys | [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) (the reference client) |
 
 ## Good first issues
