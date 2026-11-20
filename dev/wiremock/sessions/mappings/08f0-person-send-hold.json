@@ -1,0 +1,47 @@
+{
+  "name": "SendStreamingMessage to a child context whose text starts [mock:hold]: round 2, working, and the scenario `sessions-hold` moves to `held`, so the next SubscribeToTask of a round 2 is held for 60 s (a stop reaches a round that is still working)",
+  "priority": 3,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SendStreamingMessage"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.contextId",
+          "matches": "ctx-.+\\.keep-(true|false)\\..+"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.message.parts[0].text",
+          "matches": "\\[mock:hold\\].*"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-person-send.sse"
+  },
+  "scenarioName": "sessions-hold",
+  "requiredScenarioState": "Started",
+  "newScenarioState": "held"
+}

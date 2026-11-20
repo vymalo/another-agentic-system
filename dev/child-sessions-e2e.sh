@@ -299,7 +299,8 @@ expect "the child's stream: its usage frames, the call and the totals, say count
 # A person drives a session (S3 of epic #332): start from the parent, send, steer, stop, close, and the refusals. A second user and a second
 # parent, so the checks above stay as they were. The mock keeps no state (dev/wiremock/sessions, the mappings 08*): the session id is
 # `<parent context>.keep-<true|false>.<message id>`, round 1 is the task of that id, held for 5 s, and a message to the child context is
-# always round 2, held for 8 s, so a steer and a stop have a round to meet.
+# always round 2, held for 8 s; a message that starts `[mock:hold]` moves a WireMock scenario (`sessions-hold`, mapping 08f0) so that
+# round 2's subscription is held 60 s (08g0): a steer and a stop meet a round that is still working, however slow the runner is.
 # =======================================================================================================================
 echo "== a person drives a session: a second parent, a second user"
 email=${PERSON_EMAIL:-child-sessions-person@example.com}
@@ -413,7 +414,7 @@ expect "the helper's round was followed: the round's task is the session and nob
 
 echo "== a person sends: the next round, then a steer into it, then stops it"
 bg_status="$tmp/send.status"
-( run_props "$child2" "now the editors ($nonce)" '{}' "$tmp/send.sse" >"$bg_status" ) &
+( run_props "$child2" "[mock:hold] now the editors ($nonce)" '{}' "$tmp/send.sse" >"$bg_status" ) &
 send_pid=$!
 _deadline=$(( $(date +%s) + 30 ))
 while [ "$(msgs | grep -c '^msg|-|true$' || true)" -lt 1 ] && [ "$(date +%s)" -lt "$_deadline" ]; do sleep 1; done
@@ -445,13 +446,13 @@ refuse_working=$(printf '%s' "$good_start" | jq -c --arg id "$(uuid)" '.id = $id
 expect "a start the agent refuses (its working-rounds limit) is still 202" "$(post "/api/threads/$parent2/sessions" "$refuse_working")" "202"
 wait_for_events "$parent2" child_session_start_ended 3 "$tmp/parent2.export.json"
 expect "its outcome is failed, with adam's words" \
-  "$(jq -r '[.events[] | select(.kind == "child_session_start_ended") | .data | select(.outcome == "failed") | .reason] | last // ""' "$tmp/parent2.export.json" | cut -c1-30)" "4 rounds are already working in "
+  "$(jq -r '[.events[] | select(.kind == "child_session_start_ended") | .data | select(.outcome == "failed") | .reason] | last // ""' "$tmp/parent2.export.json" | cut -c1-30)" "4 rounds are already working i"
 expect "and no child thread was made for it: two session threads of a person (and the agent's own)" \
   "$(api GET "/api/threads?order=rail" | jq -r --arg p "$parent2" '[.[] | select(.childOf.threadId == $p)] | length')" "3"
 expect "a message the agent refuses (its round limit) fails the child's job with its words" \
   "$(wait_state "$child2" >/dev/null; run_props "$child2" "[mock:refuse-rounds] one more" '{}' "$tmp/rounds.sse" >/dev/null; wait_state "$child2")" "failed"
 expect "  and the error is in the child's log in adam's words" \
-  "$(export_of "$child2" "$tmp/child2.export.json"; jq -r '[.events[] | select(.kind == "error") | .data.message] | last // "" | .[0:30]' "$tmp/child2.export.json")" "session S has had 20 rounds,"
+  "$(export_of "$child2" "$tmp/child2.export.json"; jq -r '[.events[] | select(.kind == "error") | .data.message] | last // "" | .[0:30]' "$tmp/child2.export.json")" "session S has had 20 rounds, t"
 
 echo "== a person closes the session"
 expect "POST /api/threads/{child}/session/close answers 202 and says the state" \
@@ -476,7 +477,7 @@ expect "the opened card names the child thread and the session, and no prompt" \
   "$(jq -r --arg r "$request" '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.sessionStart" and .messageId == "session-start-\($r)")] | last | .content | "\(.threadId) | \(.session) | \(.agent) | \(.description) | \(has("text") or has("prompt"))"' "$tmp/parent2.frames.json")" \
   "$child2 | $session2 | planner | Find the writers | false"
 expect "the failed card says adam's words" \
-  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.sessionStart" and .content.state == "failed")] | last | .content.reason | .[0:30]' "$tmp/parent2.frames.json")" "4 rounds are already working in "
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.sessionStart" and .content.state == "failed")] | last | .content.reason | .[0:30]' "$tmp/parent2.frames.json")" "4 rounds are already working i"
 expect "the person's session is a vymalo.session card that says by person" \
   "$(jq -r --arg s "$session2" '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.session" and .content.session == $s)] | last | .content.by' "$tmp/parent2.frames.json")" "person"
 frames "$child2" "$tmp/child2.frames.json"
