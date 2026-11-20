@@ -5,20 +5,34 @@ import Link from "next/link";
 import { useThreadView } from "@/features/chat/components/thread-view";
 import { parseSessionStart } from "../lib/cards";
 import { isHomeCard, threadHref } from "../lib/words";
+import { useSessions } from "./sessions-provider";
 
 /**
  * The muted line of a start a person asked for ("You started planner: plan the release"), above the
  * turn, in the voice of the person's other acts (`ToolsLine`): Starting…, then Open, or why it did not
  * start. It is said again in the run that answers it; it is drawn only in its home run (`home`), with
  * the state the stream said last. The agent's words (the name, the description, the reason) are text.
- * "Try again" is the caller's: the dialog that makes the start is not this line's.
+ * "Try again" is offered while the person's draft is still kept (the contract keeps no text): it reopens the
+ * "New subagent" dialog with it. `onTryAgain` is for a caller that has its own way; it is given the button.
  */
-export function StartLine({ data, onTryAgain }: { data: unknown; onTryAgain?: () => void }) {
+export function StartLine({
+  data,
+  onTryAgain,
+}: {
+  data: unknown;
+  onTryAgain?: (opener: HTMLElement) => void;
+}) {
   const { sessionStarts } = useThreadView();
+  const sessions = useSessions();
   const own = isHomeCard(data) ? parseSessionStart(data) : null;
   if (!own) return null;
   const card = sessionStarts?.get(own.request) ?? own;
   const href = card.state === "opened" ? threadHref(card.threadId) : undefined;
+  const again =
+    onTryAgain ??
+    (sessions?.canRetry(card.request)
+      ? (opener: HTMLElement) => sessions.retry(card.request, opener)
+      : undefined);
   return (
     <p
       data-slot="start-line"
@@ -40,12 +54,12 @@ export function StartLine({ data, onTryAgain }: { data: unknown; onTryAgain?: ()
       {card.state === "failed" ? (
         <span>
           Did not start{card.reason ? `: ${card.reason}` : ""}
-          {onTryAgain ? (
+          {again ? (
             <>
               {" "}
               <button
                 type="button"
-                onClick={onTryAgain}
+                onClick={(e) => again(e.currentTarget)}
                 className="text-foreground underline underline-offset-4"
               >
                 Try again

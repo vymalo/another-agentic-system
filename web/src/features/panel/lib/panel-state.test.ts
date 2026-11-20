@@ -76,6 +76,7 @@ describe("what is remembered", () => {
   it("reads a tab it knows, nothing else", () => {
     expect(parseTab("activity")).toBe("activity");
     expect(parseTab("sources")).toBe("sources");
+    expect(parseTab("sessions")).toBe("sessions");
     expect(parseTab("steps")).toBeNull();
     expect(parseTab(null)).toBeNull();
   });
