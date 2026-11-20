@@ -21,7 +21,7 @@ import { parseMentions } from "@/features/mentions/lib/mentions";
 import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
 import type { SentTiers } from "@/features/tier/lib/sent";
 import { parseTier, TIER_KEY, TIER_PROP, type Tier } from "@/features/tier/lib/tier";
-import { problemMessage } from "@/lib/api/client";
+import { problemCode, problemMessage } from "@/lib/api/client";
 import type { components, paths } from "@/lib/api/schema";
 import { withSessionRefresh } from "@/lib/api/session-refresh";
 import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
@@ -227,6 +227,8 @@ export class SendError extends MessageNotSentError {
     readonly status?: number,
     /** The refused run was an A2UI action: it carried no message, so there is nothing to take back. */
     readonly action = false,
+    /** The problem's `code`, when the server gave one (`session_closed`, `child_mentions`, ...): what a screen words itself. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "SendError";
@@ -1485,7 +1487,7 @@ export class ThreadAgent extends AbstractAgent {
         signal,
       });
       if (!data) {
-        throw new SendError(problemMessage(error), response.status, !!action);
+        throw new SendError(problemMessage(error), response.status, !!action, problemCode(error));
       }
       for await (const frame of readSse(data, signal)) {
         let event: Ev;

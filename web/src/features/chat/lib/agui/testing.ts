@@ -70,11 +70,14 @@ export class LiveStream {
 export const sse = (body: ReadableStream<Uint8Array>, status = 200) =>
   new Response(body, { status, headers: { "content-type": "text/event-stream" } });
 
-export const problem = (status: number, title: string, detail?: string) =>
-  new Response(JSON.stringify({ title, status, ...(detail ? { detail } : {}) }), {
-    status,
-    headers: { "content-type": "application/problem+json" },
-  });
+export const problem = (status: number, title: string, detail?: string, code?: string) =>
+  new Response(
+    JSON.stringify({ title, status, ...(detail ? { detail } : {}), ...(code ? { code } : {}) }),
+    {
+      status,
+      headers: { "content-type": "application/problem+json" },
+    },
+  );
 
 export type Call = { method: string; path: string; lastEventId?: string; body?: unknown };
 

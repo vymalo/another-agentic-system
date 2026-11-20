@@ -13,6 +13,12 @@ export type ApiUsageModelLine = components["schemas"]["UsageModelLine"];
 export type ApiUsageSandboxLine = components["schemas"]["UsageSandboxLine"];
 /** How the person's own list shows a thread (`arrangeThread`, ADR 0042): pin, archive, eject or place it. */
 export type ApiArrangement = components["schemas"]["ThreadArrangement"];
+/** A subagent (a helper session of an agent, ADR 0072): what a person starts it with, closes it with, and what a child thread says of itself. */
+export type ApiChildSessionStart = components["schemas"]["ChildSessionStart"];
+export type ApiChildSessionStartAccepted = components["schemas"]["ChildSessionStartAccepted"];
+export type ApiChildSessionClose = components["schemas"]["ChildSessionClose"];
+export type ApiChildSessionCloseAccepted = components["schemas"]["ChildSessionCloseAccepted"];
+export type ApiChildOf = NonNullable<ApiThread["childOf"]>;
 export type ApiToolServer = components["schemas"]["ToolServer"];
 /** One of the person's own MCP servers, as `listUserToolServers` shows it (ADR 0046): no secret, only `hasCredential`. */
 export type ApiUserToolServer = components["schemas"]["UserToolServer"];
