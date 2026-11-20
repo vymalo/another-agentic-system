@@ -40,9 +40,13 @@ test("each subagent is one card, in its state, and Open goes to its thread", asy
   await expect(researcher.locator('[data-slot="session-state"]')).toHaveText("Closed");
   await expect(conversation(page).locator('[data-slot="agent-turn"]')).toHaveCount(1);
 
-  await planner.getByRole("link", { name: /^Open/ }).click();
+  const open = planner.getByRole("link", { name: /^Open/ });
+  // the same tab: the arrow is a mark of where it goes, not of a new window
+  await expect(open).not.toHaveAttribute("target", /./);
+  await open.click();
+  // the parent's address matches THREAD_URL too: wait for the child's
+  await expect(page).not.toHaveURL(parentUrl);
   await expect(page).toHaveURL(THREAD_URL);
-  expect(page.url()).not.toBe(parentUrl);
   await expect(page.getByRole("log", { name: "Conversation" })).toBeVisible();
 });
 
@@ -267,8 +271,18 @@ async function inChild(page: Page, keepOpen: boolean, text: string): Promise<str
 const bannerOf = (page: Page) => page.locator('[data-slot="child-banner"]');
 const childState = (page: Page) => bannerOf(page).locator('[data-slot="child-state"]');
 const messageBox = (page: Page) => page.getByLabel("Message", { exact: true });
-const release = (child: string) =>
-  fetch(`${MOCK_URL}/__mock/release?thread=${child}`, { method: "POST" });
+/**
+ * Lets the held round of `child` go on. The mock answers 409 until the round is at its hold (the step
+ * before it is what the page showed), so this asks again until it is let go, and never releases nothing.
+ */
+const release = async (child: string) => {
+  await expect
+    .poll(
+      async () =>
+        (await fetch(`${MOCK_URL}/__mock/release?thread=${child}`, { method: "POST" })).status,
+    )
+    .toBe(204);
+};
 
 async function say(page: Page, text: string) {
   await messageBox(page).fill(text);
@@ -316,7 +330,7 @@ test("a kept-open subagent: banner, a message starts the next round, steer, Stop
   await page.getByRole("button", { name: "Delivery options" }).click();
   await page.getByRole("menuitem", { name: /Stop and send/ }).click();
   await expect(conversation(page)).toContainText("instead, this");
-  await release(child);
+  // "instead, this" is not a hold: its round ends by itself, and there is nothing to release
   await expect(childState(page)).toHaveText("Idle");
 
   // Close: an idle subagent closes at once; the box becomes the notice, with the way back
@@ -348,7 +362,7 @@ test("a subagent that closes when done has no Stop and send, says what Stop does
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page.locator('[data-slot="session-closed-notice"]')).toBeVisible();
   await expect(childState(page)).toHaveText("Closed");
-  await release(child).catch(() => {});
+  await fetch(`${MOCK_URL}/__mock/release?thread=${child}`, { method: "POST" }).catch(() => {});
 });
 
 test("a close that waits for the round can be made stronger from the banner", async ({
@@ -367,7 +381,7 @@ test("a close that waits for the round can be made stronger from the banner", as
   await expect(stronger.getByRole("button", { name: "Close when this round ends" })).toHaveCount(0);
   await stronger.getByRole("button", { name: "Stop and close" }).click();
   await expect(page.locator('[data-slot="session-closed-notice"]')).toBeVisible();
-  await release(child).catch(() => {});
+  await fetch(`${MOCK_URL}/__mock/release?thread=${child}`, { method: "POST" }).catch(() => {});
 });
 
 test("the banner and the closed notice pass axe, in the page's scheme", async ({ page }, info) => {
