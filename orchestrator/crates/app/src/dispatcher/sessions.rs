@@ -102,7 +102,7 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     /// The start ends `failed` with `reason` (for the person), and the row dead with `operator`.
-    async fn end_start_failed(
+    pub(super) async fn end_start_failed(
         &self,
         row: &OutboxItem,
         request: &str,
@@ -379,7 +379,12 @@ impl<P: Ports> Dispatcher<P> {
 
     /// The agent refused the close, or it cannot be made: the ask is cleared and the child's log
     /// says why in the agent's words; the row ends dead.
-    async fn close_failed(&self, row: &OutboxItem, reason: String, operator: String) -> Done {
+    pub(super) async fn close_failed(
+        &self,
+        row: &OutboxItem,
+        reason: String,
+        operator: String,
+    ) -> Done {
         let lease = self.lease(row);
         if !self
             .app

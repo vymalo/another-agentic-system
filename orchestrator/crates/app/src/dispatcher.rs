@@ -601,10 +601,25 @@ impl<P: Ports> Dispatcher<P> {
         let entry = match self.app.resolve_agent(&binding.agent_id).await {
             Ok(Some(entry)) => entry,
             Ok(None) => {
+                let reason = format!("agent '{}' is no longer listed", binding.agent_id);
+                // A person's start or close of a session is no delegation: it ends with the
+                // word, and the job it was asked beside is not failed (ADR 0072)
+                match &row.payload {
+                    OutboxPayload::SessionStart { request, .. } => {
+                        self.end_start_failed(row, request, reason.clone(), reason)
+                            .await?;
+                        return Ok(None);
+                    }
+                    OutboxPayload::SessionClose { .. } => {
+                        self.close_failed(row, reason.clone(), reason).await?;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
                 self.apply_quiet(
                     row,
                     Input::DeliveryFailed {
-                        reason: format!("agent '{}' is no longer listed", binding.agent_id),
+                        reason,
                         retryable: false,
                     },
                     format!("dead:{}", row.id),
