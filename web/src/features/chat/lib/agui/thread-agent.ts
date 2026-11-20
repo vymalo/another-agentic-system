@@ -837,7 +837,7 @@ export class ThreadAgent extends AbstractAgent {
     const id = str(event.messageId) ?? "";
     if (type === ACTIVITY_SESSION) {
       const card = parseSession(event.content);
-      if (!card) return { event, quiet: false };
+      if (!card) return { event, quiet: true };
       if (id === SESSION_SELF_ID) {
         this.patch({ self: card });
         return { event, quiet: true };
@@ -848,7 +848,7 @@ export class ThreadAgent extends AbstractAgent {
     }
     if (type === ACTIVITY_SESSION_START) {
       const card = parseSessionStart(event.content);
-      if (!card) return { event, quiet: false };
+      if (!card) return { event, quiet: true };
       this.patch({ sessionStarts: new Map(this.snapshot.sessionStarts).set(card.request, card) });
       if (card.state === "starting") this.runHomes.add(id);
       const home = this.runHomes.has(id);

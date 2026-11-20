@@ -14,6 +14,13 @@ export function sessionStateWords(card: SessionCard): string {
   return "Idle";
 }
 
+/** The words of a subagent's row: closing wins over what the round says, closed over everything. */
+export function subagentStateWords(card: SessionCard): string {
+  if (card.state === "closed") return "Closed";
+  if (card.closing || card.closeAsked) return "Closing…";
+  return sessionStateWords(card);
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The route of a child thread, made only of a UUID; anything else is no link. */

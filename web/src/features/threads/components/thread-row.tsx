@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { type ChildOf, childOf } from "@/features/sessions/lib/cards";
+import { subagentStateWords } from "@/features/sessions/lib/words";
 import { ShareMark } from "@/features/sharing/components/share-chip";
 import type { ArrangeAction } from "@/features/threads/hooks/use-threads";
 import { actionsFor, type RowAction, type Section } from "@/features/threads/lib/rail";
@@ -54,16 +55,21 @@ function LiveMark({ state }: { state: ApiThread["state"] }) {
 }
 
 /**
- * A subagent's state in words, for its row: a thread that waits for the person says so, else the session's own
- * state. Words, never a colour alone; nothing when the row does not say.
+ * A subagent's state in words, for its row: a thread that waits for the person says so, else the words the
+ * panel uses for the session (`subagentStateWords`). Words, never a colour alone; nothing when the row does not say.
  */
 function subagentWords(helper: ChildOf, state: ApiThread["state"]): string | undefined {
   if (state === "blocked") return "Waiting for you";
-  if (helper.state === "closed") return "Closed";
-  if (helper.closing) return "Closing";
-  if (helper.state === "working") return "Working";
-  if (helper.state === "idle") return "Idle";
-  return undefined;
+  const words = subagentStateWords({
+    session: helper.session,
+    agent: helper.agent ?? "",
+    description: "",
+    keepOpen: helper.keepOpen,
+    state: helper.state ?? "idle",
+    closing: helper.closing,
+    closeAsked: helper.closeAsked,
+  });
+  return helper.state === undefined ? undefined : words;
 }
 
 const ICONS: Record<RowAction, typeof PinIcon> = {

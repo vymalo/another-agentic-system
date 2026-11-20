@@ -232,4 +232,30 @@ describe("a card's home across a resume and within one run", () => {
       agent.stop();
     });
   }
+
+  describe("a card that cannot be read", () => {
+    for (const [name, type] of [
+      ["session", "vymalo.session"],
+      ["start", "vymalo.sessionStart"],
+    ] as const) {
+      it(`is quiet: a run of nothing else is no turn (${name})`, async () => {
+        const { agent, messages } = await playFrames([
+          runStarted(1),
+          {
+            id: 2,
+            event: {
+              type: "ACTIVITY_SNAPSHOT",
+              messageId: name === "session" ? "session-2" : `session-start-${REQ}`,
+              activityType: type,
+              replace: true,
+              content: { state: "nonsense" },
+            },
+          },
+          runFinished(3),
+        ] as GoldenFrame[]);
+        expect(messages()).toHaveLength(0);
+        agent.stop();
+      });
+    }
+  });
 });

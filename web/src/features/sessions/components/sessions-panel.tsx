@@ -6,15 +6,8 @@ import { useId } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { SessionCard, SessionStartCard } from "../lib/cards";
-import { sessionStateWords, threadHref } from "../lib/words";
+import { subagentStateWords, threadHref } from "../lib/words";
 import { useSessions } from "./sessions-provider";
-
-/** The words of a subagent's row: closing wins over what the round says, closed over everything. */
-export function subagentStateWords(card: SessionCard): string {
-  if (card.state === "closed") return "Closed";
-  if (card.closing || card.closeAsked) return "Closing…";
-  return sessionStateWords(card);
-}
 
 /** The Subagents tab's label count: how many are open. */
 export function subagentsCount(open: number): string | undefined {

@@ -250,6 +250,23 @@ describe("the sections of the list (ADR 0042): Pinned, Chats, Archived", () => {
     expect(rows[0]?.textContent?.match(/working/gi)?.length).toBe(1);
   });
 
+  it("says Closing… for a subagent whose close a person asked, as the panel does", () => {
+    const helper = (id: string, childOf: Record<string, unknown>) =>
+      ({
+        ...child(thread(id, "Plan the migration"), "p-1"),
+        childOf: { session: "s1", agent: "planner", keepOpen: true, ...childOf },
+      }) as ApiThread;
+    sidebar([
+      thread("p-1", "Parent"),
+      helper("h-1", { state: "working", closeAsked: true }),
+      helper("h-2", { state: "idle", closing: true }),
+    ]);
+    const words = [...document.querySelectorAll('[data-slot="subagent-state"]')].map(
+      (e) => e.textContent,
+    );
+    expect(words).toEqual(["Closing…", "Closing…"]);
+  });
+
   it("keeps the highlight on the open thread, a child included", () => {
     sidebar([thread("t-1", "Open one"), child(thread("t-9", "A fork"), "t-1")]);
     expect(screen.getByRole("link", { name: "Open one" }).getAttribute("aria-current")).toBe(

@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import type { ApiThread } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 import { useChildView } from "../hooks/use-child-view";
+import { subagentStateWords } from "../lib/words";
 import { ParentLink } from "./parent-link";
-import { subagentStateWords } from "./sessions-panel";
 import { useSessions } from "./sessions-provider";
 
 /**

@@ -96,6 +96,7 @@ function tree(s: Setup) {
         refreshRows={s.refreshRows ?? (() => {})}
       >
         <Probe />
+        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: the tab panel of the real panel is focusable too */}
         <div role="tabpanel" tabIndex={0} aria-label="Subagents tab">
           <SessionsPanel />
         </div>
