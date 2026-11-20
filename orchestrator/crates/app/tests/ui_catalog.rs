@@ -20,6 +20,7 @@ fn catalog(version: u32, tag: &str) -> UiCatalogData {
     let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
     let catalog = serde_json::json!({
         "catalogId": id,
+        "protocolVersion": "1.0",
         "components": {"Note": {
             "type": "object",
             "title": format!("{tag}-{version}"),

@@ -326,7 +326,7 @@ async fn the_verifier_is_told_nothing_of_the_authors_screen_and_gets_no_thread()
     w.agent.set_verifier("reviewer", VerdictScript::Pass);
     let app = app_with(&w, 3);
     let id = "https://agents.vymalo.com/a2ui/catalogs/chat";
-    let catalog_json = json!({"catalogId": id, "components": {"Note": {
+    let catalog_json = json!({"catalogId": id, "protocolVersion": "1.0", "components": {"Note": {
         "type": "object",
         "properties": {"component": {"const": "Note"}},
     }}});
@@ -335,7 +335,7 @@ async fn the_verifier_is_told_nothing_of_the_authors_screen_and_gets_no_thread()
         &app,
         Some(orch_core::UiCatalogData {
             catalog_id: id.into(),
-            version: 1,
+            version: 9,
             digest: orch_core::catalog_digest(&catalog_json).unwrap(),
             catalog: catalog_json,
         }),
