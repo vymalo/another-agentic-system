@@ -485,10 +485,10 @@ impl<P: Ports> Dispatcher<P> {
             // A person's start and close of a helper session (ADR 0072) share the lane and are
             // never steers
             OutboxKind::Steer if matches!(row.payload, OutboxPayload::SessionStart { .. }) => {
-                self.start_session(row).await
+                Box::pin(self.start_session(row)).await
             }
             OutboxKind::Steer if matches!(row.payload, OutboxPayload::SessionClose { .. }) => {
-                self.close_session(row).await
+                Box::pin(self.close_session(row)).await
             }
             OutboxKind::Steer => self.steer(row).await,
             OutboxKind::Cancel => self.cancel(row).await,
@@ -1619,16 +1619,14 @@ impl<P: Ports> Dispatcher<P> {
                         number: round.number,
                         task_id,
                     };
-                    match self
-                        .app
-                        .apply(
-                            ctx.thread,
-                            sent,
-                            Some(format!("roundsent:{}:{}", ctx.row.id, round.number)),
-                            None,
-                            Some(&ctx.lease),
-                        )
-                        .await
+                    match Box::pin(self.app.apply(
+                        ctx.thread,
+                        sent,
+                        Some(format!("roundsent:{}:{}", ctx.row.id, round.number)),
+                        None,
+                        Some(&ctx.lease),
+                    ))
+                    .await
                     {
                         Ok(ApplyOutcome::Fenced) => return Err(DispatchError::Fenced),
                         Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => {}
