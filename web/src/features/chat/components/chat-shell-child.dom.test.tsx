@@ -326,6 +326,48 @@ describe("what a subagent leaves out", () => {
   });
 });
 
+describe("before the thread is known", () => {
+  const openAt = async () => {
+    type("");
+    type("ask @");
+    await new Promise((r) => setTimeout(r, 100));
+    return screen.queryByRole("listbox", { name: "Agents to mention" });
+  };
+
+  it("offers no @ or fork on a subagent's page until the thread, or its own card, says what it is", async () => {
+    const { parent, child } = await aChild({ keepOpen: true, hold: false });
+    await page.api.until(async () => (await stateOf(child)) === "idle", "idle");
+    // the control: a thread that is nobody's helper gets them once it is read
+    const release = page.gate("GET /api/threads/:id");
+    const parentView = shell(parent);
+    await screen.findByLabelText("Message");
+    await waitFor(() =>
+      expect(screen.getAllByText(/Round 1: go|echo|Plan/).length).toBeGreaterThan(0),
+    );
+    expect(await openAt()).toBeNull();
+    expect(screen.queryByRole("button", { name: /Fork/ })).toBeNull();
+    release();
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /Fork/ }).length).toBeGreaterThan(0),
+    );
+    await waitFor(async () => expect(await openAt()).toBeTruthy());
+    parentView.unmount();
+
+    // the subagent's page: with its resource unread, the stream's card may come first; either way nothing
+    // a subagent lacks is there before it is known, and nothing after
+    const releaseChild = page.gate("GET /api/threads/:id");
+    shell(child);
+    await screen.findByLabelText("Message");
+    await waitFor(() => expect(screen.getByText(/Round 1: go/)).toBeTruthy());
+    expect(await openAt()).toBeNull();
+    expect(screen.queryByRole("button", { name: /Fork/ })).toBeNull();
+    releaseChild();
+    await waitFor(() => expect(banner()).toBeTruthy());
+    expect(await openAt()).toBeNull();
+    expect(screen.queryByRole("button", { name: /Fork/ })).toBeNull();
+  });
+});
+
 describe("a run that is refused keeps the text in the box", () => {
   const refuse = (status: number, code: string) =>
     page.fake("POST /agui/agents/adam", {

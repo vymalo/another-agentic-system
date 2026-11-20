@@ -631,7 +631,9 @@ export function createSessions(host: SessionsHost) {
         res,
         400,
         "Bad Request",
-        text.trim() === "" ? "text must not be empty" : `text must be at most ${MAX_TEXT} characters`,
+        text.trim() === ""
+          ? "text must not be empty"
+          : `text must be at most ${MAX_TEXT} characters`,
       );
     }
     const description = checkDescription(b.description);

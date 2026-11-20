@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, configure, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { LiveStream, loadGolden, sse, THREAD_ID, type GoldenFrame } from "./testing";
+import { type GoldenFrame, LiveStream, loadGolden, sse, THREAD_ID } from "./testing";
 import { mountRuntime, summarize } from "./testing-runtime";
 
 configure({ asyncUtilTimeout: 10_000 });
@@ -145,7 +145,12 @@ const runStarted = (id?: number) => ({
 });
 const runFinished = (id: number) => ({
   id,
-  event: { type: "RUN_FINISHED", threadId: THREAD_ID, runId: "run-1", outcome: { type: "success" } },
+  event: {
+    type: "RUN_FINISHED",
+    threadId: THREAD_ID,
+    runId: "run-1",
+    outcome: { type: "success" },
+  },
 });
 const sessionCard = (id: number, state: string): GoldenFrame => ({
   id,
@@ -154,7 +159,14 @@ const sessionCard = (id: number, state: string): GoldenFrame => ({
     messageId: "session-2",
     activityType: "vymalo.session",
     replace: true,
-    content: { session: "s1", threadId: CHILD, agent: "planner", description: "d", keepOpen: true, state },
+    content: {
+      session: "s1",
+      threadId: CHILD,
+      agent: "planner",
+      description: "d",
+      keepOpen: true,
+      state,
+    },
   },
 });
 const startCard = (id: number, state: string): GoldenFrame => ({
@@ -181,13 +193,20 @@ describe("a card's home across a resume and within one run", () => {
     const { agent, messages } = await playFrames([
       runStarted(1),
       ...reply,
-      { id: 2, event: { type: "SUBAGENT_STARTED", subagentRunId: "sub-session-2", name: "planner" } },
+      {
+        id: 2,
+        event: { type: "SUBAGENT_STARTED", subagentRunId: "sub-session-2", name: "planner" },
+      },
       sessionCard(3, "working"),
       runStarted(),
       { event: { type: "SUBAGENT_STARTED", subagentRunId: "sub-session-2", name: "planner" } },
       sessionCard(4, "idle"),
       {
-        event: { type: "SUBAGENT_FINISHED", subagentRunId: "sub-session-2", outcome: { type: "suspended" } },
+        event: {
+          type: "SUBAGENT_FINISHED",
+          subagentRunId: "sub-session-2",
+          outcome: { type: "suspended" },
+        },
       },
       runFinished(5),
     ] as GoldenFrame[]);

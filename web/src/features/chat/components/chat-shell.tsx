@@ -52,7 +52,7 @@ import { type ChildBox, ChildComposerGate } from "@/features/sessions/components
 import { SessionsProvider } from "@/features/sessions/components/sessions-provider";
 import { childOf } from "@/features/sessions/lib/cards";
 import { REFUSAL_CODES, refusalWords } from "@/features/sessions/lib/refusals";
-import { CHILD_PART_OF_PARENT } from "@/features/sessions/lib/words";
+import { CHILD_PART_OF_PARENT, THREAD_NOT_KNOWN } from "@/features/sessions/lib/words";
 import { BranchesProvider } from "@/features/threads/components/branches-provider";
 import { ForkProvider } from "@/features/threads/components/fork-provider";
 import {
@@ -334,6 +334,9 @@ function Chat({ threadId }: { threadId: string | null }) {
   const readOnly = access.readOnly ? access.reason : null;
   // a thread has a right-hand panel (its sources, later its activity); the new-chat page has none
   const Panels = threadId === null ? Fragment : PanelProvider;
+  // Whether the thread is known to be a subagent's own or not: the resource says it (`childOf`), and the stream's
+  // `session-self` card, faster, says it for a subagent. Until one has, nothing is offered that a subagent leaves out.
+  const known = threadId === null || thread?.id === threadId || snapshot.self != null;
   const composerFor = (child: ChildBox | null) =>
     readOnly ? (
       <ReadOnlyNotice reason={readOnly} isNew={threadId === null} />
@@ -352,15 +355,15 @@ function Chat({ threadId }: { threadId: string | null }) {
           agent: child?.agent ?? toolsAgentName,
           steers,
           // the replay has to be on screen: a send before it replaces the turns it has not drawn
-          ready: threadId === null || (loaded && !snapshot.replaying),
+          ready: threadId === null || (known && loaded && !snapshot.replaying),
         }}
         inputRef={composerRef}
         usage={<UsageRing usage={snapshot.usage} />}
-        mentions={child ? undefined : { agents: mentionable, store: mentionsStore }}
-        commands={child ? undefined : commands}
+        mentions={child || !known ? undefined : { agents: mentionable, store: mentionsStore }}
+        commands={child || !known ? undefined : commands}
         toolbar={
           <>
-            {child ? null : (
+            {child || !known ? null : (
               <ToolsPicker
                 view={toolServers}
                 agentId={toolsAgentId}
@@ -375,7 +378,7 @@ function Chat({ threadId }: { threadId: string | null }) {
         }
         notices={
           <>
-            {child ? null : (
+            {child || !known ? null : (
               <>
                 <ToolsWarning
                   chosen={chosenTools}
@@ -433,7 +436,13 @@ function Chat({ threadId }: { threadId: string | null }) {
         state={state}
         lastSeq={snapshot.lastSeq}
         readOnly={readOnly}
-        childReason={childOf(thread) !== null ? CHILD_PART_OF_PARENT : null}
+        childReason={
+          childOf(thread) !== null || snapshot.self != null
+            ? CHILD_PART_OF_PARENT
+            : known
+              ? null
+              : THREAD_NOT_KNOWN
+        }
         tier={tier.send}
       >
         <BranchesProvider threadId={threadId} refreshKey={state ?? ""}>

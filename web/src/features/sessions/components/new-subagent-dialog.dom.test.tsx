@@ -292,7 +292,14 @@ describe("a refusal stays in the dialog with the draft", () => {
       onOpenChange: vi.fn(),
     };
     const tree = (o: ChildSessionsOffer) => (
-      <NewSubagentDialog open parent={parent} offer={o} tier={undefined} returnTo={{ current: null }} {...spies} />
+      <NewSubagentDialog
+        open
+        parent={parent}
+        offer={o}
+        tier={undefined}
+        returnTo={{ current: null }}
+        {...spies}
+      />
     );
     const view = render(tree(ghost));
     fill("Haunt");

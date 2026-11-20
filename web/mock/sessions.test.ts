@@ -519,7 +519,10 @@ describe("what a start is refused for", () => {
     // the description is read before the card says it offers nothing
     const off = await person("sessions=off");
     const offParent = await off.answered();
-    res = await off.json("POST", `/api/threads/${offParent}/sessions`, { ...base, description: "" });
+    res = await off.json("POST", `/api/threads/${offParent}/sessions`, {
+      ...base,
+      description: "",
+    });
     expect([res.status, await code(res)]).toEqual([422, "bad_description"]);
   });
 

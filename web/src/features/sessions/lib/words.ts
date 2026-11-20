@@ -28,5 +28,7 @@ export function isHomeCard(content: unknown): boolean {
   );
 }
 
+/** Why a thread cannot be forked yet: whether it is a subagent's own is not known until it is read. */
+export const THREAD_NOT_KNOWN = "Loading this thread";
 /** Why a subagent's own thread is not forked, shared or handed to another agent: it is part of its parent chat. */
 export const CHILD_PART_OF_PARENT = "A subagent is part of its parent chat";
