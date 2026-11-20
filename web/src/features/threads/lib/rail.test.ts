@@ -92,6 +92,16 @@ describe("actionsFor: what the row's menu offers (ADR 0042, decisions 4 and 6; A
     expect(kinds(actions)).not.toContain("pin");
   });
 
+  it("a subagent's thread keeps Eject, Archive and Delete, and has no fork action", () => {
+    const helper = thread("h", {
+      nestedUnder: "a",
+      childOf: { session: "s1", agent: "planner", state: "working" },
+    } as Partial<ApiThread>);
+    const actions = actionsFor(helper, { section: "chats", mayDelete: true });
+    expect(kinds(actions)).toEqual(["eject", "archive", "delete"]);
+    expect(actions.map((a) => a.label.toLowerCase()).join(" ")).not.toContain("fork");
+  });
+
   it("an archived chat: Unarchive and Delete, and no Pin", () => {
     expect(
       kinds(actionsFor(thread("a", { archived: true }), { section: "archived", mayDelete: true })),
