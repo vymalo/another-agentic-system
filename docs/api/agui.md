@@ -1083,8 +1083,8 @@ stateDiagram-v2
   `child_session_state`): `{session, agent, keepOpen, state, closing, closeAsked, at}`. A composer is hidden when `state` is
   `closed`, says "Closing..." while `closing`, and offers Stop & send only when `keepOpen`.
 - **The person's messages in a child** (the start's prompt, later rounds, steers) are the ordinary text frames of the child's stream.
-- **`PROJECTION_VERSION` stays 2.** No released log has these kinds and no frame of an existing event changes. `STATE_SNAPSHOT.thread.childOf`
-  keeps the members `chat-api.yaml` gives it (the web reads them, S4).
+- **`PROJECTION_VERSION` stays 2.** No released log has these kinds and no frame of an existing event changes. `STATE_SNAPSHOT.thread` does not say that a thread is a child
+  (`childOf`); the web reads `childOf` from `GET /api/threads/{id}`, as `chat-api.yaml` gives it.
 
 ## Token usage
 
