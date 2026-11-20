@@ -462,11 +462,11 @@ check "mock-sessions: a person's start -> round 1's task, in a context of its ow
 check "mock-sessions: a start with no description -> InvalidParams (-32602), adam's words" \
   "$(person 'x' ctx-task-parent '{"start":{"agent":"planner","keepOpen":true}}' | jq -r '[.error.code, .error.message] | join(" ")')" "-32602 \`start.description\` is missing: it is a string"
 check "mock-sessions: a start whose text starts [mock:refuse-working] -> UnsupportedOperation (-32004), adam's words" \
-  "$(person '[mock:refuse-working] x' ctx-task-parent '{"start":{"agent":"planner","description":"d"}}' | jq -r '[.error.code, (.error.message | .[0:30])] | join(" ")')" "-32004 4 rounds are already working in "
+  "$(person '[mock:refuse-working] x' ctx-task-parent '{"start":{"agent":"planner","description":"d"}}' | jq -r '[.error.code, (.error.message | .[0:30])] | join(" ")')" "-32004 4 rounds are already working i"
 check "mock-sessions: a message to the child context -> round 2 of the session, working, by person" \
   "$(person 'now the editors' "ctx-$PSESSION" '{}' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '[.[0].result.task | .id, (.metadata[$u] | "\(.round) \(.state)")] | join(" ")')" "$PSESSION.r2 2 working"
 check "mock-sessions: a message whose text starts [mock:refuse-rounds] -> UnsupportedOperation (-32004), adam's words" \
-  "$(person '[mock:refuse-rounds] x' "ctx-$PSESSION" '{}' | jq -r '[.error.code, (.error.message | .[0:30])] | join(" ")')" "-32004 session S has had 20 rounds,"
+  "$(person '[mock:refuse-rounds] x' "ctx-$PSESSION" '{}' | jq -r '[.error.code, (.error.message | .[0:30])] | join(" ")')" "-32004 session S has had 20 rounds, t"
 check "mock-sessions: a close -> a task of the child context whose session says closed" \
   "$(person close "ctx-$PSESSION" '{"close":{"cancel":false}}' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '.[0].result.task | [.id, .contextId, .metadata[$u].state] | join(" ")')" "$PSESSION.close ctx-$PSESSION closed"
 check "mock-sessions: SubscribeToTask of round 2 of a kept-open session -> working, working, then completed with the session idle" \
