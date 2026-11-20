@@ -101,18 +101,28 @@ function Form({
   const [closeWhenDone, setCloseWhenDone] = useState(initial ? !initial.keepOpen : true);
   const [errors, setErrors] = useState<Errors>({});
   const { start, busy } = useStartSession(parent);
+  // until the person picks, the first helper is the default; once a pick is gone (the card dropped it) none is
+  const [defaulted, setDefaulted] = useState(true);
+  const pickerRef = useRef<HTMLFieldSetElement>(null);
   const descriptionRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   // the card is read again when the dialog opens: the helpers listed are the ones it lists now
   // biome-ignore lint/correctness/useExhaustiveDependencies: once, on open
   useEffect(() => onOpened(), []);
-  // the first helper is the default until the person picks, and a helper the card dropped is no pick
-  const chosen = helpers.some((h) => h.name === agent) ? agent : (helpers[0]?.name ?? "");
+  // a helper the card dropped is no pick, and no other is chosen in its place
+  const chosen = helpers.some((h) => h.name === agent)
+    ? agent
+    : agent === "" && defaulted
+      ? (helpers[0]?.name ?? "")
+      : "";
   const helper = helpers.find((h) => h.name === chosen);
 
   const verdict = checkStartDescription(description);
   const counted = "length" in verdict ? verdict.length : codePointLength(description);
+
+  const focusPicker = () =>
+    pickerRef.current?.querySelector<HTMLElement>('[role="radio"], select')?.focus();
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -126,13 +136,15 @@ function Form({
             ? "The description is one line without control or invisible characters."
             : refusalWords("bad_description", undefined);
     }
+    if (chosen === "") found.helper = "Pick a subagent.";
     if (text.trim() === "") found.text = "Write what the subagent should do.";
     else if (codePointLength(text) > MAX_START_TEXT) {
       found.text = `The prompt is at most ${MAX_START_TEXT.toLocaleString("en-US")} characters.`;
     }
-    if (found.description || found.text) {
+    if (found.helper || found.description || found.text) {
       setErrors(found);
-      (found.description ? descriptionRef : textRef).current?.focus();
+      if (found.helper) focusPicker();
+      else (found.description ? descriptionRef : textRef).current?.focus();
       return;
     }
     const draft: StartDraft = {
@@ -149,6 +161,8 @@ function Form({
     }
     // each refusal where it belongs; anything else (a limit, a lost connection) at the top
     if (result.code === "unknown_helper") {
+      setAgent("");
+      setDefaulted(false);
       setErrors({ helper: result.words });
       onCardChanged();
     } else if (result.code === "bad_description") {
@@ -183,6 +197,7 @@ function Form({
       {offer !== null ? (
         <>
           <fieldset
+            ref={pickerRef}
             className="grid gap-2"
             aria-describedby={errors.helper ? ids.helper : undefined}
           >
@@ -190,8 +205,10 @@ function Form({
             {helpers.length <= RADIOS_UP_TO ? (
               <RadioGroup
                 value={chosen}
-                onValueChange={setAgent}
-                aria-label="Subagent"
+                onValueChange={(v) => {
+                  setAgent(v);
+                  if (errors.helper) setErrors((er) => ({ ...er, helper: undefined }));
+                }}
                 className="gap-2"
               >
                 {helpers.map((h, i) => (
@@ -217,9 +234,17 @@ function Form({
                 <NativeSelect
                   aria-label="Subagent"
                   value={chosen}
-                  onChange={(e) => setAgent(e.target.value)}
+                  onChange={(e) => {
+                    setAgent(e.target.value);
+                    if (errors.helper) setErrors((er) => ({ ...er, helper: undefined }));
+                  }}
                   className="w-full"
                 >
+                  {chosen === "" ? (
+                    <NativeSelectOption value="" disabled>
+                      Choose a subagent
+                    </NativeSelectOption>
+                  ) : null}
                   {helpers.map((h) => (
                     <NativeSelectOption key={h.name} value={h.name}>
                       {h.name}

@@ -281,6 +281,42 @@ describe("a refusal stays in the dialog with the draft", () => {
     expect(spies.onCardChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("unknown_helper clears the pick: the re-read card's first helper is not started unasked", async () => {
+    const parent = await page.api.answered();
+    const ghost = { maxOpen: 4, agents: [{ name: "ghost", description: "Not on the card." }] };
+    const spies = {
+      onStarted: vi.fn(),
+      onOpened: vi.fn(),
+      onCardChanged: vi.fn(),
+      onWithdrawn: vi.fn(),
+      onOpenChange: vi.fn(),
+    };
+    const tree = (o: ChildSessionsOffer) => (
+      <NewSubagentDialog open parent={parent} offer={o} tier={undefined} returnTo={{ current: null }} {...spies} />
+    );
+    const view = render(tree(ghost));
+    fill("Haunt");
+    submit();
+    await waitFor(() => expect(spies.onCardChanged).toHaveBeenCalledTimes(1));
+    // the card, read again, lists others: none is the person's pick
+    view.rerender(tree(offer));
+    const radios = screen.getAllByRole("radio") as HTMLButtonElement[];
+    expect(radios.length).toBeGreaterThan(1);
+    expect(radios.every((r) => r.getAttribute("aria-checked") === "false")).toBe(true);
+    const before = (await asked(parent)).length;
+    submit();
+    const dialog = screen.getByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText("Pick a subagent.")).toBeTruthy());
+    expect(radios).toContain(document.activeElement);
+    expect(spies.onStarted).not.toHaveBeenCalled();
+    expect((await asked(parent)).length).toBe(before);
+    // an explicit pick starts that helper
+    fireEvent.click(radios[1] as HTMLElement);
+    submit();
+    await waitFor(() => expect(spies.onStarted).toHaveBeenCalledTimes(1));
+    expect(spies.onStarted.mock.calls[0]?.[1].agent).toBe(offer.agents[1]?.name);
+  });
+
   it("bad_description, on the description field, which is marked invalid and focused", async () => {
     await refused("00000000-0000-4000-8000-0000000000aa", "bad_description", 422);
     const field = screen.getByLabelText("What it is for") as HTMLInputElement;
