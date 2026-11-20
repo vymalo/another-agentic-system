@@ -526,6 +526,38 @@ describe("closing from the tab", () => {
     });
   }
 
+  for (const skew of [-1, 1]) {
+    it(`ends Closing… on the next update and not before, with the page's clock ${skew < 0 ? "behind" : "ahead of"} the server's`, async () => {
+      page.fake("POST /api/threads/:id/session/close", {
+        status: 202,
+        body: { state: "closing" },
+      });
+      // far from the stamps of the rows: no comparison of clocks could tell the order
+      const now = vi.spyOn(Date, "now");
+      now.mockReturnValue(Date.parse(skew < 0 ? "1970-01-02T00:00:00Z" : "3500-01-01T00:00:00Z"));
+      try {
+        const working = row(1, "working", { updatedAt: "2026-11-20T10:00:00Z" });
+        const view = mount({ rows: [working] });
+        fireEvent.click(screen.getByRole("button", { name: "Close planner" }));
+        const dialog = await screen.findByRole("dialog", { name: "Close subagent" });
+        fireEvent.click(within(dialog).getByRole("button", { name: "Close when this round ends" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+        const state = () =>
+          screen.getByRole("listitem").querySelector('[data-slot="subagent-state"]')?.textContent;
+        expect(state()).toBe("Closing…");
+        // the same row again is no update
+        view.rerender(tree({ rows: [working] }));
+        expect(state()).toBe("Closing…");
+        // a row that arrives after the answer says the state, whatever its stamp
+        view.rerender(tree({ rows: [row(1, "working", { updatedAt: "2026-11-20T10:00:01Z" })] }));
+        expect(state()).not.toBe("Closing…");
+      } finally {
+        now.mockRestore();
+        page.fake("POST /api/threads/:id/session/close", null);
+      }
+    });
+  }
+
   it("gives the focus to the tab's panel when the close folds the row that held the button away", async () => {
     const parent = await page.api.answered();
     const { child } = await page.api.opened(parent, { keepOpen: true });

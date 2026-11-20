@@ -1,12 +1,16 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useThreadView } from "@/features/chat/components/thread-view";
 import type { ApiThread } from "@/lib/api/types";
 import {
   type AppliedClose,
   type AppliedEntry,
+  type Arrivals,
+  arrivalsOf,
   liveCloses,
   type MergedChildren,
   mergeChildren,
+  NO_ARRIVALS,
+  noteArrivals,
   startsWaiting,
 } from "../lib/children";
 
@@ -36,19 +40,22 @@ export function useChildSessions(
 ): ChildSessions {
   const { sessions, sessionStarts, self } = useThreadView();
   const [asked, setAsked] = useState<ReadonlyMap<string, AppliedEntry>>(new Map());
-  const apply = useCallback(
-    (child: string, state: AppliedClose, cancel = false) =>
-      setAsked((m) => new Map(m).set(child, { state, cancel, at: Date.now() })),
-    [],
-  );
+  // what has arrived about each child, counted in the order it arrived: a close is over once something
+  // newer than its answer arrives, whatever either clock says
+  const arrivals = useRef<Arrivals>(NO_ARRIVALS);
+  const apply = useCallback((child: string, state: AppliedClose, cancel = false) => {
+    const after = arrivalsOf(arrivals.current, child);
+    setAsked((m) => new Map(m).set(child, { state, cancel, after }));
+  }, []);
   return useMemo(() => {
     const starts = sessionStarts ?? new Map();
-    const live = liveCloses(asked, {
+    arrivals.current = noteArrivals(arrivals.current, {
       thread: parent,
       rows,
       cards: sessions ?? new Map(),
       self: self ?? null,
     });
+    const live = liveCloses(asked, arrivals.current);
     const applied = new Map([...live].map(([child, e]) => [child, e.state] as const));
     const forced = new Set([...live].filter(([, e]) => e.cancel).map(([child]) => child));
     const merged = mergeChildren({

@@ -19,32 +19,73 @@ export const MAX_WAITING_STARTS = 4;
 /** What a close answered: the state the orchestrator's record has after the request. */
 export type AppliedClose = "closing" | "closed";
 
-/** A close this page asked: what it answered, whether it stopped the round, and when it was answered (ms). */
-export type AppliedEntry = { state: AppliedClose; cancel: boolean; at: number };
+/**
+ * A close this page asked: what it answered, whether it stopped the round, and how many updates about
+ * the child this page had seen when it was answered (`after`, see `noteArrivals`).
+ */
+export type AppliedEntry = { state: AppliedClose; cancel: boolean; after: number };
+
+/** What the page has seen of each child, by lowercased child thread id: the objects, and how many were new. */
+export type Arrivals = {
+  seen: ReadonlyMap<string, ReadonlySet<object>>;
+  count: ReadonlyMap<string, number>;
+};
+
+export const NO_ARRIVALS: Arrivals = { seen: new Map(), count: new Map() };
 
 /**
- * The closes still worth applying. The record has the last word: once a row or a card about the child
- * is newer than the answer, it says the state itself, a refusal (the state said again with no close
- * asked) included, and the entry is dropped. The child's own card counts for the thread it is on.
+ * Counts, by arrival order and never by a clock, the updates about each child: a row, a stream card or
+ * the child's own card that this page had not seen before. The client's clock and the server's are
+ * never compared.
  */
-export function liveCloses(
-  entries: ReadonlyMap<string, AppliedEntry>,
+export function noteArrivals(
+  prev: Arrivals,
   evidence: {
-    /** The open thread: the one the child's own card (`self`) is about. */
     thread: string;
     rows: readonly ApiThread[];
     cards: ReadonlyMap<string, SessionCard>;
     self: SessionCard | null;
   },
+): Arrivals {
+  const now = new Map<string, Set<object>>();
+  const put = (child: string | undefined, thing: object) => {
+    if (child === undefined) return;
+    const key = child.toLowerCase();
+    const set = now.get(key) ?? new Set<object>();
+    set.add(thing);
+    now.set(key, set);
+  };
+  for (const r of evidence.rows) put(r.id, r);
+  for (const c of evidence.cards.values()) put(c.threadId, c);
+  if (evidence.self !== null) put(evidence.thread, evidence.self);
+  const count = new Map(prev.count);
+  for (const [key, set] of now) {
+    const before = prev.seen.get(key);
+    let fresh = 0;
+    for (const thing of set) if (!before?.has(thing)) fresh++;
+    if (fresh > 0) {
+      count.set(key, (count.get(key) ?? 0) + fresh);
+    }
+  }
+  return { seen: now, count };
+}
+
+/** How many updates about this child the page has seen. */
+export const arrivalsOf = (arrivals: Arrivals, child: string): number =>
+  arrivals.count.get(child.toLowerCase()) ?? 0;
+
+/**
+ * The closes still worth applying. The record has the last word: once a row or a card about the child
+ * arrives after the answer, it says the state itself, a refusal (the state said again with no close
+ * asked) included, and the entry is dropped. The child's own card counts for the thread it is on.
+ */
+export function liveCloses(
+  entries: ReadonlyMap<string, AppliedEntry>,
+  arrivals: Arrivals,
 ): ReadonlyMap<string, AppliedEntry> {
-  const after = (time: string | undefined, at: number): boolean => Date.parse(time ?? "") > at;
   const live = new Map<string, AppliedEntry>();
   for (const [child, entry] of entries) {
-    const said =
-      evidence.rows.some((r) => same(r.id, child) && after(r.updatedAt, entry.at)) ||
-      [...evidence.cards.values()].some((c) => same(c.threadId, child) && after(c.at, entry.at)) ||
-      (same(evidence.thread, child) && evidence.self !== null && after(evidence.self.at, entry.at));
-    if (!said) live.set(child, entry);
+    if (arrivalsOf(arrivals, child) <= entry.after) live.set(child, entry);
   }
   return live;
 }

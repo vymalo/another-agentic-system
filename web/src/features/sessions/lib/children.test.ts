@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { ApiThread } from "@/lib/api/types";
 import type { SessionCard, SessionStartCard } from "./cards";
-import { type AppliedEntry, liveCloses, mergeChildren, startsWaiting } from "./children";
+import {
+  type AppliedEntry,
+  type Arrivals,
+  arrivalsOf,
+  liveCloses,
+  mergeChildren,
+  NO_ARRIVALS,
+  noteArrivals,
+  startsWaiting,
+} from "./children";
 
 const PARENT = "00000000-0000-4000-8000-000000000001";
 const A = "00000000-0000-4000-8000-00000000000a";
@@ -152,69 +161,71 @@ describe("the subagents of a thread, merged", () => {
 });
 
 describe("a close the person asked, until the record says otherwise", () => {
-  const ASKED = Date.parse("2026-11-20T10:00:00Z");
-  const before = "2026-11-20T09:59:00Z";
-  const after = "2026-11-20T10:00:05Z";
-  const entry = (state: "closing" | "closed", cancel = false): AppliedEntry => ({
+  // the stamps are made up on purpose: arrival order decides, so no stamp may matter
+  const stamp = "1999-01-01T00:00:00Z";
+  type Evidence = Partial<Parameters<typeof noteArrivals>[1]>;
+  const see = (prev: Arrivals, over: Evidence = {}) =>
+    noteArrivals(prev, { thread: PARENT, rows: [], cards: new Map(), self: null, ...over });
+  const entry = (
+    state: "closing" | "closed",
+    cancel: boolean,
+    arrivals: Arrivals,
+  ): AppliedEntry => ({
     state,
     cancel,
-    at: ASKED,
+    after: arrivalsOf(arrivals, A),
   });
-  const live = (
-    entries: Record<string, AppliedEntry>,
-    over: Partial<Parameters<typeof liveCloses>[1]> = {},
-  ) =>
-    liveCloses(new Map(Object.entries(entries)), {
-      thread: PARENT,
-      rows: [],
-      cards: new Map(),
-      self: null,
-      ...over,
-    });
+  const rowA = row(A, "s1", { updatedAt: stamp });
+  const cardA = card("s1", { at: stamp });
+  const known = see(NO_ARRIVALS, { rows: [rowA], cards: new Map([["session-1", cardA]]) });
 
-  it("keeps a close that nothing newer contradicts", () => {
-    const kept = live(
-      { [A]: entry("closing") },
-      {
-        rows: [row(A, "s1", { updatedAt: before })],
-        cards: new Map([["session-1", card("s1", { at: before })]]),
-      },
-    );
+  it("keeps a close that nothing has arrived after, the same things seen again included", () => {
+    const kept = liveCloses(new Map([[A, entry("closing", false, known)]]), known);
     expect([...kept.keys()]).toEqual([A]);
+    const again = see(known, { rows: [rowA], cards: new Map([["session-1", cardA]]) });
+    expect(liveCloses(new Map([[A, entry("closing", false, known)]]), again).size).toBe(1);
   });
 
   for (const cancel of [false, true]) {
-    it(`drops a closing (cancel: ${cancel}) once a newer card says the session again`, () => {
-      const kept = live(
-        { [A]: entry("closing", cancel) },
-        { cards: new Map([["session-1", card("s1", { at: after })]]) },
-      );
-      expect(kept.size).toBe(0);
+    it(`drops a closing (cancel: ${cancel}) once a card arrives, whatever its stamp says`, () => {
+      const asked = entry("closing", cancel, known);
+      // the server's clock is far behind the page's, and far ahead: the stamp of the card is no evidence
+      for (const at of ["1970-01-01T00:00:01Z", "2999-01-01T00:00:00Z"]) {
+        const next = see(known, { cards: new Map([["session-1", card("s1", { at })]]) });
+        expect(liveCloses(new Map([[A, asked]]), next).size).toBe(0);
+      }
     });
 
-    it(`drops a closing (cancel: ${cancel}) once a newer row says the session again`, () => {
-      const kept = live(
-        { [A]: entry("closing", cancel) },
-        { rows: [row(A, "s1", { updatedAt: after })] },
-      );
-      expect(kept.size).toBe(0);
+    it(`drops a closing (cancel: ${cancel}) once a row arrives, whatever its stamp says`, () => {
+      const asked = entry("closing", cancel, known);
+      for (const updatedAt of ["1970-01-01T00:00:01Z", "2999-01-01T00:00:00Z"]) {
+        const next = see(known, { rows: [row(A, "s1", { updatedAt })] });
+        expect(liveCloses(new Map([[A, asked]]), next).size).toBe(0);
+      }
     });
 
-    it(`drops a closing (cancel: ${cancel}) once the child's own newer card says it`, () => {
-      const kept = live(
-        { [A]: entry("closing", cancel) },
-        { thread: A, self: card("s1", { threadId: undefined, at: after }) },
-      );
-      expect(kept.size).toBe(0);
+    it(`drops a closing (cancel: ${cancel}) once the child's own card arrives`, () => {
+      const base = see(NO_ARRIVALS, { thread: A });
+      const asked = entry("closing", cancel, base);
+      const next = see(base, { thread: A, self: card("s1", { threadId: undefined, at: stamp }) });
+      expect(liveCloses(new Map([[A, asked]]), next).size).toBe(0);
     });
   }
 
-  it("does not read another session's newer card against this close", () => {
-    const kept = live(
-      { [A]: entry("closing") },
-      { cards: new Map([["session-2", card("s2", { threadId: B, at: after })]]) },
-    );
-    expect(kept.size).toBe(1);
+  it("keeps the close until the next update, not before it", () => {
+    const asked = entry("closing", false, known);
+    const next = see(known, { rows: [row(A, "s1", { updatedAt: "2999-01-01T00:00:00Z" })] });
+    // the page's old row is gone and a new one is in: only now is it over
+    expect(liveCloses(new Map([[A, asked]]), known).size).toBe(1);
+    expect(liveCloses(new Map([[A, asked]]), next).size).toBe(0);
+  });
+
+  it("does not read another session's arrival against this close", () => {
+    const asked = entry("closing", false, known);
+    const next = see(known, {
+      cards: new Map([["session-2", card("s2", { threadId: B, at: stamp })]]),
+    });
+    expect(liveCloses(new Map([[A, asked]]), next).size).toBe(1);
   });
 });
 
