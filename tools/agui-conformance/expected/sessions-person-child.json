@@ -82,11 +82,7 @@
       "activityType": "vymalo.job",
       "content": {
         "at": "2027-01-15T08:00:07Z",
-        "job": 2,
-        "round": {
-          "by": "person",
-          "number": 2
-        }
+        "job": 2
       }
     },
     {

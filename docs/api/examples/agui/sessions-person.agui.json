@@ -270,26 +270,53 @@
   },
   {
     "event": {
-      "activityType": "vymalo.sessionStart",
+      "description": "Find the writers",
+      "metadata": {
+        "vymalo.actor": {
+          "name": "plain",
+          "type": "agent"
+        },
+        "vymalo.at": "2027-01-15T08:00:07Z",
+        "vymalo.childThread": "<child-thread-id>",
+        "vymalo.session": "s1"
+      },
+      "name": "researcher",
+      "subagentRunId": "sub-session-7",
+      "type": "SUBAGENT_STARTED"
+    }
+  },
+  {
+    "event": {
+      "activityType": "vymalo.session",
       "content": {
         "agent": "researcher",
         "at": "2027-01-15T08:00:07Z",
+        "by": "person",
         "description": "Find the writers",
         "keepOpen": true,
-        "request": "00000000-0000-7000-8000-0000000000a1",
+        "round": 1,
         "session": "s1",
-        "state": "opened",
+        "state": "working",
         "threadId": "<child-thread-id>"
       },
-      "messageId": "session-start-00000000-0000-7000-8000-0000000000a1",
+      "messageId": "session-7",
       "metadata": {
         "vymalo.actor": {
-          "name": "orchestrator",
-          "type": "system"
+          "name": "plain",
+          "type": "agent"
         }
       },
       "replace": true,
       "type": "ACTIVITY_SNAPSHOT"
+    }
+  },
+  {
+    "event": {
+      "outcome": {
+        "type": "suspended"
+      },
+      "subagentRunId": "sub-session-7",
+      "type": "SUBAGENT_FINISHED"
     }
   },
   {
@@ -341,53 +368,26 @@
   },
   {
     "event": {
-      "description": "Find the writers",
-      "metadata": {
-        "vymalo.actor": {
-          "name": "plain",
-          "type": "agent"
-        },
-        "vymalo.at": "2027-01-15T08:00:08Z",
-        "vymalo.childThread": "<child-thread-id>",
-        "vymalo.session": "s1"
-      },
-      "name": "researcher",
-      "subagentRunId": "sub-session-8",
-      "type": "SUBAGENT_STARTED"
-    }
-  },
-  {
-    "event": {
-      "activityType": "vymalo.session",
+      "activityType": "vymalo.sessionStart",
       "content": {
         "agent": "researcher",
         "at": "2027-01-15T08:00:08Z",
-        "by": "person",
         "description": "Find the writers",
         "keepOpen": true,
-        "round": 1,
+        "request": "00000000-0000-7000-8000-0000000000a1",
         "session": "s1",
-        "state": "working",
+        "state": "opened",
         "threadId": "<child-thread-id>"
       },
-      "messageId": "session-8",
+      "messageId": "session-start-00000000-0000-7000-8000-0000000000a1",
       "metadata": {
         "vymalo.actor": {
-          "name": "plain",
-          "type": "agent"
+          "name": "orchestrator",
+          "type": "system"
         }
       },
       "replace": true,
       "type": "ACTIVITY_SNAPSHOT"
-    }
-  },
-  {
-    "event": {
-      "outcome": {
-        "type": "suspended"
-      },
-      "subagentRunId": "sub-session-8",
-      "type": "SUBAGENT_FINISHED"
     }
   },
   {
@@ -450,7 +450,7 @@
         "vymalo.session": "s1"
       },
       "name": "researcher",
-      "subagentRunId": "sub-session-8-9",
+      "subagentRunId": "sub-session-7-9",
       "type": "SUBAGENT_STARTED"
     }
   },
@@ -469,7 +469,7 @@
         "state": "idle",
         "threadId": "<child-thread-id>"
       },
-      "messageId": "session-8",
+      "messageId": "session-7",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",
@@ -486,7 +486,7 @@
         "report": "done",
         "round": 1
       },
-      "subagentRunId": "sub-session-8-9",
+      "subagentRunId": "sub-session-7-9",
       "type": "SUBAGENT_FINISHED"
     }
   },
@@ -552,7 +552,7 @@
         "state": "closed",
         "threadId": "<child-thread-id>"
       },
-      "messageId": "session-8",
+      "messageId": "session-7",
       "metadata": {
         "vymalo.actor": {
           "name": "plain",

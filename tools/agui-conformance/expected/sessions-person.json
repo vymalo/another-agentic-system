@@ -32,12 +32,12 @@
       "end": "success"
     },
     {
-      "id": "sub-session-8",
+      "id": "sub-session-7",
       "name": "researcher",
       "end": "suspended:"
     },
     {
-      "id": "sub-session-8-9",
+      "id": "sub-session-7-9",
       "name": "researcher",
       "end": "success",
       "result": {
@@ -85,7 +85,7 @@
       "activityType": "vymalo.sessionStart",
       "content": {
         "agent": "researcher",
-        "at": "2027-01-15T08:00:07Z",
+        "at": "2027-01-15T08:00:08Z",
         "description": "Find the writers",
         "keepOpen": true,
         "request": "00000000-0000-7000-8000-0000000000a1",
@@ -95,7 +95,7 @@
       }
     },
     {
-      "id": "session-8",
+      "id": "session-7",
       "role": "activity",
       "activityType": "vymalo.session",
       "content": {

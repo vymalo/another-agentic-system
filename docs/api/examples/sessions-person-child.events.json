@@ -87,11 +87,7 @@
     },
     "at": "<timestamp>",
     "data": {
-      "job": 2,
-      "round": {
-        "by": "person",
-        "number": 2
-      }
+      "job": 2
     },
     "kind": "job_started",
     "seq": 7,
@@ -191,7 +187,8 @@
     "data": {
       "closing": false,
       "session": "s1",
-      "state": "closed"
+      "state": "closed",
+      "closeAsked": true
     },
     "kind": "child_session_state",
     "seq": 14,

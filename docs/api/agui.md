@@ -1056,8 +1056,8 @@ sequenceDiagram
   participant O as Orchestrator
   U->>O: POST /api/threads/{parent}/sessions
   O-->>U: ACTIVITY_SNAPSHOT vymalo.sessionStart session-start-<request> (starting)
-  O-->>U: ACTIVITY_SNAPSHOT vymalo.sessionStart (opened, threadId) or (failed, reason)
   O-->>U: SUBAGENT_STARTED sub-session-<seq> (by person), ACTIVITY_SNAPSHOT vymalo.session session-<seq> (working)
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.sessionStart (opened, threadId) or (failed, reason)
   U->>O: POST /api/threads/{child}/session/close
   O-->>U: child stream: ACTIVITY_SNAPSHOT vymalo.session session-self (closing)
   O-->>U: child stream: ACTIVITY_SNAPSHOT vymalo.session session-self (closed)

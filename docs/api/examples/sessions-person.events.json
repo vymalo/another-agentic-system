@@ -85,22 +85,6 @@
   },
   {
     "actor": {
-      "name": "orchestrator",
-      "type": "system"
-    },
-    "at": "<timestamp>",
-    "data": {
-      "outcome": "opened",
-      "request": "00000000-0000-7000-8000-0000000000a1",
-      "session": "s1",
-      "thread": "00000000-0000-7000-8000-000000000003"
-    },
-    "kind": "child_session_start_ended",
-    "seq": 7,
-    "threadId": "<thread-id>"
-  },
-  {
-    "actor": {
       "name": "plain",
       "type": "agent"
     },
@@ -115,6 +99,22 @@
       "thread": "00000000-0000-7000-8000-000000000003"
     },
     "kind": "child_session_opened",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "outcome": "opened",
+      "request": "00000000-0000-7000-8000-0000000000a1",
+      "session": "s1",
+      "thread": "00000000-0000-7000-8000-000000000003"
+    },
+    "kind": "child_session_start_ended",
     "seq": 8,
     "threadId": "<thread-id>"
   },
