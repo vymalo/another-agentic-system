@@ -91,11 +91,14 @@ caller drives itself with `tls_connector()`.
   `sslrootcert` as a path or PEM; each `sslmode` with the mode `tokio-postgres` is given, and `config_mut` unable to
   change it; every refusal, none showing the password; an `sslrootcert` that cannot be read or holds no certificate.
 * `tests/parse.rs`: 21 URLs name the host (a socket included), port, user, password, database, `application_name`,
-  `options` and `sslmode` that sqlx 0.9 read from them; and in seven child processes, each with its own `PG*`
-  variables and password files, six more URLs do. What sqlx read was recorded by running sqlx itself on 2026-11-21,
-  before it left the workspace (sys#382 E1), in `tests/sqlx-0.9-reads.tsv`, which is never edited (the operating
-  system's user is `<os-user>`; where no host is named, sqlx's `localhost` also matches the directory of a local
-  server's socket, which sqlx would have taken where one exists).
+  `options` and `sslmode` that sqlx 0.9 read from them in an environment with no `PG*` variable; and in seven more
+  environments, each with its own `PG*` variables and password files, six more URLs do. Each case runs in a child
+  process whose environment is cleared, so the machine's own `PG*` variables and `~/.pgpass` change nothing. What
+  sqlx read was recorded by running sqlx itself on 2026-11-21, before it left the workspace (sys#382 E1), in
+  `tests/sqlx-0.9-reads.tsv`, whose recorded lines are never edited (sqlx's default user is `<os-user>`, read as
+  sqlx read it: the operating system's user, else `unknown`, as in a container whose uid has no name; where no host
+  is named, sqlx's `localhost` also matches the directory of a local server's socket, which sqlx would have taken
+  where one exists).
 * `tests/tls.rs`, against a server with TLS on and a certificate for `localhost` from a test CA
   (`ORCH_TEST_TLS_DATABASE_URL`, `ORCH_TEST_TLS_ROOT_CERT`; skipped without them, and **CI does not set them**: they
   are run by hand, as the pull request that changes this crate says): `disable` is plain; `prefer` and `require` take

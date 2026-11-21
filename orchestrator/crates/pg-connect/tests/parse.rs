@@ -1,8 +1,10 @@
 //! A connection string names the server, the user, the password, the database and the session
-//! parameters it named to sqlx 0.9: what sqlx read from each of these URLs, in this process's
-//! environment and, in a child process each, in environments of `PG*` variables and a password
+//! parameters it named to sqlx 0.9: what sqlx read from each of these URLs, in an environment with
+//! no `PG*` variable and, in a child process each, in environments of `PG*` variables and a password
 //! file, was recorded by sqlx itself before it left the workspace (`tests/sqlx-0.9-reads.tsv`, sys#382
-//! E1), and every URL must still read the same.
+//! E1), and every URL must still read the same. Every case runs in a child process whose
+//! environment is cleared, so a `PG*` variable or a `~/.pgpass` of the machine running the tests
+//! changes nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::path::Path;
@@ -39,16 +41,10 @@ const URLS: &[&str] = &[
 
 /// What `ours` reads, in the columns of the recording: the host, the port, the user, the password,
 /// the database, the `application_name`, the `options` and the `sslmode`, each as the recording
-/// wrote sqlx's (`Debug`, the user as `<os-user>` when it is the operating system's).
+/// wrote sqlx's (`Debug`).
 fn reading(ours: &PgOptions) -> Vec<String> {
     let config = ours.config();
-    let os_user = whoami::username().ok();
-    let user = config.get_user().unwrap_or_default();
-    let user = if Some(user) == os_user.as_deref() {
-        "<os-user>".to_owned()
-    } else {
-        format!("{user:?}")
-    };
+    let user = format!("{:?}", config.get_user().unwrap_or_default());
     let password = config
         .get_password()
         .map(|p| std::str::from_utf8(p).unwrap());
@@ -64,7 +60,14 @@ fn reading(ours: &PgOptions) -> Vec<String> {
     ]
 }
 
-/// The recorded reading of `url` in `case`.
+/// sqlx 0.9's user where neither the URL nor `PGUSER` names one (`PgConnectOptions::new_without_pgpass`):
+/// the operating system's, else `unknown`. The recording wrote it `<os-user>`, because it depends on
+/// the machine (a container's uid may have no name).
+fn sqlx_default_user() -> String {
+    whoami::username().unwrap_or_else(|_| "unknown".to_owned())
+}
+
+/// The recorded reading of `url` in `case`, `<os-user>` replaced by this machine's.
 fn recorded(case: &str, url: &str) -> Vec<String> {
     SQLX_READS
         .lines()
@@ -73,7 +76,10 @@ fn recorded(case: &str, url: &str) -> Vec<String> {
         .find(|fields| fields[0] == case && fields[1] == url)
         .unwrap_or_else(|| panic!("no recording of {url} in case {case}"))[2..]
         .iter()
-        .map(|field| (*field).to_owned())
+        .map(|field| match *field {
+            "<os-user>" => format!("{:?}", sqlx_default_user()),
+            field => field.to_owned(),
+        })
         .collect()
 }
 
@@ -103,15 +109,45 @@ fn same(url: &str, case: &str) {
     );
 }
 
-#[test]
-fn every_url_names_what_it_named_to_sqlx() {
-    for url in URLS {
-        same(url, "-");
+/// Set in the child processes of the tests below, to the case they check.
+const CASE: &str = "ORCH_PG_CONNECT_ENV_CASE";
+
+/// Runs `test` of this binary again in a child process whose environment holds only `CASE`, a
+/// `HOME` with no password file, `PATH` and `vars`, and asserts it passed.
+fn in_child(test: &str, case: &str, vars: &[(&str, &str)]) {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", test, "--nocapture"])
+        .env_clear()
+        .env(CASE, case)
+        .env("HOME", "/nonexistent-home");
+    if let Some(path) = std::env::var_os("PATH") {
+        child.env("PATH", path);
     }
+    child.envs(vars.iter().copied());
+    let output = child.output().unwrap();
+    assert!(
+        output.status.success(),
+        "case {case}:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "case {case}: the child ran the test"
+    );
 }
 
-/// Set in the child processes of the test below, to the case they check.
-const CASE: &str = "ORCH_PG_CONNECT_ENV_CASE";
+#[test]
+fn every_url_names_what_it_named_to_sqlx() {
+    if std::env::var(CASE).is_ok() {
+        for url in URLS {
+            same(url, "-");
+        }
+        return;
+    }
+    in_child("every_url_names_what_it_named_to_sqlx", "-", &[]);
+}
 
 /// The URLs read in each environment: one that names nothing, and some that name a part.
 const ENV_URLS: &[&str] = &[
@@ -193,33 +229,8 @@ fn the_environment_is_read_as_sqlx_reads_it() {
         let path = dir.join(".pgpass");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let me = std::env::current_exe().unwrap();
     for (name, vars) in cases {
-        let mut child = std::process::Command::new(&me);
-        child
-            .args([
-                "--exact",
-                "the_environment_is_read_as_sqlx_reads_it",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env(CASE, name)
-            .env("HOME", "/nonexistent-home");
-        if let Some(path) = std::env::var_os("PATH") {
-            child.env("PATH", path);
-        }
-        child.envs(vars);
-        let output = child.output().unwrap();
-        assert!(
-            output.status.success(),
-            "case {name}:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-            "case {name}: the child ran the test"
-        );
+        in_child("the_environment_is_read_as_sqlx_reads_it", name, &vars);
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }

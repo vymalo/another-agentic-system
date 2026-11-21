@@ -2,9 +2,10 @@
 //! that sqlx ever applied reads to the version, description, checksum and transaction sqlx gave it
 //! (`tests/sqlx-0.9-history.txt`, recorded by sqlx itself before it left the workspace), a history
 //! written by sqlx's own statements is a no-op for it, its refusals are sqlx's, and the lock it
-//! takes is sqlx's. sqlx's statements are quoted from `sqlx-postgres` 0.9.0, `src/migrate.rs`. The
-//! database tests are skipped unless `ORCH_TEST_DATABASE_URL` is set; each makes a database of its
-//! own and drops it.
+//! takes is sqlx's (the key sqlx took for four database names is recorded too, `SQLX_LOCK_KEYS`).
+//! sqlx's statements are quoted from `sqlx-postgres` 0.9.0, `src/migrate.rs`. The database tests
+//! are skipped unless `ORCH_TEST_DATABASE_URL` is set; each makes a database of its own and drops
+//! it.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::path::{Path, PathBuf};
@@ -68,6 +69,24 @@ fn every_migration_sqlx_read_reads_as_sqlx_read_it() {
         checked += 1;
     }
     assert!(checked >= 29, "the recording holds every migration of E1");
+}
+
+/// The advisory lock key sqlx 0.9's migrator took (`Migrate::lock` on a `PgConnection`), read from
+/// `pg_locks` (`classid << 32 | objid`) on a Postgres 16 server for each database name: recorded
+/// 2026-11-21 by running sqlx itself, so the waits of `the_lock_is_sqlx_s_lock` are on sqlx's key
+/// and not only on this runner's own `lock_id`. Never edit a pair.
+const SQLX_LOCK_KEYS: &[(&str, i64)] = &[
+    ("orch_test", 2_586_541_127_846_781_434),
+    ("orch", 427_233_155_538_191_790),
+    ("pgmigrate_compat_1_0", 3_334_769_513_974_460_830),
+    ("postgres", 368_907_709_894_077_238),
+];
+
+#[test]
+fn the_lock_key_is_the_one_sqlx_took() {
+    for (database, key) in SQLX_LOCK_KEYS {
+        assert_eq!(lock_id(database), *key, "{database}");
+    }
 }
 
 /// A list that does not name every file of its directory, or names one it does not have, is
@@ -303,7 +322,8 @@ async fn installed_on(db: &Db) -> Vec<String> {
 }
 
 /// A database sqlx migrated is a no-op for this runner, which then applies only what is new (a
-/// file that opts out of the transaction included).
+/// file that opts out of the transaction included); and sqlx's checks of an existing history pass
+/// on what this runner wrote.
 #[tokio::test]
 async fn a_history_sqlx_wrote_is_continued() {
     let Some(db) = Db::new().await else {
@@ -350,6 +370,36 @@ async fn a_history_sqlx_wrote_is_continued() {
         .unwrap()
         .get(0);
     assert!(execution >= 0, "the execution time is recorded");
+
+    // And sqlx would continue this runner's history: what it reads before it runs anything (its
+    // two statements, quoted from `sqlx-postgres` 0.9.0) finds no dirty row, and every row it
+    // compares has the version and checksum sqlx gives the file.
+    let dirty = client
+        .query(
+            &format!("SELECT version FROM {TABLE} WHERE success = false ORDER BY version LIMIT 1"),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(dirty.is_empty(), "no dirty row for sqlx");
+    let applied: Vec<(i64, Vec<u8>)> = client
+        .query(
+            &format!("SELECT version, checksum FROM {TABLE} ORDER BY version"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    let expected: Vec<(i64, Vec<u8>)> = ours(four.path())
+        .iter()
+        .map(|m| (m.version(), m.checksum()))
+        .collect();
+    assert_eq!(
+        applied, expected,
+        "sqlx's checks pass on this runner's rows"
+    );
     drop(client);
     db.drop().await;
 }

@@ -3,7 +3,7 @@
 # a line: it is what sqlx did, and orch-pg-connect must keep reading every URL the same way.
 #
 # case, url, host, port, user, password, dbname, application_name, options, sslmode; tab-separated.
-# case "-" is this process's environment, the others a child's (tests/parse.rs sets their PG* variables).
+# case "-" is an environment with no PG* variable, the others one each (tests/parse.rs sets their PG* variables).
 # <os-user> is the operating system's user (sqlx's default). Tcp("localhost") where no host is named is sqlx's
 # default when no local server's socket exists (tests/parse.rs also accepts the socket's directory where one does).
 -	postgres://app:pw@db.example:5433/orch	Tcp("db.example")	5433	"app"	Some("pw")	Some("orch")	None	None	Prefer
