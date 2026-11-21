@@ -157,6 +157,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | step activity `messageId` | `step-<seq>` of the first event of the step (the same id for every snapshot of the step; a step that starts again after its end is another run of it, with another seq). |
 | `subagentRunId` of a step | `sub-step-<seq>` of the same event, for a sub-agent step. |
 | session activity `messageId`, `subagentRunId` of a session | `session-<seq>` and `sub-session-<seq>`, the `seq` of the `child_session_opened`; the subagent that follows a later report is `sub-session-<seq>-<seq of that report>`, so no id is used twice in a run (the reference client refuses it). |
+| trusted request activity `messageId` | `trusted-<seq>` of the `trusted_request` event. No subagent id: the request is not the agent's invocation. |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
 | SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message **of the log** is open. A live message is not in the log and does not hold it back; a live frame never has one. |
@@ -211,6 +212,7 @@ gets everything.
 | A verification that ends without a verdict: `rework` (another source failed the round), a `user_message` or `ui_action` (abandoned), `thread_state{cancelled}`, `done`/`failed`, or `thread_state{blocked}` after `error{retryable:true}` when CI is also required (a timeout or a failure whose source the log does not name) | The verifier's subagent is still open | `SUBAGENT_FINISHED{subagentRunId:"sub-verify-<verification>", result:{status:"canceled"}}`, before the frames of the event that ended it |
 | `thread_state{blocked}` after `error{retryable:true}` (a timeout, or a verifier that could not be used) | The verifier's subagent is still open, and the gate does not require CI, so the hold can only be the verifier's | `SUBAGENT_ERROR{subagentRunId:"sub-verify-<verification>", message:<the error's>, code:"verifier_failed"}`, before the interrupt that closes the run |
 | `ci_result{provider, repository, sha, branch?, name, conclusion, url?, summary?}` (ADR 0017) | Any time: a report comes from a CI system, not the agent. Counted by the gate or not, every report has a card | `ACTIVITY_SNAPSHOT{messageId:"ci-<provider>-<sha>-<name>-<seq>", activityType:"vymalo.ci", replace:false, content:{name, conclusion, passed, sha, shortSha, provider, repository, branch?, url?, summary?}}`, no `subagentRunId`. No state change: the `check_result` that follows, when the report counts, does that. A report after the job ended opens a run of its own and closes it, like any late event. See [CI results](#ci-results-vymalo-ci) |
+| `trusted_request{component, hints}` (`trusted-components/v1`, [ADR 0083](../decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md)) | An agent asked the client to draw a trusted component, through the adapter's strict read; a request for a component the card did not offer never reaches the log | `ACTIVITY_SNAPSHOT{messageId:"trusted-<seq>", activityType:"vymalo.trustedRequest", replace:false, content:{component, hints:{name?, scopes?, expiresInDays?}, at}, metadata:{"vymalo.actor"}}`, no `subagentRunId`. No state change and no text: the client draws the interface and its own frame from the card, and the agent never sees a secret. A request with no run open opens one of its own and closes it, like any late event. See [`trusted-components-v1.md`](trusted-components-v1.md) |
 | `rework{attempt, maxAttempts, findings}` (ADR 0018) | After a failed `check_result` | `ACTIVITY_SNAPSHOT{messageId:"rework-<attempt>", activityType:"vymalo.rework", replace:true, content:{the event's data}}` → `SUBAGENT_STARTED{subagentRunId:"sub-<seq>", name:agentId}` for the next attempt → `STATE_SNAPSHOT{thread.state:"queued", job.attempt}`. The agent's own events then continue that invocation |
 | `agent_step{id, path, kind, label, state, phase, icon?, detail?, input?, output?, ioDropped?}` (ADR 0025, ADR 0030) | A step of the agent's work, a report that passed the core's door and its coalescing | See [Nested steps](#nested-steps): `ACTIVITY_SNAPSHOT{messageId:"step-<seq>", activityType:"vymalo.step", replace:true, content:{…, startedAt, at}, subagentRunId:<the subagent that encloses it>}`, and for a sub-agent step `SUBAGENT_STARTED{subagentRunId:"sub-step-<seq>", parentSubagentRunId}` before its first snapshot and the end of that subagent after its last. A step opens the run and the agent's invocation as `agent_status` does, and moves a `queued` thread to `working` with a `STATE_SNAPSHOT` |
 | `ask_started{ask, agent, by, depth, text, stepId, parentStepId?}` (ADR 0026) | The agent asked a mentioned agent (the thread tool `ask_agent`); the run and the thread's agent's invocation are open (a log that says an ask first opens the invocation under the agent's name) | See [Asked agents as subagents](#asked-agents-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-ask-<ask>", name:<the asked agent's id>, parentSubagentRunId:<the asker's run>, metadata:{"vymalo.actor": the asked agent}}` → `ACTIVITY_SNAPSHOT{messageId:"ask-<ask>", activityType:"vymalo.ask", replace:true, content:{ask, agent, by, depth, text, stepId, parentStepId?, state:"running", startedAt, at}, subagentRunId:<the asker's run>}`. The thread's state does not move |
@@ -2271,6 +2273,25 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "threadId": { "type": "string", "format": "uuid", "description": "The child thread; with opened" },
         "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The session's id; with opened" },
         "reason": { "type": "string", "maxLength": 512, "description": "Why it failed, the agent's own words (untrusted); with failed" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
+    "vymalo.trustedRequest": {
+      "type": "object",
+      "required": ["component", "hints", "at"],
+      "additionalProperties": false,
+      "description": "An agent asked the client to draw a trusted component (ADR 0083, trusted-components/v1): the activity's id is trusted-<seq> of the trusted_request event and it never replaces. The client draws the interface and its frame; hints are the agent's bounded suggestions (untrusted), and no secret is ever in the card",
+      "properties": {
+        "component": { "enum": ["McpCredential"], "description": "The component asked for; a closed set this build can draw" },
+        "hints": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "A name to suggest" },
+            "scopes": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 128 }, "description": "Scopes to suggest" },
+            "expiresInDays": { "type": "integer", "minimum": 1, "maximum": 3650 }
+          }
+        },
         "at": { "$ref": "#/$defs/at" }
       }
     },

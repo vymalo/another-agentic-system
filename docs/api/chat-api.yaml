@@ -3125,6 +3125,7 @@ components:
         - child_session_start_ended # data: { request, outcome: opened|failed, session?, thread?, reason? }  the outcome of a start: `opened` names the session and the child thread (`child_session_opened` with `by: person` is written with it), `failed` says why in `reason`, the agent's own words (untrusted, at most 512 bytes; "the agent could not be reached" when it never answered). Exactly once per request, in the parent's log, attributed to the system. Additive (S3).
         - child_session_close_asked # data: { session, cancel: bool }  a person asked to close the session (`closeChildSession`): in the **child's** log, attributed to the person. Additive (S3).
         - child_session_state # data: { session, state: working|idle|closed, closing: bool, closeAsked?: true }  the session changed state or started or stopped closing, as the agent said it, or the agent refused a close a person asked (then `closeAsked` is absent, the ask being cleared): in the child's log, attributed to the system, written when `state` or `closing` differs from the last and after a refused close. `closeAsked` is `true` while a person's close is asked and not answered. Additive (S3).
+        - trusted_request    # data: { component: McpCredential, hints: { name?, scopes?, expiresInDays? } }  an agent asked the client to draw a trusted component ([ADR 0083](../decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md), [`trusted-components-v1.md`](trusted-components-v1.md)): the component and the agent's bounded suggestions (untrusted text), never a secret. Attributed to the agent; moves no state. A request for a component the agent's card did not offer never reaches the log. Additive; an older build refuses the kind at its check.
     Mention:
       type: object
       description: "An agent a person mentioned in a message, as a structured reference ([`mentions-v1.md`](mentions-v1.md), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)): the identity is `agentId`, never the label."
@@ -3367,6 +3368,22 @@ components:
           type: string
           enum: [done, failed, canceled, blocked]
           description: "child_session_reported: how the round ended; `blocked` is a round that waits for the person."
+        component:
+          type: string
+          enum: [McpCredential]
+          description: "trusted_request only (ADR 0083, `trusted-components/v1`): the trusted component the agent asked the client to draw. A closed set: this build draws `McpCredential` (a person's own MCP server credential, ADR 0046). The agent never draws it and never sees a secret."
+        hints:
+          type: object
+          additionalProperties: false
+          description: "trusted_request only: the agent's suggestions, for the client to show as suggested by the agent and for the person to edit and confirm. Every member is optional and bounded; a request with a hint out of bounds is not logged."
+          properties:
+            name: { type: string, minLength: 1, maxLength: 80, description: "A name to suggest (for McpCredential, a server's name): no control character." }
+            scopes:
+              type: array
+              maxItems: 32
+              items: { type: string, minLength: 1, maxLength: 128, pattern: "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$" }
+              description: "Scopes to suggest: at most 32, each 1 to 128 bytes of visible ASCII with no space, quote or backslash (RFC 6749, as ADR 0046 checks one)."
+            expiresInDays: { type: integer, minimum: 1, maximum: 3650, description: "How long the person may want the grant to last." }
         counted:
           type: boolean
           enum: [false]
