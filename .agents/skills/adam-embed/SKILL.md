@@ -58,7 +58,9 @@ the adam crates pinned in `orchestrator/Cargo.toml`.
      `LlmAgent`; features `macros` (default), `a2a` (the card), `mcp` (`mcp.json` tools), `dev`
      (reload). `adam::include_agent!()` includes the agent directory a `build.rs` embedded with
      `adam_agent_fs::build("agent").emit()`; `AgentDef::from_manifest(AGENT)?.bind(tools![..])?
-     .state(..).model(model, alias)?` binds it. Details and the tool rules:
+     .state(..).model(model, alias)?` binds it. An `LlmAgent` built by hand (not through the assembly) gets
+     `Limits::default().max_output_tokens`, 4,096, unless it sets one: ADR 0064's profile resolution and clamp (the
+     128,000 fallback) apply through `AgentDef::bind`/`model`, not the loop. Details and the tool rules:
      `crates/adam/README.md` ("`#[tool]`", "Agent directories"), `docs/reference/agent-files.md`.
    * **A wrapper agent must delegate the split.** `adam_runtime::Agent` has provided `split`/`join`
      methods (and so does `AgentStarter`) that let a run keep its transcript in an append-only body
@@ -94,7 +96,9 @@ https://github.com/vymalo/another-adam-rs/blob/main/docs/guides/embed-in-an-app.
   a `SecretSource` (the default refuses every name), and with `.tools(..)` a `ToolSet` of its own (`#[tool]`
   functions) that the files select with `tools:`. The engine reads no environment variable.
 * **Then** `start().await?`, `send`, `steer`, `answer`, `cancel`, `list`, `get`, `events`, `commands` (the folder's
-  `/name` commands, which a message expands), `files` and `file` (what a tool handed over, by SHA-256) and `shutdown`; decide from `EngineError`'s class
+  `/name` commands, which a message expands), `files` and `file` (what a tool handed over, by SHA-256), `firings` (the runs
+  `schedules/` fired, which `get`, `events` and `cancel` reach too), `helpers`, `start_session`, `sessions` and
+  `close_session` (child sessions of the local subagents, `child-sessions/v1`) and `shutdown`; decide from `EngineError`'s class
   (`adam_error::Classify`), and match `RunState` and `EngineEvent` with a `_` arm (both `#[non_exhaustive]`). `events(run)` is bounded: a slow reader gets `Behind`, then a `Snapshot` read from the store.
 * **Keep the embedded set**: anything else you depend on takes `adam-a2a` without `server`, `adam-a2a-runtime` without
   `push`, `adam-assembly` (and `adam`) without `remote`, and `adam-ui` without `thread-tools`, or Cargo turns them back
