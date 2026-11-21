@@ -58,12 +58,25 @@ is raised.
 
 ## Result
 
-*Filled after the first run on 2026-11-21; see the board post and S9's PR for the same words.*
+**Run 2026-11-21, in CI (job `spike` of `.github/workflows/agent-router-spike.yml`, head `ed497cfb`): the
+header reaches the model, and two behaviours S9 must carry were found on the way.**
 
-- **The ext-auth header reaches the model: yes/no.** What the mock saw, exactly (including whether the
-  client-sent `Authorization` was still there beside the injected one — Envoy appends the ext_authz
-  response's headers, so a client-sent value is a second value unless something removes it).
-- **What the controller generated:** the `HTTPRoute`s (if any) or the Envoy config, and therefore what
-  a `SecurityPolicy` can target: the `Gateway`, a generated route, or neither.
-- **What S9 must add:** the stripping of the client's `Authorization` (if the spike shows it survives),
-  the TLS on the internal path from a cert-manager CA, and Authorino's `AuthConfig` in place of the stub.
+- **Yes: the ext-auth `Authorization` reached the mock through the `AIGatewayRoute`.** The request with
+  `X-Run-Id: run-1` and a client-sent `Authorization: Bearer client-sent` got `200`; the mock's answer
+  carried `X-Run-Id: ["run-1"]`, `X-Auth-User: ["run-run-1"]`, and `spike.sh`'s assertion on the
+  injected `Authorization` passed. The runner's log masks the value as `***`; the `grep` for
+  `injected-by-extauth` is the evidence.
+- **The HTTP external authorization forwards five headers by default** — `Host`, `Method`, `Path`,
+  `Content-Length` and `Authorization` — so `X-Run-Id` never reached the authorizer until the
+  `SecurityPolicy` named it: `extAuth.headersToExtAuth: ["X-Run-Id"]`, a **sibling of `http`** (the
+  strict decoder refuses it inside `http`). **S9 must carry this line.** The gRPC external
+  authorization (the epic's choice, and Authorino's) forwards every header and needs no such list.
+- **`headersToBackend` overrides a coexisting header**: the mock saw one `Authorization` value, the
+  injected one, not the client's beside it — the client-sent header is replaced, not appended, as the
+  API documents.
+- **The controller generated an `HTTPRoute`** named `spike` in `default` from the `AIGatewayRoute`
+  (`up.sh` prints it), so a `SecurityPolicy` can target the generated route; this spike targeted the
+  Gateway, which applies to all its routes.
+- **What S9 still adds**: TLS on the internal path from a cert-manager CA, Authorino's `AuthConfig`
+  over gRPC with the lease lookup, the NetworkPolicy that keeps the route off the edge, and the
+  balance's `model_locked` (the injector's per-call check, not this route's).
