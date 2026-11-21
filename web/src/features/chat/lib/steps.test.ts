@@ -91,6 +91,17 @@ describe("which parts draw something in a turn", () => {
     expect(drawsPart(data(ACTIVITY.surface, { surface: "a" }))).toBe(true);
   });
 
+  it("a trusted request the client draws, known or not (then as words and a link)", () => {
+    expect(
+      drawsPart(data(ACTIVITY.trustedRequest, { component: "McpCredential", hints: {} })),
+    ).toBe(true);
+    expect(drawsPart(data(ACTIVITY.trustedRequest, { component: "ApiKeyCreate", hints: {} }))).toBe(
+      true,
+    );
+    expect(drawsPart(data(ACTIVITY.trustedRequest, { hints: {} }))).toBe(false);
+    expect(drawsPart(data(ACTIVITY.trustedRequest, null))).toBe(false);
+  });
+
   it("blank words, the statuses that come with the words, the markers and unknown parts draw nothing", () => {
     expect(drawsPart({ type: "text", text: "  \n" })).toBe(false);
     expect(drawsPart({ type: "text" })).toBe(false);

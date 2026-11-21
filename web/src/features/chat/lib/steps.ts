@@ -10,6 +10,7 @@ import {
   parseAsk,
   parseStatus,
   parseStep,
+  parseTrustedRequest,
   type ReworkContent,
 } from "@/features/chat/lib/agui/vymalo";
 import { parseSession } from "@/features/sessions/lib/cards";
@@ -112,6 +113,11 @@ export function drawsPart(part: PartLike): boolean {
   // the card of a subagent: drawn in its home run only, from the stream's latest word of it
   if (part.name === activityPartName(ACTIVITY.session)) {
     return isHomeCard(part.data) && parseSession(part.data) !== null;
+  }
+  // a trusted component the agent asked the client to draw (ADR 0083): the client's own card, drawn
+  // for a component this build knows and for one it does not (then as words and a link)
+  if (part.name === activityPartName(ACTIVITY.trustedRequest)) {
+    return parseTrustedRequest(part.data) !== null;
   }
   return (
     part.name === activityPartName(ACTIVITY.error) ||

@@ -1154,6 +1154,60 @@ attached to a chat from the Tools menu beside the message box, as the deployment
   link is in no markup) and `my-servers-page.dom.test.tsx`, the picker's cases in `tools-picker.dom.test.tsx`, the item in `account-menu.dom.test.tsx`, `e2e/my-tools.spec.ts` (a bearer server is added and its secret is never shown again; a stale re-key is refused in words; the ninth is refused; a refused address; oauth2 shows the issuer and turns ready, and a person who declines; Connect's refusals; a key given to a server that needs one; a moved address warns; delete; attach from the picker; no menu item without the permission; the page without the permission says so; the feature off; a phone; axe in both schemes), and the screens `tools-page`, `tools-connect`, `tools-add-form` and `tools-picker-own` of `pnpm screens`.
   **Proven on the web's mock server only**: no live orchestrator, no real authorization server and no real MCP server was used.
 
+## Trusted components
+
+*Added 2026-11-21 ([ADR 0083](../docs/decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md),
+[the contract](../docs/api/trusted-components-v1.md); the owner asked for a component "the model shows him" to create a
+key with, where "the info never goes to the server").* A2UI lets an agent draw a form **and read what is typed into
+it**: anything a component's action binds is resolved by the client, logged as `ui_action.context` and forwarded. That
+is right for a plan or a choice and wrong for a secret. So a **trusted component** is not a catalog component at all:
+the agent *names* one (`trusted-components/v1`), the orchestrator logs it, and the **client** draws its own interface —
+mark, words and the sentence "the agent can’t see this" — and answers with a **receipt**, never a value.
+
+- **The card is the client's.** The activity is `vymalo.trustedRequest` (`{component, hints, at}`); the renderer is
+  `features/trusted/components/trusted-request.tsx` in `DataUIs`, and its chrome is
+  `features/trusted/components/chrome.tsx`. Nothing of it comes from a surface, so nothing an agent draws can produce
+  it: `McpCredential` is in no catalog, so a surface that names it is **refused whole** by the validator ("component …
+  is not in this app's catalog", `lib/a2ui/prepare.ts`) and never drawn as this card (`lib/a2ui/limits.ts`).
+- **Only `McpCredential` is drawn** (`features/trusted/lib/receipt.ts`, `TRUSTED_COMPONENTS`), because it is the only
+  one of the ADR's five whose API exists (ADR 0046). **Every other name is words and a link**, never a plain form
+  (decision 6), and so is every case where the form cannot be used: a person whose roles lack `tools.user.add`, a
+  deployment with the feature off, a list that cannot be read, a deployment that keeps no credentials, a card with no
+  id. The link goes to `/tools`.
+- **The form** (`components/mcp-credential.tsx`) is the client's: the name (prefilled from `hints.name`), the address,
+  the kind (`bearer` or `api_key`, only the kinds the deployment lists that take a secret), the header of an
+  `api_key`, the secret, and the scopes `hints.scopes` as chips the person removes. The hints are said to be the
+  agent's ("Suggested by …"), and `expiresInDays` is shown as what the agent suggested — this deployment keeps a
+  server's key until the person replaces or deletes it, and a `bearer`/`api_key` server has no scopes of its own, so
+  what the person keeps of the scopes is what the agent is told the key is for.
+- **The secret never leaves the component's state.** It is an argument of one call — `POST /api/user-tool-servers`
+  (`buildCreate`, `features/tools/lib/user-servers.ts`) or `PATCH /api/user-tool-servers/{serverId}` with the secret
+  and the `revision` it was read at and nothing else (`rekeyBody`) — and it is **cleared from the field the moment it
+  is sent**, whatever the answer. It is in no surface data model (there is none), in no `$field` marker
+  (`rewriteContext`) and in no action `context` (`resolveFields`): the card never calls either. The API's own
+  credentials are the person's; the orchestrator never sees the value.
+- **The receipt** is `{status, id, name, scopes?}` (`receiptOf`), sent as the action's `context` —
+  `{name: "submit", surfaceId: <the card's id>, sourceComponentId: "McpCredential"}`. `last4` is **omitted on
+  purpose**: no route returns a suffix of a stored secret (`UserToolServer` says `hasCredential` and nothing else), so
+  the four characters the contract allows would have to be cut from the secret on the device — the client deriving it,
+  which the ADR forbids. A refusal is shown in the problem's words (a 400's `detail` verbatim, which never quotes a
+  value; otherwise the `code`'s words, `failureOf`), and no receipt is sent.
+- **The form acts while the chat waits for the person** (`useSurfaceHost().canSend`), like a surface's controls, and
+  says so in words otherwise. The receipt goes out the way an A2UI action does: with no message and no `resume`.
+- **Tests:** `features/trusted/lib/receipt.test.ts` (the drawn components, the receipt with no secret and no `last4`,
+  the re-key body, the servers a key can be given to), `features/trusted/components/trusted-request.dom.test.tsx`
+  through the real runtime and transcript (the card and its hints; the POST, the receipt and the secret in no part of
+  the page; a refusal's words; a re-key; an unknown component and a person without the permission as words and a link;
+  a deployment with no credentials), `lib/agui/vymalo.test.ts` (the activity's parse and the hints' bounds),
+  `lib/steps.test.ts` (the card counts as a turn's output), `mock/projection.test.ts` (the card the mock projects) and
+  `e2e/trusted.spec.ts` (the `trusted` story of the mock: the form drawn, the person fills it, the page's own
+  `POST /api/user-tool-servers`, the action's `context` holding the receipt and no secret — **written, and not run
+  here**: the Playwright run needs a production build, which the shared build queue was too loaded to take).
+  **Proven on the web's mock server only, and one gap stops it end to end:** a receipt names the card's id as its
+  `surfaceId`, and the orchestrator refuses an action that does not name a surface of the thread, so the mock accepts
+  it (`mock/projection.ts` `trustedCardsOf`, `mock/server.ts`) and a real orchestrator does not yet — see the contract's
+  status. The web's `drawsPart` counts the card as a turn's output, so `carry.rs::draws` needs the same line.
+
 ## Access tier
 
 For an agent whose card lists `access-tier/v1` ([ADR 0061](../docs/decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md),

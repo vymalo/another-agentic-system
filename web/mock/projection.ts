@@ -215,6 +215,16 @@ export function surfacesOf(log: readonly Event[]): Map<string, string> {
   return out;
 }
 
+/**
+ * The trusted cards a log has (ADR 0083): the `messageId` of every `trusted_request` (`trusted-<seq>`). A receipt is a
+ * `ui_action` whose `surfaceId` names the card the person answered, and a card is not a surface.
+ */
+export function trustedCardsOf(log: readonly Event[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of log) if (e.kind === "trusted_request") out.add(`trusted-${e.seq}`);
+  return out;
+}
+
 type Surface = { messageId: string; operations: unknown[] };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -2122,6 +2132,25 @@ export class Projector {
           messageId: `ci-${String(d.provider)}-${sha}-${String(d.name)}-${e.seq}`,
           activityType: "vymalo.ci",
           content,
+          replace: false,
+          metadata: actorMeta(e),
+        });
+        break;
+      }
+      case "trusted_request": {
+        // an agent asked the client to draw a trusted component (ADR 0083, trusted-components/v1): a
+        // card of its own for every request, never replacing another (`trusted-<seq>`); the client
+        // draws the interface, its frame and the sentence the agent cannot cross, and the card holds
+        // no secret. The thread's state does not move
+        out.push({
+          type: "ACTIVITY_SNAPSHOT",
+          messageId: `trusted-${e.seq}`,
+          activityType: "vymalo.trustedRequest",
+          content: {
+            component: e.data.component,
+            hints: isRecord(e.data.hints) ? e.data.hints : {},
+            at: e.at,
+          },
           replace: false,
           metadata: actorMeta(e),
         });

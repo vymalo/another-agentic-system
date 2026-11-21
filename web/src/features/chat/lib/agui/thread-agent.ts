@@ -999,6 +999,20 @@ export class ThreadAgent extends AbstractAgent {
           } as BaseEvent,
         ];
       }
+      if (type === ACTIVITY.trustedRequest && isRecord(event.content)) {
+        // `card` is the activity's `messageId` (`trusted-<seq>`): the receipt's action names the card
+        // the person answered, and the runtime keeps no activity id of its own
+        return [
+          {
+            ...event,
+            content: {
+              ...event.content,
+              card: str(event.messageId) ?? "",
+              ...(actor ? { actor } : {}),
+            },
+          } as BaseEvent,
+        ];
+      }
       if (actor && type.startsWith("vymalo.") && isRecord(event.content)) {
         return [{ ...event, content: { ...event.content, actor } } as BaseEvent];
       }

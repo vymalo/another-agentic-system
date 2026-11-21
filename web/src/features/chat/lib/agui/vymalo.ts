@@ -53,6 +53,13 @@ export const ACTIVITY = {
    */
   session: "vymalo.session",
   sessionStart: "vymalo.sessionStart",
+  /**
+   * An agent asked the client to draw a trusted component (ADR 0083, `trusted-components/v1`): the
+   * component's name and the agent's bounded hints, never a secret. The client draws the interface,
+   * its frame and the sentence "the agent can't see this" itself, and answers with a receipt; an
+   * agent-drawn surface can never produce it (`features/trusted`).
+   */
+  trustedRequest: "vymalo.trustedRequest",
 } as const;
 
 /** The ecosystem's activity type of an A2UI surface (ADR 0013), the one the orchestrator sends. */
@@ -881,5 +888,74 @@ export function parseSurface(v: unknown): SurfaceContent | null {
     surface,
     ...("a2ui_operations" in v ? { a2ui_operations: v.a2ui_operations } : {}),
     ...(actor ? { actor } : {}),
+  };
+}
+
+/** Scopes a trusted request may suggest (`trusted-components-v1`, the bounds of `hints`). */
+export const MAX_TRUSTED_SCOPES = 32;
+/** Days a trusted request's `expiresInDays` may name, at most. */
+export const MAX_TRUSTED_DAYS = 3650;
+
+/** A suggested name: 1 to 80 characters, none of them a control character. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point
+const TRUSTED_NAME = /^[^\u0000-\u001f\u007f-\u009f]{1,80}$/;
+/** A suggested scope: 1 to 128 bytes of visible ASCII, no space, quote or backslash (RFC 6749). */
+const TRUSTED_SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
+
+/**
+ * The agent's suggestions for a trusted component: what the client prefills and the person edits
+ * and confirms (ADR 0083, decision 4). Untrusted text, bounded by the contract.
+ */
+export type TrustedHints = {
+  name?: string;
+  scopes?: string[];
+  expiresInDays?: number;
+};
+
+/**
+ * `vymalo.trustedRequest` (ADR 0083, `docs/api/trusted-components-v1.md`): the component an agent
+ * asked the client to draw, and its hints. A payload without a component renders nothing. A hint
+ * outside the contract's bounds is dropped and the card is kept: the orchestrator refuses such a
+ * request at its door, and the log is data. The component is read as it is, known or not: a name
+ * this build does not draw is drawn as words and a link, never as a form.
+ *
+ * `card` is this client's own: `ThreadAgent` moves the activity's `messageId` (`trusted-<seq>`) into
+ * the content, as it moves the actor, because the runtime keeps no activity id of its own. It is the
+ * id the receipt's action names as the card the person answered.
+ */
+export type TrustedRequestContent = WithActor<{
+  component: string;
+  hints: TrustedHints;
+  card?: string;
+}>;
+
+export function parseTrustedRequest(v: unknown): TrustedRequestContent | null {
+  if (!isRecord(v)) return null;
+  const component = str(v.component);
+  if (!component) return null;
+  const card = str(v.card);
+  const hints = isRecord(v.hints) ? v.hints : {};
+  const name = str(hints.name);
+  const scopes = Array.isArray(hints.scopes)
+    ? hints.scopes
+        .filter((s): s is string => typeof s === "string" && TRUSTED_SCOPE.test(s))
+        .slice(0, MAX_TRUSTED_SCOPES)
+    : [];
+  const days = hints.expiresInDays;
+  const expiresInDays =
+    typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= MAX_TRUSTED_DAYS
+      ? days
+      : undefined;
+  const actor = readActor(v.actor);
+  return {
+    component,
+    hints: {
+      ...(name !== undefined && TRUSTED_NAME.test(name) ? { name } : {}),
+      ...(scopes.length > 0 ? { scopes } : {}),
+      ...(expiresInDays !== undefined ? { expiresInDays } : {}),
+    },
+    ...(card ? { card } : {}),
+    ...(actor ? { actor } : {}),
+    ...readAt(v),
   };
 }

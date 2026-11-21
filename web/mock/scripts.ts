@@ -3703,6 +3703,52 @@ export function scriptFor(text: string): {
           ...finish(`echo: ${text}`),
         ],
       };
+    case "trusted": {
+      // a trusted component the client draws (ADR 0083, trusted-components/v1): the agent asks for a key for the
+      // person's own search server and waits. The person's answer is a `ui_action` whose `context` is the receipt;
+      // the scripted agent echoes it, so a test can read what reached it (and that no secret did)
+      return {
+        start: [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: "Your search server needs a key. Fill this in — I won't see it.",
+            },
+          },
+          {
+            kind: "trusted_request",
+            data: {
+              component: "McpCredential",
+              hints: {
+                name: "My search",
+                scopes: ["search.read", "search.write"],
+                expiresInDays: 30,
+              },
+            },
+          },
+          {
+            kind: "agent_status",
+            data: { status: "input_required", detail: "Waiting for your search key" },
+          },
+          { kind: "thread_state", data: { state: "blocked" }, setState: "blocked", system: true },
+        ],
+        resume: (_answer, context) => [
+          working,
+          {
+            kind: "agent_message",
+            data: {
+              messageId: nextMessageId(),
+              final: true,
+              text: `Receipt: ${JSON.stringify(context ?? {})}`,
+            },
+          },
+          ...finish(`saved ${String(context?.name ?? "a server")}`),
+        ],
+      };
+    }
     case "describe":
     case "describe-long":
     case "Plan": // plain words, for the screenshots and the e2e of descriptions

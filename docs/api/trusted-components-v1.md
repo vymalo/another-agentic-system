@@ -2,8 +2,18 @@
 
 - **Status:** **proposed 2026-11-21** ([ADR 0083](../decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md)).
   The orchestrator's half is built: it reads the card, logs `trusted_request` and projects the
-  `vymalo.trustedRequest` card. The web's half (the interface, its frame and the receipt) is the next
-  slice. Only `McpCredential` is built, because it is the only component whose API exists (ADR 0046).
+  `vymalo.trustedRequest` card. The web's half is built too (2026-11-21, the same day): it draws the
+  card, its frame and its form for `McpCredential`, calls the API with the person's own credentials and
+  answers with the receipt (`web/src/features/trusted/`, `web/README.md` "Trusted components"). Only
+  `McpCredential` is built, because it is the only component whose API exists (ADR 0046).
+  **Two gaps the web half found, and neither is fixed here:** the receipt is an action whose
+  `surfaceId` is the card's `messageId` (`trusted-<seq>`), and the orchestrator refuses an action that
+  does not name a surface of the thread (`agui-projection/src/translate.rs`, `InputError::UnknownSurface`),
+  so a receipt reaches the mock and not yet a real orchestrator; and `carry.rs::draws` does not count
+  `vymalo.trustedRequest` as turn output while the web's `drawsPart` now does, so the two lists must
+  agree before a page of history counts its turns.
+  **The web's half is proven on its own mock server only**: no live orchestrator drew a card, and no
+  live agent received a receipt.
 - **A2A extension:** `https://agents.vymalo.com/a2a/extensions/trusted-components/v1`.
 - **Who writes it:** this system. **Who serves it:** the agent, by asking; the client, by drawing.
 
@@ -146,6 +156,10 @@ exists:
 
 - It is a `ui_action.context`: logged verbatim as `ui_action.context` and forwarded to the agent
   (`docs/api/agui.md`, "Outbound: log event → AG-UI"). No new event kind and no new route.
+- The action names the card it answers: `surfaceId` is that card's `messageId` (`trusted-<seq>`),
+  `name` is `submit` and `sourceComponentId` is the component's name (`McpCredential`). A card is not a
+  surface, so the orchestrator must accept a trusted card's id where it now requires a surface of the
+  thread (the gap named in the status above).
 - It fits the context's existing bounds: 256 bytes per id and 16 KiB of context. A name of 80
   characters, 32 scopes of 128 bytes, `last4` and a `vault:` reference are well under it.
 - Nothing redacts it, and nothing needs to: no member is a secret. `last4` is never derived by the
