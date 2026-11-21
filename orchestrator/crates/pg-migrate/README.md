@@ -12,6 +12,13 @@ let migrator = orch_pg_migrate::Migrator::new(
 migrator.run(&mut client).await?; // a tokio_postgres::Client to the database itself
 ```
 
+`migrations!` names each file (its text is in the binary; a missing file fails the build), so a crate's test checks its
+list against the directory, or a file added there would never run:
+
+```rust
+migrator.check_directory(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))).unwrap();
+```
+
 ## What it keeps from sqlx 0.9
 
 | | sqlx's migrator and this one |
@@ -21,10 +28,14 @@ migrator.run(&mut client).await?; // a tokio_postgres::Client to the database it
 | Its checksum | the SHA-384 of its text |
 | Its transaction | one, holding the SQL and the history row; none for a file that starts with `-- no-transaction` |
 | The lock | `pg_advisory_lock(0x3d32ad9e * crc32(current_database()))` (CRC-32/ISO-HDLC) for the whole run, on the run's connection; released at its end, an error included (sqlx keeps it on an error) |
-| The refusals, before anything runs | a row that did not succeed (`Dirty`), a version the history has and this build does not (`VersionMissing`), a checksum that differs (`VersionMismatch`) |
+| The refusals | before anything is applied: a row that did not succeed (`Dirty`), a version the history has and this build does not (`VersionMissing`); where its version comes (a lower one not yet applied is applied first): a checksum that differs (`VersionMismatch`) |
+| The session | `TimeZone = UTC` and `DateStyle = ISO, MDY` for the run, as sqlx sets them on every connection |
+
+A reversible migration (`.up.sql`, `.down.sql`) is refused: sqlx runs only the `up` half, and none exists here.
 
 A session lock needs one session: run it on a connection to the database itself, never through a
-transaction-mode pooler (PgBouncer).
+transaction-mode pooler (PgBouncer). A run that is cancelled (its future dropped by a timeout or a shutdown) keeps
+the lock until its connection closes: drop that client then, rather than reusing it.
 
 ## Errors
 
@@ -34,13 +45,16 @@ above, `Execute { version, source }` when a migration's SQL fails (its transacti
 
 ## Tests
 
-* Unit: a file name read as sqlx reads it (`-- no-transaction` included, bad names refused), the table name
-  and versions checked, and the lock key against CRC-32's check value.
+* Unit: a file name read as sqlx reads it (`-- no-transaction` included; bad names, `.up.sql` and `.down.sql`
+  refused), the table name and versions checked, and the lock key against CRC-32's check value.
 * `tests/sqlx_compat.rs`, with sqlx as a dev-dependency until it leaves the workspace at the end of E1:
   * `every_migration_of_the_workspace_reads_as_sqlx_reads_it`: every `crates/*/migrations` directory has the
-    versions, descriptions and checksums sqlx gives it (no database needed);
+    versions, descriptions, checksums and transactions sqlx gives it (no database needed);
+  * `a_list_is_checked_against_its_directory`: a file left out of the list, and one the directory lacks;
   * against Postgres (`ORCH_TEST_DATABASE_URL`, skipped without it; a database of its own each):
     `each_continues_the_others_history` (sqlx migrates, this runner is a no-op and then applies only the new
-    one, and sqlx is a no-op after it), `the_history_is_checked_before_anything_runs` (the three refusals, a
-    failed migration leaves no row and none of its work, the lock is free after each refusal),
-    `the_lock_is_sqlx_s_lock` (this runner waits while sqlx's migrator holds its lock).
+    ones, a `CREATE INDEX CONCURRENTLY` outside a transaction among them, and sqlx is a no-op after it),
+    `the_history_is_checked_before_anything_runs` (the three refusals, a failed migration leaves no row and none of
+    its work, the lock is free after each refusal), `the_lock_is_sqlx_s_lock` (while sqlx's migrator holds its lock
+    the server shows this runner's request for it, not granted; it runs once sqlx lets go). Each drops its database,
+    and the databases a killed run left are dropped by the next.

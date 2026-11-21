@@ -13,12 +13,18 @@
 //!   transaction; every other runs in one with its history row.
 //! * **The lock.** `pg_advisory_lock(0x3d32ad9e * crc32(current_database()))`, CRC-32/ISO-HDLC,
 //!   held for the whole run on the run's connection, and released at its end, an error included.
-//! * **The refusals.** A row that did not succeed ([`MigrateError::Dirty`]), a version the history
-//!   has and this build does not ([`MigrateError::VersionMissing`]), and a version whose checksum
-//!   differs ([`MigrateError::VersionMismatch`]): nothing is applied then.
+//! * **The refusals.** A row that did not succeed ([`MigrateError::Dirty`]) and a version the
+//!   history has and this build does not ([`MigrateError::VersionMissing`]) stop the run before
+//!   anything is applied; a version whose checksum differs ([`MigrateError::VersionMismatch`])
+//!   stops it where that version comes, as sqlx does (a lower version not yet applied is applied
+//!   first).
+//! * **The session.** `TimeZone` is `UTC` and `DateStyle` is `ISO, MDY` for the run, as sqlx sets
+//!   them on every connection, so a migration reads a literal as it did.
 //!
-//! A session lock needs one session: run it on a connection to the database itself, not through a
-//! transaction-mode pooler.
+//! A reversible migration (`.up.sql`, `.down.sql`) is refused: sqlx runs only the `up` half, and
+//! none exists here. A session lock needs one session: run it on a connection to the database
+//! itself, not through a transaction-mode pooler. A run that is cancelled (its future dropped)
+//! keeps the lock until the connection closes: drop the client then.
 
 #![forbid(unsafe_code)]
 
@@ -31,6 +37,7 @@ use tokio_postgres::Client;
 /// One migration: its version, its description and its SQL, as sqlx read them from the file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Migration {
+    file_name: String,
     version: i64,
     description: String,
     sql: &'static str,
@@ -46,14 +53,28 @@ impl Migration {
     /// [`MigrateError::FileName`] for a name that is not `<integer>_<description>.sql`.
     pub fn from_file(file_name: &str, sql: &'static str) -> Result<Self, MigrateError> {
         let bad = || MigrateError::FileName(file_name.to_owned());
+        if file_name.ends_with(".up.sql") || file_name.ends_with(".down.sql") {
+            return Err(bad());
+        }
         let (version, rest) = file_name.split_once('_').ok_or_else(bad)?;
         let description = rest.strip_suffix(".sql").ok_or_else(bad)?;
         Ok(Self {
+            file_name: file_name.to_owned(),
             version: version.parse().map_err(|_| bad())?,
             description: description.replace('_', " "),
             sql,
             no_tx: sql.starts_with("-- no-transaction"),
         })
+    }
+
+    /// The name of its file.
+    pub fn file_name(&self) -> &str {
+        &self.file_name
+    }
+
+    /// Whether it runs outside a transaction (its text starts with `-- no-transaction`).
+    pub fn no_transaction(&self) -> bool {
+        self.no_tx
     }
 
     /// Its version.
@@ -120,6 +141,40 @@ impl Migrator {
         &self.migrations
     }
 
+    /// Whether the migrations are exactly the `.sql` files of `dir`: what a crate's test calls on
+    /// its `migrations/`, since `migrations!` names its files one by one and a file added to the
+    /// directory but not to the list would never run.
+    ///
+    /// # Errors
+    ///
+    /// The names that are in one and not the other, each prefixed `unlisted ` (in the directory
+    /// only) or `missing ` (in the list only); or the directory's read error, as text.
+    pub fn check_directory(&self, dir: &std::path::Path) -> Result<(), Vec<String>> {
+        let entries =
+            std::fs::read_dir(dir).map_err(|e| vec![format!("{}: {e}", dir.display())])?;
+        let mut files = Vec::new();
+        for entry in entries {
+            let name = entry.map_err(|e| vec![e.to_string()])?.file_name();
+            let name = name.to_string_lossy().into_owned();
+            if name.ends_with(".sql") {
+                files.push(name);
+            }
+        }
+        let listed: Vec<&str> = self.migrations.iter().map(Migration::file_name).collect();
+        let mut wrong: Vec<String> = files
+            .iter()
+            .filter(|f| !listed.contains(&f.as_str()))
+            .map(|f| format!("unlisted {f}"))
+            .collect();
+        wrong.extend(
+            listed
+                .iter()
+                .filter(|l| !files.iter().any(|f| f == *l))
+                .map(|l| format!("missing {l}")),
+        );
+        if wrong.is_empty() { Ok(()) } else { Err(wrong) }
+    }
+
     /// Applies every migration the history does not have, under the database's advisory lock, and
     /// releases the lock whatever the outcome. Idempotent, and safe to call from every replica at
     /// boot.
@@ -139,7 +194,14 @@ impl Migrator {
         client
             .execute("SELECT pg_advisory_lock($1)", &[&lock])
             .await?;
-        let outcome = self.run_locked(client).await;
+        // sqlx's session: a migration reads a time or a date as it did.
+        let outcome = match client
+            .batch_execute("SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'")
+            .await
+        {
+            Ok(()) => self.run_locked(client).await,
+            Err(e) => Err(e.into()),
+        };
         let unlocked = client
             .execute("SELECT pg_advisory_unlock($1)", &[&lock])
             .await;
@@ -247,7 +309,9 @@ impl Migrator {
 
 /// Builds a crate's migrations from files under `dir`, relative to the crate's manifest:
 /// `migrations!("migrations": "0001_init.sql", "0002_more.sql")`. Each file's text is in the
-/// binary; a name that is not `<integer>_<description>.sql` is an error when it is built.
+/// binary (a missing file fails the build); a name that is not `<integer>_<description>.sql` is an
+/// error when the list is built. Check the list against the directory in a test:
+/// [`Migrator::check_directory`].
 #[macro_export]
 macro_rules! migrations {
     ($dir:literal : $($file:literal),+ $(,)?) => {
@@ -311,7 +375,14 @@ mod tests {
         let no_tx = Migration::from_file("12_a_b_c.sql", "-- no-transaction\nSELECT 1;").unwrap();
         assert_eq!((no_tx.version(), no_tx.description()), (12, "a b c"));
         assert!(no_tx.no_tx);
-        for bad in ["0001.sql", "x_y.sql", "0001_y.txt", "_y.sql"] {
+        for bad in [
+            "0001.sql",
+            "x_y.sql",
+            "0001_y.txt",
+            "_y.sql",
+            "2_x.down.sql",
+            "2_x.up.sql",
+        ] {
             assert!(
                 matches!(
                     Migration::from_file(bad, ""),
