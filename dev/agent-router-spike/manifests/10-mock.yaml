@@ -1,0 +1,105 @@
+# The mock model: an OpenAI-compatible endpoint whose answer carries the request headers it received.
+# GET /__count answers how many model requests reached it, so a refused request can be shown to reach none.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spike-mock
+  namespace: default
+data:
+  mock.py: |
+    import json, threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    COUNT = {"n": 0}
+    LOCK = threading.Lock()
+
+    class Mock(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, body):
+            data = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path == "/__count":
+                with LOCK:
+                    n = COUNT["n"]
+                return self._send(200, {"count": n})
+            self._handle()
+
+        def do_POST(self):
+            self._handle()
+
+        def _handle(self):
+            with LOCK:
+                COUNT["n"] += 1
+            length = int(self.headers.get("content-length") or 0)
+            if length:
+                self.rfile.read(length)
+            got = {name: self.headers.get_all(name)
+                   for name in ("Authorization", "X-Run-Id", "X-Auth-User")}
+            content = json.dumps({"received": got, "path": self.path})
+            self._send(200, {
+                "id": "spike",
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })
+
+    ThreadingHTTPServer(("0.0.0.0", 8080), Mock).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spike-mock
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spike-mock
+  template:
+    metadata:
+      labels:
+        app: spike-mock
+    spec:
+      containers:
+        - name: mock
+          image: python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+          command: ["python", "/opt/mock/mock.py"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /__count
+              port: 8080
+            periodSeconds: 2
+          volumeMounts:
+            - name: code
+              mountPath: /opt/mock
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: spike-mock
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spike-mock
+  namespace: default
+spec:
+  selector:
+    app: spike-mock
+  ports:
+    - port: 80
+      targetPort: 8080
