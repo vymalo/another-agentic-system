@@ -43,7 +43,11 @@ data:
         def _check(self):
             run = self.headers.get("X-Run-Id")
             if not run:
-                return self._reply(401, {"code": "run_not_bound"})
+                # What Envoy actually sent, so a lost header is visible in the log rather than guessed.
+                seen = {name: self.headers.get_all(name)
+                        for name in ("X-Run-Id", "X-Ai-Eg-Model", "Authorization", "Host", "Path")}
+                return self._reply(401, {"code": "run_not_bound", "seen": seen,
+                                         "path": self.path})
             self._reply(200, {"ok": True}, headers=[
                 ("Authorization", "Bearer injected-by-extauth"),
                 ("X-Auth-User", "run-" + run),
@@ -115,4 +119,7 @@ spec:
       backendRefs:
         - name: spike-extauth
           port: 9002
+      # The default HTTP ext-auth check forwards only Host, Method, Path, Content-Length and
+      # Authorization; without this line the authorizer never sees the run id.
+      headersToExtAuth: ["X-Run-Id"]
       headersToBackend: ["Authorization", "X-Auth-User"]
