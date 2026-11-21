@@ -53,6 +53,7 @@ fn known(state: ThreadState) -> KnownThread {
         message_texts: BTreeMap::new(),
         run_ids: BTreeSet::new(),
         surfaces: BTreeMap::new(),
+        trusted_cards: BTreeSet::new(),
     }
 }
 
@@ -916,6 +917,60 @@ fn an_action_for_a_surface_the_thread_does_not_have_is_refused() {
     assert_eq!(err(&action_request(go()), blocked()).http_status(), 422);
     let new = translate(&action_request(go()), &ThreadView::new_thread(alice()));
     assert!(matches!(new, Err(InputError::UnknownSurface { .. })));
+}
+
+#[test]
+fn a_receipt_naming_a_trusted_card_is_accepted_and_an_unknown_id_is_refused() {
+    // ADR 0083: the receipt names the card's `messageId` (`trusted-<seq>`), and a card is not a
+    // surface. The action is accepted and forwarded as it is; an id that is neither a surface nor
+    // a card of the thread stays `UnknownSurface` (fail closed, never widened).
+    let receipt = json!({
+        "status": "created",
+        "id": "u-abc1234567",
+        "name": "My search",
+        "scopes": ["search.read"],
+    });
+    let receipt_as_context = receipt.as_object().unwrap().clone();
+    let submit = |surface_id: &str| {
+        json!({
+            "name": "submit",
+            "surfaceId": surface_id,
+            "sourceComponentId": "McpCredential",
+            "context": receipt.clone(),
+        })
+    };
+    let view = KnownThread {
+        trusted_cards: ["trusted-7".to_owned()].into(),
+        ..blocked()
+    };
+
+    let got = ok(&action_request(submit("trusted-7")), view.clone());
+    let [Input::UiAction { action, .. }] = &got[..] else {
+        panic!("{got:?}");
+    };
+    assert_eq!(action.surface_id, "trusted-7");
+    assert_eq!(action.name, "submit");
+    assert_eq!(action.source_component_id, "McpCredential");
+    assert_eq!(
+        action.context, receipt_as_context,
+        "the receipt is the context"
+    );
+    assert_eq!(
+        action.version,
+        UiVersion::V1_0,
+        "a card has no dialect: the action is still v1.0"
+    );
+    assert_eq!(action.run_id.as_deref(), Some("run-act"));
+
+    // An id that is neither a surface nor a card is refused exactly as before.
+    let e = err(&action_request(submit("trusted-99")), view);
+    assert_eq!(
+        e,
+        InputError::UnknownSurface {
+            surface_id: "trusted-99".into()
+        }
+    );
+    assert_eq!(e.http_status(), 422);
 }
 
 #[test]

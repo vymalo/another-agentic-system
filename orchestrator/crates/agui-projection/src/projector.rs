@@ -407,6 +407,10 @@ pub struct Projector {
     run_ids: BTreeSet<String>,
     /// The A2UI surfaces the thread has now (a deleted surface is gone).
     surfaces: BTreeMap<String, Surface>,
+    /// The ids of the trusted cards the thread's log holds now (`trusted-<seq>` of each
+    /// `trusted_request`, ADR 0083): a card is not a surface, and an action may name one of these
+    /// (the receipt). Cleared with the surfaces when a new job begins: an old card is not acted on.
+    trusted_cards: BTreeSet<String>,
     /// The UI catalogs the log recorded and which is current (ADR 0023), folded with the rule the
     /// core uses, so the state snapshot and the thread's ledger agree.
     catalog: UiCatalogLedger,
@@ -588,6 +592,7 @@ impl Projector {
             reasoning_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
+            trusted_cards: BTreeSet::new(),
             catalog: UiCatalogLedger::default(),
             job_number: 1,
             attempt: 1,
@@ -707,6 +712,7 @@ impl Projector {
                 .iter()
                 .map(|(id, s)| (id.clone(), s.dialect))
                 .collect(),
+            trusted_cards: self.trusted_cards.clone(),
         })
     }
 
@@ -1582,6 +1588,7 @@ impl Projector {
         self.suspended = None;
         self.pending_error = None;
         self.surfaces.clear();
+        self.trusted_cards.clear();
         self.steps.clear();
         self.asks.clear();
     }
@@ -1817,7 +1824,10 @@ impl Projector {
             ActivitySnapshotEvent::new(id.clone(), ACTIVITY_TRUSTED_REQUEST, content);
         snapshot.replace = Some(false);
         snapshot.base.metadata = Some(actor_metadata(&ev.actor));
-        self.message_ids.insert(id);
+        self.message_ids.insert(id.clone());
+        // The id the client's receipt names as `surfaceId`: a card is not a surface, so the action
+        // is accepted against this set (ADR 0083).
+        self.trusted_cards.insert(id);
         out.push(snapshot.into());
         if opened {
             self.settle(ev, out);

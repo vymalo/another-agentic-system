@@ -5,7 +5,8 @@ use futures::StreamExt;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, ChildSessionsOffer, CommandsListing, CommandsOffer,
     ForkHistory, KnownExtension, LiveChunk, LiveEnd, Releases, StepKind, StepReport, StepState,
-    TierListing, TierOffer, ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    TierListing, TierOffer, ToolsGrant, TrustedComponent, TrustedHints, TrustedRequestData,
+    UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -63,6 +64,9 @@ pub enum Call {
         text: String,
         /// The A2UI action delivered instead of text, if any.
         action: Option<Box<UiActionData>>,
+        /// The time an A2UI action carries as its `timestamp` member (the log's own time, ADR
+        /// 0013): `None` for anything that is not an action.
+        action_at: Option<orch_core::Timestamp>,
         /// Selected release.
         release: Option<String>,
         /// What the request told the agent of the person's UI catalog (ADR 0023).
@@ -251,6 +255,9 @@ struct Shared {
 /// - `ui-gate`: like `ui`, but the surface is drawn, then the task waits for
 ///   [`ScriptedAgent::release_gate`] before it says `input-required` (a stream that starts in
 ///   between never sees the surface);
+/// - `trusted`: `working`, a trusted request for `McpCredential` (`trusted-components/v1`, ADR
+///   0083), then `input-required("Add your search")`; the follow-up (the receipt, an action)
+///   continues the task with `working`, an artifact `answer`, `completed`;
 /// - `ask-gate`: like `ask`, but the task waits for [`ScriptedAgent::release_gate`] before it says
 ///   `input-required` (a question in words, no surface);
 /// - `choices`: a question with choices, as adam's `ask_user` asks one: it is `ui` when the request
@@ -753,6 +760,19 @@ impl Shared {
         );
     }
 
+    /// A trusted component an agent asks the client to draw (`trusted-components/v1`, ADR 0083):
+    /// the adapter maps it from a message's metadata, and the `trusted` script sends it.
+    fn push_trusted(&self, task: &str, request: TrustedRequestData) {
+        let n = self.state().tasks.get(task).map_or(0, |t| t.log.len());
+        self.push(
+            task,
+            None,
+            None,
+            IdemKey::Task(format!("a2a:{task}:trusted:{n}")),
+            Some(AgentUpdate::TrustedRequest(request)),
+        );
+    }
+
     /// Waits until `f` holds for the task (checked on every change).
     async fn wait_until(&self, task: &str, f: impl Fn(&TaskRec) -> bool) {
         loop {
@@ -938,6 +958,24 @@ async fn drive(shared: Arc<Shared>, task: String, text: String, resumed: bool) {
             shared.push_status(&task, InputRequired, Some("Pick one"));
         }
         "ui" | "ui-gate" => {
+            shared.push_artifact(&task, "answer", format!("answered: {text}"));
+            shared.push_status(&task, Completed, None);
+        }
+        "trusted" if !resumed => {
+            shared.push_trusted(
+                &task,
+                TrustedRequestData {
+                    component: TrustedComponent::McpCredential,
+                    hints: TrustedHints {
+                        name: Some("My search".to_owned()),
+                        scopes: vec!["search.read".to_owned()],
+                        expires_in_days: Some(30),
+                    },
+                },
+            );
+            shared.push_status(&task, InputRequired, Some("Add your search"));
+        }
+        "trusted" => {
             shared.push_artifact(&task, "answer", format!("answered: {text}"));
             shared.push_status(&task, Completed, None);
         }
@@ -1645,15 +1683,18 @@ impl AgentClient for ScriptedAgent {
     }
 
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
-        let (text, action) = match &req.content {
-            SendContent::Text(t) => (t.clone(), None),
+        let (text, action, action_at) = match &req.content {
+            SendContent::Text(t) => (t.clone(), None, None),
             // scripted by the text it carries (a start's prompt, `close` for a close)
-            SendContent::SessionStart { .. } | SendContent::SessionClose { .. } => {
-                (req.content.text().unwrap_or_default().to_owned(), None)
-            }
-            SendContent::UiAction { action, .. } => (
+            SendContent::SessionStart { .. } | SendContent::SessionClose { .. } => (
+                req.content.text().unwrap_or_default().to_owned(),
+                None,
+                None,
+            ),
+            SendContent::UiAction { action, at } => (
                 format!("ui-action {}", action.name),
                 Some(Box::new(action.clone())),
+                Some(*at),
             ),
         };
         let script = text.split_whitespace().next().unwrap_or("").to_owned();
@@ -1667,6 +1708,7 @@ impl AgentClient for ScriptedAgent {
                 reference_task_ids: req.reference_task_ids.clone(),
                 text: text.clone(),
                 action,
+                action_at,
                 release: req.release.clone(),
                 ui_catalog: req.ui_catalog.clone().map(Box::new),
                 thread_tools: req.thread_tools.clone().map(Box::new),

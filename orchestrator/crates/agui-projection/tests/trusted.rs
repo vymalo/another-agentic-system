@@ -4,11 +4,11 @@
 
 mod support;
 
-use orch_agui_projection::{Audience, Frame, Projector};
+use orch_agui_projection::{Audience, Frame, Projector, ThreadView};
 use orch_agui_proto::testkit::assert_conforms;
 use orch_core::{
     Actor, AgentId, Event, EventBody, GatePolicy, Timestamp, TrustedComponent, TrustedHints,
-    TrustedRequestData,
+    TrustedRequestData, UserId,
 };
 use serde_json::{Value, json};
 use support::log::{meta_under, thread_id};
@@ -103,6 +103,26 @@ fn two_requests_are_two_cards() {
     ]);
     let ids: Vec<String> = cards(&frames).into_iter().map(|(id, _, _)| id).collect();
     assert_eq!(ids, ["trusted-3", "trusted-4"]);
+}
+
+#[test]
+fn the_view_holds_the_trusted_cards_the_log_has() {
+    // The id the client's receipt names as `surfaceId` is the activity's own `messageId`, so the
+    // view must hold exactly those (ADR 0083).
+    let mut projector = Projector::new(meta_under(GatePolicy::default()));
+    for ev in [
+        event(6, request(TrustedHints::default())),
+        event(7, request(TrustedHints::default())),
+    ] {
+        projector.apply(&ev, Audience::Viewer);
+    }
+    let ThreadView::Known(known) = projector.view(&UserId::new("alice@example.com")) else {
+        panic!("a known thread");
+    };
+    assert_eq!(
+        known.trusted_cards,
+        ["trusted-6", "trusted-7"].map(str::to_owned).into()
+    );
 }
 
 #[test]

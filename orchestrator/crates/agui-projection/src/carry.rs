@@ -16,8 +16,8 @@ use serde_json::{Map, Value, json};
 use crate::frame::Frame;
 use crate::vocab::{
     ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK, ACTIVITY_CHECK,
-    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_REWORK, ACTIVITY_STATUS, ACTIVITY_STEP, CUSTOM_USAGE,
-    CUSTOM_USAGE_TOTAL,
+    ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_REWORK, ACTIVITY_STATUS, ACTIVITY_STEP,
+    ACTIVITY_TRUSTED_REQUEST, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL,
 };
 
 /// The most kept files a carry names: the newest ones.
@@ -124,8 +124,10 @@ impl CarryLog {
 }
 
 /// Whether an activity is something a turn of the agent draws: the web's `drawsPart` for the activities
-/// (`web/src/features/chat/lib/steps.ts`). A status that only comes with the agent's words (`completed`,
-/// `input_required`), the job marker, a fork's divider and a tools card draw nothing of their own.
+/// (`web/src/features/chat/lib/steps.ts`, which mirrors this list). A status that only comes with the
+/// agent's words (`completed`, `input_required`), the job marker, a fork's divider and a tools card
+/// draw nothing of their own. A trusted request does: it is the agent's card, drawn by the client
+/// (ADR 0083), and `drawsPart` counts it too.
 fn draws(activity_type: &str, content: &Map<String, Value>) -> bool {
     match activity_type {
         ACTIVITY_STATUS => content
@@ -140,7 +142,8 @@ fn draws(activity_type: &str, content: &Map<String, Value>) -> bool {
         | ACTIVITY_REWORK
         | ACTIVITY_ACTION
         | ACTIVITY_ERROR
-        | ACTIVITY_A2UI_SURFACE => true,
+        | ACTIVITY_A2UI_SURFACE
+        | ACTIVITY_TRUSTED_REQUEST => true,
         _ => false,
     }
 }
