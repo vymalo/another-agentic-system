@@ -37,6 +37,7 @@ on:
       - "dev/agents.live.yaml"
       - "dev/mcp-tokens.yaml"
       - "tools/projection-digests-check.sh"
+      - "tools/sqlx-out-check.sh"
       - ".github/workflows/orchestrator.yml"
   push:
     branches: [main]
@@ -55,6 +56,7 @@ on:
       - "dev/agents.yaml"
       - "dev/agents.live.yaml"
       - "dev/mcp-tokens.yaml"
+      - "tools/sqlx-out-check.sh"
       - ".github/workflows/orchestrator.yml"
 
 permissions:
@@ -135,6 +137,11 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: sh tools/projection-digests-check.sh "origin/${BASE_REF}"
+      - name: sqlx stays out of the workspace
+        # ADR 0076, sys#382 E1: every Postgres crate is on tokio-postgres; a package named sqlx or sqlx-* in
+        # the lockfile, a dev-dependency's included, brings it back.
+        working-directory: .
+        run: sh tools/sqlx-out-check.sh
       - name: Create the S3 test bucket on RustFS
         # SigV4 with curl's own signer, path style (`<endpoint>/<bucket>`); a bucket that exists answers 200 again.
         run: |

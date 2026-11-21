@@ -93,8 +93,6 @@ http = "1"
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy"] }
 sse-stream = "0.2.6"
 tower-http = { version = "0.7.1", features = ["trace", "request-id", "timeout", "limit", "cors"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "json", "uuid", "migrate", "macros"] }
-jiff-sqlx = { version = "0.2", features = ["postgres"] }
 a2a-lf = "0.3.1"
 a2a-client-lf = "0.2.5"
 a2a-server-lf = "0.4.4"
@@ -111,7 +109,6 @@ regex = "1"
 # Unicode normalisation (NFKD) of the keys of a search (`orch-core`, ADR 0068); already in the lock through `url`.
 unicode-normalization = "0.1"
 url = "2"
-chrono = { version = "0.4", default-features = false }
 # The MCP server surface (ADR 0019). `server` brings the handler traits and the JSON Schema
 # derivation, `transport-streamable-http-server` the tower service that `orch-surface-mcp` mounts.
 # The tests add the client side as a dev-dependency.

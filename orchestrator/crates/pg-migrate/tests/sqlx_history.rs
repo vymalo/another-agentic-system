@@ -1,19 +1,22 @@
-//! This runner and sqlx 0.9 read and continue each other's history (sys#382 E1): the same
-//! checksums for every migration of the workspace, a database migrated by one is a no-op for the
-//! other, the refusals match, and the advisory lock is the same lock. The database tests are
-//! skipped unless `ORCH_TEST_DATABASE_URL` is set; each makes a database of its own and drops it.
+//! This runner continues the history sqlx 0.9 kept (sys#382 E1): every migration of the workspace
+//! that sqlx ever applied reads to the version, description, checksum and transaction sqlx gave it
+//! (`tests/sqlx-0.9-history.txt`, recorded by sqlx itself before it left the workspace), a history
+//! written by sqlx's own statements is a no-op for it, its refusals are sqlx's, and the lock it
+//! takes is sqlx's. sqlx's statements are quoted from `sqlx-postgres` 0.9.0, `src/migrate.rs`. The
+//! database tests are skipped unless `ORCH_TEST_DATABASE_URL` is set; each makes a database of its
+//! own and drops it.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use orch_pg_migrate::{MigrateError, Migration, Migrator};
-use sqlx::migrate::Migrate as _;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Connection as _, PgConnection, PgPool};
+use orch_pg_migrate::{MigrateError, Migration, Migrator, lock_id};
 
 const TABLE: &str = "_compat_migrations";
+
+/// What sqlx 0.9 read from every migration file of the workspace.
+const SQLX_HISTORY: &str = include_str!("sqlx-0.9-history.txt");
 
 /// The migrations of a directory, read as this runner reads them.
 fn ours(dir: &Path) -> Vec<Migration> {
@@ -32,45 +35,39 @@ fn ours(dir: &Path) -> Vec<Migration> {
         .collect()
 }
 
-/// Every migration directory of the workspace: each file has the version, description, checksum
-/// and transaction sqlx gives it, so a history sqlx wrote is this runner's.
-#[tokio::test]
-async fn every_migration_of_the_workspace_reads_as_sqlx_reads_it() {
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Every migration sqlx read has, read by this runner, the version, description, checksum and
+/// transaction sqlx gave it, so a history sqlx wrote is this runner's. A migration added since is
+/// this runner's alone and needs no line.
+#[test]
+fn every_migration_sqlx_read_reads_as_sqlx_read_it() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let mut dirs = 0;
-    for entry in std::fs::read_dir(crates).unwrap() {
-        let dir = entry.unwrap().path().join("migrations");
-        if !dir.is_dir() {
-            continue;
-        }
-        dirs += 1;
-        let theirs = sqlx::migrate::Migrator::new(dir.as_path()).await.unwrap();
-        let theirs: Vec<(i64, String, Vec<u8>, bool)> = theirs
-            .iter()
-            .map(|m| {
-                (
-                    m.version,
-                    m.description.to_string(),
-                    m.checksum.to_vec(),
-                    m.no_tx,
-                )
-            })
-            .collect();
-        let mine: Vec<(i64, String, Vec<u8>, bool)> = ours(&dir)
-            .iter()
-            .map(|m| {
-                (
-                    m.version(),
-                    m.description().to_owned(),
-                    m.checksum(),
-                    m.no_transaction(),
-                )
-            })
-            .collect();
-        assert!(!mine.is_empty(), "{}", dir.display());
-        assert_eq!(mine, theirs, "{}", dir.display());
+    let mut checked = 0;
+    for line in SQLX_HISTORY.lines().filter(|l| !l.starts_with('#')) {
+        let mut fields = line.splitn(5, ' ');
+        let mut next = || fields.next().unwrap();
+        let (krate, version, tx, checksum, description) = (next(), next(), next(), next(), next());
+        let dir = crates.join(krate).join("migrations");
+        let version: i64 = version.parse().unwrap();
+        let mine = ours(&dir)
+            .into_iter()
+            .find(|m| m.version() == version)
+            .unwrap_or_else(|| panic!("{krate} has no migration {version} any more"));
+        assert_eq!(
+            (
+                mine.description(),
+                hex(&mine.checksum()).as_str(),
+                if mine.no_transaction() { "no-tx" } else { "tx" },
+            ),
+            (description, checksum, tx),
+            "{krate} {version}"
+        );
+        checked += 1;
     }
-    assert!(dirs >= 2, "store-postgres and secrets-pg have migrations");
+    assert!(checked >= 29, "the recording holds every migration of E1");
 }
 
 /// A list that does not name every file of its directory, or names one it does not have, is
@@ -100,12 +97,17 @@ fn a_list_is_checked_against_its_directory() {
     );
 }
 
-/// A database of its own on the test server, with a sqlx pool and a tokio-postgres client.
+/// One connection to `config`, its task spawned.
+async fn connect(config: &tokio_postgres::Config) -> tokio_postgres::Client {
+    let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+    tokio::spawn(connection);
+    client
+}
+
+/// A database of its own on the test server.
 struct Db {
     name: String,
-    admin: PgConnectOptions,
-    sqlx: PgPool,
-    options: PgConnectOptions,
+    admin: tokio_postgres::Config,
     config: tokio_postgres::Config,
 }
 
@@ -118,72 +120,65 @@ impl Db {
         static N: AtomicU32 = AtomicU32::new(0);
         let pid = std::process::id();
         let name = format!("{PREFIX}{pid}_{}", N.fetch_add(1, Ordering::SeqCst));
-        let admin: PgConnectOptions = url.parse().unwrap();
-        let mut conn = PgConnection::connect_with(&admin).await.unwrap();
+        let admin: tokio_postgres::Config = url.parse().unwrap();
+        let conn = connect(&admin).await;
         // What an earlier run of another process left (it was killed before it dropped them).
-        let stale: Vec<String> = sqlx::query_scalar(
-            "SELECT datname FROM pg_database WHERE starts_with(datname, $1) \
-             AND NOT starts_with(datname, $2)",
-        )
-        .bind(PREFIX)
-        .bind(format!("{PREFIX}{pid}_"))
-        .fetch_all(&mut conn)
-        .await
-        .unwrap();
+        let stale: Vec<String> = conn
+            .query(
+                "SELECT datname::text FROM pg_database WHERE starts_with(datname, $1) \
+                 AND NOT starts_with(datname, $2)",
+                &[&PREFIX, &format!("{PREFIX}{pid}_")],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
         for old in stale {
-            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DROP DATABASE IF EXISTS {old} WITH (FORCE)"
-            )))
-            .execute(&mut conn)
-            .await;
+            let _ = conn
+                .batch_execute(&format!("DROP DATABASE IF EXISTS {old} WITH (FORCE)"))
+                .await;
         }
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
-            .execute(&mut conn)
+        conn.batch_execute(&format!("CREATE DATABASE {name}"))
             .await
             .unwrap();
-        let options = admin.clone().database(&name);
-        let sqlx = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_with(options.clone())
-            .await
-            .unwrap();
-        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        let mut config = admin.clone();
         config.dbname(&name);
         Some(Self {
             name,
             admin,
-            sqlx,
-            options,
             config,
         })
     }
 
     async fn client(&self) -> tokio_postgres::Client {
-        let (client, connection) = self.config.connect(tokio_postgres::NoTls).await.unwrap();
-        tokio::spawn(connection);
-        client
+        connect(&self.config).await
     }
 
     async fn rows(&self) -> Vec<(i64, bool)> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT version, success FROM {TABLE} ORDER BY version"
-        )))
-        .fetch_all(&self.sqlx)
-        .await
-        .unwrap()
+        self.client()
+            .await
+            .query(
+                &format!("SELECT version, success FROM {TABLE} ORDER BY version"),
+                &[],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect()
     }
 
     /// Drops the database: at the end of each test that made one.
     async fn drop(self) {
-        self.sqlx.close().await;
-        let mut conn = PgConnection::connect_with(&self.admin).await.unwrap();
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "DROP DATABASE IF EXISTS {} WITH (FORCE)",
-            self.name
-        )))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+        connect(&self.admin)
+            .await
+            .batch_execute(&format!(
+                "DROP DATABASE IF EXISTS {} WITH (FORCE)",
+                self.name
+            ))
+            .await
+            .unwrap();
     }
 }
 
@@ -239,31 +234,83 @@ const CONCURRENT: (&str, &str) = (
     "-- no-transaction\nCREATE INDEX CONCURRENTLY a_id ON a (id);\n",
 );
 
-async fn sqlx_runs(db: &Db, files: &Path) {
-    let mut migrator = sqlx::migrate::Migrator::new(files).await.unwrap();
-    migrator.dangerous_set_table_name(TABLE);
-    migrator.run(&db.sqlx).await.unwrap();
+/// What sqlx 0.9's migrator did for `migrations` on a fresh database, with its own statements: its
+/// table, then each migration and its row in one transaction, the row written with an execution
+/// time of -1 that is set after the commit.
+async fn sqlx_ran(db: &Db, migrations: &[Migration]) {
+    let mut client = db.client().await;
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE IF NOT EXISTS {TABLE} (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
+    success BOOLEAN NOT NULL,
+    checksum BYTEA NOT NULL,
+    execution_time BIGINT NOT NULL
+);"
+        ))
+        .await
+        .unwrap();
+    for migration in migrations {
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(migration_sql(migration)).await.unwrap();
+        tx.execute(
+            &format!(
+                "INSERT INTO {TABLE} ( version, description, success, checksum, execution_time ) \
+                 VALUES ( $1, $2, TRUE, $3, -1 )"
+            ),
+            &[
+                &migration.version(),
+                &migration.description(),
+                &migration.checksum(),
+            ],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        client
+            .execute(
+                &format!("UPDATE {TABLE} SET execution_time = $1 WHERE version = $2"),
+                &[&1_000_i64, &migration.version()],
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// The SQL of the files this suite writes, by the migration's version.
+fn migration_sql(migration: &Migration) -> &'static str {
+    [ONE, TWO, THREE, CONCURRENT]
+        .iter()
+        .find(|(name, _)| *name == migration.file_name())
+        .map(|(_, sql)| *sql)
+        .unwrap()
 }
 
 async fn installed_on(db: &Db) -> Vec<String> {
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT installed_on::text FROM {TABLE} ORDER BY version"
-    )))
-    .fetch_all(&db.sqlx)
-    .await
-    .unwrap()
+    db.client()
+        .await
+        .query(
+            &format!("SELECT installed_on::text FROM {TABLE} ORDER BY version"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
 }
 
 /// A database sqlx migrated is a no-op for this runner, which then applies only what is new (a
-/// file that opts out of the transaction included); and sqlx then finds nothing to do in what this
-/// runner wrote.
+/// file that opts out of the transaction included).
 #[tokio::test]
-async fn each_continues_the_others_history() {
+async fn a_history_sqlx_wrote_is_continued() {
     let Some(db) = Db::new().await else {
         return;
     };
     let two = dir(&[ONE, TWO]);
-    sqlx_runs(&db, two.path()).await;
+    sqlx_ran(&db, &ours(two.path())).await;
     let installed = installed_on(&db).await;
 
     let mut client = db.client().await;
@@ -288,21 +335,21 @@ async fn each_continues_the_others_history() {
         db.rows().await,
         [(1, true), (2, true), (3, true), (4, true)]
     );
-    let index: Option<String> = sqlx::query_scalar("SELECT to_regclass('a_id')::text")
-        .fetch_one(&db.sqlx)
+    let index: Option<String> = client
+        .query_one("SELECT to_regclass('a_id')::text", &[])
         .await
-        .unwrap();
+        .unwrap()
+        .get(0);
     assert_eq!(index.as_deref(), Some("a_id"));
-    let execution: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT execution_time FROM {TABLE} WHERE version = 3"
-    )))
-    .fetch_one(&db.sqlx)
-    .await
-    .unwrap();
+    let execution: i64 = client
+        .query_one(
+            &format!("SELECT execution_time FROM {TABLE} WHERE version = 3"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
     assert!(execution >= 0, "the execution time is recorded");
-
-    sqlx_runs(&db, four.path()).await;
-    assert_eq!(db.rows().await.len(), 4, "this runner's history is sqlx's");
     drop(client);
     db.drop().await;
 }
@@ -359,18 +406,20 @@ async fn the_history_is_checked_before_anything_runs() {
         "{failed:?}"
     );
     assert_eq!(db.rows().await.len(), 2, "no row for the failed migration");
-    let c: Option<String> = sqlx::query_scalar("SELECT to_regclass('c')::text")
-        .fetch_one(&db.sqlx)
+    let observer = db.client().await;
+    let c: Option<String> = observer
+        .query_one("SELECT to_regclass('c')::text", &[])
         .await
-        .unwrap();
+        .unwrap()
+        .get(0);
     assert_eq!(c, None, "its work was rolled back");
 
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE {TABLE} SET success = false WHERE version = 2"
-    )))
-    .execute(&db.sqlx)
-    .await
-    .unwrap();
+    observer
+        .batch_execute(&format!(
+            "UPDATE {TABLE} SET success = false WHERE version = 2"
+        ))
+        .await
+        .unwrap();
     let dirty = Migrator::new(TABLE, ours(two.path()))
         .unwrap()
         .run(&mut client)
@@ -378,27 +427,30 @@ async fn the_history_is_checked_before_anything_runs() {
         .unwrap_err();
     assert!(matches!(dirty, MigrateError::Dirty(2)), "{dirty:?}");
 
-    // The lock is released after every refusal: sqlx can take it at once.
-    let mut conn = PgConnection::connect_with(&db.options).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), conn.lock())
+    // The lock is released after every refusal: another session takes it at once.
+    let free: bool = observer
+        .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_id(&db.name)])
         .await
-        .expect("the lock is free")
-        .unwrap();
-    conn.unlock().await.unwrap();
-    conn.close().await.unwrap();
+        .unwrap()
+        .get(0);
+    assert!(free, "the lock is free");
+    drop(observer);
     drop(client);
     db.drop().await;
 }
 
-/// While sqlx's migrator holds its lock, this runner waits for that very lock (the server shows
-/// its request, not granted); it runs once sqlx lets go.
+/// While a session holds sqlx's lock (sqlx's `lock`: `SELECT pg_advisory_lock($1)` with
+/// `generate_lock_id(current_database())`), this runner waits for that very lock (the server shows
+/// its request, not granted); it runs once the lock is let go.
 #[tokio::test]
 async fn the_lock_is_sqlx_s_lock() {
     let Some(db) = Db::new().await else {
         return;
     };
-    let mut held = PgConnection::connect_with(&db.options).await.unwrap();
-    held.lock().await.unwrap();
+    let held = db.client().await;
+    held.execute("SELECT pg_advisory_lock($1)", &[&lock_id(&db.name)])
+        .await
+        .unwrap();
 
     let files = dir(&[ONE]);
     let migrator = Migrator::new(TABLE, ours(files.path())).unwrap();
@@ -413,16 +465,18 @@ async fn the_lock_is_sqlx_s_lock() {
         (outcome, client)
     });
     // An advisory lock this runner's session asked for and was not given: sqlx's.
+    let observer = db.client().await;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let waiting: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' \
-                 AND pid = $1 AND NOT granted)",
-            )
-            .bind(waiter)
-            .fetch_one(&db.sqlx)
-            .await
-            .unwrap();
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' \
+                     AND pid = $1 AND NOT granted)",
+                    &[&waiter],
+                )
+                .await
+                .unwrap()
+                .get(0);
             if waiting {
                 break;
             }
@@ -433,14 +487,17 @@ async fn the_lock_is_sqlx_s_lock() {
     .expect("the runner waits for sqlx's lock");
     assert!(!run.is_finished());
 
-    held.unlock().await.unwrap();
-    held.close().await.unwrap();
+    held.execute("SELECT pg_advisory_unlock($1)", &[&lock_id(&db.name)])
+        .await
+        .unwrap();
+    drop(held);
     let (outcome, client) = tokio::time::timeout(Duration::from_secs(10), run)
         .await
         .expect("it runs once the lock is free")
         .unwrap();
     outcome.unwrap();
     assert_eq!(db.rows().await, [(1, true)]);
+    drop(observer);
     drop(client);
     db.drop().await;
 }

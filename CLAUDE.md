@@ -171,8 +171,10 @@ environment variables or tests. `tools/docs-check` fails when a crate has no
 README and checks its relative links; it cannot check accuracy, so review does.
 
 Rust: `thiserror` in library crates, `anyhow` in binaries, no `f64` for time or
-money, `jiff` for time, `sqlx` + `axum`. The `core` crate stays free of async
-and I/O so the compiler enforces purity.
+money, `jiff` for time, `tokio-postgres` (pools and connections through
+`orch-pg-connect`, migrations through `orch-pg-migrate`; no `sqlx`, which
+`tools/sqlx-out-check.sh` keeps out of the lockfile) + `axum`. The `core` crate
+stays free of async and I/O so the compiler enforces purity.
 
 ## Commands
 

@@ -2998,7 +2998,7 @@ fn an_unreachable_database_is_fatal() {
             ("SMOKE_AGENT_TOKEN", TOKEN),
         ],
     );
-    // sqlx gives up on an unreachable database after its 30 s acquire timeout.
+    // The store's pool gives up on an unreachable database after its 30 s wait.
     let status = run.wait(Duration::from_secs(90));
     assert_eq!(status.code(), Some(69), "EX_UNAVAILABLE");
     let log = run.log();

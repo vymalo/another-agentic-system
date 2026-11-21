@@ -128,7 +128,6 @@ orch-pg-connect.workspace = true
 orch-testsupport.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
-sqlx.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

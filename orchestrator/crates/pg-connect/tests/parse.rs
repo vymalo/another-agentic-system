@@ -1,13 +1,16 @@
 //! A connection string names the server, the user, the password, the database and the session
-//! parameters it named to sqlx 0.9: the same URLs read by both, in this process's environment and,
-//! in a child process each, in environments of `PG*` variables and a password file.
+//! parameters it named to sqlx 0.9: what sqlx read from each of these URLs, in this process's
+//! environment and, in a child process each, in environments of `PG*` variables and a password
+//! file, was recorded by sqlx itself before it left the workspace (`tests/sqlx-0.9-reads.tsv`, sys#382
+//! E1), and every URL must still read the same.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::path::PathBuf;
+use std::path::Path;
 
-use orch_pg_connect::{PgOptions, TlsMode};
-use sqlx::postgres::{PgConnectOptions, PgSslMode};
-use tokio_postgres::config::Host;
+use orch_pg_connect::PgOptions;
+
+/// What sqlx 0.9 read, one line per case and URL.
+const SQLX_READS: &str = include_str!("sqlx-0.9-reads.tsv");
 
 const URLS: &[&str] = &[
     "postgres://app:pw@db.example:5433/orch",
@@ -34,86 +37,76 @@ const URLS: &[&str] = &[
     "postgres://app:pw@db.example/my%20db",
 ];
 
-/// What sqlx connects to: its socket, else its host when it starts with `/`, else its host (an
-/// IPv6 address without its brackets).
-fn their_host(theirs: &PgConnectOptions) -> Host {
-    match theirs.get_socket() {
-        Some(dir) => Host::Unix(dir.clone()),
-        None if theirs.get_host().starts_with('/') => Host::Unix(PathBuf::from(theirs.get_host())),
-        None => Host::Tcp(
-            theirs
-                .get_host()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .to_owned(),
-        ),
-    }
-}
-
-/// sqlx keeps the password private; its `Debug` shows it.
-fn their_password(theirs: &PgConnectOptions) -> String {
-    let debug = format!("{theirs:?}");
-    let start = debug.find("password: ").unwrap() + "password: ".len();
-    let end = start + debug[start..].find(", database: ").unwrap();
-    debug[start..end].to_owned()
-}
-
-fn same(url: &str, context: &str) {
-    let theirs: PgConnectOptions = url.parse().unwrap();
-    let ours: PgOptions = url.parse().unwrap();
+/// What `ours` reads, in the columns of the recording: the host, the port, the user, the password,
+/// the database, the `application_name`, the `options` and the `sslmode`, each as the recording
+/// wrote sqlx's (`Debug`, the user as `<os-user>` when it is the operating system's).
+fn reading(ours: &PgOptions) -> Vec<String> {
     let config = ours.config();
-    assert_eq!(
-        config.get_hosts(),
-        [their_host(&theirs)],
-        "{context} {url}: host"
-    );
-    assert_eq!(
-        config.get_ports(),
-        [theirs.get_port()],
-        "{context} {url}: port"
-    );
-    assert_eq!(
-        config.get_user(),
-        Some(theirs.get_username()),
-        "{context} {url}: user"
-    );
+    let os_user = whoami::username().ok();
+    let user = config.get_user().unwrap_or_default();
+    let user = if Some(user) == os_user.as_deref() {
+        "<os-user>".to_owned()
+    } else {
+        format!("{user:?}")
+    };
     let password = config
         .get_password()
         .map(|p| std::str::from_utf8(p).unwrap());
-    assert_eq!(
+    vec![
+        format!("{:?}", config.get_hosts()[0]),
+        config.get_ports()[0].to_string(),
+        user,
         format!("{password:?}"),
-        their_password(&theirs),
-        "{context} {url}: password"
-    );
+        format!("{:?}", config.get_dbname()),
+        format!("{:?}", config.get_application_name()),
+        format!("{:?}", config.get_options()),
+        format!("{:?}", ours.tls()),
+    ]
+}
+
+/// The recorded reading of `url` in `case`.
+fn recorded(case: &str, url: &str) -> Vec<String> {
+    SQLX_READS
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .find(|fields| fields[0] == case && fields[1] == url)
+        .unwrap_or_else(|| panic!("no recording of {url} in case {case}"))[2..]
+        .iter()
+        .map(|field| (*field).to_owned())
+        .collect()
+}
+
+/// sqlx's default host where no host is named: the first of these directories that holds the
+/// server's socket, else `localhost`. The recording was made where none did; where one does, sqlx
+/// would have said its directory, as this crate does.
+fn default_host_here(theirs: &str, ours: &str, port: &str) -> bool {
+    theirs == "Tcp(\"localhost\")"
+        && ["/var/run/postgresql", "/private/tmp", "/tmp"]
+            .iter()
+            .any(|dir| {
+                ours == format!("Unix({dir:?})")
+                    && Path::new(dir).join(format!(".s.PGSQL.{port}")).exists()
+            })
+}
+
+fn same(url: &str, case: &str) {
+    let ours: PgOptions = url.parse().unwrap();
+    let mut ours = reading(&ours);
+    let theirs = recorded(case, url);
+    if default_host_here(&theirs[0], &ours[0], &ours[1]) {
+        ours[0] = theirs[0].clone();
+    }
     assert_eq!(
-        config.get_dbname(),
-        theirs.get_database(),
-        "{context} {url}: database"
+        ours, theirs,
+        "case {case}, {url}: host, port, user, password, database, application_name, options, sslmode"
     );
-    assert_eq!(
-        config.get_application_name(),
-        theirs.get_application_name(),
-        "{context} {url}: application_name"
-    );
-    assert_eq!(
-        config.get_options(),
-        theirs.get_options(),
-        "{context} {url}: options"
-    );
-    let mode = match theirs.get_ssl_mode() {
-        PgSslMode::Disable | PgSslMode::Allow => TlsMode::Disable,
-        PgSslMode::Prefer => TlsMode::Prefer,
-        PgSslMode::Require => TlsMode::Require,
-        PgSslMode::VerifyCa => TlsMode::VerifyCa,
-        PgSslMode::VerifyFull => TlsMode::VerifyFull,
-    };
-    assert_eq!(ours.tls(), mode, "{context} {url}: sslmode");
 }
 
 #[test]
 fn every_url_names_what_it_named_to_sqlx() {
     for url in URLS {
-        same(url, "");
+        same(url, "-");
     }
 }
 
