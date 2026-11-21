@@ -56,6 +56,18 @@ wait for a free connection, the making of a new one and that check (so a socket 
 as sqlx's `acquire_timeout` did. `connect()` makes one
 connection; an error that ends it is logged (`tracing`, warn).
 
+**A connection the pool drops ends as a client ends one.** `deadpool-postgres`' own connector aborts the task that drives
+a connection when the pool drops it, so the server reads an end of stream with no `Terminate` and, under TLS, no
+`close_notify`, and logs `could not receive data from client: Connection reset by peer` for it (*verified 2026-11-21*
+against PostgreSQL 16.16 with `ssl=on`). This crate's connector drives each connection in a task of its own, and the task
+`deadpool-postgres` aborts only tells that one the client is gone: the connection reads the answers it still owes and
+sends `Terminate` (the TLS stream its `close_notify`), within `LINGER` (1 s), or is cut. `pool_tracked(max_size, wait,
+&tasks)` is `pool` with those tasks in a `ConnectionTasks`, which a caller that closes the pool waits for
+(`ended_within(LINGER)`): a task the runtime drops when the process exits says nothing to the server.
+`ConnectionTasks::spawn` counts another task among them (a `LISTEN` connection the caller drives), `running()` says how many
+run. `wire_config()` is the configuration a connection is made with (its `sslmode` the one TLS needs), for a connection the
+caller drives itself with `tls_connector()`.
+
 ## What differs from sqlx
 
 | | sqlx 0.9 | here |
@@ -63,6 +75,7 @@ connection; an error that ends it is logged (`tracing`, warn).
 | Session parameters at startup | `TimeZone=UTC`, `DateStyle=ISO, MDY`, `extra_float_digits=2` | the server's defaults (`tokio-postgres` decodes typed values in binary; text a query formats follows the server) |
 | A connection's life | closed after 10 idle minutes, and after 30 in all | kept until it fails its check |
 | `sslrootcert` | read for every connection | read once per pool (a rotated CA needs a restart) |
+| A connection the pool closes | `Terminate`, then the stream shut down (`PgConnection::close`, read in `sqlx-postgres` 0.9.0) | the same, within `LINGER` |
 | The refusals above | done | refused |
 
 ## Errors
@@ -86,3 +99,6 @@ connection; an error that ends it is logged (`tracing`, warn).
   the untrusted certificate; without `sslrootcert` neither verifying mode does; `verify-ca` takes the server under an
   address the certificate does not name, `verify-full` does not; a pool connects with the same TLS. With
   `ORCH_TEST_DATABASE_URL` (a plain server), `prefer` falls back and `require` does not.
+* `tests/pool.rs` (`ORCH_TEST_DATABASE_URL`, a plain server; skipped without it): a pool used on a runtime of its own,
+  closed, its tasks waited for with `ended_within(LINGER)` and the runtime dropped at once: every connection ended with
+  `Terminate`, as a forwarder between the pool and the server records (`deadpool-postgres`' own connector fails it).

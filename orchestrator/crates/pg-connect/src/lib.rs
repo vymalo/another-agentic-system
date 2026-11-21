@@ -26,12 +26,14 @@
 
 mod parse;
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use deadpool_postgres::{Connect, Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
@@ -40,8 +42,14 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
     CertificateError, ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
 };
+use tokio::task::JoinHandle;
 use tokio_postgres::config::SslMode;
 use tokio_postgres_rustls::MakeRustlsConnect;
+use tokio_util::task::TaskTracker;
+
+/// How long a connection of a pool whose client was dropped has to end as a client ends one
+/// (the answers still owed, then `Terminate` and, under TLS, `close_notify`) before it is cut.
+pub const LINGER: Duration = Duration::from_secs(1);
 
 /// What `sslmode` asks for, as sqlx read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,8 +145,9 @@ impl PgOptions {
     }
 
     /// The configuration a connection is made with: the one held, its `sslmode` the one
-    /// [`tls`](Self::tls) needs whatever [`config_mut`](Self::config_mut) did to it.
-    fn wire_config(&self) -> tokio_postgres::Config {
+    /// [`tls`](Self::tls) needs whatever [`config_mut`](Self::config_mut) did to it. For a
+    /// connection driven by its caller (a `LISTEN`), with [`tls_connector`](Self::tls_connector).
+    pub fn wire_config(&self) -> tokio_postgres::Config {
         let mut config = self.config.clone();
         config.ssl_mode(self.tls.wire());
         config
@@ -244,13 +253,36 @@ impl PgOptions {
     /// sqlx's `acquire_timeout` did. Unlike sqlx's, a connection is not closed after ten idle minutes
     /// or thirty in all.
     ///
+    /// A connection the pool drops (closed, not checked, taken out of it) ends as a client ends
+    /// one, given [`LINGER`] to do so: `deadpool-postgres`' own connector aborts its task, so the
+    /// server reads an end of stream with no `Terminate` and, under TLS, no `close_notify` (and
+    /// logs `could not receive data from client`).
+    ///
     /// # Errors
     ///
     /// The TLS errors of [`tls_connector`](Self::tls_connector), and [`ConnectError::Pool`].
     pub fn pool(&self, max_size: usize, wait: Duration) -> Result<Pool, ConnectError> {
-        let manager = Manager::from_config(
+        self.pool_tracked(max_size, wait, &ConnectionTasks::default())
+    }
+
+    /// [`pool`](Self::pool), the tasks that drive its connections in `tasks`, so that a caller
+    /// that closes the pool can wait for them to end ([`ConnectionTasks::ended_within`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`pool`](Self::pool).
+    pub fn pool_tracked(
+        &self,
+        max_size: usize,
+        wait: Duration,
+        tasks: &ConnectionTasks,
+    ) -> Result<Pool, ConnectError> {
+        let manager = Manager::from_connect(
             self.wire_config(),
-            self.tls_connector()?,
+            Graceful {
+                tls: self.tls_connector()?,
+                tasks: tasks.clone(),
+            },
             ManagerConfig {
                 recycling_method: RecyclingMethod::Verified,
             },
@@ -264,6 +296,92 @@ impl PgOptions {
             .runtime(Runtime::Tokio1)
             .build()
             .map_err(|e| ConnectError::Pool(e.to_string()))
+    }
+}
+
+/// The tasks that drive the connections of a pool (and any other the caller hands to
+/// [`spawn`](Self::spawn)), to wait for at shutdown: a task the runtime drops when the process
+/// exits says nothing to the server.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionTasks(TaskTracker);
+
+impl ConnectionTasks {
+    /// Spawns `task` on the current runtime, counted among these.
+    pub fn spawn<F>(&self, task: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.0.spawn(task)
+    }
+
+    /// How many are running.
+    pub fn running(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Waits at most `within` for every task to end, and says whether they did. Call it once
+    /// nothing will spawn another (the pool closed).
+    pub async fn ended_within(&self, within: Duration) -> bool {
+        self.0.close();
+        tokio::time::timeout(within, self.0.wait()).await.is_ok()
+    }
+}
+
+/// The connector of [`PgOptions::pool_tracked`]: the connection is driven by a task of
+/// `tasks`, and the task `deadpool-postgres` holds (and aborts when it drops the client) only
+/// tells that one that the client is gone, which then has [`LINGER`] to end the connection.
+struct Graceful {
+    tls: MakeRustlsConnect,
+    tasks: ConnectionTasks,
+}
+
+impl Connect for Graceful {
+    fn connect(
+        &self,
+        pg_config: &tokio_postgres::Config,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        (tokio_postgres::Client, JoinHandle<()>),
+                        tokio_postgres::Error,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        let tls = self.tls.clone();
+        let pg_config = pg_config.clone();
+        Box::pin(async move {
+            let (client, connection) = pg_config.connect(tls).await?;
+            let (dropped, gone) = tokio::sync::oneshot::channel::<()>();
+            let driver = self.tasks.spawn(async move {
+                let mut connection = std::pin::pin!(connection);
+                let ended = tokio::select! {
+                    ended = &mut connection => Some(ended),
+                    _ = gone => None,
+                };
+                let ended = match ended {
+                    Some(ended) => ended,
+                    // its client is dropped too: the connection ends once the answers it owes are
+                    // read, or is cut (as an abort cut it)
+                    None => match tokio::time::timeout(LINGER, connection).await {
+                        Ok(ended) => ended,
+                        Err(_) => return,
+                    },
+                };
+                // The client sees a closed connection on its next call; the cause is only here.
+                if let Err(error) = ended {
+                    tracing::warn!(%error, "a postgres connection ended with an error");
+                }
+            });
+            let held = tokio::spawn(async move {
+                let _dropped = dropped;
+                let _ = driver.await;
+            });
+            Ok((client, held))
+        })
     }
 }
 
