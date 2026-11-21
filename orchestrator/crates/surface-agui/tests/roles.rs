@@ -443,7 +443,10 @@ async fn a_person_whose_roles_grant_nothing_is_refused_before_any_stream() {
 async fn a_stream_ends_at_the_earliest_of_its_token_an_hour_and_the_deployment_lifetime() {
     // ADR 0082: every stream ends, whatever credential it was opened with; ADR 0033 keeps the
     // token as one of the bounds. This test used to encode "stays open" for two of the three.
-    let rig = Rig::start_with_lifetime(chat_policy(), Duration::from_millis(1500)).await;
+    // Three seconds, not the 1.5 s a shorter bound would allow: `finished_thread_of_alice` streams
+    // the run that creates the thread, and that response is bounded by the same lifetime, so the
+    // margin is what keeps a slow CI run from failing the fixture rather than the property.
+    let rig = Rig::start_with_lifetime(chat_policy(), Duration::from_secs(3)).await;
     let thread = rig.finished_thread_of_alice().await;
     let url = format!("{}/agui/threads/{thread}/connect", rig.base);
     let open = |token: &'static str| {
