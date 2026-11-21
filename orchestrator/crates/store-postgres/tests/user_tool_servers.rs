@@ -7,6 +7,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 mod support;
+use orch_store_postgres::PgPool;
+use orch_store_postgres::sql::{SqlError, Tx};
+use orch_store_postgres::sql::{query, query_as, query_scalar};
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,8 +20,6 @@ use orch_ports::{
     UserToolServerId, UserToolServerState, UserToolServerStore, UserToolServerStoreError,
 };
 use orch_store_postgres::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgStore, PgUserToolServers};
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Postgres, Transaction};
 use support::TestDb;
 use uuid::Uuid;
 
@@ -61,16 +62,15 @@ async fn store_with(db: &TestDb, max: u32, settings: &[(&str, &str)]) -> PgUserT
     PgStore::migrate_direct(&db.pinned_direct_url())
         .await
         .expect("migrate");
-    let pool = PgPoolOptions::new()
-        .max_connections(max)
-        .acquire_timeout(Duration::from_secs(3))
-        .connect_with(
-            db.options_with(settings)
-                .await
-                .application_name("orch-user-tool-servers-test"),
-        )
-        .await
-        .expect("connect pool");
+    let pool = PgPool::with_wait(
+        support::named(
+            db.options_with(settings).await,
+            "orch-user-tool-servers-test",
+        ),
+        max,
+        Duration::from_secs(3),
+    )
+    .expect("build pool");
     PgUserToolServers::from_pool(pool)
 }
 
@@ -79,9 +79,9 @@ async fn store(db: &TestDb) -> PgUserToolServers {
 }
 
 /// A transaction that holds the lock of `owner`: what an insert in the middle of its work has.
-async fn hold_owner_lock(pool: &PgPool, owner: &UserId) -> Transaction<'static, Postgres> {
+async fn hold_owner_lock(pool: &PgPool, owner: &UserId) -> Tx {
     let mut tx = pool.begin().await.expect("begin");
-    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+    query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
         .bind(OWNER_LOCK_CLASS)
         .bind(owner.as_str())
         .execute(&mut *tx)
@@ -93,7 +93,7 @@ async fn hold_owner_lock(pool: &PgPool, owner: &UserId) -> Transaction<'static, 
 /// How many backends wait for the advisory lock of `owner`, as a two-`int4` lock (`objsubid` 2) of
 /// the class of this store.
 async fn waiting_for(pool: &PgPool, owner: &UserId) -> i64 {
-    sqlx::query_scalar(
+    query_scalar(
         "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
          AND classid::bigint = $1 AND objsubid = 2 \
          AND objid::bigint = (hashtext($2)::bigint & 4294967295)",
@@ -136,7 +136,7 @@ async fn an_insert_waits_for_the_lock_of_its_owner_and_counts_after_it() {
 
     let mut tx = hold_owner_lock(&holder, &owner).await;
     let eighth = definition(&id_of(MAX_USER_TOOL_SERVERS - 1));
-    sqlx::query(
+    query(
         "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, revision) \
          VALUES ($1, $2, 'by hand', $3, '{\"kind\":\"none\"}', 'added', nextval('user_tool_server_revisions'))",
     )
@@ -226,14 +226,14 @@ async fn the_lock_of_an_owner_collides_with_no_lock_of_a_bigint_key() {
     // class in the high 32 bits, the owner's hash in the low 32: the bigint that `classid` and
     // `objid` would show for the lock of the owner, were it a one-key lock
     let same_bits: i64 =
-        sqlx::query_scalar("SELECT ($1::bigint << 32) | (hashtext($2)::bigint & 4294967295)")
+        query_scalar("SELECT ($1::bigint << 32) | (hashtext($2)::bigint & 4294967295)")
             .bind(i64::from(OWNER_LOCK_CLASS))
             .bind(owner.as_str())
             .fetch_one(&holder)
             .await
             .expect("the bits");
     let mut bigint = holder.begin().await.expect("begin");
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+    query("SELECT pg_advisory_xact_lock($1)")
         .bind(same_bits)
         .execute(&mut *bigint)
         .await
@@ -255,7 +255,7 @@ async fn the_lock_of_an_owner_collides_with_no_lock_of_a_bigint_key() {
     wait_until_someone_waits_for(&holder, &owner).await;
     // both are granted at once, with the same class and object numbers: one is the test's one-key
     // lock (`objsubid` 1) and the other the owner's, which is a two-key lock (`objsubid` 2)
-    let mut granted: Vec<i16> = sqlx::query_scalar(
+    let mut granted: Vec<i16> = query_scalar(
         "SELECT objsubid FROM pg_locks WHERE locktype = 'advisory' AND granted \
          AND classid::bigint = $1 AND objid::bigint = (hashtext($2)::bigint & 4294967295)",
     )
@@ -337,7 +337,7 @@ async fn a_write_that_waits_for_a_row_gives_up_as_unavailable_and_changes_nothin
     let revision = store.insert(&owner, &first).await.expect("insert");
 
     let mut tx = holder.begin().await.expect("begin");
-    sqlx::query("SELECT 1 FROM user_tool_servers WHERE owner = $1 AND id = $2 FOR UPDATE")
+    query("SELECT 1 FROM user_tool_servers WHERE owner = $1 AND id = $2 FOR UPDATE")
         .bind(owner.as_str())
         .bind(first.id().as_str())
         .execute(&mut *tx)
@@ -393,7 +393,7 @@ async fn writers_do_not_depend_on_the_isolation_the_database_defaults_to() {
         &[("default_transaction_isolation", "repeatable read")],
     )
     .await;
-    let level: String = sqlx::query_scalar("SHOW default_transaction_isolation")
+    let level: String = query_scalar("SHOW default_transaction_isolation")
         .fetch_one(store.pool())
         .await
         .expect("show");
@@ -547,8 +547,8 @@ impl Default for Row<'_> {
     }
 }
 
-async fn insert_by_hand(pool: &PgPool, row: Row<'_>) -> Result<(), sqlx::Error> {
-    sqlx::query(
+async fn insert_by_hand(pool: &PgPool, row: Row<'_>) -> Result<(), SqlError> {
+    query(
         "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, credential, revision) \
          VALUES ('x@example.test', $1, $2, 'https://mcp.example.com/mcp', $3::jsonb, $4, $5, $6)",
     )
@@ -586,7 +586,7 @@ async fn the_table_refuses_a_row_that_cannot_be_a_definition() {
     insert_by_hand(pool, Row::default())
         .await
         .expect("the baseline of the refusals");
-    sqlx::query("DELETE FROM user_tool_servers WHERE id = 'u-0000000002'")
+    query("DELETE FROM user_tool_servers WHERE id = 'u-0000000002'")
         .execute(pool)
         .await
         .unwrap();
@@ -734,7 +734,7 @@ async fn a_row_that_is_not_a_definition_is_corrupt_and_the_message_holds_nothing
     for (n, (what, url, auth, state, credential)) in cases.into_iter().enumerate() {
         let owner = owner("corrupt");
         let id = format!("u-{}", id_of(n));
-        sqlx::query(
+        query(
             "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, credential, revision) \
              VALUES ($1, $2, 'Hand made', $3, $4::jsonb, $5, $6, nextval('user_tool_server_revisions'))",
         )
@@ -826,7 +826,7 @@ async fn a_row_that_does_not_read_back_is_warned_of_by_its_id_and_by_nothing_els
     .into_iter()
     .enumerate()
     {
-        sqlx::query(
+        query(
             "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, revision) \
              VALUES ($1, $2, 'Hand made', $3, $4::jsonb, 'added', nextval('user_tool_server_revisions'))",
         )
@@ -915,7 +915,7 @@ async fn a_server_that_todays_lists_refuse_still_reads_back() {
     .into_iter()
     .enumerate()
     {
-        sqlx::query(
+        query(
             "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, revision) \
              VALUES ($1, $2, 'Older', $3, '{\"kind\":\"bearer\"}', 'connected', nextval('user_tool_server_revisions'))",
         )
@@ -969,7 +969,7 @@ async fn the_columns_hold_what_the_port_writes() {
         String,
         String,
         String,
-    ) = sqlx::query_as(
+    ) = query_as(
         "SELECT auth->>'kind', credential, state, created_at::text, updated_at::text \
              FROM user_tool_servers WHERE owner = $1 AND id = $2",
     )
@@ -993,7 +993,7 @@ async fn the_columns_hold_what_the_port_writes() {
         )
         .await
         .unwrap();
-    let (created_after, updated_after): (String, String) = sqlx::query_as(
+    let (created_after, updated_after): (String, String) = query_as(
         "SELECT created_at::text, updated_at::text FROM user_tool_servers WHERE owner = $1 AND id = $2",
     )
     .bind(owner.as_str())
@@ -1114,7 +1114,7 @@ async fn the_limit_counts_rows_and_not_readable_definitions() {
     for n in 0..MAX_USER_TOOL_SERVERS - 1 {
         store.insert(&owner, &definition(&id_of(n))).await.unwrap();
     }
-    sqlx::query(
+    query(
         "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, revision) \
          VALUES ($1, $2, 'Hand made', 'ftp://nowhere/', '{\"kind\":\"none\"}', 'added', nextval('user_tool_server_revisions'))",
     )
@@ -1236,7 +1236,7 @@ async fn the_table_refuses_an_owner_that_is_empty() {
         .insert(&nobody, &definition("0000000001"))
         .await
         .expect_err("a definition of nobody");
-    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM user_tool_servers WHERE owner = ''")
+    let rows: i64 = query_scalar("SELECT count(*) FROM user_tool_servers WHERE owner = ''")
         .fetch_one(store.pool())
         .await
         .expect("count");

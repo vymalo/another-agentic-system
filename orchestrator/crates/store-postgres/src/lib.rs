@@ -23,7 +23,8 @@
 //!   implemented by [`PgStore`] too: the folded words of titles, descriptions and messages, written in the
 //!   transaction that appends the event and erased with the thread (migration `0025`).
 //!
-//! Only runtime-checked `sqlx::query` is used, so building needs no database.
+//! Statements are written with [`sql`] on `tokio-postgres` (ADR 0076): each parameter typed as sqlx
+//! typed it, each statement prepared once per connection. Building needs no database.
 //!
 //! ```no_run
 //! # async fn boot(url: &str) -> Result<(), orch_ports::StoreError> {
@@ -41,15 +42,18 @@ mod error;
 mod pending_authorizations;
 mod prompts;
 mod search;
+pub mod sql;
 mod store;
 mod usage;
 mod user_tool_servers;
 mod wakeup;
 
+pub use error::DbFailure;
 pub use pending_authorizations::{PENDING_LOCK_TIMEOUT, PgPendingAuthorizations};
 pub use prompts::{
     LOCK_TIMEOUT as PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, list_sql as prompt_list_sql,
 };
-pub use store::PgStore;
+pub use sql::PgPool;
+pub use store::{MIGRATIONS_TABLE, PgStore};
 pub use user_tool_servers::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgUserToolServers};
 pub use wakeup::PgWakeup;

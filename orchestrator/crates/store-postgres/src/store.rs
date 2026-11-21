@@ -2,11 +2,14 @@
 
 use std::time::Duration;
 
+use deadpool_postgres::Object;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, RankError, ThreadId,
     ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
+use orch_pg_connect::PgOptions;
+use orch_pg_migrate::Migrator;
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
     CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder,
@@ -14,24 +17,67 @@ use orch_ports::{
     OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE,
     ThreadListing, ThreadStore,
 };
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use tokio_postgres::Row as PgRow;
 
 use crate::codec::{
     binding_from_row, enum_str, event_from_row, get_ts, get_ts_opt, inbox_cols, inbox_from_row,
     outbox_cols, outbox_from_row, parse_enum, thread_cols, thread_from_row, to_db, ts,
 };
-use crate::error::{is_unique_violation, migrate_err, store_err};
+use crate::error::{SqlError, is_unique_violation, migrate_err, refused_while_starting, store_err};
 use crate::search;
+use crate::sql::{Executor, PgPool, Tx, query, query_as, query_scalar, retrying};
 use crate::usage;
 use crate::wakeup::{CHANNEL_INBOX, CHANNEL_OUTBOX, CHANNEL_THREAD};
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+/// The name of the history of this crate's migrations: sqlx's default, which every database this
+/// crate migrated has.
+pub const MIGRATIONS_TABLE: &str = "_sqlx_migrations";
+
+/// The embedded migrations, in the history sqlx kept (`orch-pg-migrate`: the same table, checksums
+/// and advisory lock, so a database sqlx migrated is a no-op).
+fn migrator() -> Result<Migrator, StoreError> {
+    let migrations = orch_pg_migrate::migrations!("migrations":
+        "0001_init.sql",
+        "0002_ui_events.sql",
+        "0003_job_ledger.sql",
+        "0004_inbox.sql",
+        "0005_job_started.sql",
+        "0006_ui_catalog.sql",
+        "0007_agent_step.sql",
+        "0008_thread_titled.sql",
+        "0009_title_requests.sql",
+        "0010_thread_forks.sql",
+        "0011_thread_description.sql",
+        "0012_tools.sql",
+        "0013_steer.sql",
+        "0014_asks.sql",
+        "0015_sharing.sql",
+        "0016_thread_rail.sql",
+        "0017_thread_purges.sql",
+        "0018_reasoning.sql",
+        "0019_binding_context_assigned.sql",
+        "0020_model_usage.sql",
+        "0021_user_tool_servers.sql",
+        "0022_user_tool_oauth_pending.sql",
+        "0023_usage_ledger.sql",
+        "0024_outbox_owner.sql",
+        "0025_thread_search.sql",
+        "0026_user_prompts.sql",
+        "0027_child_sessions.sql",
+        "0028_child_sessions_person.sql",
+    )
+    .map_err(migrate_err)?;
+    Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
+}
 
 /// Default pool size of [`PgStore::connect`]; one connection is held by the wakeup listener.
 const DEFAULT_MAX_CONNECTIONS: u32 = 10;
 
-/// [`ThreadStore`] on Postgres (sqlx). Cheap to clone: clones share the pool.
+/// How long [`PgStore::migrate_direct`] tries to connect: thirty seconds, the acquire timeout of
+/// the pool of one it made on sqlx.
+const DIRECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// [`ThreadStore`] on Postgres (`tokio-postgres`). Cheap to clone: clones share the pool.
 ///
 /// Every write that other processes should react to also sends a `NOTIFY` inside its own
 /// transaction (delivered only if it commits): `orch_thread` with the thread id after a
@@ -44,8 +90,8 @@ pub struct PgStore {
 }
 
 impl PgStore {
-    /// Connects a pool of [`DEFAULT_MAX_CONNECTIONS`] (10) connections. Does not migrate; call
-    /// [`migrate`](Self::migrate) at boot.
+    /// Connects a pool of [`DEFAULT_MAX_CONNECTIONS`] (10) connections, and one connection now. Does
+    /// not migrate; call [`migrate`](Self::migrate) at boot.
     ///
     /// # Errors
     /// [`StoreError::Unavailable`] if the database cannot be reached.
@@ -59,11 +105,10 @@ impl PgStore {
     /// # Errors
     /// [`StoreError::Unavailable`] if the database cannot be reached.
     pub async fn connect_with(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(max_connections.max(1))
-            .connect_with(parse_url(url)?)
-            .await
-            .map_err(store_err)?;
+        let pool = PgPool::new(parse_url(url)?, max_connections).map_err(store_err)?;
+        // One connection now, as sqlx's `connect_with` made one: a database that cannot be reached
+        // fails here (after the pool's wait), not at the first call. It stays in the pool.
+        drop(pool.acquire().await.map_err(store_err)?);
         Ok(Self { pool })
     }
 
@@ -78,25 +123,34 @@ impl PgStore {
     }
 
     /// Applies the embedded migrations. Idempotent, and safe to call from every replica at
-    /// the same time: sqlx serialises runners with a Postgres advisory lock and records what
-    /// it applied in `_sqlx_migrations`, so a second runner finds nothing left to do.
+    /// the same time: the migrator serialises runners with a Postgres advisory lock (sqlx's, by
+    /// `orch-pg-migrate`) and records what it applied in `_sqlx_migrations`, so a second runner
+    /// finds nothing left to do.
+    ///
+    /// The run's connection is taken out of the pool and closed when the run ends, a success, an
+    /// error or a cancelled future alike: its session lock, and the settings the migrator gives the
+    /// session, never go back to the pool. The pool makes another when a call needs one.
     ///
     /// # Errors
     /// [`StoreError::Unavailable`] if the database is unreachable; [`StoreError::Internal`] if
     /// it rejects a migration's statements; [`StoreError::Corrupt`] if an applied migration was
     /// edited afterwards.
     pub async fn migrate(&self) -> Result<(), StoreError> {
-        MIGRATOR.run(&self.pool).await.map_err(migrate_err)
+        let migrator = migrator()?;
+        let mut client = Object::take(self.pool.acquire().await.map_err(store_err)?);
+        migrator.run(&mut client).await.map_err(migrate_err)
     }
 
-    /// [`migrate`](Self::migrate) on one connection of its own to `url` (a pool of one, closed when it is done).
+    /// [`migrate`](Self::migrate) on one connection of its own to `url`, closed when it is done.
     ///
     /// For a deployment whose request pool goes through a transaction-mode pooler (PgBouncer): the
     /// migrator takes a **session** advisory lock (`pg_advisory_lock`) and holds it across its
     /// statements, which a pooler that hands the server connection to someone else between two
     /// transactions cannot keep (the lock would be left on a connection nobody owns, and the next
     /// replica's migration would wait for it). `url` is the database itself. Same effect and errors as
-    /// [`migrate`](Self::migrate), safe from every replica at the same time; it touches no pool.
+    /// [`migrate`](Self::migrate), safe from every replica at the same time; it touches no pool. A
+    /// database that refuses the connection because it is starting is tried again for thirty
+    /// seconds, as the pool of one it made on sqlx did.
     ///
     /// # Errors
     /// [`StoreError::Unavailable`] if the database is unreachable; [`StoreError::Internal`] if `url`
@@ -104,32 +158,39 @@ impl PgStore {
     /// database rejects a migration's statements; [`StoreError::Corrupt`] if an applied migration was
     /// edited afterwards.
     pub async fn migrate_direct(url: &str) -> Result<(), StoreError> {
-        // One connection, taken by the migrator for the whole run: its lock and its statements share a
-        // session. A pool of one rather than a bare connection, which a spawned task cannot lend
-        // (sqlx's "implementation of `Acquire` is not general enough").
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_with(parse_url(url)?)
-            .await
-            .map_err(store_err)?;
-        let outcome = MIGRATOR.run(&pool).await.map_err(migrate_err);
+        let options = parse_url(url)?;
+        let migrator = migrator()?;
+        let mut client = connect_direct(&options).await?;
+        let outcome = migrator.run(&mut client).await.map_err(migrate_err);
         // The lock goes with the session whether or not this succeeded.
-        pool.close().await;
+        drop(client);
         outcome
     }
+}
+
+/// One connection of its own to the database of `options`, tried again while the database refuses
+/// it because it is starting, for [`DIRECT_TIMEOUT`].
+pub(crate) async fn connect_direct(
+    options: &PgOptions,
+) -> Result<tokio_postgres::Client, StoreError> {
+    retrying(
+        DIRECT_TIMEOUT,
+        || options.connect(),
+        |e| matches!(e, orch_pg_connect::ConnectError::Database(e) if refused_while_starting(e)),
+    )
+    .await
+    .map_err(|e| store_err(e.into_sql_error(SqlError::Connect)))
 }
 
 /// A connection string as options, for every connection this crate opens by itself. The error never
 /// holds the text: it may carry a password.
 ///
-/// `extra_float_digits` is not sent. sqlx sends it as a startup parameter by default, and PgBouncer
-/// refuses a startup parameter it does not track ("unsupported startup parameter:
-/// extra_float_digits", *verified 2026-10-28* against PgBouncer 1.22.0), so every connection through
-/// a pooler would fail unless its operator listed it in `ignore_startup_parameters`. It only changes
-/// how a float is written in the text protocol, and sqlx reads every result in the binary one.
-pub(crate) fn parse_url(url: &str) -> Result<PgConnectOptions, StoreError> {
-    url.parse::<PgConnectOptions>()
-        .map(|options| options.extra_float_digits(None))
+/// No `extra_float_digits` is sent (nor any other startup parameter but the URL's own): sqlx sent
+/// it unless told not to, and PgBouncer refuses a startup parameter it does not track
+/// ("unsupported startup parameter: extra_float_digits", *verified 2026-10-28* against PgBouncer
+/// 1.22.0).
+pub(crate) fn parse_url(url: &str) -> Result<PgOptions, StoreError> {
+    url.parse::<PgOptions>()
         .map_err(|_| StoreError::internal("the connection string cannot be parsed"))
 }
 
@@ -181,7 +242,7 @@ impl PgStore {
         let cut = fork.map_or(0, |o| o.cut);
         if child && let Some(of) = &new.child_of {
             // KEY SHARE: the parent cannot be deleted under us, and its own commits go on.
-            let parent = sqlx::query(
+            let parent = query(
                 "SELECT child_of IS NOT NULL AS is_child FROM threads \
                  WHERE id = $1 AND owner = $2 FOR KEY SHARE",
             )
@@ -194,11 +255,11 @@ impl PgStore {
                 rollback(tx).await;
                 return Err(StoreError::NotFound);
             };
-            if parent.try_get::<bool, _>("is_child").map_err(store_err)? {
+            if parent.try_get::<_, bool>("is_child").map_err(store_err)? {
                 rollback(tx).await;
                 return Err(StoreError::Refused("nested_child"));
             }
-            let found = sqlx::query(concat!(
+            let found = query(concat!(
                 "SELECT ",
                 thread_cols!(),
                 " FROM threads WHERE child_of = $1 AND child_session = $2"
@@ -216,7 +277,7 @@ impl PgStore {
         }
         if let Some(origin) = fork {
             // KEY SHARE: the parent cannot be deleted under us, and its own commits go on.
-            let parent: Option<i64> = sqlx::query_scalar(
+            let parent: Option<i64> = query_scalar(
                 "SELECT last_seq FROM threads WHERE id = $1 AND owner = $2 FOR KEY SHARE",
             )
             .bind(origin.parent.0)
@@ -235,7 +296,7 @@ impl PgStore {
         }
         if let Some(parent) = new.rail_parent {
             // KEY SHARE: the thread it is nested under cannot go under us.
-            let top_level = sqlx::query(
+            let top_level = query(
                 "SELECT 1 FROM threads WHERE id = $1 AND owner = $2 AND rail_parent IS NULL \
                  FOR KEY SHARE",
             )
@@ -261,7 +322,7 @@ impl PgStore {
             new_rank(&mut tx, new.owner.as_str(), new.id, Place::Top).await?
         };
         // Creation is version 1 whatever the first commit does.
-        let inserted = sqlx::query(
+        let inserted = query(
             "INSERT INTO threads (id, owner, title, description, agent_id, release, state, job, \
              version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind, \
              rail_parent, rail_rank, title_terms, description_terms, child_of, child_session) \
@@ -298,7 +359,7 @@ impl PgStore {
                 && let Some(of) = &new.child_of
             {
                 rollback(tx).await;
-                let row = sqlx::query(concat!(
+                let row = query(concat!(
                     "SELECT ",
                     thread_cols!(),
                     " FROM threads WHERE child_of = $1 AND child_session = $2"
@@ -321,7 +382,7 @@ impl PgStore {
                 store_err(e)
             });
         }
-        sqlx::query(
+        query(
             "INSERT INTO a2a_bindings (thread_id, agent_id, context_id, updated_at) \
              VALUES ($1, $2, $3, $4)",
         )
@@ -339,7 +400,7 @@ impl PgStore {
         if let Some(origin) = fork {
             // The parent's events as they are: the same seq, time, actor and data. Events up to
             // the cut never change, so no lock on them is needed.
-            let copied = sqlx::query(
+            let copied = query(
                 "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
                  SELECT $1, seq, at, kind, actor, data FROM events \
                  WHERE thread_id = $2 AND seq <= $3",
@@ -381,7 +442,7 @@ impl PgStore {
         } else {
             search_reached
         };
-        let row = sqlx::query(concat!(
+        let row = query(concat!(
             "UPDATE threads SET last_seq = $2, usage_through = $2, search_through = $4, search_fold = $5, \
              updated_at = $3 WHERE id = $1 RETURNING ",
             thread_cols!()
@@ -509,7 +570,7 @@ impl PgStore {
         listing: &ThreadListing,
     ) -> Result<Vec<ThreadRecord>, StoreError> {
         if let Some(cursor) = listing.before {
-            let known = sqlx::query("SELECT 1 FROM threads WHERE id = $1 AND owner = $2")
+            let known = query("SELECT 1 FROM threads WHERE id = $1 AND owner = $2")
                 .bind(cursor.0)
                 .bind(owner.as_str())
                 .fetch_optional(&self.pool)
@@ -519,7 +580,7 @@ impl PgStore {
                 return Ok(Vec::new());
             }
         }
-        sqlx::query(concat!(
+        query(concat!(
             "SELECT ",
             thread_cols!(),
             " FROM threads WHERE owner = $1 AND ($2::uuid IS NULL OR id < $2) \
@@ -556,7 +617,7 @@ impl PgStore {
                     ArchivedFilter::Include => cursor_position!(unit_filter_include!()),
                     ArchivedFilter::Only => cursor_position!(unit_filter_only!()),
                 };
-                let row = sqlx::query(position)
+                let row = query(position)
                     .bind(owner.as_str())
                     .bind(listing.include_edits)
                     .bind(id.0)
@@ -567,14 +628,14 @@ impl PgStore {
                     return Ok(Vec::new());
                 };
                 Some((
-                    row.try_get::<i32, _>("sec").map_err(store_err)?,
-                    row.try_get::<String, _>("rail_rank").map_err(store_err)?,
+                    row.try_get::<_, i32>("sec").map_err(store_err)?,
+                    row.try_get::<_, String>("rail_rank").map_err(store_err)?,
                     get_ts_opt(&row, "archived_at")?,
-                    row.try_get::<uuid::Uuid, _>("id").map_err(store_err)?,
+                    row.try_get::<_, uuid::Uuid>("id").map_err(store_err)?,
                 ))
             }
         };
-        let query = match (listing.archived, cursor.is_some()) {
+        let statement = match (listing.archived, cursor.is_some()) {
             (ArchivedFilter::Exclude, true) => units!(unit_filter_exclude!(), after_cursor!()),
             (ArchivedFilter::Exclude, false) => units!(unit_filter_exclude!(), no_cursor!()),
             (ArchivedFilter::Include, true) => units!(unit_filter_include!(), after_cursor!()),
@@ -586,7 +647,7 @@ impl PgStore {
             Some((sec, rank, at, id)) => (Some(sec), Some(rank), at, Some(id)),
             None => (None, None, None, None),
         };
-        let units = sqlx::query(query)
+        let units = query(statement)
             .bind(owner.as_str())
             .bind(listing.include_edits)
             .bind(i64::from(listing.limit))
@@ -604,7 +665,7 @@ impl PgStore {
             return Ok(units);
         }
         let ids: Vec<uuid::Uuid> = units.iter().map(|u| u.id.0).collect();
-        let children = sqlx::query(concat!(
+        let children = query(concat!(
             "SELECT ",
             thread_cols!(),
             " FROM threads WHERE owner = $1 AND rail_parent = ANY($2) \
@@ -650,7 +711,7 @@ async fn lowest_rank(
     owner: &str,
     except: Option<ThreadId>,
 ) -> Result<Option<String>, StoreError> {
-    sqlx::query_scalar(
+    query_scalar(
         "SELECT min(rail_rank) FROM threads \
          WHERE owner = $1 AND rail_parent IS NULL AND ($2::uuid IS NULL OR id <> $2)",
     )
@@ -673,7 +734,7 @@ async fn neighbour(
     next: bool,
 ) -> Result<Option<(uuid::Uuid, String)>, StoreError> {
     // The row after (or before) a position, among the section's rows: by rank, ties newest first.
-    let query = if next {
+    let statement = if next {
         "SELECT id, rail_rank FROM threads \
              WHERE owner = $1 AND rail_parent IS NULL AND archived_at IS NULL \
                AND fork_kind IS DISTINCT FROM 'edit' AND (pinned_at IS NOT NULL) = $2 \
@@ -688,7 +749,7 @@ async fn neighbour(
                AND (rail_rank < $3 COLLATE \"C\" OR (rail_rank = $3 COLLATE \"C\" AND id > $4)) \
              ORDER BY rail_rank DESC, id ASC LIMIT 1"
     };
-    let row = sqlx::query(query)
+    let row = query(statement)
         .bind(owner)
         .bind(pinned)
         .bind(at.0)
@@ -708,7 +769,7 @@ async fn neighbour(
 
 /// Writes the owner's top-level ranks again, evenly spread, in the order they have now.
 async fn respread(tx: &mut Tx, owner: &str) -> Result<(), StoreError> {
-    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+    let ids: Vec<uuid::Uuid> = query_scalar(
         "SELECT id FROM threads WHERE owner = $1 AND rail_parent IS NULL \
          ORDER BY rail_rank, id DESC",
     )
@@ -717,7 +778,7 @@ async fn respread(tx: &mut Tx, owner: &str) -> Result<(), StoreError> {
     .await
     .map_err(store_err)?;
     let ranks = spread(ids.len());
-    sqlx::query(
+    query(
         "UPDATE threads t SET rail_rank = v.rank FROM unnest($1::uuid[], $2::text[]) AS v(id, rank) \
          WHERE t.id = v.id",
     )
@@ -742,7 +803,7 @@ async fn new_rank(
         let (lower, upper) = match place {
             Place::Top => (None, lowest_rank(tx, owner, Some(moving)).await?),
             Place::Before(anchor) | Place::After(anchor) => {
-                let anchored = sqlx::query(
+                let anchored = query(
                     "SELECT rail_rank, pinned_at IS NOT NULL AS pinned FROM threads \
                      WHERE id = $1 AND owner = $2 AND rail_parent IS NULL \
                        AND archived_at IS NULL AND fork_kind IS DISTINCT FROM 'edit'",
@@ -810,7 +871,7 @@ async fn after_block(tx: &mut Tx, owner: &str, rec: &ThreadRecord) -> Result<Pla
     let Some(parent) = rec.rail_parent else {
         return Ok(Place::Top);
     };
-    let kept = sqlx::query(
+    let kept = query(
         "SELECT 1 FROM threads WHERE id = $1 AND owner = $2 AND pinned_at IS NULL \
          AND archived_at IS NULL AND fork_kind IS DISTINCT FROM 'edit'",
     )
@@ -834,7 +895,7 @@ async fn arrange(
     change: Arrangement,
     now: Timestamp,
 ) -> Result<ThreadRecord, StoreError> {
-    let row = sqlx::query(concat!(
+    let row = query(concat!(
         "SELECT ",
         thread_cols!(),
         " FROM threads WHERE id = $1 AND owner = $2 FOR UPDATE"
@@ -854,7 +915,7 @@ async fn arrange(
     }
     if let Some(Place::Before(a) | Place::After(a)) = change.place {
         let usable = a != id
-            && sqlx::query(
+            && query(
                 "SELECT 1 FROM threads WHERE id = $1 AND owner = $2 AND rail_parent IS NULL \
                  AND archived_at IS NULL AND fork_kind IS DISTINCT FROM 'edit'",
             )
@@ -899,7 +960,7 @@ async fn arrange(
         rec.archived_at
     };
     let rail_parent = if unnest { None } else { rec.rail_parent };
-    let row = sqlx::query(concat!(
+    let row = query(concat!(
         "UPDATE threads SET pinned_at = $2, archived_at = $3, rail_parent = $4, rail_rank = $5 \
          WHERE id = $1 RETURNING ",
         thread_cols!()
@@ -931,7 +992,7 @@ async fn delete(
     // Locked in id order, whatever order the caller named them: two deletes of overlapping sets
     // cannot wait on each other. A fork or a commit that meets the lock waits, and finds the row
     // gone (or the version moved) when it gets it.
-    let locked: Vec<(uuid::Uuid, i64)> = sqlx::query_as(
+    let locked: Vec<(uuid::Uuid, i64)> = query_as(
         "SELECT id, version FROM threads WHERE id = ANY($1) AND owner = $2 ORDER BY id FOR UPDATE",
     )
     .bind(&ids)
@@ -953,7 +1014,7 @@ async fn delete(
     }
     // An edit of one that goes that the caller did not name: it would be left with the log it was
     // cut from gone and no way for the person to see it. (One made while we hold the locks waits.)
-    let missed = sqlx::query(
+    let missed = query(
         "SELECT 1 FROM threads \
          WHERE fork_kind = 'edit' AND forked_from = ANY($1) AND NOT (id = ANY($1)) LIMIT 1",
     )
@@ -966,20 +1027,19 @@ async fn delete(
     }
     // A child of one that goes that the caller did not name: a session opened since it looked. (One
     // opened while we hold the locks waits for them, and finds its parent gone.)
-    let unnamed = sqlx::query(
-        "SELECT 1 FROM threads WHERE child_of = ANY($1) AND NOT (id = ANY($1)) LIMIT 1",
-    )
-    .bind(&ids)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_err)?;
+    let unnamed =
+        query("SELECT 1 FROM threads WHERE child_of = ANY($1) AND NOT (id = ANY($1)) LIMIT 1")
+            .bind(&ids)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_err)?;
     if unnamed.is_some() {
         return Err(StoreError::VersionConflict);
     }
     // The threads nested under one that goes take its place in the owner's list: top-level, with
     // its rank (children are told apart by `id`, newest first, as the list reads them), its pin and
     // its archive. Before the delete, which would only null `rail_parent`.
-    sqlx::query(
+    query(
         "UPDATE threads c SET rail_parent = NULL, rail_rank = p.rail_rank, \
            pinned_at = p.pinned_at, archived_at = COALESCE(c.archived_at, p.archived_at) \
          FROM threads p \
@@ -991,14 +1051,14 @@ async fn delete(
     .map_err(store_err)?;
     // The timers of the inbox name the thread in their payload and have no foreign key.
     let names: Vec<String> = ids.iter().map(ToString::to_string).collect();
-    sqlx::query("DELETE FROM inbox WHERE source = $1 AND payload ->> 'thread' = ANY($2)")
+    query("DELETE FROM inbox WHERE source = $1 AND payload ->> 'thread' = ANY($2)")
         .bind(TIMER_SOURCE)
         .bind(&names)
         .execute(&mut **tx)
         .await
         .map_err(store_err)?;
     // The promise that the files will go, in the transaction that deletes the log.
-    sqlx::query(
+    query(
         "INSERT INTO thread_purges (thread_id, deleted_at) \
          SELECT unnest($1::uuid[]), $2 ON CONFLICT (thread_id) DO NOTHING",
     )
@@ -1011,7 +1071,7 @@ async fn delete(
     // deletes the log, so the ledger never points at a thread that is gone.
     usage::forget_threads(tx, &ids).await?;
     // Cascades the events, outbox, binding and watches; nulls `forked_from` of the forks.
-    sqlx::query("DELETE FROM threads WHERE id = ANY($1)")
+    query("DELETE FROM threads WHERE id = ANY($1)")
         .bind(&ids)
         .execute(&mut **tx)
         .await
@@ -1049,9 +1109,8 @@ fn fork_node_from_row(row: &PgRow) -> Result<ForkNode, StoreError> {
     let kind: Option<String> = row.try_get("fork_kind").map_err(store_err)?;
     let message: Option<i64> = row.try_get("message").map_err(store_err)?;
     let created = row
-        .try_get::<jiff_sqlx::Timestamp, _>("created_at")
-        .map_err(store_err)?
-        .to_jiff();
+        .try_get::<_, jiff::Timestamp>("created_at")
+        .map_err(store_err)?;
     let kind: Option<ForkKind> = kind.map(|k| parse_enum("fork kind", &k)).transpose()?;
     // A link is an edit whose parent still exists; any other thread starts a family of its own.
     let link = match (kind, parent, at) {
@@ -1218,7 +1277,7 @@ async fn finish_outbox_row(
     now: Timestamp,
 ) -> Result<(), StoreError> {
     let (status, error) = outbox_outcome(outcome);
-    sqlx::query(OUTBOX_FINISH)
+    query(OUTBOX_FINISH)
         .bind(lease.id.0)
         .bind(&lease.owner)
         .bind(attempt(lease))
@@ -1240,10 +1299,8 @@ fn job_json(job: &Job) -> Result<serde_json::Value, StoreError> {
     serde_json::to_value(job).map_err(|e| StoreError::corrupt_with("cannot serialise the job", e))
 }
 
-type Tx = Transaction<'static, Postgres>;
-
 async fn notify_thread(tx: &mut Tx, thread: ThreadId) -> Result<(), StoreError> {
-    sqlx::query("SELECT pg_notify($1, $2)")
+    query("SELECT pg_notify($1, $2)")
         .bind(CHANNEL_THREAD)
         .bind(thread.to_string())
         .execute(&mut **tx)
@@ -1255,12 +1312,12 @@ async fn notify_thread(tx: &mut Tx, thread: ThreadId) -> Result<(), StoreError> 
 /// Finishes the thread's unsent messages (`delegate` and `steer` rows) as `skipped`: those
 /// `pending`, and those `inflight` whose lease expired before `now`. A round to follow and a
 /// person's start or close of a session are no messages and stay. Returns the count.
-async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
+async fn skip_unsent_rows<'c, E: Into<Executor<'c>>>(
     exec: E,
     thread: ThreadId,
     now: Timestamp,
 ) -> Result<u32, StoreError> {
-    sqlx::query(
+    query(
         "UPDATE outbox SET status = 'skipped', lease_owner = NULL, lease_until = NULL, \
          updated_at = $2 \
          WHERE thread_id = $1 AND kind IN ('delegate', 'steer') AND sent_at IS NULL \
@@ -1276,8 +1333,8 @@ async fn skip_unsent_rows<'e, E: sqlx::PgExecutor<'e>>(
     .map_err(store_err)
 }
 
-async fn notify_outbox<'e, E: sqlx::PgExecutor<'e>>(exec: E) -> Result<(), StoreError> {
-    sqlx::query("SELECT pg_notify($1, '')")
+async fn notify_outbox<'c, E: Into<Executor<'c>>>(exec: E) -> Result<(), StoreError> {
+    query("SELECT pg_notify($1, '')")
         .bind(CHANNEL_OUTBOX)
         .execute(exec)
         .await
@@ -1285,8 +1342,8 @@ async fn notify_outbox<'e, E: sqlx::PgExecutor<'e>>(exec: E) -> Result<(), Store
         .map_err(store_err)
 }
 
-async fn notify_inbox<'e, E: sqlx::PgExecutor<'e>>(exec: E) -> Result<(), StoreError> {
-    sqlx::query("SELECT pg_notify($1, '')")
+async fn notify_inbox<'c, E: Into<Executor<'c>>>(exec: E) -> Result<(), StoreError> {
+    query("SELECT pg_notify($1, '')")
         .bind(CHANNEL_INBOX)
         .execute(exec)
         .await
@@ -1334,7 +1391,7 @@ async fn insert_watches_and_timers(
         keys.dedup();
         for key in &keys {
             lock_watch(tx, key).await?;
-            let inserted = sqlx::query(
+            let inserted = query(
                 "INSERT INTO watches (key, thread_id, created_at) VALUES ($1, $2, $3) \
                  ON CONFLICT (key) DO NOTHING",
             )
@@ -1351,7 +1408,7 @@ async fn insert_watches_and_timers(
             }
         }
         // A parked report was waiting, not failing: its claims so far are refunded.
-        rearmed = sqlx::query(
+        rearmed = query(
             "WITH c AS ( \
                SELECT id FROM inbox WHERE status = 'parked' AND correlation = ANY($1) \
                ORDER BY id FOR UPDATE SKIP LOCKED) \
@@ -1370,7 +1427,7 @@ async fn insert_watches_and_timers(
     for timer in timers {
         let payload = serde_json::to_value(timer.payload(thread))
             .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
-        sqlx::query(
+        query(
             "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, \
              available_at, created_at, updated_at) \
              VALUES ($1, $2, $3, 'timer', $4, 'pending', $5, $6, $6) \
@@ -1396,12 +1453,11 @@ async fn warn_if_watched_by_another(
     key: &str,
     thread: ThreadId,
 ) -> Result<(), StoreError> {
-    let owner: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT thread_id FROM watches WHERE key = $1")
-            .bind(key)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(store_err)?;
+    let owner: Option<uuid::Uuid> = query_scalar("SELECT thread_id FROM watches WHERE key = $1")
+        .bind(key)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(store_err)?;
     if let Some(owner) = owner.filter(|owner| *owner != thread.0) {
         tracing::warn!(
             watch = key,
@@ -1415,7 +1471,7 @@ async fn warn_if_watched_by_another(
 
 /// Takes the transaction-scoped lock that serialises adding a watch and parking for it.
 async fn lock_watch(tx: &mut Tx, key: &str) -> Result<(), StoreError> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+    query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("orch:watch:{key}"))
         .execute(&mut **tx)
         .await
@@ -1435,7 +1491,7 @@ async fn insert_events(
         let seq = first_seq + offset;
         let actor = serde_json::to_value(&new.actor)
             .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data, idempotency_key) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
@@ -1475,7 +1531,7 @@ async fn insert_outbox(
     for row in rows {
         let payload = serde_json::to_value(&row.payload)
             .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
-        sqlx::query(
+        query(
             "INSERT INTO outbox (id, thread_id, kind, payload, status, next_attempt_at, \
              created_at, updated_at) VALUES ($1, $2, $3, $4, 'pending', $5, $5, $5)",
         )
@@ -1498,7 +1554,7 @@ async fn update_binding(
     now: Timestamp,
 ) -> Result<(), StoreError> {
     let task_state = update.task_state.as_ref().map(enum_str).transpose()?;
-    sqlx::query(
+    query(
         // The context is adopted once: the first one the agent assigned stands (ADR 0055).
         "UPDATE a2a_bindings SET task_id = COALESCE($2, task_id), \
          task_state = COALESCE($3, task_state), revision = COALESCE($4, revision), \
@@ -1522,7 +1578,7 @@ async fn finish_inbox_row(
     lease: &InboxLease,
     now: Timestamp,
 ) -> Result<(), StoreError> {
-    sqlx::query(
+    query(
         "UPDATE inbox SET status = 'applied', lease_owner = NULL, lease_until = NULL, \
          updated_at = $2 WHERE id = $1",
     )
@@ -1541,7 +1597,7 @@ async fn rollback(tx: Tx) {
 
 impl ThreadStore for PgStore {
     async fn ping(&self) -> Result<(), StoreError> {
-        sqlx::query("SELECT 1")
+        query("SELECT 1")
             .execute(&self.pool)
             .await
             .map(|_| ())
@@ -1578,7 +1634,7 @@ impl ThreadStore for PgStore {
         owner: &UserId,
         parent: ThreadId,
     ) -> Result<Vec<ThreadRecord>, StoreError> {
-        let rows = sqlx::query(concat!(
+        let rows = query(concat!(
             "SELECT ",
             thread_cols!(),
             " FROM threads WHERE owner = $1 AND child_of = $2 ORDER BY created_at, id LIMIT 1000"
@@ -1599,7 +1655,7 @@ impl ThreadStore for PgStore {
         // Up from `thread` along edit links to the thread the family started from, then down from
         // it along edit links. The depth bounds are belts: a thread's parent is older than it, so
         // the links cannot loop.
-        sqlx::query(FORK_FAMILY)
+        query(FORK_FAMILY)
             .bind(thread.0)
             .bind(owner.as_str())
             .fetch_all(&self.pool)
@@ -1615,7 +1671,7 @@ impl ThreadStore for PgStore {
         owner: Option<&UserId>,
         id: ThreadId,
     ) -> Result<Option<ThreadRecord>, StoreError> {
-        sqlx::query(concat!(
+        query(concat!(
             "SELECT ",
             thread_cols!(),
             " FROM threads WHERE id = $1 AND ($2::text IS NULL OR owner = $2)"
@@ -1634,7 +1690,7 @@ impl ThreadStore for PgStore {
         &self,
         nonce: &[u8; NONCE_LEN],
     ) -> Result<Option<ThreadRecord>, StoreError> {
-        sqlx::query(concat!(
+        query(concat!(
             "SELECT ",
             thread_cols!(),
             " FROM threads WHERE share_nonce = $1"
@@ -1705,7 +1761,7 @@ impl ThreadStore for PgStore {
     ) -> Result<Vec<ThreadId>, StoreError> {
         // One statement, as `claim_inbox`: candidates are picked oldest first under
         // `FOR UPDATE SKIP LOCKED`, so concurrent claimers get disjoint rows.
-        let rows = sqlx::query(
+        let rows = query(
             "WITH c AS ( \
                SELECT thread_id FROM thread_purges \
                WHERE lease_until IS NULL OR lease_until <= $1 \
@@ -1725,7 +1781,7 @@ impl ThreadStore for PgStore {
             .map(|row| {
                 Ok((
                     get_ts(row, "deleted_at")?,
-                    row.try_get::<uuid::Uuid, _>("thread_id")
+                    row.try_get::<_, uuid::Uuid>("thread_id")
                         .map_err(store_err)?,
                 ))
             })
@@ -1735,7 +1791,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn finish_purge(&self, thread: ThreadId) -> Result<(), StoreError> {
-        sqlx::query("DELETE FROM thread_purges WHERE thread_id = $1")
+        query("DELETE FROM thread_purges WHERE thread_id = $1")
             .bind(thread.0)
             .execute(&self.pool)
             .await
@@ -1744,7 +1800,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn purges_pending(&self) -> Result<u64, StoreError> {
-        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM thread_purges")
+        let n: i64 = query_scalar("SELECT count(*) FROM thread_purges")
             .fetch_one(&self.pool)
             .await
             .map_err(store_err)?;
@@ -1760,7 +1816,7 @@ impl ThreadStore for PgStore {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         // The row lock serialises every writer of this thread: the seq counter below cannot
         // be raced, so seq has no gaps and no duplicates (READ COMMITTED is enough).
-        let locked = sqlx::query(
+        let locked = query(
             "SELECT version, last_seq, state, owner, usage_through, forked_at, search_through, \
                  search_fold, title, description FROM threads WHERE id = $1 FOR UPDATE",
         )
@@ -1779,7 +1835,7 @@ impl ThreadStore for PgStore {
             // keeps the claim in place until this transaction ends: a claimer's UPDATE waits
             // (or, with SKIP LOCKED, passes the row by), so the check cannot go stale before
             // the write below.
-            let held = sqlx::query(
+            let held = query(
                 "SELECT 1 FROM outbox WHERE id = $1 AND thread_id = $2 AND lease_owner = $3 \
                  AND attempts = $4 AND status = 'inflight' FOR SHARE",
             )
@@ -1804,7 +1860,7 @@ impl ThreadStore for PgStore {
             // key: a stale `park_inbox` holding key K waits for this row while this commit,
             // holding the row, wants K in `insert_watches_and_timers`. Postgres detects such a
             // cycle (`40P01`), aborts one side, and the store maps that to a transient error.
-            let held = sqlx::query(
+            let held = query(
                 "SELECT 1 FROM inbox WHERE id = $1 AND lease_owner = $2 AND attempts = $3 \
                  AND status = 'inflight' FOR UPDATE",
             )
@@ -1833,7 +1889,7 @@ impl ThreadStore for PgStore {
             if let Some(lease) = &commit.inbox {
                 finish_inbox_row(&mut tx, lease, commit.now).await?;
             }
-            let row = sqlx::query(concat!(
+            let row = query(concat!(
                 "SELECT ",
                 thread_cols!(),
                 " FROM threads WHERE id = $1"
@@ -1855,7 +1911,7 @@ impl ThreadStore for PgStore {
             .filter_map(|e| e.idempotency_key.as_deref())
             .collect();
         if !keys.is_empty() {
-            let seen = sqlx::query(
+            let seen = query(
                 "SELECT 1 FROM events WHERE thread_id = $1 AND idempotency_key = ANY($2) LIMIT 1",
             )
             .bind(thread.0)
@@ -1872,7 +1928,7 @@ impl ThreadStore for PgStore {
         // The usage ledger is written in this transaction (ADR 0065). First what it has not been
         // through: events a build without the ledger appended, or the log the thread had before
         // migration 0023; none at all in steady state, when `usage_through` is `last_seq`.
-        let owner = UserId::new(&locked.try_get::<String, _>("owner").map_err(store_err)?);
+        let owner = UserId::new(&locked.try_get::<_, String>("owner").map_err(store_err)?);
         let through: i64 = locked.try_get("usage_through").map_err(store_err)?;
         let cut: Option<i64> = locked.try_get("forked_at").map_err(store_err)?;
         let behind = usage_counted_through(through, cut);
@@ -1922,7 +1978,7 @@ impl ThreadStore for PgStore {
         // The job is written with the state, under the same lock and version check; a commit
         // without one leaves the stored job alone.
         let job = commit.job.as_ref().map(job_json).transpose()?;
-        let row = sqlx::query(concat!(
+        let row = query(concat!(
             "UPDATE threads SET state = $2, job = COALESCE($5, job), title = COALESCE($6, title), \
              description = CASE WHEN $7::text IS NULL THEN description ELSE NULLIF($7, '') END, \
              visibility = CASE $8::text WHEN 'set' THEN $9::text WHEN 'clear' THEN 'private' \
@@ -2004,7 +2060,7 @@ impl ThreadStore for PgStore {
         after: i64,
         limit: u32,
     ) -> Result<Vec<Event>, StoreError> {
-        sqlx::query(
+        query(
             "SELECT seq, at, kind, actor, data FROM events \
              WHERE thread_id = $1 AND seq > $2 ORDER BY seq LIMIT $3",
         )
@@ -2024,7 +2080,7 @@ impl ThreadStore for PgStore {
         thread: ThreadId,
         digest: &str,
     ) -> Result<Option<Event>, StoreError> {
-        sqlx::query(
+        query(
             "SELECT seq, at, kind, actor, data FROM events \
              WHERE thread_id = $1 AND kind = 'ui_catalog' AND data ->> 'digest' = $2 \
              ORDER BY seq DESC LIMIT 1",
@@ -2045,7 +2101,7 @@ impl ThreadStore for PgStore {
         kind: EventKind,
         limit: u32,
     ) -> Result<Vec<Event>, StoreError> {
-        sqlx::query(
+        query(
             "SELECT seq, at, kind, actor, data FROM events \
              WHERE thread_id = $1 AND kind = $2 ORDER BY seq DESC LIMIT $3",
         )
@@ -2061,7 +2117,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn get_binding(&self, thread: ThreadId) -> Result<Option<AgentBinding>, StoreError> {
-        sqlx::query(
+        query(
             "SELECT thread_id, agent_id, context_id, task_id, task_state, revision \
              FROM a2a_bindings WHERE thread_id = $1",
         )
@@ -2088,7 +2144,7 @@ impl ThreadStore for PgStore {
             ClaimOrder::Fair => CLAIM_FAIR,
             ClaimOrder::Fifo => CLAIM_FIFO,
         };
-        let mut rows: Vec<(i64, PgRow)> = sqlx::query(sql)
+        let mut rows: Vec<(i64, PgRow)> = query(sql)
             .bind(to_db(now))
             .bind(owner)
             .bind(to_db(plus(ts(now), lease)))
@@ -2097,7 +2153,7 @@ impl ThreadStore for PgStore {
             .await
             .map_err(store_err)?
             .into_iter()
-            .map(|row| row.try_get::<i64, _>("ord").map(|ord| (ord, row)))
+            .map(|row| row.try_get::<_, i64>("ord").map(|ord| (ord, row)))
             .collect::<Result<_, _>>()
             .map_err(store_err)?;
         rows.sort_by_key(|(ord, _)| *ord);
@@ -2105,7 +2161,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn renew_lease(&self, lease: &Lease, until: Timestamp) -> Result<bool, StoreError> {
-        sqlx::query(
+        query(
             "UPDATE outbox SET lease_until = $4 \
              WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
         )
@@ -2126,7 +2182,7 @@ impl ThreadStore for PgStore {
         now: Timestamp,
     ) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
-        let sent = sqlx::query(
+        let sent = query(
             "UPDATE outbox SET sent_at = $4, updated_at = $4 \
              WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight' \
              RETURNING thread_id",
@@ -2154,7 +2210,7 @@ impl ThreadStore for PgStore {
         task_id: String,
         now: Timestamp,
     ) -> Result<bool, StoreError> {
-        sqlx::query(
+        query(
             "UPDATE outbox SET sent_at = $4, task_id = $5, updated_at = $4 \
              WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
         )
@@ -2175,7 +2231,7 @@ impl ThreadStore for PgStore {
         next_attempt_at: Timestamp,
         error: String,
     ) -> Result<bool, StoreError> {
-        sqlx::query(
+        query(
             "UPDATE outbox SET status = 'pending', next_attempt_at = $4, lease_owner = NULL, \
              lease_until = NULL, last_error = $5, updated_at = clock_timestamp() \
              WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
@@ -2198,7 +2254,7 @@ impl ThreadStore for PgStore {
         now: Timestamp,
     ) -> Result<bool, StoreError> {
         let (status, error) = outbox_outcome(outcome);
-        let done = sqlx::query(OUTBOX_FINISH)
+        let done = query(OUTBOX_FINISH)
             .bind(lease.id.0)
             .bind(&lease.owner)
             .bind(attempt(lease))
@@ -2218,7 +2274,7 @@ impl ThreadStore for PgStore {
 
     async fn requeue_as_delegate(&self, lease: &Lease, now: Timestamp) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
-        let held = sqlx::query(
+        let held = query(
             "SELECT payload FROM outbox \
              WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight' \
                AND kind = 'steer' FOR UPDATE",
@@ -2243,7 +2299,7 @@ impl ThreadStore for PgStore {
         let delegate = serde_json::to_value(&delegate)
             .map_err(|e| StoreError::corrupt_with("outbox payload", e))?;
         // `ord` and `created_at` stay: the delegation keeps the steer's place in the thread's order
-        sqlx::query(
+        query(
             "UPDATE outbox SET kind = 'delegate', payload = $2, status = 'pending', \
              next_attempt_at = $3, lease_owner = NULL, lease_until = NULL, updated_at = $3 \
              WHERE id = $1",
@@ -2268,7 +2324,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn release_leases(&self, owner: &str, now: Timestamp) -> Result<u32, StoreError> {
-        let n = sqlx::query(
+        let n = query(
             "UPDATE outbox SET lease_until = $2, updated_at = $2 \
              WHERE status = 'inflight' AND lease_owner = $1",
         )
@@ -2288,7 +2344,7 @@ impl ThreadStore for PgStore {
         // One scan of the `outbox_open` partial index (only open rows are in it). The due
         // predicate is the one `claim_outbox` uses. `count(*)` is bigint, and the aggregate of
         // no row is 0 / NULL, so an empty outbox gives zeros and `None`.
-        let row = sqlx::query(
+        let row = query(
             "SELECT \
                count(*) FILTER (WHERE (status = 'pending' AND next_attempt_at <= $1) \
                                    OR (status = 'inflight' AND lease_until <= $1)) AS due, \
@@ -2316,7 +2372,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn get_outbox(&self, id: OutboxId) -> Result<Option<OutboxItem>, StoreError> {
-        sqlx::query(concat!(
+        query(concat!(
             "SELECT ",
             outbox_cols!(),
             " FROM outbox WHERE id = $1"
@@ -2331,7 +2387,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn list_open_outbox(&self, thread: ThreadId) -> Result<Vec<OutboxItem>, StoreError> {
-        sqlx::query(concat!(
+        query(concat!(
             "SELECT ",
             outbox_cols!(),
             " FROM outbox WHERE thread_id = $1 AND status IN ('pending', 'inflight') ORDER BY ord"
@@ -2348,7 +2404,7 @@ impl ThreadStore for PgStore {
     async fn receive(&self, row: NewInbox, now: Timestamp) -> Result<Received, StoreError> {
         let payload = serde_json::to_value(&row.payload)
             .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
-        let stored = sqlx::query(
+        let stored = query(
             "INSERT INTO inbox (id, source, idempotency_key, kind, payload, correlation, status, \
              available_at, created_at, updated_at) \
              VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $7, $7) \
@@ -2382,7 +2438,7 @@ impl ThreadStore for PgStore {
         // One statement, as `claim_outbox`: candidates are picked earliest first under
         // `FOR UPDATE SKIP LOCKED`, so concurrent claimers get disjoint rows, and a timer
         // whose `available_at` is still ahead of `now` is not a candidate.
-        let mut items = sqlx::query(concat!(
+        let mut items = query(concat!(
             "WITH c AS ( \
                SELECT id FROM inbox \
                WHERE (status = 'pending' AND available_at <= $1) \
@@ -2411,7 +2467,7 @@ impl ThreadStore for PgStore {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
         // The correlation never changes, so it can be read before the row is locked: the lock
         // order is the watch key, then the row (see `insert_watches_and_timers`).
-        let row = sqlx::query(
+        let row = query(
             "SELECT correlation FROM inbox WHERE id = $1 AND lease_owner = $2 AND attempts = $3 \
              AND status = 'inflight'",
         )
@@ -2432,7 +2488,7 @@ impl ThreadStore for PgStore {
         // Under the lock: a watch committed before it is seen here (each statement takes a
         // fresh snapshot), and one that commits after finds this row parked and re-arms it.
         let watched = match &correlation {
-            Some(key) => sqlx::query("SELECT 1 FROM watches WHERE key = $1")
+            Some(key) => query("SELECT 1 FROM watches WHERE key = $1")
                 .bind(key)
                 .fetch_optional(&mut *tx)
                 .await
@@ -2440,7 +2496,7 @@ impl ThreadStore for PgStore {
                 .is_some(),
             None => false,
         };
-        let moved = sqlx::query(
+        let moved = query(
             "UPDATE inbox SET status = CASE WHEN $4 THEN 'pending' ELSE 'parked' END, \
              available_at = CASE WHEN $4 THEN $5 ELSE available_at END, \
              parked_at = CASE WHEN $4 THEN NULL ELSE $5 END, \
@@ -2478,7 +2534,7 @@ impl ThreadStore for PgStore {
         available_at: Timestamp,
         error: String,
     ) -> Result<bool, StoreError> {
-        sqlx::query(
+        query(
             "UPDATE inbox SET status = 'pending', available_at = $4, lease_owner = NULL, \
              lease_until = NULL, last_error = $5, updated_at = clock_timestamp() \
              WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
@@ -2504,7 +2560,7 @@ impl ThreadStore for PgStore {
             InboxFinal::Applied => ("applied", None),
             InboxFinal::Dead { error } => ("dead", Some(error)),
         };
-        sqlx::query(
+        query(
             "UPDATE inbox SET status = $4, last_error = COALESCE($5, last_error), \
              lease_owner = NULL, lease_until = NULL, updated_at = $6 \
              WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
@@ -2529,7 +2585,7 @@ impl ThreadStore for PgStore {
         // Rows are locked in id order and a row somebody else holds is left for the next pass,
         // so this statement never waits for a row lock and cannot be part of a deadlock. (A
         // row held by a re-arm is not expired anyway: it is not parked any more.)
-        sqlx::query(
+        query(
             "WITH c AS ( \
                SELECT id FROM inbox WHERE status = 'parked' AND parked_at <= $1 \
                ORDER BY id FOR UPDATE SKIP LOCKED) \
@@ -2545,7 +2601,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn release_inbox_leases(&self, owner: &str, now: Timestamp) -> Result<u32, StoreError> {
-        let n = sqlx::query(
+        let n = query(
             "UPDATE inbox SET lease_until = $2, refunded = refunded + 1, updated_at = $2 \
              WHERE status = 'inflight' AND lease_owner = $1",
         )
@@ -2562,7 +2618,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn get_watch(&self, key: &str) -> Result<Option<ThreadId>, StoreError> {
-        let row = sqlx::query("SELECT thread_id FROM watches WHERE key = $1")
+        let row = query("SELECT thread_id FROM watches WHERE key = $1")
             .bind(key)
             .fetch_optional(&self.pool)
             .await
@@ -2572,7 +2628,7 @@ impl ThreadStore for PgStore {
     }
 
     async fn get_inbox(&self, id: InboxId) -> Result<Option<InboxItem>, StoreError> {
-        sqlx::query(concat!(
+        query(concat!(
             "SELECT ",
             inbox_cols!(),
             " FROM inbox WHERE id = $1"
@@ -2591,7 +2647,7 @@ impl ThreadStore for PgStore {
         source: &str,
         idempotency_key: &str,
     ) -> Result<Option<InboxItem>, StoreError> {
-        sqlx::query(concat!(
+        query(concat!(
             "SELECT ",
             inbox_cols!(),
             " FROM inbox WHERE source = $1 AND idempotency_key = $2"

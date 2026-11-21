@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use deadpool_postgres::Object;
 use orch_core::search::{
     COMMIT_CATCH_UP_EVENTS, FOLD_VERSION, MAX_MESSAGE_HITS, MessageChange, SearchTerms,
     document_keys, message_change,
@@ -27,10 +28,10 @@ use orch_ports::{
     MatchedMessage, SearchBackfill, SearchRank, SearchRequest, SearchRow, SearchRows, StoreError,
     ThreadSearch,
 };
-use sqlx::{PgConnection, Row};
 
 use crate::codec::{event_from_row, thread_cols, thread_from_row};
-use crate::error::store_err;
+use crate::error::{DbFailure, SqlError, store_err};
+use crate::sql::{query, query_as, query_scalar};
 use crate::store::{PgStore, archived_name};
 
 /// How many events of the log one read of a catch-up takes.
@@ -52,11 +53,11 @@ fn remaining_ms(deadline: Instant, now: Instant) -> Option<u64> {
 /// Gives the next statement of the transaction what is left of the search's budget as its
 /// `statement_timeout` (`set_config(.., true)` is `SET LOCAL`: it ends with the transaction, so a pooler
 /// in transaction mode and every other statement of the pool are untouched).
-async fn arm(tx: &mut PgConnection, deadline: Instant) -> Result<(), StoreError> {
+async fn arm(tx: &mut Object, deadline: Instant) -> Result<(), StoreError> {
     let Some(ms) = remaining_ms(deadline, Instant::now()) else {
         return Err(StoreError::unavailable(BudgetSpent));
     };
-    sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+    query("SELECT set_config('statement_timeout', $1, true)")
         .bind(format!("{ms}ms"))
         .execute(tx)
         .await
@@ -89,22 +90,20 @@ fn tsquery(terms: &SearchTerms) -> Result<String, StoreError> {
 /// Writes what one event changes in the index of messages of `thread`: a later final message deletes
 /// the earlier rows of its `messageId`, and the message's words are stored when it has any.
 async fn index_change(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     thread: ThreadId,
     owner: &UserId,
     seq: i64,
     change: MessageChange<'_>,
 ) -> Result<bool, StoreError> {
     if let Some(id) = change.replaces {
-        sqlx::query(
-            "DELETE FROM message_terms WHERE thread_id = $1 AND message_id = $2 AND seq < $3",
-        )
-        .bind(thread.0)
-        .bind(id)
-        .bind(seq)
-        .execute(&mut *conn)
-        .await
-        .map_err(store_err)?;
+        query("DELETE FROM message_terms WHERE thread_id = $1 AND message_id = $2 AND seq < $3")
+            .bind(thread.0)
+            .bind(id)
+            .bind(seq)
+            .execute(&mut *conn)
+            .await
+            .map_err(store_err)?;
     }
     let Some(text) = change.text else {
         return Ok(false);
@@ -113,7 +112,7 @@ async fn index_change(
     if keys.is_empty() {
         return Ok(false);
     }
-    sqlx::query(
+    query(
         "INSERT INTO message_terms (thread_id, seq, owner, message_id, terms) \
          VALUES ($1, $2, $3, $4, array_to_tsvector($5::text[])) \
          ON CONFLICT (thread_id, seq) DO UPDATE SET owner = EXCLUDED.owner, \
@@ -133,7 +132,7 @@ async fn index_change(
 /// Indexes the searched messages among `events`, in order. The events are those of a thread of `owner`,
 /// already inserted in this transaction.
 pub(crate) async fn index_events(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     thread: ThreadId,
     owner: &UserId,
     events: &[Event],
@@ -152,11 +151,8 @@ pub(crate) fn keys_of(text: Option<&str>) -> Vec<String> {
 }
 
 /// Deletes every row of the index of `thread` (a thread stored under another fold version, or a rebuild).
-pub(crate) async fn delete_index(
-    conn: &mut PgConnection,
-    thread: ThreadId,
-) -> Result<(), StoreError> {
-    sqlx::query("DELETE FROM message_terms WHERE thread_id = $1")
+pub(crate) async fn delete_index(conn: &mut Object, thread: ThreadId) -> Result<(), StoreError> {
+    query("DELETE FROM message_terms WHERE thread_id = $1")
         .bind(thread.0)
         .execute(conn)
         .await
@@ -170,7 +166,7 @@ pub(crate) async fn delete_index(
 /// is done, else exactly where it stopped, so the watermark has no gap and a later commit or the
 /// backfill continues from there.
 pub(crate) async fn catch_up_before_commit(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     thread: ThreadId,
     owner: &UserId,
     through: i64,
@@ -186,7 +182,7 @@ pub(crate) async fn catch_up_before_commit(
 /// The ids, among `ids`, of agent messages that a **later** final message (above `to`, up to `end`)
 /// replaces: indexing the earlier one now would only be undone when the catch-up reaches the later.
 async fn replaced_later(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     thread: ThreadId,
     to: i64,
     end: i64,
@@ -195,7 +191,7 @@ async fn replaced_later(
     if ids.is_empty() || to >= end {
         return Ok(HashSet::new());
     }
-    let found: Vec<String> = sqlx::query_scalar(
+    let found: Vec<String> = query_scalar(
         "SELECT DISTINCT data->>'messageId' FROM events \
          WHERE thread_id = $1 AND seq > $2 AND seq <= $3 AND kind = 'agent_message' \
          AND data->>'final' = 'true' AND data->>'messageId' = ANY($4)",
@@ -217,7 +213,7 @@ async fn replaced_later(
 /// `(to, end]` replaces is not indexed. An event that does not decode is left out and logged (its seq and
 /// thread, never its content): the index is not a reason for a conversation to stop.
 pub(crate) async fn catch_up(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     thread: ThreadId,
     owner: &UserId,
     after: i64,
@@ -227,7 +223,7 @@ pub(crate) async fn catch_up(
     let started = Instant::now();
     let mut cursor = after;
     while cursor < to {
-        let rows = sqlx::query(
+        let rows = query(
             "SELECT seq, at, kind, actor, data FROM events \
              WHERE thread_id = $1 AND seq > $2 AND seq <= $3 \
              AND kind IN ('user_message', 'agent_message') ORDER BY seq LIMIT $4",
@@ -249,7 +245,7 @@ pub(crate) async fn catch_up(
                 Ok(event) => events.push(event),
                 Err(_) => tracing::warn!(
                     %thread,
-                    seq = row.try_get::<i64, _>("seq").unwrap_or(0),
+                    seq = row.try_get::<_, i64>("seq").unwrap_or(0),
                     "a message does not decode and is not in the search index"
                 ),
             }
@@ -269,7 +265,7 @@ pub(crate) async fn catch_up(
             index_change(conn, thread, owner, event.seq, change).await?;
         }
     }
-    let stored: i64 = sqlx::query_scalar(
+    let stored: i64 = query_scalar(
         "SELECT count(*) FROM message_terms WHERE thread_id = $1 AND seq > $2 AND seq <= $3",
     )
     .bind(thread.0)
@@ -291,23 +287,19 @@ pub(crate) async fn catch_up(
 }
 
 /// Whether the error is Postgres' `query_canceled` (`57014`), what `statement_timeout` raises.
-fn is_statement_timeout(err: &sqlx::Error) -> bool {
-    err.as_database_error()
-        .and_then(|db| db.code())
-        .is_some_and(|code| code == "57014")
+fn is_statement_timeout(err: &SqlError) -> bool {
+    err.code() == Some("57014")
 }
 
 /// Whether the error is Postgres' `lock_not_available` (`55P03`), what `lock_timeout` raises.
-fn is_lock_timeout(err: &sqlx::Error) -> bool {
-    err.as_database_error()
-        .and_then(|db| db.code())
-        .is_some_and(|code| code == "55P03")
+fn is_lock_timeout(err: &SqlError) -> bool {
+    err.code() == Some("55P03")
 }
 
 /// A search that could not be answered now: the store is down or the query ran out of time.
-fn search_err(err: sqlx::Error) -> StoreError {
+fn search_err(err: SqlError) -> StoreError {
     if is_statement_timeout(&err) {
-        StoreError::unavailable(err)
+        StoreError::unavailable(DbFailure::of(&err))
     } else {
         store_err(err)
     }
@@ -325,7 +317,7 @@ impl ThreadSearch for PgStore {
                 more: false,
             });
         }
-        let query = tsquery(&request.terms)?;
+        let terms = tsquery(&request.terms)?;
         let limit = i64::from(request.limit.max(1));
         // A read transaction with ONE deadline for all its statements (see `arm`).
         let deadline = Instant::now() + SEARCH_BUDGET;
@@ -333,7 +325,7 @@ impl ThreadSearch for PgStore {
         arm(&mut tx, deadline).await?;
         // the threads: the owner's, the ones the list would show, whose title or description matches or
         // that have a message that does (the events a fork copied are not its own while its parent exists)
-        let rows = sqlx::query(concat!(
+        let rows = query(concat!(
             "WITH q AS (SELECT $2::text::tsquery AS q) \
              SELECT s.* FROM ( \
                SELECT ",
@@ -354,7 +346,7 @@ impl ThreadSearch for PgStore {
              ORDER BY s.hit_rank DESC, s.id DESC LIMIT $7"
         ))
         .bind(owner.as_str())
-        .bind(&query)
+        .bind(&terms)
         .bind(request.include_edits)
         .bind(archived_name(request.archived))
         .bind(request.after.map(|p| i32::from(p.rank.number())))
@@ -384,7 +376,7 @@ impl ThreadSearch for PgStore {
             let ids: Vec<uuid::Uuid> = found.iter().map(|r| r.thread.id.0).collect();
             // how many messages match, per thread
             arm(&mut tx, deadline).await?;
-            let counts: Vec<(uuid::Uuid, i64)> = sqlx::query_as(
+            let counts: Vec<(uuid::Uuid, i64)> = query_as(
                 "SELECT m.thread_id, count(*)::bigint FROM message_terms m \
                  JOIN threads f ON f.id = m.thread_id \
                  WHERE m.thread_id = ANY($2) AND m.owner = $1 AND m.terms @@ $3::text::tsquery \
@@ -393,13 +385,13 @@ impl ThreadSearch for PgStore {
             )
             .bind(owner.as_str())
             .bind(&ids)
-            .bind(&query)
+            .bind(&terms)
             .fetch_all(&mut *tx)
             .await
             .map_err(search_err)?;
             // the newest three of them, per thread
             arm(&mut tx, deadline).await?;
-            let newest: Vec<(uuid::Uuid, i64)> = sqlx::query_as(
+            let newest: Vec<(uuid::Uuid, i64)> = query_as(
                 "SELECT x.thread_id, x.seq FROM unnest($2::uuid[]) AS ids(id), LATERAL ( \
                    SELECT m.thread_id, m.seq FROM message_terms m \
                    JOIN threads f ON f.id = m.thread_id \
@@ -409,7 +401,7 @@ impl ThreadSearch for PgStore {
             )
             .bind(owner.as_str())
             .bind(&ids)
-            .bind(&query)
+            .bind(&terms)
             .bind(i64::try_from(MAX_MESSAGE_HITS).unwrap_or(3))
             .fetch_all(&mut *tx)
             .await
@@ -418,7 +410,7 @@ impl ThreadSearch for PgStore {
             let threads: Vec<uuid::Uuid> = newest.iter().map(|(t, _)| *t).collect();
             let seqs: Vec<i64> = newest.iter().map(|(_, s)| *s).collect();
             arm(&mut tx, deadline).await?;
-            let events = sqlx::query(
+            let events = query(
                 "SELECT e.thread_id, e.seq, e.at, e.kind, e.actor, e.data FROM events e \
                  JOIN unnest($1::uuid[], $2::bigint[]) AS w(thread_id, seq) \
                    ON e.thread_id = w.thread_id AND e.seq = w.seq",
@@ -477,7 +469,7 @@ impl ThreadSearch for PgStore {
     ) -> Result<SearchBackfill, StoreError> {
         let limit = limit.max(1);
         let mut page = SearchBackfill::default();
-        let due: Vec<uuid::Uuid> = sqlx::query_scalar(
+        let due: Vec<uuid::Uuid> = query_scalar(
             "SELECT id FROM threads WHERE ($1::uuid IS NULL OR id > $1) \
              AND ($3 OR search_through < last_seq OR search_fold <> $4) ORDER BY id LIMIT $2",
         )
@@ -495,13 +487,13 @@ impl ThreadSearch for PgStore {
             let mut tx = self.pool().begin().await.map_err(store_err)?;
             // Never wait long for a thread: a commit that holds the lock for seconds is a thread that is
             // being written to, and its own commits catch it up.
-            sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+            query("SELECT set_config('lock_timeout', $1, true)")
                 .bind(BACKFILL_LOCK_TIMEOUT)
                 .execute(&mut *tx)
                 .await
                 .map_err(store_err)?;
             // the lock every commit of the thread takes: the page and the service can run together
-            let locked = match sqlx::query(
+            let locked = match query(
                 "SELECT owner, last_seq, search_through, search_fold, title, description FROM threads \
                  WHERE id = $1 FOR UPDATE",
             )
@@ -520,7 +512,7 @@ impl ThreadSearch for PgStore {
             let Some(locked) = locked else {
                 continue; // erased since
             };
-            let owner = UserId::new(&locked.try_get::<String, _>("owner").map_err(store_err)?);
+            let owner = UserId::new(&locked.try_get::<_, String>("owner").map_err(store_err)?);
             let last_seq: i64 = locked.try_get("last_seq").map_err(store_err)?;
             let mut through: i64 = locked.try_get("search_through").map_err(store_err)?;
             let fold: i32 = locked.try_get("search_fold").map_err(store_err)?;
@@ -535,7 +527,7 @@ impl ThreadSearch for PgStore {
             let description: Option<String> = locked.try_get("description").map_err(store_err)?;
             let indexed =
                 catch_up(&mut tx, ThreadId(id), &owner, through, last_seq, last_seq).await?;
-            sqlx::query(
+            query(
                 "UPDATE threads SET search_through = $2, search_fold = $5, \
                  title_terms = array_to_tsvector($3::text[]), \
                  description_terms = array_to_tsvector($4::text[]) WHERE id = $1",
@@ -558,7 +550,7 @@ impl ThreadSearch for PgStore {
     async fn search_backlog(&self, cap: u32) -> Result<u32, StoreError> {
         // `LIMIT` stops the read at `cap` threads; when nearly every thread is indexed it reads the
         // whole table once (there is no index on these columns: they change with every commit).
-        let n: i64 = sqlx::query_scalar(
+        let n: i64 = query_scalar(
             "SELECT count(*) FROM (SELECT 1 FROM threads \
              WHERE search_through < last_seq OR search_fold <> $1 LIMIT $2) s",
         )

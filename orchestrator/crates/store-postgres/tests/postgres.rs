@@ -2,7 +2,11 @@
 //! is set; each test runs in its own schema.
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
+mod history;
 mod support;
+use orch_store_postgres::DbFailure;
+use orch_store_postgres::PgPool;
+use orch_store_postgres::sql::{query, query_as, query_scalar};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -206,7 +210,19 @@ async fn sixteen_concurrent_appenders_get_contiguous_seq() {
 
 /// How many migrations the crate embeds: each is recorded once, however often `migrate` runs.
 fn embedded_migrations() -> i64 {
-    i64::try_from(sqlx::migrate!("./migrations").iter().count()).unwrap()
+    i64::try_from(
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "sql")
+            })
+            .count(),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -215,7 +231,7 @@ async fn migrate_twice_is_a_no_op() {
     let store = PgStore::from_pool(db.pool("orch-test", 4).await);
     store.migrate().await.unwrap();
     store.migrate().await.unwrap();
-    let (applied,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
+    let (applied,): (i64,) = query_as("SELECT count(*) FROM _sqlx_migrations")
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -249,7 +265,7 @@ async fn migrate_from_many_replicas_at_once() {
         t.await.unwrap().unwrap();
     }
     let store = PgStore::from_pool(db.pool("orch-test", 2).await);
-    let (applied,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
+    let (applied,): (i64,) = query_as("SELECT count(*) FROM _sqlx_migrations")
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -349,7 +365,7 @@ async fn listener_reconnect_emits_resync_and_keeps_working() {
     let mut sub = wakeup.subscribe();
 
     // Kill the listener's backend, as a failover or a network cut would.
-    let (killed,): (i64,) = sqlx::query_as(
+    let (killed,): (i64,) = query_as(
         "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
          WHERE application_name = $1 AND pid <> pg_backend_pid()",
     )
@@ -430,7 +446,7 @@ async fn live_text_published_in_one_process_reaches_a_subscriber_in_another() {
 
     // A stray payload on the channel (another version, a hand-typed NOTIFY) is not live text and
     // does not disturb what follows.
-    sqlx::query("SELECT pg_notify('orch_live', 'not json')")
+    query("SELECT pg_notify('orch_live', 'not json')")
         .execute(&other_pool)
         .await
         .unwrap();
@@ -464,7 +480,7 @@ async fn live_text_works_again_after_a_listener_reconnect() {
     let mut sub = wakeup.subscribe_live();
     let mut topics = wakeup.subscribe();
 
-    sqlx::query(
+    query(
         "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
          WHERE application_name = $1 AND pid <> pg_backend_pid()",
     )
@@ -600,7 +616,7 @@ async fn a_rejected_statement_is_internal_and_never_retried() {
     let store = db.store().await;
     let id = create(&store, vec![]).await;
     // The deployment lost a table: SQLSTATE 42P01, which waiting does not cure.
-    sqlx::query("DROP TABLE events CASCADE")
+    query("DROP TABLE events CASCADE")
         .execute(store.pool())
         .await
         .unwrap();
@@ -608,12 +624,16 @@ async fn a_rejected_statement_is_internal_and_never_retried() {
     assert!(matches!(err, StoreError::Internal { .. }), "{err:?}");
     assert_eq!(err.class(), ErrorClass::Internal);
     assert!(!err.is_retryable());
+    // the source is the failure as the store keeps it, the server's SQLSTATE in it, and no
+    // driver's error under it
     let source = std::error::Error::source(&err).unwrap();
-    assert!(source.downcast_ref::<sqlx::Error>().is_some());
+    let failure = source.downcast_ref::<DbFailure>().unwrap();
+    assert_eq!(failure.code(), Some("42P01"), "{failure}");
+    assert!(std::error::Error::source(failure).is_none());
 }
 
 #[tokio::test]
-async fn a_closed_pool_is_unavailable_and_keeps_the_driver_error() {
+async fn a_closed_pool_is_unavailable_and_keeps_the_failure() {
     let db = db_or_skip!();
     let store = db.store().await;
     store.pool().close().await;
@@ -621,7 +641,8 @@ async fn a_closed_pool_is_unavailable_and_keeps_the_driver_error() {
     assert!(matches!(err, StoreError::Unavailable { .. }), "{err:?}");
     assert!(err.is_retryable());
     let source = std::error::Error::source(&err).unwrap();
-    assert!(source.downcast_ref::<sqlx::Error>().is_some());
+    let failure = source.downcast_ref::<DbFailure>().unwrap();
+    assert_eq!(failure.to_string(), "the pool is closed");
 }
 
 #[tokio::test]
@@ -631,7 +652,7 @@ async fn a_row_that_does_not_parse_is_corrupt() {
     let id = create(&store, vec![]).await;
     // A poisoned row: written by hand, valid for the schema and not for this code (a user
     // message without its text).
-    sqlx::query(
+    query(
         "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
          VALUES ($1, 2, now(), 'user_message', '{}', '{\"unexpected\": true}')",
     )
@@ -650,10 +671,12 @@ async fn a_row_that_does_not_parse_is_corrupt() {
 async fn an_unreachable_database_is_unavailable_without_a_database() {
     // Nothing listens on port 1; the pool gives up quickly and the store reports it as a
     // transient failure whose source is the driver's error.
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .acquire_timeout(Duration::from_millis(300))
-        .connect_lazy("postgres://nobody@127.0.0.1:1/none")
-        .unwrap();
+    let pool = PgPool::with_wait(
+        "postgres://nobody@127.0.0.1:1/none".parse().unwrap(),
+        10,
+        Duration::from_millis(300),
+    )
+    .unwrap();
     let store = PgStore::from_pool(pool);
     let err = store.ping().await.unwrap_err();
     assert_eq!(err.class(), ErrorClass::Transient, "{err:?}");
@@ -755,15 +778,10 @@ async fn migration_0003_upgrades_a_database_that_holds_threads() {
         include_str!("../migrations/0002_ui_events.sql"),
     )
     .unwrap();
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let id = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, created_at, updated_at) \
          VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, now(), now())",
     )
@@ -772,7 +790,7 @@ async fn migration_0003_upgrades_a_database_that_holds_threads() {
     .await
     .unwrap();
     // The old code could not write these; the old constraints refuse them.
-    let refused = sqlx::query("UPDATE threads SET state = 'verifying' WHERE id = $1")
+    let refused = query("UPDATE threads SET state = 'verifying' WHERE id = $1")
         .bind(id)
         .execute(&pool)
         .await;
@@ -784,13 +802,13 @@ async fn migration_0003_upgrades_a_database_that_holds_threads() {
     let thread = store.get_thread(None, ThreadId(id)).await.unwrap().unwrap();
     assert_eq!(thread.state, ThreadState::Working);
     assert_eq!(thread.job, orch_core::Job::default());
-    sqlx::query("UPDATE threads SET state = 'verifying' WHERE id = $1")
+    query("UPDATE threads SET state = 'verifying' WHERE id = $1")
         .bind(id)
         .execute(store.pool())
         .await
         .unwrap();
     for kind in ["ci_result", "check_result", "rework"] {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, (SELECT coalesce(max(seq), 0) + 1 FROM events WHERE thread_id = $1), \
                      now(), $2, '{}', '{}')",
@@ -803,7 +821,7 @@ async fn migration_0003_upgrades_a_database_that_holds_threads() {
     }
     // The outbox takes a `verify` row with the verifier's task id, and still refuses nonsense.
     let insert_outbox = |kind: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO outbox (id, thread_id, kind, payload, status, next_attempt_at, \
              created_at, updated_at, task_id) \
              VALUES ($1, $2, $3, '{}', 'pending', now(), now(), now(), 'task-1')",
@@ -911,9 +929,9 @@ fn watch_lock_name(key: &WatchKey) -> String {
 /// Waits until some backend is blocked on the advisory lock of `key`, straight from
 /// `pg_locks`: the proof that a call is waiting where the test wants it, with no sleep standing
 /// in for it. (The sleeps below only pace the polling.)
-async fn wait_until_blocked_on_watch(pool: &sqlx::PgPool, key: &WatchKey) {
+async fn wait_until_blocked_on_watch(pool: &PgPool, key: &WatchKey) {
     for _ in 0..500 {
-        let blocked: bool = sqlx::query_scalar(
+        let blocked: bool = query_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
              AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0))",
         )
@@ -951,12 +969,12 @@ async fn a_park_waits_for_the_commit_that_is_adding_its_watch() {
 
     // The commit, as far as it has got: it holds the key and has inserted the watch.
     let mut commit_tx = store.pool().begin().await.unwrap();
-    sqlx::query(LOCK_WATCH)
+    query(LOCK_WATCH)
         .bind(watch_lock_name(&key))
         .execute(&mut *commit_tx)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO watches (key, thread_id, created_at) VALUES ($1, $2, now())")
+    query("INSERT INTO watches (key, thread_id, created_at) VALUES ($1, $2, now())")
         .bind(key.as_str())
         .bind(thread.0)
         .execute(&mut *commit_tx)
@@ -1005,12 +1023,12 @@ async fn a_commit_adding_a_watch_waits_for_a_park_and_re_arms_its_row() {
 
     // The park, as far as it has got: it holds the key and has parked the row.
     let mut park_tx = store.pool().begin().await.unwrap();
-    sqlx::query(LOCK_WATCH)
+    query(LOCK_WATCH)
         .bind(watch_lock_name(&key))
         .execute(&mut *park_tx)
         .await
         .unwrap();
-    sqlx::query(
+    query(
         "UPDATE inbox SET status = 'parked', parked_at = now(), lease_owner = NULL, \
          lease_until = NULL WHERE id = $1",
     )
@@ -1075,7 +1093,7 @@ async fn expiry_passes_by_a_row_somebody_holds_instead_of_waiting() {
     }
 
     let mut holder = store.pool().begin().await.unwrap();
-    sqlx::query("SELECT 1 FROM inbox WHERE id = $1 FOR UPDATE")
+    query("SELECT 1 FROM inbox WHERE id = $1 FOR UPDATE")
         .bind(ids[0].0)
         .execute(&mut *holder)
         .await
@@ -1128,15 +1146,10 @@ async fn migration_0004_upgrades_a_database_that_holds_threads() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, created_at, updated_at) \
          VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, now(), now())",
     )
@@ -1144,12 +1157,7 @@ async fn migration_0004_upgrades_a_database_that_holds_threads() {
     .execute(&pool)
     .await
     .unwrap();
-    assert!(
-        sqlx::query("SELECT 1 FROM inbox")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
+    assert!(query("SELECT 1 FROM inbox").execute(&pool).await.is_err());
 
     let store = PgStore::from_pool(pool);
     store.migrate().await.unwrap();
@@ -1161,7 +1169,7 @@ async fn migration_0004_upgrades_a_database_that_holds_threads() {
     assert_eq!(old.state, ThreadState::Working);
 
     let insert = |id: Uuid, kind: &'static str, status: &'static str, key: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, available_at, \
              created_at, updated_at) VALUES ($1, 'github', $4, $2, '{}', $3, now(), now(), now())",
         )
@@ -1198,17 +1206,17 @@ async fn migration_0004_upgrades_a_database_that_holds_threads() {
             .unwrap();
     }
 
-    sqlx::query("INSERT INTO watches (key, thread_id, created_at) VALUES ('ci:x@y', $1, now())")
+    query("INSERT INTO watches (key, thread_id, created_at) VALUES ('ci:x@y', $1, now())")
         .bind(thread)
         .execute(store.pool())
         .await
         .unwrap();
-    sqlx::query("DELETE FROM threads WHERE id = $1")
+    query("DELETE FROM threads WHERE id = $1")
         .bind(thread)
         .execute(store.pool())
         .await
         .unwrap();
-    let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM watches")
+    let (left,): (i64,) = query_as("SELECT count(*) FROM watches")
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -1250,15 +1258,10 @@ async fn migration_0007_upgrades_a_database_that_holds_a_log() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
     )
@@ -1267,7 +1270,7 @@ async fn migration_0007_upgrades_a_database_that_holds_a_log() {
     .await
     .unwrap();
     let insert = |seq: i64, kind: &'static str, data: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"agent\",\"name\":\"coder\"}', $4::jsonb)",
         )
@@ -1346,15 +1349,10 @@ async fn migration_0008_upgrades_a_database_that_holds_a_log() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
     )
@@ -1363,7 +1361,7 @@ async fn migration_0008_upgrades_a_database_that_holds_a_log() {
     .await
     .unwrap();
     let insert = |seq: i64, kind: &'static str, data: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"user\",\"name\":\"alice@example.com\"}', $4::jsonb)",
         )
@@ -1452,15 +1450,10 @@ async fn migration_0009_upgrades_a_database_that_holds_a_log() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 0, now(), now())",
     )
@@ -1469,7 +1462,7 @@ async fn migration_0009_upgrades_a_database_that_holds_a_log() {
     .await
     .unwrap();
     let insert = |kind: &'static str, payload: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
              created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
         )
@@ -1537,14 +1530,14 @@ async fn a_row_this_build_cannot_read_does_not_spoil_its_batch() {
     let (good, _) = ci_row(1);
     let good_id = good.id;
     store.receive(good, t0()).await.unwrap();
-    sqlx::query(
+    query(
         "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, available_at, \
          created_at, updated_at) \
          VALUES ($1, 'github', 'odd', 'ci_report', '{\"kind\": \"from_the_future\"}', 'pending', \
          $2, $2, $2)",
     )
     .bind(Uuid::now_v7())
-    .bind(jiff_sqlx::Timestamp::from(t0()))
+    .bind(t0())
     .execute(store.pool())
     .await
     .unwrap();
@@ -1588,7 +1581,7 @@ async fn a_legacy_cancel_row_reads_as_the_current_jobs_and_a_new_one_keeps_its_j
     )
     .await;
     // what an older build wrote: the unit variant, a bare JSON string
-    sqlx::query(
+    query(
         "INSERT INTO outbox (id, thread_id, kind, payload, status, next_attempt_at, created_at, \
          updated_at) VALUES ($1, $2, 'cancel', '\"cancel\"'::jsonb, 'pending', now(), now(), now())",
     )
@@ -1608,12 +1601,11 @@ async fn a_legacy_cancel_row_reads_as_the_current_jobs_and_a_new_one_keeps_its_j
     assert_eq!(job_of(2), Some(OutboxPayload::Cancel { job: None }));
     assert_eq!(job_of(9), Some(OutboxPayload::Cancel { job: None }));
     // a row that names its job stores it
-    let (stored,): (serde_json::Value,) =
-        sqlx::query_as("SELECT payload FROM outbox WHERE id = $1")
-            .bind(Uuid::from_u128(0x0190_0000_0000_7000_a000_0000_0000_0001))
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (stored,): (serde_json::Value,) = query_as("SELECT payload FROM outbox WHERE id = $1")
+        .bind(Uuid::from_u128(0x0190_0000_0000_7000_a000_0000_0000_0001))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(stored, serde_json::json!({"cancel": {"job": 3}}));
 }
 
@@ -1664,15 +1656,10 @@ async fn migration_0010_upgrades_a_database_that_holds_a_log() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
     )
@@ -1681,7 +1668,7 @@ async fn migration_0010_upgrades_a_database_that_holds_a_log() {
     .await
     .unwrap();
     let insert = |thread: Uuid, seq: i64, kind: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{}'::jsonb, '{}'::jsonb)",
         )
@@ -1722,13 +1709,11 @@ async fn migration_0010_upgrades_a_database_that_holds_a_log() {
         .unwrap();
     assert_eq!(old.forked_from, None);
     let origin = |from: Option<Uuid>, at: Option<i64>, kind: Option<&'static str>| {
-        sqlx::query(
-            "UPDATE threads SET forked_from = $2, forked_at = $3, fork_kind = $4 WHERE id = $1",
-        )
-        .bind(thread)
-        .bind(from)
-        .bind(at)
-        .bind(kind)
+        query("UPDATE threads SET forked_from = $2, forked_at = $3, fork_kind = $4 WHERE id = $1")
+            .bind(thread)
+            .bind(from)
+            .bind(at)
+            .bind(kind)
     };
     for (what, from, at, kind) in [
         ("a cut with no kind", None, Some(1_i64), None),
@@ -1814,15 +1799,10 @@ async fn migration_0011_upgrades_a_database_that_holds_a_log() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
     )
@@ -1831,7 +1811,7 @@ async fn migration_0011_upgrades_a_database_that_holds_a_log() {
     .await
     .unwrap();
     let event = |seq: i64, kind: &'static str, data: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"system\",\"name\":\"orchestrator\"}', $4::jsonb)",
         )
@@ -1841,7 +1821,7 @@ async fn migration_0011_upgrades_a_database_that_holds_a_log() {
         .bind(data)
     };
     let row = |kind: &'static str, payload: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
              created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
         )
@@ -1911,7 +1891,7 @@ async fn migration_0011_upgrades_a_database_that_holds_a_log() {
     assert_eq!(old.description, None, "the old thread has no description");
     // the column takes a description and refuses an empty one or one over the limit
     let set = |text: String| {
-        sqlx::query("UPDATE threads SET description = $2 WHERE id = $1")
+        query("UPDATE threads SET description = $2 WHERE id = $1")
             .bind(thread)
             .bind(text)
     };
@@ -1990,15 +1970,10 @@ async fn migration_0012_upgrades_a_database_that_holds_a_log() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
     )
@@ -2007,7 +1982,7 @@ async fn migration_0012_upgrades_a_database_that_holds_a_log() {
     .await
     .unwrap();
     let event = |seq: i64, kind: &'static str, data: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"user\",\"name\":\"alice@example.com\"}', $4::jsonb)",
         )
@@ -2066,7 +2041,7 @@ async fn migration_0012_upgrades_a_database_that_holds_a_log() {
         .unwrap()
         .unwrap();
     assert!(old.job.tools.is_empty());
-    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+    query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
         .bind(thread)
         .bind(r#"{"tools":["websearch"]}"#)
         .execute(store.pool())
@@ -2079,7 +2054,7 @@ async fn migration_0012_upgrades_a_database_that_holds_a_log() {
         .unwrap();
     assert_eq!(set.job.tools, ["websearch"]);
     // the outbox kinds are the ones 0011 left
-    let kinds: Vec<(String,)> = sqlx::query_as(
+    let kinds: Vec<(String,)> = query_as(
         // This test's own table: every test has a schema of its own in one database, and
         // another test may be migrating (or dropping) its copy of the constraint right now.
         "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
@@ -2160,15 +2135,10 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
     )
@@ -2177,7 +2147,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
     .await
     .unwrap();
     let event = |seq: i64, kind: &'static str, actor: &'static str, data: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, $4::jsonb, $5::jsonb)",
         )
@@ -2207,7 +2177,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
     let delegate = Uuid::now_v7();
     let ask = Uuid::now_v7();
     let row = |id: Uuid, kind: &'static str, payload: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
              created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
         )
@@ -2300,7 +2270,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             ][..],
         ),
     ] {
-        let (def,): (String,) = sqlx::query_as(
+        let (def,): (String,) = query_as(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
              WHERE conname = $1 AND conrelid = $2::regclass",
         )
@@ -2348,7 +2318,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
         .unwrap()
         .unwrap();
     assert!(old.job.asks.is_empty());
-    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+    query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
         .bind(thread)
         .bind(
             r#"{"mentioned":["researcher"],"asks":[{"n":1,"by":"main","agent":"researcher","depth":1,"outcome":"timed_out"}]}"#,
@@ -2383,7 +2353,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
             r#"{{"mentioned":["researcher"],"asks":[{{"n":1,"by":"main","agent":"researcher","depth":1{context},"outcome":"timed_out"}}]}}"#
         )
     };
-    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+    query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
         .bind(thread)
         .bind(ask_row(r#","contextId":"ctx-asked""#))
         .execute(store.pool())
@@ -2399,7 +2369,7 @@ async fn migration_0014_upgrades_a_database_that_holds_a_log_and_an_outbox() {
         Some("ctx-asked")
     );
     // the rest of the test goes on with the row as an older build wrote it
-    sqlx::query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
+    query("UPDATE threads SET job = $2::jsonb WHERE id = $1")
         .bind(thread)
         .bind(ask_row(""))
         .execute(store.pool())
@@ -2537,7 +2507,7 @@ async fn a_fork_survives_the_deletion_of_its_parent() {
         3
     );
 
-    sqlx::query("DELETE FROM threads WHERE id = $1")
+    query("DELETE FROM threads WHERE id = $1")
         .bind(parent.0)
         .execute(store.pool())
         .await
@@ -2742,15 +2712,10 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let thread = Uuid::now_v7();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'working', 1, 1, now(), now())",
     )
@@ -2761,7 +2726,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
     let delegate = Uuid::now_v7();
     let steer = Uuid::now_v7();
     let row = |id: Uuid, kind: &'static str, payload: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, next_attempt_at, \
              created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, 'pending', 0, now(), now(), now())",
         )
@@ -2800,7 +2765,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             .is_err(),
         "the constraint still names the kinds"
     );
-    let kinds: Vec<(String,)> = sqlx::query_as(
+    let kinds: Vec<(String,)> = query_as(
         "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'outbox_kind_check' \
          AND conrelid = 'outbox'::regclass",
     )
@@ -2936,16 +2901,11 @@ async fn migration_0015_upgrades_a_database_that_holds_threads() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     let (old, other) = (Uuid::now_v7(), Uuid::now_v7());
     for thread in [old, other] {
-        sqlx::query(
+        query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
         )
@@ -2955,7 +2915,7 @@ async fn migration_0015_upgrades_a_database_that_holds_threads() {
         .unwrap();
     }
     let event = |thread: Uuid, seq: i64, kind: &'static str, data: &'static str| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"user\",\"name\":\"alice@example.com\"}'::jsonb, $4::jsonb)",
         )
@@ -2979,21 +2939,11 @@ async fn migration_0015_upgrades_a_database_that_holds_threads() {
     let store = PgStore::from_pool(pool);
     store.migrate().await.unwrap();
     // every thread that existed is private, with no nonce and no time
-    let rows: Vec<(String, Option<Vec<u8>>, Option<Timestamp>)> = sqlx::query(
-        "SELECT visibility, share_nonce, shared_at::timestamptz FROM threads ORDER BY id",
-    )
-    .map(|r: sqlx::postgres::PgRow| {
-        use sqlx::Row;
-        (
-            r.get::<String, _>(0),
-            r.get::<Option<Vec<u8>>, _>(1),
-            r.get::<Option<jiff_sqlx::Timestamp>, _>(2)
-                .map(jiff_sqlx::Timestamp::to_jiff),
-        )
-    })
-    .fetch_all(store.pool())
-    .await
-    .unwrap();
+    let rows: Vec<(String, Option<Vec<u8>>, Option<Timestamp>)> =
+        query_as("SELECT visibility, share_nonce, shared_at::timestamptz FROM threads ORDER BY id")
+            .fetch_all(store.pool())
+            .await
+            .unwrap();
     assert_eq!(rows.len(), 2);
     assert!(
         rows.iter()
@@ -3034,7 +2984,7 @@ async fn migration_0015_upgrades_a_database_that_holds_threads() {
 
     // the shape: shared with a nonce and a time, or private with neither
     let set = |thread: Uuid, visibility: &'static str, nonce: Option<Vec<u8>>, at: bool| {
-        sqlx::query(
+        query(
             "UPDATE threads SET visibility = $2, share_nonce = $3, \
              shared_at = CASE WHEN $4 THEN now() END WHERE id = $1",
         )
@@ -3154,12 +3104,7 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
     ] {
         std::fs::write(dir.join(name), sql).unwrap();
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
 
     // threads 1..=9, created in that order; (owner, forked_from, kind)
@@ -3178,7 +3123,7 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
         (9, "alice@example.com", Some(8), Some("fork")),
     ];
     for (n, owner, from, kind) in rows {
-        sqlx::query(
+        query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, forked_from, forked_at, fork_kind) \
              VALUES ($1, $2, 't', 'coder', 'done', 1, 1, now() + make_interval(secs => $3), now(), \
@@ -3197,7 +3142,7 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
     let store = PgStore::from_pool(pool);
     store.migrate().await.unwrap();
     let read = || async {
-        sqlx::query_as::<_, (Uuid, Option<Uuid>, String)>(
+        query_as::<(Uuid, Option<Uuid>, String)>(
             "SELECT id, rail_parent, rail_rank FROM threads ORDER BY id",
         )
         .fetch_all(store.pool())
@@ -3236,7 +3181,7 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
     assert_eq!(listed, [9, 7, 1, 5, 3, 2].map(|n| ThreadId(id(n))).to_vec());
 
     // the rank is required, and a thread cannot be nested under itself
-    let no_rank = sqlx::query(
+    let no_rank = query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 1, now(), now())",
     )
@@ -3245,7 +3190,7 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
     .await;
     assert!(no_rank.is_err(), "rail_rank is NOT NULL");
     assert!(
-        sqlx::query("UPDATE threads SET rail_parent = id WHERE id = $1")
+        query("UPDATE threads SET rail_parent = id WHERE id = $1")
             .bind(id(1))
             .execute(store.pool())
             .await
@@ -3253,7 +3198,7 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
         "a thread is not nested under itself"
     );
     // the indexes the list reads by
-    let indexes: Vec<String> = sqlx::query_scalar(
+    let indexes: Vec<String> = query_scalar(
         "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() \
          AND tablename = 'threads' ORDER BY indexname",
     )
@@ -3268,7 +3213,7 @@ async fn migration_0016_upgrades_a_database_that_holds_threads_and_forks() {
     }
 
     // deleting a parent leaves its children whole and on the list's own level
-    sqlx::query("DELETE FROM threads WHERE id = $1")
+    query("DELETE FROM threads WHERE id = $1")
         .bind(id(1))
         .execute(store.pool())
         .await
@@ -3343,12 +3288,8 @@ async fn a_delete_leaves_no_row_of_the_thread_but_its_purge_row() {
     let (report, _) = ci_row(3);
     store.receive(report, t0()).await.unwrap();
 
-    async fn count(pool: &sqlx::PgPool, sql: &'static str, id: Uuid) -> i64 {
-        sqlx::query_scalar(sql)
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .unwrap()
+    async fn count(pool: &PgPool, sql: &'static str, id: Uuid) -> i64 {
+        query_scalar(sql).bind(id).fetch_one(pool).await.unwrap()
     }
     let tables = [
         "SELECT count(*) FROM threads WHERE id = $1",
@@ -3592,17 +3533,12 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
             std::fs::copy(&path, dir.join(&name)).unwrap();
         }
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
     // a thread with its first message as a build of 0019 wrote them: the store of this build writes
     // columns that 0023 added (`usage_through`), so it cannot create one on this schema
     let thread = ThreadId(Uuid::now_v7());
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at, rail_rank) \
          VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 1, now(), now(), 'i')",
@@ -3611,7 +3547,7 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
+    query(
         "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
          VALUES ($1, 1, now(), 'user_message', '{\"type\":\"user\",\"name\":\"alice@example.com\"}', \
          $2::jsonb)",
@@ -3670,7 +3606,7 @@ async fn migration_0020_upgrades_a_database_that_holds_a_log() {
         counted: true,
     });
     let insert = |seq: i64, kind: &'static str, data: String| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"agent\",\"name\":\"coder\"}', $4::jsonb)",
         )
@@ -3740,15 +3676,10 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
             std::fs::copy(&path, dir.join(&name)).unwrap();
         }
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
-    let applied = |pool: sqlx::PgPool| async move {
-        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
+    let applied = |pool: PgPool| async move {
+        let (n,): (i64,) = query_as("SELECT count(*) FROM _sqlx_migrations")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -3759,7 +3690,7 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
     // two threads and a message as a build of 0026 wrote them
     let (parent, other) = (ThreadId(Uuid::now_v7()), ThreadId(Uuid::now_v7()));
     for thread in [parent, other] {
-        sqlx::query(
+        query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, rail_rank) \
              VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 1, now(), now(), 'i')",
@@ -3770,7 +3701,7 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
         .unwrap();
     }
     let insert_event = |thread: ThreadId, seq: i64, kind: &'static str, data: String| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"agent\",\"name\":\"coder\"}', $4::jsonb)",
         )
@@ -3811,8 +3742,8 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
         .is_err(),
         "0026 has no `child_session_opened`"
     );
-    let has_column = |pool: sqlx::PgPool| async move {
-        let (n,): (i64,) = sqlx::query_as(
+    let has_column = |pool: PgPool| async move {
+        let (n,): (i64,) = query_as(
             "SELECT count(*) FROM information_schema.columns \
              WHERE table_schema = current_schema() AND table_name = 'threads' \
              AND column_name IN ('child_of', 'child_session')",
@@ -3873,14 +3804,14 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
 
     // the rows the store never writes are refused by the table as well
     let child = |id: Uuid, of: Option<Uuid>, session: Option<&str>| {
-        sqlx::query(
+        query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, rail_rank, child_of, child_session) \
              VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 0, now(), now(), 'i', $2, $3)",
         )
         .bind(id)
         .bind(of)
-        .bind(session)
+        .bind(session.map(str::to_owned))
     };
     let (c1, c2) = (Uuid::now_v7(), Uuid::now_v7());
     assert!(
@@ -3954,7 +3885,7 @@ async fn migration_0027_upgrades_a_database_that_holds_threads_and_a_log() {
         })
     );
     assert!(
-        sqlx::query("DELETE FROM threads WHERE id = $1")
+        query("DELETE FROM threads WHERE id = $1")
             .bind(parent.0)
             .execute(store.pool())
             .await
@@ -3983,15 +3914,10 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
             std::fs::copy(&path, dir.join(&name)).unwrap();
         }
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
-    let applied = |pool: sqlx::PgPool| async move {
-        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
+    let applied = |pool: PgPool| async move {
+        let (n,): (i64,) = query_as("SELECT count(*) FROM _sqlx_migrations")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -4014,7 +3940,7 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
         (parent, &parent_job, None),
         (child, &child_job, Some(parent)),
     ] {
-        sqlx::query(
+        query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, rail_rank, job, child_of, child_session) \
              VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 0, now(), now(), 'i', $2, $3, $4)",
@@ -4028,7 +3954,7 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
         .unwrap();
     }
     let insert_event = |thread: ThreadId, seq: i64, kind: &'static str, data: String| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, now(), $3, '{\"type\":\"system\",\"name\":\"orchestrator\"}', $4::jsonb)",
         )
@@ -4155,7 +4081,7 @@ async fn an_open_that_loses_at_the_unique_index_answers_with_the_winners_thread(
     let store = db.store().await;
     let (parent, winner, loser) = (Uuid::now_v7(), Uuid::now_v7(), ThreadId(Uuid::now_v7()));
     let owner = orch_core::UserId::new("alice@example.com");
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at, rail_rank) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 0, now(), now(), 'i')",
     )
@@ -4165,7 +4091,7 @@ async fn an_open_that_loses_at_the_unique_index_answers_with_the_winners_thread(
     .unwrap();
     // the winner's transaction: its child is written and not yet committed
     let mut tx = store.pool().begin().await.unwrap();
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
          updated_at, rail_rank, child_of, child_session) \
          VALUES ($1, 'alice@example.com', 't', 'coder', 'queued', 1, 0, now(), now(), 'i', $2, 's1')",
@@ -4217,7 +4143,7 @@ async fn an_open_that_loses_at_the_unique_index_answers_with_the_winners_thread(
     // it is waiting on the index: a lock wait of another backend, not a finished call
     let waiting = async {
         loop {
-            let (n,): (i64,) = sqlx::query_as(
+            let (n,): (i64,) = query_as(
                 "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
                  AND query LIKE 'INSERT INTO threads%' AND pid <> pg_backend_pid()",
             )
@@ -4240,10 +4166,69 @@ async fn an_open_that_loses_at_the_unique_index_answers_with_the_winners_thread(
         other => panic!("{other:?}"),
     }
     assert!(store.get_thread(None, loser).await.unwrap().is_none());
-    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM threads WHERE child_of = $1")
+    let (n,): (i64,) = query_as("SELECT count(*) FROM threads WHERE child_of = $1")
         .bind(parent)
         .fetch_one(store.pool())
         .await
         .unwrap();
     assert_eq!(n, 1);
+}
+
+/// sqlx set `TimeZone=UTC` and `DateStyle=ISO, MDY` on every session; `tokio-postgres` sends neither, so
+/// a session has the server's, the role's or the database's. Nothing the store reads or writes depends
+/// on them: a store whose sessions are in a zone 13 h 45 min from UTC, with a day-first date style, writes
+/// and reads the instants it is given (and a usage month is the same month).
+#[tokio::test]
+async fn a_session_in_another_zone_and_date_style_reads_and_writes_the_same_instants() {
+    let db = db_or_skip!();
+    let migrated = db.store().await;
+    drop(migrated);
+    let odd = PgStore::from_pool(
+        db.pool_with(
+            "orch-test-zone",
+            4,
+            &[("TimeZone", "Pacific/Chatham"), ("DateStyle", "SQL, DMY")],
+        )
+        .await,
+    );
+    let (zone, style): (String, String) =
+        query_as("SELECT current_setting('TimeZone'), current_setting('DateStyle')")
+            .fetch_one(odd.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        (zone.as_str(), style.as_str()),
+        ("Pacific/Chatham", "SQL, DMY")
+    );
+
+    let id = create(&odd, vec![delegate()]).await;
+    let thread = odd.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!((thread.created_at, thread.updated_at), (t0(), t0()));
+    let events = odd.list_events(id, 0, 10).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].at, t0());
+    // the server holds the instant itself: in UTC it is the time that was written
+    let written: String = query_scalar(
+        "SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
+         FROM threads WHERE id = $1",
+    )
+    .bind(id.0)
+    .fetch_one(odd.pool())
+    .await
+    .unwrap();
+    assert_eq!(written, T0);
+    // an outbox row is due when it was written, as the claim compares instants
+    let claimed = odd
+        .claim_outbox(
+            "w",
+            t0(),
+            Duration::from_secs(30),
+            10,
+            orch_ports::ClaimOrder::Fifo,
+        )
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].next_attempt_at, t0());
+    assert_eq!(claimed[0].lease_until, Some(t0() + Duration::from_secs(30)));
 }

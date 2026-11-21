@@ -29,16 +29,17 @@
 
 use std::time::Duration;
 
+use crate::error::{DbFailure, SqlError};
+use crate::sql::{Tx, query, query_as, query_scalar};
 use orch_core::prompt::{PromptAudience, PromptDefinition, PromptId};
 use orch_core::{ErrorClass, Timestamp, UserId};
 use orch_ports::{
     MAX_PROMPTS, PromptPage, PromptRevision, PromptScope, PromptStore, PromptStoreError,
     PromptSummary, PromptViewer, StoredPrompt,
 };
-use sqlx::{Postgres, Transaction};
 
 use crate::codec::{to_db, ts};
-use crate::error::{is_unique_violation, sql_class};
+use crate::error::is_unique_violation;
 use crate::store::PgStore;
 
 /// How long a write waits for a lock, the owner's first and then the row's, before it gives up as
@@ -61,7 +62,7 @@ type Row = (
     serde_json::Value,
     Vec<String>,
     i64,
-    jiff_sqlx::Timestamp,
+    jiff::Timestamp,
 );
 
 /// A row with its owner in front (the owner is read only to say whether the viewer owns it, and goes no further).
@@ -75,7 +76,7 @@ type OwnedRow = (
     serde_json::Value,
     Vec<String>,
     i64,
-    jiff_sqlx::Timestamp,
+    jiff::Timestamp,
 );
 
 const COLUMNS: &str =
@@ -91,7 +92,7 @@ type SummaryRow = (
     Vec<String>,
     bool,
     i64,
-    jiff_sqlx::Timestamp,
+    jiff::Timestamp,
 );
 
 /// The constraint names of the migration.
@@ -100,16 +101,16 @@ const NAME_PER_OWNER: &str = "user_prompts_name_per_owner";
 
 impl PgStore {
     /// Begins a write: `READ COMMITTED`, with the wait for a lock bounded by [`LOCK_TIMEOUT`].
-    async fn begin_prompt_write(&self) -> Result<Transaction<'static, Postgres>, PromptStoreError> {
+    async fn begin_prompt_write(&self) -> Result<Tx, PromptStoreError> {
         let mut tx = self
             .pool()
             .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
             .await
             .map_err(db_err)?;
-        let bounded = sqlx::query(sqlx::AssertSqlSafe(format!(
+        let bounded = query(format!(
             "SET LOCAL lock_timeout = '{}ms'",
             LOCK_TIMEOUT.as_millis()
-        )))
+        ))
         .execute(&mut *tx)
         .await;
         if let Err(err) = bounded {
@@ -120,12 +121,9 @@ impl PgStore {
     }
 
     /// Begins a write that holds the owner's lock until it ends.
-    async fn begin_prompt_write_locked(
-        &self,
-        owner: &UserId,
-    ) -> Result<Transaction<'static, Postgres>, PromptStoreError> {
+    async fn begin_prompt_write_locked(&self, owner: &UserId) -> Result<Tx, PromptStoreError> {
         let mut tx = self.begin_prompt_write().await?;
-        let taken = sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        let taken = query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
             .bind(PROMPT_OWNER_LOCK_CLASS)
             .bind(owner.as_str())
             .execute(&mut *tx)
@@ -147,17 +145,16 @@ impl PromptStore for PgStore {
     ) -> Result<StoredPrompt, PromptStoreError> {
         let mut tx = self.begin_prompt_write_locked(owner).await?;
         // The id first, then the name, then the count, as the port promises.
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM user_prompts WHERE id = $1)")
-                .bind(prompt.id().as_str())
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db_err)?;
+        let exists: bool = query_scalar("SELECT EXISTS (SELECT 1 FROM user_prompts WHERE id = $1)")
+            .bind(prompt.id().as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
         if exists {
             abandon(tx).await;
             return Err(PromptStoreError::Exists);
         }
-        let named: bool = sqlx::query_scalar(
+        let named: bool = query_scalar(
             "SELECT EXISTS (SELECT 1 FROM user_prompts WHERE owner = $1 AND name = $2)",
         )
         .bind(owner.as_str())
@@ -171,7 +168,7 @@ impl PromptStore for PgStore {
         }
         // The count is taken with the owner's lock held: no other insert of this owner is between
         // this count and this insert.
-        let held: i64 = sqlx::query_scalar("SELECT count(*) FROM user_prompts WHERE owner = $1")
+        let held: i64 = query_scalar("SELECT count(*) FROM user_prompts WHERE owner = $1")
             .bind(owner.as_str())
             .fetch_one(&mut *tx)
             .await
@@ -181,7 +178,7 @@ impl PromptStore for PgStore {
             return Err(PromptStoreError::TooMany { limit: MAX_PROMPTS });
         }
         let written = ts(at);
-        let inserted: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        let inserted: Result<i64, SqlError> = query_scalar(
             "INSERT INTO user_prompts \
                (id, owner, name, title, description, body, variables, audience, revision, \
                 created_at, updated_at) \
@@ -226,10 +223,10 @@ impl PromptStore for PgStore {
         viewer: &PromptViewer,
         id: &PromptId,
     ) -> Result<Option<StoredPrompt>, PromptStoreError> {
-        let found: Option<OwnedRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let found: Option<OwnedRow> = query_as(format!(
             "SELECT owner, {COLUMNS} FROM user_prompts \
              WHERE id = $1 AND (owner = $2 OR (cardinality(audience) > 0 AND audience && $3))"
-        )))
+        ))
         .bind(id.as_str())
         .bind(viewer.user.as_str())
         .bind(roles_plus_star(viewer))
@@ -264,7 +261,7 @@ impl PromptStore for PgStore {
         limit: u32,
     ) -> Result<PromptPage, PromptStoreError> {
         let limit = i64::from(limit.min(u32::try_from(MAX_PROMPTS).unwrap_or(100)));
-        let rows: Vec<SummaryRow> = sqlx::query_as(sqlx::AssertSqlSafe(list_sql(scope)))
+        let rows: Vec<SummaryRow> = query_as(list_sql(scope))
             .bind(viewer.user.as_str())
             .bind(roles_plus_star(viewer))
             .bind(after.map(PromptId::as_str))
@@ -272,7 +269,7 @@ impl PromptStore for PgStore {
             .fetch_all(self.pool())
             .await
             .map_err(db_err)?;
-        let held: i64 = sqlx::query_scalar("SELECT count(*) FROM user_prompts WHERE owner = $1")
+        let held: i64 = query_scalar("SELECT count(*) FROM user_prompts WHERE owner = $1")
             .bind(viewer.user.as_str())
             .fetch_one(self.pool())
             .await
@@ -300,7 +297,7 @@ impl PromptStore for PgStore {
     ) -> Result<StoredPrompt, PromptStoreError> {
         let mut tx = self.begin_prompt_write().await?;
         let written = ts(at);
-        let updated: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
+        let updated: Result<Option<i64>, SqlError> = query_scalar(
             "UPDATE user_prompts SET name = $3, title = $4, description = $5, body = $6, \
                variables = $7, audience = $8, revision = nextval('user_prompt_revisions'), \
                updated_at = $9 \
@@ -323,7 +320,7 @@ impl PromptStore for PgStore {
             Ok(Some(revision)) => revision,
             Ok(None) => {
                 // gone or not the owner's: NotFound; there, at another revision: Conflict
-                let present: bool = sqlx::query_scalar(
+                let present: bool = query_scalar(
                     "SELECT EXISTS (SELECT 1 FROM user_prompts WHERE id = $1 AND owner = $2)",
                 )
                 .bind(prompt.id().as_str())
@@ -360,7 +357,7 @@ impl PromptStore for PgStore {
         expected: Option<PromptRevision>,
     ) -> Result<(), PromptStoreError> {
         let mut tx = self.begin_prompt_write().await?;
-        let gone: Option<i64> = sqlx::query_scalar(
+        let gone: Option<i64> = query_scalar(
             "DELETE FROM user_prompts \
              WHERE id = $1 AND owner = $2 AND ($3::bigint IS NULL OR revision = $3) \
              RETURNING revision",
@@ -374,14 +371,13 @@ impl PromptStore for PgStore {
         if gone.is_some() {
             return tx.commit().await.map_err(db_err);
         }
-        let present: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM user_prompts WHERE id = $1 AND owner = $2)",
-        )
-        .bind(id.as_str())
-        .bind(owner.as_str())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db_err)?;
+        let present: bool =
+            query_scalar("SELECT EXISTS (SELECT 1 FROM user_prompts WHERE id = $1 AND owner = $2)")
+                .bind(id.as_str())
+                .bind(owner.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db_err)?;
         abandon(tx).await;
         Err(if present {
             PromptStoreError::Conflict
@@ -427,7 +423,7 @@ fn roles_plus_star(viewer: &PromptViewer) -> Vec<String> {
 }
 
 /// Ends a transaction that wrote nothing, which releases the locks it holds at once.
-async fn abandon(tx: Transaction<'static, Postgres>) {
+async fn abandon(tx: Tx) {
     // a failed rollback is a connection that is gone, and the server has released the locks then
     let _ = tx.rollback().await;
 }
@@ -470,12 +466,7 @@ fn stored(row: Row, own: bool) -> Result<StoredPrompt, PromptStoreError> {
     let revision = u64::try_from(revision)
         .map(PromptRevision::new)
         .map_err(|_| corrupt("the revision is not a positive number"))?;
-    Ok(StoredPrompt::new(
-        prompt,
-        revision,
-        updated_at.to_jiff(),
-        own,
-    ))
+    Ok(StoredPrompt::new(prompt, revision, updated_at, own))
 }
 
 fn summary(row: SummaryRow) -> Result<PromptSummary, PromptStoreError> {
@@ -500,7 +491,7 @@ fn summary(row: SummaryRow) -> Result<PromptSummary, PromptStoreError> {
         revision: u64::try_from(revision)
             .map(PromptRevision::new)
             .map_err(|_| corrupt("the revision is not a positive number"))?,
-        updated_at: updated_at.to_jiff(),
+        updated_at: updated_at,
     })
 }
 
@@ -514,72 +505,41 @@ const LOCK_NOT_AVAILABLE: &str = "55P03";
 /// repeats it: a value the database cannot hold (22P05, a NUL in a `jsonb` string), a violated
 /// constraint nobody maps, a rejected statement. The driver's error is the source; it holds no
 /// parameter of the statement, so no word of a prompt and no owner.
-fn db_err(err: sqlx::Error) -> PromptStoreError {
-    if matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some(LOCK_NOT_AVAILABLE))
-    {
+fn db_err(err: SqlError) -> PromptStoreError {
+    failure_err(DbFailure::of(&err))
+}
+
+/// [`db_err`] of the failure as this crate keeps it: its SQLSTATE and class decide, and it is the
+/// source (it holds no parameter of the statement, and never a server's `DETAIL`).
+fn failure_err(failure: DbFailure) -> PromptStoreError {
+    if failure.code() == Some(LOCK_NOT_AVAILABLE) {
         return PromptStoreError::unavailable(
             "the prompts are locked by another writer for longer than a write waits; try again",
         )
-        .with_source(err);
+        .with_source(failure);
     }
-    match sql_class(&err) {
+    match failure.class() {
         ErrorClass::Corrupt => {
             PromptStoreError::Corrupt("a row of the store does not decode".to_owned())
         }
         ErrorClass::Transient => {
-            PromptStoreError::unavailable("the database cannot be reached").with_source(err)
+            PromptStoreError::unavailable("the database cannot be reached").with_source(failure)
         }
-        _ => PromptStoreError::internal("the database refused the request").with_source(err),
+        _ => PromptStoreError::internal("the database refused the request").with_source(failure),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-    use std::fmt;
-
     use orch_core::ErrorClass;
     use orch_ports::PromptStoreError;
-    use sqlx::error::{DatabaseError, ErrorKind};
 
-    use super::db_err;
-
-    /// A database error with a SQLSTATE and no more.
-    #[derive(Debug)]
-    struct Refused(&'static str);
-
-    impl fmt::Display for Refused {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("refused")
-        }
-    }
-
-    impl std::error::Error for Refused {}
-
-    impl DatabaseError for Refused {
-        fn message(&self) -> &str {
-            "refused"
-        }
-        fn code(&self) -> Option<Cow<'_, str>> {
-            Some(Cow::Borrowed(self.0))
-        }
-        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-            self
-        }
-        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
-            self
-        }
-        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
-            self
-        }
-        fn kind(&self) -> ErrorKind {
-            ErrorKind::Other
-        }
-    }
+    use super::failure_err;
+    use crate::error::DbFailure;
 
     fn class_of(code: &'static str) -> ErrorClass {
         use orch_core::Classify;
-        db_err(sqlx::Error::Database(Box::new(Refused(code)))).class()
+        failure_err(DbFailure::sqlstate(code)).class()
     }
 
     #[test]
@@ -596,7 +556,7 @@ mod tests {
             assert_eq!(class_of(code), ErrorClass::Transient, "{code}");
         }
         assert!(matches!(
-            db_err(sqlx::Error::Database(Box::new(Refused("22P05")))),
+            failure_err(DbFailure::sqlstate("22P05")),
             PromptStoreError::Internal { .. }
         ));
     }

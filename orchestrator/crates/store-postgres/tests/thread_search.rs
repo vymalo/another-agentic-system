@@ -18,6 +18,7 @@ use orch_ports::{
     ThreadStore,
 };
 use orch_store_postgres::PgStore;
+use orch_store_postgres::sql::{query, query_as, query_scalar};
 use support::TestDb;
 use uuid::Uuid;
 
@@ -104,7 +105,7 @@ fn request(q: &str) -> SearchRequest {
 }
 
 async fn rows(store: &PgStore, table: &str) -> i64 {
-    sqlx::query_scalar(match table {
+    query_scalar(match table {
         "message_terms" => "SELECT count(*) FROM message_terms",
         _ => "SELECT count(*) FROM threads WHERE title_terms IS NOT NULL",
     })
@@ -181,7 +182,7 @@ async fn a_search_that_runs_out_of_time_is_unavailable() {
         .await
         .unwrap();
     let mut blocker = store.pool().begin().await.unwrap();
-    sqlx::query("LOCK TABLE message_terms IN ACCESS EXCLUSIVE MODE")
+    query("LOCK TABLE message_terms IN ACCESS EXCLUSIVE MODE")
         .execute(&mut *blocker)
         .await
         .unwrap();
@@ -229,7 +230,7 @@ async fn the_index_holds_the_rust_keys_as_they_are() {
     let lexemes = |sql: &'static str| {
         let pool = store.pool().clone();
         async move {
-            let mut got: Vec<String> = sqlx::query_scalar::<_, Vec<String>>(sql)
+            let mut got: Vec<String> = query_scalar::<Vec<String>>(sql)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -261,7 +262,7 @@ async fn the_watermark_follows_the_log() {
     let through = |store: &PgStore| {
         let pool = store.pool().clone();
         async move {
-            sqlx::query_scalar::<_, i64>("SELECT search_through FROM threads")
+            query_scalar::<i64>("SELECT search_through FROM threads")
                 .fetch_one(&pool)
                 .await
                 .unwrap()
@@ -288,7 +289,7 @@ async fn the_watermark_follows_the_log() {
         .unwrap();
     assert_eq!(fork.last_seq, 4);
     let rows: Vec<(uuid::Uuid, i64)> =
-        sqlx::query_as("SELECT thread_id, count(*)::bigint FROM message_terms GROUP BY thread_id ORDER BY thread_id")
+        query_as("SELECT thread_id, count(*)::bigint FROM message_terms GROUP BY thread_id ORDER BY thread_id")
             .fetch_all(store.pool())
             .await
             .unwrap();
@@ -306,14 +307,14 @@ async fn a_commit_that_fails_late_leaves_no_index_row() {
         .create_thread(new_thread(1, "Notes"), commit(vec![say("walrus first")]))
         .await
         .unwrap();
-    sqlx::query(
+    query(
         "CREATE FUNCTION fail_late() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
          RAISE EXCEPTION 'a test made this commit fail late'; END $$",
     )
     .execute(store.pool())
     .await
     .unwrap();
-    sqlx::query(
+    query(
         "CREATE TRIGGER fail_late BEFORE UPDATE ON threads FOR EACH ROW \
          WHEN (NEW.last_seq = 2) EXECUTE FUNCTION fail_late()",
     )
@@ -333,7 +334,7 @@ async fn a_commit_that_fails_late_leaves_no_index_row() {
         1,
         "no row of the failed commit"
     );
-    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+    let events: i64 = query_scalar("SELECT count(*) FROM events")
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -347,7 +348,7 @@ async fn a_commit_that_fails_late_leaves_no_index_row() {
             .is_empty()
     );
     // and without the failure it is searched
-    sqlx::query("DROP TRIGGER fail_late ON threads")
+    query("DROP TRIGGER fail_late ON threads")
         .execute(store.pool())
         .await
         .unwrap();
@@ -382,12 +383,10 @@ async fn a_later_commit_indexes_only_its_own_events() {
     let snapshot = |store: &PgStore| {
         let pool = store.pool().clone();
         async move {
-            sqlx::query_as::<_, (i64, String)>(
-                "SELECT seq, xmin::text FROM message_terms ORDER BY seq",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap()
+            query_as::<(i64, String)>("SELECT seq, xmin::text FROM message_terms ORDER BY seq")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
         }
     };
     let before = snapshot(&store).await;
@@ -400,12 +399,12 @@ async fn a_later_commit_indexes_only_its_own_events() {
     assert_eq!(after.len(), 4);
     assert_eq!(after[..3], before[..], "the old rows were not rewritten");
     assert_eq!(after[3].0, 4);
-    let through: i64 = sqlx::query_scalar("SELECT search_through FROM threads")
+    let through: i64 = query_scalar("SELECT search_through FROM threads")
         .fetch_one(store.pool())
         .await
         .unwrap();
     assert_eq!(through, 4);
-    let fold: i32 = sqlx::query_scalar("SELECT search_fold FROM threads")
+    let fold: i32 = query_scalar("SELECT search_fold FROM threads")
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -423,11 +422,11 @@ async fn a_commit_moves_the_watermark_by_the_bound_and_no_further() {
         .create_thread(new_thread(1, "Old"), commit(events))
         .await
         .unwrap();
-    sqlx::query("DELETE FROM message_terms")
+    query("DELETE FROM message_terms")
         .execute(store.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE threads SET search_through = 0, title_terms = NULL")
+    query("UPDATE threads SET search_through = 0, title_terms = NULL")
         .execute(store.pool())
         .await
         .unwrap();
@@ -435,13 +434,13 @@ async fn a_commit_moves_the_watermark_by_the_bound_and_no_further() {
         .commit(id(1), rec.version, commit(vec![say("walrus own")]))
         .await
         .unwrap();
-    let through: i64 = sqlx::query_scalar("SELECT search_through FROM threads")
+    let through: i64 = query_scalar("SELECT search_through FROM threads")
         .fetch_one(store.pool())
         .await
         .unwrap();
     assert_eq!(through, orch_core::search::COMMIT_CATCH_UP_EVENTS);
     // 500 old rows, and the commit's own at seq 1201, nothing between
-    let seqs: Vec<i64> = sqlx::query_scalar("SELECT seq FROM message_terms ORDER BY seq")
+    let seqs: Vec<i64> = query_scalar("SELECT seq FROM message_terms ORDER BY seq")
         .fetch_all(store.pool())
         .await
         .unwrap();

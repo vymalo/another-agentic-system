@@ -10,8 +10,8 @@ use orch_ports::{
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use sqlx::Row;
-use sqlx::postgres::PgRow;
+use tokio_postgres::Row as PgRow;
+use tokio_postgres::types::FromSql;
 
 use crate::error::store_err;
 
@@ -47,8 +47,8 @@ pub(crate) fn ts(t: Timestamp) -> Timestamp {
     t.round(Unit::Microsecond).unwrap_or(t)
 }
 
-pub(crate) fn to_db(t: Timestamp) -> jiff_sqlx::Timestamp {
-    jiff_sqlx::Timestamp::from(ts(t))
+pub(crate) fn to_db(t: Timestamp) -> Timestamp {
+    ts(t)
 }
 
 /// The snake_case wire spelling of a unit-variant enum, as stored in a text column.
@@ -68,21 +68,14 @@ pub(crate) fn parse_enum<T: DeserializeOwned>(what: &str, s: &str) -> Result<T, 
 }
 
 pub(crate) fn get_ts(row: &PgRow, col: &str) -> Result<Timestamp, StoreError> {
-    row.try_get::<jiff_sqlx::Timestamp, _>(col)
-        .map(jiff_sqlx::Timestamp::to_jiff)
-        .map_err(store_err)
+    row.try_get::<_, Timestamp>(col).map_err(store_err)
 }
 
 pub(crate) fn get_ts_opt(row: &PgRow, col: &str) -> Result<Option<Timestamp>, StoreError> {
-    row.try_get::<Option<jiff_sqlx::Timestamp>, _>(col)
-        .map(|t| t.map(jiff_sqlx::Timestamp::to_jiff))
-        .map_err(store_err)
+    row.try_get::<_, Option<Timestamp>>(col).map_err(store_err)
 }
 
-fn get<'r, T>(row: &'r PgRow, col: &str) -> Result<T, StoreError>
-where
-    T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
-{
+fn get<'r, T: FromSql<'r>>(row: &'r PgRow, col: &str) -> Result<T, StoreError> {
     row.try_get(col).map_err(store_err)
 }
 

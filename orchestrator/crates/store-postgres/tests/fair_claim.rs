@@ -3,14 +3,16 @@
 //! its own schema.
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
+mod history;
 mod support;
+use orch_store_postgres::PgPool;
+use orch_store_postgres::sql::query;
 
 use std::time::Duration;
 
 use jiff::Timestamp;
 use orch_ports::{ClaimOrder, ThreadStore};
 use orch_store_postgres::PgStore;
-use sqlx::{PgPool, Row};
 use support::TestDb;
 use uuid::Uuid;
 
@@ -34,7 +36,7 @@ fn id(n: u128) -> Uuid {
 
 /// A thread of `owner`, as a build that knows nothing of the owner on the outbox wrote it.
 async fn thread(pool: &PgPool, n: u128, owner: &str) {
-    sqlx::query(
+    query(
         "INSERT INTO threads (id, owner, title, agent_id, state, version, created_at, updated_at, \
          rail_rank) VALUES ($1, $2, 't', 'coder', 'queued', 1, now(), now(), $3)",
     )
@@ -48,7 +50,7 @@ async fn thread(pool: &PgPool, n: u128, owner: &str) {
 
 /// An outbox row for thread `n` as an older build inserts it: no owner, and a status.
 async fn row(pool: &PgPool, n: u128, status: &str, lease_until: Option<&str>) {
-    sqlx::query(
+    query(
         "INSERT INTO outbox (id, thread_id, kind, payload, status, next_attempt_at, lease_until, \
          created_at, updated_at) VALUES ($1, $1, 'delegate', $2::jsonb, $3, now() - interval '1 minute', \
          $4::timestamptz, now(), now())",
@@ -63,7 +65,7 @@ async fn row(pool: &PgPool, n: u128, status: &str, lease_until: Option<&str>) {
 }
 
 async fn owner_of_row(pool: &PgPool, n: u128) -> Option<String> {
-    sqlx::query("SELECT owner FROM outbox WHERE id = $1")
+    query("SELECT owner FROM outbox WHERE id = $1")
         .bind(id(n))
         .fetch_one(pool)
         .await
@@ -117,7 +119,7 @@ async fn an_open_row_cannot_be_left_without_an_owner() {
     let pool = store.pool().clone();
     thread(&pool, 1, "alice@example.com").await;
     row(&pool, 1, "pending", None).await;
-    let refused = sqlx::query("UPDATE outbox SET owner = NULL WHERE id = $1")
+    let refused = query("UPDATE outbox SET owner = NULL WHERE id = $1")
         .bind(id(1))
         .execute(&pool)
         .await
@@ -125,7 +127,7 @@ async fn an_open_row_cannot_be_left_without_an_owner() {
     let refused = refused.to_string();
     assert!(refused.contains("outbox_open_has_owner"), "{refused}");
     // a finished row needs none
-    sqlx::query("UPDATE outbox SET status = 'delivered', owner = NULL WHERE id = $1")
+    query("UPDATE outbox SET status = 'delivered', owner = NULL WHERE id = $1")
         .bind(id(1))
         .execute(&pool)
         .await
@@ -150,12 +152,7 @@ async fn migration_0024_gives_the_open_rows_their_owner() {
             std::fs::copy(&path, dir.join(&name)).unwrap();
         }
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
 
     // rows as the build before this one wrote them: pending, a lease that ran out, a lease that
@@ -211,7 +208,7 @@ async fn rows_another_claimer_holds_are_skipped_and_the_claim_takes_the_next() {
     row(&pool, 21, "pending", None).await;
     // another claimer is in the middle of taking the first two
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT id FROM outbox WHERE id = ANY($1) FOR UPDATE")
+    query("SELECT id FROM outbox WHERE id = ANY($1) FOR UPDATE")
         .bind(vec![id(1), id(2)])
         .fetch_all(&mut *tx)
         .await

@@ -2,14 +2,15 @@
 
 use std::time::Duration;
 
+use crate::error::{DbFailure, SqlError};
+use crate::sql::{PgPool, Tx, query, query_as, query_scalar};
 use orch_core::{ErrorClass, UserId};
 use orch_ports::{
     CredentialRef, MAX_USER_TOOL_SERVERS, ServerRevision, StoredServer, UserAuth, UserToolServer,
     UserToolServerId, UserToolServerState, UserToolServerStore, UserToolServerStoreError,
 };
-use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::error::{is_unique_violation, sql_class};
+use crate::error::is_unique_violation;
 
 /// How long a write waits for a lock, the owner's first and then the row's, before it gives up as
 /// [`UserToolServerStoreError::Unavailable`]: two seconds.
@@ -112,12 +113,11 @@ impl PgUserToolServers {
     /// [`UserToolServerStoreError::Unavailable`] when the database cannot be reached or refuses the
     /// query.
     pub async fn count_with_credential(&self) -> Result<u64, UserToolServerStoreError> {
-        let held: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM user_tool_servers WHERE credential IS NOT NULL",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db_err)?;
+        let held: i64 =
+            query_scalar("SELECT count(*) FROM user_tool_servers WHERE credential IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db_err)?;
         // a count is never negative; a number that is not a `u64` is a database that is wrong
         u64::try_from(held).map_err(|_| {
             UserToolServerStoreError::unavailable("the database gave a count out of range")
@@ -125,16 +125,16 @@ impl PgUserToolServers {
     }
 
     /// Begins a write: `READ COMMITTED`, with the wait for a lock bounded by [`LOCK_TIMEOUT`].
-    async fn begin(&self) -> Result<Transaction<'static, Postgres>, UserToolServerStoreError> {
+    async fn begin(&self) -> Result<Tx, UserToolServerStoreError> {
         let mut tx = self
             .pool
             .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
             .await
             .map_err(db_err)?;
-        let bounded = sqlx::query(sqlx::AssertSqlSafe(format!(
+        let bounded = query(format!(
             "SET LOCAL lock_timeout = '{}ms'",
             LOCK_TIMEOUT.as_millis()
-        )))
+        ))
         .execute(&mut *tx)
         .await;
         if let Err(err) = bounded {
@@ -146,12 +146,9 @@ impl PgUserToolServers {
     }
 
     /// Begins a write that holds the owner's lock until it ends.
-    async fn begin_locked(
-        &self,
-        owner: &UserId,
-    ) -> Result<Transaction<'static, Postgres>, UserToolServerStoreError> {
+    async fn begin_locked(&self, owner: &UserId) -> Result<Tx, UserToolServerStoreError> {
         let mut tx = self.begin().await?;
-        let taken = sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        let taken = query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
             .bind(OWNER_LOCK_CLASS)
             .bind(owner.as_str())
             .execute(&mut *tx)
@@ -174,7 +171,7 @@ impl UserToolServerStore for PgUserToolServers {
         let mut tx = self.begin_locked(owner).await?;
         // The id first, so that at the limit a definition that is there already is "exists", and
         // not "too many".
-        let exists: bool = sqlx::query_scalar(
+        let exists: bool = query_scalar(
             "SELECT EXISTS (SELECT 1 FROM user_tool_servers WHERE owner = $1 AND id = $2)",
         )
         .bind(owner.as_str())
@@ -188,19 +185,18 @@ impl UserToolServerStore for PgUserToolServers {
         }
         // The count is taken with the owner's lock held: no other insert of this owner is between
         // this count and this insert.
-        let held: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM user_tool_servers WHERE owner = $1")
-                .bind(owner.as_str())
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db_err)?;
+        let held: i64 = query_scalar("SELECT count(*) FROM user_tool_servers WHERE owner = $1")
+            .bind(owner.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
         if !usize::try_from(held).is_ok_and(|held| held < MAX_USER_TOOL_SERVERS) {
             abandon(tx).await;
             return Err(UserToolServerStoreError::TooMany {
                 limit: MAX_USER_TOOL_SERVERS,
             });
         }
-        let inserted: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        let inserted: Result<i64, SqlError> = query_scalar(
             "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, credential, revision) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, nextval('user_tool_server_revisions')) \
              RETURNING revision",
@@ -232,9 +228,9 @@ impl UserToolServerStore for PgUserToolServers {
         owner: &UserId,
         id: &UserToolServerId,
     ) -> Result<Option<StoredServer>, UserToolServerStoreError> {
-        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let row: Option<Row> = query_as(format!(
             "SELECT {COLUMNS} FROM user_tool_servers WHERE owner = $1 AND id = $2"
-        )))
+        ))
         .bind(owner.as_str())
         .bind(id.as_str())
         .fetch_optional(&self.pool)
@@ -244,9 +240,9 @@ impl UserToolServerStore for PgUserToolServers {
     }
 
     async fn list(&self, owner: &UserId) -> Result<Vec<StoredServer>, UserToolServerStoreError> {
-        let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let rows: Vec<Row> = query_as(format!(
             "SELECT {COLUMNS} FROM user_tool_servers WHERE owner = $1 ORDER BY id"
-        )))
+        ))
         .bind(owner.as_str())
         .fetch_all(&self.pool)
         .await
@@ -274,7 +270,7 @@ impl UserToolServerStore for PgUserToolServers {
     ) -> Result<ServerRevision, UserToolServerStoreError> {
         let auth = auth_json(server.auth())?;
         let mut tx = self.begin().await?;
-        let written: Option<i64> = sqlx::query_scalar(
+        let written: Option<i64> = query_scalar(
             "UPDATE user_tool_servers SET name = $3, url = $4, auth = $5, state = $6, \
                credential = $7, revision = nextval('user_tool_server_revisions'), \
                updated_at = clock_timestamp() \
@@ -303,7 +299,7 @@ impl UserToolServerStore for PgUserToolServers {
         expected: ServerRevision,
     ) -> Result<ServerRevision, UserToolServerStoreError> {
         let mut tx = self.begin().await?;
-        let written: Option<i64> = sqlx::query_scalar(
+        let written: Option<i64> = query_scalar(
             "UPDATE user_tool_servers SET state = $3, \
                revision = nextval('user_tool_server_revisions'), updated_at = clock_timestamp() \
              WHERE owner = $1 AND id = $2 AND revision = $4 \
@@ -325,7 +321,7 @@ impl UserToolServerStore for PgUserToolServers {
         id: &UserToolServerId,
     ) -> Result<(), UserToolServerStoreError> {
         let mut tx = self.begin().await?;
-        sqlx::query("DELETE FROM user_tool_servers WHERE owner = $1 AND id = $2")
+        query("DELETE FROM user_tool_servers WHERE owner = $1 AND id = $2")
             .bind(owner.as_str())
             .bind(id.as_str())
             .execute(&mut *tx)
@@ -336,7 +332,7 @@ impl UserToolServerStore for PgUserToolServers {
 }
 
 /// Ends a transaction that wrote nothing, which releases the locks it holds at once.
-async fn abandon(tx: Transaction<'static, Postgres>) {
+async fn abandon(tx: Tx) {
     // a failed rollback is a connection that is gone, and the server has released the locks then
     let _ = tx.rollback().await;
 }
@@ -346,7 +342,7 @@ async fn abandon(tx: Transaction<'static, Postgres>) {
 /// another revision (`Conflict`), which one more read of the key, in the same transaction, tells
 /// apart. Nothing was written when none matched.
 async fn finish(
-    mut tx: Transaction<'static, Postgres>,
+    mut tx: Tx,
     written: Option<i64>,
     owner: &UserId,
     id: &UserToolServerId,
@@ -355,7 +351,7 @@ async fn finish(
         tx.commit().await.map_err(db_err)?;
         return revision_of(revision);
     }
-    let present: bool = sqlx::query_scalar(
+    let present: bool = query_scalar(
         "SELECT EXISTS (SELECT 1 FROM user_tool_servers WHERE owner = $1 AND id = $2)",
     )
     .bind(owner.as_str())
@@ -458,23 +454,29 @@ const LOCK_NOT_AVAILABLE: &str = "55P03";
 /// network, the pool, the server, a rejected statement, a lock that was not got in time) is
 /// `Unavailable`, with the driver's error as the source. A driver error holds no parameter of the
 /// statement, so no URL and no owner.
-fn db_err(err: sqlx::Error) -> UserToolServerStoreError {
-    if matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some(LOCK_NOT_AVAILABLE))
-    {
+fn db_err(err: SqlError) -> UserToolServerStoreError {
+    failure_err(DbFailure::of(&err))
+}
+
+/// [`db_err`] of the failure as this crate keeps it, which is the source (no parameter of the
+/// statement, and never a server's `DETAIL`).
+fn failure_err(failure: DbFailure) -> UserToolServerStoreError {
+    if failure.code() == Some(LOCK_NOT_AVAILABLE) {
         return UserToolServerStoreError::unavailable(
             "the definitions are locked by another writer for longer than a write waits; try again",
         )
-        .with_source(err);
+        .with_source(failure);
     }
-    match sql_class(&err) {
+    match failure.class() {
         ErrorClass::Corrupt => {
             UserToolServerStoreError::Corrupt("a row of the store does not decode".to_owned())
         }
         ErrorClass::Transient => {
-            UserToolServerStoreError::unavailable("the database cannot be reached").with_source(err)
+            UserToolServerStoreError::unavailable("the database cannot be reached")
+                .with_source(failure)
         }
         _ => UserToolServerStoreError::unavailable("the database refused the request")
-            .with_source(err),
+            .with_source(failure),
     }
 }
 

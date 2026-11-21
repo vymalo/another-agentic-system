@@ -3,13 +3,14 @@
 
 use std::time::Duration;
 
+use crate::error::{DbFailure, SqlError};
+use crate::sql::{PgPool, Tx, query, query_as};
 use jiff::Timestamp;
 use orch_core::UserId;
 use orch_ports::{
     OAuthState, PendingAuthorization, PendingAuthorizationError, PendingAuthorizations,
     StateDigest, UserToolServerId,
 };
-use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::codec::to_db;
 
@@ -62,16 +63,16 @@ impl PgPendingAuthorizations {
     }
 
     /// Begins a statement's transaction: `READ COMMITTED`, with the wait for a lock bounded.
-    async fn begin(&self) -> Result<Transaction<'static, Postgres>, PendingAuthorizationError> {
+    async fn begin(&self) -> Result<Tx, PendingAuthorizationError> {
         let mut tx = self
             .pool
             .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
             .await
             .map_err(db_err)?;
-        let bounded = sqlx::query(sqlx::AssertSqlSafe(format!(
+        let bounded = query(format!(
             "SET LOCAL lock_timeout = '{}ms'",
             PENDING_LOCK_TIMEOUT.as_millis()
-        )))
+        ))
         .execute(&mut *tx)
         .await;
         if let Err(err) = bounded {
@@ -96,18 +97,17 @@ impl PendingAuthorizations for PgPendingAuthorizations {
         let mut tx = self.begin().await?;
         // what has ended, and an earlier put of this very state (a state is made once, from random
         // bytes, so the second is not a case a caller meets; it must still not fail)
-        let swept = sqlx::query(
-            "DELETE FROM user_tool_oauth_pending WHERE expires_at <= $1 OR state_hash = $2",
-        )
-        .bind(to_db(now))
-        .bind(digest.as_bytes().as_slice())
-        .execute(&mut *tx)
-        .await;
+        let swept =
+            query("DELETE FROM user_tool_oauth_pending WHERE expires_at <= $1 OR state_hash = $2")
+                .bind(to_db(now))
+                .bind(digest.as_bytes().as_slice())
+                .execute(&mut *tx)
+                .await;
         if let Err(err) = swept {
             let _ = tx.rollback().await;
             return Err(db_err(err));
         }
-        let written = sqlx::query(
+        let written = query(
             "INSERT INTO user_tool_oauth_pending (state_hash, owner, server, expires_at) \
              VALUES ($1, $2, $3, $4) \
              ON CONFLICT (owner, server) DO UPDATE SET \
@@ -134,14 +134,13 @@ impl PendingAuthorizations for PgPendingAuthorizations {
     ) -> Result<Option<PendingAuthorization>, PendingAuthorizationError> {
         let digest = StateDigest::of(state);
         let mut tx = self.begin().await?;
-        let taken: Result<Option<(String, String, jiff_sqlx::Timestamp)>, sqlx::Error> =
-            sqlx::query_as(
-                "DELETE FROM user_tool_oauth_pending WHERE state_hash = $1 \
+        let taken: Result<Option<(String, String, jiff::Timestamp)>, SqlError> = query_as(
+            "DELETE FROM user_tool_oauth_pending WHERE state_hash = $1 \
                  RETURNING owner, server, expires_at",
-            )
-            .bind(digest.as_bytes().as_slice())
-            .fetch_optional(&mut *tx)
-            .await;
+        )
+        .bind(digest.as_bytes().as_slice())
+        .fetch_optional(&mut *tx)
+        .await;
         let row = match taken {
             Ok(row) => row,
             Err(err) => {
@@ -154,7 +153,7 @@ impl PendingAuthorizations for PgPendingAuthorizations {
             return Ok(None);
         };
         // ended: the row is gone (it was deleted above) and gives back nothing
-        if now >= expires_at.to_jiff() {
+        if now >= expires_at {
             return Ok(None);
         }
         // a row the table's checks let through is a server id; one that is not (a repair by hand with
@@ -169,22 +168,19 @@ impl PendingAuthorizations for PgPendingAuthorizations {
 
 /// A driver error as the port says it. Everything is `Unavailable` (a store that cannot do it now,
 /// and a statement it refuses, which for this table is a bug and not the caller's), with a sentence
-/// that names nothing. The source of an error the server answered is its message and SQLSTATE and
-/// not the driver's error, whose `Debug` carries the failing row.
-fn db_err(err: sqlx::Error) -> PendingAuthorizationError {
-    if let sqlx::Error::Database(db) = &err {
-        let code = db.code().map(|c| c.into_owned());
-        let source = std::io::Error::other(format!(
-            "{} (SQLSTATE {})",
-            db.message(),
-            code.as_deref().unwrap_or("unknown")
-        ));
-        let detail = if code.as_deref() == Some(LOCK_NOT_AVAILABLE) {
+/// that names nothing. The source is the failure as this crate keeps it: for an error the server
+/// answered, its severity, message and SQLSTATE, never its `DETAIL`, which carries the failing row.
+fn db_err(err: SqlError) -> PendingAuthorizationError {
+    failure_err(DbFailure::of(&err))
+}
+
+fn failure_err(failure: DbFailure) -> PendingAuthorizationError {
+    let detail = match failure.code() {
+        Some(LOCK_NOT_AVAILABLE) => {
             "the pending authorizations are locked by another writer for longer than a statement waits; try again"
-        } else {
-            "the database refused the request"
-        };
-        return PendingAuthorizationError::unavailable(detail).with_source(source);
-    }
-    PendingAuthorizationError::unavailable("the database cannot be reached").with_source(err)
+        }
+        Some(_) => "the database refused the request",
+        None => "the database cannot be reached",
+    };
+    PendingAuthorizationError::unavailable(detail).with_source(failure)
 }

@@ -20,17 +20,18 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
+use deadpool_postgres::Object;
 use orch_core::{
     ModelTokens, SandboxEntry, SandboxEnvironment, SandboxShape, SandboxUsage, ThreadId,
     TokenCounts, UnmeasuredSandbox, UsageChange, UsageMonth, UsageMonthTotals, UsageRow,
     UsageSource, UsageTaskKey, UserId, usage_change, usage_counted_through,
 };
 use orch_ports::{StoreError, UsageBackfill, UsageLedger};
-use sqlx::postgres::PgRow;
-use sqlx::{PgConnection, Row};
+use tokio_postgres::Row as PgRow;
 
 use crate::codec::{enum_str, event_from_row, parse_enum};
-use crate::error::store_err;
+use crate::error::{SqlError, store_err};
+use crate::sql::{query, query_scalar};
 use crate::store::PgStore;
 
 /// How many events of the log one read of a catch-up takes.
@@ -85,11 +86,7 @@ struct Task {
 
 impl Folder {
     /// Folds `change` into its task's row, loading the row if this is the first change for it.
-    async fn apply(
-        &mut self,
-        conn: &mut PgConnection,
-        change: &UsageChange,
-    ) -> Result<(), StoreError> {
+    async fn apply(&mut self, conn: &mut Object, change: &UsageChange) -> Result<(), StoreError> {
         let task = match self.tasks.entry(change.key.clone()) {
             Entry::Occupied(task) => task.into_mut(),
             Entry::Vacant(slot) => slot.insert(Task {
@@ -108,7 +105,7 @@ impl Folder {
     }
 
     /// Writes the rows that changed, one write for each; returns how many.
-    async fn flush(self, conn: &mut PgConnection) -> Result<usize, StoreError> {
+    async fn flush(self, conn: &mut Object) -> Result<usize, StoreError> {
         let mut written = 0;
         for task in self.tasks.into_values() {
             if let Some(row) = task.folded {
@@ -123,7 +120,7 @@ impl Folder {
 /// Applies what the usage events among `events` change, in order. The events are those of a thread
 /// of `owner`, already inserted in this transaction.
 pub(crate) async fn fold_events(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     owner: &UserId,
     events: &[orch_core::Event],
 ) -> Result<(), StoreError> {
@@ -145,7 +142,7 @@ pub(crate) async fn fold_events(
 /// the ledger is not a reason for a conversation to stop, and a log that cannot be read is a fault
 /// of its own.
 pub(crate) async fn catch_up(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     thread: ThreadId,
     owner: &UserId,
     after: i64,
@@ -156,7 +153,7 @@ pub(crate) async fn catch_up(
     let mut cursor = after;
     let mut folded = 0_u64;
     while cursor < to {
-        let rows = sqlx::query(
+        let rows = query(
             "SELECT seq, at, kind, actor, data FROM events \
              WHERE thread_id = $1 AND seq > $2 AND seq <= $3 \
              AND kind IN ('model_usage', 'model_usage_total') ORDER BY seq LIMIT $4",
@@ -182,7 +179,7 @@ pub(crate) async fn catch_up(
                 }
                 Err(_) => tracing::warn!(
                     %thread,
-                    seq = row.try_get::<i64, _>("seq").unwrap_or(0),
+                    seq = row.try_get::<_, i64>("seq").unwrap_or(0),
                     "a usage event does not decode and is not counted in the ledger"
                 ),
             }
@@ -203,10 +200,10 @@ pub(crate) async fn catch_up(
 
 /// The rows of `thread` become ones that name no thread: the usage stays, the link goes.
 pub(crate) async fn forget_threads(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     threads: &[uuid::Uuid],
 ) -> Result<(), StoreError> {
-    sqlx::query("UPDATE usage_tasks SET thread_id = NULL WHERE thread_id = ANY($1)")
+    query("UPDATE usage_tasks SET thread_id = NULL WHERE thread_id = ANY($1)")
         .bind(threads)
         .execute(conn)
         .await
@@ -219,12 +216,12 @@ const TASK_COLUMNS: &str =
 
 /// The row of a task of a thread that exists, with its id.
 async fn load(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     key: &UsageTaskKey,
 ) -> Result<Option<(i64, UsageRow)>, StoreError> {
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+    let row = query(format!(
         "SELECT {TASK_COLUMNS} FROM usage_tasks WHERE thread_id = $1 AND agent = $2 AND task = $3"
-    )))
+    ))
     .bind(key.thread.0)
     .bind(&key.agent)
     .bind(&key.task)
@@ -238,12 +235,9 @@ async fn load(
 }
 
 /// A task row with its lines and sandbox entries.
-async fn with_children(
-    conn: &mut PgConnection,
-    row: &PgRow,
-) -> Result<(i64, UsageRow), StoreError> {
+async fn with_children(conn: &mut Object, row: &PgRow) -> Result<(i64, UsageRow), StoreError> {
     let id: i64 = row.try_get("id").map_err(store_err)?;
-    let lines = sqlx::query(
+    let lines = query(
         "SELECT provider, model, input_tokens, output_tokens, total_tokens, reasoning_tokens, \
          cached_input_tokens, cache_write_input_tokens FROM usage_lines WHERE task_id = $1 \
          ORDER BY provider COLLATE \"C\", model COLLATE \"C\"",
@@ -255,7 +249,7 @@ async fn with_children(
     // only a sandbox that was measured has entries
     let measured: bool = row.try_get("sandbox_measured").map_err(store_err)?;
     let entries = if measured {
-        sqlx::query(
+        query(
             "SELECT cpu_millis, memory_bytes, commands, milliseconds FROM usage_sandbox \
              WHERE task_id = $1 ORDER BY ord",
         )
@@ -324,11 +318,11 @@ fn to_row(task: &PgRow, lines: &[PgRow], entries: &[PgRow]) -> Result<UsageRow, 
         })
         .collect::<Result<Vec<_>, StoreError>>()?;
     Ok(UsageRow {
-        owner: UserId::new(&task.try_get::<String, _>("owner").map_err(get_err)?),
+        owner: UserId::new(&task.try_get::<_, String>("owner").map_err(get_err)?),
         key: UsageTaskKey {
             // a row that names no thread is never loaded by key; the nil id marks one read by `owner`
             thread: ThreadId(
-                task.try_get::<Option<uuid::Uuid>, _>("thread_id")
+                task.try_get::<_, Option<uuid::Uuid>>("thread_id")
                     .map_err(get_err)?
                     .unwrap_or_default(),
             ),
@@ -360,7 +354,7 @@ fn by_task(rows: Vec<PgRow>) -> Result<HashMap<i64, Vec<PgRow>>, StoreError> {
 /// written: the lines whose counts changed (an upsert), the lines that disappeared (a total can name
 /// other models than the calls it replaces), and the sandbox entries when they changed.
 async fn store(
-    conn: &mut PgConnection,
+    conn: &mut Object,
     stored: Option<(i64, UsageRow)>,
     row: &UsageRow,
 ) -> Result<(), StoreError> {
@@ -373,7 +367,7 @@ async fn store(
     };
     let (id, before) = match stored {
         Some((id, before)) => {
-            sqlx::query(
+            query(
                 "UPDATE usage_tasks SET month = $2, source = $3, seq = $4, \
                  sandbox_environment = $5, sandbox_measured = $6 WHERE id = $1",
             )
@@ -389,7 +383,7 @@ async fn store(
             (id, Some(before))
         }
         None => {
-            let id = sqlx::query_scalar(
+            let id = query_scalar(
                 "INSERT INTO usage_tasks (owner, thread_id, agent, task, month, source, seq, \
                  sandbox_environment, sandbox_measured) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
@@ -412,7 +406,7 @@ async fn store(
     let before_lines = before.as_ref().map_or(&[][..], |b| b.tokens.as_slice());
     for line in row.tokens.iter().filter(|l| !before_lines.contains(l)) {
         let t = &line.tokens;
-        sqlx::query(
+        query(
             "INSERT INTO usage_lines (task_id, provider, model, input_tokens, output_tokens, \
              total_tokens, reasoning_tokens, cached_input_tokens, cache_write_input_tokens) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
@@ -446,7 +440,7 @@ async fn store(
         .map(|old| (old.provider.as_deref().unwrap_or(""), old.model.as_str()))
         .unzip();
     if !gone_models.is_empty() {
-        sqlx::query(
+        query(
             "DELETE FROM usage_lines WHERE task_id = $1 AND (provider, model) IN \
              (SELECT * FROM unnest($2::text[], $3::text[]))",
         )
@@ -459,13 +453,13 @@ async fn store(
     }
     let entries = sandbox_entries(row);
     if before.as_ref().map(sandbox_entries).unwrap_or_default() != entries {
-        sqlx::query("DELETE FROM usage_sandbox WHERE task_id = $1")
+        query("DELETE FROM usage_sandbox WHERE task_id = $1")
             .bind(id)
             .execute(&mut *conn)
             .await
             .map_err(store_err)?;
         for (ord, entry) in (0_i16..).zip(entries) {
-            sqlx::query(
+            query(
                 "INSERT INTO usage_sandbox (task_id, ord, cpu_millis, memory_bytes, commands, \
                  milliseconds) VALUES ($1, $2, $3, $4, $5, $6)",
             )
@@ -499,20 +493,20 @@ impl UsageLedger for PgStore {
     ) -> Result<UsageMonthTotals, StoreError> {
         // one snapshot for the four reads, so a commit between them cannot make them disagree
         let mut tx = self.pool().begin().await.map_err(store_err)?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         let who = owner.as_str();
         let when = month.to_string();
         let tasks: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM usage_tasks WHERE owner = $1 AND month = $2")
+            query_scalar("SELECT count(*) FROM usage_tasks WHERE owner = $1 AND month = $2")
                 .bind(who)
                 .bind(&when)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(store_err)?;
-        let lines = sqlx::query(
+        let lines = query(
             "SELECT l.provider, l.model, \
              SUM(l.input_tokens)::text AS input_tokens, SUM(l.output_tokens)::text AS output_tokens, \
              SUM(l.total_tokens)::text AS total_tokens, SUM(l.reasoning_tokens)::text AS reasoning_tokens, \
@@ -526,7 +520,7 @@ impl UsageLedger for PgStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(store_err)?;
-        let shapes = sqlx::query(
+        let shapes = query(
             "SELECT t.sandbox_environment AS environment, s.cpu_millis, s.memory_bytes, \
              SUM(s.commands)::text AS commands, SUM(s.milliseconds)::text AS milliseconds \
              FROM usage_tasks t JOIN usage_sandbox s ON s.task_id = t.id \
@@ -537,7 +531,7 @@ impl UsageLedger for PgStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(store_err)?;
-        let unmeasured = sqlx::query(
+        let unmeasured = query(
             "SELECT sandbox_environment AS environment, count(*) AS tasks FROM usage_tasks \
              WHERE owner = $1 AND month = $2 AND sandbox_environment IS NOT NULL \
              AND NOT sandbox_measured GROUP BY sandbox_environment",
@@ -553,8 +547,8 @@ impl UsageLedger for PgStore {
             .iter()
             .map(|l| {
                 let provider: String = l.try_get("provider").map_err(store_err)?;
-                let text = |col: &str| l.try_get::<String, _>(col).map_err(store_err);
-                let part = |col: &str| l.try_get::<Option<String>, _>(col).map_err(store_err);
+                let text = |col: &str| l.try_get::<_, String>(col).map_err(store_err);
+                let part = |col: &str| l.try_get::<_, Option<String>>(col).map_err(store_err);
                 Ok(ModelTokens {
                     provider: Some(provider).filter(|p| !p.is_empty()),
                     model: l.try_get("model").map_err(store_err)?,
@@ -577,9 +571,9 @@ impl UsageLedger for PgStore {
                     environment: parse_enum("sandbox environment", &word)?,
                     cpu_millis: opt_count(s.try_get("cpu_millis").map_err(store_err)?),
                     memory_bytes: opt_count(s.try_get("memory_bytes").map_err(store_err)?),
-                    commands: sum(&s.try_get::<String, _>("commands").map_err(store_err)?),
+                    commands: sum(&s.try_get::<_, String>("commands").map_err(store_err)?),
                     milliseconds: sum(&s
-                        .try_get::<String, _>("milliseconds")
+                        .try_get::<_, String>("milliseconds")
                         .map_err(store_err)?),
                 })
             })
@@ -611,14 +605,14 @@ impl UsageLedger for PgStore {
         // one snapshot for the three reads, so a commit between them cannot hand a task the lines of
         // another version of it
         let mut conn = self.pool().begin().await.map_err(store_err)?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *conn)
             .await
             .map_err(store_err)?;
-        let tasks = sqlx::query(sqlx::AssertSqlSafe(format!(
+        let tasks = query(format!(
             "SELECT {TASK_COLUMNS} FROM usage_tasks WHERE owner = $1 AND thread_id = $2 \
              ORDER BY agent COLLATE \"C\", task COLLATE \"C\""
-        )))
+        ))
         .bind(owner.as_str())
         .bind(thread.0)
         .fetch_all(&mut *conn)
@@ -638,7 +632,7 @@ impl UsageLedger for PgStore {
         let mut lines = by_task(if ids.is_empty() {
             Vec::new()
         } else {
-            sqlx::query(
+            query(
                 "SELECT task_id, provider, model, input_tokens, output_tokens, total_tokens, \
                      reasoning_tokens, cached_input_tokens, cache_write_input_tokens \
                      FROM usage_lines WHERE task_id = ANY($1) \
@@ -652,7 +646,7 @@ impl UsageLedger for PgStore {
         let mut entries = by_task(if measured.is_empty() {
             Vec::new()
         } else {
-            sqlx::query(
+            query(
                 "SELECT task_id, cpu_millis, memory_bytes, commands, milliseconds \
                  FROM usage_sandbox WHERE task_id = ANY($1) ORDER BY task_id, ord",
             )
@@ -685,7 +679,7 @@ impl UsageLedger for PgStore {
         if after.is_none() {
             // rows that name a thread an older build erased: that build deleted the thread and knew
             // nothing of the ledger's `thread_id`
-            page.detached = sqlx::query(
+            page.detached = query(
                 "UPDATE usage_tasks SET thread_id = NULL WHERE thread_id IS NOT NULL \
                  AND NOT EXISTS (SELECT 1 FROM threads t WHERE t.id = usage_tasks.thread_id)",
             )
@@ -697,7 +691,7 @@ impl UsageLedger for PgStore {
         // `GREATEST(usage_through, COALESCE(forked_at, 0))` is `orch_core::usage_counted_through` in
         // SQL: the page is chosen with it and each thread is judged again with the Rust function
         // under the thread's lock, so the two must say the same.
-        let due: Vec<uuid::Uuid> = sqlx::query_scalar(
+        let due: Vec<uuid::Uuid> = query_scalar(
             "SELECT id FROM threads WHERE ($1::uuid IS NULL OR id > $1) \
              AND GREATEST(usage_through, COALESCE(forked_at, 0)) < last_seq ORDER BY id LIMIT $2",
         )
@@ -715,13 +709,13 @@ impl UsageLedger for PgStore {
             // is being written to, and its own commits catch it up. The statement below is the only
             // one of the transaction that waits on a lock another transaction can hold: the rows of
             // the ledger are written under this lock.
-            sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+            query("SELECT set_config('lock_timeout', $1, true)")
                 .bind(BACKFILL_LOCK_TIMEOUT)
                 .execute(&mut *tx)
                 .await
                 .map_err(store_err)?;
             // the lock every commit of the thread takes: the page and the service can run together
-            let locked = match sqlx::query(
+            let locked = match query(
                 "SELECT owner, last_seq, usage_through, forked_at FROM threads \
                  WHERE id = $1 FOR UPDATE",
             )
@@ -740,7 +734,7 @@ impl UsageLedger for PgStore {
             let Some(locked) = locked else {
                 continue; // erased since
             };
-            let owner = UserId::new(&locked.try_get::<String, _>("owner").map_err(store_err)?);
+            let owner = UserId::new(&locked.try_get::<_, String>("owner").map_err(store_err)?);
             let last_seq: i64 = locked.try_get("last_seq").map_err(store_err)?;
             let through: i64 = locked.try_get("usage_through").map_err(store_err)?;
             let cut: Option<i64> = locked.try_get("forked_at").map_err(store_err)?;
@@ -749,7 +743,7 @@ impl UsageLedger for PgStore {
                 continue; // a commit caught it up since the page was read
             }
             let folded = catch_up(&mut tx, ThreadId(id), &owner, from, last_seq).await?;
-            sqlx::query("UPDATE threads SET usage_through = $2 WHERE id = $1")
+            query("UPDATE threads SET usage_through = $2 WHERE id = $1")
                 .bind(id)
                 .bind(last_seq)
                 .execute(&mut *tx)
@@ -766,7 +760,7 @@ impl UsageLedger for PgStore {
         // One statement: the lines and the sandbox entries go with their task (`ON DELETE CASCADE`).
         // The oldest months first, and `SKIP LOCKED`: a task a commit is updating at this moment is left
         // for the next sweep instead of making the sweep wait behind it.
-        let removed = sqlx::query(
+        let removed = query(
             "DELETE FROM usage_tasks WHERE id IN (SELECT id FROM usage_tasks WHERE month < $1 \
              ORDER BY month LIMIT $2 FOR UPDATE SKIP LOCKED)",
         )
@@ -784,8 +778,6 @@ impl UsageLedger for PgStore {
 const BACKFILL_LOCK_TIMEOUT: &str = "5s";
 
 /// Whether the error is Postgres' `lock_not_available` (`55P03`), what `lock_timeout` raises.
-fn is_lock_timeout(err: &sqlx::Error) -> bool {
-    err.as_database_error()
-        .and_then(|db| db.code())
-        .is_some_and(|code| code == "55P03")
+fn is_lock_timeout(err: &SqlError) -> bool {
+    err.code() == Some("55P03")
 }

@@ -3,18 +3,23 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::future::Future;
+use std::pin::Pin;
+
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{AgentId, LiveChunk, LiveEnd, LiveKind, LiveText, ThreadId};
+use orch_pg_connect::{PgOptions, TlsMode};
 use orch_ports::{StoreError, Topic, Wakeup, WakeupCapabilities, WakeupError};
-use sqlx::PgPool;
-use sqlx::postgres::{PgListener, PgPoolOptions};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio_postgres::AsyncMessage;
+use tokio_postgres::config::SslMode;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
-use crate::error::wakeup_err;
+use crate::error::{SqlError, wakeup_err};
+use crate::sql::{DEFAULT_WAIT, PgPool, query};
 
 /// Channel carrying `Topic::Thread`; the payload is the thread id.
 pub(crate) const CHANNEL_THREAD: &str = "orch_thread";
@@ -83,8 +88,9 @@ impl Drop for Shared {
 
 /// [`Wakeup`] over Postgres `LISTEN/NOTIFY`.
 ///
-/// One background task holds a dedicated listener connection (taken from the pool, so the
-/// pool needs at least two connections) and fans notifications out over a broadcast channel.
+/// One background task holds a dedicated listener connection (a connection of its own, made with
+/// the pool's options or the direct URL; it is not one of the pool's) and fans notifications out
+/// over a broadcast channel.
 /// Whenever the listener had to reconnect, notifications may have been lost, so every
 /// subscriber receives [`Topic::Resync`]; the same happens to a subscriber that lags.
 /// Notifications are hints: consumers re-read the store and also poll.
@@ -95,7 +101,8 @@ impl Drop for Shared {
 /// best effort in both directions: a reconnect or a lagging subscriber loses pieces without a
 /// `Resync`, because the sender repeats the text so far and the log has the final one.
 ///
-/// Clones share the task; it stops when the last clone is dropped or the pool is closed.
+/// Clones share the task; it stops when the last clone is dropped or, for [`start`](Self::start),
+/// when the pool is closed ([`PgPool::close`]).
 /// [`PgStore`](crate::PgStore) already sends the `NOTIFY`s for its own writes inside the
 /// writing transaction, so the application only needs [`Wakeup::subscribe`].
 #[derive(Clone)]
@@ -114,33 +121,33 @@ impl PgWakeup {
     /// listener attaches in the background (see [`wait_listening`](Self::wait_listening)) and
     /// keeps retrying with backoff if Postgres is unreachable.
     pub fn start(pool: PgPool) -> Self {
-        Self::spawn(pool.clone(), pool)
+        let options = pool.options().clone();
+        let closed: Closed = Box::pin(pool.closed());
+        Self::spawn(pool, options, closed)
     }
 
     /// Like [`start`](Self::start), with the listener on a connection of its own to `direct_url`
     /// while `pool` carries the `NOTIFY`s: for a deployment whose `pool` goes through a
     /// transaction-mode pooler (PgBouncer), which cannot keep a `LISTEN`. A `NOTIFY` is one
-    /// statement and works through a pooler; the listener needs the session, so it is not taken from
-    /// `pool` but from a pool of one connection that is made here and connects on demand, retrying
-    /// like [`start`](Self::start) when the database cannot be reached.
+    /// statement and works through a pooler; the listener needs the session, so it connects to
+    /// `direct_url` on demand, retrying like [`start`](Self::start) when the database cannot be
+    /// reached. Closing `pool` does not stop it (its connection is not the pool's).
     ///
     /// # Errors
     /// [`StoreError::Internal`] if `direct_url` is not a connection string. The error never holds the
     /// text (it may carry a password).
     pub fn start_direct(pool: PgPool, direct_url: &str) -> Result<Self, StoreError> {
         let options = crate::store::parse_url(direct_url)?;
-        let listener = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_lazy_with(options);
-        Ok(Self::spawn(pool, listener))
+        Ok(Self::spawn(pool, options, Box::pin(std::future::pending())))
     }
 
-    fn spawn(pool: PgPool, listener: PgPool) -> Self {
+    fn spawn(pool: PgPool, options: PgOptions, closed: Closed) -> Self {
         let (tx, _) = broadcast::channel(CAPACITY);
         let (live, _) = broadcast::channel(CAPACITY);
         let (listening_tx, listening) = watch::channel(false);
         let task = tokio::spawn(listen_loop(
-            listener,
+            options,
+            closed,
             tx.clone(),
             live.clone(),
             listening_tx,
@@ -169,7 +176,7 @@ impl PgWakeup {
 impl Wakeup for PgWakeup {
     async fn notify(&self, topic: Topic) -> Result<(), WakeupError> {
         let (channel, payload) = encode(&topic);
-        sqlx::query("SELECT pg_notify($1, $2)")
+        query("SELECT pg_notify($1, $2)")
             .bind(channel)
             .bind(payload)
             .execute(&self.shared.pool)
@@ -198,7 +205,7 @@ impl Wakeup for PgWakeup {
         // The pieces go out one `NOTIFY` after the other, each in its own transaction, so the
         // listeners hear them in this order.
         for payload in encode_live(&live)? {
-            sqlx::query("SELECT pg_notify($1, $2)")
+            query("SELECT pg_notify($1, $2)")
                 .bind(CHANNEL_LIVE)
                 .bind(payload)
                 .execute(&self.shared.pool)
@@ -332,14 +339,61 @@ fn decode_live(payload: &str) -> Option<LiveText> {
     })
 }
 
-async fn attach(pool: &PgPool) -> Result<PgListener, sqlx::Error> {
-    let mut listener = PgListener::connect_with(pool).await?;
-    listener.listen_all(CHANNELS).await?;
-    Ok(listener)
+/// What stops the listener: the pool's closing, or nothing.
+type Closed = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// `LISTEN` on every channel, as sqlx's `PgListener::listen_all` wrote it: one simple query of
+/// `LISTEN "<channel>";` statements.
+fn listen_all_query(channels: &[&str]) -> String {
+    channels
+        .iter()
+        .map(|channel| format!(r#"LISTEN "{}";"#, channel.replace('"', "\"\"")))
+        .collect()
 }
 
+/// A connection that listens: the client (dropping it closes the connection) and what the
+/// connection hears, in order, until it ends.
+struct Listener {
+    _client: tokio_postgres::Client,
+    messages: mpsc::UnboundedReceiver<Result<AsyncMessage, tokio_postgres::Error>>,
+}
+
+/// A connection of its own to the database of `options` (with the TLS they ask for), listening on
+/// every channel. Its connection is driven by a task that hands every message it hears to the
+/// listener, and ends with the connection.
+async fn attach(options: &PgOptions) -> Result<Listener, SqlError> {
+    let mut config = options.config().clone();
+    config.ssl_mode(match options.tls() {
+        TlsMode::Disable => SslMode::Disable,
+        TlsMode::Prefer => SslMode::Prefer,
+        _ => SslMode::Require,
+    });
+    let tls = options.tls_connector().map_err(SqlError::Connect)?;
+    let connected = tokio::time::timeout(DEFAULT_WAIT, config.connect(tls)).await;
+    let (client, mut connection) = connected.map_err(|_| SqlError::TimedOut)??;
+    let (sender, messages) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut heard = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
+        while let Some(message) = heard.next().await {
+            let failed = message.is_err();
+            if sender.send(message).is_err() || failed {
+                break;
+            }
+        }
+    });
+    client.batch_execute(&listen_all_query(&CHANNELS)).await?;
+    Ok(Listener {
+        _client: client,
+        messages,
+    })
+}
+
+/// Attaches, hands every notification to the subscribers, and attaches again when the connection
+/// ends, sending [`Topic::Resync`] after every attach but the first: what was sent while nobody
+/// listened was lost, and polling recovers it. Ends when `closed` does.
 async fn listen_loop(
-    pool: PgPool,
+    options: PgOptions,
+    mut closed: Closed,
     tx: broadcast::Sender<Topic>,
     live: broadcast::Sender<LiveText>,
     listening: watch::Sender<bool>,
@@ -347,13 +401,19 @@ async fn listen_loop(
     let mut backoff = BACKOFF_START;
     let mut first = true;
     loop {
-        let mut listener = match attach(&pool).await {
+        let attached = tokio::select! {
+            () = &mut closed => return,
+            attached = attach(&options) => attached,
+        };
+        let mut listener = match attached {
             Ok(listener) => listener,
-            Err(sqlx::Error::PoolClosed) => return,
             Err(e) => {
                 tracing::warn!(error = %e, "postgres listener could not attach; retrying");
                 let _ = listening.send(false);
-                tokio::time::sleep(backoff).await;
+                tokio::select! {
+                    () = &mut closed => return,
+                    () = tokio::time::sleep(backoff) => {}
+                }
                 backoff = (backoff * 2).min(BACKOFF_MAX);
                 continue;
             }
@@ -366,33 +426,61 @@ async fn listen_loop(
         }
         first = false;
         loop {
-            match listener.try_recv().await {
-                Ok(Some(n)) if n.channel() == CHANNEL_LIVE => match decode_live(n.payload()) {
-                    // No subscriber is not an error: live text is best effort.
-                    Some(text) => {
-                        let _ = live.send(text);
+            let heard = tokio::select! {
+                () = &mut closed => return,
+                heard = listener.messages.recv() => heard,
+            };
+            match heard {
+                Some(Ok(AsyncMessage::Notification(n))) if n.channel() == CHANNEL_LIVE => {
+                    match decode_live(n.payload()) {
+                        // No subscriber is not an error: live text is best effort.
+                        Some(text) => {
+                            let _ = live.send(text);
+                        }
+                        None => {
+                            tracing::debug!("a live payload this build cannot read was dropped");
+                        }
                     }
-                    None => tracing::debug!("a live payload this build cannot read was dropped"),
-                },
-                Ok(Some(n)) => {
+                }
+                Some(Ok(AsyncMessage::Notification(n))) => {
                     // No subscriber is not an error: notifications are hints.
                     let _ = tx.send(decode(n.channel(), n.payload()));
                 }
-                Ok(None) => {
-                    tracing::warn!("postgres listener connection lost; reconnecting");
+                // a notice of the server's
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    let error = SqlError::from(e);
+                    tracing::warn!(error = %error, "postgres listener failed; reconnecting");
                     let _ = listening.send(false);
                     break;
                 }
-                Err(sqlx::Error::PoolClosed) => return,
-                Err(e) => {
-                    tracing::warn!(error = %e, "postgres listener failed; reconnecting");
+                None => {
+                    tracing::warn!("postgres listener connection lost; reconnecting");
                     let _ = listening.send(false);
                     break;
                 }
             }
         }
         // Never spin, even if attaching keeps succeeding and receiving keeps failing.
-        tokio::time::sleep(BACKOFF_START).await;
+        tokio::select! {
+            () = &mut closed => return,
+            () = tokio::time::sleep(BACKOFF_START) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod listener_tests {
+    use super::*;
+
+    #[test]
+    fn the_listen_statement_is_sqlx_s() {
+        assert_eq!(
+            listen_all_query(&CHANNELS),
+            r#"LISTEN "orch_thread";LISTEN "orch_outbox";LISTEN "orch_inbox";LISTEN "orch_resync";LISTEN "orch_live";"#
+        );
+        assert_eq!(listen_all_query(&[r#"a"b"#]), r#"LISTEN "a""b";"#);
     }
 }
 

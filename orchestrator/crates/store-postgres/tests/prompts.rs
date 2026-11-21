@@ -8,6 +8,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 mod support;
+use orch_store_postgres::PgPool;
+use orch_store_postgres::sql::{SqlError, Tx};
+use orch_store_postgres::sql::{query, query_as, query_scalar};
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -20,7 +23,6 @@ use orch_ports::{
 use orch_store_postgres::{
     OWNER_LOCK_CLASS, PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, PgStore, prompt_list_sql,
 };
-use sqlx::{PgPool, Postgres, Transaction};
 use support::TestDb;
 use uuid::Uuid;
 
@@ -69,9 +71,9 @@ async fn save(store: &PgStore, owner: &UserId, p: &PromptDefinition) -> StoredPr
 
 /// A transaction that holds a lock of `owner` in `class`: what an insert in the middle of its work
 /// has.
-async fn hold_lock(pool: &PgPool, class: i32, owner: &UserId) -> Transaction<'static, Postgres> {
+async fn hold_lock(pool: &PgPool, class: i32, owner: &UserId) -> Tx {
     let mut tx = pool.begin().await.expect("begin");
-    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+    query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
         .bind(class)
         .bind(owner.as_str())
         .execute(&mut *tx)
@@ -81,7 +83,7 @@ async fn hold_lock(pool: &PgPool, class: i32, owner: &UserId) -> Transaction<'st
 }
 
 async fn waiting_for(pool: &PgPool, class: i32, owner: &UserId) -> i64 {
-    sqlx::query_scalar(
+    query_scalar(
         "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
          AND classid::bigint = $1 AND objsubid = 2 \
          AND objid::bigint = (hashtext($2)::bigint & 4294967295)",
@@ -109,8 +111,8 @@ async fn insert_row(
     name: &str,
     body: &str,
     audience: &[&str],
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<(), SqlError> {
+    query(
         "INSERT INTO user_prompts (id, owner, name, title, body, variables, audience, revision, created_at, updated_at) \
          VALUES ($1, 'by-hand@example.test', $2, 'T', $3, '[]'::jsonb, $4, nextval('user_prompt_revisions'), now(), now())",
     )
@@ -160,9 +162,7 @@ async fn the_table_refuses_what_the_rules_never_write() {
         ),
     ] {
         let error = result.expect_err(what);
-        let code = error
-            .as_database_error()
-            .and_then(|e| e.code().map(|c| c.to_string()));
+        let code = error.code().map(str::to_owned);
         assert_eq!(code.as_deref(), Some("23514"), "{what}: {error}");
     }
     insert_row(pool, "p-aaaaaaaaaaae", "ok", &"a".repeat(16384), &["*"])
@@ -185,7 +185,7 @@ async fn an_insert_waits_for_the_lock_of_its_owner_and_counts_after_it() {
     }
     let mut tx = hold_lock(&holder, PROMPT_OWNER_LOCK_CLASS, &alice).await;
     let last = prompt("last", &[]);
-    sqlx::query(
+    query(
         "INSERT INTO user_prompts (id, owner, name, title, body, variables, audience, revision, created_at, updated_at) \
          VALUES ($1, $2, 'by-hand', 'T', 'b', '[]'::jsonb, '{}', nextval('user_prompt_revisions'), now(), now())",
     )
@@ -282,7 +282,7 @@ async fn a_row_that_is_not_a_prompt_is_corrupt_and_says_nothing_of_it() {
     let alice = owner("alice");
     let saved = save(&store, &alice, &prompt("broken", &[])).await;
     save(&store, &alice, &prompt("fine", &[])).await;
-    sqlx::query("UPDATE user_prompts SET body = 'SENTINEL {{ not a reference }}' WHERE id = $1")
+    query("UPDATE user_prompts SET body = 'SENTINEL {{ not a reference }}' WHERE id = $1")
         .bind(saved.prompt().id().as_str())
         .execute(store.pool())
         .await
@@ -305,7 +305,7 @@ async fn a_row_that_is_not_a_prompt_is_corrupt_and_says_nothing_of_it() {
     assert_eq!(page.items.len(), 2);
     // a variable that is not a question is corrupt too, and the list still counts it; one that is not
     // an array is refused by the table itself
-    sqlx::query("UPDATE user_prompts SET body = 'Hello', variables = '[1]'::jsonb WHERE id = $1")
+    query("UPDATE user_prompts SET body = 'Hello', variables = '[1]'::jsonb WHERE id = $1")
         .bind(saved.prompt().id().as_str())
         .execute(store.pool())
         .await
@@ -325,7 +325,7 @@ async fn a_row_that_is_not_a_prompt_is_corrupt_and_says_nothing_of_it() {
             .max(),
         Some(1)
     );
-    sqlx::query("UPDATE user_prompts SET variables = '{}'::jsonb WHERE id = $1")
+    query("UPDATE user_prompts SET variables = '{}'::jsonb WHERE id = $1")
         .bind(saved.prompt().id().as_str())
         .execute(store.pool())
         .await
@@ -392,12 +392,12 @@ async fn the_shared_query_matches_everybody_and_the_roles_a_viewer_has() {
 /// imply the partial index's predicate, so the GIN index could not be used however big the table).
 async fn plan_of(store: &PgStore, scope: PromptScope) -> String {
     let mut tx = store.pool().begin().await.unwrap();
-    sqlx::query("SET LOCAL enable_seqscan = off")
+    query("SET LOCAL enable_seqscan = off")
         .execute(&mut *tx)
         .await
         .unwrap();
     let sql = format!("EXPLAIN {}", prompt_list_sql(scope));
-    let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+    let rows: Vec<(String,)> = query_as(sql)
         .bind("somebody@example.test")
         .bind(vec!["team".to_owned(), "*".to_owned()])
         .bind(None::<String>)

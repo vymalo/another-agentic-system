@@ -7,6 +7,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 mod support;
+use orch_store_postgres::PgPool;
+use orch_store_postgres::sql::{query, query_scalar};
 
 use std::time::{Duration, Instant};
 
@@ -14,8 +16,6 @@ use jiff::{SignedDuration, Timestamp};
 use orch_core::{Classify, ErrorClass, UserId};
 use orch_ports::{OAuthState, PendingAuthorizationError, PendingAuthorizations, UserToolServerId};
 use orch_store_postgres::{PENDING_LOCK_TIMEOUT, PgPendingAuthorizations};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use support::TestDb;
 use uuid::Uuid;
 
@@ -43,17 +43,17 @@ fn server(suffix: &str) -> UserToolServerId {
 async fn store_with(db: &TestDb, max: u32) -> PgPendingAuthorizations {
     let migrated = db.store().await;
     drop(migrated);
-    let pool = PgPoolOptions::new()
-        .max_connections(max)
-        .acquire_timeout(Duration::from_secs(3))
-        .connect_with(db.options().application_name("orch-pending-test"))
-        .await
-        .expect("connect pool");
+    let pool = PgPool::with_wait(
+        support::named(db.options(), "orch-pending-test"),
+        max,
+        Duration::from_secs(3),
+    )
+    .expect("build pool");
     PgPendingAuthorizations::from_pool(pool)
 }
 
 async fn rows(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM user_tool_oauth_pending")
+    query_scalar("SELECT count(*) FROM user_tool_oauth_pending")
         .fetch_one(pool)
         .await
         .unwrap()
@@ -74,13 +74,13 @@ async fn a_row_holds_the_hash_of_the_state_and_never_the_state() {
         .await
         .unwrap();
 
-    let whole_row: String = sqlx::query_scalar("SELECT t::text FROM user_tool_oauth_pending t")
+    let whole_row: String = query_scalar("SELECT t::text FROM user_tool_oauth_pending t")
         .fetch_one(store.pool())
         .await
         .unwrap();
     assert!(!whole_row.contains("SENTINEL"), "{whole_row}");
     assert!(!whole_row.contains("0123456789abcdef"), "{whole_row}");
-    let is_the_sha256: bool = sqlx::query_scalar(
+    let is_the_sha256: bool = query_scalar(
         "SELECT state_hash = sha256(convert_to($1, 'UTF8')) FROM user_tool_oauth_pending",
     )
     .bind("SENTINEL-state-0123456789abcdef")
@@ -176,7 +176,7 @@ async fn the_table_refuses_what_is_not_an_owner_a_server_or_a_digest() {
     let insert = |hash: Vec<u8>, owner: &'static str, server: &'static str| {
         let pool = store.pool().clone();
         async move {
-            sqlx::query(
+            query(
                 "INSERT INTO user_tool_oauth_pending (state_hash, owner, server, expires_at) \
                  VALUES ($1, $2, $3, now())",
             )
@@ -234,7 +234,7 @@ async fn a_wait_for_a_row_that_somebody_holds_ends_as_unavailable_and_gives_the_
         .unwrap();
 
     let mut tx = holder.begin().await.unwrap();
-    sqlx::query("SELECT 1 FROM user_tool_oauth_pending FOR UPDATE")
+    query("SELECT 1 FROM user_tool_oauth_pending FOR UPDATE")
         .execute(&mut *tx)
         .await
         .unwrap();

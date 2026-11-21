@@ -5,14 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Postgres implementation of the orchestrator's ThreadStore and Wakeup ports (sqlx, LISTEN/NOTIFY, embedded migrations)."
+description = "Postgres implementation of the orchestrator's ThreadStore and Wakeup ports (tokio-postgres, LISTEN/NOTIFY, embedded migrations)."
 readme = "README.md"
 
 [dependencies]
 orch-core.workspace = true
 orch-ports.workspace = true
-sqlx.workspace = true
-jiff-sqlx.workspace = true
+# Postgres (ADR 0076, sys#382 E1): the connection string and TLS as sqlx read them, a deadpool pool,
+# and the migrations in the history sqlx kept.
+orch-pg-connect.workspace = true
+orch-pg-migrate.workspace = true
+tokio-postgres = { workspace = true, features = ["with-uuid-1", "with-serde_json-1", "with-jiff-0_2"] }
+deadpool-postgres.workspace = true
 jiff.workspace = true
 uuid.workspace = true
 serde.workspace = true
@@ -25,7 +29,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util", "test-util"] }
 tracing-subscriber = { workspace = true }
 
 [lints]

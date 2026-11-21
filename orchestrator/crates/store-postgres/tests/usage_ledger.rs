@@ -3,7 +3,10 @@
 //! test runs in its own schema.
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
+mod history;
 mod support;
+use orch_store_postgres::sql::SqlError;
+use orch_store_postgres::sql::{query, query_as, query_scalar};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -166,14 +169,11 @@ async fn append(store: &PgStore, thread: ThreadId, version: i64, events: Vec<New
 }
 
 async fn scalar(store: &PgStore, sql: &'static str) -> i64 {
-    sqlx::query_scalar(sql)
-        .fetch_one(store.pool())
-        .await
-        .unwrap()
+    query_scalar(sql).fetch_one(store.pool()).await.unwrap()
 }
 
 async fn through(store: &PgStore, thread: ThreadId) -> (i64, i64) {
-    sqlx::query_as("SELECT usage_through, last_seq FROM threads WHERE id = $1")
+    query_as("SELECT usage_through, last_seq FROM threads WHERE id = $1")
         .bind(thread.0)
         .fetch_one(store.pool())
         .await
@@ -182,11 +182,11 @@ async fn through(store: &PgStore, thread: ThreadId) -> (i64, i64) {
 
 /// The log as a build without the ledger left it: no rows, no thread gone through.
 async fn forget(store: &PgStore) {
-    sqlx::query("DELETE FROM usage_tasks")
+    query("DELETE FROM usage_tasks")
         .execute(store.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE threads SET usage_through = 0")
+    query("UPDATE threads SET usage_through = 0")
         .execute(store.pool())
         .await
         .unwrap();
@@ -197,7 +197,7 @@ async fn the_migration_makes_the_ledger_and_a_thread_starts_with_nothing_gone_th
     let db = db_or_skip!();
     let store = db.store().await;
     for table in ["usage_tasks", "usage_lines", "usage_sandbox"] {
-        let found: i64 = sqlx::query_scalar(
+        let found: i64 = query_scalar(
             "SELECT count(*) FROM information_schema.tables \
              WHERE table_schema = current_schema() AND table_name = $1",
         )
@@ -208,7 +208,7 @@ async fn the_migration_makes_the_ledger_and_a_thread_starts_with_nothing_gone_th
         assert_eq!(found, 1, "{table}");
     }
     // no foreign key to threads: a row outlives its thread
-    let keys: i64 = sqlx::query_scalar(
+    let keys: i64 = query_scalar(
         "SELECT count(*) FROM pg_constraint WHERE conrelid = 'usage_tasks'::regclass AND contype = 'f'",
     )
     .fetch_one(store.pool())
@@ -305,7 +305,7 @@ async fn the_ledger_is_written_in_the_transaction_of_the_event_or_the_commit_fai
     let (a, v) = open(&store, &alice(), Vec::new()).await;
 
     // the ledger cannot be written: the commit fails, and the event is not in the log
-    sqlx::query("ALTER TABLE usage_lines RENAME TO usage_lines_away")
+    query("ALTER TABLE usage_lines RENAME TO usage_lines_away")
         .execute(store.pool())
         .await
         .unwrap();
@@ -328,7 +328,7 @@ async fn the_ledger_is_written_in_the_transaction_of_the_event_or_the_commit_fai
     );
 
     // and once it can, the same commit applies, event and rows together
-    sqlx::query("ALTER TABLE usage_lines_away RENAME TO usage_lines")
+    query("ALTER TABLE usage_lines_away RENAME TO usage_lines")
         .execute(store.pool())
         .await
         .unwrap();
@@ -352,12 +352,12 @@ async fn events_a_build_without_the_ledger_appended_are_caught_up_by_the_next_co
         (3_i64, call("t1", "c2", counts(20, 3))),
         (4, total("t0", vec![glm(1000, 100)], None)),
     ] {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(a.0)
         .bind(seq)
-        .bind(jiff_sqlx::Timestamp::from(event.at))
+        .bind(event.at)
         .bind(event.body.kind().as_str())
         .bind(serde_json::to_value(&event.actor).unwrap())
         .bind(event.body.data_value())
@@ -365,7 +365,7 @@ async fn events_a_build_without_the_ledger_appended_are_caught_up_by_the_next_co
         .await
         .unwrap();
     }
-    sqlx::query("UPDATE threads SET last_seq = 4, version = version + 1 WHERE id = $1")
+    query("UPDATE threads SET last_seq = 4, version = version + 1 WHERE id = $1")
         .bind(a.0)
         .execute(store.pool())
         .await
@@ -387,17 +387,17 @@ async fn a_usage_event_that_does_not_decode_is_left_out_and_blocks_nothing() {
     let db = db_or_skip!();
     let store = db.store().await;
     let (a, v) = open(&store, &alice(), Vec::new()).await;
-    sqlx::query(
+    query(
         "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
          VALUES ($1, 2, $2, 'model_usage', $3, '{\"not\": \"a usage event\"}')",
     )
     .bind(a.0)
-    .bind(jiff_sqlx::Timestamp::from(t0()))
+    .bind(t0())
     .bind(serde_json::to_value(Actor::agent(&AgentId::new("coder"), None)).unwrap())
     .execute(store.pool())
     .await
     .unwrap();
-    sqlx::query("UPDATE threads SET last_seq = 2, version = version + 1 WHERE id = $1")
+    query("UPDATE threads SET last_seq = 2, version = version + 1 WHERE id = $1")
         .bind(a.0)
         .execute(store.pool())
         .await
@@ -577,19 +577,14 @@ async fn migration_0023_upgrades_a_database_that_holds_logs_and_the_backfill_fil
             std::fs::copy(&path, dir.join(&name)).unwrap();
         }
     }
-    sqlx::migrate::Migrator::new(dir.as_path())
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    history::migrate_dir(&pool, &dir).await;
     std::fs::remove_dir_all(&dir).unwrap();
 
     // threads and logs as a build without the ledger wrote them
     let parent = ThreadId(Uuid::now_v7());
     let fork = ThreadId(Uuid::now_v7());
     let new_thread = |id: ThreadId, last_seq: i64, forked: bool| {
-        sqlx::query(
+        query(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, rail_rank, forked_from, forked_at, fork_kind) \
              VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, $2, now(), now(), 'i', \
@@ -604,13 +599,13 @@ async fn migration_0023_upgrades_a_database_that_holds_logs_and_the_backfill_fil
     new_thread(parent, 3, false).execute(&pool).await.unwrap();
     new_thread(fork, 4, true).execute(&pool).await.unwrap();
     let insert = |thread: ThreadId, seq: i64, event: &NewEvent| {
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(thread.0)
         .bind(seq)
-        .bind(jiff_sqlx::Timestamp::from(event.at))
+        .bind(event.at)
         .bind(event.body.kind().as_str())
         .bind(serde_json::to_value(&event.actor).unwrap())
         .bind(event.body.data_value())
@@ -668,12 +663,13 @@ async fn migration_0023_upgrades_a_database_that_holds_logs_and_the_backfill_fil
     assert_eq!(store.month(&alice(), jan()).await.unwrap(), totals);
 }
 
-/// Counts the statements the driver logs (`sqlx::query`) while a future runs.
+/// Counts the statements the store logs (target `orch_store_postgres::sql`, as sqlx logged each under
+/// `sqlx::query`) while a future runs.
 struct Statements(Arc<AtomicUsize>);
 
 impl<S: tracing::Subscriber> Layer<S> for Statements {
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-        if event.metadata().target() == "sqlx::query" {
+        if event.metadata().target() == "orch_store_postgres::sql" {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -724,7 +720,7 @@ async fn write_calls_by_hand(
     }
     for start in (0..n).step_by(1000) {
         let end = (start + 1000).min(n);
-        sqlx::query(
+        query(
             "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
              SELECT $1, s, a::timestamptz, k, ac, d \
              FROM unnest($2::bigint[], $3::text[], $4::text[], $5::jsonb[], $6::jsonb[]) \
@@ -741,7 +737,7 @@ async fn write_calls_by_hand(
         .unwrap();
     }
     let last = first + i64::try_from(n).unwrap() - 1;
-    sqlx::query("UPDATE threads SET last_seq = $2, version = version + 1 WHERE id = $1")
+    query("UPDATE threads SET last_seq = $2, version = version + 1 WHERE id = $1")
         .bind(thread.0)
         .bind(last)
         .execute(store.pool())
@@ -768,6 +764,7 @@ async fn a_catch_up_costs_statements_by_task_and_page_not_by_event() {
         cost.push(statements);
     }
     // three tasks and a few pages: tens of statements; one per event would be thousands
+    assert!(cost[0] > 3, "the statements are counted: {cost:?}");
     assert!(
         cost[0] < 100,
         "1200 events on 3 tasks: {} statements",
@@ -815,6 +812,7 @@ async fn a_threads_rows_are_read_in_a_constant_number_of_statements() {
     // the snapshot's begin and its isolation level, the tasks, their lines and their sandbox
     // entries, and the commit; the same for one task as for eight
     assert!(cost[0] <= 6, "{cost:?}");
+    assert!(cost[0] >= 3, "the statements are counted: {cost:?}");
     assert_eq!(cost[0], cost[1], "{cost:?}");
 }
 
@@ -825,7 +823,7 @@ async fn a_threads_rows_are_read_in_a_constant_number_of_statements() {
 async fn the_migration_scans_no_table_and_a_new_sandbox_environment_needs_no_migration() {
     let db = db_or_skip!();
     let store = db.store().await;
-    let checks: i64 = sqlx::query_scalar(
+    let checks: i64 = query_scalar(
         "SELECT count(*) FROM pg_constraint WHERE conrelid = 'threads'::regclass \
          AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%usage_through%'",
     )
@@ -871,8 +869,8 @@ async fn the_migration_scans_no_table_and_a_new_sandbox_environment_needs_no_mig
 }
 
 /// A row of a task whose commands ran in `word`.
-async fn insert_environment(store: &PgStore, word: &str, n: usize) -> Result<(), sqlx::Error> {
-    sqlx::query(
+async fn insert_environment(store: &PgStore, word: &str, n: usize) -> Result<(), SqlError> {
+    query(
         "INSERT INTO usage_tasks (owner, thread_id, agent, task, month, source, seq, \
          sandbox_environment) VALUES ('a@b.c', NULL, 'coder', $2, '2026-01', 'total', 1, $1)",
     )
@@ -896,7 +894,7 @@ async fn a_thread_whose_lock_is_held_is_skipped_and_counted_and_a_later_run_fold
 
     let holder = db.pool("holder", 1).await;
     let mut tx = holder.begin().await.unwrap();
-    sqlx::query("SELECT 1 FROM threads WHERE id = $1 FOR UPDATE")
+    query("SELECT 1 FROM threads WHERE id = $1 FOR UPDATE")
         .bind(held.0)
         .fetch_one(&mut *tx)
         .await
@@ -934,7 +932,7 @@ async fn rows_of_a_thread_an_older_build_erased_are_detached_by_the_backfill() {
     let (gone, _) = open(&store, &alice(), vec![total("t1", vec![glm(10, 2)], None)]).await;
     let (kept, _) = open(&store, &alice(), vec![total("t1", vec![glm(1, 1)], None)]).await;
     let before = store.month(&alice(), jan()).await.unwrap();
-    sqlx::query("DELETE FROM threads WHERE id = $1")
+    query("DELETE FROM threads WHERE id = $1")
         .bind(gone.0)
         .execute(store.pool())
         .await
@@ -1063,14 +1061,14 @@ async fn a_sweep_leaves_a_row_that_is_held_and_does_not_wait_for_it() {
         ],
     )
     .await;
-    let held_id: i64 = sqlx::query_scalar("SELECT id FROM usage_tasks WHERE task = 'held'")
+    let held_id: i64 = query_scalar("SELECT id FROM usage_tasks WHERE task = 'held'")
         .fetch_one(store.pool())
         .await
         .unwrap();
 
     let holder = db.pool("holder", 1).await;
     let mut tx = holder.begin().await.unwrap();
-    sqlx::query("SELECT 1 FROM usage_tasks WHERE id = $1 FOR UPDATE")
+    query("SELECT 1 FROM usage_tasks WHERE id = $1 FOR UPDATE")
         .bind(held_id)
         .fetch_one(&mut *tx)
         .await
