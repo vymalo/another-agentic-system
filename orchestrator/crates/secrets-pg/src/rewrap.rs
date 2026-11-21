@@ -2,7 +2,7 @@
 
 use orch_ports::{SecretError, SecretMaterial};
 
-use crate::store::{COLUMNS, PgSecretStore, Row, Stored, db_err};
+use crate::store::{COLUMNS, PgSecretStore, Row, Stored, column, db_err, row_at};
 
 /// What one run of [`PgSecretStore::rewrap`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,7 +58,7 @@ impl RewrapReport {
 const PAGE: i64 = 100;
 
 /// A row of a page: `owner, server`, then [`Row`]'s columns.
-type PageRow = (String, String, i64, i16, String, Vec<u8>, Vec<u8>);
+type PageRow = (String, String, Row);
 
 /// What became of one row.
 enum Outcome {
@@ -105,25 +105,33 @@ impl PgSecretStore {
         let mut report = RewrapReport::default();
         let mut after = (String::new(), String::new());
         loop {
-            let page: Vec<PageRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "SELECT owner, server, {COLUMNS} FROM user_secrets \
-                 WHERE (owner, server) > ($1, $2) ORDER BY owner, server LIMIT $3"
-            )))
-            .bind(&after.0)
-            .bind(&after.1)
-            .bind(PAGE)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db_err)?;
+            let conn = self.conn().await?;
+            let select = conn
+                .prepare_cached(&format!(
+                    "SELECT owner, server, {COLUMNS} FROM user_secrets \
+                     WHERE (owner, server) > ($1, $2) ORDER BY owner, server LIMIT $3"
+                ))
+                .await
+                .map_err(db_err)?;
+            let page = conn
+                .query(&select, &[&after.0, &after.1, &PAGE])
+                .await
+                .map_err(db_err)?;
+            // the connection serves the rows' own transactions while the page is worked through
+            drop(conn);
+            let page = page
+                .iter()
+                .map(|row| Ok((column(row, 0)?, column(row, 1)?, row_at(row, 2)?)))
+                .collect::<Result<Vec<PageRow>, SecretError>>()?;
             let Some((last_owner, last_server, ..)) = page.last() else {
                 break;
             };
             after = (last_owner.clone(), last_server.clone());
-            for (owner, server, version, v, kid, nonce, ciphertext) in page {
-                let outcome = if kid == current {
-                    self.check_current(&owner, &server, (version, v, kid, nonce, ciphertext))
+            for (owner, server, row) in page {
+                let outcome = if row.2 == current {
+                    self.check_current(&owner, &server, row)
                 } else {
-                    self.rewrap_one(&owner, &server, version, &current).await?
+                    self.rewrap_one(&owner, &server, row.0, &current).await?
                 };
                 match outcome {
                     Outcome::Rewrapped => report.rewrapped += 1,
@@ -183,15 +191,19 @@ impl PgSecretStore {
         seen_version: i64,
         current: &str,
     ) -> Result<Outcome, SecretError> {
-        let mut tx = self.locked(owner, server).await?;
-        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT {COLUMNS} FROM user_secrets WHERE owner = $1 AND server = $2"
-        )))
-        .bind(owner)
-        .bind(server)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?;
+        let mut conn = self.conn().await?;
+        let tx = self.locked(&mut conn, owner, server).await?;
+        let select = tx
+            .prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM user_secrets WHERE owner = $1 AND server = $2"
+            ))
+            .await
+            .map_err(db_err)?;
+        let row = tx
+            .query_opt(&select, &[&owner, &server])
+            .await
+            .map_err(db_err)?;
+        let row: Option<Row> = row.map(|row| row_at(&row, 0)).transpose()?;
         let Some(row) = row else {
             return Ok(Outcome::Changed);
         };
@@ -213,21 +225,29 @@ impl PgSecretStore {
             return Ok(Outcome::AlreadyCurrent);
         }
         let sealed = self.seal(owner, server, stored.version, material.expose())?;
-        let done = sqlx::query(
-            "UPDATE user_secrets SET v = $4, kid = $5, nonce = $6, ciphertext = $7 \
-             WHERE owner = $1 AND server = $2 AND version = $3",
-        )
-        .bind(owner)
-        .bind(server)
-        .bind(seen_version)
-        .bind(sealed.v)
-        .bind(&sealed.kid)
-        .bind(sealed.nonce.as_slice())
-        .bind(&sealed.ciphertext)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
-        if done.rows_affected() != 1 {
+        let update = tx
+            .prepare_cached(
+                "UPDATE user_secrets SET v = $4, kid = $5, nonce = $6, ciphertext = $7 \
+                 WHERE owner = $1 AND server = $2 AND version = $3",
+            )
+            .await
+            .map_err(db_err)?;
+        let done = tx
+            .execute(
+                &update,
+                &[
+                    &owner,
+                    &server,
+                    &seen_version,
+                    &sealed.v,
+                    &sealed.kid,
+                    &sealed.nonce.as_slice(),
+                    &sealed.ciphertext,
+                ],
+            )
+            .await
+            .map_err(db_err)?;
+        if done != 1 {
             // not reachable with the lock held, and not a reason to write anything
             return Ok(Outcome::Changed);
         }

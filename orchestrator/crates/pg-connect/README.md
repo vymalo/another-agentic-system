@@ -51,8 +51,9 @@ configuration's own `sslmode`.
 ## The pool
 
 `PgOptions::pool(max_size, wait)`: `deadpool-postgres`, at most `max_size` connections (at least one) made on demand,
-each checked with an empty query before it is handed out again (sqlx's `test_before_acquire`), `wait` bounding both a
-wait for a free connection and the making of a new one, as sqlx's `acquire_timeout` did. `connect()` makes one
+each checked with an empty query before it is handed out again (sqlx's `test_before_acquire`), `wait` bounding a
+wait for a free connection, the making of a new one and that check (so a socket that is half open cannot hang a call),
+as sqlx's `acquire_timeout` did. `connect()` makes one
 connection; an error that ends it is logged (`tracing`, warn).
 
 ## What differs from sqlx

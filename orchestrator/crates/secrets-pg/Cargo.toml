@@ -14,15 +14,20 @@ orch-ports.workspace = true
 aes-gcm.workspace = true
 getrandom.workspace = true
 sha2.workspace = true
-sqlx.workspace = true
 thiserror.workspace = true
+# Postgres (ADR 0076, sys#382 E1): the connection string and TLS as sqlx read them, a deadpool pool,
+# and the migrations in the history sqlx kept.
+orch-pg-connect.workspace = true
+orch-pg-migrate.workspace = true
+tokio-postgres.workspace = true
+deadpool-postgres.workspace = true
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
-orch-store-postgres.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 uuid.workspace = true
 
 [lints]

@@ -8,8 +8,7 @@ use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore as _, Us
 use orch_secrets_pg::{
     PgSecretStore, RewrapFailure, RewrapFailureKind, RewrapReport, advisory_lock_key,
 };
-use sqlx::PgPool;
-use support::{TestDb, hold_lock, ring, wait_for_a_waiter};
+use support::{Pool, TestDb, execute, fetch_all, fetch_one, hold_lock, ring, wait_for_a_waiter};
 
 /// The `n`th person of this test: no other test has them (see [`TestDb::owner`]), so no lock of
 /// their keys is anyone else's.
@@ -34,13 +33,13 @@ type RawRow = (String, String, i64, i16, String, Vec<u8>, Vec<u8>);
 /// The columns of a row without its key: version, format, key id, nonce, ciphertext.
 type Sealed = (i64, i16, String, Vec<u8>, Vec<u8>);
 
-async fn raw_rows(pool: &PgPool) -> Vec<RawRow> {
-    sqlx::query_as(
+async fn raw_rows(pool: &Pool) -> Vec<RawRow> {
+    fetch_all(
+        pool,
         "SELECT owner, server, version, v, kid, nonce, ciphertext FROM user_secrets ORDER BY owner, server",
+        &[],
     )
-    .fetch_all(pool)
     .await
-    .unwrap()
 }
 
 /// A database with: `old`, a deployment on key `k1`; `new`, one that made `k2` current and still
@@ -49,7 +48,7 @@ struct World {
     db: TestDb,
     old: PgSecretStore,
     new: PgSecretStore,
-    raw: PgPool,
+    raw: Pool,
 }
 
 async fn world() -> Option<World> {
@@ -81,11 +80,12 @@ async fn rewrap_moves_every_row_to_the_current_key_and_keeps_versions_and_materi
         }
     }
     let before = raw_rows(&w.raw).await;
-    let updated_before: Vec<(String,)> =
-        sqlx::query_as("SELECT updated::text FROM user_secrets ORDER BY owner, server")
-            .fetch_all(&w.raw)
-            .await
-            .unwrap();
+    let updated_before: Vec<(String,)> = fetch_all(
+        &w.raw,
+        "SELECT updated::text FROM user_secrets ORDER BY owner, server",
+        &[],
+    )
+    .await;
     assert!(before.iter().all(|row| row.4 == "k1"));
 
     let report = w.new.rewrap().await.unwrap();
@@ -114,11 +114,12 @@ async fn rewrap_moves_every_row_to_the_current_key_and_keeps_versions_and_materi
         assert_ne!(was.6, is.6, "a new ciphertext");
     }
     // `updated` says when the material last changed, and it did not
-    let updated_after: Vec<(String,)> =
-        sqlx::query_as("SELECT updated::text FROM user_secrets ORDER BY owner, server")
-            .fetch_all(&w.raw)
-            .await
-            .unwrap();
+    let updated_after: Vec<(String,)> = fetch_all(
+        &w.raw,
+        "SELECT updated::text FROM user_secrets ORDER BY owner, server",
+        &[],
+    )
+    .await;
     assert_eq!(updated_after, updated_before);
 
     // a deployment that has dropped k1 reads all of it, at the versions it had
@@ -173,10 +174,12 @@ async fn rewrap_goes_through_more_rows_than_a_page() {
         (u64::from(total), 0),
         "{report:?}"
     );
-    let (under_k1,): (i64,) = sqlx::query_as("SELECT count(*) FROM user_secrets WHERE kid <> 'k2'")
-        .fetch_one(&w.raw)
-        .await
-        .unwrap();
+    let (under_k1,): (i64,) = fetch_one(
+        &w.raw,
+        "SELECT count(*) FROM user_secrets WHERE kid <> 'k2'",
+        &[],
+    )
+    .await;
     assert_eq!(under_k1, 0);
 }
 
@@ -284,14 +287,13 @@ async fn a_row_that_does_not_open_is_counted_as_failed_and_left_alone() {
         .put(&owner(&w.db, 1), &credential(2), &material("bad"))
         .await
         .unwrap();
-    sqlx::query(
+    execute(
+        &w.raw,
         "UPDATE user_secrets SET ciphertext = set_byte(ciphertext, 0, get_byte(ciphertext, 0) # 1) \
          WHERE server = $1",
+        &[&credential(2).to_string()],
     )
-    .bind(credential(2).to_string())
-    .execute(&w.raw)
-    .await
-    .unwrap();
+    .await;
     let bad_before: Vec<RawRow> = raw_rows(&w.raw)
         .await
         .into_iter()
@@ -469,10 +471,12 @@ async fn a_rewrap_racing_a_rotate_loses_nothing() {
     // whichever way each race went, the rows are under the key that seals now
     let report = w.new.rewrap().await.unwrap();
     assert_eq!((report.failed, report.changed), (0, 0), "{report:?}");
-    let (others,): (i64,) = sqlx::query_as("SELECT count(*) FROM user_secrets WHERE kid <> 'k2'")
-        .fetch_one(&w.raw)
-        .await
-        .unwrap();
+    let (others,): (i64,) = fetch_one(
+        &w.raw,
+        "SELECT count(*) FROM user_secrets WHERE kid <> 'k2'",
+        &[],
+    )
+    .await;
     assert_eq!(others, 0);
 }
 
@@ -585,7 +589,7 @@ async fn a_row_that_changes_while_the_run_waits_for_its_lock_is_left_alone_and_c
 
         // another writer is in the middle of its write: it holds the key's lock
         let lock = advisory_lock_key(&alice, &server);
-        let mut writer = hold_lock(&w.raw, lock).await;
+        let writer = hold_lock(&w.raw, lock).await;
         let new = w.new.clone();
         let run = tokio::spawn(async move { new.rewrap().await });
         // the run has read the row and waits for this key's lock (the owner is this test's, so
@@ -593,24 +597,23 @@ async fn a_row_that_changes_while_the_run_waits_for_its_lock_is_left_alone_and_c
         wait_for_a_waiter(&w.raw, lock).await;
 
         if deleted {
-            sqlx::query("DELETE FROM user_secrets")
-                .execute(&mut *writer)
-                .await
-                .unwrap();
+            execute(&writer, "DELETE FROM user_secrets", &[]).await;
         } else {
-            sqlx::query("UPDATE user_secrets SET version = version + 1000")
-                .execute(&mut *writer)
-                .await
-                .unwrap();
-        }
-        let before = {
-            // read through the writer's own session: the change is not committed yet
-            sqlx::query_as::<_, Sealed>(
-                "SELECT version, v, kid, nonce, ciphertext FROM user_secrets",
+            execute(
+                &writer,
+                "UPDATE user_secrets SET version = version + 1000",
+                &[],
             )
-            .fetch_all(&mut *writer)
+            .await;
+        }
+        let before: Vec<Sealed> = {
+            // read through the writer's own session: the change is not committed yet
+            fetch_all(
+                &writer,
+                "SELECT version, v, kid, nonce, ciphertext FROM user_secrets",
+                &[],
+            )
             .await
-            .unwrap()
         };
         writer.commit().await.unwrap();
 
@@ -624,11 +627,12 @@ async fn a_row_that_changes_while_the_run_waits_for_its_lock_is_left_alone_and_c
             !report.is_complete(),
             "a run that saw a row change is not proof"
         );
-        let after: Vec<Sealed> =
-            sqlx::query_as("SELECT version, v, kid, nonce, ciphertext FROM user_secrets")
-                .fetch_all(&w.raw)
-                .await
-                .unwrap();
+        let after: Vec<Sealed> = fetch_all(
+            &w.raw,
+            "SELECT version, v, kid, nonce, ciphertext FROM user_secrets",
+            &[],
+        )
+        .await;
         assert_eq!(after, before, "nothing was written by the run");
     }
 }
