@@ -4071,6 +4071,86 @@ async fn migration_0028_takes_the_four_kinds_of_a_persons_half_and_keeps_what_wa
     );
 }
 
+#[tokio::test]
+async fn migration_0029_takes_the_trusted_request_kind_and_keeps_what_was_there() {
+    let db = db_or_skip!();
+    let pool = db.pool("orch-test-upgrade-0029", 4).await;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("orch-migrations-{}", Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.as_str() < "0029" {
+            std::fs::copy(&path, dir.join(&name)).unwrap();
+        }
+    }
+    history::migrate_dir(&pool, &dir).await;
+    std::fs::remove_dir_all(&dir).unwrap();
+    let applied = |pool: PgPool| async move {
+        let (n,): (i64,) = query_as("SELECT count(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        n
+    };
+    assert_eq!(applied(pool.clone()).await, 28);
+
+    let thread = ThreadId(Uuid::now_v7());
+    query(
+        "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+         updated_at, rail_rank) VALUES ($1, 'alice@example.com', 't', 'coder', 'done', 1, 0, now(), now(), 'i')",
+    )
+    .bind(thread.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let body = EventBody::TrustedRequest(orch_core::TrustedRequestData {
+        component: orch_core::TrustedComponent::McpCredential,
+        hints: orch_core::TrustedHints {
+            name: Some("My search".into()),
+            scopes: vec!["search.read".into()],
+            expires_in_days: Some(30),
+        },
+    });
+    let insert_event = |seq: i64, kind: &'static str, data: String| {
+        query(
+            "INSERT INTO events (thread_id, seq, at, kind, actor, data) \
+             VALUES ($1, $2, now(), $3, '{\"type\":\"system\",\"name\":\"orchestrator\"}', $4::jsonb)",
+        )
+        .bind(thread.0)
+        .bind(seq)
+        .bind(kind)
+        .bind(data)
+    };
+    assert!(
+        insert_event(1, body.kind().as_str(), body.data_value().to_string())
+            .execute(&pool)
+            .await
+            .is_err(),
+        "0028 has no `trusted_request`"
+    );
+
+    let store = PgStore::from_pool(pool);
+    store.migrate().await.unwrap();
+    assert_eq!(applied(store.pool().clone()).await, embedded_migrations());
+    insert_event(1, body.kind().as_str(), body.data_value().to_string())
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        insert_event(2, "nonsense", "{}".into())
+            .execute(store.pool())
+            .await
+            .is_err(),
+        "the constraint still names the kinds"
+    );
+    let events = store.list_events(thread, 0, 10).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].body, body, "read back as the core wrote it");
+}
+
 /// The race `open_child_thread` loses at the index, made deterministic: another transaction holds an
 /// uncommitted child for the session, the call looks, finds nothing, inserts and waits on the unique
 /// index; when the other commits the call reads its thread and answers `Existing`, writing nothing.
