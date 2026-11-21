@@ -147,8 +147,9 @@ serve `tests/contract.rs`.
   response not cancelling, keepalive, release through `forwardedProps`, ignored members, a 2 MiB body.
 - `tests/attach.rs`: a retried POST replays the same frames, one while the run is going follows it to
   its end, earlier runs can be attached to, two concurrent requests with the same ids write one message,
-  a retried answer, and five sends of one message under five run ids are one message, one run, one
-  delivery and one `model_usage_total` (ADR 0082).
+  a retried answer, a known message id sent with other words is a 422 `message_id_reused` with the log
+  unchanged and no run started, and five sends of one message under five run ids are one message, one
+  run, one delivery and one `model_usage_total` (ADR 0082).
 - `tests/lifetime.rs`: a connect stream opened with a credential that does not run out ends at its
   lifetime while the run is still open, and a reopen from the last `id:` says each later event once and
   none twice (ADR 0082).

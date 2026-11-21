@@ -50,6 +50,7 @@ fn known(state: ThreadState) -> KnownThread {
         open_interrupts: Vec::new(),
         message_ids: BTreeSet::new(),
         message_runs: BTreeMap::new(),
+        message_texts: BTreeMap::new(),
         run_ids: BTreeSet::new(),
         surfaces: BTreeMap::new(),
     }
@@ -394,10 +395,11 @@ fn nothing_new_and_a_run_that_exists_attaches() {
 fn a_resend_of_a_known_message_under_a_new_run_id_attaches_to_the_run_it_opened() {
     // ADR 0082, decision 5: the id is the client's, so a retry cannot be expected to remember the
     // run id too. The log's `user_message` says which run the message opened, and that is the run
-    // the resend is shown.
+    // the resend is shown — provided the words are the same.
     let view = KnownThread {
         message_ids: ["m-1".to_owned()].into(),
         message_runs: [("m-1".to_owned(), "r-1".to_owned())].into(),
+        message_texts: [("m-1".to_owned(), "first".to_owned())].into(),
         run_ids: ["r-1".to_owned()].into(),
         ..known(ThreadState::Done)
     };
@@ -408,6 +410,33 @@ fn a_resend_of_a_known_message_under_a_new_run_id_attaches_to_the_run_it_opened(
 }
 
 #[test]
+fn a_known_message_id_sent_with_other_words_is_refused_on_both_paths() {
+    // ADR 0082, C4: an id is bound to the text it was first written with, so an edited draft is a
+    // second message wearing the first one's id. Both ways an id is reconciled today — the drop of
+    // a message the log holds, and an attach — must refuse rather than discard the new words.
+    for run_id in ["r-1", "r-retry"] {
+        let view = KnownThread {
+            message_ids: ["m-1".to_owned()].into(),
+            message_runs: [("m-1".to_owned(), "r-1".to_owned())].into(),
+            message_texts: [("m-1".to_owned(), "first".to_owned())].into(),
+            run_ids: ["r-1".to_owned()].into(),
+            ..known(ThreadState::Done)
+        };
+        let edited = request(json!({"runId": run_id, "messages": [user_msg("m-1", "second")]}));
+        let e = err(&edited, view);
+        assert_eq!(
+            e,
+            InputError::MessageIdReused {
+                message_id: "m-1".into()
+            },
+            "{run_id}"
+        );
+        assert_eq!(e.http_status(), 422);
+        assert_eq!(e.code(), Some("message_id_reused"));
+    }
+}
+
+#[test]
 fn a_resend_attaches_to_the_last_message_of_the_request_the_log_has() {
     // The client resends its whole transcript: the message it is sending again is the last one.
     let view = KnownThread {
@@ -415,6 +444,11 @@ fn a_resend_attaches_to_the_last_message_of_the_request_the_log_has() {
         message_runs: [
             ("m-1".to_owned(), "r-1".to_owned()),
             ("m-2".to_owned(), "r-2".to_owned()),
+        ]
+        .into(),
+        message_texts: [
+            ("m-1".to_owned(), "first".to_owned()),
+            ("m-2".to_owned(), "second".to_owned()),
         ]
         .into(),
         run_ids: ["r-1".to_owned(), "r-2".to_owned()].into(),

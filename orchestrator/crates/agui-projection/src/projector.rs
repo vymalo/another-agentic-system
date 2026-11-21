@@ -398,6 +398,9 @@ pub struct Projector {
     /// log's `user_message` carries both ids, and this is what lets a resend of that message under a
     /// run id of its own attach to the run it belongs to.
     message_runs: BTreeMap<String, String>,
+    /// The text each user message the log holds was sent with, by message id (ADR 0082): an id is
+    /// bound to its text, so a resend that repeats the id with other words is refused.
+    message_texts: BTreeMap<String, String>,
     /// The ids of the reasoning the log has said (ADR 0044): live reasoning for one is late.
     reasoning_ids: BTreeSet<String>,
     run_ids: BTreeSet<String>,
@@ -580,6 +583,7 @@ impl Projector {
             pending_error: None,
             message_ids: BTreeSet::new(),
             message_runs: BTreeMap::new(),
+            message_texts: BTreeMap::new(),
             reasoning_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
@@ -695,6 +699,7 @@ impl Projector {
             },
             message_ids: self.message_ids.clone(),
             message_runs: self.message_runs.clone(),
+            message_texts: self.message_texts.clone(),
             run_ids: self.run_ids.clone(),
             surfaces: self
                 .surfaces
@@ -940,9 +945,11 @@ impl Projector {
             .unwrap_or_else(|| format!("run-{}", ev.seq));
         self.open_run(run_id.clone(), true, out);
         self.message_ids.insert(message_id.clone());
-        // The log's `user_message` says which run the message opened (ADR 0082): a resend of it
-        // under another run id attaches to that one.
+        // The log's `user_message` says which run the message opened and what words it carried
+        // (ADR 0082): a resend attaches to that run, and only if it repeats those words.
         self.message_runs.insert(message_id.clone(), run_id);
+        self.message_texts
+            .insert(message_id.clone(), d.text.clone());
         if audience.holds(&message_id) {
             return;
         }

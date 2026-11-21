@@ -4,10 +4,15 @@ use axum::http::{HeaderMap, StatusCode, header};
 use orch_agui_projection::InputError;
 use orch_api::{ApiError, Problem};
 
-/// The problem a request that [`orch_agui_projection`] refuses becomes: 400, 409 or 422.
+/// The problem a request that [`orch_agui_projection`] refuses becomes: 400, 409, 413 or 422, with
+/// the refusal's stable `code` where it has one (`message_id_reused`).
 pub(crate) fn input_error(e: &InputError) -> ApiError {
     let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
-    Problem::new(status, e.to_string()).into()
+    let problem = Problem::new(status, e.to_string());
+    match e.code() {
+        Some(code) => problem.with_code(code).into(),
+        None => problem.into(),
+    }
 }
 
 /// The binding answers `text/event-stream`, so a client that asks for nothing it can read (for

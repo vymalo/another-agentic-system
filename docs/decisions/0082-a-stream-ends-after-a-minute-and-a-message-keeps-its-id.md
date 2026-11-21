@@ -28,7 +28,8 @@ What exists today, read at `ebcee350` and changed by this ADR (the last column i
 | Stream lifetime | **One hour**, or the token's `exp` + 60 s, **or nothing at all** when the principal carries no `expires_at` (a proxy header, a static token) | `api/src/sse.rs:14,24-31,35-47`; ADR 0033 §6, §10 | **the shortest of the three, always** (`sse::stream_budget`, `ApiConfig::sse_lifetime`, 60 s by default) |
 | Resume | **Done**: `Last-Event-ID` on the three connect routes; the log is re-read from 1 and folded to the cursor, then the stream follows | `surface-agui/src/connect.rs:54-70,88-93`, `agui-projection/src/connect.rs:58-71,89-109` | unchanged, and now the ordinary path once a minute |
 | Idempotency | **Done server-side**, keyed on the **client's** message id: `agui:<thread>:msg:<id>`, a unique index, `Duplicate` folds to an attach | `surface-agui/src/run.rs:409-431`, `agui-projection/src/translate.rs:389-404,519-548`, `store-postgres/src/store.rs:1852-1868`, `migrations/0001_init.sql:32` | unchanged: the key is the message id, never the run id |
-| A resend with a **new** `runId` | **422 `nothing to run`**: the message is already in the log, so there is nothing to start, and it is *not* an attach | `agui-projection/src/translate.rs:539-548`; `docs/api/agui.md:476-478` | **attach to the run that message opened**: the log's `user_message` records it, and the projector folds it into `KnownThread::message_runs` |
+| A resend with a **new** `runId` | **422 `nothing to run`**: the message is already in the log, so there is nothing to start, and it is *not* an attach | `agui-projection/src/translate.rs:539-548`; `docs/api/agui.md:476-478` | **attach to the run that message opened**, when the words are the same: the log's `user_message` records the run and the text, and the projector folds both into `KnownThread` (`message_runs`, `message_texts`); a resend with other words is 422 `message_id_reused` |
+| A resend with **other words** under a known id | **Silently dropped**: reconciliation by id kept the logged message and discarded the new text (or answered 422 `nothing to run` when the run id was new) | `agui-projection/src/translate.rs:389-404,539-548` | **422 `message_id_reused`**, before anything is written: an id is bound to its text |
 | The web's send | Mints a **fresh** `runId` per send and a fresh message id (the library's), and on a refusal keeps only the **text** | `web/src/features/chat/lib/agui/thread-agent.ts:1495-1515,1540-1541`, `failed-send.ts:8-17`, `use-chat-runtime.ts:192-194` | not this change (the web's half) |
 | The web's reconnect | On the stream **ending**, with `Last-Event-ID` and a backoff of `min(30 s, 1 s · 2^attempt)` — **no jitter, no dead-stream detection** | `thread-agent.ts:383,593-637`; comments are parsed and discarded at `lib/agui/sse.ts:41` | not this change (the web's half) |
 
@@ -73,6 +74,15 @@ already an input of `translate`. **1, protocols only** — SSE and the AG-UI con
    is sending again — and returns it as `Translation::attach`; the surface streams that run from its `RUN_STARTED` (its own
    `runId` in the frames, not the request's). A known id whose log entry opened no run (an agent's message, an activity) is still
    the 422: there is nothing to attach to, and the guard stays.
+   **The id is bound to its text.** C4 says the id is "used again for every send of *that text*", so a resend repeats the same
+   bytes; a request that repeats a known id with **other** words is not a resend but a second message wearing the first one's id,
+   and it is refused with 422 `message_id_reused` before anything is written. Accepting another text would make the id
+   meaningless, and the two alternatives are both worse: dropping the new words silently (what the reconciliation by id did) or
+   attaching to the old run and showing the person an answer to words they no longer sent. The log's `user_message` carries the
+   text, so the projector folds `message_texts: message id → text` beside `message_runs`, and `translate` compares exactly, before
+   either path that reconciles by id — the drop of a message the thread holds and the attach. A client that edits a draft mints a
+   new id, which is C4's own rule, now enforced where the orchestrator can see it. (The comparison is exact bytes of the text the
+   message would be sent with: the surface's own reading of the content parts, so a retry that resends the same request passes.)
    *Rejected: keep the 422 and make the client reuse the `runId` too. It works only for our own client; C4 is about the
    protocol, and a retry that a proxy replays cannot be expected to remember a run id.*
    *Rejected: a run id on the event's idempotency key. The key is the message id (that is what makes a retry the same input);
@@ -92,9 +102,11 @@ already an input of `translate`. **1, protocols only** — SSE and the AG-UI con
 - Billing does not move: usage is folded from the log, and the log gains nothing from a reopen. Five sends of one message now
   add one `model_usage_total` (proven in `surface-agui/tests/attach.rs`).
 - The 422 row of the run route narrows to "the message id is known but its run cannot be attached" — a case that should now be
-  unreachable for a message the log has a run for, and stays as a guard.
-- Nothing about a connection is stored: the lifetime is a `Duration` in the router's state, and the message→run map is a fold of
-  the log, rebuilt on every request like the rest of the projector.
+  unreachable for a message the log has a run for, and stays as a guard — and gains one new case, `message_id_reused`, for a
+  known id sent with other words. A client that edits a draft must mint a new id; that is C4's own rule, and the alternative was
+  either a silent drop or an answer to words the person no longer sent.
+- Nothing about a connection is stored: the lifetime is a `Duration` in the router's state, and the message→run and message→text
+  maps are folds of the log, rebuilt on every request like the rest of the projector.
 
 ## Alternatives considered
 

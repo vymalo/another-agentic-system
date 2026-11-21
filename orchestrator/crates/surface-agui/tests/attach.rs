@@ -119,6 +119,66 @@ async fn a_retried_answer_attaches_instead_of_answering_twice() {
 }
 
 #[tokio::test]
+async fn a_message_id_the_log_holds_is_refused_when_it_is_sent_with_different_words_and_nothing_is_written()
+ {
+    // C4 (ADR 0082): the id is bound to the text it was first written with, so an edited message
+    // wearing the same id is a second message, not a resend. It is refused before anything is
+    // written — neither silently dropped nor attached to the old run, which would lose the new
+    // words.
+    let h = Harness::start().await;
+    let thread = new_thread_id();
+    let first = h
+        .run(
+            "plain",
+            ALICE,
+            &input(&thread, "run-a", &[("msg-1", "echo one")]),
+        )
+        .await
+        .all()
+        .await;
+    assert_eq!(first.first().unwrap().event["runId"], "run-a");
+    h.wait_state(ALICE, &thread, "done").await;
+    let before = h.events(ALICE, &thread).await;
+
+    let refused = h
+        .refused(
+            "plain",
+            Some(ALICE),
+            &input(&thread, "run-b", &[("msg-1", "echo two")]),
+        )
+        .await;
+    let problem = refused.problem(422);
+    assert_eq!(problem["code"], "message_id_reused");
+    assert!(
+        problem["detail"].as_str().unwrap().contains("msg-1"),
+        "the refusal names the id: {problem}"
+    );
+
+    // Nothing was written, and no run started.
+    let after = h.events(ALICE, &thread).await;
+    assert_eq!(after.len(), before.len(), "the log is unchanged: {after:?}");
+    assert!(
+        after.iter().all(|e| e["data"]["runId"] != "run-b"),
+        "{after:?}"
+    );
+    assert_eq!(h.agent.sends().len(), 1, "the agent was not asked again");
+
+    // The same words under the same id are still a resend: it attaches to the run that message
+    // opened, so the refusal above refused the words and not the retry.
+    let resent = h
+        .run(
+            "plain",
+            ALICE,
+            &input(&thread, "run-c", &[("msg-1", "echo one")]),
+        )
+        .await
+        .all()
+        .await;
+    assert_eq!(resent.first().unwrap().event["runId"], "run-a");
+    assert_eq!(h.agent.sends().len(), 1);
+}
+
+#[tokio::test]
 async fn five_sends_of_one_message_under_five_run_ids_are_one_message_one_run_and_one_charge() {
     // ADR 0082, decision 5, and C4: the message id is the client's and is reused for every send of
     // the same text, whether the transport retries or the person presses Send again. A send under a

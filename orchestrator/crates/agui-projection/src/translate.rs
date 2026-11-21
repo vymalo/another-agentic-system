@@ -49,6 +49,9 @@ pub struct KnownThread {
     /// The run each user message of the log opened, by message id (ADR 0082): a resend of that
     /// message, whatever `runId` it carries, attaches to the run the log says it belongs to.
     pub message_runs: BTreeMap<String, String>,
+    /// The words each user message of the log was sent with, by message id (ADR 0082): an id is
+    /// bound to its text, so a request that repeats the id with other words is refused.
+    pub message_texts: BTreeMap<String, String>,
     /// Every run id the log already holds.
     pub run_ids: BTreeSet<String>,
     /// The A2UI surfaces the thread has now, with the dialect each one speaks. An action is
@@ -120,6 +123,18 @@ pub enum InputError {
     NothingToRun {
         /// The request's `runId`.
         run_id: String,
+    },
+    /// A message id the log holds was sent with other words (422, `message_id_reused`). An id is
+    /// bound to the text it was first written with (ADR 0082, C4): a client that edits a draft
+    /// mints a new id, because a resend repeats the same bytes. Accepting another text would make
+    /// the id meaningless.
+    #[error(
+        "message {message_id:?} is already in this thread with other words; a message id is bound \
+         to the text it was sent with, so an edited message needs a new id"
+    )]
+    MessageIdReused {
+        /// The id the request repeated.
+        message_id: String,
     },
     /// More than one message is new (422): the orchestrator owns the history, one message at a
     /// time.
@@ -249,6 +264,7 @@ impl InputError {
             | InputError::TooManyNewMessages { .. }
             | InputError::NewNonUserMessage { .. }
             | InputError::EmptyMessage { .. }
+            | InputError::MessageIdReused { .. }
             | InputError::InvalidResumePayload { .. }
             | InputError::RunIdReused { .. }
             | InputError::InvalidAction { .. }
@@ -257,6 +273,34 @@ impl InputError {
             | InputError::AmbiguousAction
             | InputError::AmbiguousAnswer => 422,
             InputError::ActionTooLarge { .. } => 413,
+        }
+    }
+
+    /// The stable, machine-readable `code` of the problem the surface answers with, where a client
+    /// acts on it (the RFC 9457 extension member `code` that `orch_api::Problem` carries). `None`
+    /// for the refusals that are only a status and a sentence: their bodies are what they always
+    /// were.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            InputError::MessageIdReused { .. } => Some("message_id_reused"),
+            InputError::ThreadIdNotUuid { .. }
+            | InputError::ProtocolVersion { .. }
+            | InputError::NothingToRun { .. }
+            | InputError::TooManyNewMessages { .. }
+            | InputError::NewNonUserMessage { .. }
+            | InputError::EmptyMessage { .. }
+            | InputError::InvalidResumePayload { .. }
+            | InputError::AmbiguousAnswer
+            | InputError::RunIdReused { .. }
+            | InputError::RunInProgress
+            | InputError::InvalidSend { .. }
+            | InputError::ThreadFinished { .. }
+            | InputError::InvalidAction { .. }
+            | InputError::ActionTooLarge { .. }
+            | InputError::UnknownSurface { .. }
+            | InputError::EarlierSurface { .. }
+            | InputError::AmbiguousAction
+            | InputError::WrongAgent { .. } => None,
         }
     }
 }
@@ -393,6 +437,27 @@ pub fn translate_with_warnings(
         ThreadView::Known(k) => Some(k),
         ThreadView::New { .. } => None,
     };
+
+    // An id is bound to the text it was first written with (ADR 0082, C4): a resend repeats the
+    // same bytes, so a known id sent with other words is a second message wearing the first one's
+    // id, refused before anything is written. Both ways this function reconciles by id — the drop
+    // below and an attach — pass through here, so neither discards the new words silently.
+    if let Some(k) = known {
+        for message in &input.messages {
+            let Message::User(u) = message else {
+                continue;
+            };
+            let Some(logged) = k.message_texts.get(u.id.as_str()) else {
+                continue;
+            };
+            let (text, _) = user_text(&u.content);
+            if text != *logged {
+                return Err(InputError::MessageIdReused {
+                    message_id: u.id.to_string(),
+                });
+            }
+        }
+    }
 
     // Reconcile by id: what the thread already holds is not new, whatever its role.
     let mut new_users = Vec::new();
