@@ -264,6 +264,8 @@ type Viewer = {
   /** When the response ends: `first-close` at the first run close (a run response), `after-replay` when the replay is over and no run is open (`?mode=run`), else never. */
   end: "first-close" | "after-replay" | "never";
   keepalive: NodeJS.Timeout;
+  /** When the stream ends on its own terms (ADR 0082): only a followed stream has one. */
+  lifetime?: NodeJS.Timeout;
   /** Test hook: frames left before the connection is cut. */
   cutAfter: number | undefined;
   /** A reader of a share link (ADR 0040): the reader projection, and whether the link still serves them. */
@@ -273,6 +275,12 @@ type Viewer = {
 export type MockOptions = {
   stepMs?: number;
   keepaliveMs?: number;
+  /**
+   * How long a followed stream stays open before it ends on its own terms (ADR 0082): the orchestrator's
+   * `sse_lifetime`, 60 s by default, shorter in tests. A run's response is not affected: it ends at its
+   * terminal event.
+   */
+  lifetimeMs?: number;
   /** How often the text so far of a reply being written is said again from its start (default 1000). */
   refreshMs?: number;
   /**
@@ -349,6 +357,7 @@ export function readerEvent(e: Event, reader: Reader): Event {
 export function createMockServer(options: MockOptions = {}): http.Server {
   const stepMs = options.stepMs ?? 400;
   const keepaliveMs = options.keepaliveMs ?? 15_000;
+  const lifetimeMs = options.lifetimeMs ?? 60_000;
   const refreshMs = options.refreshMs ?? 1000;
   const issuer = options.browserAuth ? createIssuer(options.browserAuth) : undefined;
   /** Who the verified token of a request is (browser mode): the profile the issuer approved. */
@@ -874,6 +883,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 
   function closeViewer(v: Viewer, abrupt = false) {
     clearInterval(v.keepalive);
+    clearTimeout(v.lifetime);
     for (const set of viewers.values()) set.delete(v);
     if (abrupt) v.res.destroy();
     else v.res.end();
@@ -965,6 +975,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     const set = viewers.get(thread.id) ?? new Set();
     viewers.set(thread.id, set);
     set.add(viewer);
+    // The deployment's stream lifetime (ADR 0082, decision 1): the response ends on its own terms after
+    // `lifetimeMs`, whatever is open, and the client reopens from its last `id:` — the ordinary path, not
+    // an error one. A run's response ends at its own terminal event instead.
+    if (viewer.end === "never") {
+      viewer.lifetime = setTimeout(() => closeViewer(viewer), lifetimeMs);
+      viewer.lifetime.unref();
+    }
   }
 
   function append(threadId: string, kind: Event["kind"], actor: Actor, data: Event["data"]): Event {
@@ -1414,6 +1431,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const only = url.searchParams.get("thread");
       for (const [id, set] of viewers) {
         if (only === null || id === only) for (const v of [...set]) closeViewer(v, true);
+      }
+      return void res.writeHead(204).end();
+    }
+    // A stream that dies without closing (ADR 0082, C3): the socket stays open and says nothing, which is
+    // what a proxy, a phone radio or a dead NAT entry leaves behind. The viewers open now stop sending
+    // their keepalive; a client that reconnects gets a new one, beating as usual. `?thread=` as above.
+    if (path === "/__mock/silence-streams" && method === "POST") {
+      const only = url.searchParams.get("thread");
+      for (const [id, set] of viewers) {
+        if (only === null || id === only) for (const v of [...set]) clearInterval(v.keepalive);
       }
       return void res.writeHead(204).end();
     }
@@ -3838,6 +3865,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 async function main() {
   const port = Number(process.env.MOCK_PORT ?? 4010);
   const stepMs = process.env.MOCK_STEP_MS ? Number(process.env.MOCK_STEP_MS) : undefined;
+  const lifetimeMs = process.env.MOCK_STREAM_LIFETIME_MS
+    ? Number(process.env.MOCK_STREAM_LIFETIME_MS)
+    : undefined;
   const origins = (
     process.env.MOCK_PUBLIC_ORIGINS ??
     "http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002"
@@ -3845,6 +3875,7 @@ async function main() {
   const corsOrigins = process.env.MOCK_CORS_ORIGINS?.split(",").filter(Boolean);
   const server = createMockServer({
     ...(stepMs === undefined ? {} : { stepMs }),
+    ...(lifetimeMs === undefined ? {} : { lifetimeMs }),
     ...(corsOrigins?.length ? { corsOrigins } : {}),
     // `MOCK_BROWSER_AUTH=1`: the mock is the issuer too and wants DPoP (mock/issuer.ts)
     ...(process.env.MOCK_BROWSER_AUTH
