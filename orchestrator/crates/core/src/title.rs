@@ -293,6 +293,7 @@ pub(crate) fn agent_words(body: &EventBody) -> Option<&str> {
         | EventBody::ChildSessionStartEnded(_)
         | EventBody::ChildSessionCloseAsked(_)
         | EventBody::ChildSessionState(_)
+        | EventBody::TrustedRequest(_)
         | EventBody::ThreadForked(_) => return None,
     };
     (!words.trim().is_empty()).then_some(words)

@@ -20,6 +20,7 @@ use crate::step::AgentStepData;
 use crate::thread::ThreadState;
 use crate::title::ThreadTitledData;
 use crate::tools::ToolsData;
+use crate::trusted::TrustedRequestData;
 use crate::ui::{UiActionData, UiSurfaceData};
 use crate::ui_catalog::UiCatalogData;
 use crate::usage::{ModelUsageData, ModelUsageTotalData};
@@ -99,6 +100,10 @@ pub enum EventKind {
     ChildSessionCloseAsked,
     /// The session's state changed (ADR 0072, S3): in the child's log.
     ChildSessionState,
+    /// An agent asked the client to draw a trusted component (`trusted-components/v1`, ADR 0083):
+    /// the component and the agent's hints, never a secret. The client draws it; the agent never
+    /// does.
+    TrustedRequest,
 }
 
 impl EventKind {
@@ -138,6 +143,7 @@ impl EventKind {
             EventKind::ChildSessionStartEnded => "child_session_start_ended",
             EventKind::ChildSessionCloseAsked => "child_session_close_asked",
             EventKind::ChildSessionState => "child_session_state",
+            EventKind::TrustedRequest => "trusted_request",
         }
     }
 }
@@ -635,6 +641,8 @@ pub enum EventBody {
     ChildSessionCloseAsked(ChildSessionCloseAskedData),
     /// See [`ChildSessionStateData`].
     ChildSessionState(ChildSessionStateData),
+    /// See [`TrustedRequestData`].
+    TrustedRequest(TrustedRequestData),
 }
 
 impl EventBody {
@@ -674,6 +682,7 @@ impl EventBody {
             EventBody::ChildSessionStartEnded(_) => EventKind::ChildSessionStartEnded,
             EventBody::ChildSessionCloseAsked(_) => EventKind::ChildSessionCloseAsked,
             EventBody::ChildSessionState(_) => EventKind::ChildSessionState,
+            EventBody::TrustedRequest(_) => EventKind::TrustedRequest,
         }
     }
 
@@ -713,6 +722,7 @@ impl EventBody {
             EventBody::ChildSessionStartEnded(d) => serde_json::to_value(d),
             EventBody::ChildSessionCloseAsked(d) => serde_json::to_value(d),
             EventBody::ChildSessionState(d) => serde_json::to_value(d),
+            EventBody::TrustedRequest(d) => serde_json::to_value(d),
         };
         // Plain structs of strings/bools/enums always serialise.
         value.unwrap_or(Value::Null)
@@ -768,6 +778,7 @@ impl EventBody {
             EventKind::ChildSessionState => {
                 EventBody::ChildSessionState(serde_json::from_value(data)?)
             }
+            EventKind::TrustedRequest => EventBody::TrustedRequest(serde_json::from_value(data)?),
         })
     }
 }

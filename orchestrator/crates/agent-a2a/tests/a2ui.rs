@@ -94,6 +94,7 @@ fn kinds(envs: &[AgentEnvelope]) -> Vec<String> {
             Some(AgentUpdate::TierRejected) => "tier-rejected".to_owned(),
             Some(AgentUpdate::ChildSessions(_)) => "sessions".to_owned(),
             Some(AgentUpdate::ChildSessionsRejected(_)) => "sessions-rejected".to_owned(),
+            Some(AgentUpdate::TrustedRequest(_)) => "trusted".to_owned(),
             Some(AgentUpdate::File { name, .. }) => format!("file:{name}"),
             Some(AgentUpdate::FileUploaded { name, .. }) => format!("upload:{name}"),
             Some(AgentUpdate::FileKept { name, .. } | AgentUpdate::FileRefused { name, .. }) => {

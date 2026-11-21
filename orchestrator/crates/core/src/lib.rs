@@ -37,6 +37,7 @@ mod thread_tools;
 mod title;
 mod tools;
 mod transition;
+mod trusted;
 mod ui;
 mod ui_catalog;
 mod usage;
@@ -147,6 +148,11 @@ pub use tools::{
     check_servers, is_valid_server_id,
 };
 pub use transition::{Command, EventDraft, Input, TransitionError, start_thread, transition};
+pub use trusted::{
+    MAX_TRUSTED_EXPIRES_IN_DAYS, MAX_TRUSTED_NAME_CHARS, MAX_TRUSTED_SCOPE_BYTES,
+    MAX_TRUSTED_SCOPES, TRUSTED_COMPONENTS_EXTENSION, TrustedComponent, TrustedComponentsOffer,
+    TrustedHints, TrustedHintsInvalid, TrustedRequestData,
+};
 pub use ui::{
     A2UI_EXTENSION_V1_0, A2UI_MEDIA_TYPE, MAX_ACTION_CONTEXT_BYTES, MAX_ID_BYTES, MAX_OPERATIONS,
     MAX_OPERATIONS_BYTES, MAX_SURFACE_BYTES, OperationError, OperationInfo, SurfaceOp,

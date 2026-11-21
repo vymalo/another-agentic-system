@@ -7,7 +7,7 @@ use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, BoxError, ChildSessionsOffer, Classify, CommandsListing,
     ErrorClass, ForkHistory, KnownExtension, LiveChunk, Releases, TierListing, Timestamp,
-    ToolsGrant, UiActionData, UiDelivery, UiVersion,
+    ToolsGrant, TrustedComponentsOffer, UiActionData, UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -134,6 +134,10 @@ pub struct AgentCardInfo {
     /// well-formed `params` (ADR 0072); `None` when it does not list it or lists it badly. Read
     /// live like the rest of the card (ADR 0008).
     pub child_sessions: Option<ChildSessionsOffer>,
+    /// The trusted components the card lets the agent ask the client to draw, when it lists
+    /// `trusted-components/v1` with well-formed `params` and names at least one this build draws
+    /// (ADR 0083); `None` otherwise. Read live like the rest of the card (ADR 0008).
+    pub trusted_components: Option<TrustedComponentsOffer>,
     /// The parameters of a build extension the card lists, as text (ADR 0053): empty for a card
     /// that lists none. Read live like the rest of the card, bounded by the core when recorded,
     /// never read as an instruction.

@@ -1,0 +1,106 @@
+# ADR 0084 — The run lease: the broker binds a run and lends its model credential to the injector
+
+- **Status:** **proposed (2026-11-21).** It fixes the contract of sys#334's slice **B1** (the broker's first part) that
+  S9's injector consumes. Two choices are the owner's and are listed under *Open questions*; the recommended answers are
+  the ones written here, so the morning has something concrete to rule on. The requirements are the epic's own
+  (*Key Assumptions* 3, 14 and 15, and the constraint that the lease route is not at the edge).
+
+## Context
+
+S8 makes every model call of a run leave adam with **no key of its own**, tagged with `X-Run-Id` (the root run's id,
+ADR 0067 decision 1; subagents and child sessions carry the same). S9 puts **Agent Router** in front of the model
+endpoint and **Authorino** in front of Agent Router's routes; Authorino authenticates the agent pod, asks the broker for
+the run's credential, adds `Authorization` upstream only, caches it per run within the lease, and strips a client-sent
+`Authorization`.
+
+The missing half is the broker. Today `orch-credential-broker` serves **people's own MCP servers**: `store`,
+`begin_oauth`, `complete_oauth`, `lease`, `revoke`, keyed by a user tool server; it has no notion of a run. The epic
+splits the broker's first part out ahead of hooks (B1): **its store, the lease contract, and an internal lease lookup
+absent from the edge**, keyed by the run id and the caller's identity, answering only when the caller is the agent the
+run is bound to.
+
+What binds this record: the value never travels through A2A, the chat, the event log, outbox, AG-UI frames, step
+input/output, exports, shares, forks, the agent's store or the model's requests; only the vault keeps it, and the
+injector holds it for at most 30 s to set a header. Fail closed: a refusal or an unreachable broker parks the run
+(adam ADR 0067 decision 9). The broker is already the only holder of the sealed store, and the owner chose **OpenBao**
+as the vault for real deployments, the broker's sealed store for small and development ones (epic *Key Assumptions* 14).
+
+## Decision
+
+1. **The orchestrator binds the run at its creation.** `POST /internal/runs` takes `{run, agent, person, model?,
+   expiresAt}`. The broker keeps the binding (run id, agent id, person id, model endpoint name if given, expiry,
+   revocation). The same binding sent again is **idempotent**; a different binding for a run id already bound is
+   refused (`409`), because a run is bound once. `expiresAt` is the run's deadline, **capped by the broker** (24 h), and
+   the binding is not a secret: it names people and agents, no value.
+
+2. **The lookup is Authorino's, and only the bound agent's.** `GET /internal/runs/{run}/lease` takes the caller's
+   identity — Authorino's own service account **and** the agent identity it authenticated (the agent pod's
+   service-account identity, or its client certificate). The broker answers only when all three hold: the caller is the
+   agent the run is bound to, the binding is live (not expired, not revoked), and the deployment has a credential for
+   the run's model. A refusal is one of the ruled slugs — `run_not_bound`, `lease_expired`, `unavailable` — and
+   `model_locked` is **not** this route's (the balance is checked per call by the injector's authorization, not per
+   lease).
+
+3. **The lease is short and cannot outlive the binding.** The answer is a bearer token for the model endpoint and its
+   expiry: at most **30 s** and never past the binding's. The response is `no-store`, the value is never logged, and
+   `Debug` shows the expiry and the model, never the value. Authorino caches it per run for no longer than the lease, so
+   a revoked binding stops spending within 30 s.
+
+4. **One port, two stores.** A `RunLeases` port keeps the binding (the broker's Postgres store, beside its existing
+   tables); a `ModelCredentials` port reads the value — **OpenBao** in production, the broker's **sealed store** in small
+   and development deployments. A missing credential is `unavailable` (fail closed), never an empty header; the store's
+   availability is the lookup's.
+
+5. **The route is not at the edge.** It is served on the broker's internal listener only: no Ingress, no route in the
+   public API document, and a NetworkPolicy that admits the orchestrator's pods (to bind) and the injector's pods (to
+   look up). The broker authenticates the caller itself (a TokenReview of the presented service-account token, or
+   mTLS), and trusts the agent identity only from that caller: the `X-Run-Id` header is an opaque capability, never a
+   credential (S9's rule).
+
+6. **Expiry and revocation are the binding's.** The binding expires at `expiresAt`; a canceled or finished run deletes
+   it (`DELETE /internal/runs/{run}`, idempotent, the orchestrator's call); a sweep removes expired rows. After either,
+   the next lookup is `run_not_bound` or `lease_expired`, and the injector's cache holds nothing past one lease.
+
+7. **Metering keeps its owner.** The lookup is how the injector learns the run's identity; the usage ledger charges the
+   run's person (ADR 0065), and the balance check with `model_locked` belongs to the injector's per-call authorization.
+   This route answers "who is this run" and "what may it spend with", not "may it spend now".
+
+## Consequences
+
+- The agent holds no model key, a revoked run stops within one lease, and the broker knows the run's person before the
+  first model call.
+- The broker gains one table and two routes; the orchestrator gains the bind/delete calls; Authorino gains the lookup.
+  No new dependency, and no driver type in a signature (invariant 6).
+- The lookup route's reachability is the S9 half: a NetworkPolicy and a listener, and the agent's identity authenticated
+  by Authorino (TokenReview or a client certificate).
+- Two stores behind one port: the vault's availability is the lookup's availability; the sealed store is the dev
+  fallback, and the conformance suite must hold both to the same answers.
+
+## Alternatives
+
+- **The credential in the AgentConfig or a Secret the agent mounts**: the agent, or its pod, would hold it; refused by
+  the epic's constraint that the agent never holds a model credential.
+- **The broker as the model proxy** (the call goes through the broker, which adds the key): a second proxy beside Agent
+  Router, which the owner chose; refused.
+- **A lease for the run's whole life**: fewer broker calls, but a revocation waits for the run to end; the 30 s lease
+  with the injector's cache is the recommendation.
+- **A per-person provider key** (open question 1): a different store shape (per person and model) and a different
+  balance semantics; the ADR keeps the deployment's key as the default.
+
+## Open questions
+
+1. **Which credential is injected** — the deployment's provider key for the model endpoint, leased per run and metered
+   against the person's balance (**recommended**: the frontier plan prices per task and the balance is the person's), or
+   a per-person key kept in the vault. The epic's words, "the person's run-scoped credential", read as the latter; the
+   frontier plan reads as the former. The answer changes the store's shape, not the routes.
+2. **The lease TTL** — 30 s per lease, renewed by Authorino's cache (**recommended**, the epic's "at most 30 s"), or the
+   run's whole life.
+3. **The lookup's caller identity** — Authorino's service account plus the agent identity it authenticated
+   (**recommended**), or mTLS from the injector.
+4. **Does the binding name the model endpoint**, or does the lookup resolve it from the agent's AgentConfig?
+   (**Recommended:** the binding names it, so a change of the agent's model does not change a live run.)
+
+## What this ADR does not fix
+
+The vault's own deployment and unsealing, the balance check and `model_locked`, the egress proxy's interception for
+people's own hosts, and the operator's parity slice — each is its own slice of the epic.

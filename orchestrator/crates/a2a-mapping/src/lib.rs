@@ -164,6 +164,16 @@
 //! | an event | `Turn("T:sessions-event:<16 hex digits>")` |
 //! | an entry that does not pass the door | `Turn("T:sessions-rejected")` (never applied) |
 //!
+//! A trusted component an agent asks the client to draw (ADR 0083, `trusted-components/v1`,
+//! `docs/api/trusted-components-v1.md`) rides on an agent `Message`'s metadata under the
+//! extension's URI, as `{component, hints}`. It is one strict parse
+//! ([`TrustedRequestData::from_metadata_value`], in the core): a component this build does not draw,
+//! or hints out of bounds, mean the request is not read at all (fail closed), and the adapter drops
+//! one for a component the card read for the call did not offer. A request with no words and no
+//! surface is still a message: it maps to one envelope, `AgentUpdate::TrustedRequest`, under
+//! `Task("a2a:msg:<id>:trusted")`, after the words and surfaces of the same message. A status
+//! update's message is not a carrier: the contract says an agent `Message`.
+//!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
 //! replaces collapse into one.
@@ -230,7 +240,8 @@ use orch_core::{
     A2UI_MEDIA_TYPE, ACCESS_TIER_EXTENSION, AccessTier, AgentTaskState, AgentUpdate,
     CHILD_SESSIONS_EXTENSION, LiveChunk, LiveEnd, LiveKind, MAX_REASONING_BYTES, MessagePurpose,
     STEPS_EXTENSION, StepKind, StepOutput, StepReport, StepState, TEXT_STREAM_EXTENSION,
-    UPLOADS_EXTENSION, USAGE_EXTENSION, UsageCall, UsageTotals, UsageUpdate, check_operations,
+    TRUSTED_COMPONENTS_EXTENSION, TrustedRequestData, UPLOADS_EXTENSION, USAGE_EXTENSION,
+    UsageCall, UsageTotals, UsageUpdate, check_operations,
 };
 use orch_ports::{AgentEnvelope, AgentError, IdemKey, TaskSnapshot};
 use serde_json::Value;
@@ -1835,7 +1846,15 @@ impl StreamMapper {
         }
         let text = text_of(&m.parts);
         let split = split_ui(&m.parts);
-        if text.is_none() && split.ui.is_empty() {
+        // A trusted component the agent asks the client to draw (`trusted-components/v1`, ADR
+        // 0083): a request in the message's metadata, read strictly here and checked again at the
+        // core's door. The adapter drops one for a component the card did not offer.
+        let trusted = m
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(TRUSTED_COMPONENTS_EXTENSION))
+            .and_then(TrustedRequestData::from_metadata_value);
+        if text.is_none() && split.ui.is_empty() && trusted.is_none() {
             return Vec::new();
         }
         let task_id = m.task_id.clone().filter(|t| !t.is_empty());
@@ -1878,6 +1897,17 @@ impl StreamMapper {
             .into_iter()
             .map(Ok),
         );
+        if let Some(request) = trusted {
+            out.push(Ok(AgentEnvelope {
+                task_id: task_id.clone(),
+                context_id: context_id.clone(),
+                task_state: None,
+                revision: revision.clone(),
+                key: IdemKey::Task(format!("a2a:msg:{}:trusted", m.message_id)),
+                update: Some(AgentUpdate::TrustedRequest(request)),
+                live: None,
+            }));
+        }
         out
     }
 }
@@ -2637,6 +2667,77 @@ mod tests {
         let envs = ok(StreamMapper::default().map(StreamResponse::Message(message)));
         assert_eq!(envs.len(), 1);
         assert_eq!(envs[0].key, IdemKey::Task("a2a:msg:m-2:ui:0".into()));
+    }
+
+    fn trusted_message(id: &str, entry: Value) -> Message {
+        let mut message = Message::new(Role::Agent, vec![]);
+        message.message_id = id.into();
+        message.task_id = Some(T.into());
+        message.context_id = Some(C.into());
+        message.metadata = Some(HashMap::from([(
+            TRUSTED_COMPONENTS_EXTENSION.to_owned(),
+            entry,
+        )]));
+        message
+    }
+
+    #[test]
+    fn a_message_with_text_and_a_trusted_request_maps_to_two_envelopes() {
+        let mut message = Message::new(Role::Agent, vec![Part::text("Use this widget")]);
+        message.message_id = "m-4".into();
+        message.task_id = Some(T.into());
+        message.context_id = Some(C.into());
+        message.metadata = Some(HashMap::from([(
+            TRUSTED_COMPONENTS_EXTENSION.to_owned(),
+            json!({"component": "McpCredential", "hints": {"name": "My search"}}),
+        )]));
+        let envs = ok(StreamMapper::default().map(StreamResponse::Message(message)));
+        assert_eq!(envs.len(), 2);
+        assert_eq!(envs[0].key, IdemKey::Task("a2a:msg:m-4".into()));
+        assert!(matches!(envs[0].update, Some(AgentUpdate::Message { .. })));
+        assert_eq!(envs[1].key, IdemKey::Task("a2a:msg:m-4:trusted".into()));
+        let Some(AgentUpdate::TrustedRequest(request)) = &envs[1].update else {
+            panic!("not a trusted request: {envs:?}");
+        };
+        assert_eq!(
+            request.component,
+            orch_core::TrustedComponent::McpCredential
+        );
+        assert_eq!(request.hints.name.as_deref(), Some("My search"));
+    }
+
+    #[test]
+    fn a_message_of_only_a_trusted_request_is_the_request() {
+        let message = trusted_message("m-5", json!({"component": "McpCredential", "hints": {}}));
+        let envs = ok(StreamMapper::default().map(StreamResponse::Message(message)));
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].key, IdemKey::Task("a2a:msg:m-5:trusted".into()));
+        assert!(matches!(
+            envs[0].update,
+            Some(AgentUpdate::TrustedRequest(_))
+        ));
+    }
+
+    #[test]
+    fn a_trusted_request_this_build_does_not_draw_is_not_read() {
+        for entry in [
+            // a component with no API yet (the ADR's other four)
+            json!({"component": "ApiKeyCreate", "hints": {}}),
+            // no hints
+            json!({"component": "McpCredential"}),
+            // hints out of bounds
+            json!({"component": "McpCredential", "hints": {"scopes": ["has space"]}}),
+            // not an object
+            json!("McpCredential"),
+        ] {
+            let message = trusted_message("m-6", entry.clone());
+            assert!(
+                StreamMapper::default()
+                    .map(StreamResponse::Message(message))
+                    .is_empty(),
+                "{entry}"
+            );
+        }
     }
 
     #[test]

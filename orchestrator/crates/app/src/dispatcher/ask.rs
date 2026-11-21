@@ -270,7 +270,10 @@ impl Answer {
                 | AgentUpdate::TierRejected
                 // an asked agent's sessions are not followed (ADR 0072)
                 | AgentUpdate::ChildSessions(_)
-                | AgentUpdate::ChildSessionsRejected(_),
+                | AgentUpdate::ChildSessionsRejected(_)
+                // an asked agent cannot ask the person's client to draw a trusted component
+                // (ADR 0083): only the thread's agent may
+                | AgentUpdate::TrustedRequest(_),
             )
             | None => {}
         }

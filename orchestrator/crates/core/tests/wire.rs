@@ -136,6 +136,14 @@ fn every_kind_roundtrips_and_never_emits_null() {
         EventBody::ToolsDetached(ToolsData {
             servers: vec!["docs".into()],
         }),
+        EventBody::TrustedRequest(TrustedRequestData {
+            component: TrustedComponent::McpCredential,
+            hints: TrustedHints {
+                name: Some("My search".into()),
+                scopes: vec!["search.read".into()],
+                expires_in_days: Some(30),
+            },
+        }),
     ];
     for body in bodies {
         let e = event(body, Actor::system());

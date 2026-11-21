@@ -223,7 +223,9 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
             EventBody::Artifact(artifact)
         }
         // The person's screen, the thread's branching and sharing, and the child threads it made
-        // (the owner's alone, ADR 0072) are the owner's business.
+        // (the owner's alone, ADR 0072) are the owner's business. So is a trusted component an
+        // agent asked the client to draw (ADR 0083): a reader of a shared thread is not the person
+        // whose credential it would create.
         EventBody::UiCatalog(_)
         | EventBody::ChildSessionOpened(_)
         | EventBody::ChildSessionReported(_)
@@ -232,6 +234,7 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         | EventBody::ChildSessionStartEnded(_)
         | EventBody::ChildSessionCloseAsked(_)
         | EventBody::ChildSessionState(_)
+        | EventBody::TrustedRequest(_)
         | EventBody::ThreadForked(_)
         | EventBody::ThreadShared(_)
         | EventBody::ThreadUnshared(_) => return inert(event),
@@ -543,6 +546,7 @@ mod tests {
                     | EventBody::ChildSessionStartEnded(_)
                     | EventBody::ChildSessionCloseAsked(_)
                     | EventBody::ChildSessionState(_)
+                    | EventBody::TrustedRequest(_)
             );
             assert_eq!(is_inert(&out), expect_inert, "{:?}", event.kind());
             if !expect_inert {

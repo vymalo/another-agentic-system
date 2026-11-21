@@ -4,6 +4,7 @@ use crate::access_tier::AccessTier;
 use crate::child_sessions::SessionNews;
 use crate::event::{FileRef, MessagePurpose};
 use crate::step::StepReport;
+use crate::trusted::TrustedRequestData;
 use crate::usage::{UsageInvalid, UsageUpdate};
 
 /// Protocol-neutral task state reported by an agent (mirrors A2A `TaskState`).
@@ -224,4 +225,9 @@ pub enum AgentUpdate {
     /// failure. The application counts it (the dispatcher does not hand it to the core; a core
     /// that is handed one changes nothing). The text says why, with no value from the report.
     ChildSessionsRejected(String),
+    /// An agent asked the client to draw a trusted component (`trusted-components/v1`, ADR 0083),
+    /// through the adapter's strict read. The core checks it again and logs it as a
+    /// `trusted_request`; it moves nothing. An adapter drops a request for a component the card
+    /// did not offer.
+    TrustedRequest(TrustedRequestData),
 }

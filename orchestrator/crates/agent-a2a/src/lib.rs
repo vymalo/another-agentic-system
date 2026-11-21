@@ -68,6 +68,12 @@
 //! Release channels (ADR 0008) are an optional extension: [`releases_from_card`] reads them
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
 //! namespaced message metadata. Nothing here depends on a specific agent host.
+//!
+//! Trusted components (`trusted-components/v1`, ADR 0083) are activated on a send and a
+//! resubscribe when the card read for that very call offers the extension well formed
+//! ([`trusted_components_from_card`]); the agent then asks the client to draw one in its
+//! `Message` metadata, and a request for a component the card did not offer is dropped
+//! (`orch_a2a_mapping` reads the request).
 
 mod a2ui;
 mod access_tier;
@@ -80,6 +86,7 @@ mod files;
 mod mentions;
 mod releases;
 mod thread_tools;
+mod trusted;
 mod uploads;
 
 pub use a2ui::{
@@ -95,3 +102,4 @@ pub use extensions::{
 pub use files::FileFetch;
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
 pub use thread_tools::thread_tools_metadata;
+pub use trusted::trusted_components_from_card;

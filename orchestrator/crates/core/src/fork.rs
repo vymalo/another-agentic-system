@@ -227,6 +227,7 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::ChildSessionStartEnded
                 | EventKind::ChildSessionCloseAsked
                 | EventKind::ChildSessionState
+                | EventKind::TrustedRequest
                 | EventKind::ThreadForked => Err(ForkError::NotAMessage),
             }
         }
@@ -622,6 +623,9 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             | EventBody::ChildSessionStartEnded(_)
             | EventBody::ChildSessionCloseAsked(_)
             | EventBody::ChildSessionState(_)
+            // A trusted component the agent asked for is not the conversation either (ADR 0083):
+            // the fork's client draws its own, and the request names no words.
+            | EventBody::TrustedRequest(_)
             | EventBody::ThreadForked(_) => {}
         }
     }

@@ -347,6 +347,7 @@ impl ScriptedAgent {
                 access_tier: TierListing::Absent,
                 commands: CommandsListing::Absent,
                 child_sessions: None,
+                trusted_components: None,
                 build: std::collections::BTreeMap::new(),
             },
         );
@@ -576,6 +577,7 @@ fn default_card() -> AgentCardInfo {
         access_tier: TierListing::Absent,
         commands: CommandsListing::Absent,
         child_sessions: None,
+        trusted_components: None,
         build: std::collections::BTreeMap::new(),
     }
 }

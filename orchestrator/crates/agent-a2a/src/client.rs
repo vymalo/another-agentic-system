@@ -21,8 +21,8 @@ use orch_a2a_mapping::{StreamMapper, sessions_news, snapshot, usage_totals, want
 use orch_core::{
     ACCESS_TIER_EXTENSION, BoxError, CHILD_SESSIONS_EXTENSION, KnownExtension, MENTIONS_EXTENSION,
     STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
-    UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery, UiVersion,
-    history_preamble,
+    TRUSTED_COMPONENTS_EXTENSION, TrustedComponentsOffer, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION,
+    USAGE_EXTENSION, UiDelivery, UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -43,6 +43,7 @@ use crate::files::{Fetcher, FileFetch};
 use crate::mentions::mentions_metadata;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 use crate::thread_tools::{mint, thread_tools_metadata};
+use crate::trusted::trusted_components_from_card;
 use crate::uploads::uploads_metadata;
 
 /// Tunables of the A2A client. The defaults suit production.
@@ -492,6 +493,18 @@ fn without_sessions(mut snap: TaskSnapshot) -> TaskSnapshot {
     snap
 }
 
+/// Whether an item is a trusted-component request the card read for this call did not offer
+/// (ADR 0083): a component the card does not list is never drawn, whatever the agent asked for.
+fn unoffered(item: &Item, trusted: Option<&TrustedComponentsOffer>) -> bool {
+    matches!(
+        item,
+        Ok(orch_ports::AgentEnvelope {
+            update: Some(orch_core::AgentUpdate::TrustedRequest(request)),
+            ..
+        }) if trusted.is_none_or(|offer| !offer.offers(request.component))
+    )
+}
+
 struct Mapping {
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,
@@ -499,6 +512,9 @@ struct Mapping {
     reader: Option<TaskReader>,
     /// The call activated `child-sessions/v1`: only then is anything said of sessions believed.
     sessions: bool,
+    /// The card read for the call offered `trusted-components/v1` well formed: only a request for
+    /// one of its components is believed (ADR 0083).
+    trusted: Option<TrustedComponentsOffer>,
     /// Ticks while the task runs, when the call activated `child-sessions/v1`.
     poll: Option<tokio::time::Interval>,
     mapper: StreamMapper,
@@ -522,6 +538,7 @@ fn map_stream(
     inner: BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
     fetcher: Option<Fetcher>,
     reader: Option<TaskReader>,
+    trusted: Option<TrustedComponentsOffer>,
 ) -> AgentStream {
     let sessions = reader.as_ref().is_some_and(|r| r.sessions);
     let poll = reader.as_ref().filter(|r| r.sessions).map(|r| {
@@ -534,6 +551,7 @@ fn map_stream(
         fetcher,
         reader,
         sessions,
+        trusted,
         poll,
         mapper: StreamMapper::default(),
         queue: VecDeque::new(),
@@ -604,6 +622,7 @@ fn map_stream(
                     if !st.sessions {
                         items.retain(|item| !unasked(item));
                     }
+                    items.retain(|item| !unoffered(item, st.trusted.as_ref()));
                     st.queue.extend(items);
                 }
                 Some(Err(e)) => {
@@ -641,12 +660,15 @@ fn catalog_for<'r>(
 /// depend on the message, each when the card read for this very call lists it: `steps/v1`, so
 /// that the agent reports its work as nested steps (ADR 0025), `text-stream/v1`, so that it
 /// sends its reply as it writes it (ADR 0027), `usage/v1`, so that it reports the tokens of its
-/// model calls (ADR 0056), and `child-sessions/v1`, so that it reports its helpers as sessions (ADR
+/// model calls (ADR 0056), `child-sessions/v1`, so that it reports its helpers as sessions (ADR
 /// 0072; `child_sessions` is whether `child_sessions_from_card` read a well-formed offer from that
-/// card). An agent without them is plain A2A.
+/// card), and `trusted-components/v1`, so that it may ask the client to draw one (ADR 0083;
+/// `trusted_components` is whether the card offered a component this build draws). An agent
+/// without them is plain A2A.
 fn reporting_extensions(
     card_extensions: &BTreeSet<KnownExtension>,
     child_sessions: bool,
+    trusted_components: bool,
 ) -> Vec<String> {
     let mut uris: Vec<String> = [
         (KnownExtension::Steps, STEPS_EXTENSION),
@@ -659,6 +681,9 @@ fn reporting_extensions(
     .collect();
     if child_sessions {
         uris.push(CHILD_SESSIONS_EXTENSION.to_owned());
+    }
+    if trusted_components {
+        uris.push(TRUSTED_COMPONENTS_EXTENSION.to_owned());
     }
     uris
 }
@@ -830,6 +855,7 @@ impl AgentClient for A2aAgentClient {
             access_tier: access_tier_from_card(&card),
             commands: commands_from_card(&card),
             child_sessions: child_sessions_from_card(&card),
+            trusted_components: trusted_components_from_card(&card),
             build: build_from_card(&card),
         })
     }
@@ -884,16 +910,21 @@ impl AgentClient for A2aAgentClient {
         let uploads = uploads_metadata(&req, &known, thread_tools.is_some());
         // a steer asks for no reporting of its own (the task keeps reporting on the stream that
         // started it), but the contract wants `child-sessions/v1` on every request about a child
-        // context, and the card read for this call decides
+        // context, and the card read for this call decides; a trusted component may be asked in
+        // answer to the steer too, so that extension is activated when the card offers one
         let child = child_sessions_from_card(&card).is_some();
+        let trusted = trusted_components_from_card(&card);
         let reporting = if req.steer {
+            let mut uris = Vec::new();
             if child {
-                vec![CHILD_SESSIONS_EXTENSION.to_owned()]
-            } else {
-                Vec::new()
+                uris.push(CHILD_SESSIONS_EXTENSION.to_owned());
             }
+            if trusted.is_some() {
+                uris.push(TRUSTED_COMPONENTS_EXTENSION.to_owned());
+            }
+            uris
         } else {
-            reporting_extensions(&known, child)
+            reporting_extensions(&known, child, trusted.is_some())
         };
         let riders = Riders {
             thread_tools: thread_tools.as_ref(),
@@ -922,7 +953,7 @@ impl AgentClient for A2aAgentClient {
                 client.send_streaming_message(&request),
             )
             .await?;
-        Ok(map_stream(stream, self.fetcher.clone(), reader))
+        Ok(map_stream(stream, self.fetcher.clone(), reader, trusted))
     }
 
     async fn resubscribe(&self, task: &TaskHandle) -> Result<AgentStream, AgentError> {
@@ -930,9 +961,11 @@ impl AgentClient for A2aAgentClient {
         // asked for them again: a stream that was cut and picked up must carry the same events the
         // first did.
         let card = self.fetch_card(&task.endpoint).await?;
+        let trusted = trusted_components_from_card(&card);
         let reporting = reporting_extensions(
             &extensions_from_card(&card),
             child_sessions_from_card(&card).is_some(),
+            trusted.is_some(),
         );
         let client = Arc::new(
             self.client_for(&task.endpoint, &card, reporting.clone())
@@ -949,7 +982,7 @@ impl AgentClient for A2aAgentClient {
                 client.subscribe_to_task(&request),
             )
             .await?;
-        Ok(map_stream(stream, self.fetcher.clone(), reader))
+        Ok(map_stream(stream, self.fetcher.clone(), reader, trusted))
     }
 
     async fn get_task(&self, task: &TaskHandle) -> Result<TaskSnapshot, AgentError> {
@@ -1045,7 +1078,9 @@ impl AgentClient for A2aAgentClient {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use orch_core::{AgentTaskState, AgentUpdate};
+    use orch_core::{
+        AgentTaskState, AgentUpdate, TrustedComponent, TrustedHints, TrustedRequestData,
+    };
     use orch_ports::{AgentEnvelope, IdemKey};
 
     use super::*;
@@ -1096,5 +1131,33 @@ mod tests {
             .map(word)
             .collect();
         assert_eq!(order, ["r", "a"]);
+    }
+
+    #[test]
+    fn the_trusted_components_extension_is_activated_only_when_the_card_offers_one() {
+        let known = BTreeSet::new();
+        let activated = |trusted| {
+            reporting_extensions(&known, false, trusted)
+                .contains(&TRUSTED_COMPONENTS_EXTENSION.to_owned())
+        };
+        assert!(!activated(false));
+        assert!(activated(true));
+    }
+
+    #[test]
+    fn a_request_for_a_component_the_card_did_not_offer_is_dropped() {
+        let offer =
+            TrustedComponentsOffer::from_params(&json!({"components": ["McpCredential"]})).unwrap();
+        let item: Item = Ok(env(
+            "trusted",
+            Some(AgentUpdate::TrustedRequest(TrustedRequestData {
+                component: TrustedComponent::McpCredential,
+                hints: TrustedHints::default(),
+            })),
+        ));
+        // the card read for the call offered it: believed
+        assert!(!unoffered(&item, Some(&offer)));
+        // the card did not list the extension, or listed none this build draws: never drawn
+        assert!(unoffered(&item, None));
     }
 }

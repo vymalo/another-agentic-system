@@ -65,6 +65,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0026_user_prompts.sql",
         "0027_child_sessions.sql",
         "0028_child_sessions_person.sql",
+        "0029_trusted_requests.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -2681,6 +2682,6 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 28);
+        assert_eq!(migrator.migrations().len(), 29);
     }
 }

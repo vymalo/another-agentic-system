@@ -183,6 +183,9 @@ pub fn describe(event: &Event) -> Option<String> {
         | EventBody::ChildSessionStartEnded(_)
         | EventBody::ChildSessionCloseAsked(_)
         | EventBody::ChildSessionState(_) => return None,
+        // a trusted component the agent asked the client to draw (ADR 0083) is the person's
+        // business, not progress of the job
+        EventBody::TrustedRequest(_) => return None,
         // who may read the conversation, not progress of the job (ADR 0040)
         EventBody::ThreadShared(_) | EventBody::ThreadUnshared(_) => return None,
         // the set of tools attached to the conversation, not progress of the job

@@ -241,7 +241,8 @@ fn env_state(env: &AgentEnvelope) -> Option<AgentTaskState> {
             | AgentUpdate::UsageRejected(_)
             | AgentUpdate::TierRejected
             | AgentUpdate::ChildSessions(_)
-            | AgentUpdate::ChildSessionsRejected(_),
+            | AgentUpdate::ChildSessionsRejected(_)
+            | AgentUpdate::TrustedRequest(_),
         )
         | None => None,
     })
