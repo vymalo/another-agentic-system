@@ -77,10 +77,10 @@ async fn the_migrations_run_on_the_direct_connection_and_touch_no_pool() {
         .await
         .expect("migrate on the direct connection");
 
-    let mut observer = observer(&db).await;
-    assert!(count_applied(&mut observer).await > 0);
+    let observer = observer(&db).await;
+    assert!(count_applied(&observer).await > 0);
     // the session lock of the migrator went with its connection
-    let held = advisory_locks(&mut observer).await;
+    let held = advisory_locks(&observer).await;
     assert_eq!(held, 0, "no advisory lock is left held");
     // a second run finds nothing to do
     PgStore::migrate_direct(&db.direct_url).await.unwrap();
@@ -147,14 +147,14 @@ async fn the_listener_is_a_session_of_the_direct_connection_and_the_notify_goes_
     assert!(wakeup.wait_listening(WITHIN).await, "the listener attached");
     let mut events = wakeup.subscribe();
 
-    let mut observer = observer(&db).await;
-    let direct = sessions(&mut observer, "orch-direct").await;
+    let observer = observer(&db).await;
+    let direct = sessions(&observer, "orch-direct").await;
     assert_eq!(direct.len(), 1, "one listener session: {direct:?}");
     assert!(
         direct[0].1.contains("LISTEN"),
         "it is the session that listens: {direct:?}"
     );
-    let pooled = sessions(&mut observer, "orch-pooled").await;
+    let pooled = sessions(&observer, "orch-pooled").await;
     assert!(
         pooled.iter().all(|(_, query)| !query.contains("LISTEN")),
         "the request pool never listens: {pooled:?}"
@@ -242,8 +242,8 @@ async fn behind_a_pooler_replicas_migrating_through_the_pool_race() {
                 failed += 1;
             }
         }
-        let mut observer = observer(&db).await;
-        let left = advisory_locks(&mut observer).await;
+        let observer = observer(&db).await;
+        let left = advisory_locks(&observer).await;
         if failed > 0 || left > 0 {
             witnessed.push((round, failed, left));
             break;
@@ -270,9 +270,9 @@ async fn replicas_migrating_on_the_direct_connection_are_serialized_and_leave_no
         for task in tasks {
             task.await.unwrap().expect("every replica migrates");
         }
-        let mut observer = observer(&db).await;
-        assert!(count_applied(&mut observer).await > 0);
-        assert_eq!(advisory_locks(&mut observer).await, 0);
+        let observer = observer(&db).await;
+        assert!(count_applied(&observer).await > 0);
+        assert_eq!(advisory_locks(&observer).await, 0);
     }
 }
 

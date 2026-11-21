@@ -491,7 +491,7 @@ fn summary(row: SummaryRow) -> Result<PromptSummary, PromptStoreError> {
         revision: u64::try_from(revision)
             .map(PromptRevision::new)
             .map_err(|_| corrupt("the revision is not a positive number"))?,
-        updated_at: updated_at,
+        updated_at,
     })
 }
 
