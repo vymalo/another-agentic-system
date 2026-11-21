@@ -123,7 +123,14 @@ impl World {
                     .await
                     .expect("the Postgres variant needs ORCH_TEST_DATABASE_URL");
                 db.store().await; // the orchestrator's tables, once; instances only connect
-                let local = LocalWorld::postgres_over(db.options());
+                // the local agents' crate is still on sqlx: its options, read from the same pinned
+                // URL (no `extra_float_digits`, which a pooler refuses)
+                let options = db
+                    .pinned_url()
+                    .parse::<sqlx::postgres::PgConnectOptions>()
+                    .expect("valid ORCH_TEST_DATABASE_URL")
+                    .extra_float_digits(None);
+                let local = LocalWorld::postgres_over(options);
                 (Db::Postgres(db), local)
             }
         };

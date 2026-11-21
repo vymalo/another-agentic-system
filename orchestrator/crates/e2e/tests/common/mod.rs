@@ -26,6 +26,7 @@ use orch_ports::{
     AgentEndpoint, InboxItem, InboxLease, InboxPayload, PortSet, Ports, SystemClock, ThreadStore,
     UuidV7Ids, Wakeup,
 };
+use orch_store_postgres::sql::query_as;
 use orch_store_postgres::{PgStore, PgWakeup};
 use orch_testsupport::{
     Chat, FakeAgent, FakeAgentOptions, FakeReleases, Frame, TestInstance, VerifierScript,
@@ -868,7 +869,7 @@ impl World {
             return Vec::new();
         };
         let pool = db.pool("scan", 2).await;
-        let tables: Vec<(String,)> = sqlx::query_as(
+        let tables: Vec<(String,)> = query_as(
             "SELECT table_name FROM information_schema.tables \
              WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'",
         )
@@ -884,11 +885,7 @@ impl World {
             let query = format!(
                 "SELECT count(*) FROM \"{table}\" t WHERE row_to_json(t)::text LIKE '%' || $1 || '%'"
             );
-            let (hits,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(query))
-                .bind(needle)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            let (hits,): (i64,) = query_as(query).bind(needle).fetch_one(&pool).await.unwrap();
             if hits > 0 {
                 found.push(table);
             }
