@@ -77,6 +77,28 @@ Two conclusions follow, and they decide this ADR:
 So one of the five is built, and it is the one that proves the shape: ADR 0046's `secret` is already write-only and never echoed. The other four need a route or a
 store, and this ADR does not pretend otherwise.
 
+### Amended 2026-11-21 (the vault boards): the reference form, and rotation
+
+The owner's vault boards landed after this ADR merged (`T8 · The vault`, another-context#72 `e902e828`; decision row 114, not yet confirmed in
+detail), and they fix four things the ADR had left open. Nothing above changes; this is what the boards add.
+
+1. **The reference form.** The boards show `vault://<org>/<project>/<name>#v<n>` as a placeholder. This deployment has no project concept and one
+   tenant per deployment, so the real form is **`vault:<name>#v<n>`**:
+   - `name` is the person's own name for the secret, in their own vault — the person is implicit, because a vault is the person's (ADR 0046's
+     sealed store is per owner) and a configuration that names a reference is stored on that person's thread or tool server;
+   - `#v<n>` is the version, always explicit: a reference that did not name a version would change meaning under a rotation, and a
+     configuration must not;
+   - a reference is **not a secret**: it is safe in a log, a message and a transcript, which is why the agent may write one.
+2. **Rotation.** Rotating makes version `n+1` and **keeps version `n` for 24 hours**, so a run that resolved the old reference finishes on it. The
+   agent sees only the number, and a configuration that pins `#v1` keeps working until it is re-pointed.
+3. **What the agent writes.** The configuration keys are `secretRef` (a value a call presents) and `signingSecretRef` (a key a call signs with),
+   each holding a `vault:` reference. The platform injects the value at call time; the agent never holds it, and neither does the orchestrator.
+4. **The vault list shows no values**, only names, versions and where each is used — which is the receipt rule of decision 5 applied to the list
+   screen.
+
+The `SecretGenerate` and `SecretCollect` rows of the table above are unchanged: **not built**, and a named secret with versions is still not what
+the sealed store holds today. This note fixes the form those two will use, not their status.
+
 ## Consequences
 
 - **The log keeps the receipt and nothing else.** No secret is in the log because no secret is in an action context; the receipt is a `ui_action.context` the
