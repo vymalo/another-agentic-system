@@ -555,8 +555,8 @@ async fn assemble(
         let secrets = PgSecretStore::connect(database_url, keyring.clone())
             .await
             .context("cannot connect the secret store to Postgres (secrets)")?;
-        // Idempotent and serialised by sqlx's advisory lock: every replica may run it at boot. With a
-        // pooler in front (`database.directUrl`) on a connection of the database itself.
+        // Idempotent and serialised by the migrator's advisory lock (sqlx's, taken by orch-pg-migrate):
+        // every replica may run it at boot. With a pooler in front (`database.directUrl`) on a connection of the database itself.
         match direct_url {
             Some(direct) => PgSecretStore::migrate_direct(direct).await,
             None => secrets.migrate().await,

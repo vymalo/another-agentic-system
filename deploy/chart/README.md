@@ -259,8 +259,9 @@ connections can go through a pooler, is [`docs/api/config.md`, "Database behind 
 
 **The pool mode is not a value.** The chart writes `transaction`. Session mode needs no pooler's help and statement mode breaks transactions, and the orchestrator's
 connections are made for transaction mode (`SET LOCAL`, transaction-scoped advisory locks). `max_prepared_statements` must be above 0 (PgBouncer 1.21 or later): the
-orchestrator's driver names its prepared statements, and without the setting two clients collide on a server connection (`prepared statement "sqlx_s_1" already exists`,
-SQLSTATE 42P05). The render is refused with it at 0, removed or not a number, and with `pool_mode` among the parameters.
+orchestrator's driver names its prepared statements (`tokio-postgres` names them `s0`, `s1`, ... in each process, so two replicas use the same names), and without the
+setting two clients collide on a server connection (`prepared statement "s0" already exists`, SQLSTATE 42P05; observed with sqlx's names, `sqlx_s_1`, against PgBouncer
+1.22.0, *unverified* with these). The render is refused with it at 0, removed or not a number, and with `pool_mode` among the parameters.
 
 `default_pool_size` is per pooler pod and per user and database, and `max_client_conn` per pod: the orchestrator's most is about `pooler.instances` x `default_pool_size`
 server connections, and with the migrations' and the listeners' (one each per orchestrator process), the agents' and the operator's own it must stay well below the
@@ -274,7 +275,7 @@ not the chart's. These are the numbers of a starting point; a database that hold
 
 ### What stays on the database itself, and the agents
 
-The orchestrator's `database.url` is the pooler's Service and its `database.directUrl` is the cluster's `-rw` Service. Direct: the migrations at boot (sqlx's migrator holds a
+The orchestrator's `database.url` is the pooler's Service and its `database.directUrl` is the cluster's `-rw` Service. Direct: the migrations at boot (the migrator holds sqlx's
 **session** advisory lock across its statements) and the `LISTEN` connection of the wakeup (`LISTEN` is session state), and the commands that open the database. Everything else goes through
 the pooler: the request pool, the dispatcher, the inbox, the purge and sweep workers and the `NOTIFY`s. Why, and what was observed against PgBouncer 1.22.0, is in
 [`docs/api/config.md`](../../docs/api/config.md#database-behind-a-pooler). **The agents' own databases (the chat's, the browser's, each coder's) are never pooled**: their URIs

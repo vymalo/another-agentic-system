@@ -462,10 +462,11 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     let store = PgStore::connect_with(&cfg.database_url, cfg.database_max_connections)
         .await
         .context("cannot connect to Postgres (DATABASE_URL)")?;
-    // Idempotent and serialised by sqlx's advisory lock: every replica may run it at boot. That lock
-    // is a session lock, so with a pooler in front (`database.directUrl`) the migrations run on a
-    // connection of the database itself, and so does the `LISTEN` of the wakeup: both need a session
-    // that a transaction-mode pooler cannot keep. Everything else uses the pool.
+    // Idempotent and serialised by the migrator's advisory lock (sqlx's, taken by orch-pg-migrate):
+    // every replica may run it at boot. That lock is a session lock, so with a pooler in front
+    // (`database.directUrl`) the migrations run on a connection of the database itself, and so does
+    // the `LISTEN` of the wakeup: both need a session that a transaction-mode pooler cannot keep.
+    // Everything else uses the pool.
     match cfg.database_direct_url.as_deref() {
         Some(direct) => {
             tracing::info!(
