@@ -727,3 +727,42 @@ async fn real_errors_of_the_database_are_classified_as_the_table_says() {
     let report = store.rewrap().await.map(|_| ()).unwrap_err();
     assert!(matches!(report, SecretError::Corrupt(_)), "{report:?}");
 }
+
+/// A migration whose SQL the database refuses (`MigrateError::Execute`): here `user_secrets` was made
+/// by hand before the first migration, which then fails with SQLSTATE `42P07`. Waiting does not
+/// cure it, so it is `Unavailable` and no outage, and the source names the cause.
+#[tokio::test]
+async fn a_migration_the_database_refuses_is_unavailable_and_no_outage() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let raw = db.pool("orch-secrets-raw", 2).await;
+    execute(&raw, "CREATE TABLE user_secrets (owner text)", &[]).await;
+    let store = PgSecretStore::from_pool(db.pool("orch-secrets-refused", 2).await, ring_k1());
+    let refused = [
+        store.migrate().await.unwrap_err(),
+        PgSecretStore::migrate_direct(&db.pinned_direct_url())
+            .await
+            .unwrap_err(),
+    ];
+    for error in refused {
+        assert!(
+            matches!(error, SecretError::Unavailable { .. }),
+            "{error:?}"
+        );
+        assert!(!is_outage(&error), "{error:?}");
+        assert!(
+            std::error::Error::source(&error).is_some_and(|s| s.to_string().contains("42P07")),
+            "{error:?}"
+        );
+    }
+    // nothing of the migration is left: its transaction was rolled back
+    let (sequences,): (i64,) = fetch_one(
+        &raw,
+        "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = current_schema() AND c.relkind = 'S'",
+        &[],
+    )
+    .await;
+    assert_eq!(sequences, 0);
+}

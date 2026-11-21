@@ -171,18 +171,20 @@ impl TestDb {
     /// `direct_url` for a process or a call that has no options of ours: with the `search_path` of
     /// the schema when the isolation is a schema.
     pub fn pinned_direct_url(&self) -> String {
+        self.pinned(&self.direct_url)
+    }
+
+    /// [`url`](Self::url), pinned as [`pinned_direct_url`](Self::pinned_direct_url) is.
+    pub fn pinned_url(&self) -> String {
+        self.pinned(&self.url)
+    }
+
+    fn pinned(&self, url: &str) -> String {
         if self.dedicated {
-            self.direct_url.clone()
+            url.to_owned()
         } else {
-            let sep = if self.direct_url.contains('?') {
-                '&'
-            } else {
-                '?'
-            };
-            format!(
-                "{}{sep}options=-c%20search_path%3D{}",
-                self.direct_url, self.schema
-            )
+            let sep = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{sep}options=-c%20search_path%3D{}", self.schema)
         }
     }
 

@@ -4,14 +4,14 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use deadpool_postgres::{HookError, Object, Pool, PoolError};
+use deadpool_postgres::{HookError, Object, Pool, PoolError, Transaction};
 use orch_core::UserId;
 use orch_pg_connect::{ConnectError, PgOptions};
 use orch_pg_migrate::{MigrateError, Migrator};
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore, SecretVersion};
 use sha2::{Digest as _, Sha256};
+use tokio_postgres::IsolationLevel;
 use tokio_postgres::types::FromSql;
-use tokio_postgres::{IsolationLevel, Transaction};
 
 use crate::envelope::{Envelope, NONCE_LEN, OpenError, SealError};
 use crate::keys::Keyring;
@@ -123,18 +123,11 @@ impl PgSecretStore {
     /// [`SecretError::Corrupt`] if the history does not match the migrations of this build.
     pub async fn migrate(&self) -> Result<(), SecretError> {
         let migrator = migrator()?;
-        let mut conn = Lent(Some(self.conn().await?));
-        let Some(client) = conn.0.as_mut() else {
-            return Err(SecretError::unavailable(
-                "the migrations of the secret store failed",
-            ));
-        };
-        let outcome = migrator.run(client).await;
-        if outcome.is_ok() {
-            // the lock was released: the connection may serve again
-            conn.give_back();
-        }
-        outcome.map_err(migrate_err)
+        // The run's connection leaves the pool and is closed when this ends, on a success, an error
+        // or a cancelled future alike: its session lock, and the settings the migrator gave the
+        // session, never go back to the pool with it. The pool makes another when a call needs one.
+        let mut client = Object::take(self.conn().await?);
+        migrator.run(&mut client).await.map_err(migrate_err)
     }
 
     /// [`migrate`](Self::migrate) on one connection of its own to `url`, closed when it is done.
@@ -201,8 +194,7 @@ impl PgSecretStore {
         owner: &str,
         server: &str,
     ) -> Result<Transaction<'a>, SecretError> {
-        let client: &'a mut tokio_postgres::Client = conn;
-        let tx = client
+        let tx = conn
             .build_transaction()
             .isolation_level(IsolationLevel::ReadCommitted)
             .start()
@@ -214,11 +206,10 @@ impl PgSecretStore {
                 LOCK_TIMEOUT.as_millis()
             ))
             .await?;
-            tx.execute(
-                "SELECT pg_advisory_xact_lock($1)",
-                &[&lock_key(owner, server)],
-            )
-            .await
+            let lock = tx
+                .prepare_cached("SELECT pg_advisory_xact_lock($1)")
+                .await?;
+            tx.execute(&lock, &[&lock_key(owner, server)]).await
         }
         .await;
         if let Err(err) = taken {
@@ -257,25 +248,6 @@ impl PgSecretStore {
         self.keys
             .open(owner, server, stored.version, &stored.envelope)
             .map_err(open_err)
-    }
-}
-
-/// A pooled connection that goes back to the pool only when it is given back: dropped otherwise
-/// (an error, or a future cancelled half way), it is closed, and a session lock it may hold goes
-/// with it.
-struct Lent(Option<Object>);
-
-impl Lent {
-    fn give_back(mut self) {
-        drop(self.0.take());
-    }
-}
-
-impl Drop for Lent {
-    fn drop(&mut self) {
-        if let Some(conn) = self.0.take() {
-            drop(Object::take(conn));
-        }
     }
 }
 
@@ -334,10 +306,11 @@ pub(crate) fn row_at(row: &tokio_postgres::Row, at: usize) -> Result<Row, Secret
 
 /// The next version of the store's sequence. Called with the key's lock held.
 async fn next_version(tx: &Transaction<'_>) -> Result<u64, SecretError> {
-    let row = tx
-        .query_one("SELECT nextval('user_secret_versions')", &[])
+    let next = tx
+        .prepare_cached("SELECT nextval('user_secret_versions')")
         .await
         .map_err(db_err)?;
+    let row = tx.query_one(&next, &[]).await.map_err(db_err)?;
     let version: i64 = column(&row, 0)?;
     u64::try_from(version)
         .map_err(|_| SecretError::unavailable("the version sequence gave a number out of range"))
@@ -355,13 +328,19 @@ impl SecretStore for PgSecretStore {
         let tx = self.locked(&mut conn, owner, &server).await?;
         let version = next_version(&tx).await?;
         let sealed = self.seal(owner, &server, version, material.expose())?;
+        let insert = tx
+            .prepare_cached(
+                "INSERT INTO user_secrets (owner, server, version, v, kid, nonce, ciphertext) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                 ON CONFLICT (owner, server) DO UPDATE SET \
+                   version = EXCLUDED.version, v = EXCLUDED.v, kid = EXCLUDED.kid, \
+                   nonce = EXCLUDED.nonce, ciphertext = EXCLUDED.ciphertext, \
+                   updated = clock_timestamp()",
+            )
+            .await
+            .map_err(db_err)?;
         tx.execute(
-            "INSERT INTO user_secrets (owner, server, version, v, kid, nonce, ciphertext) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
-             ON CONFLICT (owner, server) DO UPDATE SET \
-               version = EXCLUDED.version, v = EXCLUDED.v, kid = EXCLUDED.kid, \
-               nonce = EXCLUDED.nonce, ciphertext = EXCLUDED.ciphertext, \
-               updated = clock_timestamp()",
+            &insert,
             &[
                 &owner,
                 &server,
@@ -385,11 +364,14 @@ impl SecretStore for PgSecretStore {
     ) -> Result<Option<(SecretVersion, SecretMaterial)>, SecretError> {
         let (owner, server) = (owner.as_str(), server.to_string());
         let conn = self.conn().await?;
+        let select = conn
+            .prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM user_secrets WHERE owner = $1 AND server = $2"
+            ))
+            .await
+            .map_err(db_err)?;
         let row = conn
-            .query_opt(
-                &format!("SELECT {COLUMNS} FROM user_secrets WHERE owner = $1 AND server = $2"),
-                &[&owner, &server],
-            )
+            .query_opt(&select, &[&owner, &server])
             .await
             .map_err(db_err)?;
         drop(conn);
@@ -403,12 +385,13 @@ impl SecretStore for PgSecretStore {
         let (owner, server) = (owner.as_str(), server.to_string());
         let mut conn = self.conn().await?;
         let tx = self.locked(&mut conn, owner, &server).await?;
-        tx.execute(
-            "DELETE FROM user_secrets WHERE owner = $1 AND server = $2",
-            &[&owner, &server],
-        )
-        .await
-        .map_err(db_err)?;
+        let delete = tx
+            .prepare_cached("DELETE FROM user_secrets WHERE owner = $1 AND server = $2")
+            .await
+            .map_err(db_err)?;
+        tx.execute(&delete, &[&owner, &server])
+            .await
+            .map_err(db_err)?;
         tx.commit().await.map_err(db_err)
     }
 
@@ -426,11 +409,12 @@ impl SecretStore for PgSecretStore {
         let (owner, server) = (owner.as_str(), server.to_string());
         let mut conn = self.conn().await?;
         let tx = self.locked(&mut conn, owner, &server).await?;
+        let select = tx
+            .prepare_cached("SELECT version FROM user_secrets WHERE owner = $1 AND server = $2")
+            .await
+            .map_err(db_err)?;
         let held = tx
-            .query_opt(
-                "SELECT version FROM user_secrets WHERE owner = $1 AND server = $2",
-                &[&owner, &server],
-            )
+            .query_opt(&select, &[&owner, &server])
             .await
             .map_err(db_err)?;
         let held: Option<i64> = held.map(|row| column(&row, 0)).transpose()?;
@@ -440,11 +424,17 @@ impl SecretStore for PgSecretStore {
         }
         let version = next_version(&tx).await?;
         let sealed = self.seal(owner, &server, version, material.expose())?;
-        let done = tx
-            .execute(
+        let update = tx
+            .prepare_cached(
                 "UPDATE user_secrets SET version = $3, v = $4, kid = $5, nonce = $6, ciphertext = $7, \
                    updated = clock_timestamp() \
                  WHERE owner = $1 AND server = $2 AND version = $8",
+            )
+            .await
+            .map_err(db_err)?;
+        let done = tx
+            .execute(
+                &update,
                 &[
                     &owner,
                     &server,
@@ -530,7 +520,8 @@ impl<E> Retried<E> {
 }
 
 /// `attempt` until it succeeds, fails in a way `again` does not try again, or `wait` is over:
-/// sqlx's backoff while a database starts (10 ms, doubled, at most a fifth of the wait).
+/// sqlx's backoff while a database starts (10 ms, doubled, at most a fifth of the wait). A wait too
+/// long to add to the clock (`Duration::MAX`) is no deadline: the backoff then stops at a second.
 async fn retrying<T, E, F>(
     wait: Duration,
     mut attempt: impl FnMut() -> F,
@@ -539,19 +530,35 @@ async fn retrying<T, E, F>(
 where
     F: Future<Output = Result<T, E>>,
 {
-    let deadline = Instant::now() + wait;
+    let deadline = Instant::now().checked_add(wait);
     let mut backoff = Duration::from_millis(10);
-    let max_backoff = wait / 5;
+    let max_backoff = match deadline {
+        Some(_) => wait / 5,
+        None => Duration::from_secs(1),
+    };
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match tokio::time::timeout(left, attempt()).await {
-            Ok(Ok(value)) => return Ok(value),
-            Ok(Err(e)) if again(&e) && Instant::now() + backoff < deadline => {}
-            Ok(Err(e)) => return Err(Retried::Failed(e)),
-            Err(_) => return Err(Retried::TimedOut),
+        let outcome = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(left, attempt()).await {
+                    Ok(outcome) => outcome,
+                    Err(_) => return Err(Retried::TimedOut),
+                }
+            }
+            None => attempt().await,
+        };
+        let in_time = |deadline: Instant| {
+            Instant::now()
+                .checked_add(backoff)
+                .is_some_and(|next| next < deadline)
+        };
+        match outcome {
+            Ok(value) => return Ok(value),
+            Err(e) if again(&e) && deadline.is_none_or(in_time) => {}
+            Err(e) => return Err(Retried::Failed(e)),
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(max_backoff);
+        backoff = backoff.saturating_mul(2).min(max_backoff);
     }
 }
 
@@ -587,7 +594,8 @@ fn transient_sqlstate(code: &str) -> bool {
 /// kind and nothing else) when the database is down or cannot be understood: the network, TLS, a
 /// connection that closed (its connection task ended), a frame that does not parse, a connect that
 /// took too long. Every other kind (a parameter or a column of the wrong type, a row count, the
-/// configuration) is a statement this crate got wrong, which waiting does not cure.
+/// configuration, and the two of [`DRIVER_REFUSALS`]) is a request this crate or its configuration
+/// got wrong, which waiting does not cure.
 const DRIVER_OUTAGES: [&str; 7] = [
     "error communicating with the server",
     "error performing TLS handshake",
@@ -597,6 +605,12 @@ const DRIVER_OUTAGES: [&str; 7] = [
     "error connecting to server",
     "timeout waiting for server",
 ];
+
+/// The kinds of `tokio-postgres` that carry an I/O error and are still no outage, read before the
+/// I/O rule: a message that cannot be encoded (a user, database or `application_name` of the
+/// connection string that holds a NUL byte, refused every time), and the client's own refusal of
+/// an authentication (a SASL mechanism or a server signature it does not accept).
+const DRIVER_REFUSALS: [&str; 2] = ["error encoding message to server", "authentication error"];
 
 /// The failure of the database as this crate keeps it, the source of an `Unavailable`: whether it
 /// is an outage, and a text for whoever reads the log. The text is the server's message (never its
@@ -641,7 +655,8 @@ fn sqlstate_failure(code: &str, text: String) -> SecretError {
 /// A failure that is not the server's, by what the driver says of it (`kind`, its `Display`),
 /// whether its connection closed, and its I/O error if it has one.
 fn driver_failure(closed: bool, io: Option<&std::io::Error>, kind: String) -> SecretError {
-    let outage = closed || io.is_some() || DRIVER_OUTAGES.contains(&kind.as_str());
+    let outage = !DRIVER_REFUSALS.contains(&kind.as_str())
+        && (closed || io.is_some() || DRIVER_OUTAGES.contains(&kind.as_str()));
     let text = match io {
         Some(io) => format!("{kind}: {io}"),
         None => kind,
@@ -681,13 +696,20 @@ fn pool_err(err: PoolError) -> SecretError {
 }
 
 /// An error of `orch-pg-connect`: the server's as the driver's; a root certificate that cannot be
-/// read and a TLS configuration that rustls refuses as sqlx's TLS errors were (outages).
+/// read and a TLS configuration that rustls refuses as sqlx's TLS errors were (outages); a pool
+/// that cannot be built is its configuration.
 fn connect_err(err: ConnectError) -> SecretError {
     match err {
         ConnectError::Database(e) => db_err(e),
         ConnectError::RootCert => failure(true, "sslrootcert cannot be read".to_owned()),
         ConnectError::Tls(_) => failure(true, "the TLS configuration is refused".to_owned()),
-        _ => failure(false, "the pool cannot be built".to_owned()),
+        ConnectError::Pool(_) => failure(false, "the pool cannot be built".to_owned()),
+        // `ConnectError` is non_exhaustive: a variant added later is read as a refusal until it is
+        // named here, and its text is not kept (it might hold a driver's error)
+        _ => failure(
+            false,
+            "the connection failed in a way this build does not know".to_owned(),
+        ),
     }
 }
 
@@ -728,9 +750,19 @@ fn migrate_err(err: MigrateError) -> SecretError {
             "the applied migrations of the secret store do not match this build",
         )
         .with_source(e),
-        other => {
-            SecretError::unavailable("the migrations of the secret store failed").with_source(other)
+        // a crate's own mistake: the error holds a name or a number, never a driver's error
+        e @ (MigrateError::FileName(_)
+        | MigrateError::TableName(_)
+        | MigrateError::DuplicateVersion(_)) => {
+            SecretError::unavailable("the migrations of the secret store failed").with_source(e)
         }
+        // `MigrateError` is non_exhaustive: a variant added later is a refusal until it is named
+        // here, and is not kept as the source (it might hold a driver's error, and a DETAIL)
+        _ => failure(
+            false,
+            "the migrations of the secret store failed in a way this build does not know"
+                .to_owned(),
+        ),
     }
 }
 
@@ -794,9 +826,7 @@ mod tests {
         assert_eq!(down.class(), ErrorClass::Transient);
         let refused = driver("query returned an unexpected number of rows");
         assert!(matches!(refused, SecretError::Unavailable { .. }));
-        // a row that does not decode is `Corrupt` at `column`; `tests/adapter.rs` decodes one
-        let bad = SecretError::corrupt("a row of the secret store does not decode");
-        assert!(matches!(bad, SecretError::Corrupt(_)));
+        // a row that does not decode is `Corrupt` at `column`: `tests/adapter.rs` decodes one
     }
 
     #[test]
@@ -882,6 +912,22 @@ mod tests {
             ),
             ("a column that is not there", driver("invalid column `v`")),
             (
+                "a message that cannot be encoded",
+                driver_failure(
+                    false,
+                    Some(&std::io::Error::other("string contains embedded null")),
+                    "error encoding message to server".to_owned(),
+                ),
+            ),
+            (
+                "an authentication the client refuses",
+                driver_failure(
+                    false,
+                    Some(&std::io::Error::other("invalid server signature")),
+                    "authentication error".to_owned(),
+                ),
+            ),
+            (
                 "a pool without a runtime",
                 pool_err(PoolError::NoRuntimeSpecified),
             ),
@@ -953,5 +999,98 @@ mod tests {
         let error = db_err(unreadable);
         assert!(matches!(error, SecretError::Unavailable { .. }));
         assert!(!is_outage(&error), "{error:?}");
+    }
+
+    /// A server on a port of its own: it reads what the client sends first, answers `reply`, and
+    /// holds the socket open, so the client reads the answer and not the end of the stream.
+    #[allow(clippy::unwrap_used)]
+    async fn fake_server(reply: &'static [u8]) -> u16 {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut first = [0_u8; 1024];
+                    let _ = socket.read(&mut first).await;
+                    let _ = socket.write_all(reply).await;
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                });
+            }
+        });
+        port
+    }
+
+    /// What the driver makes of a connection to `url`.
+    #[allow(clippy::unwrap_used)]
+    async fn driver_error_of(url: &str) -> tokio_postgres::Error {
+        let options: PgOptions = url.parse().unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), options.connect())
+            .await
+            .unwrap();
+        match outcome {
+            Err(ConnectError::Database(e)) => e,
+            Ok(_) => panic!("{url}: connected"),
+            Err(other) => panic!("{url}: not the driver's error: {other:?}"),
+        }
+    }
+
+    /// `sslmode=require` against a server that answers `N` to the SSLRequest: the driver's TLS
+    /// error, which carries no I/O error, so only its words make it an outage.
+    #[tokio::test]
+    async fn a_server_that_refuses_tls_under_require_is_an_outage() {
+        let port = fake_server(b"N").await;
+        let e = driver_error_of(&format!("postgres://u@127.0.0.1:{port}/db?sslmode=require")).await;
+        assert_eq!(e.to_string(), "error performing TLS handshake");
+        let error = db_err(e);
+        assert!(is_outage(&error), "{error:?}");
+    }
+
+    /// A ReadyForQuery (`Z`, length 5, idle) before any authentication: the driver's unexpected
+    /// message, with no I/O error either.
+    #[tokio::test]
+    async fn a_server_that_answers_out_of_turn_is_an_outage() {
+        let port = fake_server(b"Z\0\0\0\x05I").await;
+        let e = driver_error_of(&format!("postgres://u@127.0.0.1:{port}/db?sslmode=disable")).await;
+        assert_eq!(e.to_string(), "unexpected message from server");
+        let error = db_err(e);
+        assert!(is_outage(&error), "{error:?}");
+    }
+
+    /// A NUL byte in the user: the startup message cannot be encoded, every time. The driver's
+    /// error carries an I/O error, and is still no outage (sqlx refused such a URL).
+    #[tokio::test]
+    async fn a_user_that_cannot_be_encoded_is_a_refusal() {
+        let port = fake_server(b"").await;
+        let e = driver_error_of(&format!(
+            "postgres://a%00b@127.0.0.1:{port}/db?sslmode=disable"
+        ))
+        .await;
+        assert_eq!(e.to_string(), "error encoding message to server");
+        assert!(!refused_while_starting(&e), "not tried again");
+        let error = db_err(e);
+        assert!(matches!(error, SecretError::Unavailable { .. }));
+        assert!(!is_outage(&error), "{error:?}");
+    }
+
+    #[test]
+    fn a_wait_too_long_for_the_clock_has_no_deadline() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build();
+        let Ok(runtime) = runtime else {
+            panic!("no runtime");
+        };
+        let mut tries = 0;
+        let outcome: Result<u32, Retried<u32>> = runtime.block_on(retrying(
+            Duration::MAX,
+            || {
+                tries += 1;
+                let n = tries;
+                async move { if n < 3 { Err(n) } else { Ok(n) } }
+            },
+            |_| true,
+        ));
+        assert!(matches!(outcome, Ok(3)));
     }
 }

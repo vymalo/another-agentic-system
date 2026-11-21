@@ -106,14 +106,15 @@ impl PgSecretStore {
         let mut after = (String::new(), String::new());
         loop {
             let conn = self.conn().await?;
+            let select = conn
+                .prepare_cached(&format!(
+                    "SELECT owner, server, {COLUMNS} FROM user_secrets \
+                     WHERE (owner, server) > ($1, $2) ORDER BY owner, server LIMIT $3"
+                ))
+                .await
+                .map_err(db_err)?;
             let page = conn
-                .query(
-                    &format!(
-                        "SELECT owner, server, {COLUMNS} FROM user_secrets \
-                         WHERE (owner, server) > ($1, $2) ORDER BY owner, server LIMIT $3"
-                    ),
-                    &[&after.0, &after.1, &PAGE],
-                )
+                .query(&select, &[&after.0, &after.1, &PAGE])
                 .await
                 .map_err(db_err)?;
             // the connection serves the rows' own transactions while the page is worked through
@@ -192,11 +193,14 @@ impl PgSecretStore {
     ) -> Result<Outcome, SecretError> {
         let mut conn = self.conn().await?;
         let tx = self.locked(&mut conn, owner, server).await?;
+        let select = tx
+            .prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM user_secrets WHERE owner = $1 AND server = $2"
+            ))
+            .await
+            .map_err(db_err)?;
         let row = tx
-            .query_opt(
-                &format!("SELECT {COLUMNS} FROM user_secrets WHERE owner = $1 AND server = $2"),
-                &[&owner, &server],
-            )
+            .query_opt(&select, &[&owner, &server])
             .await
             .map_err(db_err)?;
         let row: Option<Row> = row.map(|row| row_at(&row, 0)).transpose()?;
@@ -221,10 +225,16 @@ impl PgSecretStore {
             return Ok(Outcome::AlreadyCurrent);
         }
         let sealed = self.seal(owner, server, stored.version, material.expose())?;
-        let done = tx
-            .execute(
+        let update = tx
+            .prepare_cached(
                 "UPDATE user_secrets SET v = $4, kid = $5, nonce = $6, ciphertext = $7 \
                  WHERE owner = $1 AND server = $2 AND version = $3",
+            )
+            .await
+            .map_err(db_err)?;
+        let done = tx
+            .execute(
+                &update,
                 &[
                     &owner,
                     &server,
