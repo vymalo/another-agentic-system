@@ -2,14 +2,15 @@
 //! (ADR 0076, sys#382 E1): the same connection string means the same server, the same TLS and the
 //! same checks, so moving a crate off sqlx changes no deployment's configuration.
 //!
-//! * **The connection string** is a `postgres://` or `postgresql://` URL, every parameter
-//!   `tokio-postgres` knows (`host`, `port`, `user`, `password`, `dbname`, `application_name`,
-//!   `options`, `connect_timeout`, ...) read by it. `sslmode` and `sslrootcert` are read here,
-//!   because `tokio-postgres` knows only three of sqlx's five modes. `sslcert`, `sslkey` and
-//!   `sslpassword` (a client certificate) are refused: no deployment uses one, and a parameter
-//!   that would be ignored must not be.
+//! * **The connection string** is read as sqlx read it: the `PG*` environment variables first
+//!   (`PGHOST`, `PGHOSTADDR`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGAPPNAME`,
+//!   `PGOPTIONS`, `PGSSLMODE`, `PGSSLROOTCERT`), a `postgres://` or `postgresql://` URL over them
+//!   (its query key by key, sqlx's aliases included, the last one winning, `options` growing), then
+//!   the password file (`PGPASSFILE`, `~/.pgpass`) for a password nothing gave. A key sqlx ignored
+//!   is ignored. A client certificate (`sslcert`, `sslkey`, `sslpassword`, `PGSSLCERT`,
+//!   `PGSSLKEY`) is refused: no deployment uses one, and sqlx would have sent it.
 //! * **TLS is sqlx's**, with rustls on aws-lc-rs and the Mozilla roots (`webpki-roots`) plus the
-//!   file `sslrootcert`:
+//!   `sslrootcert` (a PEM file, or the PEM itself):
 //!
 //!   | `sslmode` | TLS | The server's certificate |
 //!   |---|---|---|
@@ -22,6 +23,8 @@
 //! No error of this crate holds the connection string: it may carry a password.
 
 #![forbid(unsafe_code)]
+
+mod parse;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -56,74 +59,98 @@ pub enum TlsMode {
     VerifyFull,
 }
 
+impl TlsMode {
+    /// The `sslmode` `tokio-postgres` is given: it negotiates, rustls checks.
+    fn wire(self) -> SslMode {
+        match self {
+            TlsMode::Disable => SslMode::Disable,
+            TlsMode::Prefer => SslMode::Prefer,
+            TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull => SslMode::Require,
+        }
+    }
+}
+
+/// `sslrootcert`: a file, or the PEM itself, as sqlx's `CertificateInput` told them apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RootCert {
+    Path(PathBuf),
+    Pem(String),
+}
+
+impl RootCert {
+    pub(crate) fn from_text(text: &str) -> Self {
+        let trimmed = text.trim();
+        if trimmed.starts_with("-----BEGIN") && trimmed.ends_with("-----") {
+            Self::Pem(text.to_owned())
+        } else {
+            Self::Path(PathBuf::from(text))
+        }
+    }
+}
+
 /// A connection string, read: the `tokio-postgres` configuration and the TLS it asks for.
 #[derive(Clone, Debug)]
 pub struct PgOptions {
     config: tokio_postgres::Config,
     tls: TlsMode,
-    root_cert: Option<PathBuf>,
+    root_cert: Option<RootCert>,
 }
 
 impl FromStr for PgOptions {
     type Err = ParseError;
 
+    /// Reads `url` with the process's environment and password file, as sqlx did.
     fn from_str(url: &str) -> Result<Self, ParseError> {
-        let mut parsed = url::Url::parse(url).map_err(|_| ParseError::NotAUrl)?;
-        if !matches!(parsed.scheme(), "postgres" | "postgresql") {
-            return Err(ParseError::Scheme);
-        }
-        let mut tls = TlsMode::Prefer;
-        let mut root_cert = None;
-        // The parameters TLS needs are taken out of the query as it is written; every other
-        // segment is kept byte for byte, never encoded again (a form encoding would turn a space,
-        // `%20`, into a `+`, which `tokio-postgres` reads as a `+`).
-        let raw = parsed.query().unwrap_or_default().to_owned();
-        let mut kept = Vec::new();
-        for segment in raw.split('&').filter(|s| !s.is_empty()) {
-            let Some((key, value)) = url::form_urlencoded::parse(segment.as_bytes()).next() else {
-                continue;
-            };
-            match key.as_ref() {
-                "sslmode" => {
-                    tls = match value.as_ref() {
-                        "disable" | "allow" => TlsMode::Disable,
-                        "prefer" => TlsMode::Prefer,
-                        "require" => TlsMode::Require,
-                        "verify-ca" => TlsMode::VerifyCa,
-                        "verify-full" => TlsMode::VerifyFull,
-                        _ => return Err(ParseError::SslMode),
-                    };
-                }
-                "sslrootcert" => root_cert = Some(PathBuf::from(value.as_ref())),
-                "sslcert" | "sslkey" | "sslpassword" => {
-                    return Err(ParseError::ClientCertificate);
-                }
-                _ => kept.push(segment),
-            }
-        }
-        parsed.set_query((!kept.is_empty()).then(|| kept.join("&")).as_deref());
-        let mut config =
-            tokio_postgres::Config::from_str(parsed.as_str()).map_err(|_| ParseError::Parameter)?;
-        config.ssl_mode(match tls {
-            TlsMode::Disable => SslMode::Disable,
-            TlsMode::Prefer => SslMode::Prefer,
-            TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull => SslMode::Require,
-        });
-        Ok(Self {
-            config,
-            tls,
-            root_cert,
-        })
+        Ok(Self::from_parsed(parse::parse(url, &parse::Process)?))
     }
 }
 
 impl PgOptions {
+    fn from_parsed(parsed: parse::Parsed) -> Self {
+        let mut config = tokio_postgres::Config::new();
+        match parsed.target() {
+            parse::Host::Tcp(host) => config.host(&host),
+            #[cfg(unix)]
+            parse::Host::Socket(dir) => config.host_path(&dir),
+            #[cfg(not(unix))]
+            parse::Host::Socket(dir) => config.host(&dir.to_string_lossy()),
+        };
+        config.port(parsed.port).user(&parsed.user);
+        if let Some(password) = &parsed.password {
+            config.password(password);
+        }
+        if let Some(dbname) = &parsed.dbname {
+            config.dbname(dbname);
+        }
+        if let Some(name) = &parsed.application_name {
+            config.application_name(name);
+        }
+        if let Some(options) = &parsed.options {
+            config.options(options);
+        }
+        config.ssl_mode(parsed.tls.wire());
+        Self {
+            config,
+            tls: parsed.tls,
+            root_cert: parsed.root_cert,
+        }
+    }
+
+    /// The configuration a connection is made with: the one held, its `sslmode` the one
+    /// [`tls`](Self::tls) needs whatever [`config_mut`](Self::config_mut) did to it.
+    fn wire_config(&self) -> tokio_postgres::Config {
+        let mut config = self.config.clone();
+        config.ssl_mode(self.tls.wire());
+        config
+    }
+
     /// The `tokio-postgres` configuration (its `sslmode` already the one TLS needs).
     pub fn config(&self) -> &tokio_postgres::Config {
         &self.config
     }
 
-    /// The configuration, to change (a test pins a database of its own).
+    /// The configuration, to change (a test pins a database of its own). Its `sslmode` is not
+    /// for changing: every connection is made with the one [`tls`](Self::tls) needs.
     pub fn config_mut(&mut self) -> &mut tokio_postgres::Config {
         &mut self.config
     }
@@ -170,11 +197,20 @@ impl PgOptions {
         Ok(MakeRustlsConnect::new(config))
     }
 
-    /// The Mozilla roots, and the certificates of `sslrootcert`.
+    /// The Mozilla roots, and the certificates of `sslrootcert` (its file read now: a pool reads
+    /// it once, where sqlx read it for every connection).
     fn roots(&self) -> Result<RootCertStore, ConnectError> {
         let mut roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        if let Some(path) = &self.root_cert {
-            let certs = CertificateDer::pem_file_iter(path).map_err(|_| ConnectError::RootCert)?;
+        if let Some(root_cert) = &self.root_cert {
+            let certs: Vec<_> = match root_cert {
+                RootCert::Path(path) => CertificateDer::pem_file_iter(path)
+                    .map_err(|_| ConnectError::RootCert)?
+                    .collect(),
+                RootCert::Pem(pem) => CertificateDer::pem_slice_iter(pem.as_bytes()).collect(),
+            };
+            if certs.is_empty() {
+                return Err(ConnectError::RootCert);
+            }
             for cert in certs {
                 roots
                     .add(cert.map_err(|_| ConnectError::RootCert)?)
@@ -192,27 +228,31 @@ impl PgOptions {
     /// [`ConnectError::Database`] when the server cannot be reached or refuses, and the TLS
     /// errors of [`tls_connector`](Self::tls_connector).
     pub async fn connect(&self) -> Result<tokio_postgres::Client, ConnectError> {
-        let (client, connection) = self.config.connect(self.tls_connector()?).await?;
+        let (client, connection) = self.wire_config().connect(self.tls_connector()?).await?;
         tokio::spawn(async move {
-            // The client sees the error on its next call; nothing to do with it here.
-            let _ = connection.await;
+            // The client sees a closed connection on its next call; the cause is only here.
+            if let Err(error) = connection.await {
+                tracing::warn!(%error, "a postgres connection ended with an error");
+            }
         });
         Ok(client)
     }
 
-    /// A pool of at most `max_size` connections (at least one), each made on demand. `wait`
-    /// bounds both a wait for a free connection and the making of a new one, as sqlx's
-    /// `acquire_timeout` did.
+    /// A pool of at most `max_size` connections (at least one), each made on demand and checked
+    /// with an empty query before it is handed out again, as sqlx's `test_before_acquire` pinged
+    /// it. `wait` bounds both a wait for a free connection and the making of a new one, as sqlx's
+    /// `acquire_timeout` did. Unlike sqlx's, a connection is not closed after ten idle minutes
+    /// or thirty in all.
     ///
     /// # Errors
     ///
     /// The TLS errors of [`tls_connector`](Self::tls_connector), and [`ConnectError::Pool`].
     pub fn pool(&self, max_size: usize, wait: Duration) -> Result<Pool, ConnectError> {
         let manager = Manager::from_config(
-            self.config.clone(),
+            self.wire_config(),
             self.tls_connector()?,
             ManagerConfig {
-                recycling_method: RecyclingMethod::Fast,
+                recycling_method: RecyclingMethod::Verified,
             },
         );
         Pool::builder(manager)
@@ -329,9 +369,10 @@ pub enum ParseError {
     /// `sslcert`, `sslkey` or `sslpassword`: a client certificate, which this crate does not offer.
     #[error("a client certificate (sslcert, sslkey, sslpassword) is not supported")]
     ClientCertificate,
-    /// A parameter `tokio-postgres` does not know, or a value it refuses.
-    #[error("a parameter of the connection string is not known or not valid")]
-    Parameter,
+    /// A value sqlx refused: a `port` or `statement-cache-capacity` that is not a number, a
+    /// `hostaddr` that is not an address, a part of the URL that is not UTF-8 once decoded.
+    #[error("the parameter {0} of the connection string is not valid")]
+    Parameter(&'static str),
 }
 
 /// Why a connection or a pool could not be made.
@@ -347,8 +388,9 @@ pub enum ConnectError {
     /// The pool could not be built.
     #[error("the pool cannot be built: {0}")]
     Pool(String),
-    /// The server could not be reached, or refused.
-    #[error("the database cannot be reached")]
+    /// The server could not be reached, or it refused the connection (its authentication, a
+    /// database that does not exist, its TLS).
+    #[error("the database could not be connected to")]
     Database(#[from] tokio_postgres::Error),
 }
 
@@ -397,14 +439,51 @@ mod tests {
                 ParseError::ClientCertificate,
             ),
             (
-                "postgres://u:secretpw@h/db?nonsense=1",
-                ParseError::Parameter,
+                "postgres://u:secretpw@h/db?port=secretpw",
+                ParseError::Parameter("port"),
             ),
         ] {
             let error = url.parse::<PgOptions>().unwrap_err();
             assert_eq!(error, want, "{url}");
             assert!(!format!("{error} {error:?}").contains("secretpw"), "{url}");
         }
+    }
+
+    #[test]
+    fn a_change_to_the_configuration_cannot_undo_tls() {
+        let mut options: PgOptions = "postgres://u@h/db?sslmode=verify-full".parse().unwrap();
+        options
+            .config_mut()
+            .ssl_mode(SslMode::Disable)
+            .dbname("other");
+        let wire = options.wire_config();
+        assert_eq!(wire.get_ssl_mode(), SslMode::Require);
+        assert_eq!(wire.get_dbname(), Some("other"));
+    }
+
+    #[test]
+    fn the_configuration_is_built_from_the_parts() {
+        let options: PgOptions =
+            "postgres://u:p@h:5433/db?application_name=app&options=-c%20a%3D1&sslmode=disable"
+                .parse()
+                .unwrap();
+        let config = options.config();
+        assert_eq!(
+            config.get_hosts(),
+            [tokio_postgres::config::Host::Tcp("h".into())]
+        );
+        assert_eq!(config.get_ports(), [5433]);
+        assert_eq!(config.get_user(), Some("u"));
+        assert_eq!(config.get_password(), Some(&b"p"[..]));
+        assert_eq!(config.get_dbname(), Some("db"));
+        assert_eq!(config.get_application_name(), Some("app"));
+        assert_eq!(config.get_options(), Some("-c a=1"));
+        assert_eq!(config.get_ssl_mode(), SslMode::Disable);
+        let socket: PgOptions = "postgres://u@%2Frun%2Fpg/db".parse().unwrap();
+        assert_eq!(
+            socket.config().get_hosts(),
+            [tokio_postgres::config::Host::Unix("/run/pg".into())]
+        );
     }
 
     #[test]
@@ -419,5 +498,21 @@ mod tests {
         ));
         let plain: PgOptions = "postgres://u@h/db?sslmode=verify-full".parse().unwrap();
         assert!(plain.tls_connector().is_ok(), "the Mozilla roots alone");
+        let not_pem: PgOptions = "postgres://u@h/db?sslmode=verify-full\
+             &sslrootcert=-----BEGIN%20CERTIFICATE-----%0Anot%20base64%0A-----END%20CERTIFICATE-----"
+            .parse()
+            .unwrap();
+        assert!(matches!(
+            not_pem.tls_connector(),
+            Err(ConnectError::RootCert)
+        ));
+        let no_certificate: PgOptions = "postgres://u@h/db?sslmode=verify-ca\
+             &sslrootcert=-----BEGIN%20PRIVATE%20KEY-----%0AAAAA%0A-----END%20PRIVATE%20KEY-----"
+            .parse()
+            .unwrap();
+        assert!(
+            matches!(no_certificate.tls_connector(), Err(ConnectError::RootCert)),
+            "an sslrootcert that holds no certificate"
+        );
     }
 }

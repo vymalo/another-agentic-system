@@ -2751,14 +2751,17 @@ name = "orch-pg-connect"
 version = "0.1.0"
 dependencies = [
  "deadpool-postgres",
+ "percent-encoding",
  "rustls",
  "sqlx",
  "thiserror",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
+ "tracing",
  "url",
  "webpki-roots",
+ "whoami",
 ]
 
 [[package]]

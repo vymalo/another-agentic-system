@@ -123,6 +123,7 @@ tokio-postgres = "0.7.18"
 tokio-postgres-rustls = "0.14"
 deadpool-postgres = { version = "0.14.2", default-features = false, features = ["rt_tokio_1"] }
 webpki-roots = "1"
+whoami = { version = "2.1", default-features = false, features = ["std"] }
 # Wipes the bytes of a secret when it is dropped (`orch-ports`, `SecretMaterial`, ADR 0046).
 zeroize = "1"
 # The AES-256-GCM of the sealed secrets (`orch-secrets-pg`, ADR 0046): RustCrypto's, pure Rust, `Apache-2.0 OR MIT`.
