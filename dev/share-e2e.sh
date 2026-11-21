@@ -231,7 +231,7 @@ sse_get() { # sse_get PATH OUT [HEADER]: a GET of an event stream, to its end (a
   fi
 }
 
-open_stream() { # open_stream PATH OUT RC [HEADER]: a stream that has no end of its own, in the background; RC gets curl's exit status when it ends
+open_stream() { # open_stream PATH OUT RC [HEADER]: a stream that follows the thread until something else ends it — a revoke, a narrowing, or the stream's own lifetime (ADR 0082) — in the background; RC gets curl's exit status when it ends
   : >"$2"
   rm -f "$3"
   if [ $# -ge 4 ]; then
@@ -543,6 +543,9 @@ expect "the thread is still internal" "$(api GET "/api/threads/$thread" | jq -r 
 echo "== at the cap internal: revoking ends the stream open on the link"
 open_stream "/agui/shared/$token_b/connect" "$tmp/open-internal.sse" "$tmp/open-internal.rc" "$other_header"
 if wait_data "$tmp/open-internal.sse"; then ok "the second user's stream, open with no end of its own, has delivered its frames through the edge"; else bad "the open stream delivered nothing in 20 s ($(head -c 200 "$tmp/open-internal.sse.err"))"; fi
+# Every stream now ends by itself after the deployment's lifetime (60 s, ADR 0082), so say it is still open at the revoke:
+# what the check below proves is that the revocation ended it, not the lifetime.
+if [ -f "$tmp/open-internal.rc" ]; then bad "the open stream had already ended before the link was taken down (curl exit $(cat "$tmp/open-internal.rc"))"; else ok "the open stream is still open when the link is taken down"; fi
 expect "DELETE /share is 204" "$(call "$id_header" DELETE "/api/threads/$thread/share")" 204
 if wait_end "$tmp/open-internal.rc"; then
   _rc=$(cat "$tmp/open-internal.rc")
@@ -622,6 +625,8 @@ expect "... the parent's id" "$(jq -r '.id' "$tmp/body")" "$thread"
 echo "== the cap public: revoking ends the stream an anonymous reader has open"
 open_stream "/agui/public/shared/$token_c/connect" "$tmp/open-public.sse" "$tmp/open-public.rc"
 if wait_data "$tmp/open-public.sse"; then ok "the anonymous stream, open with no end of its own, has delivered its frames through the edge"; else bad "the open public stream delivered nothing in 20 s ($(head -c 200 "$tmp/open-public.sse.err"))"; fi
+# As above: the stream ends by itself after the lifetime (ADR 0082), so what follows proves the revocation ended it.
+if [ -f "$tmp/open-public.rc" ]; then bad "the open public stream had already ended before the link was taken down (curl exit $(cat "$tmp/open-public.rc"))"; else ok "the open public stream is still open when the link is taken down"; fi
 expect "DELETE /share is 204" "$(call "$id_header" DELETE "/api/threads/$thread/share")" 204
 if wait_end "$tmp/open-public.rc"; then
   _rc=$(cat "$tmp/open-public.rc")
