@@ -6,20 +6,17 @@ mod support;
 
 use std::time::Duration;
 
+use orch_pg_connect::PgOptions;
 use orch_secrets_pg::{MIGRATIONS_TABLE, PgSecretStore};
-use sqlx::PgPool;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use support::{TestDb, ring_k1};
+use support::{Pool, TestDb, fetch_one, ring_k1};
 
 /// A pool whose server is not there: any use of it fails.
-fn unreachable_pool() -> PgPool {
-    let options = PgConnectOptions::new()
-        .host("127.0.0.1")
-        .port(1)
-        .database("none");
-    PgPoolOptions::new()
-        .acquire_timeout(Duration::from_millis(500))
-        .connect_lazy_with(options)
+fn unreachable_pool() -> Pool {
+    "postgres://127.0.0.1:1/none"
+        .parse::<PgOptions>()
+        .unwrap()
+        .pool(1, Duration::from_millis(500))
+        .unwrap()
 }
 
 #[tokio::test]
@@ -29,6 +26,10 @@ async fn the_migrations_run_on_the_direct_connection_and_touch_no_pool() {
     };
     let store = PgSecretStore::from_pool(unreachable_pool(), ring_k1());
     assert!(store.migrate().await.is_err(), "the pool is unreachable");
+    // a migration that could not reach the database is an outage (the connection refused, tried
+    // again for the pool's wait, as sqlx's pool did)
+    let error = store.migrate().await.unwrap_err();
+    assert!(orch_secrets_pg::is_outage(&error), "{error:?}");
 
     PgSecretStore::migrate_direct(&db.pinned_direct_url())
         .await
@@ -39,21 +40,21 @@ async fn the_migrations_run_on_the_direct_connection_and_touch_no_pool() {
         .expect("again");
 
     let raw = db.pool("orch-secrets-raw", 2).await;
-    let applied: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT count(*) FROM {MIGRATIONS_TABLE} WHERE success"
-    )))
-    .fetch_one(&raw)
-    .await
-    .unwrap();
+    let (applied,): (i64,) = fetch_one(
+        &raw,
+        &format!("SELECT count(*) FROM {MIGRATIONS_TABLE} WHERE success"),
+        &[],
+    )
+    .await;
     assert!(applied > 0);
     // the session lock of the migrator went with its connection
-    let held: i64 = sqlx::query_scalar(
+    let (held,): (i64,) = fetch_one(
+        &raw,
         "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND database = \
          (SELECT oid FROM pg_database WHERE datname = current_database())",
+        &[],
     )
-    .fetch_one(&raw)
-    .await
-    .unwrap();
+    .await;
     assert_eq!(held, 0, "no advisory lock is left held");
 }
 
