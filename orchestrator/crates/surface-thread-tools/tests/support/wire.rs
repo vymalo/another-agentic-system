@@ -169,11 +169,12 @@ impl WireRig {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let sse_keepalive = ApiConfig::default().sse_keepalive;
+        let sse_lifetime = ApiConfig::default().sse_lifetime;
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
             ApiConfig::default(),
             vec![
-                orch_surface_agui::routes(Arc::clone(&app), sse_keepalive),
+                orch_surface_agui::routes(Arc::clone(&app), sse_keepalive, sse_lifetime),
                 orch_surface_thread_tools::routes(Arc::clone(&app), config),
             ],
         );

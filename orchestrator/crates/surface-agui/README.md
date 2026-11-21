@@ -3,7 +3,9 @@
 The AG-UI interaction surface. `POST /agui/agents/{agentId}` takes an AG-UI 1.0 `RunAgentInput` and
 answers a stream of AG-UI events, projected from the event log for the requester.
 `GET /agui/threads/{threadId}/connect` is the viewer's stream of a thread: replayed from the start or
-from a `Last-Event-ID` cursor, then followed across runs. `GET /agui/agents/{agentId}/capabilities` is
+from a `Last-Event-ID` cursor, then followed across runs, until its lifetime ends it and the client
+reopens it from its last `id:` ([ADR 0082](../../../docs/decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)).
+`GET /agui/agents/{agentId}/capabilities` is
 the agent's `AgentCapabilities` document. The binding, with the mapping tables and the refusals, is
 [`docs/api/agui.md`](../../../docs/api/agui.md)
 ([ADR 0012](../../../docs/decisions/0012-ag-ui-user-facing-protocol.md)).
@@ -24,7 +26,7 @@ Cargo feature of the binary ([`orchestrator`](../../bin/orchestrator/README.md),
 
 | Item | What |
 |---|---|
-| `routes::<P>(Arc<App<P>>, sse_keepalive: Duration) -> orch_api::SurfaceRoutes` | the run route and the connect stream (streaming routes, no request timeout) and the capabilities document (an ordinary route), ready for `orch_api::router_with_surfaces` |
+| `routes::<P>(Arc<App<P>>, sse_keepalive: Duration, sse_lifetime: Duration) -> orch_api::SurfaceRoutes` | the run route and the connect stream (streaming routes, no request timeout; keepalive every `sse_keepalive`, and every stream ends after `sse_lifetime`, [ADR 0082](../../../docs/decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)) and the capabilities document (an ordinary route), ready for `orch_api::router_with_surfaces` |
 | `MAX_BODY_BYTES` | 8 MiB: what a request may weigh |
 | `PROJECTION_VERSION` | re-exported from [`orch-agui-projection`](../agui-projection/README.md): the version of the frames this build writes (`ui.history.projection` of `GET /api/config`, `projection` of a page) |
 | The history routes | `GET /agui/threads/{threadId}/history` (ordinary request, behind the identity layer, `thread.read`), `GET /agui/shared/{token}/history` (signed in) and `GET /agui/public/shared/{token}/history` (`SurfaceRoutes::public`: rate limited, **one stream permit held while it folds**, `429` with `Retry-After` and `code: too_many_streams`): a finite page of the connect stream's frames, `before` / `limit` / `since` / `after`, as one JSON document ([`history.md`](../../../docs/api/history.md), [ADR 0059](../../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)) |
@@ -48,7 +50,11 @@ Mounted by `orch-api`, the route sits behind the identity layer like every route
    `forwardedProps[<release-channels URI>].release`, validated against the live card); otherwise the
    input goes through `App::submit`. The event carries the message id and run id of the request and the
    idempotency key `agui:<threadId>:msg:<messageId>` (`agui:<threadId>:run:<runId>` for an answer with
-   no message id). A concurrent request with the same ids loses the race and attaches. The gate a run
+   no message id). A concurrent request with the same ids loses the race and attaches; a **resend** of a
+   message the log holds, under a `runId` of its own, attaches to the run that message opened — the
+   log's `user_message` records it, and `translate` returns it as `Translation::attach`
+   ([ADR 0082](../../../docs/decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)).
+   The gate a run
    asks for, `forwardedProps["vymalo.gate"]`, is read before anything else (a malformed one is a 400 whatever
    the thread) and applies when the run creates the thread: `App` resolves it on top of the deployment's and the
    agent's and refuses (400, before the stream) what weakens the gate or this build cannot honour. A run that continues a thread (or loses the race to create it) and asks for a gate different from the thread's is refused too (409, `App::gate_request_changes`); the same gate, or none, is served.
@@ -59,7 +65,9 @@ Mounted by `orch-api`, the route sits behind the identity layer like every route
    The access tier of the message, `forwardedProps["vymalo.tier"]` ([ADR 0061](../../../docs/decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](../../../docs/api/access-tier-v1.md)), is read on every run too (`orch_app::tier::parse`: one of `plan`, `edits`, `auto`, `bypass` or `null`; anything else is a 400 before anything is written, whatever the thread) and given to the one input that is a message (a first message, a follow-up, a Stop & send, a fork's first message); a run with no message to carry it (a cancel, an attach, an A2UI action) ignores it with a warning. Whether the person's role allows it (422) and the thread's agent's live card honours it (422, or 503 when it cannot be read) is `App`'s, checked before the message is written; the message is logged with it and its `TEXT_MESSAGE_START` says it in `metadata["vymalo.tier"]`.
 5. **Stream.** From the first event the input caused (or, for an attach, from that run's `RUN_STARTED`)
    to the first terminal event of the run: `RUN_FINISHED` or `RUN_ERROR`, then EOF. Frames carry `id:
-   <seq>` on resume points. Keepalive comments every `sse_keepalive`.
+   <seq>` on resume points. Keepalive comments every `sse_keepalive`. A stream that has not ended by
+   then ends at the deployment's lifetime (`sse_lifetime`, 60 s by default), and the client attaches
+   again with the same `runId`: ending is not cancelling.
 
 A run is not tied to its connection: dropping the response never cancels; the cancel endpoint of the
 resource API does, and the outcome arrives as `RUN_FINISHED` with outcome `cancelled`.
@@ -69,7 +77,7 @@ resource API does, and the outcome arrives as `RUN_FINISHED` with outcome `cance
 1. **Parameters.** `Accept` admits `text/event-stream` or is absent (406); `Last-Event-ID` is a
    non-negative integer, or absent or empty (400 otherwise); `?mode` is absent or `run` (400).
 2. **Thread.** `parse_thread_id` and `App::get_thread`: a thread that does not exist for the caller, a
-   malformed id and a thread the caller may not read (someone else's, unless their roles read every thread) are the same 404 problem, before any stream byte; roles with no `thread.read` are 403. The stream is bounded by the token it was opened with: it ends at its `exp` plus 60 s, and after an hour at most (`orch_api::sse::bounded`), and the client reconnects with `Last-Event-ID`; a credential that does not run out is not bounded.
+   malformed id and a thread the caller may not read (someone else's, unless their roles read every thread) are the same 404 problem, before any stream byte; roles with no `thread.read` are 403. The stream is bounded by the shortest of the token it was opened with (`exp` plus 60 s), an hour, and the deployment's lifetime (`sse_lifetime`, 60 s by default; `orch_api::sse::stream_budget` and `bounded`), so a credential that does not run out is bounded too ([ADR 0082](../../../docs/decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)); the client reopens with `Last-Event-ID` and is shown each later event once.
 3. **Stream.** `App::event_stream(user, thread, 0)` reads the log from the first event and then follows
    it (wakeups, with a poll under them), so the same code serves a replay, a cursor and the live tail
    on any replica. [`orch_agui_projection::Connect`](../agui-projection/README.md) folds the events,
@@ -79,9 +87,10 @@ resource API does, and the outcome arrives as `RUN_FINISHED` with outcome `cance
    says the last `seq` it has read as an `id:` **alone, with no `data:`**
    (`Connect::head_marker`, once the replay has reached the head and after any later such event,
    never while a message of the log is open; `stream::sse_head`), so a viewer can tell that it holds
-   the thread's `lastSeq`; keepalive comments every `sse_keepalive`. The stream ends when the client closes, when `Connect` says so, or
+   the thread's `lastSeq`; keepalive comments every `sse_keepalive`. The stream ends when the client closes, when `Connect` says so,
    when the process shuts down and the stream has caught up (a truncated stream: the client reconnects
-   with its cursor).
+   with its cursor), or when the deployment's lifetime has passed — the ordinary end, after which the
+   client reopens from its last `id:` ([ADR 0082](../../../docs/decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)).
 
 The connect handler decides nothing about the frames and keeps nothing between requests: no registry
 of connections or runs, so a reconnect to another replica needs no shared memory. Dropping the
@@ -94,7 +103,7 @@ connection never cancels a run.
 1. **Parameters** are checked as for a connect (406, 400) and the cursor is validated **before** a stream permit is taken.
 2. **The link.** `App::open_shared` (or `open_public`): every link that does not work is the one 404 problem, before any stream byte.
 3. **The permit** (public only) is taken after the link is known to work, so a guess takes none.
-4. **Stream.** `App::shared_feed` and the reader projection (`orch_app::reader_event`): the owner is "the owner", hidden events are inert events with their `seq`, and a public reader gets no step input, output or detail (unless `sharing.public.stepIo`) and no files (unless `sharing.public.files`). The frames are the connect's, with the headers of every shared answer (`no-store, no-transform`, `noindex`), except that the `href` of a kept file names the link's own route (`/api/shared/{token}/artifacts/{sha256}`, or `/api/public/shared/{token}/…` on the public stream: `FileRoute`), as it does in the pages of the shared history routes. The stream ends when the link stops working: a revocation, a rotation or a lowered cap, rechecked on `thread_shared` and `thread_unshared` and every 30 s, and the reconnect is the 404. Where the log ends in events with no frame (the share itself is one) the stream says it with an `id:` alone, as every connect stream does (below).
+4. **Stream.** `App::shared_feed` and the reader projection (`orch_app::reader_event`): the owner is "the owner", hidden events are inert events with their `seq`, and a public reader gets no step input, output or detail (unless `sharing.public.stepIo`) and no files (unless `sharing.public.files`). The frames are the connect's, with the headers of every shared answer (`no-store, no-transform`, `noindex`), except that the `href` of a kept file names the link's own route (`/api/shared/{token}/artifacts/{sha256}`, or `/api/public/shared/{token}/…` on the public stream: `FileRoute`), as it does in the pages of the shared history routes. The stream ends when the link stops working — a revocation, a rotation or a lowered cap, rechecked on `thread_shared` and `thread_unshared` and every 30 s, and the reconnect is the 404 — and, like every stream, at the deployment's lifetime (a signed-in one also at its token's expiry, and an hour at most; [ADR 0082](../../../docs/decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)): a reader whose stream ended at its lifetime reopens it from its last `id:`. Where the log ends in events with no frame (the share itself is one) the stream says it with an `id:` alone, as every connect stream does (below).
 
 There is no run route for a link: a reader sends nothing, and the thread's own routes stay its owner's.
 
@@ -138,21 +147,26 @@ serve `tests/contract.rs`.
   response not cancelling, keepalive, release through `forwardedProps`, ignored members, a 2 MiB body.
 - `tests/attach.rs`: a retried POST replays the same frames, one while the run is going follows it to
   its end, earlier runs can be attached to, two concurrent requests with the same ids write one message,
-  a retried answer.
+  a retried answer, and five sends of one message under five run ids are one message, one run, one
+  delivery and one `model_usage_total` (ADR 0082).
+- `tests/lifetime.rs`: a connect stream opened with a credential that does not run out ends at its
+  lifetime while the run is still open, and a reopen from the last `id:` says each later event once and
+  none twice (ADR 0082).
 - `tests/tools.rs`: attached servers on a run (ADR 0024): a creating run records the message then `tools_attached` and says the set in every later snapshot and as a `vymalo.tools` card, the agent is told what is attached (no URL), an empty or `null` member attaches nothing, every malformed shape is a 400 and every server that cannot be attached a 422 with no thread made and nothing sent, a continuing run ignores the member (and a malformed one is still refused), a retry of the creating run records nothing twice, and a viewer that connects later is told the set.
 - `tests/fork.rs`: a run that creates its thread as a fork (ADR 0042): no thread before the send, the fork made with its message in one commit (the copy, `thread_forked`, the message, `job_started`), the response starting at its own `RUN_STARTED` with none of the copied turns, the agent told the parent's transcript, mentions and catalog applied to the message, the resend attaching and writing no second message (also after the parent went on), another thread's id, another cut, run or message a 409 and somebody else's a 404, a parent that is not the caller's or missing a 404, an open turn a 409 `turn_open`, a cut outside the log a 422, a malformed member or one with a gate or tools a 400, a `null` member an ordinary thread. `tests/contract.rs` drives the same run and its refusals against the contract.
 - `tests/mentions.rs` and `tests/roles.rs`: mentions on a run (ADR 0026): `forwardedProps["vymalo.mentions"]` is read on every run and refused before the stream when malformed (400: not an array, more than 16, a member missing, of the wrong type, or one a reference does not have), refused (422) when a label is not the text at its offsets (counted in code points or in bytes instead of UTF-16 units, inside a surrogate pair, past the end, overlapping or out of order), when the agent is unknown or its card moved, when it is the thread's own agent, or when the caller's role may not invoke it (`you may not use 'coder'`, before the registry is asked), and 503 with `Retry-After` while the registry cannot say, with no thread made and nothing sent in every case; a valid one is recorded as sent, shown on the message's start for a viewer, resolved from the registry for the agent, and its agent joins the job's set; a retry writes nothing twice; one on a run with no message is ignored.
 - `tests/ui_catalog.rs`: the UI catalog on a run: a first run records it first and every snapshot names it, a thread without one says nothing (and `null` is none), the same request again attaches and records nothing twice (and ignores a newer catalog), a newer version on a later run is recorded and an older one never becomes current, an answer can carry a newer catalog, the 400 for each rule of the envelope and of the schemas (the reason in `detail`), the 413, and a bad catalog refused on a continuing thread and on an attach with nothing written.
-- `tests/roles.rs`: nobody follows or runs another person's thread, an administrator included (404, nothing sent to the agent), a role that names some agents runs only those (and reads capabilities only of those), a person whose roles grant nothing is 403 `no_access` before any stream, and a stream ends with its token and goes on without an expiry.
+- `tests/roles.rs`: nobody follows or runs another person's thread, an administrator included (404, nothing sent to the agent), a role that names some agents runs only those (and reads capabilities only of those), a person whose roles grant nothing is 403 `no_access` before any stream, and a stream ends at the earliest of its token, an hour and the deployment's lifetime — an expired token at once, a day-long token and one that never expires at the lifetime (ADR 0082).
 - `tests/send.rs`: a message while a run is open, over HTTP with the dispatcher running: `steer` and `interrupt` each served (the response is a run of its own and does not echo the message; the first response ends at the message with the invocation suspended; the log says `delivery`; a stop cancels the task and the next job is in the run of the message), no member is a 409 that says what would be served, a malformed one a 400 with nothing written (also for a new thread), only a message is served (two messages, nothing new, a reused run id, an action, someone else's thread), a retried send attaches, and a viewer reconnecting from every resume point gets the rest and nothing else.
 - `tests/refusals.rs`: every status of the table in `docs/api/agui.md` (400, 401, 404, 406, 409, 413,
   415, 422, 502) as a problem, with nothing written; another owner's thread id; a message on a finished
   thread is served as the next job (and its retry is an attach, not a third job), a run while another is open is a 409.
-- `tests/connect.rs`: a finished thread replayed and left open (only keepalives while idle), runs that
+- `tests/connect.rs`: a finished thread replayed, then idle (only keepalives) until the lifetime ends
+  the stream, runs that
   come later followed, several viewers each getting the whole stream, a reconnect in the middle of a run
   (the preamble, then the rest once), a reconnect from every resume point of a two-run thread, a cursor
   at or beyond the end, `?mode=run` on an idle thread and on a running one, a closed connection not
-  cancelling, the stream ending at shutdown, every refusal (404 for missing, malformed and foreign
+  cancelling, the stream ending at shutdown, and at its lifetime, every refusal (404 for missing, malformed and foreign
   threads with one body, 401, 400, 406). A thread that ends in a frame is told no head, one that ends in its share is told it (also in `?mode=run`, before the stream ends), and a viewer that holds the head is told nothing.
 - `tests/registry.rs`: the registry's agents on the AG-UI routes, over a `CompositeRegistry` of the static agents and a `MemoryRegistry` the tests change: an agent is a 404 until the registry lists it, then its capabilities are described and a run streams and finishes, and a 404 again once the registry stops listing it; a registry that is down is a 503 with `Retry-After` and the fixed detail "the agent registry is unreachable" for the registry's agent and for an agent nobody lists (never a 404), the static agents still run, and a registry that is back is read again. `tests/contract.rs` also drives the capabilities 503 against the documented statuses. **The audience** ([ADR 0045](../../../docs/decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)): an agent the registry lists for administrators only, or for the holders of a role the person lacks, has the same 404 "no such agent" for its capabilities and for a run as an agent nobody lists (same problem body); an administrator describes and runs it; a message to a thread whose agent the audience took away is a **403** ("your roles do not grant agent.invoke for the agent x", the thread is theirs and read-only), a new thread on that agent is a 404, and another person's thread id on it is a 404 too.
 - `tests/capabilities.rs`: the document conforms and describes the agent, release channels are declared

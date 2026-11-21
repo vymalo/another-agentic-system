@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Extension;
 use axum::Router;
@@ -44,12 +45,14 @@ fn browser() -> BrowserAuth {
     }
 }
 
-/// `/x/budget`: how many seconds a stream of the caller may stay open (`stream_budget`).
-fn budget_surface() -> SurfaceRoutes {
-    async fn budget(Extension(principal): Extension<Principal>) -> String {
-        orch_api::sse::stream_budget(&principal, jiff::Timestamp::now())
-            .map_or_else(|| "unbounded".to_owned(), |d| d.as_secs().to_string())
-    }
+/// `/x/budget`: how many seconds a stream of the caller may stay open (`stream_budget`, on a
+/// deployment whose streams live `lifetime`).
+fn budget_surface(lifetime: Duration) -> SurfaceRoutes {
+    let budget = move |Extension(principal): Extension<Principal>| async move {
+        orch_api::sse::stream_budget(&principal, jiff::Timestamp::now(), lifetime)
+            .as_secs()
+            .to_string()
+    };
     SurfaceRoutes::new().streaming(Router::new().route("/x/budget", get(budget)))
 }
 
@@ -81,7 +84,8 @@ async fn edge(dpop: bool, cfg: ApiConfig) -> Edge {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let router = orch_api::router_with_surfaces(app, cfg, vec![budget_surface()]);
+    let lifetime = cfg.sse_lifetime;
+    let router = orch_api::router_with_surfaces(app, cfg, vec![budget_surface(lifetime)]);
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
@@ -320,7 +324,16 @@ async fn without_dpop_the_scheme_is_refused_and_only_bearer_is_advertised() {
 
 #[tokio::test]
 async fn a_stream_ends_with_the_token_whether_it_came_as_a_bearer_or_with_dpop() {
-    let e = edge(true, ApiConfig::default()).await;
+    // An hour of lifetime: what this test measures is the token's own bound (ADR 0033), not the
+    // deployment's (ADR 0082).
+    let e = edge(
+        true,
+        ApiConfig {
+            sse_lifetime: Duration::from_secs(3600),
+            ..ApiConfig::default()
+        },
+    )
+    .await;
     let key = DpopKey::es256();
     let bound = e.idp.bound_token(AUDIENCE, ALICE, &key);
     let budget = |body: String| body.parse::<u64>().unwrap_or_else(|_| panic!("{body}"));
@@ -356,6 +369,41 @@ async fn a_stream_ends_with_the_token_whether_it_came_as_a_bearer_or_with_dpop()
     let expired = e.idp.mint(&claims, Signing::Published(Alg::Rs256));
     let response = e.dpop("/x/budget", &key, &expired).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_stream_ends_at_the_deployments_lifetime_even_for_a_token_that_outlives_it() {
+    // ADR 0082: the lifetime is one of the bounds, and it is the one that always applies. A token
+    // that does not run out has no bound of its own, and used to leave the stream open for ever.
+    let e = edge(
+        true,
+        ApiConfig {
+            sse_lifetime: Duration::from_secs(30),
+            ..ApiConfig::default()
+        },
+    )
+    .await;
+    let key = DpopKey::es256();
+    let bound = e.idp.bound_token(AUDIENCE, ALICE, &key);
+    for body in [
+        e.dpop("/x/budget", &key, &bound)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        e.get("/x/budget")
+            .bearer_auth(e.idp.token(AUDIENCE, ALICE))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(body, "30");
+    }
 }
 
 // --- GET /api/public/auth ---

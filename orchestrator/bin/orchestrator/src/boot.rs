@@ -82,17 +82,22 @@ fn surface_routes<P: orch_ports::Ports>(
     surface: Surface,
     app: &Arc<App<P>>,
     sse_keepalive: Duration,
+    sse_lifetime: Duration,
     cfg: &Config,
 ) -> Result<SurfaceRoutes, ConfigError> {
     match surface {
         #[cfg(feature = "surface-agui")]
         Surface::Agui => {
             let _ = cfg;
-            Ok(orch_surface_agui::routes(Arc::clone(app), sse_keepalive))
+            Ok(orch_surface_agui::routes(
+                Arc::clone(app),
+                sse_keepalive,
+                sse_lifetime,
+            ))
         }
         #[cfg(not(feature = "surface-agui"))]
         Surface::Agui => {
-            let _ = (cfg, app, sse_keepalive);
+            let _ = (cfg, app, sse_keepalive, sse_lifetime);
             Err(ConfigError::SurfaceNotCompiled {
                 surface: surface.name(),
                 feature: surface.feature(),
@@ -100,7 +105,7 @@ fn surface_routes<P: orch_ports::Ports>(
         }
         #[cfg(feature = "surface-webhook")]
         Surface::WebhookGeneric => {
-            let _ = sse_keepalive;
+            let _ = (sse_keepalive, sse_lifetime);
             let generic = cfg
                 .webhook_generic
                 .clone()
@@ -115,7 +120,7 @@ fn surface_routes<P: orch_ports::Ports>(
         }
         #[cfg(feature = "surface-webhook")]
         Surface::WebhookGithub => {
-            let _ = sse_keepalive;
+            let _ = (sse_keepalive, sse_lifetime);
             let github = cfg
                 .webhook_github
                 .clone()
@@ -130,7 +135,7 @@ fn surface_routes<P: orch_ports::Ports>(
         }
         #[cfg(not(feature = "surface-webhook"))]
         Surface::WebhookGeneric | Surface::WebhookGithub => {
-            let _ = (cfg, app, sse_keepalive);
+            let _ = (cfg, app, sse_keepalive, sse_lifetime);
             Err(ConfigError::SurfaceNotCompiled {
                 surface: surface.name(),
                 feature: surface.feature(),
@@ -653,7 +658,7 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
     let surfaces = cfg
         .surfaces
         .iter()
-        .map(|&surface| surface_routes(surface, app, api.sse_keepalive, cfg))
+        .map(|&surface| surface_routes(surface, app, api.sse_keepalive, api.sse_lifetime, cfg))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(orch_api::router_with_surfaces(
         Arc::clone(app),

@@ -87,6 +87,12 @@ pub struct ApiConfig {
     /// Interval of the SSE `: keepalive` comment (15 s per the contract; shorter in tests).
     /// Not used by the resource API itself: surfaces read it and pass it to their streams.
     pub sse_keepalive: Duration,
+    /// How long an SSE stream stays open before it ends and the client reopens it with
+    /// `Last-Event-ID` (60 s, the contract's lifetime per ADR 0082; shorter in tests). The budget
+    /// of a stream is the shortest of this, the credential's expiry plus its leeway, and
+    /// [`MAX_STREAM`](sse::MAX_STREAM). Not used by the resource API itself: surfaces read it and
+    /// pass it to their streams, like [`sse_keepalive`](Self::sse_keepalive).
+    pub sse_lifetime: Duration,
     /// Request timeout for everything except the SSE stream.
     pub request_timeout: Duration,
     /// The rate limit of the public routes (ADR 0040, section 10): `Some` builds the limiter, and
@@ -118,6 +124,7 @@ impl Default for ApiConfig {
     fn default() -> Self {
         ApiConfig {
             sse_keepalive: Duration::from_secs(15),
+            sse_lifetime: Duration::from_secs(60),
             request_timeout: Duration::from_secs(30),
             public_limits: Some(PublicLimits::default()),
             browser_auth: None,

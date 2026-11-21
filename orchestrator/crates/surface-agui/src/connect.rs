@@ -98,9 +98,10 @@ pub(crate) async fn connect<P: Ports>(
         ?follow,
         "a viewer connected"
     );
-    // The stream lasts as long as the token it was opened with (ADR 0033): the client reconnects
-    // with `Last-Event-ID` and a fresh one.
-    let budget = stream_budget(&principal, state.app.ports().clock().now());
+    // The stream lasts as long as the shortest of the token it was opened with (ADR 0033), an hour,
+    // and the deployment's lifetime (ADR 0082): the client reconnects with `Last-Event-ID` and a
+    // fresh token, and is shown what it missed.
+    let budget = stream_budget(&principal, state.app.ports().clock().now(), state.lifetime);
     let sse =
         Sse::new(bounded(frames(connect, live), budget)).keep_alive(keep_alive(state.keepalive));
     Ok((stream_headers(), sse).into_response())
@@ -109,8 +110,8 @@ pub(crate) async fn connect<P: Ports>(
 /// `GET /agui/shared/{token}/connect`: the shared thread's AG-UI events for a **signed-in reader**
 /// (ADR 0040, section 8): the connect stream over the reader projection, read-only, replayed from the
 /// start or a cursor and then followed. It ends when the link is taken down, replaced or narrowed
-/// below `internal`, and at the person's token expiry (at most an hour). 404 for every link that does
-/// not work; 403 for roles that hold no `thread.read`.
+/// below `internal`, at the person's token expiry, and at the deployment's lifetime (ADR 0082), at
+/// most an hour. 404 for every link that does not work; 403 for roles that hold no `thread.read`.
 pub(crate) async fn connect_shared<P: Ports>(
     State(state): State<SurfaceState<P>>,
     Extension(principal): Extension<Principal>,
@@ -121,7 +122,7 @@ pub(crate) async fn connect_shared<P: Ports>(
     check_accept(&headers)?;
     let cursor = cursor_of(&headers)?;
     let read = state.app.open_shared(&principal, &token).await?;
-    let budget = stream_budget(&principal, state.app.ports().clock().now());
+    let budget = stream_budget(&principal, state.app.ports().clock().now(), state.lifetime);
     let files = FileRoute::shared(&token);
     shared_response(&state, &read, &query, cursor, budget, None, files)
 }
@@ -129,7 +130,8 @@ pub(crate) async fn connect_shared<P: Ports>(
 /// `GET /agui/public/shared/{token}/connect`: the same for **anybody** (outside the identity layer),
 /// only for a thread served as `public`, with the public projection. It holds one of the link's
 /// stream permits for as long as it is open (429 when the link, or all links together, have theirs),
-/// and is capped at one hour like any stream.
+/// and ends at the deployment's lifetime like any stream (ADR 0082; an hour at most): there is no
+/// credential to bound it by, and the reader reopens with its last `id:`.
 pub(crate) async fn connect_public<P: Ports>(
     State(state): State<SurfaceState<P>>,
     Extension(access): Extension<PublicAccess>,
@@ -151,7 +153,7 @@ pub(crate) async fn connect_public<P: Ports>(
         &read,
         &query,
         cursor,
-        Some(MAX_STREAM),
+        state.lifetime.min(MAX_STREAM),
         Some(permit),
         files,
     )
@@ -165,7 +167,7 @@ fn shared_response<P: Ports>(
     read: &SharedRead,
     query: &ConnectQuery,
     cursor: i64,
-    budget: Option<std::time::Duration>,
+    budget: std::time::Duration,
     permit: Option<orch_api::StreamPermit>,
     files: FileRoute,
 ) -> Result<Response, ApiError> {

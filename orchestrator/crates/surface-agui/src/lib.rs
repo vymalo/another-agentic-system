@@ -37,6 +37,10 @@
 //! with its last `id:`. A thread that is missing, malformed or someone else's is one 404, before
 //! any stream byte.
 //!
+//! Every stream here ends after the deployment's lifetime (60 s by default, ADR 0082), whatever
+//! credential it was opened with. Ending is the ordinary path: nothing leaves the log, and a client
+//! that reopens with the last `id:` it saw is shown every later event once.
+//!
 //! # The history read
 //!
 //! `GET /agui/threads/{threadId}/history` is a finite page of the connect stream's frames: a whole
@@ -84,6 +88,7 @@ pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) struct State<P: Ports> {
     pub(crate) app: Arc<App<P>>,
     pub(crate) keepalive: Duration,
+    pub(crate) lifetime: Duration,
 }
 
 impl<P: Ports> Clone for State<P> {
@@ -91,19 +96,26 @@ impl<P: Ports> Clone for State<P> {
         State {
             app: Arc::clone(&self.app),
             keepalive: self.keepalive,
+            lifetime: self.lifetime,
         }
     }
 }
 
 /// The routes of the surface. `POST /agui/agents/{agentId}` (a run) and
 /// `GET /agui/threads/{threadId}/connect` (attach, replay, follow) are streaming routes (no
-/// request timeout) whose `: keepalive` comment is sent every `sse_keepalive`;
+/// request timeout) whose `: keepalive` comment is sent every `sse_keepalive` and that end after
+/// `sse_lifetime` (ADR 0082), whichever credential they were opened with;
 /// `GET /agui/agents/{agentId}/capabilities` and `GET /agui/threads/{threadId}/history` (and its two
 /// shared variants) are ordinary requests.
-pub fn routes<P: Ports>(app: Arc<App<P>>, sse_keepalive: Duration) -> SurfaceRoutes {
+pub fn routes<P: Ports>(
+    app: Arc<App<P>>,
+    sse_keepalive: Duration,
+    sse_lifetime: Duration,
+) -> SurfaceRoutes {
     let state = State {
         app,
         keepalive: sse_keepalive,
+        lifetime: sse_lifetime,
     };
     let streaming = Router::new()
         .route("/agui/agents/{agent_id}", post(run::run::<P>))

@@ -98,8 +98,10 @@ pub(crate) async fn run<P: Ports>(
         )
         .await?
         {
-            // As long as the token the run was started with (ADR 0033).
-            let budget = stream_budget(&principal, state.app.ports().clock().now());
+            // As long as the shortest of the token the run was started with (ADR 0033), an hour,
+            // and the deployment's lifetime (ADR 0082): the client reopens and attaches with the
+            // same `runId`.
+            let budget = stream_budget(&principal, state.app.ports().clock().now(), state.lifetime);
             let stream = bounded(frames(feed), budget);
             let sse = Sse::new(stream).keep_alive(keep_alive(state.keepalive));
             return Ok((stream_headers(), sse).into_response());

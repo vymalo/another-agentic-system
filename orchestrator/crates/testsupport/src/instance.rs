@@ -244,9 +244,14 @@ impl TestInstance {
             tokio::spawn(Dispatcher::new(Arc::clone(&app), config, owner).run(shutdown.clone()))
         });
         let keepalive = api.sse_keepalive;
+        let lifetime = api.sse_lifetime;
         let crash = CancellationToken::new();
         let log: Arc<dyn LogTap> = Arc::new(AppLog(Arc::clone(&app)));
-        let mut surfaces = vec![orch_surface_agui::routes(Arc::clone(&app), keepalive)];
+        let mut surfaces = vec![orch_surface_agui::routes(
+            Arc::clone(&app),
+            keepalive,
+            lifetime,
+        )];
         surfaces.extend(extra);
         let router =
             orch_api::router_with_surfaces(app, api, surfaces).layer(axum::middleware::from_fn({

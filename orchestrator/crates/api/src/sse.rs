@@ -9,40 +9,43 @@ use futures::{Stream, StreamExt as _};
 use orch_core::Timestamp;
 use orch_ports::Principal;
 
-/// The longest a stream stays open on one credential: an hour (ADR 0033). A client reconnects with
-/// `Last-Event-ID` (the connect stream is resumable) and the proxy's session gives it a fresh token.
+/// The longest a stream stays open on one credential, whatever the deployment's lifetime says: an
+/// hour (ADR 0033). A client reconnects with `Last-Event-ID` (the connect stream is resumable) and
+/// the proxy's session gives it a fresh token.
 pub const MAX_STREAM: Duration = Duration::from_secs(3600);
 
 /// The leeway of a token's `exp` (60 seconds, as the authenticator allows it): a stream may outlive
 /// the expiry by that much and no more.
 pub const STREAM_LEEWAY: Duration = Duration::from_secs(60);
 
-/// How long a stream may stay open for `principal`, at `now` (ADR 0033): until the credential's
-/// expiry plus the leeway, and at most [`MAX_STREAM`]. `None` for a credential that does not run
-/// out (the proxy header, a static token): such a stream is not bounded here, only by the
-/// process going away.
-pub fn stream_budget(principal: &Principal, now: Timestamp) -> Option<Duration> {
-    let expires_at = principal.expires_at?;
-    let left = expires_at
-        .as_second()
-        .saturating_add(i64::try_from(STREAM_LEEWAY.as_secs()).unwrap_or(0))
-        .saturating_sub(now.as_second());
-    Some(Duration::from_secs(u64::try_from(left.max(0)).unwrap_or(0)).min(MAX_STREAM))
+/// How long a stream may stay open for `principal`, at `now`, on a deployment whose streams live
+/// `lifetime` (ADR 0082, amending ADR 0033 section 6): the shortest of the credential's remaining
+/// time plus the leeway, [`MAX_STREAM`], and the lifetime.
+///
+/// It is always bounded. A credential that does not run out (the proxy header, a static token) is
+/// bounded by the lifetime like every other one: the stream ends, the client reopens with the last
+/// `id:` it saw, and nothing of the log is lost.
+pub fn stream_budget(principal: &Principal, now: Timestamp, lifetime: Duration) -> Duration {
+    let by_expiry = principal.expires_at.map_or(MAX_STREAM, |expires_at| {
+        let left = expires_at
+            .as_second()
+            .saturating_add(i64::try_from(STREAM_LEEWAY.as_secs()).unwrap_or(0))
+            .saturating_sub(now.as_second());
+        Duration::from_secs(u64::try_from(left.max(0)).unwrap_or(0))
+    });
+    by_expiry.min(MAX_STREAM).min(lifetime)
 }
 
-/// `stream`, ended when `budget` has passed (never, for `None`). The events already sent stay
-/// sent: the client resumes from the last `id:` it saw.
-pub fn bounded<S: Stream>(stream: S, budget: Option<Duration>) -> impl Stream<Item = S::Item> {
+/// `stream`, ended when `budget` has passed. The events already sent stay sent: the client resumes
+/// from the last `id:` it saw.
+pub fn bounded<S: Stream>(stream: S, budget: Duration) -> impl Stream<Item = S::Item> {
     // A timer that is due at once may still be pending when the stream is first polled: a budget
     // of nothing ends the stream before its first item, not after a few.
-    let spent = budget.is_some_and(|budget| budget.is_zero());
+    let spent = budget.is_zero();
     stream
         .take_while(move |_| std::future::ready(!spent))
         .take_until(async move {
-            match budget {
-                Some(budget) => tokio::time::sleep(budget).await,
-                None => std::future::pending::<()>().await,
-            }
+            tokio::time::sleep(budget).await;
         })
 }
 
@@ -135,48 +138,56 @@ mod tests {
     }
 
     #[test]
-    fn a_credential_that_does_not_run_out_does_not_bound_a_stream() {
-        assert_eq!(stream_budget(&expiring(None), at(1_000)), None);
+    fn a_credential_that_does_not_run_out_is_bounded_by_the_lifetime_too() {
+        // The case that used to be unbounded (a proxy header, a static token): ADR 0082.
+        assert_eq!(
+            stream_budget(&expiring(None), at(1_000), Duration::from_secs(60)),
+            Duration::from_secs(60)
+        );
+        // An hour is still the ceiling, whatever the lifetime says.
+        assert_eq!(
+            stream_budget(&expiring(None), at(1_000), Duration::from_secs(7200)),
+            MAX_STREAM
+        );
     }
 
     #[test]
-    fn a_stream_lasts_until_the_expiry_and_the_leeway_and_at_most_an_hour() {
+    fn a_stream_lasts_until_the_expiry_the_leeway_the_lifetime_or_an_hour_whichever_is_shortest() {
         let now = 1_000_000;
-        let budget = |exp: i64| {
-            stream_budget(&expiring(Some(exp)), at(now))
-                .unwrap()
-                .as_secs()
+        let budget = |exp: i64, lifetime: u64| {
+            stream_budget(&expiring(Some(exp)), at(now), Duration::from_secs(lifetime)).as_secs()
         };
-        // Five minutes left: five minutes and the leeway.
-        assert_eq!(budget(now + 300), 360);
-        // Expired within the leeway: what is left of it.
-        assert_eq!(budget(now - 10), 50);
+        // Five minutes left, on a deployment whose streams live a minute: the lifetime.
+        assert_eq!(budget(now + 300, 60), 60);
+        // Five minutes left, on one whose streams live ten minutes: five minutes and the leeway.
+        assert_eq!(budget(now + 300, 600), 360);
+        // Expired within the leeway: what is left of it, shorter than the lifetime.
+        assert_eq!(budget(now - 10, 60), 50);
         // Expired beyond it (a clock apart from the authenticator's): none.
-        assert_eq!(budget(now - 61), 0);
-        assert_eq!(budget(now - 100_000), 0);
-        // A token for a day is still an hour.
-        assert_eq!(budget(now + 86_400), 3600);
-        assert_eq!(budget(now + 3600 - STREAM_LEEWAY.as_secs() as i64), 3600);
-        assert_eq!(budget(253_402_207_200 - 100), 3600);
+        assert_eq!(budget(now - 61, 60), 0);
+        assert_eq!(budget(now - 100_000, 60), 0);
+        // A token for a day on a deployment whose streams live two hours is still an hour.
+        assert_eq!(budget(now + 86_400, 7200), 3600);
+        assert_eq!(
+            budget(now + 3600 - STREAM_LEEWAY.as_secs() as i64, 7200),
+            3600
+        );
+        assert_eq!(budget(253_402_207_200 - 100, 7200), 3600);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_bounded_stream_ends_at_the_budget_and_an_unbounded_one_does_not() {
+    async fn a_bounded_stream_ends_at_its_budget() {
         let ticks = || {
             futures::stream::unfold(0_u32, |n| async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 Some((n, n + 1))
             })
         };
-        let seen: Vec<u32> = bounded(ticks(), Some(Duration::from_millis(3500)))
+        let seen: Vec<u32> = bounded(ticks(), Duration::from_millis(3500))
             .collect()
             .await;
         assert_eq!(seen, [0, 1, 2]);
-        let none: Vec<u32> = bounded(ticks(), Some(Duration::ZERO)).collect().await;
+        let none: Vec<u32> = bounded(ticks(), Duration::ZERO).collect().await;
         assert!(none.is_empty());
-        let mut open = Box::pin(bounded(ticks(), None));
-        for n in 0..10 {
-            assert_eq!(open.next().await, Some(n));
-        }
     }
 }
