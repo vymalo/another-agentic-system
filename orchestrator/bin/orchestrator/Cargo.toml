@@ -124,6 +124,7 @@ futures.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 # The token issuer on a local port that the tests of `auth.mode: jwt` ask the binary to trust.
 orch-auth-jwt = { workspace = true, features = ["testkit"] }
+orch-pg-connect.workspace = true
 orch-testsupport.workspace = true
 reqwest.workspace = true
 sha2.workspace = true

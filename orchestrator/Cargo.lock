@@ -3090,6 +3090,7 @@ dependencies = [
  "orch-credential-broker",
  "orch-log-filter",
  "orch-model-openai",
+ "orch-pg-connect",
  "orch-ports",
  "orch-registry-platform",
  "orch-secrets-pg",
