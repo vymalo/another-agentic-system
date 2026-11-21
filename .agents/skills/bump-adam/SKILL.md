@@ -14,7 +14,7 @@ to prevent:
 | `dev/coder/UPSTREAM` | `commit=<40-hex>`, the commit the vendored files are copies of |
 | `dev/coder/{agent,wiremock,git-server,coder-agent}/` | byte-for-byte copies (the file list and the upstream path of each are in `UPSTREAM` and `dev/coder/check-vendored.sh`) |
 | `compose.yaml`, `x-adam-image` | `ghcr.io/vymalo/another-adam-rs/coder:sha-<7>@sha256:<digest>`, one pin for the coder and for every agent that is only a folder |
-| `orchestrator/Cargo.toml` (+ `Cargo.lock`) | seven `rev = "<40-hex>"` lines (`adam-host`, `adam-core`, `adam-runtime`, `adam-a2a`, `adam-a2a-runtime`, `adam-store-postgres`, `adam-notify-postgres`), used by the off-by-default feature `agent-local` (ADR 0015) |
+| `orchestrator/Cargo.toml` (+ `Cargo.lock`) | one `rev = "<40-hex>"` line per adam-rs crate it names, eight since `7ac3281` (`adam-host`, `adam-core`, `adam-runtime`, `adam-a2a`, `adam-a2a-runtime`, `adam-store-postgres`, `adam-notify-postgres`, `adam-postgres`), used by the off-by-default feature `agent-local` (ADR 0015) |
 | `.agents/skills/adam-*/` and `skills-lock.json` | the six `adam-*` skills, vendored from adam-rs and pinned per skill (`commit`, format 2); the skills CLI writes them and a hand edit is overwritten by the next update |
 
 The worked example is the bump `af1e715` to `b64e3fe`, vymalo/another-agentic-system#136 (two commits on its
@@ -69,13 +69,14 @@ finds it; `git show <sha>` is the shape of a bump.
    and update the comment block above it (the manifest facts, the label, the adam-rs pull requests the
    image now contains). Do not add a second line that names an image of that repository: the
    services take `*adam-image`.
-6. **Move the crates.** Replace the `rev =` of **all seven** lines in `orchestrator/Cargo.toml` with B's
+6. **Move the crates.** Replace the `rev =` of **every** line in `orchestrator/Cargo.toml` that names
+   `another-adam-rs` (`grep -c 'another-adam-rs' orchestrator/Cargo.toml`: eight at `7ac3281`) with B's
    full sha (a mix gives two copies of the same traits), then update the lockfile:
 
    ```sh
    cd orchestrator
    cargo update -p adam-host --precise <B, 40-hex>      # and the same for each other adam crate if the lock still names A
-   grep -c 'another-adam-rs?rev=<B>' Cargo.lock          # 7 packages; none may still say A
+   grep -o 'another-adam-rs?rev=[0-9a-f]*' Cargo.lock | sort | uniq -c   # one rev only, B (11 packages at 7ac3281); none may still say A
    ```
 
    The bump to `b64e3fe` did this and the lockfile also let `tempfile` resolve a newer `getrandom`
