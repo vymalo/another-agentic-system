@@ -4,7 +4,7 @@
 # even as a dev-dependency or through another crate's dependencies. The lockfile is the whole tree.
 #
 # Usage: tools/sqlx-out-check.sh [path to Cargo.lock]     (default: orchestrator/Cargo.lock)
-# Exit 0 = no package named sqlx or sqlx-*; exit 1 = one is there (each is named).
+# Exit 0 = no package named sqlx, sqlx-* or *-sqlx; exit 1 = one is there (each is named).
 
 set -eu
 
@@ -15,7 +15,9 @@ if [ ! -f "$LOCK" ]; then
   exit 1
 fi
 
-found=$(sed -n 's/^name = "\(sqlx\(-[^"]*\)\{0,1\}\)"$/\1/p' "$LOCK" | sort -u)
+# sqlx itself, its crates (sqlx-core, sqlx-postgres, ...) and a wrapper named after it (jiff-sqlx, sea-query-sqlx):
+# a package whose name has `sqlx` as one of its dash-separated words.
+found=$(sed -n 's/^name = "\([^"]*\)"$/\1/p' "$LOCK" | grep -E '(^|-)sqlx(-|$)' | sort -u || true)
 if [ -n "$found" ]; then
   echo "::error::$LOCK holds sqlx again; the orchestrator's Postgres crates use tokio-postgres (orch-pg-connect, orch-pg-migrate):" >&2
   echo "$found" >&2
