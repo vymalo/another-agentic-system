@@ -114,8 +114,8 @@ async fn the_screens_catalog_is_recorded_once_per_digest_and_the_snapshot_names_
         .iter()
         .map(|c| c["version"].as_i64().unwrap())
         .collect();
-    assert_eq!(versions.first(), Some(&1));
-    assert_eq!(versions.last(), Some(&2));
+    assert_eq!(versions.first(), Some(&9));
+    assert_eq!(versions.last(), Some(&10));
     assert!(versions.windows(2).all(|w| w[0] <= w[1]), "{versions:?}");
     assert_eq!(chat.thread(&thread).await["state"], "done");
 }
