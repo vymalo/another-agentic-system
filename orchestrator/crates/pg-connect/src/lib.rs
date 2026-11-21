@@ -240,8 +240,8 @@ impl PgOptions {
 
     /// A pool of at most `max_size` connections (at least one), each made on demand and checked
     /// with an empty query before it is handed out again, as sqlx's `test_before_acquire` pinged
-    /// it. `wait` bounds both a wait for a free connection and the making of a new one, as sqlx's
-    /// `acquire_timeout` did. Unlike sqlx's, a connection is not closed after ten idle minutes
+    /// it. `wait` bounds a wait for a free connection, the making of a new one and that check, as
+    /// sqlx's `acquire_timeout` did. Unlike sqlx's, a connection is not closed after ten idle minutes
     /// or thirty in all.
     ///
     /// # Errors
@@ -259,6 +259,8 @@ impl PgOptions {
             .max_size(max_size.max(1))
             .wait_timeout(Some(wait))
             .create_timeout(Some(wait))
+            // the ping of `Verified` on a socket that is half open must not hang a call
+            .recycle_timeout(Some(wait))
             .runtime(Runtime::Tokio1)
             .build()
             .map_err(|e| ConnectError::Pool(e.to_string()))
