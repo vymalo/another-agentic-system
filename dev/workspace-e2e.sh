@@ -18,8 +18,10 @@
 # POST /agui/agents/adam, the thread's state from GET /api/threads/{id}, its frames from GET /agui/threads/{id}/connect?mode=run,
 # its log from GET /api/threads/{id}/export. The coder's model is `mock-coder`: a task that carries `[mock:create-repo]` or
 # `[mock:second-repo]` selects the script (dev/coder/wiremock/mock-openai/mappings/coder-script.json, vendored from adam-rs).
-# The catalog it sends is the one the web ships (web/src/features/chat/lib/a2ui/catalog/catalog.json and catalog.lock.json), as
-# `forwardedProps["vymalo.uiCatalog"]` of the first run; the thread holds it afterwards.
+# The catalog it sends is the one the web ships (web/src/features/chat/lib/a2ui/catalog/catalog.json and catalog.lock.json: a
+# `ui-catalog/v2` document, its `protocolVersion` "1.0"), as `forwardedProps["vymalo.uiCatalog"]` of the first run; the thread holds
+# it afterwards. The form is itself the proof that the orchestrator sent the coder `a2uiRendererCapabilities["1.0"]`: an adam agent
+# draws nothing without it.
 #
 # create-repo (the person says yes): "Write a fib.sh ... I'll give you a repo later." The coder builds the project in a scratch
 # project and, with no repository named, stops with a question: the thread is `blocked`, and nothing was pushed, opened or created
@@ -121,6 +123,13 @@ for f in "$catalog_file" "$catalog_lock"; do
 done
 catalog_version=$(jq -r '.version' "$catalog_lock")
 catalog_digest=$(jq -r '.digest' "$catalog_lock")
+protocol=$(jq -r '.protocolVersion // "nothing"' "$catalog_file")
+if [ "$protocol" = "1.0" ]; then
+  ok "the screen's catalog is a ui-catalog/v2 document (protocolVersion \"1.0\")"
+else
+  bad "the screen's catalog says protocolVersion '$protocol', want \"1.0\": a v0.9 catalog cannot be drawn by A2UI v1.0 (docs/api/ui-catalog-v2.md)"
+  finish
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -232,6 +241,7 @@ action_message() {
 read_surfaces() {
   surfaces=$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "a2ui-surface") | .messageId] | unique | length' "$events" 2>/dev/null || echo '?')
   _ops=$(jq -c '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "a2ui-surface")] | last | .content.a2ui_operations // []' "$events" 2>/dev/null || echo '[]')
+  ops_versions=$(printf '%s' "$_ops" | jq -r 'map(.version // "none") | unique | join(" ")')
   surface_id=$(printf '%s' "$_ops" | jq -r '[.[] | .createSurface? // empty] | first | .surfaceId // empty')
   choices=$(printf '%s' "$_ops" | jq -c '[.[] | .updateComponents? // empty | .components[]? | select(.component == "Choices")]')
   choices_id=$(printf '%s' "$choices" | jq -r '.[0].id // empty')
@@ -244,6 +254,11 @@ expect_consent() {
   read_surfaces
   if [ "$surfaces" = 1 ] && [ -n "$surface_id" ] && [ "$(printf '%s' "$choices" | jq -r 'length')" = 1 ]; then
     ok "$1: the thread waits on one a2ui-surface with one Choices"
+    if [ "$ops_versions" = "1.0" ]; then
+      ok "$1: every operation of the surface says \"version\": \"1.0\""
+    else
+      bad "$1: the operations say version '${ops_versions:-nothing}', want only \"1.0\" (operations: $(printf '%s' "$_ops" | head -c 400))"
+    fi
     if printf '%s' "$choices" | jq -e '.[0].questions | length == 1 and .[0].id == "consent" and ([.[0].options[].value] == ["yes", "no"])' >/dev/null 2>&1; then
       ok "$1: the form asks one question, consent, and offers yes and no"
     else

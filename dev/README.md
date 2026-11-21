@@ -643,7 +643,7 @@ The first entry of [`agents.yaml`](agents.yaml) is the default agent, and it is
 [adam-coder](https://github.com/vymalo/another-adam-rs) ([ADR 0014](../docs/decisions/0014-adam-coder-default-agent-over-a2a.md)),
 **shown as Adam** (id `adam`, name `Adam`, alias `coder`: [ADR 0049](../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md);
 the compose service, the image, `CODER_A2A_TOKEN` and `dev/coder/` keep the name `coder`; what the vendored folder says in its own words is "I'm Adam"
-since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `7418467`):
+since adam-rs's own rename, adam-rs ADR 0021, is in the pin, `e2bfda9`):
 `GET /api/agents` lists it first and the chat UI preselects it. The two WireMock mocks stay in the
 file, after it, to try the other thread endings.
 
@@ -1365,7 +1365,7 @@ model request holds the cancelled task's first message in front of the new one (
 
 Since adam-rs `d411249` ([#59](https://github.com/vymalo/another-adam-rs/pull/59), MVP slice 3 of [`docs/mvp.md`](../docs/mvp.md)) the coder, and
 every agent served by `adam-agent`, draws from the component catalog of the person's screen
-([ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md)): `ask_user`
+([ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [`ui-catalog-v2.md`](../docs/api/ui-catalog-v2.md)): `ask_user`
 takes `choices` (up to eight questions of two to eight options), and the coder asks several questions at once as **one form** instead of a
 paragraph, `show` and `ui_catalog` draw other blocks. The person answers all of them with one submit, which is one action; the answers come back as the result of the
 tool call, `- db: pg` per question, which the model quotes in its next words.
@@ -1373,7 +1373,7 @@ tool call, `- db: pg` per question, which the model quotes in its next words.
 | What | Where |
 |---|---|
 | The catalog | the web's own, `web/src/features/chat/lib/a2ui/catalog/catalog.json` and its `catalog.lock.json`. The web sends it under `forwardedProps["vymalo.uiCatalog"]` on the run that opens a thread, and the orchestrator hands it to the agent (inline on the first message, by reference after). `dev/choices-e2e.sh` reads the same two files |
-| What the coder says it can do | its card lists A2UI v0.9.1 with `acceptsInlineCatalogs`, `ui-catalog/v1` and `thread-tools/v1`; the orchestrator reads the card at every send (ADR 0008), so nothing is configured for it here |
+| What the coder says it can do | its card lists A2UI v1.0 with `acceptsInlineCatalogs`, `ui-catalog/v2` and `thread-tools/v1` (v1.0 and v2 since adam-rs `e2bfda9`, ADR 0075: the stack speaks no other dialect, and an agent whose card lists the retired v0.9.1 URI gets words); the orchestrator reads the card at every send (ADR 0008), so nothing is configured for it here |
 | The thread's own tools | `get_ui_catalog` at `http://orchestrator:8080/thread-tools/<id>/mcp` ([above](#the-thread-tools)): plain `http` between containers, so the coder has `MCP_ALLOW_INSECURE: "true"` in `compose.yaml` (so have the folder agents, in `x-adam-agent-env`). Without it the grant is refused, the agent has no thread tools, and a catalog that comes only by reference (a later message, a coder that has not kept it) cannot be fetched: the coder asks in text, with the options listed |
 | The mock model | `dev/coder/wiremock/mock-openai/mappings/coder-choices.json` (vendored, [`coder/UPSTREAM`](coder/UPSTREAM)): a task that holds `[mock:choices]` makes `mock-coder` call `ask_user` with three questions (database, login, where it runs); a request that holds the call's result and `db: pg` gets "Going with Postgres, Keycloak and Compose." |
 | The scenario | `dev/choices-e2e.sh`, `choices` in `dev/e2e-all.sh` |
@@ -1385,7 +1385,7 @@ sequenceDiagram
   participant C as coder
   participant M as mock-openai
   U->>O: run 1: "[mock:choices] ...", forwardedProps vymalo.uiCatalog (the web's catalog)
-  O->>C: SendStreamingMessage: ui-catalog/v1 (inline), A2UI capabilities, thread-tools/v1 {url, token}
+  O->>C: SendStreamingMessage: ui-catalog/v2 (inline), a2uiRendererCapabilities["1.0"], thread-tools/v1 {url, token}
   C->>O: tools/list at the thread's endpoint (plain http, MCP_ALLOW_INSECURE)
   C->>M: chat completions, model mock-coder, tools ask_user, show, ui_catalog (get_ui_catalog hidden)
   M-->>C: ask_user with three questions
@@ -1428,7 +1428,7 @@ Since adam-rs `c13ddf1` ([#60](https://github.com/vymalo/another-adam-rs/pull/60
 folder tells its agent to show what it found: after it searched it reads which components the screen has (`ui_catalog`) and, when there is a `Cards`, calls `show`
 with one `Cards` block of the sources it used (title, site, a sentence, the link exactly as the search returned it, tags), and a `Mermaid` block when the question
 is about how things relate. The blocks come back as **one surface**, a Column of a Text, the Cards and the Mermaid, under the screen's own catalogId; the words still
-carry every link ([ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [`ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md) version 3: the web draws
+carry every link ([ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [`ui-catalog-v2.md`](../docs/api/ui-catalog-v2.md) version 9: the web draws
 the cards and the graph, and a surface whose card has no title or a link that is not a plain `http(s)` URL is refused, visibly).
 
 <picture>
@@ -1448,7 +1448,7 @@ the cards and the graph, and a surface whose card has no title or a link that is
 | The folder | [`agents/researcher/agent/instructions.md`](agents/researcher/agent/instructions.md): the stack's own text plus adam-rs's paragraph "Show what you found, when the screen can draw it" and the card's skill line, as in adam-rs's `dev/agents/researcher/agent/instructions.md` at `c13ddf1`. Not vendored (the folder is ours and `check-vendored.sh` does not read it): the paragraph is copied by hand when adam-rs changes it. `mcp.json` is ours (it names the mock web search). The folder is read at startup: `docker compose --profile app up -d researcher` after an edit |
 | The sources | the mock web search's keyword `async` ([`results.json`](mock-mcp-search/results.json)): three results, `https://example.org/mock-search/async-book`, `/async-futures`, `/async-tokio` |
 | The script | `mock-researcher` with `[mock:cards]` in the question: search for `async programming`, `ui_catalog`, `show` (a Text, three cards, a `graph TD`), then the words that name the links ([above](#several-agents)) |
-| The catalog | the web's own (`catalog.json` and its lock, version 3): `dev/cards-e2e.sh` sends it as the web does |
+| The catalog | the web's own (`catalog.json` and its lock, version 9, a `ui-catalog/v2` document whose `protocolVersion` is `"1.0"`): `dev/cards-e2e.sh` sends it as the web does |
 | The scenario | `dev/cards-e2e.sh`, `cards` in `dev/e2e-all.sh` |
 
 ```mermaid
@@ -1458,8 +1458,8 @@ sequenceDiagram
   participant R as researcher (adam-agent)
   participant M as mock-model
   participant S as mock-mcp-search
-  U->>O: run 1: "[mock:cards] what is async rust?", forwardedProps vymalo.uiCatalog (version 3)
-  O->>R: SendStreamingMessage: ui-catalog/v1 (inline), A2UI capabilities, thread-tools/v1
+  U->>O: run 1: "[mock:cards] what is async rust?", forwardedProps vymalo.uiCatalog (version 9)
+  O->>R: SendStreamingMessage: ui-catalog/v2 (inline), a2uiRendererCapabilities["1.0"], thread-tools/v1
   R->>M: chat completions, model mock-researcher
   M-->>R: search__web_search "async programming"
   R->>S: tools/call web_search
@@ -1469,8 +1469,8 @@ sequenceDiagram
   R-->>O: artifact ui (application/a2ui+json) under the catalog's id, then the words
   O-->>U: one agent message and one a2ui-surface, RUN_FINISHED
   U->>O: run 2: the same thread from an older screen (no catalog sent)
-  O-->>U: the thread's catalog is still version 3, no new ui_catalog in the log
-  U->>O: run 3: a new thread from a screen whose catalog has no Cards (version 2)
+  O-->>U: the thread's catalog is still version 9, no new ui_catalog in the log
+  U->>O: run 3: a new thread from a screen whose catalog has no Cards (one version down)
   O->>R: the older catalog inline
   R-->>O: show is refused, the words only
   O-->>U: no a2ui-surface, the three links in the words

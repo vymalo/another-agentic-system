@@ -109,17 +109,23 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-19 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-7418467` is one linux/amd64 OCI manifest (3.13 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 74184670e082766990aff5393ab84ce7f49829b6, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `ddef35e` plus adam-rs #140 to #208 (ADR 0014's status note
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-20 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-e2bfda9` is one linux/amd64 OCI manifest (3.13 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision e2bfda93429bb36895cc0fdb318f3fdb67bd3451, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `7418467` plus adam-rs #209 to #253 (ADR 0014's status note
+# of 2026-11-21 lists what this stack sees), the A2UI v1.0 cutover among them (adam-rs #251, adam-rs ADR 0056; ADR 0075 and epic #380 here):
+# every adam agent writes A2UI v1.0 only (`"version": "1.0"`, the extension URI `https://a2ui.org/a2a-extension/a2ui/v1.0`, the basic catalog
+# `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`), reads only `ui-catalog/v2` documents, and draws nothing in a turn whose
+# message carries no `a2uiRendererCapabilities["1.0"]` — so a card that still lists the retired v0.9.1 URI gets words, never a form. The run
+# store moves to schema version 6 (the store and the notifier on tokio-postgres, sqlx out, adam-rs ADR 0053), migrated at startup by the
+# coder, the chat and the browser. No vendored file changed. `7418467` was `ddef35e` plus adam-rs #140 to #208 (ADR 0014's status note
 # of 2026-11-19 lists what this stack sees): the coder no longer uses OpenCode (#145: `delegate_to_opencode` is gone, the scripted coder writes
 # `hello.txt` with `write_file`, and OPENCODE_MODEL is ignored, so nothing here sets it), paged tools, a plan, skills, commands and project
 # context (adam-rs ADR 0044), the tool calls of a turn at the same time (ADR 0049: MCP tools run together unless `"parallel": false`, which the
 # browser's mcp.json now says), sessions and `child-sessions/v1` on the card of an agent whose root has a subagent, the coder and the chat here (ADR 0045, #198: the orchestrator
 # activates what a card lists, ADR 0072 here), file bytes out of the run (schema v5 part 1, #204, migrated at startup), credentials per call
 # (ADR 0058, #200), static musl binaries (#201) and the dev stack without Podman (#208: the `devbox` seeds and the OpenCode script left the
-# vendored files). A2UI stays v0.9.1 (adam-rs ADR 0056 is a decision, not built). `ddef35e` was `8847c28` plus adam-rs #116 (an asked coder hears the
+# vendored files). A2UI stayed v0.9.1 there (adam-rs ADR 0056 was a decision, not built). `ddef35e` was `8847c28` plus adam-rs #116 (an asked coder hears the
 # repositories the person named only in the words the orchestrator carries beside the grant of the ask's message, `person.said` of the
 # thread-tools metadata, read into the context key `vymalo.person`: never the ask's text, and nothing without the member; the agent side of
 # ADR 0026's fourth note here, #271), with adam-rs's own bump commits; no vendored file changed. `8847c28` is `5581d40` plus adam-rs #108 (a child's notice no longer keeps
@@ -159,7 +165,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-7418467@sha256:980c0ffba570025edbd7873813d2cba9a616da529d65a9720b108c94499f4cd9
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-e2bfda9@sha256:0541ee92cd14904652d38a569cf7d263ab0b97bbdddc7f06947ccf4e1957f883
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
@@ -680,7 +686,8 @@ services:
   # missing-toolchain report; since e9bfea3 a stop without a pull request is a question and it works only on a
   # repository the person named; since ae540e9 it reports its checks as a `checks` artifact. Since f882b91 the same
   # image also carries `adam-agent`, which the two services below run (nothing of the coder changed). Since d411249 the coder asks
-  # with Choices: its card lists A2UI v0.9.1, `ui-catalog/v1` and `thread-tools/v1`, so the orchestrator sends it the screen's catalog
+  # with Choices: its card lists A2UI v1.0, `ui-catalog/v2` (both since e2bfda9: v0.9.1 and `ui-catalog/v1` before it) and `thread-tools/v1`, so
+  # the orchestrator sends it the screen's catalog
   # and the address of the thread's own tools (`MCP_ALLOW_INSECURE` below), and `ask_user` may carry several questions at once
   # that the person answers as one form (dev/choices-e2e.sh; dev/README.md, "Choices"). `adam-agent` lists the same extensions.
   # Since cf6ddbb the coder reports its work as steps (`steps/v1`: a step per tool call; until 7418467 OpenCode was a sub-agent step with

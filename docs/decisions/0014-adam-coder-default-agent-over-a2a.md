@@ -787,3 +787,47 @@ stack sees of it, read as `adam-upgrade` says (`git log --format='%h %s' ddef35e
   workflow of the pull request that pins it (the coder's new script, the folder agents with skills, plans and parallel calls on their
   scripted models, the orchestrator activating `child-sessions/v1` on real cards); the chart's render check (`deploy.yml`); the Postgres
   cases of the orchestrator's tests; the chat on netcup on the new image.
+
+### Status note, 2026-11-21: A2UI v1.0 only, the cutover reaches the dev stack (adam-rs e2bfda9)
+
+The pin moves to adam-rs `e2bfda9`, which is `7418467` plus adam-rs #209 to #253 and their bump commits.
+`git log --format='%h %s' 7418467..e2bfda9 | grep '!:'` is empty: no commit of the range says it breaks. What this stack sees of it,
+read as `adam-upgrade` says:
+
+- **A2UI v1.0, only** (#251, adam-rs ADR 0056; [ADR 0075](0075-a2ui-v1-0-cutover.md) and [epic #380](https://github.com/vymalo/another-agentic-system/issues/380)
+  here): the card of every adam agent lists `https://a2ui.org/a2a-extension/a2ui/v1.0` and
+  `https://agents.vymalo.com/a2a/extensions/ui-catalog/v2` (the `…/a2ui/v0.9.1` and `ui-catalog/v1` names are gone), every surface says
+  `"version": "1.0"` and names v1.0's basic catalog, a catalog is read only as a `ui-catalog/v2` document
+  (`{catalogId, protocolVersion: "1.0", components}`), an agent **draws nothing** in a turn whose message carries no
+  `a2uiRendererCapabilities["1.0"]`, and an action is read only when it says `"1.0"` (an older A2UI part is read as JSON text). The
+  orchestrator already sends the capabilities on every message, steers and actions included (S1 of the epic, `fe3e9388`), so a card that
+  lists v1.0 keeps its forms and cards; a card that still listed v0.9.1 would get words. The stack's mocks and folder agents speak no
+  A2UI on the wire, so none of them needed a change.
+- **The run store moves to schema version 6** (the store and the notifier on tokio-postgres, sqlx out, adam-rs ADR 0053), migrated at
+  startup by the coder, the chat and the browser.
+- **Re-copied: nothing.** `git diff --stat 7418467 e2bfda9 -- dev/wiremock dev/git-server dev/coder-agent bin/adam-coder/agent` is empty,
+  so no vendored file changed and the skill's step 3 copied none; only `commit=` in `dev/coder/UPSTREAM` moved.
+- **The dev stack moves with it.** `compose.yaml`'s `x-adam-image` and its comment block; the chart's `chat.image`
+  (`deploy/chart/values.yaml`, which the chat and the browser both take) and its comment, and the `chat.image` row of
+  `deploy/chart/README.md`. `dev/cards-e2e.sh`, `dev/choices-e2e.sh`, `dev/artifact-e2e.sh`, `dev/workspace-e2e.sh` and
+  `dev/delete-e2e.sh` now assert the v1.0 extension URI, `"version": "1.0"` on every operation of every surface, and the
+  `ui-catalog/v2` document the web ships (`protocolVersion` `"1.0"`; delete asserts the catalog the thread's log recorded);
+  `dev/README.md` says v1.0 where it described v0.9.1.
+- **The crates do NOT move, and that is a deviation from the skill's four places, named here.** S3 changes no Rust, and no dev
+  scenario uses the `agent-local` feature (the one agent it hosts is `echo`, which speaks no A2UI). The range rewrites
+  `crates/adam-store-postgres` (1841 lines) and `crates/adam-runtime` (thousands: the store on tokio-postgres, the head and the
+  worker), so porting `orch-agent-adam` is a slice of its own, not this one. **The residual:** a build with `--features agent-local`
+  still links adam at `7418467`, i.e. an adam that advertises the retired v0.9.1 URI, which the orchestrator (v1.0 only) no longer
+  detects: a locally hosted A2UI agent would answer in words. Nothing in the stack does that today, and the seven `rev` lines move
+  when that slice lands.
+- *Verified 2026-11-21* (anonymous ghcr API, HTTP 200): `coder:sha-e2bfda9` is one `linux/amd64` OCI image manifest (no index; 3.13 GB
+  of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`, label `org.opencontainers.image.revision`
+  `e2bfda93429bb36895cc0fdb318f3fdb67bd3451`, digest `sha256:0541ee92...` (the registry's `Docker-Content-Digest` and the sha-256 of the
+  manifest it returned). `dev/coder/check-vendored.sh` passes (`vendored files match vymalo/another-adam-rs@e2bfda9`);
+  `docker compose --profile '*' config -q` is clean, with `compose.live.yaml` and `dev/compose.github-app.yaml` too;
+  `dev/check-mocks.sh` (178 checks) and `dev/check-agent-mocks.sh` (225) pass against the stack's mocks;
+  `sh deploy/chart/tests/render-check.sh` passes on the new `chat.image`; `docs-check` says `docs OK`.
+- *Unverified where this was written* (the full `app` profile was not brought up: a 2.9 GB image and a long run): the five scenarios in containers, first run by the
+  Coder E2E workflow of the pull request that pins it (the coder's form on v1.0, the researcher's cards and graph, the artifact
+  surface, the workspace's consent forms, the delete's catalog); the chart deployed by `deploy.yml`; the chat on netcup on the new
+  image.
