@@ -5,15 +5,13 @@
 //! Skipped unless `ORCH_TEST_DATABASE_URL` is set.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::str::FromStr as _;
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use orch_agent_adam::{DIRECT_CONNECTIONS, LocalAgents, LocalKind, LocalOptions};
+use orch_agent_adam::{LocalAgents, LocalKind, LocalOptions};
 use orch_core::{AgentId, AgentTaskState};
+use orch_pg_connect::PgOptions;
 use orch_ports::{AgentClient as _, AgentEndpoint, SendContent, SendRequest};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Connection as _, PgConnection, PgPool};
 use tokio_util::sync::CancellationToken;
 
 const WITHIN: Duration = Duration::from_secs(15);
@@ -32,6 +30,21 @@ fn with_database(url: &str, database: &str) -> String {
     format!("{}/{}{}", &url[..path], database, &url[query..])
 }
 
+/// `url` whose sessions are named `app`, as a deployment would name them: in the URL, which both
+/// readers of a connection string (the pools' and the listener's) take.
+fn named(url: &str, app: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}application_name={app}")
+}
+
+async fn connect(url: &str) -> tokio_postgres::Client {
+    url.parse::<PgOptions>()
+        .unwrap()
+        .connect()
+        .await
+        .expect("connect")
+}
+
 async fn database() -> Option<Database> {
     let url = std::env::var("ORCH_TEST_DATABASE_URL")
         .ok()
@@ -44,27 +57,15 @@ async fn database() -> Option<Database> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let name = format!("t_{secs}_{}", uuid::Uuid::now_v7().simple());
-    let mut conn = PgConnection::connect(&direct).await.expect("connect");
-    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
-        .execute(&mut conn)
+    connect(&direct)
+        .await
+        .batch_execute(&format!("CREATE DATABASE \"{name}\""))
         .await
         .expect("create the database");
     Some(Database {
         url: with_database(&url, &name),
         direct_url: with_database(&direct, &name),
     })
-}
-
-async fn pool(url: &str, app: &str, max: u32) -> PgPool {
-    let options = PgConnectOptions::from_str(url)
-        .unwrap()
-        .extra_float_digits(None)
-        .application_name(app);
-    PgPoolOptions::new()
-        .max_connections(max)
-        .connect_with(options)
-        .await
-        .expect("connect the pool")
 }
 
 fn echo_request() -> SendRequest {
@@ -92,37 +93,38 @@ async fn the_tables_and_the_listener_are_the_direct_connection_and_a_run_goes_th
         eprintln!("skipped: ORCH_TEST_DATABASE_URL is not set");
         return;
     };
-    let mut observer = PgConnection::connect(&db.direct_url).await.unwrap();
+    let observer = connect(&db.direct_url).await;
     // Every DDL statement of the database, with the name of the session that ran it.
-    for statement in [
-        "CREATE TABLE ddl_audit (app text NOT NULL)",
-        "CREATE FUNCTION audit_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN \
-         INSERT INTO public.ddl_audit VALUES (current_setting('application_name')); END $$",
-        "CREATE EVENT TRIGGER audit_ddl ON ddl_command_end EXECUTE FUNCTION audit_ddl()",
-        "DELETE FROM ddl_audit",
-    ] {
-        sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(&mut observer)
-            .await
-            .unwrap();
-    }
+    observer
+        .batch_execute(
+            "CREATE TABLE ddl_audit (app text NOT NULL); \
+             CREATE FUNCTION audit_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN \
+             INSERT INTO public.ddl_audit VALUES (current_setting('application_name')); END $$; \
+             CREATE EVENT TRIGGER audit_ddl ON ddl_command_end EXECUTE FUNCTION audit_ddl(); \
+             DELETE FROM ddl_audit",
+        )
+        .await
+        .unwrap();
 
-    let pooled = pool(&db.url, "orch-agents-pooled", 6).await;
-    let direct = pool(&db.direct_url, "orch-agents-direct", DIRECT_CONNECTIONS).await;
+    // What the binary does: two connection strings, and `connect` makes the pools.
     let agents = std::sync::Arc::new(
-        LocalAgents::postgres_direct(
-            pooled,
-            direct,
+        LocalAgents::connect(
+            &named(&db.url, "orch-agents-pooled"),
+            Some(&named(&db.direct_url, "orch-agents-direct")),
             LocalOptions::new("direct-test"),
             &[LocalKind::Echo],
         )
+        .await
         .unwrap(),
     );
     agents.migrate().await.expect("migrate on the direct pool");
-    let apps: Vec<String> = sqlx::query_scalar("SELECT DISTINCT app FROM ddl_audit")
-        .fetch_all(&mut observer)
+    let apps: Vec<String> = observer
+        .query("SELECT DISTINCT app FROM ddl_audit", &[])
         .await
-        .unwrap();
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
     assert_eq!(apps, ["orch-agents-direct"], "the tables were made by it");
 
     let stop = CancellationToken::new();
@@ -146,17 +148,21 @@ async fn the_tables_and_the_listener_are_the_direct_connection_and_a_run_goes_th
     assert!(finished, "the echo run completed");
 
     // the notifier listens on the direct connection and on no other
-    let listening: Vec<(String,)> = sqlx::query_as(
-        "SELECT application_name FROM pg_stat_activity \
-         WHERE datname = current_database() AND pid <> pg_backend_pid() \
-         AND query ILIKE 'LISTEN%'",
-    )
-    .fetch_all(&mut observer)
-    .await
-    .unwrap();
+    let listening: Vec<String> = observer
+        .query(
+            "SELECT application_name::text FROM pg_stat_activity \
+             WHERE datname = current_database() AND pid <> pg_backend_pid() \
+             AND query ILIKE 'LISTEN%'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
     assert_eq!(
         listening,
-        [("orch-agents-direct".to_owned(),)],
+        ["orch-agents-direct"],
         "one listening session, and it is the direct one"
     );
     stop.cancel();

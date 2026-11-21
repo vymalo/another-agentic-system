@@ -32,7 +32,8 @@ pub use client::LocalAgentClient;
 pub use error::LocalAgentsError;
 
 /// The prefix of every table and every `NOTIFY` channel of the local agents' journal
-/// (`orch_agent_runs`, `orch_agent_journal`, `orch_agent_meta`; `orch_agent_events`,
+/// (`orch_agent_runs`, `orch_agent_journal`, `orch_agent_meta`, `orch_agent_push`,
+/// `orch_agent_blob`, `orch_agent_run_blob`, `orch_agent_body`; `orch_agent_events`,
 /// `orch_agent_signals`). It keeps them apart from the orchestrator's own (`threads`, `events`,
 /// `a2a_bindings`, `outbox`; `orch_thread`, `orch_outbox`, `orch_resync`) in the shared database.
 pub const TABLE_PREFIX: &str = "orch_agent_";

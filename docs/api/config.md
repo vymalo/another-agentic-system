@@ -218,7 +218,7 @@ With many replicas, each holds a pool, and Postgres has a fixed number of connec
 
 | Used for | Connection | Why |
 |---|---|---|
-| The migrations at boot (the thread store's, the secret store's, the in-process agents' journal's) | `directUrl` | the migrator (`orch-pg-migrate` for the two stores, sqlx's for the agents' journal, which takes the same lock) takes a **session** advisory lock (`pg_advisory_lock`) and holds it across its statements; a transaction-mode pooler hands the server connection to someone else between two transactions |
+| The migrations at boot (the thread store's, the secret store's, the in-process agents' journal's) | `directUrl` | the migrator (`orch-pg-migrate` for the two stores; adam-rs's own for the agents' journal, which takes a session lock of the journal's prefix, `pg_advisory_lock(hashtext(...))`, since adam-rs `7ac3281`) takes a **session** advisory lock (`pg_advisory_lock`) and holds it across its statements; a transaction-mode pooler hands the server connection to someone else between two transactions |
 | The `LISTEN` connection of the wakeup, and the in-process agents' notifier | `directUrl` | `LISTEN` is session state; a pooler in transaction mode cannot keep it |
 | `orchestrator usage backfill` and `orchestrator secrets rewrap` | `directUrl` | a command holds a session across statements and has no use for a pooler |
 | Everything else: the request pool, the dispatcher, the inbox, the purge and sweep workers, the in-process agents' journal, the `NOTIFY`s | `url` | each is a statement or a transaction |
