@@ -241,11 +241,20 @@ async fn two_prefixes_do_not_collide() {
         return;
     };
     let pool = world.pool("collide", 8).await.unwrap();
-    // The orchestrator's own tables, adam's default prefix and ours, in one schema.
-    orch_store_postgres::PgStore::from_pool(pool.clone())
-        .migrate()
+    // The orchestrator's own tables, adam's default prefix and ours, in one schema. The thread
+    // store is on tokio-postgres (#382 E1) and this pool is sqlx's, so its migrations reach the
+    // same schema through a URL that names it.
+    let schema: String = sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(&pool)
         .await
         .unwrap();
+    let url = std::env::var("ORCH_TEST_DATABASE_URL").unwrap();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    orch_store_postgres::PgStore::migrate_direct(&format!(
+        "{url}{sep}options=-c%20search_path%3D{schema}"
+    ))
+    .await
+    .unwrap();
     let ours = LocalAgents::postgres(
         pool.clone(),
         LocalWorld::options("ours"),
