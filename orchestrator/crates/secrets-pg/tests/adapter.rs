@@ -666,32 +666,6 @@ async fn real_errors_of_the_database_are_classified_as_the_table_says() {
     let alice = db.owner("alice");
     let server = credential("0123456789");
 
-    // a write the server refuses (SQLSTATE 25006): Unavailable, and no outage
-    PgSecretStore::migrate_direct(&db.pinned_direct_url())
-        .await
-        .unwrap();
-    let read_only = db
-        .pool_with(
-            "orch-secrets-read-only-put",
-            2,
-            &[("default_transaction_read_only", "on")],
-        )
-        .await;
-    let refused = PgSecretStore::from_pool(read_only, ring_k1())
-        .put(&alice, &server, &material("x"))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(refused, SecretError::Unavailable { .. }),
-        "{refused:?}"
-    );
-    assert!(!is_outage(&refused), "{refused:?}");
-    assert!(
-        std::error::Error::source(&refused)
-            .is_some_and(|s| s.to_string().contains("read-only") && s.to_string().contains("25006")),
-        "{refused:?}"
-    );
-
     // a server that refuses the connection: an outage
     let nowhere: orch_pg_connect::PgOptions = "postgres://127.0.0.1:1/none".parse().unwrap();
     let down = PgSecretStore::from_pool(
@@ -726,6 +700,42 @@ async fn real_errors_of_the_database_are_classified_as_the_table_says() {
     assert!(matches!(corrupt, SecretError::Corrupt(_)), "{corrupt:?}");
     let report = store.rewrap().await.map(|_| ()).unwrap_err();
     assert!(matches!(report, SecretError::Corrupt(_)), "{report:?}");
+}
+
+/// A write the server refuses (SQLSTATE 25006, a read-only session): `Unavailable`, no outage,
+/// and the source names the cause. A test of its own: through a pooler the read-only setting is
+/// the database's (`TestDb::pool_with`), so nothing else may use that database after it.
+#[tokio::test]
+async fn a_write_the_server_refuses_is_unavailable_and_no_outage() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let alice = db.owner("alice");
+    let server = credential("0123456789");
+    PgSecretStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .unwrap();
+    let read_only = db
+        .pool_with(
+            "orch-secrets-read-only-put",
+            2,
+            &[("default_transaction_read_only", "on")],
+        )
+        .await;
+    let refused = PgSecretStore::from_pool(read_only, ring_k1())
+        .put(&alice, &server, &material("x"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, SecretError::Unavailable { .. }),
+        "{refused:?}"
+    );
+    assert!(!is_outage(&refused), "{refused:?}");
+    assert!(
+        std::error::Error::source(&refused)
+            .is_some_and(|s| s.to_string().contains("read-only") && s.to_string().contains("25006")),
+        "{refused:?}"
+    );
 }
 
 /// A migration whose SQL the database refuses (`MigrateError::Execute`): here `user_secrets` was made
