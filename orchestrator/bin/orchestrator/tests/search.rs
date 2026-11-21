@@ -18,6 +18,7 @@ use orch_ports::{
     ThreadStore as _,
 };
 use orch_store_postgres::PgStore;
+use orch_store_postgres::sql::query;
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
 #[path = "../../../crates/store-postgres/tests/support/mod.rs"]
@@ -212,16 +213,14 @@ async fn it_indexes_the_logs_the_index_has_not_been_through_and_a_second_run_fin
     assert_eq!(wanted_title.rows.len(), 3);
     assert_eq!(wanted_message.rows.len(), 3);
     // the log as a build without the index left it
-    sqlx::query("DELETE FROM message_terms")
+    query("DELETE FROM message_terms")
         .execute(store.pool())
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE threads SET search_through = 0, title_terms = NULL, description_terms = NULL",
-    )
-    .execute(store.pool())
-    .await
-    .unwrap();
+    query("UPDATE threads SET search_through = 0, title_terms = NULL, description_terms = NULL")
+        .execute(store.pool())
+        .await
+        .unwrap();
     assert!(
         store
             .search_threads(&alice, &ask("walrus"))
@@ -273,7 +272,7 @@ async fn it_indexes_the_logs_the_index_has_not_been_through_and_a_second_run_fin
     assert_eq!(report(&first)["remaining"], 0);
 
     // a thread indexed under other folding rules waits for the backfill, which says how many remain
-    sqlx::query("UPDATE threads SET search_fold = 0 WHERE title = 'Walrus 1'")
+    query("UPDATE threads SET search_fold = 0 WHERE title = 'Walrus 1'")
         .execute(store.pool())
         .await
         .unwrap();

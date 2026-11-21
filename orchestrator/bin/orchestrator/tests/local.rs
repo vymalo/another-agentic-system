@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use orch_store_postgres::sql::query_scalar;
 use orch_testsupport::{Chat, eventually};
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
@@ -207,7 +208,7 @@ impl Replica {
 /// The number of runs in the local agents' journal.
 async fn journal_runs(db: &pgdb::TestDb) -> i64 {
     let pool = db.pool("local-test", 2).await;
-    sqlx::query_scalar("SELECT count(*) FROM orch_agent_runs")
+    query_scalar("SELECT count(*) FROM orch_agent_runs")
         .fetch_one(&pool)
         .await
         .unwrap()

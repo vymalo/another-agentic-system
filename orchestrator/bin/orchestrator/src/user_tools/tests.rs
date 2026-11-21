@@ -7,7 +7,8 @@ use orch_core::{Classify as _, ErrorClass};
 use orch_ports::{CredentialRef, UserAuth, UserToolPorts as _, UserToolsMode};
 #[cfg(feature = "secrets-pg")]
 use orch_ports::{SecretServer, SecretStore as _};
-use sqlx::postgres::PgPoolOptions;
+use orch_store_postgres::PgPool;
+use orch_store_postgres::sql::{query_as, query_scalar};
 use tracing::instrument::WithSubscriber as _;
 
 use super::*;
@@ -100,9 +101,7 @@ fn database_url_of(db: &pgdb::TestDb) -> String {
 #[tokio::test]
 async fn the_feature_off_builds_the_refusing_bundle_and_opens_nothing() {
     // a pool that has not connected, to a database that is not there: building must not ask it
-    let pool = PgPoolOptions::new()
-        .connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
-        .unwrap();
+    let pool = PgPool::new("postgres://nobody@127.0.0.1:1/nothing".parse().unwrap(), 10).unwrap();
     let store = PgStore::from_pool(pool.clone());
     let tools = build(None, "postgres://nobody@127.0.0.1:1/nothing", None, &store)
         .await
@@ -173,7 +172,7 @@ async fn enabled_without_secrets_keeps_definitions_and_refuses_every_credential(
     assert_eq!(error.class(), ErrorClass::Transient);
     assert!(!format!("{error} {error:?}").contains("0123456789abcdef"));
     // the secret store's table was not even made
-    let tables: i64 = sqlx::query_scalar(
+    let tables: i64 = query_scalar(
         "SELECT count(*) FROM information_schema.tables \
          WHERE table_schema = $1 AND table_name = 'user_secrets'",
     )
@@ -234,7 +233,7 @@ async fn enabled_with_secrets_keeps_credentials_sealed_in_a_pool_of_its_own() {
         tools.pending().take(&state, now).await.unwrap().is_none(),
         "once"
     );
-    let (kept,): (i64,) = sqlx::query_as("SELECT count(*) FROM user_tool_oauth_pending")
+    let (kept,): (i64,) = query_as("SELECT count(*) FROM user_tool_oauth_pending")
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -242,7 +241,7 @@ async fn enabled_with_secrets_keeps_credentials_sealed_in_a_pool_of_its_own() {
 
     // it is sealed at rest: the row holds no part of the token
     let (ciphertext,): (Vec<u8>,) =
-        sqlx::query_as("SELECT ciphertext FROM user_secrets WHERE owner = $1")
+        query_as("SELECT ciphertext FROM user_secrets WHERE owner = $1")
             .bind(owner().as_str())
             .fetch_one(store.pool())
             .await
@@ -370,9 +369,7 @@ fn only_a_process_that_serves_routes_is_given_the_settings() {
 /// serves routes asks it and stops as for an outage.
 #[tokio::test]
 async fn a_worker_builds_the_refusing_bundle_and_opens_no_connection() {
-    let pool = PgPoolOptions::new()
-        .connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
-        .unwrap();
+    let pool = PgPool::new("postgres://nobody@127.0.0.1:1/nothing".parse().unwrap(), 10).unwrap();
     let store = PgStore::from_pool(pool.clone());
     let nowhere = "postgres://nobody@127.0.0.1:1/nothing";
 
@@ -432,7 +429,7 @@ async fn a_process_that_serves_routes_builds_the_ports_and_a_worker_does_not() {
         .await
         .unwrap();
         assert_eq!(tools.mode(), mode, "{role}");
-        let tables: i64 = sqlx::query_scalar(
+        let tables: i64 = query_scalar(
             "SELECT count(*) FROM information_schema.tables \
              WHERE table_schema = $1 AND table_name = 'user_secrets'",
         )

@@ -15,6 +15,7 @@ use orch_core::{
 };
 use orch_ports::{Commit, NewEvent, NewThreadRecord, ThreadStore as _, UsageLedger as _};
 use orch_store_postgres::PgStore;
+use orch_store_postgres::sql::query;
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
 #[path = "../../../crates/store-postgres/tests/support/mod.rs"]
@@ -254,11 +255,11 @@ async fn it_folds_in_the_logs_the_ledger_has_not_been_through_and_a_second_run_f
     let wanted = store.month(&alice, month).await.unwrap();
     assert_eq!(wanted.tasks, 3);
     // the log as a build without the ledger left it
-    sqlx::query("DELETE FROM usage_tasks")
+    query("DELETE FROM usage_tasks")
         .execute(store.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE threads SET usage_through = 0")
+    query("UPDATE threads SET usage_through = 0")
         .execute(store.pool())
         .await
         .unwrap();

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use orch_store_postgres::sql::{query, query_as, query_scalar};
 use orch_testsupport::{Chat, FakeAgent, FakeAgentOptions, Frame, VerifierScript, eventually};
 
 /// The per-test schema helper of the Postgres store's own tests, shared instead of copied.
@@ -1448,7 +1449,7 @@ secrets:
 /// Whether `table` exists in the schema of `db`.
 async fn has_table(db: &pgdb::TestDb, table: &str) -> bool {
     let pool = db.pool("smoke-check", 1).await;
-    let found: i64 = sqlx::query_scalar(
+    let found: i64 = query_scalar(
         "SELECT count(*) FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2",
     )
     .bind(&db.schema)
@@ -1675,21 +1676,14 @@ async fn with_a_direct_url_the_migrations_and_the_listener_take_it_and_nothing_e
         eprintln!("skipping: ORCH_TEST_DATABASE_URL is not set");
         return;
     };
-    let observer = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(db.direct_options().application_name("smoke-observer"))
-        .await
-        .unwrap();
+    let observer = pgdb::pool_of(pgdb::named(db.direct_options(), "smoke-observer"), 1);
     for statement in [
         "CREATE TABLE ddl_audit (app text NOT NULL)",
         "CREATE FUNCTION audit_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN \
          INSERT INTO public.ddl_audit VALUES (current_setting('application_name')); END $$",
         "CREATE EVENT TRIGGER audit_ddl ON ddl_command_end EXECUTE FUNCTION audit_ddl()",
     ] {
-        sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(&observer)
-            .await
-            .unwrap();
+        query(statement).execute(&observer).await.unwrap();
     }
 
     let scratch = Scratch::new();
@@ -1731,7 +1725,7 @@ agents:
     .await;
 
     // every DDL statement of the history was run by the session that was named direct
-    let apps: Vec<String> = sqlx::query_scalar("SELECT DISTINCT app FROM ddl_audit")
+    let apps: Vec<String> = query_scalar("SELECT DISTINCT app FROM ddl_audit")
         .fetch_all(&observer)
         .await
         .unwrap();
@@ -1739,7 +1733,7 @@ agents:
 
     // the listener is one session, the direct one; a LISTEN on the pooled URL would be a second
     let listening: Vec<String> = eventually("the listener is attached", || async {
-        let found: Vec<String> = sqlx::query_scalar(
+        let found: Vec<String> = query_scalar(
             "SELECT application_name FROM pg_stat_activity \
              WHERE datname = current_database() AND pid <> pg_backend_pid() \
              AND query ILIKE 'LISTEN%'",
@@ -1764,7 +1758,7 @@ agents:
     .await;
     assert_eq!(status, 200);
     if std::env::var("ORCH_TEST_DIRECT_DATABASE_URL").is_err() {
-        let pooled_sessions: i64 = sqlx::query_scalar(
+        let pooled_sessions: i64 = query_scalar(
             "SELECT count(*) FROM pg_stat_activity \
              WHERE datname = current_database() AND application_name = 'smoke-pooled'",
         )
@@ -3772,7 +3766,7 @@ async fn one_control_plane_and_two_workers_survive_a_killed_worker() {
     // Which worker holds the delegation? Its lease names it.
     let pool = db.pool("smoke-lease", 1).await;
     let owner: String = eventually("a worker leases the delegation", || async {
-        sqlx::query_scalar(
+        query_scalar(
             "SELECT lease_owner FROM outbox WHERE kind = 'delegate' AND status = 'inflight'",
         )
         .fetch_optional(&pool)
@@ -3929,7 +3923,7 @@ async fn a_due_timer_waits_for_a_worker_process_and_is_applied_by_it() {
         "thread": id,
         "timer": {"kind": "ci_deadline", "attempt": 1, "verification": 1},
     });
-    sqlx::query(
+    query(
         "INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, available_at, \
          created_at, updated_at) VALUES ($1, 'timer', 'smoke', 'timer', $2, 'pending', now(), \
          now(), now())",
@@ -3940,7 +3934,7 @@ async fn a_due_timer_waits_for_a_worker_process_and_is_applied_by_it() {
     .await
     .unwrap();
     let state = || async {
-        sqlx::query_as::<_, (String, i32)>("SELECT status, attempts FROM inbox WHERE id = $1")
+        query_as::<(String, i32)>("SELECT status, attempts FROM inbox WHERE id = $1")
             .bind(row)
             .fetch_one(&pool)
             .await
@@ -4165,7 +4159,7 @@ async fn the_generic_webhook_takes_one_signed_report_and_nothing_unsigned() {
     };
     let pool = db.pool("smoke-webhook", 2).await;
     let rows = || async {
-        sqlx::query_as::<_, (String, String, String)>(
+        query_as::<(String, String, String)>(
             "SELECT source, idempotency_key, status FROM inbox ORDER BY created_at",
         )
         .fetch_all(&pool)
@@ -4267,7 +4261,7 @@ async fn the_github_webhook_takes_a_signed_check_run_and_acknowledges_the_rest()
     };
     let pool = db.pool("smoke-github", 2).await;
     let rows = || async {
-        sqlx::query_as::<_, (String, String, String)>(
+        query_as::<(String, String, String)>(
             "SELECT source, idempotency_key, status FROM inbox ORDER BY created_at",
         )
         .fetch_all(&pool)
