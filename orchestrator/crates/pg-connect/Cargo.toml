@@ -1,0 +1,29 @@
+[package]
+name = "orch-pg-connect"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Connects to Postgres on tokio-postgres as sqlx did: the same connection string, sslmode and sslrootcert, a deadpool pool and a direct connection (ADR 0076, sys#382 E1)."
+readme = "README.md"
+
+[dependencies]
+deadpool-postgres.workspace = true
+percent-encoding.workspace = true
+rustls.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
+tracing.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
+whoami.workspace = true
+
+[dev-dependencies]
+# The proof that a connection string means what it meant to sqlx: removed with sqlx at the end of E1.
+sqlx.workspace = true
+
+[lints]
+workspace = true
