@@ -1201,8 +1201,10 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
 }
 
 proptest! {
-    /// Re-sending everything the log holds, with a run it has, never applies anything twice:
-    /// reconciliation by id turns it into an attach.
+    /// Re-sending everything the log holds — each message with **the words the log holds for it** —
+    /// never applies anything twice: reconciliation by id turns it into an attach. The words matter
+    /// since ADR 0082: an id is bound to its text, so a transcript that repeats another text under a
+    /// known user message id is the case below, not a resend.
     #[test]
     fn re_sending_the_transcript_never_duplicates_input(actions in arb_actions()) {
         let events = build(&actions);
@@ -1215,11 +1217,44 @@ proptest! {
         let messages: Vec<Value> = view
             .message_ids
             .iter()
-            .map(|id| user_msg(id, "x"))
+            .map(|id| {
+                // An id the log holds no text for is an agent's or an activity message: the refusal
+                // does not cover it, and any text is ignored there.
+                let text = view.message_texts.get(id).map_or("x", String::as_str);
+                user_msg(id, text)
+            })
             .collect();
         let input = request(json!({"runId": run, "messages": messages}));
         let t = translate(&input, &ThreadView::Known(view)).unwrap();
         prop_assert!(t.is_empty());
+    }
+
+    /// The other half of the same rule: a **known user message id** sent with other words is
+    /// refused, so "the id is the text" holds in both directions and neither path — the drop or an
+    /// attach — can discard the new words.
+    #[test]
+    fn a_known_user_message_id_sent_with_other_words_is_refused(actions in arb_actions()) {
+        let events = build(&actions);
+        let mut projector = Projector::new(meta());
+        for e in &events {
+            projector.apply(e, Audience::Viewer);
+        }
+        let ThreadView::Known(view) = projector.view(&alice()) else { unreachable!() };
+        let Some((id, text)) = view
+            .message_texts
+            .iter()
+            .next()
+            .map(|(id, text)| (id.clone(), text.clone()))
+        else {
+            return Ok(());
+        };
+        // Never the text the log holds, whatever it is (even empty).
+        let other = format!("{text} ");
+        let input = request(json!({"runId": "run-x", "messages": [user_msg(&id, &other)]}));
+        prop_assert_eq!(
+            translate(&input, &ThreadView::Known(view)).unwrap_err(),
+            InputError::MessageIdReused { message_id: id }
+        );
     }
 }
 
