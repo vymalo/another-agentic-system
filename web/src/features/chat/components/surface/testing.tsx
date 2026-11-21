@@ -218,8 +218,15 @@ export function mountSurfaces(
   const stream = new LiveStream();
   const value: SurfaceHost = { ...HOST, ...host };
   const threadView: ThreadView = { state: "blocked", waiting: true, agentId: "plain", ...view };
+  let served = false;
   const mounted = mountRuntime(
-    () => sse(stream.body),
+    () => {
+      // a later connection is a reopen (ADR 0082): the body it gets says nothing and never closes, so a
+      // test that lets a minute of timers pass does not reconnect into the body it is still writing to
+      if (served) return sse(new ReadableStream<Uint8Array>({ start() {} }));
+      served = true;
+      return sse(stream.body);
+    },
     options,
     <SurfaceHostContext.Provider value={value}>
       <ThreadViewProvider value={threadView}>

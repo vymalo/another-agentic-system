@@ -7,6 +7,7 @@ import { type LiveEvent, liveMark } from "./live-drafts";
 import {
   type Call,
   fakeFetch,
+  framesThrough,
   type GoldenFrame,
   LiveStream,
   loadGolden,
@@ -14,7 +15,7 @@ import {
   sse,
   THREAD_ID,
 } from "./testing";
-import { type ExternalRun, SendError, ThreadAgent } from "./thread-agent";
+import { type ExternalRun, SendError, SILENCE_MS, ThreadAgent } from "./thread-agent";
 
 const BASE = "http://orch.test";
 
@@ -875,8 +876,13 @@ describe("ThreadAgent.run", () => {
     expect(sent[0]).toMatchObject({
       threadId: THREAD_ID,
       runId: "run-9",
-      messages: [{ id: "new-user", role: "user", content: "next" }],
+      messages: [{ role: "user", content: "next" }],
     });
+    // the id is the draft's, not the one the runtime minted for the message it draws (ADR 0082, C4; the
+    // rules of that id are in "the id a message goes out under")
+    const id = (sent[0] as { messages: { id: string }[] }).messages[0]?.id;
+    expect(typeof id).toBe("string");
+    expect(id).not.toBe("new-user");
     expect(sent[0]).not.toHaveProperty("resume");
     expect(sent[1]).toMatchObject({
       runId: "run-10",
@@ -1013,6 +1019,146 @@ describe("ThreadAgent.run", () => {
   it("a cancel the orchestrator refuses is an error with its reason", async () => {
     const { agent } = agentWith(() => problem(404, "Not found", "no such thread"));
     await expect(agent.cancel()).rejects.toMatchObject({ status: 404, message: "no such thread" });
+  });
+});
+
+describe("ThreadAgent: a stream that goes quiet (ADR 0082, C3)", () => {
+  it("reopens with the last delivered id after two heartbeats of silence, though the socket is open", async () => {
+    vi.useFakeTimers();
+    try {
+      const first = new LiveStream();
+      const second = new LiveStream();
+      let opened = 0;
+      const { agent, calls } = agentWith(() => sse(opened++ === 0 ? first.body : second.body));
+      const connects = () => calls.filter((c) => c.method === "GET");
+      // let the reader and the connect loop get through their promises: nothing here is a timer
+      const settle = async () => {
+        for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+      };
+      agent.start();
+      await settle();
+      expect(connects()).toHaveLength(1);
+
+      first.frames(framesThrough(loadGolden("connect-echo"), 1));
+      await settle();
+      expect(agent.getSnapshot().lastSeq).toBe(1);
+      expect(agent.getSnapshot().connection).toBe("open");
+
+      // the body says nothing, and is not closed: one heartbeat missed is not a dead stream
+      await vi.advanceTimersByTimeAsync(SILENCE_MS - 1);
+      expect(connects()).toHaveLength(1);
+      expect(agent.getSnapshot().connection).toBe("open");
+
+      // the second: the reader lets go, and the loop reopens from the cursor it reached
+      await vi.advanceTimersByTimeAsync(2);
+      await settle();
+      expect(connects()).toHaveLength(2);
+      expect(connects()[1]?.lastEventId).toBe("1");
+      agent.stop();
+      await settle();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("ThreadAgent: the id a message goes out under (ADR 0082, C4)", () => {
+  /** One run the runtime starts: its own message id, its own run id. */
+  const run = (runId: string, messageId: string, text: string): RunAgentInput => ({
+    threadId: THREAD_ID,
+    runId,
+    state: {},
+    tools: [],
+    context: [],
+    forwardedProps: {},
+    messages: [{ id: messageId, role: "user", content: text }],
+  });
+
+  const sentIds = (calls: Call[]) =>
+    calls
+      .filter((c) => c.method === "POST" && c.path === "/agui/agents/plain")
+      .map((c) => (c.body as { messages: { id: string }[] }).messages[0]?.id ?? "");
+
+  const refuse = () => problem(422, "Unprocessable", "nothing to run", "thread_busy");
+
+  it("a refused message goes again under the same id when the person presses Send again", async () => {
+    const { agent, calls } = agentWith(refuse);
+    const send = (messageId: string) =>
+      new Promise<void>((r) =>
+        agent
+          .run(run(`run-${messageId}`, messageId, "read the repo"))
+          .subscribe({ error: () => r() }),
+      );
+    await send("runtime-1");
+    // the runtime mints a new id for the message it appends a second time; the draft's id is what goes out
+    await send("runtime-2");
+    const ids = sentIds(calls);
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]);
+    // not the id the transcript draws the message under: the draft made its own, once
+    expect(ids[0]).not.toBe("runtime-1");
+    expect(ids[0]).not.toBe("runtime-2");
+  });
+
+  it("an edited draft goes out under a new id, because an id is bound to its words", async () => {
+    const { agent, calls } = agentWith(refuse);
+    const send = (messageId: string, text: string) =>
+      new Promise<void>((r) =>
+        agent.run(run(`run-${messageId}`, messageId, text)).subscribe({ error: () => r() }),
+      );
+    await send("runtime-1", "read the repo");
+    await send("runtime-2", "read the repo, then open a PR");
+    const ids = sentIds(calls);
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).not.toBe(ids[0]);
+  });
+
+  it("the same words typed again after the message was accepted are a new message", async () => {
+    const { agent, calls } = agentWith((call) => {
+      if (call.method !== "POST") return problem(404, "Not found");
+      // each send gets its own response, accepted at once: the words are the log's from there
+      const post = new LiveStream();
+      const runId = (call.body as { runId: string }).runId;
+      post.write(
+        `data: ${JSON.stringify({ type: "RUN_STARTED", threadId: THREAD_ID, runId, protocolVersion: "1.0" })}\n\n`,
+      );
+      return sse(post.body);
+    });
+    const send = (n: number) =>
+      new Promise<void>((r) =>
+        agent.run(run(`run-${n}`, `runtime-${n}`, "hi")).subscribe({ next: () => r() }),
+      );
+    await send(1);
+    await send(2);
+    const ids = sentIds(calls);
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).not.toBe(ids[0]);
+  });
+
+  it("the page still finds the message it sent by the id the transcript holds", async () => {
+    const connect = new LiveStream();
+    const post = new LiveStream();
+    const { agent, calls } = agentWith((call) =>
+      call.method === "POST" ? sse(post.body) : sse(connect.body),
+    );
+    agent.start();
+    agent.run(run("run-1", "runtime-1", "echo hi")).subscribe({ error: () => {} });
+    await until(() => sentIds(calls).length === 1, "the POST");
+    post.write(
+      `data: ${JSON.stringify({ type: "RUN_STARTED", threadId: THREAD_ID, runId: "run-1", protocolVersion: "1.0" })}\n\n`,
+    );
+    await until(() => agent.getSnapshot().openRun === "run-1", "acceptance");
+    // the log says the person's message under the id it was sent with
+    const sent = sentIds(calls)[0] as string;
+    connect.frames(
+      loadGolden("connect-echo").map((f) =>
+        f.event.messageId === "msg-1" ? { ...f, event: { ...f.event, messageId: sent } } : f,
+      ),
+    );
+    await until(() => agent.seqOfUser("runtime-1") !== undefined, "the message's place in the log");
+    expect(agent.seqOfUser("runtime-1")).toBe(1);
+    expect(agent.seqOfUser(sent)).toBe(1);
+    agent.stop();
   });
 });
 

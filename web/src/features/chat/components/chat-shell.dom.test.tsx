@@ -21,7 +21,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => 
 // The app in jsdom against the mock orchestrator: the shell, the runtime, the agent and LiveRuns.
 let ChatShell: typeof import("./chat-shell").ChatShell;
 let REVOKE_AFTER_MS: number;
-let backoffMs: (attempt: number) => number;
+let backoffMs: (attempt: number, random?: () => number) => number;
 let resetUiConfig: () => void;
 
 const server = createMockServer({ stepMs: 5, keepaliveMs: 1000 });
@@ -76,7 +76,7 @@ beforeAll(async () => {
   // the API client binds fetch and Request when it is created: import the app after the patch
   ({ ChatShell } = await import("./chat-shell"));
   ({ REVOKE_AFTER_MS } = await import("@/features/chat/lib/export-thread"));
-  ({ backoffMs } = await import("@/features/chat/lib/agui/thread-agent"));
+  ({ backoffMs } = await import("@/features/chat/lib/agui/backoff"));
   ({ resetUiConfig } = await import("@/features/chat/hooks/use-ui-config"));
 });
 afterAll(async () => {
@@ -881,7 +881,8 @@ describe("ChatShell over AG-UI", () => {
     shell("00000000-0000-7000-8000-00000000dead");
     await screen.findByText(/Thread not found/);
     // the thread's own 404 can come before the history page is asked for, and then it never is; one that was asked says 404
-    await new Promise((r) => setTimeout(r, backoffMs(0) + 250));
+    // the longest the first wait can be (it is drawn now, ADR 0082): no retry may have happened by then
+    await new Promise((r) => setTimeout(r, backoffMs(0, () => 1) + 250));
     const history = calls.filter((c) => c.includes("/history"));
     expect(history.length).toBeLessThanOrEqual(1);
     for (const call of history) expect(call).toMatch(/\/history 404$/);

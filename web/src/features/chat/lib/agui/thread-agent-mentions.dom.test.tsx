@@ -43,12 +43,14 @@ describe("mentions on the runs ThreadAgent posts (ADR 0026)", () => {
     ]);
     // the offsets are into the text as it went out
     expect(body.messages[0]?.content.slice(3, 9)).toBe("@coder");
-    // the run's own message is the runtime's, and its id is the one posted: the bubble finds the chips by it
+    // the chips are the bubble's, which holds the runtime's message: the run's message is found by that
+    // id, and the id the message went out under is the draft's (ADR 0082, C4)
     const mine = runtime()
       .thread.getState()
       .messages.find((m) => m.role === "user");
-    expect(mine?.id).toBe(body.messages[0]?.id);
-    expect(store.sentOf(body.messages[0]?.id ?? "")).toEqual([
+    expect(mine?.id).toBeDefined();
+    expect(mine?.id).not.toBe(body.messages[0]?.id);
+    expect(store.sentOf(mine?.id ?? "")).toEqual([
       { agentId: "coder", label: "@coder", start: 3, end: 9 },
     ]);
   });

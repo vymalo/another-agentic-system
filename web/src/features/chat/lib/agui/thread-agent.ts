@@ -37,6 +37,8 @@ import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
 import { authenticatedFetch } from "@/lib/auth/fetch";
 import { atApi } from "@/lib/runtime-config";
 import { uuidv7 } from "@/lib/uuid";
+import { backoffMs } from "./backoff";
+import { DraftIds } from "./draft-ids";
 import { type HistoryConfig, HistoryWindow, type PageMeta } from "./history-window";
 import {
   applyLive,
@@ -113,7 +115,9 @@ import {
  *   `seqOfUser(messageId)` is the `seq` of the event a person's message came in, and
  *   `endOfRun(runId)` the `seq` of the last event delivered for a run, which is "an event of the
  *   turn" for `POST /api/threads/{id}/fork {after}`. They are read from the groups as they are
- *   delivered, so they hold for the replay, a live run and a reconnect alike.
+ *   delivered, so they hold for the replay, a live run and a reconnect alike. A message this page sent
+ *   is in the log under the id its draft minted (ADR 0082, C4), not under the one the runtime gave the
+ *   message it draws, so `seqOfUser` resolves the runtime's id through that binding.
  * - A shared thread (ADR 0040, `source`): a reader follows it by its link's token, the same stream
  *   over `GET /agui/shared/{token}/connect` (signed in) or `GET /agui/public/shared/{token}/connect`
  *   (anybody). It sends nothing, and the files its artifacts name are read by the shared route of
@@ -380,7 +384,16 @@ export type ThreadAgentOptions = {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 };
 
-export const backoffMs = (attempt: number): number => Math.min(30_000, 1000 * 2 ** attempt);
+/**
+ * The orchestrator's keepalive (`docs/api/agui.md`, "The connect stream" §3: a `: keepalive` comment at
+ * least every 15 s) and how many of them a client may miss before it takes the stream as dead (ADR 0082,
+ * C3). Two missed heartbeats is a stream a proxy, a phone radio or a dead NAT entry holds open while
+ * saying nothing: the socket is not closed, so only the silence can tell.
+ */
+export const KEEPALIVE_MS = 15_000;
+export const MISSED_KEEPALIVES = 2;
+/** How long the connect stream's reader waits with nothing at all — no frame, no comment. */
+export const SILENCE_MS = KEEPALIVE_MS * MISSED_KEEPALIVES;
 
 const defaultSleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -479,6 +492,9 @@ export class ThreadAgent extends AbstractAgent {
   private readonly sends = new Set<AbortController>();
   private sendError: SendError | null = null;
   private stagedAction: Record<string, unknown> | undefined;
+  /** The id each message the person sent goes out under: the draft's, keyed by the runtime's (ADR 0082, C4). */
+  private readonly draftIds = new DraftIds();
+  private readonly sentAs = new Map<string, string>();
   /** The `seq` of the group being delivered, for `userSeqs` and `runEnds`. */
   private groupSeq = 0;
   private readonly userSeqs = new Map<string, number>();
@@ -541,7 +557,8 @@ export class ThreadAgent extends AbstractAgent {
    * once the group has been delivered; undefined before that, and for a message this page did not
    * see (a thread opened past it).
    */
-  seqOfUser = (messageId: string): number | undefined => this.userSeqs.get(messageId);
+  seqOfUser = (messageId: string): number | undefined =>
+    this.userSeqs.get(this.sentAs.get(messageId) ?? messageId);
 
   /**
    * The `seq` of the last event delivered for the run `runId`: an event of the turn it belongs to,
@@ -614,7 +631,14 @@ export class ThreadAgent extends AbstractAgent {
         opened = true;
         attempt = 0;
         this.patch({ connection: "open", error: null });
-        for await (const frame of readSse(data, signal)) this.onFrame(frame.data, frame.id);
+        // The connect stream is the one that is followed for as long as the page is open, so it is the
+        // one that can die without closing (ADR 0082, C3): two heartbeats missed and the reader lets go,
+        // and this loop reopens from the last `id:` as it does when the stream ends. A run's own response
+        // is not watched: it is left at `RUN_STARTED`, and a watchdog there could turn a slow accept into
+        // a second send.
+        for await (const frame of readSse(data, signal, { silenceMs: SILENCE_MS })) {
+          this.onFrame(frame.data, frame.id);
+        }
       } catch (e) {
         // a group that could not be made whole is a reconnect, not a failure to report
         if (!signal.aborted && !(e instanceof Resync)) {
@@ -1497,6 +1521,8 @@ export class ThreadAgent extends AbstractAgent {
     const input: RunAgentInput = {
       threadId: this.threadId,
       runId: uuidv7(),
+      // the id here is a placeholder: `post` sends the draft's, which is what a steer sent again reuses
+      // (ADR 0082, C4), and no transcript message of this page carries this one
       messages: [{ id: uuidv7(), role: "user", content: text }],
       state: {},
       tools: [],
@@ -1538,9 +1564,20 @@ export class ThreadAgent extends AbstractAgent {
     // answering an interrupt, and refuses both together (docs/api/agui.md, "Inbound"). An action
     // comes with neither.
     const last = input.messages.at(-1);
-    const messages = !action && !resume && last?.role === "user" ? [last] : [];
+    const message = !action && !resume && last?.role === "user" ? last : undefined;
+    // The id the message goes out under is the draft's, not the one the runtime minted for the message it
+    // draws (ADR 0082, C4): minted once for the words in the box, kept while they are unchanged, and
+    // minted again when the person edits them. A refused send, a steer sent twice and a POST the network
+    // lost before the run started therefore all carry one id, which is what the log keys idempotency on.
+    // `sentAs` keeps the runtime's id pointing at it, so the page still finds the message it sent; the
+    // sinks below (the mentions, the tier badge) stay keyed by the id the transcript holds.
+    const text = message && typeof message.content === "string" ? message.content : undefined;
+    const draftId = text === undefined ? undefined : this.draftIds.of(text);
+    if (message && draftId !== undefined && message.id !== draftId) {
+      this.sentAs.set(message.id, draftId);
+    }
+    const messages = message ? [{ ...message, ...(draftId ? { id: draftId } : {}) }] : [];
     // the agents the message mentions (ADR 0026): asked for the text that goes out, for this message only
-    const message = messages[0];
     const mentions =
       message && typeof message.content === "string"
         ? (this.options.mentions?.take(message.content, message.id) ?? [])
@@ -1599,6 +1636,8 @@ export class ThreadAgent extends AbstractAgent {
         }
         if (event.type === EventType.RUN_STARTED) {
           this.options.mentions?.accepted();
+          // the words are the log's now: typed again, they are a new message and not a resend (ADR 0082, C4)
+          if (text !== undefined) this.draftIds.accepted(text);
           return event;
         }
         if (event.type === EventType.RUN_ERROR) {

@@ -41,7 +41,14 @@ describe("the access tier on the runs ThreadAgent posts (ADR 0061)", () => {
     });
     const body = calls.find((c) => c.method === "POST")?.body as Body;
     expect(body.forwardedProps["vymalo.tier"]).toBe("plan");
-    expect(tiers.of(body.messages[0]?.id ?? "")).toBe("plan");
+    // the badge is the bubble's, which holds the runtime's message; the id the message went out under is
+    // the draft's (ADR 0082, C4), so the two are not the same
+    const mine = runtime()
+      .thread.getState()
+      .messages.find((m) => m.role === "user");
+    expect(mine?.id).toBeDefined();
+    expect(mine?.id).not.toBe(body.messages[0]?.id);
+    expect(tiers.of(mine?.id ?? "")).toBe("plan");
     agent.stop();
   });
 
