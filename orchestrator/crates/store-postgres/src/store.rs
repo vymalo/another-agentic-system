@@ -70,7 +70,7 @@ fn migrator() -> Result<Migrator, StoreError> {
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
 }
 
-/// Default pool size of [`PgStore::connect`]; one connection is held by the wakeup listener.
+/// Default pool size of [`PgStore::connect`] (the wakeup listener's connection is not one of them).
 const DEFAULT_MAX_CONNECTIONS: u32 = 10;
 
 /// How long [`PgStore::migrate_direct`] tries to connect: thirty seconds, the acquire timeout of
@@ -2660,5 +2660,27 @@ impl ThreadStore for PgStore {
         .as_ref()
         .map(inbox_from_row)
         .transpose()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// `migrations!` names its files one by one: a file added to `migrations/` and not to the
+    /// list would never run.
+    #[test]
+    fn the_migrations_listed_are_the_files_of_the_directory() {
+        let migrator = migrator().unwrap();
+        migrator
+            .check_directory(std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/migrations"
+            )))
+            .unwrap();
+        let first = &migrator.migrations()[0];
+        assert_eq!((first.version(), first.description()), (1, "init"));
+        assert_eq!(migrator.migrations().len(), 28);
     }
 }

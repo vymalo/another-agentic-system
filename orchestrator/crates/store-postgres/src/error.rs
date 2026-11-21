@@ -9,19 +9,26 @@ use orch_ports::{StoreError, WakeupError};
 ///
 /// It is the driver's error as this crate meets it, and is never kept as the source of a port's
 /// error: [`store_err`] keeps a [`DbFailure`] instead (a server's `DETAIL`, which may quote a whole
-/// row, is never in it). Its `Display` is that failure's text.
-#[derive(Debug)]
+/// row, is never in it). Its `Display` and its `Debug` are that failure's, and it has no source:
+/// the server's error `tokio-postgres` keeps (its `Debug` included) holds the `DETAIL`, the `HINT`
+/// and the `WHERE`.
+#[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum SqlError {
     /// The driver's error: the server's, the network's, or a value that does not encode or decode.
+    #[error("{}", DbFailure::of(self))]
     Driver(tokio_postgres::Error),
     /// The pool's: no connection in time, a closed pool, or the server's refusal of a connection.
+    #[error("{}", DbFailure::of(self))]
     Pool(PoolError),
     /// A pool or a connection that could not be made (its TLS, its root certificate).
+    #[error("{}", DbFailure::of(self))]
     Connect(ConnectError),
     /// No connection was made before the wait was over.
+    #[error("{}", DbFailure::of(self))]
     TimedOut,
     /// A statement that must return a row returned none.
+    #[error("{}", DbFailure::of(self))]
     RowNotFound,
 }
 
@@ -31,13 +38,18 @@ impl From<tokio_postgres::Error> for SqlError {
     }
 }
 
-impl std::fmt::Display for SqlError {
+impl std::fmt::Debug for SqlError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&DbFailure::of(self), f)
+        let variant = match self {
+            SqlError::Driver(_) => "Driver",
+            SqlError::Pool(_) => "Pool",
+            SqlError::Connect(_) => "Connect",
+            SqlError::TimedOut => "TimedOut",
+            SqlError::RowNotFound => "RowNotFound",
+        };
+        f.debug_tuple(variant).field(&DbFailure::of(self)).finish()
     }
 }
-
-impl std::error::Error for SqlError {}
 
 impl SqlError {
     /// The server's error, when the server answered with one.
@@ -82,11 +94,23 @@ const DRIVER_OUTAGES: [&str; 7] = [
     "timeout waiting for server",
 ];
 
-/// The kinds of `tokio-postgres` that carry an I/O error and are still no outage, read before the
-/// I/O rule: a message that cannot be encoded (a NUL byte in a user, a database or a text the
-/// client sends at startup, refused every time; sqlx refused such a value too), and the client's
-/// own refusal of an authentication (a SASL mechanism or a server signature it does not accept).
-const DRIVER_REFUSALS: [&str; 2] = ["error encoding message to server", "authentication error"];
+/// The kinds of `tokio-postgres` (their words, or the start of them) that can carry an I/O error
+/// and are still no outage, read before the I/O rule: a message that cannot be encoded (a NUL byte
+/// in a user, a database or a text the client sends at startup, refused every time; sqlx refused
+/// such a value too), the client's own refusal of an authentication (a SASL mechanism or a server
+/// signature it does not accept), and a parameter that cannot be encoded (`error serializing
+/// parameter <n>`, whatever error its `ToSql` gave).
+const DRIVER_REFUSALS: [&str; 3] = [
+    "error encoding message to server",
+    "authentication error",
+    "error serializing parameter ",
+];
+
+fn is_refusal(kind: &str) -> bool {
+    DRIVER_REFUSALS
+        .iter()
+        .any(|prefix| kind.starts_with(prefix))
+}
 
 /// The kinds of `tokio-postgres` that say a row is not what the code reads: a column that is not
 /// there, or a value that does not decode as its Rust type (sqlx's `ColumnNotFound`,
@@ -147,7 +171,7 @@ fn driver_kind_class(kind: &str, closed: bool, io: bool) -> ErrorClass {
     if DRIVER_CORRUPT.iter().any(|prefix| kind.starts_with(prefix)) {
         return ErrorClass::Corrupt;
     }
-    if DRIVER_REFUSALS.contains(&kind) {
+    if is_refusal(kind) {
         return ErrorClass::Internal;
     }
     if closed || io || DRIVER_OUTAGES.contains(&kind) {
@@ -179,7 +203,8 @@ fn retried_sqlstate(code: &str) -> bool {
 /// text, and nothing of the driver. The text is the server's severity, message and SQLSTATE (never
 /// its `DETAIL`, which may quote a row, nor its `HINT`), or the driver's words for its kind (and
 /// the I/O error under it, never a value that did not encode or decode).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{}", self.text())]
 pub struct DbFailure {
     class: ErrorClass,
     severity: Option<String>,
@@ -219,7 +244,7 @@ impl DbFailure {
         let kind = driver.to_string();
         // the I/O error says why a connection failed; a value's error could quote the value
         let message = match io_of(driver) {
-            Some(io) if !DRIVER_REFUSALS.contains(&kind.as_str()) => format!("{kind}: {io}"),
+            Some(io) if !is_refusal(&kind) => format!("{kind}: {io}"),
             _ => kind,
         };
         Self::plain(class, message)
@@ -259,20 +284,16 @@ impl DbFailure {
     pub fn code(&self) -> Option<&str> {
         self.code.as_deref()
     }
-}
 
-impl std::fmt::Display for DbFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn text(&self) -> std::borrow::Cow<'_, str> {
         match (&self.severity, &self.code) {
             (Some(severity), Some(code)) => {
-                write!(f, "{severity}: {} (SQLSTATE {code})", self.message)
+                format!("{severity}: {} (SQLSTATE {code})", self.message).into()
             }
-            _ => f.write_str(&self.message),
+            _ => self.message.as_str().into(),
         }
     }
 }
-
-impl std::error::Error for DbFailure {}
 
 fn pool_words(err: &PoolError) -> String {
     match err {
@@ -378,7 +399,7 @@ mod tests {
     #[test]
     fn driver_errors_are_classified_by_what_retrying_can_do() {
         use ErrorClass::{Corrupt, Internal, Transient};
-        let table: [(&str, bool, bool, ErrorClass); 19] = [
+        let table: [(&str, bool, bool, ErrorClass); 20] = [
             (
                 "error communicating with the server",
                 false,
@@ -396,6 +417,8 @@ mod tests {
             ("error deserializing column 3", false, false, Corrupt),
             ("invalid column `v`", false, false, Corrupt),
             ("error serializing parameter 0", false, false, Internal),
+            // whatever error the parameter's `ToSql` gave, an I/O error included
+            ("error serializing parameter 3", false, true, Internal),
             (
                 "query returned an unexpected number of rows",
                 false,
@@ -489,6 +512,27 @@ mod tests {
             migrate_err(MigrateError::FileName("x.sql".into())).class(),
             ErrorClass::Internal
         );
+    }
+
+    /// The driver's errors of a migration are classified as any statement's: a database that
+    /// cannot be reached is `Unavailable` (whether it failed a migration's SQL or the
+    /// bookkeeping), a connection string the driver refuses is `Internal`.
+    #[tokio::test]
+    async fn a_migration_s_driver_errors_are_classified_as_a_statement_s() {
+        let refused = || driver_error_of("postgres://u@127.0.0.1:1/db?sslmode=disable");
+        let e = migrate_err(MigrateError::Database(refused().await));
+        assert!(matches!(e, StoreError::Unavailable { .. }), "{e:?}");
+        let e = migrate_err(MigrateError::Execute {
+            version: 3,
+            source: refused().await,
+        });
+        assert!(matches!(e, StoreError::Unavailable { .. }), "{e:?}");
+
+        let unreadable = "host=h port=notaport"
+            .parse::<tokio_postgres::Config>()
+            .unwrap_err();
+        let e = migrate_err(MigrateError::Database(unreadable));
+        assert!(matches!(e, StoreError::Internal { .. }), "{e:?}");
     }
 
     #[tokio::test]
@@ -664,10 +708,10 @@ mod tests {
     /// failure has nothing under it.
     #[tokio::test]
     async fn a_servers_detail_is_not_kept() {
-        // ErrorResponse: severity, SQLSTATE 28000, message, DETAIL, then the end
+        // ErrorResponse: severity, SQLSTATE 28000, message, DETAIL, HINT, WHERE, then the end
         let reply = message(
             b'E',
-            b"SFATAL\0C28000\0Mno such role\0Dthe row (alice, hunter2)\0\0",
+            b"SFATAL\0C28000\0Mno such role\0Dthe row (alice, hunter2)\0Hhunter3\0Whunter4\0\0",
         );
         let port = fake_server(reply, false).await;
         let e = driver_error_of(&format!("postgres://u@127.0.0.1:{port}/db?sslmode=disable")).await;
@@ -675,11 +719,98 @@ mod tests {
             e.as_db_error().and_then(|db| db.detail()),
             Some("the row (alice, hunter2)")
         );
-        let error = store_err(e);
+        assert!(
+            format!("{e:?}").contains("hunter3"),
+            "the driver's Debug has it"
+        );
+        let sql = SqlError::Driver(e);
+        let shown = format!("{sql} {sql:?}");
+        assert!(!shown.contains("hunter"), "{shown}");
+        assert!(
+            shown.starts_with("FATAL: no such role (SQLSTATE 28000) Driver("),
+            "{shown}"
+        );
+        assert!(
+            std::error::Error::source(&sql).is_none(),
+            "nothing under it"
+        );
+        let error = store_err(sql);
         let source = std::error::Error::source(&error).map(ToString::to_string);
         let text = format!("{error} {error:?} {source:?}");
-        assert!(!text.contains("hunter2"), "{text}");
+        assert!(!text.contains("hunter"), "{text}");
         assert!(text.contains("SQLSTATE 28000"), "{text}");
         assert!(text.contains("no such role"), "{text}");
+    }
+
+    /// A connection of the test to the database itself (`ORCH_TEST_DIRECT_DATABASE_URL`, else
+    /// `ORCH_TEST_DATABASE_URL`: its temporary tables need one session), or nothing when unset.
+    async fn database() -> Option<tokio_postgres::Client> {
+        let url = std::env::var("ORCH_TEST_DIRECT_DATABASE_URL")
+            .or_else(|_| std::env::var("ORCH_TEST_DATABASE_URL"));
+        let Ok(url) = url else {
+            eprintln!("skipped: ORCH_TEST_DATABASE_URL unset");
+            return None;
+        };
+        let options: PgOptions = url.parse().unwrap();
+        Some(options.connect().await.unwrap())
+    }
+
+    /// A constraint's `DETAIL` quotes the failing row (a check) or the key (a unique index): it is
+    /// in no `Display` or `Debug` of the error, nor of the port's error made of it.
+    #[tokio::test]
+    async fn a_violation_s_detail_is_in_no_display_or_debug() {
+        use crate::sql::query;
+        let Some(conn) = database().await else {
+            return;
+        };
+        crate::sql::raw_sql(
+            "CREATE TEMP TABLE checked (v text CHECK (v <> 'x'), s text); \
+             CREATE TEMP TABLE keyed (k text PRIMARY KEY)",
+            &conn,
+        )
+        .await
+        .unwrap();
+        let check = query("INSERT INTO checked VALUES ('x', 'hunter5-row')")
+            .execute(&conn)
+            .await
+            .unwrap_err();
+        query("INSERT INTO keyed VALUES ('hunter6-key')")
+            .execute(&conn)
+            .await
+            .unwrap();
+        let unique = query("INSERT INTO keyed VALUES ('hunter6-key')")
+            .execute(&conn)
+            .await
+            .unwrap_err();
+        for (err, code) in [(check, "23514"), (unique, "23505")] {
+            let detail = err.as_db_error().and_then(|db| db.detail()).unwrap();
+            assert!(
+                detail.contains("hunter"),
+                "{code}: the server's DETAIL quotes it"
+            );
+            let shown = format!("{err} {err:?}");
+            assert!(!shown.contains("hunter"), "{shown}");
+            assert!(shown.contains(code), "{shown}");
+            let port = store_err(err);
+            let shown = format!("{port} {port:?}");
+            assert!(!shown.contains("hunter"), "{shown}");
+            assert!(matches!(port, StoreError::Internal { .. }), "{shown}");
+        }
+    }
+
+    /// A column that does not decode as the Rust type read: the row is not what the code
+    /// expects, `Corrupt` (sqlx's `ColumnDecode`).
+    #[tokio::test]
+    async fn a_value_that_does_not_decode_is_corrupt() {
+        use crate::sql::query_scalar;
+        let Some(conn) = database().await else {
+            return;
+        };
+        let err = query_scalar::<i64>("SELECT 'x'::text")
+            .fetch_one(&conn)
+            .await
+            .unwrap_err();
+        let error = store_err(err);
+        assert!(matches!(error, StoreError::Corrupt { .. }), "{error:?}");
     }
 }

@@ -9,12 +9,11 @@ use std::pin::Pin;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_core::{AgentId, LiveChunk, LiveEnd, LiveKind, LiveText, ThreadId};
-use orch_pg_connect::{PgOptions, TlsMode};
+use orch_pg_connect::{ConnectionTasks, PgOptions};
 use orch_ports::{StoreError, Topic, Wakeup, WakeupCapabilities, WakeupError};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_postgres::AsyncMessage;
-use tokio_postgres::config::SslMode;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
@@ -123,7 +122,8 @@ impl PgWakeup {
     pub fn start(pool: PgPool) -> Self {
         let options = pool.options().clone();
         let closed: Closed = Box::pin(pool.closed());
-        Self::spawn(pool, options, closed)
+        let tasks = pool.tasks().clone();
+        Self::spawn(pool, options, closed, tasks)
     }
 
     /// Like [`start`](Self::start), with the listener on a connection of its own to `direct_url`
@@ -138,15 +138,21 @@ impl PgWakeup {
     /// text (it may carry a password).
     pub fn start_direct(pool: PgPool, direct_url: &str) -> Result<Self, StoreError> {
         let options = crate::store::parse_url(direct_url)?;
-        Ok(Self::spawn(pool, options, Box::pin(std::future::pending())))
+        Ok(Self::spawn(
+            pool,
+            options,
+            Box::pin(std::future::pending()),
+            ConnectionTasks::default(),
+        ))
     }
 
-    fn spawn(pool: PgPool, options: PgOptions, closed: Closed) -> Self {
+    fn spawn(pool: PgPool, options: PgOptions, closed: Closed, tasks: ConnectionTasks) -> Self {
         let (tx, _) = broadcast::channel(CAPACITY);
         let (live, _) = broadcast::channel(CAPACITY);
         let (listening_tx, listening) = watch::channel(false);
         let task = tokio::spawn(listen_loop(
             options,
+            tasks,
             closed,
             tx.clone(),
             live.clone(),
@@ -359,20 +365,14 @@ struct Listener {
 }
 
 /// A connection of its own to the database of `options` (with the TLS they ask for), listening on
-/// every channel. Its connection is driven by a task that hands every message it hears to the
-/// listener, and ends with the connection.
-async fn attach(options: &PgOptions) -> Result<Listener, SqlError> {
-    let mut config = options.config().clone();
-    config.ssl_mode(match options.tls() {
-        TlsMode::Disable => SslMode::Disable,
-        TlsMode::Prefer => SslMode::Prefer,
-        _ => SslMode::Require,
-    });
+/// every channel. Its connection is driven by a task of `tasks` that hands every message it hears
+/// to the listener, and ends with the connection (once the listener is dropped, with `Terminate`).
+async fn attach(options: &PgOptions, tasks: &ConnectionTasks) -> Result<Listener, SqlError> {
     let tls = options.tls_connector().map_err(SqlError::Connect)?;
-    let connected = tokio::time::timeout(DEFAULT_WAIT, config.connect(tls)).await;
+    let connected = tokio::time::timeout(DEFAULT_WAIT, options.wire_config().connect(tls)).await;
     let (client, mut connection) = connected.map_err(|_| SqlError::TimedOut)??;
     let (sender, messages) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         let mut heard = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
         while let Some(message) = heard.next().await {
             let failed = message.is_err();
@@ -393,6 +393,7 @@ async fn attach(options: &PgOptions) -> Result<Listener, SqlError> {
 /// listened was lost, and polling recovers it. Ends when `closed` does.
 async fn listen_loop(
     options: PgOptions,
+    tasks: ConnectionTasks,
     mut closed: Closed,
     tx: broadcast::Sender<Topic>,
     live: broadcast::Sender<LiveText>,
@@ -403,7 +404,7 @@ async fn listen_loop(
     loop {
         let attached = tokio::select! {
             () = &mut closed => return,
-            attached = attach(&options) => attached,
+            attached = attach(&options, &tasks) => attached,
         };
         let mut listener = match attached {
             Ok(listener) => listener,

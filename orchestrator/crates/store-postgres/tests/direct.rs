@@ -403,3 +403,163 @@ async fn a_migration_that_is_given_up_leaves_no_lock_with_the_pool() {
     store.migrate().await.unwrap();
     assert_eq!(held().await, 0);
 }
+
+/// What one connection through a [`recorder`] sent, and whether it has ended its side.
+#[derive(Default)]
+struct Sent {
+    bytes: Vec<u8>,
+    ended: bool,
+}
+
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<Sent>>>>>;
+
+/// A forwarder on a port of its own to `target`, recording what every client sends.
+async fn recorder(target: String) -> (u16, Seen) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen: Seen = Seen::default();
+    let all = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((inbound, _)) = listener.accept().await {
+            let sent = std::sync::Arc::new(std::sync::Mutex::new(Sent::default()));
+            all.lock().unwrap().push(sent.clone());
+            let outbound = tokio::net::TcpStream::connect(&target).await.unwrap();
+            let (mut from_client, mut to_client) = inbound.into_split();
+            let (mut from_server, mut to_server) = outbound.into_split();
+            tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut from_server, &mut to_client).await;
+            });
+            tokio::spawn(async move {
+                let mut buf = [0_u8; 8192];
+                loop {
+                    let n = from_client.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 || to_server.write_all(&buf[..n]).await.is_err() {
+                        sent.lock().unwrap().ended = true;
+                        let _ = to_server.shutdown().await;
+                        return;
+                    }
+                    sent.lock().unwrap().bytes.extend_from_slice(&buf[..n]);
+                }
+            });
+        }
+    });
+    (port, seen)
+}
+
+/// A store's pool and the listener of a `PgWakeup::start` on it, used on a runtime of their own,
+/// the pool closed and that runtime dropped at once, as a process that exits after `close` drops
+/// it: every connection told the server it was leaving (`Terminate`), so the server logs nothing
+/// for it (a connection cut under TLS is a `could not receive data from client` line).
+#[test]
+fn a_closed_pool_ends_its_connections_before_the_process_exits() {
+    let Some(url) = support::direct_database_url().or_else(support::database_url) else {
+        eprintln!("skipped: ORCH_TEST_DATABASE_URL unset");
+        return;
+    };
+    let outer = tokio::runtime::Runtime::new().unwrap();
+    let (target, _) = readdressed(&url, 0);
+    let (port, seen) = outer.block_on(recorder(target));
+    let (_, moved) = readdressed(&url, port);
+    let moved = named(&moved, "orch-goodbye");
+    let sep = if moved.contains('?') { '&' } else { '?' };
+    let moved = format!("{moved}{sep}sslmode=disable");
+
+    let inner = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    inner.block_on(async {
+        let store = PgStore::connect_with(&moved, 3).await.unwrap();
+        // a pool of its own, which makes no connection: closing it waits for the listener's alone
+        let listening = PgPool::new(moved.parse().unwrap(), 1).unwrap();
+        let wakeup = PgWakeup::start(listening.clone());
+        assert!(wakeup.wait_listening(WITHIN).await, "the listener attached");
+        let (a, b) = tokio::join!(
+            orch_ports::ThreadStore::ping(&store),
+            orch_ports::ThreadStore::ping(&store)
+        );
+        a.unwrap();
+        b.unwrap();
+        store.pool().close().await;
+        listening.close().await;
+    });
+    drop(inner);
+
+    let all_ended = |seen: &Seen| {
+        let all = seen.lock().unwrap();
+        all.len() >= 3 && all.iter().all(|s| s.lock().unwrap().ended)
+    };
+    let ended = outer.block_on(async {
+        tokio::time::timeout(WITHIN, async {
+            while !all_ended(&seen) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+    });
+    assert!(ended.is_ok(), "the connections ended");
+    for sent in seen.lock().unwrap().iter() {
+        let sent = sent.lock().unwrap();
+        assert!(
+            sent.bytes.ends_with(&[b'X', 0, 0, 0, 4]),
+            "a connection ended without Terminate: {:?}",
+            &sent.bytes[sent.bytes.len().saturating_sub(16)..]
+        );
+    }
+}
+
+/// A transaction dropped as its runtime shuts down: the `ROLLBACK` it spawned never runs, and its
+/// connection is closed rather than given back to the pool inside the transaction.
+#[test]
+fn a_transaction_dropped_as_the_runtime_shuts_down_never_goes_back_to_the_pool() {
+    let Some(url) = support::database_url() else {
+        eprintln!("skipped: ORCH_TEST_DATABASE_URL unset");
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let pool = runtime.block_on(async {
+        let pool = PgPool::new(url.parse().unwrap(), 1).unwrap();
+        let tx = pool.begin().await.unwrap();
+        query("SELECT 1").execute(&tx).await.unwrap();
+        assert_eq!(pool.size(), 1);
+        // its rollback is spawned, and this runtime never runs it
+        drop(tx);
+        pool
+    });
+    drop(runtime);
+    assert_eq!(pool.size(), 0, "the connection went back to the pool");
+}
+
+/// A transaction dropped on a runtime that goes on: rolled back, and its connection given back to
+/// the pool (not closed).
+#[tokio::test]
+async fn a_dropped_transaction_is_rolled_back_and_its_connection_kept() {
+    let Some(url) = support::database_url() else {
+        eprintln!("skipped: ORCH_TEST_DATABASE_URL unset");
+        return;
+    };
+    let pool = PgPool::new(url.parse().unwrap(), 1).unwrap();
+    let tx = pool.begin().await.unwrap();
+    query("SET LOCAL application_name = 'orch-in-tx'")
+        .execute(&tx)
+        .await
+        .unwrap();
+    drop(tx);
+    tokio::time::timeout(WITHIN, async {
+        while pool.size() == 1 && pool.deadpool().status().available == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(pool.size(), 1, "the connection was closed");
+    let name: String = query_scalar("SELECT current_setting('application_name')")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_ne!(name, "orch-in-tx", "the transaction was not rolled back");
+}

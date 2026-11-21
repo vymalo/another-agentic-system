@@ -30,6 +30,7 @@ use deadpool_postgres::{Object, Pool, PoolError};
 /// The options a [`PgPool`] connects with (`orch-pg-connect`'s), re-exported for callers of
 /// [`PgPool::new`].
 pub use orch_pg_connect::PgOptions;
+use orch_pg_connect::{ConnectionTasks, LINGER};
 use tokio::sync::watch;
 use tokio_postgres::types::{FromSql, ToSql, Type};
 /// A connection of no pool, and a row, as `tokio-postgres` has them.
@@ -57,6 +58,7 @@ pub struct PgPool {
     pool: Pool,
     options: Arc<PgOptions>,
     closed: Arc<watch::Sender<bool>>,
+    tasks: ConnectionTasks,
 }
 
 impl std::fmt::Debug for PgPool {
@@ -88,12 +90,16 @@ impl PgPool {
         wait: Duration,
     ) -> Result<Self, SqlError> {
         let max = usize::try_from(max_connections.max(1)).unwrap_or(usize::MAX);
-        let pool = options.pool(max, wait).map_err(SqlError::Connect)?;
+        let tasks = ConnectionTasks::default();
+        let pool = options
+            .pool_tracked(max, wait, &tasks)
+            .map_err(SqlError::Connect)?;
         let (closed, _) = watch::channel(false);
         Ok(Self {
             pool,
             options: Arc::new(options),
             closed: Arc::new(closed),
+            tasks,
         })
     }
 
@@ -152,11 +158,26 @@ impl PgPool {
 
     /// Closes the pool: every later call fails as a closed pool ([`SqlError::Pool`]), idle
     /// connections are dropped, a connection in use is closed when it is given back, and a
-    /// [`PgWakeup`](crate::PgWakeup) listening for the pool stops. It does not wait for the
-    /// connections in use (sqlx's `close` waited for them).
+    /// [`PgWakeup`](crate::PgWakeup) listening for the pool stops. Then it waits, at most
+    /// [`LINGER`] (one second), for those connections (and that listener's) to end as a client
+    /// ends one, with `Terminate` and, under TLS, `close_notify`, so that a process that exits
+    /// next does not cut them (the server would log `could not receive data from client` for
+    /// each). sqlx's `close` waited, without a bound, for the connections in use.
     pub async fn close(&self) {
         self.pool.close();
         self.closed.send_replace(true);
+        if !self.tasks.ended_within(LINGER).await {
+            tracing::debug!(
+                running = self.tasks.running(),
+                "postgres connections still open when the pool closed"
+            );
+        }
+    }
+
+    /// The tasks that drive the pool's connections, and the listener's of a
+    /// [`PgWakeup::start`](crate::PgWakeup::start) on it.
+    pub(crate) fn tasks(&self) -> &ConnectionTasks {
+        &self.tasks
     }
 
     /// Whether [`close`](Self::close) was called.
@@ -319,14 +340,33 @@ impl Drop for Tx {
         };
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
+                let mut rolling_back = RollingBack(Some(conn));
                 runtime.spawn(async move {
-                    if conn.batch_execute("ROLLBACK").await.is_err() {
-                        drop(Object::take(conn));
+                    let rolled_back = match &rolling_back.0 {
+                        Some(conn) => conn.batch_execute("ROLLBACK").await.is_ok(),
+                        None => false,
+                    };
+                    if rolled_back {
+                        // back to the pool, out of the transaction
+                        drop(rolling_back.0.take());
                     }
                 });
             }
             // no runtime to roll back on: the connection is closed, and the server rolls back
             Err(_) => drop(Object::take(conn)),
+        }
+    }
+}
+
+/// The connection of a dropped transaction while its `ROLLBACK` runs: closed (taken out of the
+/// pool) unless the `ROLLBACK` succeeded, also when the task is dropped before it ends (the runtime
+/// shutting down), so a connection never goes back to the pool inside a transaction.
+struct RollingBack(Option<Object>);
+
+impl Drop for RollingBack {
+    fn drop(&mut self) {
+        if let Some(conn) = self.0.take() {
+            drop(Object::take(conn));
         }
     }
 }

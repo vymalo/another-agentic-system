@@ -2851,6 +2851,7 @@ dependencies = [
 name = "orch-store-postgres"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "deadpool-postgres",
  "futures",
  "jiff",
