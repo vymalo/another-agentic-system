@@ -203,15 +203,42 @@ jobs:
         # the listeners and migrations connect directly). Both containers are on the host network, as the tests expect.
         working-directory: .
         run: |
+          # wait_for <what> <container> <attempts> <command...>: the command answers, or the job fails HERE, naming the
+          # container's state and its log. A loop whose last command is `sleep` swallows its own timeout (issue 412: the
+          # step passed and the next one died on a bare "connection refused", which read as the pooler's fault).
+          # The command's output is kept in a file and printed only when it never answered, so a first attempt that is
+          # refused is not read as a failure.
+          wait_for() {
+            what=$1; container=$2; attempts=$3; shift 3
+            for _ in $(seq "$attempts"); do
+              if "$@" > "$RUNNER_TEMP/wait-$container.out" 2>&1; then
+                echo "$what is ready"
+                return 0
+              fi
+              sleep 1
+            done
+            echo "::error::$what did not answer within ${attempts}s"
+            echo "--- the last answer ---"
+            cat "$RUNNER_TEMP/wait-$container.out" || true
+            echo "--- docker ps ---"
+            docker ps -a --filter "name=$container" || true
+            echo "--- docker inspect ---"
+            docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "$container" || true
+            echo "--- docker logs $container ---"
+            docker logs "$container" || true
+            return 1
+          }
           docker run -d --name postgres --network host -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orch_test \
             postgres:16 -c max_connections=300 -c fsync=off
-          for _ in $(seq 60); do docker exec postgres pg_isready -h 127.0.0.1 -U postgres -d orch_test && break; sleep 1; done
+          # pg_isready is the PostgreSQL protocol's own readiness answer, and it is what PgBouncer's image itself probes:
+          # a TCP connect is not (a listener accepts before the server is ready), and a query through the pooler is more
+          # than readiness (it needs a pool and a server connection, which is what the tests then exercise).
+          wait_for "Postgres on 127.0.0.1:5432" postgres 60 \
+            docker exec postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d orch_test
           docker run -d --name pgbouncer --network host \
             -v "$PWD/orchestrator/crates/store-postgres/tests/pgbouncer:/etc/pgbouncer:ro" "$PGBOUNCER_IMAGE"
-          for _ in $(seq 30); do
-            docker exec -e PGPASSWORD=postgres postgres psql -h 127.0.0.1 -p 6432 -U postgres -d orch_test -Atc 'select 1' && break
-            sleep 1
-          done
+          wait_for "PgBouncer on 127.0.0.1:6432" pgbouncer 60 \
+            docker exec postgres pg_isready -h 127.0.0.1 -p 6432 -U postgres -d orch_test
       - name: The pooler is what the tests assume
         # A pooler in session mode, or one without protocol-level prepared statements, would make the suites pass for the wrong
         # reason (or fail for it): say what runs, and refuse what is not transaction mode with max_prepared_statements.
