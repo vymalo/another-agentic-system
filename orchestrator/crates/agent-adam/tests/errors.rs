@@ -72,3 +72,59 @@ async fn a_connection_string_is_never_kept() {
         assert!(!report(&direct).contains("hunter2"), "{}", report(&direct));
     }
 }
+
+/// Set in the child process of the test below.
+const CHILD: &str = "ORCH_AGENT_ADAM_LISTENER_CHILD";
+
+/// adam-rs's notifier connects its listener from the URL alone (`adam-postgres` reads no `PG*`
+/// variable and no password file), so a URL whose password comes from `PGPASSWORD` would give
+/// pools that connect and a listener that never does: it is refused at once, as `Invalid`, naming
+/// the part and never its value. A URL that names everything is taken. Run in a child process, the
+/// only one whose environment this test sets.
+#[tokio::test]
+async fn a_listener_url_the_environment_completes_is_refused() {
+    if std::env::var(CHILD).is_err() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "a_listener_url_the_environment_completes_is_refused",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .env("HOME", "/nonexistent-home")
+            .env("PGPASSWORD", "from-the-environment");
+        if let Some(path) = std::env::var_os("PATH") {
+            child.env("PATH", path);
+        }
+        let output = child.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let hosted = |url: &str| {
+        let pool = url
+            .parse::<PgOptions>()
+            .unwrap()
+            .pool(1, std::time::Duration::from_secs(1))
+            .unwrap();
+        LocalAgents::postgres(
+            pool,
+            url,
+            LocalOptions::new("listener-test"),
+            &[LocalKind::Echo],
+        )
+    };
+    let err = hosted("postgres://u@127.0.0.1:1/db").unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Invalid);
+    for text in [report(&err), format!("{err:?}")] {
+        assert!(text.contains("password"), "{text}");
+        assert!(!text.contains("from-the-environment"), "{text}");
+    }
+    assert!(hosted("postgres://u:pw@127.0.0.1:1/db").is_ok());
+}

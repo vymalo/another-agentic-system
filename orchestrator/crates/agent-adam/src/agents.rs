@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adam_a2a_runtime::RuntimeTaskBackend;
-use adam_core::{ClaimScope, DynStore, MemoryStore};
+use adam_core::{ClaimScope, DynStore, MemoryStore, StoreError};
 use adam_notify_postgres::PgNotify;
 use adam_postgres::PgConfig;
 use adam_runtime::{BroadcastSink, Runtime, RuntimeBuilder};
@@ -54,8 +54,18 @@ async fn connect_pool(url: &str, size: u32) -> Result<Pool, LocalAgentsError> {
 
 /// Where the notifier's listener connects: `url` as adam-rs's `adam-postgres` reads it, the only
 /// configuration `PgNotify` takes for the connection it opens itself (`LISTEN` needs a session of
-/// its own, outside any pool). The error never holds the text.
+/// its own, outside any pool). `adam-postgres` reads the URL alone, no `PG*` variable and no
+/// password file, so a `url` that leaves part of the server to them (a password in `PGPASSWORD`,
+/// say) is refused here: the pools would connect and the listener would not, and the agents would
+/// fall back to polling with nothing said. The error names the part, never a value.
 fn listener(url: &str) -> Result<PgConfig, LocalAgentsError> {
+    if let Some(part) = PgOptions::left_to_the_environment(url).map_err(|_| unparsable())? {
+        return Err(LocalAgentsError::store(StoreError::InvalidInput(format!(
+            "the in-process agents' notifier reads only the connection string, and its {part} \
+             comes from the environment (a PG* variable, the password file or the operating \
+             system's user): name it in the URL"
+        ))));
+    }
     PgConfig::parse(url).map_err(|_| unparsable())
 }
 
