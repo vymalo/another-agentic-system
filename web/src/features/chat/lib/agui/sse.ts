@@ -15,14 +15,38 @@ export type SseFrame = {
   data: string;
 };
 
+export type SseOptions = {
+  /**
+   * How long the body may say nothing at all — no frame, no comment, not even part of a line — before
+   * the reader lets go of it (ADR 0082, C3). The orchestrator writes a `: keepalive` comment at least
+   * every 15 s (`docs/api/agui.md`), so a window of two of them is a stream that died without closing:
+   * a proxy, a phone radio or a NAT entry dropped it, and `reader.read()` would wait for ever. Letting
+   * go ends the generator as an ordinary end, which is what the caller reopens from its last `id:`.
+   *
+   * Absent: the reader waits for ever. A run's response is read this way, because it is left at
+   * `RUN_STARTED` and a watchdog there could turn a slow accept into a second send.
+   */
+  silenceMs?: number;
+};
+
 export async function* readSse(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
+  options: SseOptions = {},
 ): AsyncGenerator<SseFrame> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const onAbort = () => void reader.cancel().catch(() => {});
   signal?.addEventListener("abort", onAbort, { once: true });
+  const silenceMs = options.silenceMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Any bytes the body delivers are its heartbeat, a comment as much as a frame: the window is re-armed
+  // after each read, and its expiry closes the reader, which resolves the read in flight as `done`.
+  const rearm = () => {
+    if (silenceMs === undefined) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => void reader.cancel().catch(() => {}), silenceMs);
+  };
   let buffer = "";
   let id: string | undefined;
   let data: string[] = [];
@@ -49,9 +73,11 @@ export async function* readSse(
   };
 
   try {
+    rearm();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) return;
+      rearm();
       let chunk = decoder.decode(value, { stream: true });
       if (skipLf && chunk.startsWith("\n")) chunk = chunk.slice(1);
       skipLf = chunk.endsWith("\r");
@@ -68,6 +94,7 @@ export async function* readSse(
       buffer = buffer.slice(start);
     }
   } finally {
+    clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
     await reader.cancel().catch(() => {});
   }

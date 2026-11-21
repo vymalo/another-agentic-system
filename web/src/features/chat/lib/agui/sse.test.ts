@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readSse, type SseFrame } from "./sse";
 
 const enc = new TextEncoder();
@@ -18,8 +18,14 @@ async function read(chunks: string[]): Promise<SseFrame[]> {
   return out;
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("readSse", () => {
-  it("reads id and data, ignores comments, event and retry", async () => {
+  // The name used to say comments were ignored. They are read, and they are the heartbeat: a comment
+  // is activity that re-arms the silence watchdog below, and it is still not a frame (ADR 0082, C3).
+  it("reads id and data; a comment is a keepalive, not a frame; event and retry are ignored", async () => {
     expect(
       await read([
         ": keepalive\n\n",
@@ -90,5 +96,51 @@ describe("readSse", () => {
     })();
     ac.abort();
     expect(await done).toEqual([]);
+  });
+
+  // ADR 0082, C3: a socket held open by a proxy or a dead NAT entry says nothing and never closes. The
+  // reader must let go of it, so the caller can reopen from its last `id:`.
+  it("lets go of a body that says nothing for the silence window, and not a moment sooner", async () => {
+    vi.useFakeTimers();
+    const never = new ReadableStream<Uint8Array>({ start() {} });
+    let ended = false;
+    const done = (async () => {
+      for await (const _ of readSse(never, undefined, { silenceMs: 100 })) {
+        // nothing to read
+      }
+      ended = true;
+    })();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(ended).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(ended).toBe(true);
+  });
+
+  it("is kept alive by a keepalive comment: only real silence is a dead stream", async () => {
+    vi.useFakeTimers();
+    let beat!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        beat = c;
+      },
+    });
+    // the orchestrator's heartbeat, one window apart at the most
+    const beats = setInterval(() => beat.enqueue(enc.encode(": keepalive\n\n")), 90);
+    let ended = false;
+    const done = (async () => {
+      for await (const _ of readSse(stream, undefined, { silenceMs: 100 })) {
+        // nothing to read
+      }
+      ended = true;
+    })();
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(90);
+      expect(ended).toBe(false);
+    }
+    clearInterval(beats);
+    beat.close();
+    await done;
+    expect(ended).toBe(true);
   });
 });
