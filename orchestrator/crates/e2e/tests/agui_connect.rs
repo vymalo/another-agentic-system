@@ -11,6 +11,7 @@
 #[macro_use]
 mod common;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use common::*;
@@ -466,15 +467,33 @@ async fn a_fork_replays_the_parents_frames_then_the_marker_and_takes_a_run_with_
     );
     assert_eq!(marker[3].id, Some(cut + 1));
 
-    // The screen holds what it was shown: every message and activity of the replay. A run with
-    // all of them and one more is accepted, and starts the fork's next job.
+    // The screen holds what it was shown: every message and activity of the replay, each message
+    // with **the words the log holds for its id** — an id is bound to them, so a replay that sent
+    // other words under it is refused (`message_id_reused`, ADR 0082). A run with all of them and
+    // one more is accepted, and starts the fork's next job.
+    let mut words: BTreeMap<String, String> = BTreeMap::new();
+    for frame in &ours {
+        let e = &frame.event;
+        if e["type"] == "TEXT_MESSAGE_CONTENT"
+            && let Some(id) = e["messageId"].as_str()
+        {
+            words
+                .entry(id.to_owned())
+                .or_default()
+                .push_str(e["delta"].as_str().unwrap_or_default());
+        }
+    }
     let mut held: Vec<Value> = Vec::new();
     for frame in &ours {
         let e = &frame.event;
         match e["type"].as_str().unwrap() {
-            "TEXT_MESSAGE_START" => held.push(json!({
-                "id": e["messageId"], "role": e["role"], "content": "text",
-            })),
+            "TEXT_MESSAGE_START" => {
+                let id = e["messageId"].as_str().unwrap();
+                held.push(json!({
+                    "id": id, "role": e["role"],
+                    "content": words.get(id).cloned().unwrap_or_default(),
+                }));
+            }
             "ACTIVITY_SNAPSHOT" => held.push(json!({
                 "id": e["messageId"], "role": "activity",
                 "activityType": e["activityType"], "content": e["content"],
