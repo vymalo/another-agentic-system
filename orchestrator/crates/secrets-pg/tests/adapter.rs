@@ -525,7 +525,10 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
     let alice = db.owner("alice");
     let pool = db.pool("orch-secrets-migrate", 8).await;
     let secrets = PgSecretStore::from_pool(pool.clone(), ring_k1());
-    let threads = orch_store_postgres::PgStore::from_pool(pool.clone());
+    // the thread store has a pool of its own type since it left sqlx: one to the same schema
+    let threads = orch_store_postgres::PgStore::connect(&db.pinned_direct_url())
+        .await
+        .unwrap();
 
     // both histories in one database and schema, run twice each, and at the same time
     secrets.migrate().await.unwrap();
@@ -562,7 +565,9 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
     let pool = second.pool("orch-secrets-migrate-2", 4).await;
     let secrets = PgSecretStore::from_pool(pool.clone(), ring_k1());
     secrets.migrate().await.unwrap();
-    orch_store_postgres::PgStore::from_pool(pool.clone())
+    orch_store_postgres::PgStore::connect(&second.pinned_direct_url())
+        .await
+        .unwrap()
         .migrate()
         .await
         .unwrap();
