@@ -30,6 +30,9 @@ sh dev/agent-router-spike/spike.sh  # the proof
 sh dev/agent-router-spike/down.sh   # deletes the cluster
 ```
 
+CI runs the same two scripts in `.github/workflows/agent-router-spike.yml`, on every pull request that
+touches this directory; it is not a release gate.
+
 ### Prerequisite on the host: the inotify budget
 
 Rootless Docker shares the user's inotify budget (`fs.inotify.max_user_instances`, 128 by default)
