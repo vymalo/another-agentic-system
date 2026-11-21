@@ -172,3 +172,15 @@ No transition joins the two homes: a thread is never in both.
 - **A local orchestrator process with HTTP on the loopback**: a server, a port and a token on every computer, against
   adam ADR 0047's "speaks no protocol".
 - **A phone with no agent**: the owner chose one local agent on a phone, within what its system allows.
+
+### Status note, 2026-11-21: E1 is built, the orchestrator is off sqlx
+
+Slice E1 is built: `orch-store-postgres`, `orch-secrets-pg` and `orch-agent-adam` speak `tokio-postgres` on
+`deadpool-postgres` pools that `orch-pg-connect` builds, the two stores migrate with `orch-pg-migrate`, and adam-rs's
+store and notifier under `agent-local` are on the same drivers since adam-rs `7ac3281` (ADR 0014's note of the same day).
+`orchestrator/Cargo.lock` holds no `sqlx` package, and `tools/sqlx-out-check.sh` fails CI's `check` job on a lockfile that
+holds one again (the slice's proof said `cargo tree -i sqlx`; the lockfile is the whole tree, dev-dependencies included).
+What sqlx 0.9 did is kept as recordings made by running sqlx itself before it left: what it read from each connection
+string (`orchestrator/crates/pg-connect/tests/sqlx-0.9-reads.tsv`), the version, description, checksum and transaction of
+every migration and the advisory lock key it took (`orchestrator/crates/pg-migrate/tests/`), so an existing database still
+migrates as a no-op and sqlx's own checks pass on what `orch-pg-migrate` writes. Slices E2 to E6 are not built.
