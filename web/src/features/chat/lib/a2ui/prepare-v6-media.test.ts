@@ -14,7 +14,7 @@ const refused = (p: Prepared) => {
   return p;
 };
 const ours = (components: Rec[], catalogId = OWN_CATALOG_ID) =>
-  surface(components, undefined, "v0.9.1", catalogId);
+  surface(components, undefined, "1.0", catalogId);
 const root = (children: string[]): Rec => ({ id: "root", component: "Column", children });
 
 const PIC = "b2".repeat(32);
@@ -95,7 +95,7 @@ describe("Gallery, Video, Audio and LinkPreview, in a surface of our catalog", (
 
   it("in the basic catalog none of them is drawn: they are not in its vocabulary", () => {
     const p = refused(
-      prepareSurface(surface([root(["l"]), link()], undefined, "v0.9.1", BASIC_CATALOG)),
+      prepareSurface(surface([root(["l"]), link()], undefined, "1.0", BASIC_CATALOG)),
     );
     expect(p.rule).toBe("catalog");
   });

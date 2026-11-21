@@ -1054,6 +1054,38 @@ collapsed line, "Asked Coder"**, under the step or the ask that asked: the tree'
   the name, no live region in the pane (the state pill stays the one polite status), axe in both schemes with the asks
   closed, open and running (`e2e/asks.spec.ts`); nothing scrolls sideways on a phone's sheet.
 
+## Subagents
+
+*Added 2026-11-20 (S4 of [#332](https://github.com/vymalo/another-agentic-system/issues/332), [ADR 0072](../docs/decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md); the mechanics are in [README.md](README.md#subagents-child-sessions)).* A helper an agent runs in the background is a **subagent**: the word
+in every label, tip and message of the UI ("helper session" is the docs' word). It lives in the right-hand panel's **Subagents** tab; the chat holds only its card and, for a start a person
+asked for, one muted line. Its own thread has a banner and a box that follows its state.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-sessions-new.png">
+  <img src="e2e/__screens__/desktop-light-sessions-new.png" alt="The New subagent dialog over a finished chat, the Subagents tab open behind it. It asks for the helper (planner, “Breaks a request into steps.”, and researcher), “What it is for” filled with “Plan the docs” and a counter, “What to ask it” filled with a request, and a checked “Close when done”. Cancel and “Start subagent” are at the foot." width="720">
+</picture>
+
+*The dialog, filled, with "Close when done" on (its default); from the web's mock server.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-sessions-close.png">
+  <img src="e2e/__screens__/desktop-light-sessions-close.png" alt="The Close subagent dialog over the thread of a subagent that is working. It asks to close planner and offers two choices: “Close when this round ends” and “Stop and close”, and a way to cancel." width="720">
+</picture>
+
+*Closing a subagent that works: two choices, each said in words; from the web's mock server.*
+
+- **Agent text is text.** The helper's name, the description, a round's answer and the agent's refusal ("Did not start: max_working: …") are an agent's words: text nodes, never Markdown, never a link,
+  cut at a length with the rest a click away, and never read as an instruction by the page.
+- **Never colour alone.** A state is a word ("Working", "Waiting for you", "Idle", "Closing…", "Closed", "Round 2 failed") in the card, the row, the banner and the rail, with a dot or a glyph
+  as a second signal; "Stays open" and "Closes when done" are words in a mark, not an icon. A failure to start is words and a **Try again** button, not a red line.
+- **One word.** "Subagent" everywhere a person reads; "session" and "helper" stay in the contract.
+- **A child is part of its parent.** Its rail row is nested, has a helper mark and its state in words, and no fork mark; its thread has no fork, edit, share, `@`, `/` or tools picker, and says
+  why ("A subagent is part of its parent chat"). Stop's tip says what it will do ("Stops this round, the subagent stays open" or "...and closes the subagent"), because the two differ.
+- **Focus.** "New subagent" and **Close** open modal dialogs (Radix: labelled, the focus held inside, Escape closes) and give the focus **back to the button that opened them**
+  (`onCloseAutoFocus`). A refused field takes the focus
+  (the description or the text), **Try again** reopens the dialog with the draft back. The dialogs and the tab pass axe in both schemes (`e2e/sessions.spec.ts`), the rows and cards
+  are reached by Tab, and nothing scrolls sideways on a phone, where the tab is the panel's sheet.
+
 ## Type, spacing, radii
 
 - Inter (variable, self-hosted via `@fontsource-variable/inter`), system monospace for code.

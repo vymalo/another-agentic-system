@@ -53,7 +53,7 @@ const cardsSurface = (extra: Rec = {}, cards: Rec[] = CARDS) =>
       { id: "options", component: "Cards", cards, ...extra },
     ],
     undefined,
-    "v0.9.1",
+    "1.0",
     OWN_CATALOG.catalogId,
   );
 

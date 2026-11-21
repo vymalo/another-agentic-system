@@ -21,7 +21,7 @@ fn action(name: &str) -> UiActionData {
         name: name.into(),
         source_component_id: "go".into(),
         context,
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: Some("run-2".into()),
     }
 }

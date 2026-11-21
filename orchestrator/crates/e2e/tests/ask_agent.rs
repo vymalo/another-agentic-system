@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use common::*;
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, AskLimits, MENTIONS_EXTENSION, THREAD_TOOLS_EXTENSION,
+    A2UI_EXTENSION_V1_0, AskLimits, MENTIONS_EXTENSION, THREAD_TOOLS_EXTENSION,
     UI_CATALOG_EXTENSION, catalog_digest,
 };
 use orch_testsupport::{
@@ -339,7 +339,7 @@ async fn a_mention_is_the_only_way_to_be_asked_and_the_limits_are_the_deployment
 /// never the derived one.
 async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(backend: Backend) {
     let drawing = |extensions: &[&str]| FakeAgentOptions {
-        ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+        ui_extensions: vec![A2UI_EXTENSION_V1_0.to_owned()],
         extensions: extensions.iter().map(|u| (*u).to_owned()).collect(),
         accepts_inline_catalogs: true,
         ..FakeAgentOptions::default()
@@ -360,10 +360,10 @@ async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(ba
     .await;
     let orch = world.instance_with_thread_tools("orch-1", true).await;
     let chat = world.chat(&orch);
-    // the run carries version 3 of the web's catalog, the first with `Choices`
+    // the run carries version 11 of the web's catalog, the first with `Choices`
     let thread = Uuid::now_v7().to_string();
     let text = "coordinate @coder -- go";
-    let mut extra = with_ui_catalog(3);
+    let mut extra = with_ui_catalog(11);
     extra["forwardedProps"]["vymalo.mentions"] = json!([mention(text, "coder")]);
     let body = Chat::agui_input(&thread, "run-1", &[("m-1", text)], extra);
     let mut sse = chat.agui_run("plain", &body).await;
@@ -371,7 +371,7 @@ async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(ba
     sse.collect_frames(WAIT).await;
     chat.wait_state(&thread, "done").await;
 
-    let screen = ui_catalog(3);
+    let screen = ui_catalog(11);
     let forms_id = format!("{UI_CATALOG_ID}/forms");
     // the thread's agent was sent the screen's whole catalog
     let plain = world.plain.executions();
@@ -393,7 +393,7 @@ async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(ba
     assert_eq!(asked.len(), 1);
     let told = asked[0].ui_catalog.clone().expect("told of a catalog");
     assert_eq!(told["catalogId"], forms_id);
-    assert_eq!(integral_numbers(&told)["version"], json!(3));
+    assert_eq!(integral_numbers(&told)["version"], json!(11));
     assert_eq!(told["inline"], true);
     let inline: Vec<Value> = asked[0]
         .inline_catalogs
@@ -415,7 +415,7 @@ async fn an_asked_agent_is_sent_a_forms_only_catalog_derived_from_the_threads(ba
     assert_eq!(json!(catalog_digest(&inline[0]).unwrap()), told["digest"]);
     assert_ne!(told["digest"], screen["digest"]);
     assert_eq!(
-        asked[0].a2ui_capabilities.as_ref().unwrap()["v0.9.1"]["supportedCatalogIds"][0],
+        asked[0].a2ui_capabilities.as_ref().unwrap()["1.0"]["supportedCatalogIds"][0],
         forms_id
     );
     assert!(asked[0].thread_tools.is_some(), "and its grant, as ever");

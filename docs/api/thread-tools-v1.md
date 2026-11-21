@@ -449,9 +449,10 @@ are cut off after 30 seconds; a provider bounds its own calls, because a tool su
 
 ### `get_ui_catalog`
 
-Returns the thread's current UI catalog ([`ui-catalog-v1.md`](ui-catalog-v1.md)): the newest version the thread
-recorded. The agent calls it when its copy may be stale (a message whose digest it does not hold, a restart) and when
-it was told `inline: false`.
+Returns the thread's current UI catalog ([`ui-catalog-v2.md`](ui-catalog-v2.md)): the newest version the thread
+recorded, as the v2 document the screen sent. The agent calls it when its copy may be stale (a message whose digest it
+does not hold, a restart) and when it was told `inline: false`. The tool's own input and output do not change with
+`ui-catalog/v2`, so this extension stays v1.
 
 Input:
 
@@ -477,7 +478,8 @@ Output, as `structuredContent` and as the same JSON in one text content:
 
 `catalog` is left out when `unchanged` is true, that is, when `knownDigest` is the current digest. A thread with no
 catalog (the web that opened it sent none) answers `isError: true` with the text "this thread has no UI catalog;
-answer in text". The call times out after 30 seconds. It reads the thread's catalog ledger and the matching
+answer in text". So does a thread whose current catalog is still a `ui-catalog/v1` document — one written before the
+A2UI v1.0 cutover, which a v1.0 reader refuses (ADR 0075): it is never served, and the text says so. The call times out after 30 seconds. It reads the thread's catalog ledger and the matching
 `ui_catalog` event; the token has already authorised the thread, so there is no further check of a user.
 
 ### `turn_output`

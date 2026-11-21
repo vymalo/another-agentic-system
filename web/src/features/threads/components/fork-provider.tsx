@@ -26,6 +26,8 @@ export type ThreadFork = {
    * a fork, an edit and the other agents of the menu are not offered. Null when they may.
    */
   readOnly: string | null;
+  /** Set on a subagent's own thread: why it is not forked, edited or continued by another agent. */
+  childReason?: string | null;
   /** The agent's turn is going on: nothing of it can be copied (the server says `turn_open`). */
   turnOpen: boolean;
   /** A fork is being made. */
@@ -60,6 +62,7 @@ export type ThreadFork = {
 const NONE: ThreadFork = {
   available: false,
   readOnly: null,
+  childReason: null,
   turnOpen: false,
   busy: false,
   error: null,
@@ -91,6 +94,7 @@ export function ForkProvider({
   state,
   lastSeq,
   readOnly = null,
+  childReason = null,
   tier,
   children,
 }: {
@@ -99,6 +103,11 @@ export function ForkProvider({
   state: ThreadState | undefined;
   /** Why the person may not act on the thread, when they may not (`threadAccess`): it forks nothing. */
   readOnly?: string | null;
+  /**
+   * Why a subagent's own thread forks nothing (a subagent is part of its parent chat): no fork, edit
+   * or regenerate is offered there, and the agent menu says it. Null for any other thread.
+   */
+  childReason?: string | null;
   /** The newest event the page has read: what the answers about the log (`seqOfMessage`) move with. */
   lastSeq: number;
   /** The tier the composer sends with its next message (ADR 0061): an edit is sent under it too. */
@@ -160,8 +169,9 @@ export function ForkProvider({
 
   const value = useMemo<ThreadFork>(
     () => ({
-      available: readOnly === null,
+      available: readOnly === null && childReason === null,
       readOnly,
+      childReason,
       turnOpen,
       busy,
       error,
@@ -176,6 +186,7 @@ export function ForkProvider({
     }),
     [
       readOnly,
+      childReason,
       turnOpen,
       busy,
       error,

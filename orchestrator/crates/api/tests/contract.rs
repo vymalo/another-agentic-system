@@ -235,6 +235,14 @@ impl Harness {
     /// The resource API with no interaction surface mounted, and a dispatcher over a scripted agent.
     async fn start() -> Self {
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
+        // `plain` runs helpers as sessions (ADR 0072)
+        agent.set_child_sessions(
+            "plain",
+            orch_core::ChildSessionsOffer::from_params(&json!({
+                "agents": [{"name": "planner", "description": "Plans"}],
+                "maxOpen": 16
+            })),
+        );
         let entry = |id: &str, name: &str| AgentEntry {
             endpoint: AgentEndpoint::a2a(
                 AgentId::new(id),
@@ -643,7 +651,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 33] = [
+    let auth_ops: [(&str, reqwest::Method, String); 35] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("getMyUsage", reqwest::Method::GET, "/api/me/usage".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
@@ -736,6 +744,16 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "cancelThread",
             reqwest::Method::POST,
             format!("/api/threads/{RANDOM}/cancel"),
+        ),
+        (
+            "startChildSession",
+            reqwest::Method::POST,
+            format!("/api/threads/{RANDOM}/sessions"),
+        ),
+        (
+            "closeChildSession",
+            reqwest::Method::POST,
+            format!("/api/threads/{RANDOM}/session/close"),
         ),
         (
             "forkThread",
@@ -2435,6 +2453,267 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     assert_eq!(r.status, 422);
     c.check("forkThread", &r);
     assert_eq!(r.json()["code"], "child_thread");
+
+    // A person drives a helper session (ADR 0072, S3): closes one, starts one, and is refused what
+    // the contract refuses, each before anything is written.
+    // closing a session that is closed already answers 202 and writes nothing
+    let before = h.events(KID, &child_id).await.len();
+    let r = h
+        .post(
+            &format!("/api/threads/{child_id}/session/close"),
+            Some(KID),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 202);
+    c.check("closeChildSession", &r);
+    assert_eq!(r.json(), json!({"state": "closed"}));
+    assert_eq!(h.events(KID, &child_id).await.len(), before);
+    // a thread that is no helper's cannot be closed, and the body is read strictly
+    let r = h
+        .post(
+            &format!("/api/threads/{parent}/session/close"),
+            Some(KID),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 422);
+    c.check("closeChildSession", &r);
+    assert_eq!(r.json()["code"], "not_child_thread");
+    let r = h
+        .post(
+            &format!("/api/threads/{child_id}/session/close"),
+            Some(KID),
+            Some(r#"{"cancel":"yes"}"#),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    c.check("closeChildSession", &r);
+    let r = h
+        .post(
+            &format!("/api/threads/{child_id}/session/close"),
+            Some(ALICE),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("closeChildSession", &r);
+
+    // starting: 202 with the request's id and the thread's Location
+    const REQ: &str = "0190bbbb-0000-7000-8000-000000000001";
+    let start = |id: &str, agent: &str, description: Value, text: &str| {
+        let mut body = json!({"id": id, "agent": agent, "text": text, "keepOpen": true});
+        if !description.is_null() {
+            body["description"] = description;
+        }
+        body.to_string()
+    };
+    let r = h
+        .post(
+            &format!("/api/threads/{parent}/sessions"),
+            Some(KID),
+            Some(&start(
+                REQ,
+                "planner",
+                json!("Find the writers"),
+                "echo list them",
+            )),
+        )
+        .await;
+    assert_eq!(r.status, 202);
+    c.check("startChildSession", &r);
+    assert_eq!(r.json(), json!({"request": REQ}));
+    assert_eq!(r.location, format!("/api/threads/{parent}"));
+    // the outcome is the parent's event, and the helper's thread is made
+    let ended = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let ev = h.events(KID, &parent).await;
+            if let Some(e) = ev.iter().find(|e| e["kind"] == "child_session_start_ended") {
+                break e.clone();
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the start did not end"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    c.contract.validate_component("Event", &ended);
+    assert_eq!(ended["data"]["request"], REQ);
+    assert_eq!(ended["data"]["outcome"], "opened");
+    let opened_thread = ended["data"]["thread"].as_str().unwrap().to_owned();
+    h.wait_state(KID, &opened_thread, "done").await;
+    for event in h.events(KID, &parent).await {
+        c.contract.validate_component("Event", &event);
+    }
+    for event in h.events(KID, &opened_thread).await {
+        c.contract.validate_component("Event", &event);
+    }
+    // the same id again answers 202 and writes nothing
+    let count = h.events(KID, &parent).await.len();
+    let r = h
+        .post(
+            &format!("/api/threads/{parent}/sessions"),
+            Some(KID),
+            Some(&start(
+                REQ,
+                "planner",
+                json!("Find the writers"),
+                "echo list them",
+            )),
+        )
+        .await;
+    assert_eq!(r.status, 202);
+    c.check("startChildSession", &r);
+    assert_eq!(h.events(KID, &parent).await.len(), count);
+    // the helper's thread says what a composer needs, and a close of it is asked, not done
+    let r = h
+        .get(&format!("/api/threads/{opened_thread}"), Some(KID))
+        .await;
+    c.check("getThread", &r);
+    assert_eq!(r.json()["childOf"]["keepOpen"], true);
+    let r = h
+        .post(
+            &format!("/api/threads/{opened_thread}/session/close"),
+            Some(KID),
+            Some(r#"{"cancel":true}"#),
+        )
+        .await;
+    assert_eq!(r.status, 202);
+    c.check("closeChildSession", &r);
+    assert_eq!(r.json(), json!({"state": "closing"}));
+    // the body's `cancel` is what the log says was asked
+    let asked = h
+        .events(KID, &opened_thread)
+        .await
+        .into_iter()
+        .find(|e| e["kind"] == "child_session_close_asked")
+        .expect("the close is in the helper's log");
+    assert_eq!(asked["data"]["cancel"], true);
+    // every refusal is decided before anything is written
+    let n = h.events(KID, &parent).await.len();
+    let refused = [
+        // (body, status, code)
+        (
+            start(
+                "0190bbbb-0000-7000-8000-000000000002",
+                "nobody",
+                json!("x"),
+                "go",
+            ),
+            422,
+            Some("unknown_helper"),
+        ),
+        (
+            start(
+                "0190bbbb-0000-7000-8000-000000000003",
+                "planner",
+                json!(" "),
+                "go",
+            ),
+            422,
+            Some("bad_description"),
+        ),
+        (
+            start(
+                "0190bbbb-0000-7000-8000-000000000004",
+                "planner",
+                Value::Null,
+                "go",
+            ),
+            422,
+            Some("bad_description"),
+        ),
+        (
+            json!({"id": "0190bbbb-0000-7000-8000-000000000005", "agent": "planner",
+                   "description": "x", "text": "go", "tier": "yolo"})
+            .to_string(),
+            400,
+            None,
+        ),
+        (
+            json!({"id": "not-a-uuid", "agent": "planner", "description": "x", "text": "go"})
+                .to_string(),
+            400,
+            None,
+        ),
+        (
+            json!({"id": "0190bbbb-0000-7000-8000-000000000006", "agent": "planner",
+                   "description": "x", "text": "go", "unknown": 1})
+            .to_string(),
+            400,
+            None,
+        ),
+    ];
+    for (body, status, code) in refused {
+        let r = h
+            .post(
+                &format!("/api/threads/{parent}/sessions"),
+                Some(KID),
+                Some(&body),
+            )
+            .await;
+        assert_eq!(
+            r.status,
+            status,
+            "{body}: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+        c.check("startChildSession", &r);
+        if let Some(code) = code {
+            assert_eq!(r.json()["code"], code);
+        }
+    }
+    // a helper's thread starts none; another person's thread is a 404
+    let r = h
+        .post(
+            &format!("/api/threads/{child_id}/sessions"),
+            Some(KID),
+            Some(&start(
+                "0190bbbb-0000-7000-8000-000000000007",
+                "planner",
+                json!("x"),
+                "go",
+            )),
+        )
+        .await;
+    assert_eq!(r.status, 422);
+    c.check("startChildSession", &r);
+    assert_eq!(r.json()["code"], "child_thread");
+    let r = h
+        .post(
+            &format!("/api/threads/{parent}/sessions"),
+            Some(ALICE),
+            Some(&start(
+                "0190bbbb-0000-7000-8000-000000000008",
+                "planner",
+                json!("x"),
+                "go",
+            )),
+        )
+        .await;
+    assert_eq!(r.status, 404);
+    c.check("startChildSession", &r);
+    // a thread the agent has not answered has no context to start a session in
+    let fresh = h.create(KID, None, "plain", None, "down wait").await;
+    let r = h
+        .post(
+            &format!("/api/threads/{fresh}/sessions"),
+            Some(KID),
+            Some(&start(
+                "0190bbbb-0000-7000-8000-000000000009",
+                "planner",
+                json!("x"),
+                "go",
+            )),
+        )
+        .await;
+    assert_eq!(r.status, 409);
+    c.check("startChildSession", &r);
+    assert_eq!(r.json()["code"], "no_context");
+    // the refusals wrote nothing
+    assert_eq!(h.events(KID, &parent).await.len(), n);
 
     // Every operation this crate serves was driven, and the contract has no other.
     assert_eq!(c.exercised, c.contract.operation_ids());

@@ -56,6 +56,7 @@ macro_rules! thread_store_conformance {
             skip_unsent_delegates a_commit_can_skip_the_unsent_delegates_it_supersedes
             steer_rows_claim_beside_an_inflight_delegate
             a_requeued_steer_waits_behind_the_delegation_in_flight
+            session_rows_ride_the_steer_lane_and_are_never_delegations
             unsent_steers_are_skipped_with_the_unsent_delegates
             release_leases outbox_stats binding_applied_with_commit
             stale_attempt_is_fenced commit_after_another_owner_reclaims_is_fenced
@@ -116,7 +117,8 @@ macro_rules! thread_store_conformance {
             a_delete_and_an_open_that_race_leave_no_orphan
             the_session_events_ledgers_and_observe_rows_round_trip
             a_commit_with_no_events_creates_a_thread
-            the_skip_of_unsent_delegates_leaves_observe_rows a_session_id_is_bounded
+            the_skip_of_unsent_delegates_leaves_observe_rows
+            the_skip_of_unsent_delegates_leaves_session_start_and_close_rows a_session_id_is_bounded
         );
     };
     (@cases $make:path; $($case:ident)*) => {

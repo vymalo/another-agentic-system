@@ -101,12 +101,13 @@
 //!
 //! With [`FakeAgentOptions::ui_extensions`] the card lists the A2UI extension under those URIs,
 //! and [`FakeAgent::set_ui_extensions`] changes them while the agent runs (the card is produced
-//! on every request). Each call records the renderer capabilities the message carried.
+//! on every request). Each call records the renderer capabilities the message carried
+//! (`a2uiRendererCapabilities`, `"1.0"`).
 //!
 //! With [`FakeAgentOptions::extensions`] the card lists extensions of the orchestrator's own by
-//! URI (`ui-catalog/v1`, `thread-tools/v1`, …), and [`FakeAgent::set_extensions`] changes them while
+//! URI (`ui-catalog/v2`, `thread-tools/v1`, …), and [`FakeAgent::set_extensions`] changes them while
 //! the agent runs; [`FakeAgentOptions::accepts_inline_catalogs`] makes its A2UI entries say
-//! `acceptsInlineCatalogs: true`. Each call records the message's `ui-catalog/v1` metadata and the
+//! `acceptsInlineCatalogs: true`. Each call records the message's `ui-catalog/v2` metadata and the
 //! catalogs it carried inline ([`Call::ui_catalog`], [`Call::inline_catalogs`]).
 //!
 //! With [`FakeAgentOptions::releases`] the card declares the release-channels extension, a new
@@ -373,7 +374,7 @@ pub struct FakeAgentOptions {
     pub bind: Option<SocketAddr>,
     /// URIs the card lists as A2UI extensions (empty: the card does not mention A2UI).
     pub ui_extensions: Vec<String>,
-    /// URIs the card lists as extensions of the orchestrator's own (`ui-catalog/v1`,
+    /// URIs the card lists as extensions of the orchestrator's own (`ui-catalog/v2`,
     /// `thread-tools/v1`, …; empty: none). Plain strings, so that a test can list a near miss.
     pub extensions: Vec<String>,
     /// The A2UI entries of the card say `acceptsInlineCatalogs: true` (A2UI: the agent takes a
@@ -467,13 +468,14 @@ pub struct Call {
     pub release: Option<String>,
     /// The `Authorization` request header.
     pub authorization: Option<String>,
-    /// The renderer capabilities of the message: the value of `a2uiClientCapabilities` or
-    /// `a2uiRendererCapabilities` in its metadata, when it carried one.
+    /// The renderer capabilities of the message: the value of `a2uiRendererCapabilities` (keyed
+    /// `"1.0"`) in its metadata, when it carried one. `a2uiClientCapabilities`, the key of the
+    /// retired `v0.9.1`, is read too, so that a test can prove it is never sent.
     pub a2ui_capabilities: Option<Value>,
     /// The A2UI action messages the message carried (the array elements of its A2UI data parts).
     pub actions: Vec<Value>,
-    /// `metadata[<ui-catalog/v1 URI>]` of the message: `{catalogId, version, digest, inline}`, when
-    /// it carried one (ADR 0023).
+    /// `metadata[<ui-catalog/v2 URI>]` of the message: `{catalogId, version, digest, inline}`, when
+    /// it carried one (ADR 0023, ADR 0075).
     pub ui_catalog: Option<Value>,
     /// The catalogs the message carried inline: the `inlineCatalogs` of its renderer capabilities.
     pub inline_catalogs: Vec<Value>,
@@ -498,6 +500,13 @@ pub struct Call {
     /// received, so a test can assert what an agent is told, and that an agent whose card does not
     /// list the extension (or the thread tools it rides on) is told nothing.
     pub uploads: Option<Value>,
+    /// `metadata[<child-sessions/v1 URI>]` of the message: `{start: {agent, description, keepOpen}}`
+    /// or `{close: {cancel}}`, a person's request about a session, when it carried one (ADR 0072).
+    /// Recorded as received.
+    pub child_sessions: Option<Value>,
+    /// The `taskId` the message **carried**: `None` for a message that continues no task (a start,
+    /// a close and the first message of a conversation carry none).
+    pub requested_task: Option<String>,
 }
 
 impl Call {
@@ -1124,7 +1133,7 @@ impl a2a_server::agent_card::AgentCardProducer for LiveCard {
         extensions.extend(uris.into_iter().map(|uri| {
             let mut params = HashMap::from([(
                 "supportedCatalogIds".to_owned(),
-                json!(["https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"]),
+                json!(["https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"]),
             )]);
             if accepts_inline {
                 params.insert("acceptsInlineCatalogs".to_owned(), json!(true));
@@ -1302,6 +1311,8 @@ impl Front {
             mentions: mentions_of(Some(message)),
             access_tier: access_tier_of(Some(message)),
             uploads: uploads_of(Some(message)),
+            child_sessions: child_sessions_of(Some(message)),
+            requested_task: message.task_id.clone().filter(|t| !t.is_empty()),
         });
         if message.context_id.as_deref() != Some(stored.context_id.as_str()) {
             return Some(Err(A2AError::task_not_found(&task_id)));
@@ -1463,6 +1474,7 @@ impl RequestHandler for Front {
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
         {
             self.seen("send_streaming_message", params);
+            refuse_person_start(params, &req.message)?;
             if let Some(steer) = self.steer(params, &req).await {
                 return steer;
             }
@@ -2025,7 +2037,7 @@ fn capabilities_of(message: Option<&Message>) -> Option<Value> {
         .cloned()
 }
 
-/// `metadata[ui-catalog/v1]` of the message (ADR 0023).
+/// `metadata[ui-catalog/v2]` of the message (ADR 0023, ADR 0075).
 fn ui_catalog_of(message: Option<&Message>) -> Option<Value> {
     message?
         .metadata
@@ -2060,6 +2072,45 @@ fn access_tier_of(message: Option<&Message>) -> Option<Value> {
         .as_ref()?
         .get(orch_core::ACCESS_TIER_EXTENSION)
         .cloned()
+}
+
+/// `metadata[child-sessions/v1]` of the message (ADR 0072): a person's `start` or `close`.
+fn child_sessions_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()?
+        .get(orch_core::CHILD_SESSIONS_EXTENSION)
+        .cloned()
+        .map(whole_numbers)
+}
+
+/// The refusals adam-rs gives a person's `start` that the fake can give by what the message says
+/// (`docs/api/child-sessions-v1.md` section 7): no description is `InvalidParams`, and a message
+/// whose text starts `[mock:refuse-working]` meets the agent's limit of working rounds
+/// (`UnsupportedOperation`, with its words). Only a message that activated the extension and
+/// carries a `start`.
+fn refuse_person_start(params: &ServiceParams, message: &Message) -> Result<(), A2AError> {
+    if !activates_sessions(params) {
+        return Ok(());
+    }
+    let Some(start) = child_sessions_of(Some(message)).and_then(|v| v.get("start").cloned()) else {
+        return Ok(());
+    };
+    let described = start
+        .get("description")
+        .and_then(Value::as_str)
+        .is_some_and(|d| !d.trim().is_empty());
+    if !described {
+        return Err(A2AError::invalid_params(
+            "`start.description` is missing: it is a string",
+        ));
+    }
+    if text_of(Some(message)).starts_with("[mock:refuse-working]") {
+        return Err(A2AError::unsupported_operation(
+            "4 rounds are already working in this context; wait for one to finish",
+        ));
+    }
+    Ok(())
 }
 
 /// `metadata[uploads/v1]` of the message (ADR 0058): what the deployment offers for large files.
@@ -2157,6 +2208,12 @@ impl Shared {
             mentions: mentions_of(ctx.message.as_ref()),
             access_tier: access_tier_of(ctx.message.as_ref()),
             uploads: uploads_of(ctx.message.as_ref()),
+            child_sessions: child_sessions_of(ctx.message.as_ref()),
+            requested_task: ctx
+                .message
+                .as_ref()
+                .and_then(|m| m.task_id.clone())
+                .filter(|t| !t.is_empty()),
         });
     }
 
@@ -2199,10 +2256,10 @@ fn ui_part(ops: Value) -> Part {
 
 fn surface_ops(surface: &str) -> Value {
     json!([
-        {"version": "v0.9.1", "createSurface": {
+        {"version": "1.0", "createSurface": {
             "surfaceId": surface,
-            "catalogId": "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json"}},
-        {"version": "v0.9.1", "updateComponents": {"surfaceId": surface, "components": [
+            "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"}},
+        {"version": "1.0", "updateComponents": {"surfaceId": surface, "components": [
             {"id": "root", "component": "Column", "children": ["title", "go"]},
             {"id": "title", "component": "Text", "text": "Pick one"},
             {"id": "go_label", "component": "Text", "text": "Go"},
@@ -2217,8 +2274,8 @@ fn surface_ops(surface: &str) -> Value {
 /// with an "Other", a login, and where it runs (several, optional, with an "Other").
 fn choices_ops(surface: &str) -> Value {
     json!([
-        {"version": "v0.9.1", "createSurface": {"surfaceId": surface, "catalogId": crate::UI_CATALOG_ID}},
-        {"version": "v0.9.1", "updateComponents": {"surfaceId": surface, "components": [
+        {"version": "1.0", "createSurface": {"surfaceId": surface, "catalogId": crate::UI_CATALOG_ID}},
+        {"version": "1.0", "updateComponents": {"surfaceId": surface, "components": [
             {"id": "root", "component": "Column", "children": ["intro", "pick"]},
             {"id": "intro", "component": "Text", "text": "A few quick choices", "variant": "h3"},
             {"id": "pick", "component": "Choices", "questions": [
@@ -2654,9 +2711,9 @@ async fn script(
         }
         "ui-bad" | "ui-big" => {
             let payload = if word == "ui-bad" {
-                json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}})
+                json!({"version": "1.0", "createSurface": {"surfaceId": "s1"}})
             } else {
-                json!([{"version": "v0.9.1", "updateDataModel": {
+                json!([{"version": "1.0", "updateDataModel": {
                     "surfaceId": "s1", "value": "x".repeat(70 * 1024)}}])
             };
             let id = shared.next_artifact_id();
@@ -2668,9 +2725,9 @@ async fn script(
             emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "ui-again" => {
-            let create = json!({"version": "v0.9.1", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}});
-            let text = |t: &str| json!({"version": "v0.9.1", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": t}]}});
-            let delete = json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": "plan-1"}});
+            let create = json!({"version": "1.0", "createSurface": {"surfaceId": "plan-1", "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat"}});
+            let text = |t: &str| json!({"version": "1.0", "updateComponents": {"surfaceId": "plan-1", "components": [{"id": "root", "component": "Text", "text": t}]}});
+            let delete = json!({"version": "1.0", "deleteSurface": {"surfaceId": "plan-1"}});
             for ops in [
                 json!([create, text("First")]),
                 json!([create, text("Second")]),
@@ -2688,8 +2745,8 @@ async fn script(
             emit(&tx, ctx.status(TaskState::Completed, None)).await?;
         }
         "ui-delete" => {
-            let create = json!([{"version": "v0.9.1", "createSurface": {"surfaceId": "s2"}}]);
-            let delete = json!([{"version": "v0.9.1", "deleteSurface": {"surfaceId": "s2"}}]);
+            let create = json!([{"version": "1.0", "createSurface": {"surfaceId": "s2"}}]);
+            let delete = json!([{"version": "1.0", "deleteSurface": {"surfaceId": "s2"}}]);
             for ops in [create, delete] {
                 let id = shared.next_artifact_id();
                 emit(

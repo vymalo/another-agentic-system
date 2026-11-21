@@ -36,6 +36,15 @@ export const readerApi = createClient<paths>({
   fetch: (request) => readerFetch(request),
 });
 
+/** The machine code of an RFC 9457 problem body (`code`, as the contract names it), when it is text. */
+export function problemCode(error: unknown): string | undefined {
+  if (error && typeof error === "object") {
+    const { code } = error as { code?: unknown };
+    if (typeof code === "string" && code !== "") return code;
+  }
+  return undefined;
+}
+
 /** Best-effort human message from an RFC 9457 problem body or anything else. */
 export function problemMessage(error: unknown): string {
   if (error && typeof error === "object") {

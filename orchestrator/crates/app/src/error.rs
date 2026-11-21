@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use orch_core::{AgentId, Classify, ErrorClass, ForkError, NotDeletable, TransitionError};
+use orch_core::{
+    AgentId, Classify, ErrorClass, ForkError, NotDeletable, SessionRefusal, TransitionError,
+};
 use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
 use crate::authz::Permission;
@@ -69,6 +71,15 @@ pub enum AppError {
     /// is neither forked, shared nor written to (ADR 0072).
     #[error("{detail}")]
     Arrangement {
+        /// The stable name.
+        code: &'static str,
+        /// What is in the way, fit to show the caller.
+        detail: String,
+    },
+    /// A request about a helper session that what it names is in the way of, with a stable `code`
+    /// a client acts on (ADR 0072, S3): `session_closed`, `no_context`, `too_many_starts`.
+    #[error("{detail}")]
+    Blocked {
         /// The stable name.
         code: &'static str,
         /// What is in the way, fit to show the caller.
@@ -157,8 +168,14 @@ impl AppError {
                 "a thread nested under another cannot be pinned or placed; eject it from its parent first"
             }
             "child_thread" => {
-                "the thread of a helper session cannot be forked, shared or written to; use the thread it belongs to"
+                "a helper session's thread cannot be forked or shared, and a helper session cannot start another"
             }
+            "child_mentions" => "a helper session cannot ask other agents",
+            "session_closes_on_stop" => {
+                "a session that closes when done closes when its round is stopped"
+            }
+            "not_child_thread" => "only a helper session's thread can be closed",
+            "no_child_sessions" => "this agent does not run helpers as sessions",
             _ => "this arrangement cannot be made",
         };
         AppError::Arrangement {
@@ -167,10 +184,18 @@ impl AppError {
         }
     }
 
-    /// The thread of a helper session (a child, ADR 0072) cannot be forked, shared or written to (a
-    /// message, a steer, a Stop & send or an action; S3 opens them): 422 `child_thread`.
+    /// The thread of a helper session (a child, ADR 0072) cannot be forked or shared, and a child
+    /// cannot start a session: 422 `child_thread`.
     pub fn child_thread() -> Self {
         AppError::arrangement("child_thread")
+    }
+
+    /// A refusal about a helper session with a code of its own (409).
+    pub fn blocked(code: &'static str, detail: impl Into<String>) -> Self {
+        AppError::Blocked {
+            code,
+            detail: detail.into(),
+        }
     }
 
     /// A broken application invariant.
@@ -201,6 +226,23 @@ impl From<TransitionError> for AppError {
             TransitionError::Finished { .. } => AppError::Finished,
             // well formed, but what it names cannot be done: 422 (ADR 0036)
             e @ TransitionError::TextTooLong { .. } => AppError::Unprocessable(e.to_string()),
+            // a helper session (ADR 0072, S3): each has the code a client acts on
+            TransitionError::SessionClosed => AppError::blocked(
+                "session_closed",
+                "this helper session is closed and takes no more messages",
+            ),
+            TransitionError::SessionClosesOnStop => AppError::arrangement("session_closes_on_stop"),
+            TransitionError::ChildMentions => AppError::arrangement("child_mentions"),
+            TransitionError::NotAChild => AppError::arrangement("not_child_thread"),
+            TransitionError::ChildSessionRefused(SessionRefusal::TooManyStarts) => {
+                AppError::blocked(
+                    "too_many_starts",
+                    "wait for the helpers you started to open",
+                )
+            }
+            TransitionError::ChildSessionRefused(SessionRefusal::ChildThread) => {
+                AppError::child_thread()
+            }
             other => AppError::Transition(other),
         }
     }
@@ -216,6 +258,7 @@ impl Classify for AppError {
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
             | AppError::Arrangement { .. }
+            | AppError::Blocked { .. }
             | AppError::OverCap { .. }
             | AppError::ThreadActive(_)
             | AppError::NotShared => ErrorClass::Rejected,
@@ -269,6 +312,7 @@ impl Classify for AppError {
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
             | AppError::Arrangement { .. }
+            | AppError::Blocked { .. }
             | AppError::UserTool(_)
             | AppError::Prompt(_)
             | AppError::Fork(_)
@@ -288,6 +332,34 @@ mod tests {
     use crate::user_tools::OwnReason;
 
     use super::*;
+
+    #[test]
+    fn what_the_core_refuses_of_a_helper_session_has_the_code_a_client_acts_on() {
+        for (refusal, code) in [
+            (TransitionError::SessionClosed, "session_closed"),
+            (
+                TransitionError::SessionClosesOnStop,
+                "session_closes_on_stop",
+            ),
+            (TransitionError::ChildMentions, "child_mentions"),
+            (TransitionError::NotAChild, "not_child_thread"),
+            (
+                TransitionError::ChildSessionRefused(SessionRefusal::TooManyStarts),
+                "too_many_starts",
+            ),
+            (
+                TransitionError::ChildSessionRefused(SessionRefusal::ChildThread),
+                "child_thread",
+            ),
+        ] {
+            match AppError::from(refusal.clone()) {
+                AppError::Arrangement { code: got, .. } | AppError::Blocked { code: got, .. } => {
+                    assert_eq!(got, code, "{refusal}");
+                }
+                other => panic!("{refusal}: {other:?}"),
+            }
+        }
+    }
 
     fn io(msg: &str) -> std::io::Error {
         std::io::Error::other(msg.to_owned())
@@ -311,6 +383,7 @@ mod tests {
             AppError::Unprocessable("no such server".into()),
             AppError::arrangement("bad_anchor"),
             AppError::arrangement("nested_row"),
+            AppError::blocked("session_closed", "closed"),
             AppError::UserTool(UserToolRefusal::Off),
             AppError::UserTool(UserToolRefusal::NotFound),
             AppError::UserTool(UserToolRefusal::TooMany { limit: 8 }),
@@ -364,6 +437,7 @@ mod tests {
                 | AppError::Refused(_)
                 | AppError::Unprocessable(_)
                 | AppError::Arrangement { .. }
+                | AppError::Blocked { .. }
                 | AppError::OverCap { .. }
                 | AppError::ThreadActive(_)
                 | AppError::NotShared => ErrorClass::Rejected,

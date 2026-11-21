@@ -6,9 +6,10 @@
 //! extension is a new variant, and the compiler lists every `match` that has to learn about it.
 //!
 //! The URIs follow the pattern of the release-channels extension,
-//! `https://agents.vymalo.com/a2a/extensions/<name>/v1` (decided 2026-10-01 on the owner's
-//! delegation; the contract of each is a page of `docs/api/`). A breaking change is a `v2` URI,
-//! never an edit of `v1`.
+//! `https://agents.vymalo.com/a2a/extensions/<name>/v<n>` (decided 2026-10-01 on the owner's
+//! delegation; the contract of each is a page of `docs/api/`). A breaking change is a new URI,
+//! never an edit of the old one: `ui-catalog/v2` replaced `ui-catalog/v1` at the A2UI v1.0
+//! cutover (ADR 0075).
 //!
 //! The release-channels extension, A2UI, `access-tier/v1` and `child-sessions/v1` are not here:
 //! each has its own reading of the card (the releases a card offers; the A2UI versions it speaks;
@@ -20,8 +21,9 @@ use std::fmt;
 
 /// The URI of `thread-tools/v1`: the per-thread MCP endpoint an agent may call (ADR 0019).
 pub const THREAD_TOOLS_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/thread-tools/v1";
-/// The URI of `ui-catalog/v1`: the UI's component catalog sent with the messages (ADR 0023).
-pub const UI_CATALOG_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/ui-catalog/v1";
+/// The URI of `ui-catalog/v2`: the UI's component catalog sent with the messages (ADR 0023,
+/// amended by ADR 0075). `ui-catalog/v1` is retired and no longer detected.
+pub const UI_CATALOG_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2";
 /// The URI of `steps/v1`: the agent's work reported as nested steps (ADR 0025).
 pub const STEPS_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/steps/v1";
 /// The URI of `mentions/v1`: agents the person addressed, sent as structured references
@@ -51,7 +53,7 @@ pub const UPLOADS_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/up
 pub enum KnownExtension {
     /// `thread-tools/v1` ([`THREAD_TOOLS_EXTENSION`]).
     ThreadTools,
-    /// `ui-catalog/v1` ([`UI_CATALOG_EXTENSION`]).
+    /// `ui-catalog/v2` ([`UI_CATALOG_EXTENSION`]).
     UiCatalog,
     /// `steps/v1` ([`STEPS_EXTENSION`]).
     Steps,
@@ -123,19 +125,30 @@ mod tests {
         let uris: std::collections::BTreeSet<_> =
             KnownExtension::ALL.iter().map(|e| e.uri()).collect();
         assert_eq!(uris.len(), KnownExtension::ALL.len());
-        for uri in uris {
+        for uri in &uris {
             assert!(uri.starts_with("https://agents.vymalo.com/a2a/extensions/"));
-            assert!(uri.ends_with("/v1"));
+            let version = uri.rsplit_once('/').map_or("", |(_, version)| version);
+            assert!(
+                version
+                    .strip_prefix('v')
+                    .is_some_and(|n| n.parse::<u32>().is_ok()),
+                "{uri}"
+            );
         }
+        // the catalog's contract broke at the A2UI v1.0 cutover: it is the one v2 (ADR 0075)
+        assert_eq!(
+            KnownExtension::UiCatalog.uri(),
+            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2"
+        );
     }
 
     #[test]
     fn only_the_exact_uri_counts() {
         for near in [
-            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2",
-            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v1/",
-            "http://agents.vymalo.com/a2a/extensions/ui-catalog/v1",
-            "https://agents.vymalo.com/a2a/extensions/UI-catalog/v1",
+            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v1",
+            "https://agents.vymalo.com/a2a/extensions/ui-catalog/v2/",
+            "http://agents.vymalo.com/a2a/extensions/ui-catalog/v2",
+            "https://agents.vymalo.com/a2a/extensions/UI-catalog/v2",
             "https://agents.vymalo.com/a2a/extensions/release-channels/v1",
             "",
         ] {

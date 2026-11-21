@@ -36,6 +36,7 @@ fn report(session: &str, state: SessionState, round: Option<RoundReport>) -> Ses
         state,
         closing: false,
         round,
+        parent_context_id: None,
     }
 }
 
@@ -66,6 +67,10 @@ fn bodies(cmds: &[Command]) -> Vec<EventBody> {
 
 fn kinds(events: &[EventBody]) -> Vec<&'static str> {
     events.iter().map(|b| b.kind().as_str()).collect()
+}
+
+fn observes_none(cmds: &[Command]) -> bool {
+    cmds.iter().all(|c| !matches!(c, Command::Observe { .. }))
 }
 
 fn snapshot(state: ThreadState) -> Snapshot {
@@ -610,6 +615,9 @@ fn a_child_thread_starts_queued_with_no_event_and_follows_its_round() {
             followed: 1,
             started: 0,
             refollow: false,
+            close_asked: false,
+            close_cancel: false,
+            track: RoundTrack::default(),
         })
     );
     // the model is never asked to title or describe it
@@ -775,7 +783,7 @@ fn a_child_is_told_of_a_new_round_once() {
     let said =
         |snap: &Snapshot, r: SessionReport| transition(snap, &Input::ChildSessionSaid(r)).unwrap();
 
-    // round 1 again: nothing to order, but the ledger follows the state
+    // round 1 again: nothing to order, but the ledger follows the state and the child's log says it
     let (snap, cmds) = said(
         &snap,
         SessionReport {
@@ -787,15 +795,18 @@ fn a_child_is_told_of_a_new_round_once() {
             )
         },
     );
-    assert!(cmds.is_empty());
+    assert_eq!(kinds(&bodies(&cmds)), ["child_session_state"]);
     assert!(snap.job.child.as_ref().unwrap().closing);
 
     // round 2 with a task: ordered once
-    let two = report(
-        "s1",
-        SessionState::Working,
-        Some(round(2, Some("t2"), Some(T::Working))),
-    );
+    let two = SessionReport {
+        closing: true,
+        ..report(
+            "s1",
+            SessionState::Working,
+            Some(round(2, Some("t2"), Some(T::Working))),
+        )
+    };
     let (snap, cmds) = said(&snap, two.clone());
     assert_eq!(
         cmds,
@@ -809,17 +820,19 @@ fn a_child_is_told_of_a_new_round_once() {
     let (snap, cmds) = said(&snap, two);
     assert!(cmds.is_empty(), "the same round is not ordered twice");
 
-    // round 3 without a task cannot be followed yet, and is not marked followed
+    // round 3 without a task cannot be followed yet, and is not marked followed (`closing` came
+    // back to false: the state is written, nothing is ordered)
     let (snap, cmds) = said(
         &snap,
         report("s1", SessionState::Working, Some(round(3, None, None))),
     );
-    assert!(cmds.is_empty());
+    assert_eq!(kinds(&bodies(&cmds)), ["child_session_state"]);
+    assert!(observes_none(&cmds));
     assert_eq!(snap.job.child.as_ref().unwrap().followed, 2);
 
     // the session closes
     let (snap, cmds) = said(&snap, report("s1", SessionState::Closed, None));
-    assert!(cmds.is_empty());
+    assert_eq!(kinds(&bodies(&cmds)), ["child_session_state"]);
     assert_eq!(snap.job.child.unwrap().state, SessionState::Closed);
     assert!(snap.job.sessions.is_empty());
 }
@@ -857,7 +870,9 @@ fn what_is_said_is_heard_in_every_state_and_moves_nothing() {
         snap.state = state;
         let (next, cmds) = transition(&snap, &Input::ChildSessionSaid(r.clone())).unwrap();
         assert_eq!(next.state, state);
-        assert_eq!(cmds.len(), 1, "{state:?}");
+        // the state of the session changed (working to idle): written, and the round is ordered
+        assert_eq!(cmds.len(), 2, "{state:?}");
+        assert_eq!(kinds(&bodies(&cmds)), ["child_session_state"]);
     }
 }
 
@@ -1062,7 +1077,8 @@ fn a_child_thread_says_its_parent_its_session_and_what_the_helper_is() {
             "threadId": child_id(1).to_string(),
             "session": "s1",
             "agent": "planner",
-            "state": "idle"
+            "state": "idle",
+            "keepOpen": true
         })
     );
     assert_eq!(wire["nestedUnder"], child_id(1).to_string());
@@ -1527,6 +1543,9 @@ fn the_child_ledger_is_written_and_read_back_whole() {
         followed: 0,
         started: 0,
         refollow: false,
+        close_asked: false,
+        close_cancel: false,
+        track: RoundTrack::default(),
     };
     let v = serde_json::to_value(&ledger).unwrap();
     assert!(

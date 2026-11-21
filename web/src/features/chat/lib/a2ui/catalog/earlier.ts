@@ -14,15 +14,20 @@ import type { UiCatalog } from "./index";
 
 type Rec = Record<string, unknown>;
 
-/** The version 7 catalog as released. */
-export const VERSION_7 = v7 as unknown as UiCatalog;
+/** The version 7 catalog as released: a v1 document, so it has no `protocolVersion`. */
+export const VERSION_7 = v7 as unknown as Omit<UiCatalog, "protocolVersion">;
 
 /** The digest version 7 shipped with. */
 export const V7_DIGEST = "sha256:6df9a37d0ae6fa53b8d22145dc1b5674b6d3f228d1c1b83b2ec640d7b3093d49";
 
-/** The catalog of version 7: `catalog` without `show`, `dropped` and `note`, and with the old descriptions. */
-export function asVersion7(catalog: UiCatalog): UiCatalog {
-  const copy = structuredClone(catalog) as unknown as { components: Record<string, Rec> };
+/** The catalog of version 7: `catalog` without `protocolVersion`, `show`, `dropped` and `note`, and with the old descriptions. */
+export function asVersion7(catalog: UiCatalog): Omit<UiCatalog, "protocolVersion"> {
+  const copy = structuredClone(catalog) as unknown as {
+    protocolVersion?: string;
+    components: Record<string, Rec>;
+  };
+  // version 7 is a v1 document: the v2 envelope's `protocolVersion` is not part of it
+  delete copy.protocolVersion;
   const released = (v7 as unknown as { components: Record<string, Rec> }).components;
   const choices = copy.components.Choices as Rec & { properties: Rec };
   choices.description = released.Choices?.description;
@@ -33,5 +38,5 @@ export function asVersion7(catalog: UiCatalog): UiCatalog {
   const item = (checklist.properties.items as Rec).items as { properties: Rec };
   delete item.properties.note;
   (item.properties.state as { enum: string[] }).enum = ["done", "doing", "todo", "failed"];
-  return copy as unknown as UiCatalog;
+  return copy as unknown as Omit<UiCatalog, "protocolVersion">;
 }

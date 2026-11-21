@@ -7,11 +7,13 @@
 
 mod support;
 
-use orch_agui_projection::{Audience, Frame, Projector};
+use orch_agui_projection::{Audience, ChildMeta, Frame, Projector, ThreadMeta};
 use orch_core::{
-    Actor, AgentId, AgentStatus, AgentStatusData, ChildSessionClosedData, ChildSessionOpenedData,
-    ChildSessionReportedData, Event, EventBody, JobRound, JobStartedData, SessionBy,
-    SessionOutcome, ThreadId, ThreadState, ThreadStateData, Timestamp, UserId, UserMessageData,
+    Actor, AgentId, AgentStatus, AgentStatusData, ChildSessionCloseAskedData,
+    ChildSessionClosedData, ChildSessionOpenedData, ChildSessionReportedData,
+    ChildSessionStartAskedData, ChildSessionStartEndedData, ChildSessionStateData, Event,
+    EventBody, JobRound, JobStartedData, SessionBy, SessionOutcome, SessionState, StartOutcomeKind,
+    ThreadId, ThreadState, ThreadStateData, Timestamp, UserId, UserMessageData,
 };
 use serde_json::{Value, json};
 use support::log::{meta, thread_id};
@@ -1001,4 +1003,351 @@ fn a_session_with_no_description_says_none() {
         })
         .unwrap();
     assert!(started.get("description").is_none(), "{started}");
+}
+
+// ---- a person starts, sends and closes a session (ADR 0072, S3) ---------------------------
+
+const REQUEST: &str = "00000000-0000-7000-8000-0000000000a1";
+
+fn person() -> Actor {
+    Actor::user(&UserId::new("alice@example.com"))
+}
+
+fn start_asked(seq: i64) -> Event {
+    ev(
+        seq,
+        person(),
+        EventBody::ChildSessionStartAsked(ChildSessionStartAskedData {
+            request: REQUEST.to_owned(),
+            agent: "helper".to_owned(),
+            description: "find the writers".to_owned(),
+            keep_open: true,
+            tier: None,
+        }),
+    )
+}
+
+fn start_ended(seq: i64, outcome: StartOutcomeKind, reason: Option<&str>) -> Event {
+    let opened = outcome == StartOutcomeKind::Opened;
+    ev(
+        seq,
+        Actor::system(),
+        EventBody::ChildSessionStartEnded(ChildSessionStartEndedData {
+            request: REQUEST.to_owned(),
+            outcome,
+            session: opened.then(|| "s1".to_owned()),
+            thread: opened.then(child),
+            reason: reason.map(str::to_owned),
+        }),
+    )
+}
+
+fn opened_by_person(seq: i64) -> Event {
+    let mut e = opened(seq, "s1", true);
+    if let EventBody::ChildSessionOpened(d) = &mut e.body {
+        d.by = Some(SessionBy::Person);
+        d.round = Some(1);
+    }
+    e
+}
+
+/// The last `ACTIVITY_SNAPSHOT` of `activity_type` among `frames`, as JSON.
+fn activity(frames: &[Frame], activity_type: &str) -> Value {
+    frames
+        .iter()
+        .rev()
+        .find_map(|f| match &f.event {
+            orch_agui_proto::Event::ActivitySnapshot(e) if e.activity_type == activity_type => {
+                Some(serde_json::to_value(e).unwrap())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no {activity_type} card"))
+}
+
+#[test]
+fn a_start_a_person_asked_is_a_card_that_says_starting() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        start_asked(3),
+    ];
+    let frames = support::flatten(&project(&events));
+    let snapshot = activity(&frames, "vymalo.sessionStart");
+    assert_eq!(snapshot["messageId"], format!("session-start-{REQUEST}"));
+    assert_eq!(snapshot["replace"], true);
+    assert_eq!(
+        snapshot["metadata"]["vymalo.actor"]["name"],
+        "alice@example.com"
+    );
+    assert_eq!(
+        snapshot["content"],
+        json!({
+            "request": REQUEST,
+            "agent": "helper",
+            "description": "find the writers",
+            "keepOpen": true,
+            "state": "starting",
+            "at": "2027-01-15T08:00:03Z",
+        })
+    );
+    assert!(
+        !all_lines(&events).iter().any(|l| l.contains("sub-session")),
+        "a start asked is no session subagent"
+    );
+}
+
+#[test]
+fn a_start_asked_outside_a_run_opens_one_as_a_late_report_does() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        thread(3, ThreadState::Done),
+        start_asked(4),
+    ];
+    let got = all_lines(&events);
+    let tail = from(&got, "RUN_STARTED run-4");
+    assert!(tail[1].starts_with("STATE_SNAPSHOT") || tail[1].starts_with("ACTIVITY_SNAPSHOT"));
+    assert!(
+        tail.iter().any(|l| l.contains("vymalo.sessionStart")),
+        "{tail:#?}"
+    );
+    assert!(
+        tail.last().unwrap().starts_with("RUN_FINISHED"),
+        "{tail:#?}"
+    );
+}
+
+#[test]
+fn the_outcome_of_a_start_says_the_card_again_opened_or_failed() {
+    let opened = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        start_asked(3),
+        start_ended(4, StartOutcomeKind::Opened, None),
+        opened_by_person(5),
+    ];
+    let frames = support::flatten(&project(&opened));
+    let snapshot = activity(&frames, "vymalo.sessionStart");
+    assert_eq!(snapshot["messageId"], format!("session-start-{REQUEST}"));
+    assert_eq!(
+        snapshot["content"],
+        json!({
+            "request": REQUEST,
+            "agent": "helper",
+            "description": "find the writers",
+            "keepOpen": true,
+            "state": "opened",
+            "threadId": CHILD,
+            "session": "s1",
+            "at": "2027-01-15T08:00:04Z",
+        })
+    );
+    // the session the person started is a card that says who started it
+    let session = card(&frames);
+    assert_eq!(session["content"]["by"], "person");
+
+    let failed = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        start_asked(3),
+        start_ended(
+            4,
+            StartOutcomeKind::Failed,
+            Some("max_working: 2 sessions are working"),
+        ),
+    ];
+    let frames = support::flatten(&project(&failed));
+    let content = &activity(&frames, "vymalo.sessionStart")["content"];
+    assert_eq!(content["state"], "failed");
+    assert_eq!(content["reason"], "max_working: 2 sessions are working");
+    assert!(content.get("threadId").is_none() && content.get("session").is_none());
+}
+
+#[test]
+fn a_start_asked_twice_and_an_outcome_twice_are_each_said_once() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        start_asked(3),
+        start_asked(4),
+        start_ended(5, StartOutcomeKind::Failed, Some("x")),
+        start_ended(6, StartOutcomeKind::Failed, Some("x")),
+    ];
+    let cards = all_lines(&events)
+        .iter()
+        .filter(|l| l.contains("vymalo.sessionStart"))
+        .count();
+    assert_eq!(cards, 2, "the ask and its outcome, once each");
+}
+
+#[test]
+fn an_outcome_for_a_start_the_log_never_asked_says_nothing() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        start_ended(3, StartOutcomeKind::Failed, Some("x")),
+    ];
+    assert!(
+        !all_lines(&events)
+            .iter()
+            .any(|l| l.contains("vymalo.sessionStart")),
+        "nothing to say it again about"
+    );
+}
+
+#[test]
+fn a_session_an_agent_opened_says_no_by() {
+    let frames = support::flatten(&project(&working()));
+    assert!(card(&frames)["content"].get("by").is_none());
+}
+
+fn child_meta() -> ThreadMeta {
+    ThreadMeta {
+        child: Some(ChildMeta {
+            agent: "helper".to_owned(),
+            keep_open: true,
+        }),
+        ..meta()
+    }
+}
+
+fn close_asked(seq: i64, cancel: bool) -> Event {
+    ev(
+        seq,
+        person(),
+        EventBody::ChildSessionCloseAsked(ChildSessionCloseAskedData {
+            session: "s1".to_owned(),
+            cancel,
+        }),
+    )
+}
+
+fn state_of(seq: i64, state: SessionState, closing: bool) -> Event {
+    state_asked(seq, state, closing, false)
+}
+
+fn state_asked(seq: i64, state: SessionState, closing: bool, close_asked: bool) -> Event {
+    ev(
+        seq,
+        Actor::system(),
+        EventBody::ChildSessionState(ChildSessionStateData {
+            session: "s1".to_owned(),
+            state,
+            closing,
+            close_asked,
+        }),
+    )
+}
+
+fn project_child(events: &[Event]) -> Vec<Frame> {
+    let mut projector = Projector::new(child_meta());
+    let frames: Vec<Vec<Frame>> = events
+        .iter()
+        .map(|e| projector.apply(e, Audience::Viewer))
+        .collect();
+    let flat = support::flatten(&frames);
+    verify::check(&flat).unwrap();
+    flat
+}
+
+#[test]
+fn a_childs_own_card_follows_the_close_and_the_state_the_composer_reads() {
+    let events = [
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        close_asked(3, false),
+        state_asked(4, SessionState::Working, true, true),
+        state_asked(5, SessionState::Closed, false, true),
+    ];
+    let mut projector = Projector::new(child_meta());
+    let per_event: Vec<Vec<Frame>> = events
+        .iter()
+        .map(|e| projector.apply(e, Audience::Viewer))
+        .collect();
+    verify::check(&support::flatten(&per_event)).unwrap();
+
+    let asked = activity(&per_event[2], "vymalo.session");
+    assert_eq!(asked["messageId"], "session-self");
+    assert_eq!(asked["replace"], true);
+    assert_eq!(
+        asked["content"],
+        json!({
+            "session": "s1",
+            "agent": "helper",
+            "keepOpen": true,
+            "state": "working",
+            "closing": false,
+            "closeAsked": true,
+            "at": "2027-01-15T08:00:03Z",
+        })
+    );
+    let closing = activity(&per_event[3], "vymalo.session");
+    assert_eq!(closing["content"]["closing"], true);
+    assert_eq!(closing["content"]["closeAsked"], true);
+    let closed = activity(&per_event[4], "vymalo.session");
+    assert_eq!(closed["content"]["state"], "closed");
+    assert_eq!(closed["content"]["closing"], false);
+    // no subagent frame, and the thread's state does not move
+    let lines = lines(&support::flatten(&per_event));
+    assert!(
+        !lines.iter().any(|l| l.contains("sub-session")),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn a_childs_state_without_a_close_asked_says_closeasked_false() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        state_of(3, SessionState::Idle, false),
+    ];
+    let frames = project_child(&events);
+    let content = &activity(&frames, "vymalo.session")["content"];
+    assert_eq!(content["state"], "idle");
+    assert_eq!(content["closeAsked"], false);
+    assert_eq!(content["closing"], false);
+}
+
+#[test]
+fn a_thread_that_is_no_child_says_nothing_of_a_close_or_a_state() {
+    let events = vec![
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        close_asked(3, true),
+        state_of(4, SessionState::Closed, false),
+    ];
+    assert!(
+        !all_lines(&events)
+            .iter()
+            .any(|l| l.contains("vymalo.session")),
+        "no card without a session this thread is"
+    );
+}
+
+#[test]
+fn a_refused_close_clears_closeasked_on_the_childs_card() {
+    // the core writes the error and then the state with no close asked (`close_failed`)
+    let events = [
+        user(1, "go"),
+        status(2, AgentStatus::Working),
+        close_asked(3, false),
+        state_asked(4, SessionState::Working, false, false),
+    ];
+    let mut projector = Projector::new(child_meta());
+    let per_event: Vec<Vec<Frame>> = events
+        .iter()
+        .map(|e| projector.apply(e, Audience::Viewer))
+        .collect();
+    verify::check(&support::flatten(&per_event)).unwrap();
+    assert_eq!(
+        activity(&per_event[2], "vymalo.session")["content"]["closeAsked"],
+        true
+    );
+    assert_eq!(
+        activity(&per_event[3], "vymalo.session")["content"]["closeAsked"],
+        false,
+        "a refused close is not asked any more"
+    );
 }

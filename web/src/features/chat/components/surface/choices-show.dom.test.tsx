@@ -37,7 +37,7 @@ async function feed(m: Mounted, frames: ReturnType<typeof surfaceRun>) {
   await waitFor(() => expect(m.agent.getSnapshot().lastSeq).toBe(last));
 }
 
-const ops = (components: Rec[]) => surface(components, undefined, "v0.9.1", OWN_CATALOG.catalogId);
+const ops = (components: Rec[]) => surface(components, undefined, "1.0", OWN_CATALOG.catalogId);
 
 async function mountShowing(components: Rec[], host: Parameters<typeof mountSurfaces>[0] = {}) {
   const m = mountSurfaces(host, {}, undefined, { catalogVersion: OWN_CATALOG.version });
@@ -201,7 +201,7 @@ describe("what a question may not show", () => {
     );
     const second = [
       {
-        version: "v0.9.1",
+        version: "1.0",
         updateComponents: { surfaceId: "s1", components: [text("why", "Because.")] },
       },
     ];

@@ -1,4 +1,5 @@
-//! The UI catalog as the web sends it, for tests (ADR 0023): `forwardedProps["vymalo.uiCatalog"]`.
+//! The UI catalog as the web sends it, for tests (ADR 0023, ADR 0075):
+//! `forwardedProps["vymalo.uiCatalog"]`.
 
 use orch_core::catalog_digest;
 use serde_json::{Value, json};
@@ -9,7 +10,8 @@ pub const UI_CATALOG_ID: &str = "https://agents.vymalo.com/a2ui/catalogs/chat";
 /// Version `version` of the web's catalog, as it sends it: `{catalogId, version, digest,
 /// catalog}`, with the real digest. Version 1 has `Text`, later versions add `Column`, and version
 /// 3 and later `Choices` (the form an asked agent is sent, ADR 0026); every version differs from
-/// the others, so each has a digest of its own.
+/// the others, so each has a digest of its own. The document is a `ui-catalog/v2` one: it declares
+/// `"protocolVersion": "1.0"` (ADR 0075), which is part of the digest like any other member.
 pub fn ui_catalog(version: u32) -> Value {
     let mut components = json!({
         "Text": {
@@ -62,7 +64,11 @@ pub fn ui_catalog(version: u32) -> Value {
             "additionalProperties": false,
         });
     }
-    let catalog = json!({"catalogId": UI_CATALOG_ID, "components": components});
+    let catalog = json!({
+        "catalogId": UI_CATALOG_ID,
+        "protocolVersion": "1.0",
+        "components": components,
+    });
     json!({
         "catalogId": UI_CATALOG_ID,
         "version": version,

@@ -1,0 +1,81 @@
+{
+  "runs": [
+    {
+      "runId": "run-1",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-6",
+      "outcome": "success"
+    },
+    {
+      "runId": "run-7",
+      "outcome": "success"
+    }
+  ],
+  "subagents": [
+    {
+      "id": "sub-2",
+      "name": "plain",
+      "end": "success"
+    }
+  ],
+  "messages": [
+    {
+      "id": "evt-1",
+      "role": "user",
+      "text": "ask the planner"
+    },
+    {
+      "id": "evt-2",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:02Z",
+        "status": "working"
+      }
+    },
+    {
+      "id": "msg-3",
+      "role": "assistant",
+      "name": "plain",
+      "subagentRunId": "sub-2",
+      "text": "Ready."
+    },
+    {
+      "id": "evt-4",
+      "role": "activity",
+      "subagentRunId": "sub-2",
+      "activityType": "vymalo.status",
+      "content": {
+        "at": "2027-01-15T08:00:04Z",
+        "status": "completed"
+      }
+    },
+    {
+      "id": "session-start-00000000-0000-7000-8000-0000000000a1",
+      "role": "activity",
+      "activityType": "vymalo.sessionStart",
+      "content": {
+        "agent": "planner",
+        "at": "2027-01-15T08:00:07Z",
+        "description": "Plan the work",
+        "keepOpen": false,
+        "reason": "max_working: 2 helper sessions are working; wait for one to finish",
+        "request": "00000000-0000-7000-8000-0000000000a1",
+        "state": "failed"
+      }
+    }
+  ],
+  "state": {
+    "thread": {
+      "state": "done",
+      "target": {
+        "agentId": "plain"
+      },
+      "title": "ask the planner"
+    }
+  },
+  "pendingInterrupts": []
+}

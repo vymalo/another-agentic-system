@@ -201,6 +201,9 @@ gets everything.
 | `child_session_opened{session, thread, agent, description, keepOpen, by?, round?}` (ADR 0072) | The agent opened a helper session. A run is opened for it if none is, and the agent's invocation is **not**: a session event never opens or reopens one. One the projection holds already says nothing again | See [Child sessions as subagents](#child-sessions-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-session-<seq>", name:<the helper>, description, parentSubagentRunId:<the open invocation, when there is one>, metadata:{"vymalo.actor", "vymalo.at", "vymalo.childThread", "vymalo.session"}}` → `ACTIVITY_SNAPSHOT{messageId:"session-<seq>", activityType:"vymalo.session", replace:true, content:{session, threadId, agent, description, keepOpen, state:"working" (`"idle"` when the event names no round), round?, at}}`. The thread's state does not move |
 | `child_session_reported{session, thread, round, report}` (ADR 0072) | A round of a session ended: `done`, `failed`, `canceled` or `blocked`. The core says a round again when it was `blocked` and ends otherwise, so a round may be reported twice | The card again (`round`, `report`; `state:"working"` for `blocked`, which waits for the person, else `"idle"`), then the end of the subagent: `SUBAGENT_FINISHED{result:{round, report}}` for `done` and `canceled`, `SUBAGENT_FINISHED{outcome:suspended, result}` for `blocked`, `SUBAGENT_ERROR{code:"session_failed"}` for `failed`. When the subagent is already ended it is started again first (`SUBAGENT_STARTED`, a new id) and the card follows. With no run open the event is a producer-initiated run of its own. Said when the round is newer than the last said or says another outcome of it; the same again, an earlier round and a session the log never opened say nothing |
 | `child_session_closed{session, thread}` (ADR 0072) | The session was closed, once | The card again with `state:"closed"` (the last `round` and `report` stay), then `SUBAGENT_FINISHED{result:{state:"closed"}}` if the subagent is still open |
+| `child_session_start_asked{request, agent, description, keepOpen, tier?}` (ADR 0072, S3) | A person asked to start a helper session, in the parent's log. A run is opened for it outside one (`run-<seq>`), as for a late report | `ACTIVITY_SNAPSHOT{messageId:"session-start-<request>", activityType:"vymalo.sessionStart", replace:true, content:{request, agent, description, keepOpen, state:"starting", at}}`. No text: the prompt is the child thread's message. The thread's state does not move. See [A person starts, sends and closes a session](#a-person-starts-sends-and-closes-a-session) |
+| `child_session_start_ended{request, outcome, session?, thread?, reason?}` (ADR 0072, S3) | The outcome of that start, once | The same card with `replace:true`: `state:"opened"` (with `threadId`, `session`) or `"failed"` (with `reason`, the agent's words, untrusted). An `opened` outcome comes with the `child_session_opened` of the person, whose frames are those above |
+| `child_session_close_asked{session, cancel}`, `child_session_state{session, state, closing, closeAsked?}` (ADR 0072, S3) | In the child's log: a person asked to close, the session changed state (or began closing), and the agent refused the close (the state said again with no close asked) | `ACTIVITY_SNAPSHOT{messageId:"session-self", activityType:"vymalo.session", replace:true, content:{session, agent, keepOpen, state, closing, closeAsked, at}}`: the child's own card, which a composer reads. No subagent frame, and the thread's state does not move |
 | `thread_forked{from:{threadId, seq}, kind, title, description?, target}` (ADR 0029) | Where the copy of the parent's events ends: the events before it are the parent's and say what they said. In any state of the projection | A run the copy left open (a cut before a message sent mid-run) is closed as `thread_state{cancelled}` closes one: `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}`. The projection forgets the finished job as `job_started` does (the interrupt, the A2UI surfaces, the steps, the attempt, the pushed commit) **and the UI catalog**, which the fork's agent was never sent. Then a producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` → `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>", activityType:"vymalo.fork", content:{from, kind, title, target, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"done", thread.title:<the parent's, as it was>, thread.description:<the parent's, when it had one>, thread.forkedFrom}` → `RUN_FINISHED{outcome:{type:"success"}}`. See [Forks](#forks) |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
 | `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
@@ -1025,7 +1028,7 @@ stateDiagram-v2
 - **A fork** copies the events and so the cards; at `thread_forked` the open run ends as a cancelled one (with the sessions'
   subagents suspended) and every card the fork copied that was not closed is said again as `closed` in the fork's own run, since a
   fork has no session of its own and no later report can come for it.
-- **Not in the state.** `STATE_SNAPSHOT.thread` does not say that a thread is a child (`childOf`): that is slice S4.
+- **Not in the state.** `STATE_SNAPSHOT.thread` does not say that a thread is a child (`childOf`): that is slice S4: the web reads it from `GET /api/threads/{id}`, refetched when the thread's `lastSeq` moves.
 - **`PROJECTION_VERSION` stays.** No released agent serves `child-sessions/v1`, so no log holds a session event, and no frame
   of an event that exists changes (a session event changes none of another event's: `tests/sessions.rs`).
 
@@ -1035,7 +1038,53 @@ The child's own stream is an ordinary one, with one difference: its `job_started
 [`sessions`](examples/agui/sessions.agui.json) (two sessions under a sub-agent step: a blocked round that ends done, a kept-open
 session with rounds done and canceled, a close, a report after the agent finished and a late close),
 [`sessions-failed`](examples/agui/sessions-failed.agui.json) (a failed round, `session_failed`) and
-[`sessions-child`](examples/agui/sessions-child.agui.json) (the child's log, two rounds). The reference client reads them in CI.
+[`sessions-child`](examples/agui/sessions-child.agui.json) (the child's log, two rounds), and for a person's side
+[`sessions-person`](examples/agui/sessions-person.agui.json) (a start asked, opened by the person, reported, closed),
+[`sessions-person-child`](examples/agui/sessions-person-child.agui.json) (the prompt, a second round, a steer, a close asked, the state `closed`)
+and [`sessions-start-failed`](examples/agui/sessions-start-failed.agui.json) (a start the agent refused, in its words). The reference client reads them in CI.
+
+
+## A person starts, sends and closes a session
+
+**Built** (2026-11-20, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slice S3e;
+the contract was S3a). A person starts a helper from the parent (`startChildSession`), talks to it in the child thread
+(`runAgent` on the child, `cancelThread`) and closes it (`closeChildSession`). Three cards carry it; the web draws them (S4, built 2026-11-20: [`web/README.md`](../../web/README.md#subagents-child-sessions)).
+
+```mermaid
+sequenceDiagram
+  participant U as AG-UI consumer
+  participant O as Orchestrator
+  U->>O: POST /api/threads/{parent}/sessions
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.sessionStart session-start-<request> (starting)
+  O-->>U: SUBAGENT_STARTED sub-session-<seq> (by person), ACTIVITY_SNAPSHOT vymalo.session session-<seq> (working)
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.sessionStart (opened, threadId) or (failed, reason)
+  U->>O: POST /api/threads/{child}/session/close
+  O-->>U: child stream: ACTIVITY_SNAPSHOT vymalo.session session-self (closing)
+  O-->>U: child stream: ACTIVITY_SNAPSHOT vymalo.session session-self (closed)
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> starting: child_session_start_asked
+  starting --> opened: child_session_start_ended opened
+  starting --> failed: child_session_start_ended failed
+  opened --> [*]
+  failed --> [*]
+```
+
+- **`vymalo.sessionStart`** (the parent's stream, `messageId: session-start-<request>`, said again with `replace: true`):
+  `{request, agent, description, keepOpen, state, threadId?, session?, reason?, at}`. `state` is `starting`, `opened` or `failed`;
+  `threadId` and `session` come with `opened`, `reason` with `failed`. `agent` and `description` are the person's words, `reason` is
+  the agent's and **untrusted**: drawn as text. It holds no prompt: that is the child thread's first message.
+- **`vymalo.session`, in the parent**, as in [Child sessions as subagents](#child-sessions-as-subagents), gains `by: "person"` when a
+  person started the session (absent for the agent's own, so the frames of a log that never had a person's start do not move). A
+  session a person started is a `SUBAGENT_STARTED` like any other.
+- **`vymalo.session`, in the child** (`messageId: session-self`, `replace: true`, said again at each `child_session_close_asked` and
+  `child_session_state`): `{session, agent, keepOpen, state, closing, closeAsked, at}`. A composer is hidden when `state` is
+  `closed`, says "Closing..." while `closing`, and offers Stop & send only when `keepOpen`.
+- **The person's messages in a child** (the start's prompt, later rounds, steers) are the ordinary text frames of the child's stream.
+- **`PROJECTION_VERSION` stays 2.** No released log has these kinds and no frame of an existing event changes. `STATE_SNAPSHOT.thread` does not say that a thread is a child
+  (`childOf`); the web reads `childOf` from `GET /api/threads/{id}`, as `chat-api.yaml` gives it.
 
 ## Token usage
 
@@ -1415,21 +1464,23 @@ custom: {"https://agents.vymalo.com/a2a/extensions/commands/v1": {"commands": [
 
 ## The UI catalog
 
-*Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md)).*
-**At the A2UI v1.0 cutover** ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), nothing built yet) this section's
-extension becomes `ui-catalog/v2`, whose contract is [`ui-catalog-v2.md`](ui-catalog-v2.md): the `catalog` gains
-`"protocolVersion": "1.0"`, the version continues at 9, and the digests change. Slice S1 rewrites this section.
+*Built 2026-10-01 (MVP slice 3, [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md));*
+**`ui-catalog/v2` since the A2UI v1.0 cutover** ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), built
+2026-11-20). The contract is [`ui-catalog-v2.md`](ui-catalog-v2.md): the document declares
+`"protocolVersion": "1.0"`, the version continues at 9, and every digest changed with the new member. The retired
+`ui-catalog/v1` is no longer detected, and a v1 document — a catalog with no `protocolVersion` — is refused.
 Agents are meant to answer and ask through the components the person's screen can show. The web defines
-them as an A2UI **inline catalog**, `{catalogId, components: {<Name>: <JSON Schema>}}`, and sends it with a
-run; the orchestrator records it in the log and tells the agent (which is the business of the A2A adapter:
-the `ui-catalog/v1` extension, detected from the live card, ADR 0008). It relays the catalog and does not
-interpret it.
+them as an A2UI v1.0 **inline catalog**, `{catalogId, protocolVersion, components: {<Name>: <JSON Schema>}}`,
+and sends it with a run; the orchestrator records it in the log and tells the agent (which is the business of
+the A2A adapter: the `ui-catalog/v2` extension, detected from the live card, ADR 0008). It relays the catalog
+and does not interpret it.
 
 ```json
 {"forwardedProps": {"vymalo.uiCatalog": {
-  "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "version": 2,
-  "digest": "sha256:…",
-  "catalog": {"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "components": {"Text": {…}, "Column": {…}}}}}}
+  "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "version": 9,
+  "digest": "sha256:5f174ee91c50759d59a0d7e91e3a1dc2e7c110b82ee91d858f4a23a944ed72b2",
+  "catalog": {"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "protocolVersion": "1.0",
+              "components": {"Text": {…}, "Column": {…}}}}}}
 ```
 
 **When a screen sends it.** On the run that creates a thread, and on any later run when the thread's
@@ -1447,13 +1498,19 @@ was created or sent):
 | `version` is an integer from 1 to 1 000 000 | 400 |
 | `digest` is `sha256:` and 64 lowercase hex digits **and is the digest of `catalog`**: SHA-256 over its canonical JSON (keys sorted, no whitespace, strings escaped as `JSON.stringify` does, integers in decimal) | 400 |
 | `catalog` is at most 64 KiB serialised | **413** |
-| `catalog` has exactly `catalogId` and `components` (no `functions`, no `theme`), one to 64 components named `[A-Z][A-Za-z0-9]{0,63}`, each a JSON object | 400 |
+| `catalog.protocolVersion` is the string `"1.0"`, and `catalog` has exactly `catalogId`, `protocolVersion` and `components` (no `functions`, no `theme`, no `title`, no `$schema`), one to 64 components named `[A-Z][A-Za-z0-9]{0,63}` and none of them `Surface`, each a JSON object | 400 |
 | no `$ref`, `$dynamicRef`, `$id`, `$anchor` or `$schema` anywhere (each schema stands alone; nothing is ever fetched), keys are ASCII, numbers are integers within ±(2^53 − 1), nesting is at most 32 deep | 400 |
 | each component schema is valid JSON Schema (draft 2020-12) and says `properties.component.const` is the component's name | 400 |
 
-The known-answer vector of the digest, pinned in the orchestrator's, the web's and adam's tests: the catalog
-`{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"type":"object","properties":{"component":{"const":"Note"},"text":{"type":"string","maxLength":10}},"required":["component","text"]}}}`
-has the digest `sha256:a237e931c3a02fc72b214561e3a52d33eaf0e29c9306bbe0ef7b3da238507293` (*verified 2026-10-01* with Python: `json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` hashed with `hashlib.sha256`).
+The known-answer vector of the digest, pinned in the orchestrator's, the web's and adam-rs's tests: the catalog
+`{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","protocolVersion":"1.0","components":{"Note":{"type":"object","properties":{"component":{"const":"Note"},"text":{"type":"string","maxLength":10}},"required":["component","text"]}}}`
+has the canonical form
+`{"catalogId":"https://agents.vymalo.com/a2ui/catalogs/test","components":{"Note":{"properties":{"component":{"const":"Note"},"text":{"maxLength":10,"type":"string"}},"required":["component","text"],"type":"object"}},"protocolVersion":"1.0"}`
+and the digest `sha256:9fdab0c5c2094871cfb01d15046f206f3460341960ddcee4767e2bd33ab8e8f8`; taking `protocolVersion` out of it
+gives back v1's vector, `sha256:a237e931c3a02fc72b214561e3a52d33eaf0e29c9306bbe0ef7b3da238507293` (*verified 2026-11-19*,
+computed three ways: the web's `canonicalJson` and `catalogDigest`, Python
+`json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)` with `hashlib.sha256`, and `sha256sum` over the
+canonical form).
 
 **What it does.** The value is read on **every** run, like `vymalo.gate`, so a malformed one is refused every time. It
 is applied only when the run applies an input: a run that attaches to one the log holds (an idempotent retry) ignores
@@ -1464,6 +1521,13 @@ the later wins), and every digest recorded stays in the log. The projection give
 snapshot says which catalog is current (`thread.uiCatalog`, see [Metadata and state](#metadata-and-state)). The
 delegation to the agent carries the catalog inline when this input made it current, and a reference to the current
 one in every other message (the delivery is in the outbox row, never a secret).
+
+**A v1 catalog in the log.** A thread from before the cutover keeps its `ui_catalog` events as they were written, and
+nothing is migrated. A v1 document (no `protocolVersion`) is never delivered to an agent — the only document a delivery
+carries inline is the one the run carried, and a run that carries a v1 document is refused with 400 — and
+`get_ui_catalog` never serves one: a thread whose current catalog is still a v1 one (a run that carried no catalog)
+answers the refetch with an error to read, as a thread with no catalog does, because a v1.0 reader refuses a v1
+document. Its next run from a v2 screen records version 9, which becomes current by the ledger's rule.
 
 ## Run binding
 
@@ -1503,7 +1567,7 @@ was streamed and nothing was written.
 | 409 | With `vymalo.fork`: the turn to copy is still going on (`code: turn_open`), or the thread exists and is not the fork this request made. The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
-| 422 | A `vymalo.fork` whose `after` is not an event of the parent; a `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
+| 422 | A `vymalo.fork` whose `after` is not an event of the parent; a `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, names one whose operations are not `"1.0"`, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
 | 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`); the agent registry cannot say whether the `agentId` exists, or whether a mentioned agent does (503, "the agent registry is unreachable", `Retry-After`: never a 404 or a 422 while the registry is down, ADR 0022) |
 
 ## Connect binding
@@ -1688,7 +1752,7 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   a list in the 1.0 schema, not a flag);
 - `custom["https://agents.vymalo.com/a2a/extensions/release-channels/v1"] = {defaultChannel,
   channels, revisions}` only when the card advertises the extension (ADR 0008);
-- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1`, `…/steer/v1` and `…/usage/v1` (ADR 0008, ADR 0036, ADR 0056; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v1` is sent no catalog);
+- `custom[<uri>] = {}` for each extension of the orchestrator's own the card lists, by exact URI: `https://agents.vymalo.com/a2a/extensions/ui-catalog/v2`, `…/thread-tools/v1`, `…/steps/v1`, `…/mentions/v1`, `…/text-stream/v1`, `…/steer/v1` and `…/usage/v1` (ADR 0008, ADR 0036, ADR 0056; the key is the signal, so a client can flag an agent before it sends anything: an agent that does not list `ui-catalog/v2` is sent no catalog);
 - `custom["https://agents.vymalo.com/a2a/extensions/access-tier/v1"] = {tiers, default, maxTier?}` only while the live card lists the
   extension with well-formed `params` (ADR 0061, [`access-tier-v1.md`](access-tier-v1.md)): `tiers` are the tiers the agent honours,
   lowest first (`plan`, `edits`, `auto`, `bypass`), `default` the one it works under when a message names none, and `maxTier`, the
@@ -1705,9 +1769,9 @@ listed, 503 when the agent registry cannot say whether it is (ADR 0022).
   live card lists the extension with well-formed `params` (ADR 0072, [`child-sessions-v1.md`](child-sessions-v1.md)): the helpers a
   person may start a session with, and the most sessions open at once in one thread. A card that lists it badly (no agent, a name
   twice, a `maxOpen` that is not a whole number of at least 1) has no key;
-- `custom["https://a2ui.org/a2a-extension/a2ui/v0.9.1"] = {supportedCatalogIds}`, and the same under
-  `…/a2ui/v1.0`, only for each A2UI extension the live card lists (ADR 0013; both URIs are detected,
-  open question 22). `supportedCatalogIds` are the catalogs the web renders, not the agent's.
+- `custom["https://a2ui.org/a2a-extension/a2ui/v1.0"] = {supportedCatalogIds}`, only when the live card lists that exact
+  URI (ADR 0013, ADR 0075: one dialect; `…/a2ui/v0.9.1` is not detected). `supportedCatalogIds` are the catalogs the web
+  renders, not the agent's: `["https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"]`.
 
 The card is read on every request and never cached (ADR 0008). A card that cannot be read in time
 (3 s) gives the smaller document (fail closed): identity with the name only, and no `custom`. The
@@ -1722,72 +1786,72 @@ orchestrator → AG-UI `a2ui-surface` activity → web**, and the user's action 
 is what the orchestrator does with it. The renderer, and the rules that only a renderer can enforce
 (vocabulary, expansion, links), are the web's ([ADR 0013](../decisions/0013-a2ui-generative-ui.md#the-web-renderer)).
 
-**This section describes what is built, A2UI v0.9.1.** The hard cutover to A2UI v1.0
-([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), nothing built yet) has its contract in
+**This section describes what is built: A2UI v1.0, and nothing older.** The hard cutover
+([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), built 2026-11-20) has its contract in
 [`ui-catalog-v2.md`](ui-catalog-v2.md): the card entry `https://a2ui.org/a2a-extension/a2ui/v1.0`,
 `a2uiRendererCapabilities` keyed `"1.0"`, no surface in a turn without them, and actions with five members only
-([section 5](ui-catalog-v2.md#5-to-the-agent-the-extension)). Slice S1 rewrites this section for v1.0.
+([section 5](ui-catalog-v2.md#5-to-the-agent-the-extension)). A `v0.9.1` agent — the release this system spoke before
+the cutover — is a card that speaks no A2UI to this build: it is sent no capabilities and draws nothing.
 
 ### Facts this rests on
 
-*Verified 2026-09-29* unless it says otherwise. Sources: the A2A extension pages
-[v0.9.1](https://a2ui.org/specification/v0.9.1-a2ui-extension-specification/) and
-[v1.0](https://a2ui.org/specification/v1.0-a2ui-extension-specification/), the protocol pages
-[v0.9.1](https://a2ui.org/specification/v0.9.1-a2ui/) and
-[v1.0](https://a2ui.org/specification/v1.0-a2ui/), the
+*Verified 2026-11-19* from `a2ui-project/a2ui` at `b4f91c26fcf62abc0720c21a65840220941d0a3f`
+(`specification/v1_0/json/*.json`, `catalogs/basic/v1/catalog.json`) and
+<https://a2ui.org/specification/v1.0-a2ui-extension-specification/>, unless it says otherwise. The
 [assistant-ui A2UI page](https://www.assistant-ui.com/docs/tools/a2ui.md) and the npm package
-`@ag-ui/a2ui-middleware` 0.0.10 (its `dist/index.d.ts` and `dist/index.js`, read from the registry tarball).
+`@ag-ui/a2ui-middleware` 0.0.10 (its `dist/index.d.ts` and `dist/index.js`, read from the registry tarball)
+were the AG-UI side of it on 2026-09-29.
 
-| Claim | v0.9.1 (current) | v1.0 (candidate) |
-|---|---|---|
-| Media type of a part that carries A2UI | `application/a2ui+json`, in `DataPart.metadata["mimeType"]` | the same |
-| The part's `data` | "MUST be an array of messages", processed in order, a failing message not stopping the rest | the same |
-| A2A extension URI | `https://a2ui.org/a2a-extension/a2ui/v0.9.1` | `https://a2ui.org/a2a-extension/a2ui/v1.0` |
-| Advertising it in the card, activating it | both optional ("encouraged" for the card); activation is by the `X-A2A-Extensions` header | the same |
-| What the client sends with a message | `message.metadata["a2uiClientCapabilities"] = {"v0.9.1": {"supportedCatalogIds": [...]}}` | `message.metadata["a2uiRendererCapabilities"] = {"v1.0": {"supportedCatalogIds": [...]}}` (renamed) |
-| Card extension `params` | `supportedCatalogIds?`, `acceptsInlineCatalogs?` | the same |
-| `version` member of every message | `"v0.9.1"` | `"v1.0"` |
-| Operations, one per message | `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface` | those, and `callRendererFunction`, `agentFunctionResponse` |
-| Component shape | `{"id", "component": "Text", …}` in the protocol page (the extension page's example still uses the nested `{"Text": {…}}` form) | `{"id", "component", …}` |
-| An action, back to the agent | `{"version", "action": {"name", "surfaceId", "sourceComponentId", "timestamp", "context"}}`, all five required, in a data part of the same media type | the same |
-| Basic catalog id | `https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json` (protocol page); the extension page writes `…/v0_9/…` | `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json` |
-| Orchestrators and attribution | "the orchestrator is responsible for setting or validating" the `iconUrl` and `agentDisplayName` of a `createSurface` theme, so a sub-agent cannot pose as another (v0.9.1 protocol page) | not re-checked |
+| Claim | A2UI v1.0 |
+|---|---|
+| Media type of a part that carries A2UI | `application/a2ui+json`, on the part (`mediaType`) and in `DataPart.metadata["mimeType"]` |
+| The part's `data` | "MUST be an array of messages", processed in order, a failing message not stopping the rest |
+| A2A extension URI | `https://a2ui.org/a2a-extension/a2ui/v1.0` |
+| Advertising it in the card, activating it | both optional ("encouraged" for the card); activation is by the `A2A-Extensions` header (the spec's examples write `X-A2A-Extensions`, and both are sent) |
+| What the client sends with a message | `message.metadata["a2uiRendererCapabilities"] = {"1.0": {"supportedCatalogIds": [...], "inlineCatalogs"?}}`, scoped to that message's turn |
+| Card extension `params` | the inner `"1.0"` object: `supportedCatalogIds?`, `acceptsInlineCatalogs?` (default `false`) |
+| `version` member of every message and of an action | `"1.0"` (not `"v1.0"`: `agent_to_renderer.json` has `"const": "1.0"`) |
+| Operations, one per message | `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`, and `callRendererFunction` / `agentFunctionResponse` |
+| Component shape | `{"id", "component": "Text", …}`, plus A2UI's own `@catalogId`, `@accessibility` and `@metadata` at a component's root |
+| An action, back to the agent | `{"version": "1.0", "action": {"name", "surfaceId", "sourceComponentId", "timestamp", "context"}}`, all five required (and an optional `userMessage` and `metadata`, never forwarded), in a data part of the same media type |
+| Basic catalog id | `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json` |
+| A catalog | `{catalogId, protocolVersion, components, …}`, `protocolVersion` exactly `"1.0"`; a v0.9 catalog cannot be used by a v1.0 runtime |
 
 The AG-UI side (*verified 2026-09-29*): the ecosystem carries A2UI as `ACTIVITY_SNAPSHOT` with
 `activityType: "a2ui-surface"`, `content.a2ui_operations` and `replace: true` (`@ag-ui/a2ui-middleware`);
 a surface is keyed by the `surfaceId` inside the operations, not by `messageId`; an action returns as
 `forwardedProps.a2uiAction.userAction`, whose members are all optional in the middleware's type
-(`name`, `surfaceId`, `sourceComponentId`, `context`, `timestamp`); the middleware itself emits `version: "v0.9"`.
+(`name`, `surfaceId`, `sourceComponentId`, `context`, `timestamp`). The middleware's own dialect is
+`"v0.9"`, which the web lowers to: it is the client's business, never the orchestrator's.
 
 *Unverified:* whether an A2A 1.0 agent puts the media type in `Part.mediaType` or in
 `metadata.mimeType`. The A2UI pages predate A2A 1.0 and show `metadata`; so both are read and both
-are written. Whether every agent that activates by header also needs `message.extensions` is unknown; both
-are sent. The v1.0 pages are a candidate and will move.
+are written. Whether A2UI's SDKs read the `A2A-Extensions` header (the spec's examples write
+`X-A2A-Extensions`) is unknown; both are sent, and adam-rs reads the card and the metadata, not the header.
 
 ### Capability detection
 
 ADR 0008: read live, never cached, fail closed. The A2A adapter reads the live card for every call
 that sends a message and for every capabilities request.
 
-- The card **lists** A2UI when `capabilities.extensions` has an entry whose `uri` is exactly one of
-  the two URIs above. Any other URI, a different scheme, a trailing slash or another case is not A2UI.
-  Both may be listed; then `v0.9.1` is spoken (open question 22).
-- **Listed:** the message carries `a2uiClientCapabilities` (or `a2uiRendererCapabilities` for v1.0) with
-  the basic catalog the web renders, the URI is added to `A2A-Extensions` and to `message.extensions`
-  (with the release-channels URI when a release is selected), and the capabilities document declares
-  `custom[<uri>] = {supportedCatalogIds}`.
+- The card **lists** A2UI when `capabilities.extensions` has an entry whose `uri` is exactly
+  `https://a2ui.org/a2a-extension/a2ui/v1.0`. Any other URI — `…/a2ui/v0.9.1` above all — a different scheme,
+  a trailing slash or another case is not A2UI (ADR 0075: one dialect, fail closed).
+- **Listed:** the message carries `a2uiRendererCapabilities` keyed `"1.0"` with the basic catalog the web
+  renders, the URI is added to `A2A-Extensions` and to `message.extensions` (with the release-channels URI when a
+  release is selected), and the capabilities document declares `custom[<uri>] = {supportedCatalogIds}`.
 - **Not listed** (or the card unreadable): nothing A2UI-specific is sent or declared. The next message
   after a card changes follows the new card.
-- **The UI catalog** (ADR 0023) rides on A2UI and is its own extension, `ui-catalog/v1`: it is sent only when the card **also** lists
-  `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1` (read for that very message). Then the message carries
-  `metadata["https://agents.vymalo.com/a2a/extensions/ui-catalog/v1"] = {catalogId, version, digest, inline}`, the A2UI
+- **The UI catalog** (ADR 0023, `ui-catalog/v2`) rides on A2UI and is its own extension, `ui-catalog/v2`: it is sent only when the card **also** lists
+  `https://agents.vymalo.com/a2a/extensions/ui-catalog/v2` (read for that very message). Then the message carries
+  `metadata["https://agents.vymalo.com/a2a/extensions/ui-catalog/v2"] = {catalogId, version, digest, inline}`, the A2UI
   `supportedCatalogIds` start with our `catalogId` in **every** such message (so a strict A2UI agent never thinks the screen lost the
   catalog), and the catalog is in `inlineCatalogs` only in the message that made it current, when the agent's A2UI entry says
   `acceptsInlineCatalogs: true` (`inline: true`); in every other message, `inline: false`: the agent has the catalog or asks for it
   again. A card without the URI gets exactly the message it got before.
 - A surface is **relayed whether or not the card lists the extension**: activation is optional in
   A2UI and a part is recognised by its media type. An **action** goes to the agent that sent the surface
-  whatever the card says now, in the version its surface spoke.
+  whatever the card says now, always as A2UI v1.0, and only for a surface whose operations are `"1.0"`.
 
 ```mermaid
 sequenceDiagram
@@ -1798,7 +1862,7 @@ sequenceDiagram
   W->>O: POST run "pick one"
   O->>Ag: GET agent card (live)
   Ag-->>O: card lists the A2UI extension
-  O->>Ag: message + a2uiClientCapabilities, A2A-Extensions: a2ui
+  O->>Ag: message + a2uiRendererCapabilities {"1.0": …}, A2A-Extensions: a2ui/v1.0
   Ag-->>O: artifact / message / status with a data part, application/a2ui+json
   O->>O: envelope check per part (array, cap, version, one operation, surfaceId)
   O->>DB: ui_surface {operations}, or error (part refused)
@@ -1825,8 +1889,8 @@ the turn, go on.
 | The part is a data part whose `data` is a JSON array | not text, raw or a URL, even with the media type |
 | Not empty; at most | 256 messages |
 | Serialised size at most | 64 KiB (the renderer's per-surface limit, so a payload it would refuse is never stored) |
-| Every message is an object with a string `version` | `v0.9`, `v0.9.1` or `v1.0`; anything else is refused |
-| Every message has exactly one operation | `createSurface`, `updateComponents`, `updateDataModel` or `deleteSurface`; the `v1.0` function messages are not relayed |
+| Every message is an object with a string `version` | `"1.0"`; anything else — `"v0.9"`, `"v0.9.1"`, `"v1.0"` — is refused as an unknown version (ADR 0075) |
+| Every message has exactly one operation | `createSurface`, `updateComponents`, `updateDataModel` or `deleteSurface`; `callRendererFunction` and `agentFunctionResponse` are not relayed |
 | The operation body is an object with a `surfaceId` | 1 to 256 bytes |
 
 Components are **not** validated against a catalog here: that is the renderer's job and it refuses what
@@ -1841,11 +1905,14 @@ inside the run that the question ends.
 
 The projector keeps, per surface, the operations received so far. A snapshot carries all of them, so a
 client that holds only the last snapshot of a surface renders it completely, and a viewer that connects
-late or resumes with a cursor gets the same story. A surface keeps only the operations that are **alive**: a `createSurface` for a surface the projector holds starts it over,
+late or resumes with a cursor gets the same story. A surface whose operations are not `"1.0"` — one of a thread from
+before the cutover — is relayed as the log holds it, so a client can show it as made by an earlier version, and an action
+on it is refused ([Surfaces from before the cutover](ui-catalog-v2.md#9-surfaces-from-before-the-cutover)). A surface keeps only the operations that are **alive**: a `createSurface` for a surface the projector holds starts it over,
 so the operations before it are dropped, and a `deleteSurface` ends the surface. The alive operations are capped at
 256 KiB (`MAX_SURFACE_BYTES`, 262,144 bytes); past that the viewer gets one `vymalo.error` line, the surface keeps its last good snapshot and
-its later updates are not shown, until a `createSurface` starts it over (then it is shown again if the new copy fits). The projector also knows which surfaces the thread has and the version
-each speaks; the inbound side uses that.
+its later updates are not shown, until a `createSurface` starts it over (then it is shown again if the new copy fits). The projector also knows which surfaces the thread has and the dialect
+each speaks — `"1.0"`, or one from before the cutover — and the inbound side uses that to refuse an action on the older
+ones.
 
 **A surface sent again** (an agent's plan: [`ui-catalog-v1.md`](ui-catalog-v1.md#a-surface-sent-again), where the rule is written once).
 The same `surfaceId` is the same surface, under the `messageId` of the event that created it in every run,
@@ -1854,7 +1921,10 @@ the projector drops the operations before it: the snapshot after it holds the cr
 200 times is one copy in the buffer and in every replay to a late or reconnecting viewer. The frames keep their kinds, order and ids, and what a client draws is the same; what changed is the **content of a snapshot after a re-create**, on the live stream and in
 every replay alike: it holds the alive operations and not the dead copies before them. A snapshot a client stored before
 (`PROJECTION_VERSION` 1) is therefore not the one this projection writes for the same log, which is why the version rose to 2
-([`history.md`](history.md) rule 7: a client discards what it stored under another version). A payload
+([`history.md`](history.md) rule 7: a client discards what it stored under another version). It rose to **3** at the A2UI v1.0
+cutover: a surface whose operations are not `"1.0"` — one of a thread from before the cutover — is now relayed as the log holds it,
+where 2 skipped it, so the frames of a log that already held such a surface changed ([Surfaces from before the
+cutover](ui-catalog-v2.md#9-surfaces-from-before-the-cutover)). A payload
 that names several surfaces is cut per surface, so each snapshot names one surface and the client can skip its dead part. A copy in a later run is the live one and the
 earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), whose copies are matched by `surfaceId` and drawn once per
 stretch of the thread between two messages of a person, so that a plan the person answered is never rewritten on the page (rule 4 of the catalog's rule).
@@ -1882,9 +1952,10 @@ orchestrator:
 1. reads the action (`name`, `surfaceId`, `sourceComponentId` strings, `context` an object): otherwise
    **422**;
 2. checks the sizes (256 bytes for the three strings, 16 KiB for `context`): otherwise **413**;
-3. checks that the thread **has the surface now**, with the version it speaks: otherwise **422**. An
-   action for a surface that was never sent, that was deleted, or on a thread that does not exist yet,
-   reaches nothing;
+3. checks that the thread **has the surface now**, and that its operations are A2UI `"1.0"`: otherwise
+   **422**. An action for a surface that was never sent, that was deleted, on a thread that does not exist
+   yet, or on a surface from before the cutover (`the surface "s1" was made by an earlier version of A2UI and
+   cannot be acted on`) reaches nothing;
 4. applies the usual rules of an input: not someone else's thread (404), the URL's agent is the
    thread's (409), no run is open (409), the thread is not finished (409; a message is served, see above), the `runId` is new (422),
    and no message, `resume` or cancel comes with it (422). Since a run is open exactly while the thread
@@ -1892,10 +1963,11 @@ orchestrator:
 5. writes `ui_action` (attributed to the user; the log's own time is the action's time) and one outbox
    row, under the idempotency key `agui:<threadId>:run:<runId>`;
 6. delivers it as a message with one data part (`application/a2ui+json`, the media type on the part and
-   in `metadata.mimeType`) holding `[{"version": <the surface's>, "action": {"name", "surfaceId",
-   "sourceComponentId", "timestamp": <RFC 3339>, "context"}}]`. On a thread blocked by the agent it
-   continues the **same A2A task**, as a message does. `userMessage` (text the agent wrote for the
-   click) is dropped; `a2uiClientDataModel` is not sent (ADR 0013).
+   in `metadata.mimeType`) holding `[{"version": "1.0", "action": {"name", "surfaceId",
+   "sourceComponentId", "timestamp": <RFC 3339>, "context"}}]` — **exactly the five members**. On a thread
+   blocked by the agent it continues the **same A2A task**, as a message does. `userMessage` (text the agent
+   wrote for the click) and `metadata` are dropped: neither is ever forwarded (ADR 0075, decision 4);
+   `a2uiRendererDataModel` is not sent (ADR 0013).
 
 **A Choices answer.** The `Choices` component of the web's UI catalog ([`ui-catalog-v1.md`](ui-catalog-v1.md#choices-answers))
 asks several questions at once and sends **one** action for all of them: `name` is the component's `action.event.name` (default
@@ -2151,18 +2223,38 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
     },
     "vymalo.session": {
       "type": "object",
-      "required": ["session", "threadId", "agent", "description", "keepOpen", "state", "at"],
+      "required": ["session", "agent", "keepOpen", "state", "at"],
       "additionalProperties": false,
       "description": "A child session the agent opened (ADR 0072): the activity's id is session-<seq> of the child_session_opened, said again with replace at every event of the session. agent and description are an agent's words, untrusted",
       "properties": {
         "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The session's id, the agent's own" },
-        "threadId": { "type": "string", "format": "uuid", "description": "The child thread that holds the session's log" },
+        "threadId": { "type": "string", "format": "uuid", "description": "The child thread that holds the session's log; in the parent's card, absent from the child's own (S3)" },
         "agent": { "type": "string", "description": "The helper's name" },
-        "description": { "type": "string", "description": "What the helper was asked to do" },
+        "description": { "type": "string", "description": "What the helper was asked to do; in the parent's card, absent from the child's own (S3)" },
         "keepOpen": { "type": "boolean", "description": "Whether the session goes idle after a round instead of closing" },
         "state": { "enum": ["working", "idle", "closed"] },
         "round": { "type": "integer", "minimum": 1, "description": "The newest round the log names" },
         "report": { "enum": ["done", "failed", "canceled", "blocked"], "description": "How that round ended; absent while it runs" },
+        "by": { "enum": ["agent", "person"], "description": "Who started the session (in the parent's card)" },
+        "closing": { "type": "boolean", "description": "A close waits for the round to end or is on its way (the child's own card, S3)" },
+        "closeAsked": { "type": "boolean", "description": "A person asked for the close (the child's own card, S3)" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
+    "vymalo.sessionStart": {
+      "type": "object",
+      "required": ["request", "agent", "description", "keepOpen", "state", "at"],
+      "additionalProperties": false,
+      "description": "A person asked to start a helper session (ADR 0072): the activity's id is session-start-<request>, said again with replace when the outcome arrives. description is the person's; reason is the agent's words, untrusted",
+      "properties": {
+        "request": { "type": "string", "format": "uuid", "description": "The id of the startChildSession request" },
+        "agent": { "type": "string", "description": "The helper the person chose" },
+        "description": { "type": "string", "maxLength": 80, "description": "What the person said the session is for" },
+        "keepOpen": { "type": "boolean" },
+        "state": { "enum": ["starting", "opened", "failed"] },
+        "threadId": { "type": "string", "format": "uuid", "description": "The child thread; with opened" },
+        "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The session's id; with opened" },
+        "reason": { "type": "string", "maxLength": 512, "description": "Why it failed, the agent's own words (untrusted); with failed" },
         "at": { "$ref": "#/$defs/at" }
       }
     },

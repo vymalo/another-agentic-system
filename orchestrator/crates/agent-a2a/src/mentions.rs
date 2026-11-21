@@ -175,7 +175,7 @@ mod tests {
                 name: "go".into(),
                 source_component_id: "b".into(),
                 context: Map::new(),
-                version: orch_core::UiVersion::V0_9_1,
+                version: orch_core::UiVersion::V1_0,
                 run_id: None,
             },
             at: jiff::Timestamp::UNIX_EPOCH,

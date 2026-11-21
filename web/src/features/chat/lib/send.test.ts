@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { deliveryNote, modeOfKey, readsWhen, STEER_URI, sendHint, stopHint } from "./send";
+import {
+  deliveryNote,
+  modeOfKey,
+  readsWhen,
+  STEER_URI,
+  sendHint,
+  stopHint,
+  stopRoundHint,
+} from "./send";
 
 const key = (over: Partial<Parameters<typeof modeOfKey>[0]>) => ({
   key: "Enter",
@@ -44,5 +52,17 @@ describe("sending while an agent works", () => {
     expect(modeOfKey(key({ ctrlKey: true }))).toBeNull();
     expect(modeOfKey(key({ altKey: true }))).toBeNull();
     expect(modeOfKey(key({ key: "a" }))).toBeNull();
+  });
+
+  it("has no Ctrl/⌘+Shift+Enter where Stop and send is not offered, and Enter still sends", () => {
+    expect(modeOfKey(key({ shiftKey: true, ctrlKey: true }), false)).toBeNull();
+    expect(modeOfKey(key({ shiftKey: true, metaKey: true }), false)).toBeNull();
+    expect(modeOfKey(key({}), false)).toBe("steer");
+    expect(modeOfKey(key({ shiftKey: true, ctrlKey: true }), true)).toBe("interrupt");
+  });
+
+  it("says what Stop does to a subagent: it stays open, or it closes with its round", () => {
+    expect(stopRoundHint(true)).toBe("Stops this round, the subagent stays open");
+    expect(stopRoundHint(false)).toBe("Stops this round and closes the subagent");
   });
 });

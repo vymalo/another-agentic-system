@@ -25,11 +25,12 @@
 #
 # The script speaks AG-UI, as the web does (docs/api/agui.md): one POST /agui/agents/coder-share per run, the thread's state from
 # GET /api/threads/{id}, its frames from GET /agui/threads/{id}/connect?mode=run, its log from GET /api/threads/{id}/export. The
-# catalog it sends is the one the web ships (version 4 or later has `Image`), read from
+# catalog it sends is the one the web ships (version 9, a `ui-catalog/v2` document; `Image` has been in it since version 4), read from
 # web/src/features/chat/lib/a2ui/catalog/catalog.json and catalog.lock.json (`forwardedProps["vymalo.uiCatalog"]`).
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
-#   * the shipped catalog has an `Image`, and `coder-share` is listed by GET /api/agents;
+#   * the shipped catalog is a `ui-catalog/v2` document (its `protocolVersion` is "1.0") and has an `Image`, and `coder-share` is
+#     listed by GET /api/agents;
 #   * the run ends RUN_FINISHED (success) and the thread `done` (no gate, no pull request), with no `error` in its log;
 #   * KEPT: the thread has exactly three file artifacts, `Chart`, `Square` and `Report`, in that order, in the AG-UI frames
 #     (`vymalo.artifact`) and in the log (`artifact`). Each frame says `kind: "file"`, `href` equal to
@@ -38,7 +39,7 @@
 #     media type it sniffed (image/svg+xml, image/png, application/json) and its `preview` (image, image, text); the log's
 #     entry holds the reference and no bytes;
 #   * ORDER: every file the surface places is in the thread before the surface is (the frame of its file comes first), and
-#     the surface (`a2ui-surface`, under the screen's catalogId) holds a Text and two `Image`s whose `artifact` are the hashes of the SVG
+#     the surface (`a2ui-surface`, its operations all saying `"version": "1.0"`, under the screen's catalogId) holds a Text and two `Image`s whose `artifact` are the hashes of the SVG
 #     and the PNG, with an alt each, and no Image of the JSON; the model's `show` was accepted ("Shown to the person.") and each
 #     `share_file` was answered "Shared <file> (<size> bytes, <type>).", and for an image with how to show it as well (" To show it in your
 #     answer, write ![description](<file>).", adam-rs ADR 0033);
@@ -130,6 +131,13 @@ echo "chart.svg $svg_sha ($svg_size bytes), square.png $png_sha ($png_size bytes
 catalog_id=$(jq -r '.catalogId' "$catalog_file")
 version=$(jq -r '.version' "$catalog_lock")
 digest=$(jq -r '.digest' "$catalog_lock")
+protocol=$(jq -r '.protocolVersion // "nothing"' "$catalog_file")
+if [ "$protocol" = "1.0" ]; then
+  ok "the screen's catalog is a ui-catalog/v2 document (protocolVersion \"1.0\")"
+else
+  bad "the screen's catalog says protocolVersion '$protocol', want \"1.0\": a v0.9 catalog cannot be drawn by A2UI v1.0 (docs/api/ui-catalog-v2.md)"
+  finish
+fi
 if jq -e '.components | has("Image")' "$catalog_file" >/dev/null 2>&1; then
   ok "the screen's catalog ($catalog_id, version $version) has an Image"
 else
@@ -328,6 +336,12 @@ for pair in "chart.svg:$svg_sha" "square.png:$png_sha"; do
   fi
 done
 operations=$(jq -c '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "a2ui-surface")] | last | .content.a2ui_operations // []' "$events" 2>/dev/null || echo '[]')
+versions=$(printf '%s' "$operations" | jq -r 'map(.version // "none") | unique | join(" ")')
+if [ "$versions" = "1.0" ]; then
+  ok "every operation of the surface says \"version\": \"1.0\""
+else
+  bad "the operations say version '${versions:-nothing}', want only \"1.0\" (operations: $(printf '%s' "$operations" | head -c 400))"
+fi
 surface_catalog=$(printf '%s' "$operations" | jq -r '[.[] | .createSurface? // empty] | first | .catalogId // empty')
 if [ "$surface_catalog" = "$catalog_id" ]; then
   ok "createSurface names the screen's catalog ($catalog_id)"

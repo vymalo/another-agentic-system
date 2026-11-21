@@ -14,11 +14,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::access_tier::AccessTier;
 use crate::agent::AgentTaskState;
 use crate::description::{DescriptionLedger, DescriptionSource};
-use crate::event::{Actor, EventBody, JobRound, JobStartedData};
-use crate::gate::{Job, Snapshot};
-use crate::ids::ThreadId;
+use crate::event::{
+    Actor, ErrorData, EventBody, JobRound, JobStartedData, Origin, UserMessageData,
+};
+use crate::gate::{Job, Snapshot, truncate_to};
+use crate::ids::{ThreadId, UserId};
 use crate::thread::ThreadState;
 use crate::title::{TitleLedger, TitleSource, check_title};
 use crate::transition::{Command, TransitionError, append};
@@ -214,6 +217,10 @@ pub struct SessionReport {
     /// The newest round the report names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round: Option<RoundReport>,
+    /// The A2A context of the parent task the session belongs to, when the report says (only a
+    /// round's object does): what a person's start is checked against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_context_id: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -393,6 +400,39 @@ pub struct ChildLedger {
     /// heard of again and is no longer blocked.
     #[serde(default, skip_serializing_if = "is_false")]
     pub refollow: bool,
+    /// A person asked to close the session (`child_session_close_asked`): the closing round that
+    /// follows is never a job of this thread.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub close_asked: bool,
+    /// The close that was asked cancels the working round first.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub close_cancel: bool,
+    /// Which round is whose, and how new the state is.
+    #[serde(default, skip_serializing_if = "RoundTrack::is_empty")]
+    pub track: RoundTrack,
+}
+
+/// What a child thread remembers to tell the rounds it did not start from the ones it did, and to
+/// keep a stale report from moving its state back. Round 0 is "none".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundTrack {
+    /// The newest round known when the close was asked: the close makes the next one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub close_after: u32,
+    /// The round the answer to the close named: the closing round, once known.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub close_round: u32,
+    /// The newest round a report that moved the state was about.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub state_round: u32,
+}
+
+impl RoundTrack {
+    /// Nothing remembered.
+    pub fn is_empty(&self) -> bool {
+        *self == RoundTrack::default()
+    }
 }
 
 /// The round of a session this thread's current job follows without having sent it (`Job.observed`,
@@ -414,7 +454,8 @@ impl ObservedRound {
     /// is. A round the parent's model started is in the parent's totals (ADR 0072, amended
     /// 2026-11-18), and so is a round whose `by` the agent did not say (`None`): it is taken for
     /// the agent's and left uncounted here. A blocked child that a person answers within the same
-    /// job keeps this round's `by`; what counts that answer is S3's decision.
+    /// job keeps this round's `by` (ADR 0072, S3: the round keeps its starter's `by`), so the
+    /// parent counts that answer.
     pub fn counts_usage(&self) -> bool {
         self.by == Some(SessionBy::Person)
     }
@@ -476,15 +517,144 @@ pub struct ChildSessionClosedData {
     pub thread: ThreadId,
 }
 
+/// The most sessions a person may have asked one parent thread to start whose outcome is not
+/// known yet ([`Job::session_starts`]); a fifth is refused ([`SessionRefusal::TooManyStarts`]).
+pub const MAX_PENDING_STARTS: usize = 4;
+/// The longest start request id, in bytes.
+pub const MAX_REQUEST_BYTES: usize = 128;
+/// The longest description of a person's start, in characters (`child-sessions/v1` section 4).
+pub const MAX_START_DESCRIPTION_CHARS: usize = 80;
+/// The most bytes of an agent's words that `child_session_start_ended` keeps.
+pub const MAX_START_REASON_BYTES: usize = 512;
+
+/// A start a person asked for whose outcome is not in the parent's log yet (`Job.session_starts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingStart {
+    /// The id the person's request carried.
+    pub request: String,
+}
+
+/// How a start a person asked for ended (`Input::SessionStartEnded`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionStartOutcome {
+    /// The agent opened the session and its child thread exists.
+    Opened {
+        /// The session's id.
+        session: String,
+        /// The child thread made for it.
+        child: ThreadId,
+    },
+    /// The agent refused, or could not be reached: the words are for the person (untrusted).
+    Failed {
+        /// What the agent said, or the orchestrator's own words.
+        reason: String,
+    },
+}
+
+/// `outcome` of a `child_session_start_ended`. Closed (ADR 0004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartOutcomeKind {
+    /// The session was opened.
+    Opened,
+    /// The start did not happen.
+    Failed,
+}
+
+/// `data` of a `child_session_start_asked`, in the parent's log. It has no place for the person's
+/// text: the log keeps what was asked of whom, never the words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionStartAskedData {
+    /// The id of the person's request.
+    pub request: String,
+    /// The helper asked for.
+    pub agent: String,
+    /// What the person said the helper is for (at most [`MAX_START_DESCRIPTION_CHARS`]).
+    pub description: String,
+    /// Whether the session goes idle after a round.
+    pub keep_open: bool,
+    /// The access tier the first round was asked under, when one applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AccessTier>,
+}
+
+/// `data` of a `child_session_start_ended`, in the parent's log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionStartEndedData {
+    /// The id of the person's request.
+    pub request: String,
+    /// How it ended.
+    pub outcome: StartOutcomeKind,
+    /// The session's id, when it opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// The child thread, when it opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<ThreadId>,
+    /// Why it did not, in the agent's words (untrusted, at most [`MAX_START_REASON_BYTES`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `data` of a `child_session_close_asked`, in the child's log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionCloseAskedData {
+    /// The session's id.
+    pub session: String,
+    /// The close cancels the working round first.
+    pub cancel: bool,
+}
+
+/// `data` of a `child_session_state`, in the child's log: the session's state changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionStateData {
+    /// The session's id.
+    pub session: String,
+    /// The session's state now.
+    pub state: SessionState,
+    /// A close waits for the open round to end.
+    pub closing: bool,
+    /// A person's close is asked and not answered yet. Said (and absent when false, as it is by
+    /// default) so a refused close, which changes neither `state` nor `closing`, clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub close_asked: bool,
+}
+
+/// What a person's first message to a session they start is: written in the child's first commit,
+/// before the round it begins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonPrompt {
+    /// The person.
+    pub user: UserId,
+    /// What they asked the helper.
+    pub text: String,
+    /// The id the request gave the message, recorded in the log.
+    pub message_id: Option<String>,
+    /// The access tier the first round was asked under.
+    pub tier: Option<AccessTier>,
+}
+
 /// Why a report about a session was refused ([`TransitionError::ChildSessionRefused`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SessionRefusal {
     /// The parent notes [`MAX_CHILD_SESSIONS`] sessions already.
     #[error("this thread already has {MAX_CHILD_SESSIONS} child sessions")]
     LedgerFull,
-    /// The report fails [`SessionReport::check`].
+    /// The report, or a person's request, fails its bounds.
     #[error("the session report is malformed")]
     Malformed,
+    /// A person asked to start a session while [`MAX_PENDING_STARTS`] starts of this thread were
+    /// still waiting for their outcome.
+    #[error("{MAX_PENDING_STARTS} sessions are already starting in this thread")]
+    TooManyStarts,
+    /// A child thread cannot start sessions: only a parent can.
+    #[error("a helper session cannot start another")]
+    ChildThread,
 }
 
 fn malformed(_: SessionInvalid) -> TransitionError {
@@ -583,6 +753,16 @@ pub fn child_title(report: &SessionReport) -> String {
 /// session, and the order to follow the round the report names (a round with a task id), if any.
 /// The thread's title is [`child_title`]; the model is never asked to title or describe it.
 pub fn start_child(report: &SessionReport) -> (Snapshot, Vec<Command>) {
+    start_child_for(report, None)
+}
+
+/// [`start_child`] for a session a person started: with their `prompt`, the child's first commit
+/// holds their `user_message` before the order to follow round 1 (which the report says the person
+/// started, so the round is counted in this thread).
+pub fn start_child_for(
+    report: &SessionReport,
+    prompt: Option<PersonPrompt>,
+) -> (Snapshot, Vec<Command>) {
     let round = report
         .round
         .as_ref()
@@ -597,29 +777,74 @@ pub fn start_child(report: &SessionReport) -> (Snapshot, Vec<Command>) {
             followed: round.as_ref().map_or(0, |(n, _)| *n),
             started: 0,
             refollow: false,
+            close_asked: false,
+            close_cancel: false,
+            track: RoundTrack::default(),
         }),
         title: TitleLedger::of(TitleSource::Model),
         // the helper's words are the agent's, fixed: nothing replaces them
         description: DescriptionLedger::of(DescriptionSource::User),
         ..Job::default()
     };
-    let cmds: Vec<Command> = round
-        .map(|(round, task_id)| Command::Observe {
-            session: report.session.clone(),
-            round,
-            task_id,
-            by: report.by,
+    let mut cmds: Vec<Command> = prompt
+        .map(|p| {
+            append(
+                Actor::user(&p.user),
+                EventBody::UserMessage(UserMessageData {
+                    text: p.text,
+                    message_id: p.message_id,
+                    run_id: None,
+                    origin: Origin::Agui,
+                    delivery: None,
+                    mentions: Vec::new(),
+                    tier: p.tier,
+                    tier_cap: None,
+                }),
+            )
         })
         .into_iter()
         .collect();
+    let follows = round.is_some();
+    cmds.extend(round.map(|(round, task_id)| Command::Observe {
+        session: report.session.clone(),
+        round,
+        task_id,
+        by: report.by,
+    }));
     // A thread with nothing to follow is at rest, in a state a person can delete it in (`queued`
     // would wait for a round that never comes): idle, or closed.
-    let state = if cmds.is_empty() {
-        ThreadState::Done
-    } else {
+    let state = if follows {
         ThreadState::Queued
+    } else {
+        ThreadState::Done
     };
     (Snapshot { state, job }, cmds)
+}
+
+/// Whether `report` is older news than what the ledger holds, which a stale listing can be: a
+/// report of an earlier round, or of the same round with the session further back than it is
+/// (working after idle or closed, a close under way undone). A report that names no round cannot
+/// be told from the newest, and is not stale.
+fn stale(child: &ChildLedger, report: &SessionReport) -> bool {
+    let Some(r) = &report.round else {
+        return false;
+    };
+    let rank = |s: SessionState| match s {
+        SessionState::Working => 0,
+        SessionState::Idle => 1,
+        SessionState::Closed => 2,
+    };
+    match r.number.cmp(&child.track.state_round) {
+        std::cmp::Ordering::Less => child.track.state_round != 0,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => {
+            rank(report.state) < rank(child.state)
+                || (report.state == SessionState::Working
+                    && child.state == SessionState::Working
+                    && child.closing
+                    && !report.closing)
+        }
+    }
 }
 
 /// A child thread is told what its session looks like now (`Input::ChildSessionSaid`): the ledger
@@ -634,10 +859,14 @@ pub(crate) fn said(
     let Some(child) = job.child.as_mut().filter(|c| c.session == report.session) else {
         return Ok(Vec::new());
     };
+    let before = (child.state, child.closing);
     // closed is final: a late or reordered report does not reopen the session
-    if child.state != SessionState::Closed {
+    if child.state != SessionState::Closed && !stale(child, report) {
         child.state = report.state;
         child.closing = report.closing;
+        if let Some(r) = &report.round {
+            child.track.state_round = child.track.state_round.max(r.number);
+        }
     }
     child.keep_open = report.keep_open;
     if !report.agent.is_empty() {
@@ -645,6 +874,46 @@ pub(crate) fn said(
     }
     if state != ThreadState::Blocked {
         child.refollow = false;
+    }
+    let mut cmds = Vec::new();
+    if (child.state, child.closing) != before {
+        cmds.push(append(
+            Actor::system(),
+            EventBody::ChildSessionState(ChildSessionStateData {
+                session: child.session.clone(),
+                state: child.state,
+                closing: child.closing,
+                close_asked: child.close_asked,
+            }),
+        ));
+    }
+    // The round a person's close made ends the session and has nothing to show: it is marked
+    // followed and never becomes a job, whatever it looks like when it is reported (working, with
+    // the close under way, or ended), and also when the report comes before the answer to the
+    // close. Only the round the close made is it: the answer names it, and until then it is the
+    // one after the newest round known when the close was asked.
+    let closing_round = child.close_asked
+        && report.round.as_ref().is_some_and(|r| {
+            let made = match child.track.close_round {
+                0 => child.track.close_after + 1,
+                named => named,
+            };
+            r.number == made
+                && r.state
+                    .and_then(report_of)
+                    .is_none_or(|outcome| outcome != SessionOutcome::Blocked)
+        });
+    if closing_round && let Some(r) = &report.round {
+        child.followed = child.followed.max(r.number);
+        return Ok(cmds);
+    }
+    // A thread running a job of its own (a message of the person's) is waiting for the answer
+    // that names the round: the report of that round is not a round to follow.
+    let own_round_unnamed = matches!(state, ThreadState::Queued | ThreadState::Working)
+        && job.observed.is_none()
+        && !(job.number == 1 && child.started == 0);
+    if own_round_unnamed {
+        return Ok(cmds);
     }
     let order = report
         .round
@@ -665,18 +934,221 @@ pub(crate) fn said(
             child.refollow = true;
             Some((r.number, task.clone()))
         });
-    Ok(match order {
-        Some((round, task_id)) => {
-            child.followed = child.followed.max(round);
-            vec![Command::Observe {
-                session: report.session.clone(),
-                round,
-                task_id,
-                by: report.by,
-            }]
-        }
-        None => Vec::new(),
-    })
+    if let Some((round, task_id)) = order {
+        child.followed = child.followed.max(round);
+        cmds.push(Command::Observe {
+            session: report.session.clone(),
+            round,
+            task_id,
+            by: report.by,
+        });
+    }
+    Ok(cmds)
+}
+
+/// What a person's message to a session's thread is allowed by the session (`UserMessage`,
+/// `StopAndSend`, `UiAction`): a closed session takes none, and a session that closes when its
+/// round ends cannot be stopped to send (`stop`), because the stop is its end. A helper cannot ask
+/// other agents, so a message that `mentions` any is refused (decision 5).
+pub(crate) fn admits_message(job: &Job, stop: bool, mentions: bool) -> Result<(), TransitionError> {
+    let Some(child) = &job.child else {
+        return Ok(());
+    };
+    if child.state == SessionState::Closed {
+        return Err(TransitionError::SessionClosed);
+    }
+    if mentions {
+        return Err(TransitionError::ChildMentions);
+    }
+    if stop && !child.keep_open {
+        return Err(TransitionError::SessionClosesOnStop);
+    }
+    Ok(())
+}
+
+/// What a person asked of a parent thread to start (`Input::StartSession`), borrowed.
+pub(crate) struct Start<'a> {
+    pub user: &'a UserId,
+    pub request: &'a str,
+    pub agent: &'a str,
+    pub description: &'a str,
+    pub text: &'a str,
+    pub keep_open: bool,
+    pub tier: Option<AccessTier>,
+    pub tier_cap: Option<AccessTier>,
+}
+
+/// A person asks the parent thread to start a session (`Input::StartSession`): valid on a parent
+/// in any state, never moves it. Writes `child_session_start_asked` (never the text) and orders
+/// the start; the same request again changes nothing. Refused for a child, for a request or a
+/// description out of bounds, and when [`MAX_PENDING_STARTS`] starts wait already.
+pub(crate) fn start_session(
+    job: &mut Job,
+    start: &Start<'_>,
+) -> Result<Vec<Command>, TransitionError> {
+    let refuse = |why| TransitionError::ChildSessionRefused(why);
+    if job.child.is_some() {
+        return Err(refuse(SessionRefusal::ChildThread));
+    }
+    let description_ok = !start.description.trim().is_empty()
+        && start.description.chars().count() <= MAX_START_DESCRIPTION_CHARS
+        && !start.description.chars().any(char::is_control);
+    if !printable(start.request, MAX_REQUEST_BYTES) || !description_ok {
+        return Err(refuse(SessionRefusal::Malformed));
+    }
+    if job
+        .session_starts
+        .iter()
+        .any(|p| p.request == start.request)
+    {
+        return Ok(Vec::new());
+    }
+    if job.session_starts.len() >= MAX_PENDING_STARTS {
+        return Err(refuse(SessionRefusal::TooManyStarts));
+    }
+    job.session_starts.push(PendingStart {
+        request: start.request.to_owned(),
+    });
+    Ok(vec![
+        append(
+            Actor::user(start.user),
+            EventBody::ChildSessionStartAsked(ChildSessionStartAskedData {
+                request: start.request.to_owned(),
+                agent: start.agent.to_owned(),
+                description: start.description.to_owned(),
+                keep_open: start.keep_open,
+                tier: start.tier,
+            }),
+        ),
+        Command::StartSession {
+            request: start.request.to_owned(),
+            agent: start.agent.to_owned(),
+            description: start.description.to_owned(),
+            text: start.text.to_owned(),
+            keep_open: start.keep_open,
+            tier: start.tier,
+            tier_cap: start.tier_cap,
+        },
+    ])
+}
+
+/// A start a person asked for ended (`Input::SessionStartEnded`): the pending start is dropped and
+/// the outcome written once; a request nobody is waiting for changes nothing.
+pub(crate) fn start_ended(
+    job: &mut Job,
+    request: &str,
+    outcome: &SessionStartOutcome,
+) -> Vec<Command> {
+    let Some(at) = job.session_starts.iter().position(|p| p.request == request) else {
+        return Vec::new();
+    };
+    job.session_starts.remove(at);
+    let data = match outcome {
+        SessionStartOutcome::Opened { session, child } => ChildSessionStartEndedData {
+            request: request.to_owned(),
+            outcome: StartOutcomeKind::Opened,
+            session: Some(session.clone()),
+            thread: Some(*child),
+            reason: None,
+        },
+        SessionStartOutcome::Failed { reason } => ChildSessionStartEndedData {
+            request: request.to_owned(),
+            outcome: StartOutcomeKind::Failed,
+            session: None,
+            thread: None,
+            reason: Some(truncate_to(reason, MAX_START_REASON_BYTES).to_owned()),
+        },
+    };
+    vec![append(
+        Actor::system(),
+        EventBody::ChildSessionStartEnded(data),
+    )]
+}
+
+/// A person asks to close the session this thread is (`Input::CloseSession`): valid in every
+/// state of a child and never moves it. Nothing for a session that is closed, or for a close of
+/// the same strength already asked; refused for a thread that is no child.
+pub(crate) fn close_session(
+    job: &mut Job,
+    user: &UserId,
+    cancel: bool,
+) -> Result<Vec<Command>, TransitionError> {
+    let child = job.child.as_mut().ok_or(TransitionError::NotAChild)?;
+    if child.state == SessionState::Closed || (child.close_asked && (child.close_cancel || !cancel))
+    {
+        return Ok(Vec::new());
+    }
+    if !child.close_asked {
+        child.track.close_after = child.followed.max(child.started);
+    }
+    child.close_asked = true;
+    child.close_cancel |= cancel;
+    Ok(vec![
+        append(
+            Actor::user(user),
+            EventBody::ChildSessionCloseAsked(ChildSessionCloseAskedData {
+                session: child.session.clone(),
+                cancel,
+            }),
+        ),
+        Command::CloseSession { cancel },
+    ])
+}
+
+/// The agent refused the close (`Input::SessionCloseFailed`): the ask is cleared, so a person may
+/// ask again, the agent's words are the child's `error` and the state is said again with no close
+/// asked. Nothing when no close was asked.
+pub(crate) fn close_failed(job: &mut Job, reason: &str) -> Result<Vec<Command>, TransitionError> {
+    let child = job.child.as_mut().ok_or(TransitionError::NotAChild)?;
+    if !child.close_asked {
+        return Ok(Vec::new());
+    }
+    child.close_asked = false;
+    child.close_cancel = false;
+    Ok(vec![
+        append(
+            Actor::system(),
+            EventBody::Error(ErrorData {
+                message: truncate_to(reason, MAX_START_REASON_BYTES).to_owned(),
+                retryable: false,
+            }),
+        ),
+        // what a card reads: the session as it was, with no close asked
+        append(
+            Actor::system(),
+            EventBody::ChildSessionState(ChildSessionStateData {
+                session: child.session.clone(),
+                state: child.state,
+                closing: child.closing,
+                close_asked: false,
+            }),
+        ),
+    ])
+}
+
+/// The answer to a message this thread sent names round `number` (`Input::RoundSent`): the round
+/// is followed, so the agent's report of it orders no `Observe`. While a job of this thread runs
+/// it is that job's round (a replay of its `RoundStarted` changes nothing); otherwise it is the
+/// round a close made, which is never a job. Another session's, or a thread that is no child,
+/// changes nothing or is refused.
+pub(crate) fn round_sent(
+    state: ThreadState,
+    job: &mut Job,
+    session: &str,
+    number: u32,
+) -> Result<Vec<Command>, TransitionError> {
+    let child = job.child.as_mut().ok_or(TransitionError::NotAChild)?;
+    if child.session != session {
+        return Ok(Vec::new());
+    }
+    child.followed = child.followed.max(number);
+    if matches!(state, ThreadState::Queued | ThreadState::Working) {
+        child.started = child.started.max(number);
+    } else if child.close_asked {
+        // no job of this thread is running: the round the close made
+        child.track.close_round = number;
+    }
+    Ok(Vec::new())
 }
 
 /// The orchestrator began to follow a round of this child thread (`Input::RoundStarted`): the job
@@ -705,6 +1177,14 @@ pub(crate) fn round_started(
     }
     if number <= child.started || job.observed.as_ref().is_some_and(|o| o.number == number) {
         return Ok((state, Vec::new()));
+    }
+    // the closing round is never a job; before the answer names it, a round that may be it waits
+    // (the dispatcher asks again)
+    if child.close_asked && child.track.close_round == number {
+        return Ok((state, Vec::new()));
+    }
+    if child.close_asked && child.track.close_round == 0 && number == child.track.close_after + 1 {
+        return Err(refuse);
     }
     let fresh = job.observed.is_none() && job.number == 1 && child.started == 0;
     match state {

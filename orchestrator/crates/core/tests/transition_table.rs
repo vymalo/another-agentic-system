@@ -67,6 +67,8 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestDescription { .. }
             | Command::Ask { .. }
             | Command::Observe { .. }
+            | Command::StartSession { .. }
+            | Command::CloseSession { .. }
             | Command::RequestVerification { .. } => None,
         })
         .collect()
@@ -329,7 +331,14 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
         followed: 1,
         started: 0,
         refollow: false,
+        close_asked: true,
+        close_cancel: false,
+        track: RoundTrack::default(),
     };
+    // a start a person asked for belongs to the conversation: it outlives the job
+    let starts = vec![orch_core::PendingStart {
+        request: "r1".into(),
+    }];
     for s in TERMINAL {
         let before = Snapshot {
             state: s,
@@ -392,6 +401,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 usage: UsageLedger::of(12, 0),
                 // the conversation's child-session ledgers go on, the round followed does not (ADR 0072)
                 sessions: sessions.clone(),
+                session_starts: starts.clone(),
                 child: Some(child.clone()),
                 observed: Some(orch_core::ObservedRound {
                     number: 1,
@@ -428,6 +438,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                     [],
                 )],
                 sessions: sessions.clone(),
+                session_starts: starts.clone(),
                 child: Some(child.clone()),
                 ..Job::default()
             }
@@ -1283,7 +1294,7 @@ fn replay_is_deterministic() {
 // ---------------------------------------------------------------- A2UI (ADR 0013)
 
 fn surface_op() -> serde_json::Value {
-    serde_json::json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1"}})
+    serde_json::json!({"version": "1.0", "createSurface": {"surfaceId": "s1"}})
 }
 fn ui(update: AgentUpdate) -> Input {
     Input::Agent {
@@ -1300,7 +1311,7 @@ fn act() -> UiActionData {
         name: "submit".into(),
         source_component_id: "btn".into(),
         context: serde_json::Map::new(),
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: Some("run-2".into()),
     }
 }
@@ -1500,6 +1511,8 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::RequestDescription { .. }
         | Command::Ask { .. }
         | Command::Observe { .. }
+        | Command::StartSession { .. }
+        | Command::CloseSession { .. }
         | Command::RequestVerification { .. } => None,
     });
     let only = found.next().expect("a delegation");

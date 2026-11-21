@@ -223,6 +223,11 @@ impl AgentClient for LocalAgentClient {
                         .to_owned(),
                 ));
             }
+            SendContent::SessionStart { .. } | SendContent::SessionClose { .. } => {
+                return Err(AgentError::Unsupported(
+                    "a local agent does not run child sessions (child-sessions/v1)".to_owned(),
+                ));
+            }
         };
         let mut message = Message::new(Role::User, vec![Part::text(text)]);
         message.message_id = req.message_id.clone();

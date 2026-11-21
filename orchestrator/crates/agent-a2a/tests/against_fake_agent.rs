@@ -459,7 +459,7 @@ async fn an_action_is_never_given_a_conversation_and_an_empty_one_changes_nothin
             name: "go".to_owned(),
             source_component_id: "btn".to_owned(),
             context: serde_json::Map::new(),
-            version: orch_core::UiVersion::V0_9_1,
+            version: orch_core::UiVersion::V1_0,
             run_id: None,
         },
         at: jiff::Timestamp::UNIX_EPOCH,

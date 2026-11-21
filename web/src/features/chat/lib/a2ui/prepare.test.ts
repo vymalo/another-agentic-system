@@ -73,7 +73,7 @@ function goldenOperations(): unknown[] {
 }
 
 describe("a valid surface", () => {
-  it("the golden, whose operations say v0.9.1 (the pinned runtime would drop them), is drawn", () => {
+  it("the golden (A2UI 1.0, which the pinned package's reducer would drop) is drawn", () => {
     const p = drawn(prepareSurface(goldenOperations()));
     expect(p.surfaceId).toBe("s1");
     expect(p.eventActions).toBe(1);
@@ -97,14 +97,15 @@ describe("a valid surface", () => {
     });
   });
 
-  it("v0.9 and v1.0 (with inline components and data model) read the same", () => {
-    const v09 = drawn(prepareSurface(surface([column("root", ["t"]), text("t", "hi")])));
-    const v10 = drawn(
+  it("an inline createSurface (components and data model) reads the same as the two operations", () => {
+    const two = drawn(prepareSurface(surface([column("root", ["t"]), text("t", "hi")])));
+    const inline = drawn(
       prepareSurface([
         {
-          version: "v1.0",
+          version: "1.0",
           createSurface: {
             surfaceId: SURFACE,
+            catalogId: BASIC_CATALOG,
             components: [
               column("root", ["t"]),
               { id: "t", component: "Text", text: { path: "/x" } },
@@ -114,8 +115,8 @@ describe("a valid surface", () => {
         },
       ]),
     );
-    expect(find(v09.spec, "Markdown")).toMatchObject({ value: "hi" });
-    expect(find(v10.spec, "Markdown")).toMatchObject({ value: "hello" });
+    expect(find(two.spec, "Markdown")).toMatchObject({ value: "hi" });
+    expect(find(inline.spec, "Markdown")).toMatchObject({ value: "hello" });
   });
 
   it("text bound to the data model reads it, and a later update replaces it", () => {
@@ -123,7 +124,7 @@ describe("a valid surface", () => {
       ...surface([column("root", ["t"]), { id: "t", component: "Text", text: { path: "/name" } }], {
         name: "one",
       }),
-      { version: "v0.9", updateDataModel: { surfaceId: SURFACE, path: "/name", contents: "two" } },
+      { version: "1.0", updateDataModel: { surfaceId: SURFACE, path: "/name", value: "two" } },
     ];
     expect(find(drawn(prepareSurface(ops)).spec, "Markdown")).toMatchObject({ value: "two" });
   });
@@ -131,14 +132,16 @@ describe("a valid surface", () => {
   it("nothing yet is pending, not an error: no operations, no root, a child that has not arrived", () => {
     expect(prepareSurface(undefined)).toEqual({ kind: "pending" });
     expect(prepareSurface([])).toEqual({ kind: "pending" });
-    expect(prepareSurface([{ version: "v0.9", createSurface: { surfaceId: "s1" } }])).toEqual({
-      kind: "pending",
-    });
+    expect(
+      prepareSurface([
+        { version: "1.0", createSurface: { surfaceId: "s1", catalogId: BASIC_CATALOG } },
+      ]),
+    ).toEqual({ kind: "pending" });
     expect(prepareSurface(withRoot(["later"], []))).toEqual({ kind: "pending" });
   });
 
   it("a deleted surface is deleted, and one created again after the delete is drawn", () => {
-    const ops = [...withRoot([], []), { version: "v0.9", deleteSurface: { surfaceId: SURFACE } }];
+    const ops = [...withRoot([], []), { version: "1.0", deleteSurface: { surfaceId: SURFACE } }];
     expect(prepareSurface(ops)).toEqual({ kind: "deleted" });
     expect(drawn(prepareSurface([...ops, ...withRoot([], [])]))).toBeDefined();
   });
@@ -450,7 +453,7 @@ describe("vocabulary: only the components the renderer draws", () => {
     const cases: [string, unknown[]][] = [
       [
         "unknown operation",
-        [...good, { version: "v0.9", callRendererFunction: { surfaceId: SURFACE } }],
+        [...good, { version: "1.0", callRendererFunction: { surfaceId: SURFACE } }],
       ],
       ["version", [{ version: "v2", createSurface: { surfaceId: SURFACE } }]],
       ["no version", [{ createSurface: { surfaceId: SURFACE } }]],
@@ -458,34 +461,34 @@ describe("vocabulary: only the components the renderer draws", () => {
         "two operations",
         [
           {
-            version: "v0.9",
-            createSurface: { surfaceId: SURFACE },
+            version: "1.0",
+            createSurface: { surfaceId: SURFACE, catalogId: BASIC_CATALOG },
             deleteSurface: { surfaceId: SURFACE },
           },
         ],
       ],
       ["not an object", [...good, "createSurface"]],
-      ["no surface id", [{ version: "v0.9", createSurface: {} }]],
-      ["surface id not text", [{ version: "v0.9", createSurface: { surfaceId: 7 } }]],
+      ["no surface id", [{ version: "1.0", createSurface: {} }]],
+      ["surface id not text", [{ version: "1.0", createSurface: { surfaceId: 7 } }]],
       [
         "update of a surface that was never created",
-        [{ version: "v0.9", updateComponents: { surfaceId: "x", components: [] } }],
+        [{ version: "1.0", updateComponents: { surfaceId: "x", components: [] } }],
       ],
       [
         "components not a list",
-        [...good, { version: "v0.9", updateComponents: { surfaceId: SURFACE, components: {} } }],
+        [...good, { version: "1.0", updateComponents: { surfaceId: SURFACE, components: {} } }],
       ],
       [
         "component without id",
         [
           ...good,
           {
-            version: "v0.9",
+            version: "1.0",
             updateComponents: { surfaceId: SURFACE, components: [{ component: "Text" }] },
           },
         ],
       ],
-      ["operations not a list", { version: "v0.9" } as unknown as unknown[]],
+      ["operations not a list", { version: "1.0" } as unknown as unknown[]],
       ["a string", "createSurface" as unknown as unknown[]],
     ];
     for (const [label, ops] of cases) {
@@ -493,10 +496,21 @@ describe("vocabulary: only the components the renderer draws", () => {
     }
   });
 
+  it("a surface of an earlier A2UI version is refused, and the reason names it (ADR 0075)", () => {
+    for (const version of ["v0.9", "v0.9.1", "v1.0"]) {
+      const ops = surface([column("root", [])], undefined, version);
+      const r = refused(prepareSurface(ops));
+      expect(r.rule, version).toBe("version");
+      expect(r.reason, version).toContain(`"${version}"`);
+      expect(r.reason, version).toContain("earlier version");
+      expect(r.reason, version).toContain('"1.0"');
+    }
+  });
+
   it("two surfaces in one activity are refused", () => {
     const ops = [
       ...surface([column("root", [])]),
-      { version: "v0.9", createSurface: { surfaceId: "other" } },
+      { version: "1.0", createSurface: { surfaceId: "other", catalogId: BASIC_CATALOG } },
     ];
     expect(refused(prepareSurface(ops)).rule).toBe("surfaces");
   });
@@ -631,7 +645,7 @@ describe("actions", () => {
   it("context bound to the data model is read at conversion", () => {
     const ops = [
       ...withAction(event("pick", { who: { path: "/who" } })),
-      { version: "v0.9", updateDataModel: { surfaceId: SURFACE, path: "/who", contents: "me" } },
+      { version: "1.0", updateDataModel: { surfaceId: SURFACE, path: "/who", value: "me" } },
     ];
     expect(actionOf(prepareSurface(ops))).toMatchObject({ context: { who: "me" } });
   });
@@ -770,7 +784,7 @@ describe("what the validator does not trust", () => {
 
 /** The operations of a surface that names this app's catalog. */
 const ours = (components: Rec[], catalogId = OWN_CATALOG_ID) =>
-  surface(components, undefined, "v0.9", catalogId);
+  surface(components, undefined, "1.0", catalogId);
 
 /** The surface of a build that has one more component than the real one, `Note`, and a version. */
 const withNote = (version: number): OwnCatalog => ({
@@ -797,14 +811,24 @@ const withNote = (version: number): OwnCatalog => ({
 describe("catalogs (ADR 0023): the basic one, ours, and no other", () => {
   const hello = [column("root", ["t"]), text("t", "hello")];
 
-  it("the three spellings of the basic catalog's id, and no id at all, are the basic catalog", () => {
+  it("the one v1.0 basic id is the basic catalog; the retired spellings are refused, and so is no id", () => {
     for (const id of BASIC_CATALOG_IDS) {
-      expect(drawn(prepareSurface(surface(hello, undefined, "v0.9", id))).surfaceId).toBe(SURFACE);
+      expect(drawn(prepareSurface(surface(hello, undefined, "1.0", id))).surfaceId).toBe(SURFACE);
+    }
+    for (const retired of [
+      "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+      "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
+    ]) {
+      const r = refused(prepareSurface(surface(hello, undefined, "1.0", retired)));
+      expect(r.rule, retired).toBe("catalog");
+      expect(r.reason, retired).toContain("does not have");
     }
     const none = surface(hello).map((op) =>
       "createSurface" in op ? { version: op.version, createSurface: { surfaceId: SURFACE } } : op,
     );
-    drawn(prepareSurface(none));
+    const r = refused(prepareSurface(none));
+    expect(r.rule).toBe("catalog");
+    expect(r.reason).toContain("names no catalog");
   });
 
   it("any other catalog is refused, and the reason names it (cut, without control characters)", () => {
@@ -838,7 +862,7 @@ describe("catalogs (ADR 0023): the basic one, ours, and no other", () => {
   it("a surface that names two catalogs is refused: a later createSurface starts it over", () => {
     const ops = [
       ...ours(hello),
-      { version: "v0.9", createSurface: { surfaceId: SURFACE, catalogId: "https://x.test/c" } },
+      { version: "1.0", createSurface: { surfaceId: SURFACE, catalogId: "https://x.test/c" } },
     ];
     expect(refused(prepareSurface(ops)).rule).toBe("catalog");
   });

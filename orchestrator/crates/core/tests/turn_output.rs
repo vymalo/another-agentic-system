@@ -298,7 +298,7 @@ fn a_new_turn_forgets_the_announcement() {
             name: "go".into(),
             source_component_id: "go".into(),
             context: serde_json::Map::new(),
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: None,
         },
         catalog: None,

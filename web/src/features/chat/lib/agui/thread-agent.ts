@@ -18,10 +18,19 @@ import {
   usageFromCarry,
 } from "@/features/chat/lib/usage";
 import { parseMentions } from "@/features/mentions/lib/mentions";
+import {
+  ACTIVITY_SESSION,
+  ACTIVITY_SESSION_START,
+  parseSession,
+  parseSessionStart,
+  SESSION_SELF_ID,
+  type SessionCard,
+  type SessionStartCard,
+} from "@/features/sessions/lib/cards";
 import { type ShareSource, sharedFileHref } from "@/features/sharing/lib/sharing";
 import type { SentTiers } from "@/features/tier/lib/sent";
 import { parseTier, TIER_KEY, TIER_PROP, type Tier } from "@/features/tier/lib/tier";
-import { problemMessage } from "@/lib/api/client";
+import { problemCode, problemMessage } from "@/lib/api/client";
 import type { components, paths } from "@/lib/api/schema";
 import { withSessionRefresh } from "@/lib/api/session-refresh";
 import type { ApiActor, ApiMention, ThreadState } from "@/lib/api/types";
@@ -214,6 +223,16 @@ export type ThreadSnapshot = {
    * `vymalo.usage_total` (`usage.ts`): never handed to the runtime, not part of the transcript.
    */
   usage: ThreadUsage;
+  /**
+   * The `vymalo.session` cards of the helper sessions this thread opened (child-sessions/v1), by card id
+   * (`session-<seq>`), each with the newest content any event said. The card is said again in runs of its own;
+   * it is drawn once, in its home run, and reads its live state here.
+   */
+  sessions: ReadonlyMap<string, SessionCard>;
+  /** The `vymalo.sessionStart` cards of a person's starts, by request, with the newest state. */
+  sessionStarts: ReadonlyMap<string, SessionStartCard>;
+  /** On a child thread: its own state, `session-self` (never drawn in the transcript). */
+  self: SessionCard | null;
 };
 
 /**
@@ -227,6 +246,8 @@ export class SendError extends MessageNotSentError {
     readonly status?: number,
     /** The refused run was an A2UI action: it carried no message, so there is nothing to take back. */
     readonly action = false,
+    /** The problem's `code`, when the server gave one (`session_closed`, `child_mentions`, ...): what a screen words itself. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "SendError";
@@ -384,6 +405,13 @@ type Route =
   | { kind: "claimed"; runId: string; sink: ReplaySubject<BaseEvent> }
   | { kind: "external"; runId: string; run: ExternalRun };
 
+const NO_SESSIONS: ReadonlyMap<string, SessionCard> = new Map();
+const NO_STARTS: ReadonlyMap<string, SessionStartCard> = new Map();
+const NO_CARDS = { sessions: NO_SESSIONS, sessionStarts: NO_STARTS, self: null };
+
+/** The subagent of a session: `sub-session-<seq>` at its opening, `sub-session-<seq>-<seq of a report>` after one. */
+const SESSION_SUBAGENT = /^sub-session-(\d+)(-\d+)?$/;
+
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -423,7 +451,12 @@ export class ThreadAgent extends AbstractAgent {
     error: null,
     sendFailures: 0,
     usage: NO_USAGE,
+    sessions: NO_SESSIONS,
+    sessionStarts: NO_STARTS,
+    self: null,
   };
+  /** The session cards whose subagent the open run started: the cards this run is the home of. */
+  private readonly runHomes = new Set<string>();
   private readonly listeners = new Set<() => void>();
   // The replies that are still being written (live text). Apart from the snapshot, which moves
   // with every log event: a draft grows several times a second, and only the turn that draws it
@@ -685,6 +718,7 @@ export class ThreadAgent extends AbstractAgent {
         this.runEnds.set(runId, this.groupSeq);
         if (this.route?.runId === runId) return; // the preamble of a resumed run: already open
         if (this.route) this.finish(this.route, false);
+        this.runHomes.clear();
         this.startedInvocations.clear();
         this.dropDrafts();
         const sink = this.claims.get(runId);
@@ -763,13 +797,68 @@ export class ThreadAgent extends AbstractAgent {
       this.finish(route, true);
       return;
     }
-    if (route.kind === "external" && event.type !== EventType.STATE_SNAPSHOT) {
+    // a session's cards and subagent frames are drawn in the run that opened them: any other run that
+    // holds nothing else says the card again and is no turn
+    const session = this.foldSession(event);
+    if (route.kind === "external" && event.type !== EventType.STATE_SNAPSHOT && !session.quiet) {
       this.material(route.run);
     }
-    for (const out of this.normalize(event, route.runId)) this.emit(route, out);
+    for (const out of this.normalize(session.event, route.runId)) this.emit(route, out);
     if (event.type === EventType.RUN_FINISHED || event.type === EventType.RUN_ERROR) {
       this.finish(route, true);
     }
+  }
+
+  /**
+   * Reads the cards of child sessions (child-sessions/v1) out of the event.
+   *
+   * - A session card (`session-<seq>`) and a start card (`session-start-<request>`) are kept in the snapshot, the
+   *   newest content of each; the child's own card (`session-self`) is kept apart.
+   * - A card is **home** in the run that holds `SUBAGENT_STARTED sub-session-<seq>` (no report suffix) for it; a start
+   *   is home where it is `starting`. The event handed on says it (`home`) and names its card (`card`); only the home
+   *   run draws the card, from the snapshot.
+   * - `quiet` is a part of a session that makes no run worth showing: every other event of a session, and the
+   *   child's own card. A run of nothing else is no turn.
+   */
+  private foldSession(event: Ev): { event: Ev; quiet: boolean } {
+    if (
+      event.type === EventType.SUBAGENT_STARTED ||
+      event.type === EventType.SUBAGENT_FINISHED ||
+      event.type === EventType.SUBAGENT_ERROR
+    ) {
+      const m = SESSION_SUBAGENT.exec(str(event.subagentRunId) ?? "");
+      if (!m) return { event, quiet: false };
+      const home = event.type === EventType.SUBAGENT_STARTED && m[2] === undefined;
+      if (home) this.runHomes.add(`session-${m[1]}`);
+      return { event, quiet: !home };
+    }
+    if (event.type !== EventType.ACTIVITY_SNAPSHOT) return { event, quiet: false };
+    const type = str(event.activityType);
+    const id = str(event.messageId) ?? "";
+    if (type === ACTIVITY_SESSION) {
+      const card = parseSession(event.content);
+      if (!card) return { event, quiet: true };
+      if (id === SESSION_SELF_ID) {
+        this.patch({ self: card });
+        return { event, quiet: true };
+      }
+      this.patch({ sessions: new Map(this.snapshot.sessions).set(id, card) });
+      const home = this.runHomes.has(id);
+      return { event: this.marked(event, id, home), quiet: !home };
+    }
+    if (type === ACTIVITY_SESSION_START) {
+      const card = parseSessionStart(event.content);
+      if (!card) return { event, quiet: true };
+      this.patch({ sessionStarts: new Map(this.snapshot.sessionStarts).set(card.request, card) });
+      if (card.state === "starting") this.runHomes.add(id);
+      const home = this.runHomes.has(id);
+      return { event: this.marked(event, id, home), quiet: !home };
+    }
+    return { event, quiet: false };
+  }
+
+  private marked(event: Ev, card: string, home: boolean): Ev {
+    return { ...event, content: { ...(event.content as object), card, home } } as Ev;
   }
 
   /** A user text message: dropped in a claimed run (the requester holds it), else a transcript entry. */
@@ -1023,7 +1112,7 @@ export class ThreadAgent extends AbstractAgent {
     this.seed = null;
     this.userSeqs.clear();
     this.runEnds.clear();
-    this.patch({ lastSeq: 0, usage: NO_USAGE });
+    this.patch({ lastSeq: 0, usage: NO_USAGE, ...NO_CARDS });
     // the transcript is held back until the seed is in, as it is for a replay
     this.patch({ replaying: true });
     let page: HistoryPageBody;
@@ -1112,7 +1201,7 @@ export class ThreadAgent extends AbstractAgent {
     this.setHistory(NO_HISTORY);
     this.userSeqs.clear();
     this.runEnds.clear();
-    this.patch({ lastSeq: 0, usage: NO_USAGE, replaying: false });
+    this.patch({ lastSeq: 0, usage: NO_USAGE, ...NO_CARDS, replaying: false });
   }
 
   /**
@@ -1198,7 +1287,21 @@ export class ThreadAgent extends AbstractAgent {
     const runs = reader.collectRuns(page);
     for (const [id, seq] of reader.userSeqs) if (!this.userSeqs.has(id)) this.userSeqs.set(id, seq);
     for (const [id, seq] of reader.runEnds) if (!this.runEnds.has(id)) this.runEnds.set(id, seq);
+    this.takeOlderCards(reader.snapshot);
     return runs;
+  }
+
+  /**
+   * The cards an older page said, for the sessions and starts the newer pages never said: what the newer ones said is newer.
+   */
+  private takeOlderCards(older: ThreadSnapshot) {
+    const sessions = new Map(this.snapshot.sessions);
+    for (const [id, card] of older.sessions) if (!sessions.has(id)) sessions.set(id, card);
+    const sessionStarts = new Map(this.snapshot.sessionStarts);
+    for (const [id, card] of older.sessionStarts)
+      if (!sessionStarts.has(id)) sessionStarts.set(id, card);
+    if (sessions.size !== this.snapshot.sessions.size) this.patch({ sessions });
+    if (sessionStarts.size !== this.snapshot.sessionStarts.size) this.patch({ sessionStarts });
   }
 
   /** Routes a page's frames as the stream's, and returns the runs they make instead of offering them to the runtime. */
@@ -1485,7 +1588,7 @@ export class ThreadAgent extends AbstractAgent {
         signal,
       });
       if (!data) {
-        throw new SendError(problemMessage(error), response.status, !!action);
+        throw new SendError(problemMessage(error), response.status, !!action, problemCode(error));
       }
       for await (const frame of readSse(data, signal)) {
         let event: Ev;

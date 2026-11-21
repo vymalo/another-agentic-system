@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
-# System-level test of the researcher answering with cards and a graph (MVP slice 4, ADR 0023): the screen's UI
-# catalog (version 3, with `Cards` and `Mermaid`) goes to the researcher with the first message, the researcher
-# searches, reads which components the screen has, and answers with ONE A2UI surface beside its words: a Text, a
-# Cards of the three sources it found and a Mermaid graph, under the screen's own catalogId. A thread keeps its
+# System-level test of the researcher answering with cards and a graph (MVP slice 4, ADR 0023, ADR 0075): the screen's UI
+# catalog (the web's, version 9, a `ui-catalog/v2` document with `Cards` and `Mermaid`) goes to the researcher with the first
+# message, the researcher searches, reads which components the screen has, and answers with ONE A2UI v1.0 surface beside its
+# words: a Text, a Cards of the three sources it found and a Mermaid graph, under the screen's own catalogId. A thread keeps its
 # catalog when an older screen writes to it, and a screen whose catalog has no `Cards` gets words only.
 #
 #   dev/cards-e2e.sh
@@ -22,18 +22,20 @@
 # cards with those links, a Mermaid `graph TD`) and then answer in words that name the three links.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
-#   * the screen's catalog is what its lock says (the digest computed here with jq and sha256sum), the researcher is
-#     listed by GET /api/agents and its card lists A2UI v0.9.1 (with inline catalogs), ui-catalog/v1 and thread-tools/v1;
-#   * RUN 1, "[mock:cards] what is async rust?" with the catalog (version 3): RUN_FINISHED, the thread `done`; one agent
-#     message that names the three links; exactly one `a2ui-surface`, under the screen's catalogId, whose components
+#   * the screen's catalog is a `ui-catalog/v2` document (its `protocolVersion` is "1.0") and what its lock says (the digest
+#     computed here with jq and sha256sum), the researcher is
+#     listed by GET /api/agents and its card lists A2UI v1.0 (with inline catalogs), ui-catalog/v2 and thread-tools/v1;
+#   * RUN 1, "[mock:cards] what is async rust?" with the catalog (version 9): RUN_FINISHED, the thread `done`; one agent
+#     message that names the three links; exactly one `a2ui-surface`, whose operations all say `"version": "1.0"` and whose
+#     `createSurface` names the screen's catalogId, whose components
 #     are a Column, a Text, a Cards of three cards whose links are the ones the search returned, and a Mermaid
-#     `graph TD`; `thread.uiCatalog` says version 3; the mock web search got exactly one call (`web_search`, a query
+#     `graph TD`; `thread.uiCatalog` says version 9; the mock web search got exactly one call (`web_search`, a query
 #     with "async"); the model was offered `search__web_search`, `ui_catalog` and `show` (not `get_ui_catalog`: one catalog
 #     tool) and its log says it could list the thread tools, got the
 #     components of the screen from `ui_catalog` (Cards and Mermaid among them) and "Shown to the person." from `show`;
 #   * RUN 2, the same thread from an OLDER screen: such a screen sends no catalog (it sends one only when the thread has
-#     none or its own is newer, docs/api/ui-catalog-v1.md), so the run adds no `ui_catalog` to the thread's log, the
-#     thread's catalog stays version 3, and the run does not fail and ends in words that name the links;
+#     none or its own is newer, docs/api/ui-catalog-v2.md), so the run adds no `ui_catalog` to the thread's log, the
+#     thread's catalog stays version 9, and the run does not fail and ends in words that name the links;
 #   * RUN 3, a new thread from a screen that is still on a catalog without `Cards` and `Mermaid` (the shipped one minus
 #     those two, one version down, digest recomputed): the thread's catalog is that one, the model's `show` is refused,
 #     and the researcher answers in words only (the three links, no `a2ui-surface`);
@@ -108,7 +110,7 @@ sha256_hex() { # the SHA-256 of stdin, as 64 lower-case hex digits
 }
 
 # canonical_digest FILE: "sha256:" and the hash of the canonical JSON of FILE: keys sorted, no whitespace, no trailing
-# newline. For a catalog (ASCII keys, integers) this is what the web computes (docs/api/ui-catalog-v1.md, "Digest").
+# newline. For a catalog (ASCII keys, integers) this is what the web computes (docs/api/ui-catalog-v2.md, "Digest").
 canonical_digest() {
   printf 'sha256:%s' "$(printf '%s' "$(jq -cS . "$1")" | sha256_hex)"
 }
@@ -118,6 +120,13 @@ catalog_id=$(jq -r '.catalogId' "$catalog_file")
 version=$(jq -r '.version' "$catalog_lock")
 digest=$(jq -r '.digest' "$catalog_lock")
 echo "the screen's catalog: $catalog_id, version $version, $digest"
+protocol=$(jq -r '.protocolVersion // "nothing"' "$catalog_file")
+if [ "$protocol" = "1.0" ]; then
+  ok "the screen's catalog is a ui-catalog/v2 document (protocolVersion \"1.0\")"
+else
+  bad "the screen's catalog says protocolVersion '$protocol', want \"1.0\": a v0.9 catalog cannot be drawn by A2UI v1.0 (docs/api/ui-catalog-v2.md)"
+  finish
+fi
 computed=$(canonical_digest "$catalog_file")
 if [ "$computed" = "$digest" ]; then
   ok "the lock matches the catalog (the digest computed here with jq and sha256sum is the lock's)"
@@ -152,8 +161,8 @@ else
   bad "GET /api/agents: $(head -c 300 "$tmp/err") $agents"
   finish
 fi
-a2ui_uri=https://a2ui.org/a2a-extension/a2ui/v0.9.1
-ui_uri=https://agents.vymalo.com/a2a/extensions/ui-catalog/v1
+a2ui_uri=https://a2ui.org/a2a-extension/a2ui/v1.0
+ui_uri=https://agents.vymalo.com/a2a/extensions/ui-catalog/v2
 tools_uri=https://agents.vymalo.com/a2a/extensions/thread-tools/v1
 code=$(curl -s -o "$tmp/card.json" -w '%{http_code}' --max-time 30 "$researcher/.well-known/agent-card.json" || true)
 if [ "$code" != 200 ]; then
@@ -313,6 +322,12 @@ else
 fi
 # The last snapshot of the surface holds all of it (replace: true).
 operations=$(jq -c '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "a2ui-surface")] | last | .content.a2ui_operations // []' "$events" 2>/dev/null || echo '[]')
+versions=$(printf '%s' "$operations" | jq -r 'map(.version // "none") | unique | join(" ")')
+if [ "$versions" = "1.0" ]; then
+  ok "run 1: every operation of the surface says \"version\": \"1.0\""
+else
+  bad "run 1: the operations say version '${versions:-nothing}', want only \"1.0\" (operations: $(printf '%s' "$operations" | head -c 400))"
+fi
 surface_catalog=$(printf '%s' "$operations" | jq -r '[.[] | .createSurface? // empty] | first | .catalogId // empty')
 if [ "$surface_catalog" = "$catalog_id" ]; then
   ok "run 1: createSurface names the screen's catalog ($catalog_id)"

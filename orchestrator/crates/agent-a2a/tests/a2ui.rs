@@ -1,7 +1,7 @@
-//! The A2UI extension through the A2A adapter (ADR 0013, ADR 0008), against an in-process A2A
-//! agent over real HTTP: capability detection on and off (both URIs, read live, never cached),
-//! surfaces from messages, status messages and artifacts, envelope rejection, and the user's
-//! action going back as a data part of the same task.
+//! The A2UI extension through the A2A adapter (ADR 0013, ADR 0075, ADR 0008), against an in-process
+//! A2A agent over real HTTP: detection of the v1.0 URI on and off (read live, never cached), the
+//! renderer capabilities of `"1.0"`, surfaces from messages, status messages and artifacts,
+//! envelope rejection, and the user's action going back as a data part of the same task.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::time::Duration;
@@ -9,8 +9,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_core::{
-    A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, AgentTaskState, AgentUpdate, MAX_OPERATIONS_BYTES,
-    UiActionData, UiVersion,
+    A2UI_EXTENSION_V1_0, AgentTaskState, AgentUpdate, MAX_OPERATIONS_BYTES, UiActionData, UiVersion,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentStream, IdemKey, SendContent, SendRequest,
@@ -64,7 +63,7 @@ fn go(surface: &str) -> UiActionData {
         name: "go".into(),
         source_component_id: "go".into(),
         context,
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: Some("run-2".into()),
     }
 }
@@ -124,29 +123,38 @@ async fn a_card_without_a2ui_has_no_ui_support() {
     assert_eq!(card.ui, None);
 }
 
+/// ADR 0075: one dialect. The v1.0 URI is the one this build reads, and the retired v0.9.1 URI —
+/// alone or beside it — is no version at all.
 #[tokio::test]
-async fn each_uri_is_detected_from_the_card() {
+async fn the_v1_0_uri_is_detected_from_the_card_and_the_retired_one_is_not() {
     for (uris, want) in [
-        (vec![A2UI_EXTENSION_V0_9_1], vec![UiVersion::V0_9_1]),
-        (vec![A2UI_EXTENSION_V1_0], vec![UiVersion::V1_0]),
+        (vec![A2UI_EXTENSION_V1_0], Some(vec![UiVersion::V1_0])),
         (
-            vec![A2UI_EXTENSION_V1_0, A2UI_EXTENSION_V0_9_1],
-            vec![UiVersion::V0_9_1, UiVersion::V1_0],
+            vec![A2UI_EXTENSION_V1_0, A2UI_EXTENSION_V1_0],
+            Some(vec![UiVersion::V1_0]),
         ),
+        (
+            vec![
+                A2UI_EXTENSION_V1_0,
+                "https://a2ui.org/a2a-extension/a2ui/v0.9.1",
+            ],
+            Some(vec![UiVersion::V1_0]),
+        ),
+        (vec!["https://a2ui.org/a2a-extension/a2ui/v0.9.1"], None),
     ] {
         let fake = agent(&uris).await;
         let card = client()
             .read_card(&fake.endpoint("ui", None))
             .await
             .unwrap();
-        assert_eq!(card.ui.unwrap().versions, want, "{uris:?}");
+        assert_eq!(card.ui.map(|ui| ui.versions), want, "{uris:?}");
     }
 }
 
 #[tokio::test]
 async fn a_card_that_changes_is_noticed_by_the_next_read() {
     // Read live, never cached (ADR 0008): same client, same endpoint, the card changes.
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     let c = client();
     assert!(c.read_card(&ep).await.unwrap().ui.is_some());
@@ -167,30 +175,31 @@ async fn capabilities_are_sent_only_when_the_live_card_lists_the_extension() {
     drain(c.send_stream(text(&ep, "echo one", None)).await.unwrap()).await;
     let call = &fake.executions()[0];
     assert_eq!(call.a2ui_capabilities, None);
-    assert!(!call.activates(A2UI_EXTENSION_V0_9_1) && !call.activates(A2UI_EXTENSION_V1_0));
+    assert!(!call.activates(A2UI_EXTENSION_V1_0) && !call.activates(A2UI_EXTENSION_V1_0));
 
     // The card gains the extension: the very next message carries the catalogs and activates it.
-    fake.set_ui_extensions(&[A2UI_EXTENSION_V0_9_1]);
+    fake.set_ui_extensions(&[A2UI_EXTENSION_V1_0]);
     drain(c.send_stream(text(&ep, "echo two", None)).await.unwrap()).await;
     let call = &fake.executions()[1];
     assert_eq!(
         call.a2ui_capabilities,
-        Some(json!({"v0.9.1": {"supportedCatalogIds": [
-            "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
-            "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"]}}))
+        Some(json!({"1.0": {"supportedCatalogIds": [
+            "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"]}}))
     );
-    assert!(call.activates(A2UI_EXTENSION_V0_9_1));
+    assert!(call.activates(A2UI_EXTENSION_V1_0));
 
     // The card loses it again: fail closed, the third message is plain again.
     fake.set_ui_extensions(&[]);
     drain(c.send_stream(text(&ep, "echo three", None)).await.unwrap()).await;
     let call = &fake.executions()[2];
     assert_eq!(call.a2ui_capabilities, None);
-    assert!(!call.activates(A2UI_EXTENSION_V0_9_1));
+    assert!(!call.activates(A2UI_EXTENSION_V1_0));
 }
 
+/// The key is `a2uiRendererCapabilities`, the value is keyed `"1.0"`, and `a2uiClientCapabilities`
+/// is never sent (ADR 0075). The extension is activated by its v1.0 URI.
 #[tokio::test]
-async fn the_candidate_version_speaks_its_own_dialect() {
+async fn the_capabilities_are_a2ui_renderer_capabilities_keyed_1_0() {
     let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     drain(
@@ -203,16 +212,21 @@ async fn the_candidate_version_speaks_its_own_dialect() {
     let call = &fake.executions()[0];
     assert_eq!(
         call.a2ui_capabilities,
-        Some(json!({"v1.0": {"supportedCatalogIds": [
+        Some(json!({"1.0": {"supportedCatalogIds": [
             "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"]}}))
     );
     assert!(call.activates(A2UI_EXTENSION_V1_0));
-    assert!(!call.activates(A2UI_EXTENSION_V0_9_1));
 }
 
+/// A card that lists the retired URI beside the v1.0 one is a v1.0 card: one dialect is spoken,
+/// and the retired URI is not activated.
 #[tokio::test]
-async fn a_card_listing_both_gets_the_current_release() {
-    let fake = agent(&[A2UI_EXTENSION_V1_0, A2UI_EXTENSION_V0_9_1]).await;
+async fn a_card_listing_both_speaks_v1_0_and_activates_only_it() {
+    let fake = agent(&[
+        A2UI_EXTENSION_V1_0,
+        "https://a2ui.org/a2a-extension/a2ui/v0.9.1",
+    ])
+    .await;
     let ep = fake.endpoint("ui", None);
     drain(
         client()
@@ -226,18 +240,18 @@ async fn a_card_listing_both_gets_the_current_release() {
         call.a2ui_capabilities
             .as_ref()
             .unwrap()
-            .get("v0.9.1")
+            .get("1.0")
             .is_some()
     );
-    assert!(call.activates(A2UI_EXTENSION_V0_9_1));
-    assert!(!call.activates(A2UI_EXTENSION_V1_0));
+    assert!(call.activates(A2UI_EXTENSION_V1_0));
+    assert!(!call.activates("https://a2ui.org/a2a-extension/a2ui/v0.9.1"));
 }
 
 // ------------------------------------------------------------------------- surfaces
 
 #[tokio::test]
 async fn a_surface_in_an_artifact_then_a_question() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     let envs = drain(
         client()
@@ -267,7 +281,7 @@ async fn a_surface_in_an_artifact_then_a_question() {
 
 #[tokio::test]
 async fn a_surface_in_an_agent_message() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     let envs = drain(
         client()
@@ -294,7 +308,7 @@ async fn a_surface_in_an_agent_message() {
 
 #[tokio::test]
 async fn a_surface_in_the_question_comes_before_the_status_and_the_detail_is_only_text() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     let envs = drain(
         client()
@@ -334,7 +348,7 @@ async fn a_surface_is_relayed_even_when_the_card_does_not_list_the_extension() {
 
 #[tokio::test]
 async fn a_malformed_or_oversized_part_is_refused_and_the_turn_goes_on() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     for (script, why) in [
         ("ui-bad now", "not an array"),
@@ -360,7 +374,7 @@ async fn a_malformed_or_oversized_part_is_refused_and_the_turn_goes_on() {
 
 #[tokio::test]
 async fn a_polled_task_carries_the_surface_under_the_stream_keys() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     let c = client();
     let live = drain(c.send_stream(text(&ep, "ui pick", None)).await.unwrap()).await;
@@ -389,7 +403,7 @@ async fn a_polled_task_carries_the_surface_under_the_stream_keys() {
 
 #[tokio::test]
 async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     let c = client();
     let first = drain(c.send_stream(text(&ep, "ui pick", None)).await.unwrap()).await;
@@ -435,7 +449,7 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
     assert_eq!(
         call.actions,
         [json!({
-            "version": "v0.9.1",
+            "version": "1.0",
             "action": {"name": "go", "surfaceId": "s1", "sourceComponentId": "go",
                        "timestamp": "2026-09-29T12:00:00Z", "context": {"choice": "a"}}
         })]
@@ -444,7 +458,7 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
         call.a2ui_capabilities.is_some(),
         "the capabilities go with every message, actions included"
     );
-    assert!(call.activates(A2UI_EXTENSION_V0_9_1));
+    assert!(call.activates(A2UI_EXTENSION_V1_0));
 }
 
 /// A model's words are a text part, whatever they look like: the person's action is the only
@@ -452,11 +466,11 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
 /// (ADR 0026, amended). The orchestrator does not read the words for an agent's convention.
 #[tokio::test]
 async fn text_that_looks_like_an_action_or_a_form_answer_is_sent_as_text_and_nothing_else() {
-    let fake = agent(&[A2UI_EXTENSION_V0_9_1]).await;
+    let fake = agent(&[A2UI_EXTENSION_V1_0]).await;
     let ep = fake.endpoint("ui", None);
     let c = client();
     let looks_like_an_action = json!([{
-        "version": "v0.9.1",
+        "version": "1.0",
         "action": {"name": "go", "surfaceId": "s1", "sourceComponentId": "go",
                    "timestamp": "2026-09-29T12:00:00Z", "context": {"choice": "a"}}
     }])
@@ -489,14 +503,15 @@ async fn text_that_looks_like_an_action_or_a_form_answer_is_sent_as_text_and_not
     }
 }
 
+/// An action is a v1.0 message whatever the card says: the card decides what is announced, never
+/// the dialect of the action (there is one, ADR 0075).
 #[tokio::test]
-async fn an_action_speaks_the_version_of_its_surface_whatever_the_card_says() {
+async fn an_action_is_a_v1_0_message_whatever_the_card_says() {
     let fake = agent(&[]).await;
     let ep = fake.endpoint("ui", None);
     let c = client();
     let first = drain(c.send_stream(text(&ep, "ui pick", None)).await.unwrap()).await;
-    let mut action = go("s1");
-    action.version = UiVersion::V1_0;
+    let action = go("s1");
     let request = SendRequest {
         endpoint: ep.clone(),
         message_id: "msg-action".into(),
@@ -518,7 +533,7 @@ async fn an_action_speaks_the_version_of_its_surface_whatever_the_card_says() {
     };
     drain(c.send_stream(request).await.unwrap()).await;
     let call = &fake.executions()[1];
-    assert_eq!(call.actions[0]["version"], "v1.0");
+    assert_eq!(call.actions[0]["version"], "1.0");
     assert_eq!(
         call.a2ui_capabilities, None,
         "no advertisement, no capabilities"

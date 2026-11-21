@@ -4,7 +4,14 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { components } from "../src/lib/api/schema";
 import { CarryLog } from "./carry";
-import { DEFAULT_LIMITS, type HistoryLimits, type Page, readPage, type Window } from "./history";
+import {
+  DEFAULT_LIMITS,
+  type HistoryLimits,
+  type Page,
+  PROJECTION_VERSION,
+  readPage,
+  type Window,
+} from "./history";
 import { Projector } from "./projection";
 import { createMockServer } from "./server";
 
@@ -279,7 +286,7 @@ describe("the mock's history route", () => {
       initialTurns: 12,
       pageTurns: 20,
       maxTurns: 100,
-      projection: 2,
+      projection: PROJECTION_VERSION,
       windowed: true,
     });
     await get("/__mock/config?session=a&history=on&initialTurns=3", { method: "POST" });

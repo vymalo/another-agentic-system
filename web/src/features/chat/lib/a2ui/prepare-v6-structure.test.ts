@@ -13,7 +13,7 @@ const refused = (p: Prepared) => {
   if (p.kind !== "refused") throw new Error(`expected a refusal, got ${p.kind}`);
   return p;
 };
-const ours = (components: Rec[]) => surface(components, undefined, "v0.9.1", OWN_CATALOG_ID);
+const ours = (components: Rec[]) => surface(components, undefined, "1.0", OWN_CATALOG_ID);
 const root = (children: string[]): Rec => ({ id: "root", component: "Column", children });
 
 describe("Tabs and Accordion, in a surface of our catalog", () => {
@@ -107,7 +107,7 @@ describe("Tabs and Accordion, in a surface of our catalog", () => {
         surface(
           [root(["t"]), { id: "t", component: "Tabs", tabs: [{ label: "A", child: "a" }] }],
           undefined,
-          "v0.9.1",
+          "1.0",
           BASIC_CATALOG,
         ),
       ),
@@ -155,7 +155,7 @@ describe("Stack, in a surface of our catalog", () => {
             { id: "a", component: "Text", text: "x" },
           ],
           undefined,
-          "v0.9.1",
+          "1.0",
           BASIC_CATALOG,
         ),
       ),

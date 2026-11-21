@@ -327,3 +327,25 @@ describe("the cards of a turn", () => {
     ]);
   });
 });
+
+describe("the card of a subagent (child-sessions/v1)", () => {
+  const session = {
+    session: "s1",
+    agent: "planner",
+    description: "plan",
+    keepOpen: false,
+    state: "working",
+  };
+  it("draws a part only in its home run, and counts as no part elsewhere", () => {
+    expect(drawsPart(data(ACTIVITY.session, { ...session, home: true }))).toBe(true);
+    expect(drawsPart(data(ACTIVITY.session, { ...session, home: false }))).toBe(false);
+    expect(drawsPart(data(ACTIVITY.session, session))).toBe(false);
+    expect(drawsPart(data(ACTIVITY.session, { home: true, state: "weird" }))).toBe(false);
+  });
+  it("is no step, so the panel's tree does not list it", () => {
+    expect(isStepPart(data(ACTIVITY.session, { ...session, home: true }))).toBe(false);
+  });
+  it("leaves the start line to the line above the turn", () => {
+    expect(drawsPart(data(ACTIVITY.sessionStart, { home: true }))).toBe(false);
+  });
+});

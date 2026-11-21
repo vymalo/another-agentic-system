@@ -876,7 +876,7 @@ fn an_action_on_a_job_being_abandoned_is_refused() {
         name: "go".into(),
         source_component_id: "b".into(),
         context: serde_json::Map::new(),
-        version: UiVersion::V0_9_1,
+        version: UiVersion::V1_0,
         run_id: None,
     };
     let refused = transition(

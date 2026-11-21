@@ -95,8 +95,7 @@ pub struct UiSupport {
 }
 
 impl UiSupport {
-    /// The version to speak when the card lists several: the current release (`v0.9.1`), else
-    /// the candidate (`v1.0`) (open question 22).
+    /// The version to speak: A2UI v1.0, the only dialect this build knows (ADR 0075).
     pub fn preferred(&self) -> Option<UiVersion> {
         self.versions.first().copied()
     }
@@ -162,13 +161,35 @@ pub enum SendContent {
         /// When the user acted (the log's own time).
         at: Timestamp,
     },
+    /// Start a session of the agent's own helper in the parent's context (`child-sessions/v1`,
+    /// ADR 0072, `docs/api/child-sessions-v1.md` section 4): `text` is round 1's prompt, not a turn
+    /// of the parent. Sent with no `taskId`; the adapter refuses it (nothing sent) when the card
+    /// read for this call does not offer the extension.
+    SessionStart {
+        /// What the helper is asked first.
+        text: String,
+        /// The helper, one of the card's `agents`.
+        agent: String,
+        /// What the helper is for (1 to 80 characters on one line).
+        description: String,
+        /// Whether the session goes idle after a round instead of closing.
+        keep_open: bool,
+    },
+    /// Close the session whose child context the request names (section 6 of the contract): sent
+    /// with no `taskId`, to the child context; `cancel` cancels a working round first.
+    SessionClose {
+        /// Cancel the working round first.
+        cancel: bool,
+    },
 }
 
 impl SendContent {
-    /// The user's text, when this is a message.
+    /// The user's text, when this is a message (a session start's prompt included; a close says
+    /// `"close"`, the one text part the contract asks for).
     pub fn text(&self) -> Option<&str> {
         match self {
-            SendContent::Text(t) => Some(t),
+            SendContent::Text(t) | SendContent::SessionStart { text: t, .. } => Some(t),
+            SendContent::SessionClose { .. } => Some("close"),
             SendContent::UiAction { .. } => None,
         }
     }
@@ -203,7 +224,7 @@ pub struct SendRequest {
     /// What to tell the agent of the person's UI catalog (ADR 0023): the catalog itself, or a
     /// reference to the current one. `None` when the thread has no catalog, and for the verifier
     /// (it is told nothing of the author's screen). An adapter sends it only to an agent whose
-    /// live card lists the `ui-catalog/v1` extension.
+    /// live card lists the `ui-catalog/v2` extension (ADR 0075).
     pub ui_catalog: Option<UiDelivery>,
     /// Who the agent is to be given the thread's tools as (`thread-tools/v1`, ADR 0023): the
     /// thread, the job, the agent, the caller and the depth. `None` for the verifier: it works in

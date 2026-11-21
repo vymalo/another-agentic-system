@@ -1,10 +1,11 @@
 import { Validator } from "@cfworker/json-schema";
-import { OWN_CATALOG, type UiCatalog } from "./index";
+import { type ComponentSchema, OWN_CATALOG, type UiCatalog } from "./index";
 
 /**
  * The component schemas of a catalog, compiled once. `@cfworker/json-schema` interprets a schema
  * (it does not generate code, so a page that forbids `eval` is fine) and reads draft 2020-12.
- * Our schemas are self-contained: no `$ref`, no `unevaluated*` (docs/api/ui-catalog-v1.md).
+ * Our schemas are self-contained: no `$ref`, no `unevaluated*` (docs/api/ui-catalog-v2.md).
+ * A catalog of an earlier version (no `protocolVersion`) compiles the same: only its components matter.
  */
 export type CompiledCatalog = {
   catalogId: string;
@@ -12,6 +13,9 @@ export type CompiledCatalog = {
   /** `undefined` when the instance fits its component's schema, else why not (the first rule it breaks). */
   check: (component: string, instance: unknown) => string | undefined;
 };
+
+/** What `compileCatalog` needs of a catalog: a v1 document and a v2 one both have it. */
+type Compilable = { catalogId: string; components: Record<string, ComponentSchema> };
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -25,7 +29,7 @@ function describe(errors: readonly { instanceLocation: string; error: string }[]
   return where ? `${where}: ${what}` : what;
 }
 
-export function compileCatalog(catalog: UiCatalog): CompiledCatalog {
+export function compileCatalog(catalog: Compilable): CompiledCatalog {
   const validators = new Map<string, Validator>();
   for (const [name, schema] of Object.entries(catalog.components)) {
     validators.set(name, new Validator(schema, "2020-12", true));

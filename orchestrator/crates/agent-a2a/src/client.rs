@@ -32,10 +32,10 @@ use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
 use serde_json::{Value, json};
 
 use crate::a2ui::{
-    action_part, client_capabilities, inline_catalog, ui_catalog_metadata, ui_from_card,
+    action_part, inline_catalog, renderer_capabilities, ui_catalog_metadata, ui_from_card,
 };
 use crate::access_tier::{access_tier_from_card, check_plain_under_cap, tier_metadata};
-use crate::child_sessions::child_sessions_from_card;
+use crate::child_sessions::{child_sessions_from_card, session_metadata};
 use crate::commands::commands_from_card;
 use crate::errors::classify;
 use crate::extensions::{build_from_card, extensions_from_card};
@@ -626,7 +626,7 @@ fn map_stream(
 }
 
 /// What the message tells the agent of the screen's catalog: the request's delivery, and only
-/// when the card read for this very call lists `ui-catalog/v1` (ADR 0008: nothing is remembered,
+/// when the card read for this very call lists `ui-catalog/v2` (ADR 0008: nothing is remembered,
 /// and a card without the extension gets the message it got before it existed).
 fn catalog_for<'r>(
     req: &'r SendRequest,
@@ -695,6 +695,7 @@ fn extensions_of(
         uris.push(uri.to_owned());
     }
     if catalog.is_some() {
+        // `ui-catalog/v2`, activated only when the card lists it (`catalog_for`)
         uris.push(UI_CATALOG_EXTENSION.to_owned());
     }
     // a steer says what it is by the extension (steer/v1 section 2): the request, not the message
@@ -733,6 +734,9 @@ fn user_message(
             None => text.clone(),
         }),
         SendContent::UiAction { action, at } => action_part(action, *at),
+        // the contract asks for one text part: the prompt of a start, "close" for a close
+        SendContent::SessionStart { text, .. } => Part::text(text.clone()),
+        SendContent::SessionClose { .. } => Part::text("close"),
     };
     let mut message = Message::new(Role::User, vec![part]);
     message.message_id = req.message_id.clone();
@@ -740,27 +744,31 @@ fn user_message(
     // answer, and the dispatcher records it (ADR 0055). An agent such as kagent refuses a context
     // it did not create.
     message.context_id = req.context_id.clone().filter(|c| !c.is_empty());
-    message.task_id = req.task_id.clone();
+    // a person's start or close is a message of a context, never of a task (contract sections 4
+    // and 6: a `close` that names a `taskId` is `InvalidParams`)
+    let session = session_metadata(&req.content);
+    message.task_id = req.task_id.clone().filter(|_| session.is_none());
     // A2A `referenceTaskIds`: the earlier tasks this one is about (ADR 0021)
-    if !req.reference_task_ids.is_empty() {
+    if !req.reference_task_ids.is_empty() && session.is_none() {
         message.reference_task_ids = Some(req.reference_task_ids.clone());
     }
     let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
+    if let Some(session) = session {
+        metadata.insert(CHILD_SESSIONS_EXTENSION.to_owned(), session);
+    }
     if let Some(release) = &req.release {
         metadata.insert(
             RELEASE_CHANNELS_URI.to_owned(),
             json!({ "release": release }),
         );
     }
-    // The renderer's capabilities go with every message, and only to an agent whose live card
-    // lists the extension: without it the message is plain A2A. The screen's own catalog is
-    // listed in them (and carried inline when the agent takes it) only to an agent that also
-    // lists ui-catalog/v1.
+    // The renderer's capabilities (`a2uiRendererCapabilities`, `"1.0"`) go with every message, and
+    // only to an agent whose live card lists the A2UI v1.0 extension: without it the message is
+    // plain A2A. The screen's own catalog is listed in them (and carried inline when the agent
+    // takes it) only to an agent that also lists ui-catalog/v2 (ADR 0075).
     let accepts_inline = ui.is_some_and(|ui| ui.accepts_inline_catalogs);
-    if let Some((key, value)) = ui
-        .and_then(UiSupport::preferred)
-        .and_then(|version| client_capabilities(version, catalog, accepts_inline))
-    {
+    if ui.is_some() {
+        let (key, value) = renderer_capabilities(catalog, accepts_inline);
         metadata.insert(key.to_owned(), value);
     }
     if let Some(delivery) = catalog {
@@ -837,6 +845,14 @@ impl AgentClient for A2aAgentClient {
             ));
         }
         let known = extensions_from_card(&card);
+        // A person's start or close is sent only to an agent whose card, read for this very call,
+        // offers child-sessions/v1 well formed (ADR 0008, fail closed): without it the agent would
+        // take the message as a turn of the parent, or refuse it in words no one can act on.
+        if session_metadata(&req.content).is_some() && child_sessions_from_card(&card).is_none() {
+            return Err(AgentError::Unsupported(
+                "the agent does not offer child-sessions/v1".to_owned(),
+            ));
+        }
         // A message for a running task is sent only to an agent whose card, read for this very
         // call, lists steer/v1 (ADR 0008, fail closed): the specification leaves it undefined, so
         // an agent without the promise could do anything with it.

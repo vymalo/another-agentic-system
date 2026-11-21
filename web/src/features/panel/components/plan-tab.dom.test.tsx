@@ -25,11 +25,11 @@ vi.mock("@/features/chat/components/steps/steps-panel-content", () => ({
 const planOf = (items: { label: string; state: string; note?: string }[]): ThreadPlan => {
   const operations = [
     {
-      version: "v0.9.1",
+      version: "1.0",
       createSurface: { surfaceId: "plan-1", catalogId: OWN_CATALOG.catalogId },
     },
     {
-      version: "v0.9.1",
+      version: "1.0",
       updateComponents: {
         surfaceId: "plan-1",
         components: [

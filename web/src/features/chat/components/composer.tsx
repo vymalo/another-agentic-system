@@ -16,7 +16,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { SendError } from "@/features/chat/lib/agui/thread-agent";
 import type { JobView, SendMode } from "@/features/chat/lib/agui/vymalo";
-import { modeOfKey } from "@/features/chat/lib/send";
+import { modeOfKey, stopRoundHint } from "@/features/chat/lib/send";
 import { CommandMenu } from "@/features/commands/components/command-menu";
 import { useCommandMenu } from "@/features/commands/hooks/use-command-menu";
 import type { AgentCommand } from "@/features/commands/lib/commands";
@@ -77,6 +77,12 @@ type Props = {
    */
   commands?: readonly AgentCommand[];
   /**
+   * The thread is a subagent's own (child-sessions/v1): its round is what Stop ends, and where the
+   * session closes when its round is stopped there is no Stop and send (the orchestrator refuses it).
+   * The box of such a thread has no "@" (a subagent cannot ask agents).
+   */
+  child?: { keepOpen: boolean };
+  /**
    * Sending while the agent works (ADR 0036). Absent: the box does not offer it (the thread's agent
    * is not known yet).
    */
@@ -87,7 +93,7 @@ type Props = {
      * A message that was refused: what the orchestrator said (the text is back in the box), and its
      * HTTP status when it answered (a 422 or a 503 has the agent list read again).
      */
-    onFailed: (message: string, status?: number) => void;
+    onFailed: (message: string, status?: number, code?: string) => void;
     /** Who works, for the menu ("Adam reads it at its next step"). */
     agent: string;
     /** Whether the agent's card lists `steer/v1`; null when it could not be read. */
@@ -132,6 +138,7 @@ export function Composer({
   notices,
   mentions,
   commands,
+  child,
   sending,
 }: Props) {
   const aui = useAui();
@@ -205,7 +212,7 @@ export function Composer({
       // with the agents they mention
       const since = composer.getState().text;
       composer.setText(store.restoreInFront(text, taken, since));
-      if (e instanceof SendError) sending.onFailed(e.message, e.status);
+      if (e instanceof SendError) sending.onFailed(e.message, e.status, e.code);
       else sending.onFailed(e instanceof Error ? e.message : String(e));
     });
     focusBox();
@@ -224,7 +231,7 @@ export function Composer({
     mention.onKeyDown(e);
     if (e.defaultPrevented) return;
     if (!whileWorking || e.nativeEvent.isComposing) return;
-    const mode = modeOfKey(e);
+    const mode = modeOfKey(e, child?.keepOpen ?? true);
     if (!mode) return;
     e.preventDefault();
     sendWhileWorking(mode);
@@ -370,7 +377,7 @@ export function Composer({
           {usage}
           {running ? (
             <>
-              <Hint label="Stop the agent" side="top">
+              <Hint label={child ? stopRoundHint(child.keepOpen) : "Stop the agent"} side="top">
                 <Button
                   type="button"
                   variant="secondary"
@@ -386,6 +393,7 @@ export function Composer({
                   agent={sending.agent}
                   steers={sending.steers}
                   loading={!sending.ready}
+                  interrupt={child?.keepOpen ?? true}
                   onSend={sendWhileWorking}
                   onClosed={focusBox}
                 />

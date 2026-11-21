@@ -78,6 +78,13 @@ pub const ACTIVITY_ASK: &str = "vymalo.ask";
 /// (untrusted text).
 pub const ACTIVITY_SESSION: &str = "vymalo.session";
 
+/// Activity type of a start a person asked for (`vymalo.sessionStart`, ADR 0072, S3): its id is
+/// `session-start-<request>` and it says the start again with `replace` when it ended. The content
+/// is `{request, agent, description, keepOpen, state, threadId?, session?, reason?, at}`: `state` is
+/// `starting`, `opened` (with `threadId` and `session`) or `failed` (with `reason`, the agent's
+/// words, untrusted text). It holds no prompt: that is the child thread's first message.
+pub const ACTIVITY_SESSION_START: &str = "vymalo.sessionStart";
+
 /// Metadata member of a session's `SUBAGENT_STARTED`: the id of the child thread that holds its log.
 pub const CHILD_THREAD_KEY: &str = "vymalo.childThread";
 

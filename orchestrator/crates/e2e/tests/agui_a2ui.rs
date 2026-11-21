@@ -1,9 +1,9 @@
-//! A2UI end to end (ADR 0013): a fake A2A agent that lists the A2UI extension in its card sends a
-//! surface, the orchestrator relays it as an `a2ui-surface` activity to the run's requester and
-//! to a viewer, the user's action comes back in `forwardedProps.a2uiAction`, and the agent gets
-//! it as an `application/a2ui+json` data part of the same task. On the in-memory store and on
-//! Postgres, through the real A2A adapter over HTTP. Every event that leaves a route is checked
-//! against the vendored AG-UI schema.
+//! A2UI v1.0 end to end (ADR 0013, ADR 0075): a fake A2A agent that lists the A2UI v1.0 extension
+//! in its card sends a surface, the orchestrator relays it as an `a2ui-surface` activity to the
+//! run's requester and to a viewer, the user's action comes back in `forwardedProps.a2uiAction`,
+//! and the agent gets it as an `application/a2ui+json` data part of the same task. On the
+//! in-memory store and on Postgres, through the real A2A adapter over HTTP. Every event that
+//! leaves a route is checked against the vendored AG-UI schema.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 #[macro_use]
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use common::*;
 use orch_agui_proto::testkit::{assert_capabilities_json_conforms, assert_json_conforms};
-use orch_core::{A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, UI_CATALOG_EXTENSION};
+use orch_core::{A2UI_EXTENSION_V1_0, UI_CATALOG_EXTENSION};
 use orch_testsupport::{
     Chat, FakeAgentOptions, Frame, SseClient, UI_CATALOG_ID, integral_numbers, ui_catalog,
     with_ui_catalog,
@@ -71,7 +71,7 @@ fn surfaces(frames: &[Frame]) -> Vec<&Frame> {
 }
 
 async fn surface_then_action(backend: Backend) {
-    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V0_9_1])).await;
+    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V1_0])).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let thread = thread_id(1);
@@ -110,7 +110,7 @@ async fn surface_then_action(backend: Backend) {
     // The agent was told what the renderer supports, and the extension was activated.
     let call = &world.plain.executions()[0];
     assert!(call.a2ui_capabilities.is_some(), "{call:?}");
-    assert!(call.activates(A2UI_EXTENSION_V0_9_1));
+    assert!(call.activates(A2UI_EXTENSION_V1_0));
 
     // A viewer reads the same surface, whole.
     let mut viewer = chat.agui_connect(&thread, None, true).await;
@@ -152,7 +152,7 @@ async fn surface_then_action(backend: Backend) {
     assert!(calls[1].resuming);
     assert_eq!(
         calls[1].actions,
-        [json!({"version": "v0.9.1", "action": {
+        [json!({"version": "1.0", "action": {
             "name": "go", "surfaceId": "s1", "sourceComponentId": "go",
             "timestamp": calls[1].actions[0]["action"]["timestamp"].clone(),
             "context": {"choice": "a"}}})]
@@ -172,7 +172,7 @@ async fn surface_then_action(backend: Backend) {
 }
 
 async fn unknown_and_oversized_actions_never_reach_the_agent(backend: Backend) {
-    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V0_9_1])).await;
+    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V1_0])).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let thread = thread_id(2);
@@ -207,7 +207,7 @@ async fn unknown_and_oversized_actions_never_reach_the_agent(backend: Backend) {
 }
 
 async fn a_part_that_fails_the_envelope_is_an_error_line_and_the_run_goes_on(backend: Backend) {
-    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V0_9_1])).await;
+    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V1_0])).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     for (n, script) in [(3, "ui-bad now"), (4, "ui-big now")] {
@@ -245,7 +245,7 @@ async fn a_part_that_fails_the_envelope_is_an_error_line_and_the_run_goes_on(bac
 }
 
 async fn a_surface_in_a_message_and_in_the_question(backend: Backend) {
-    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V0_9_1])).await;
+    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V1_0])).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
 
@@ -288,7 +288,7 @@ async fn a_surface_in_a_message_and_in_the_question(backend: Backend) {
 }
 
 async fn a_deleted_surface_cannot_be_acted_on(backend: Backend) {
-    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V0_9_1])).await;
+    let world = World::with(backend, ui_world(&[A2UI_EXTENSION_V1_0])).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let thread = thread_id(7);
@@ -329,19 +329,22 @@ async fn capabilities_follow_the_live_card(backend: Backend) {
         doc
     };
     assert!(get().await.get("custom").is_none());
-    world.plain.set_ui_extensions(&[A2UI_EXTENSION_V0_9_1]);
+    world.plain.set_ui_extensions(&[A2UI_EXTENSION_V1_0]);
     let doc = get().await;
-    assert!(doc["custom"][A2UI_EXTENSION_V0_9_1]["supportedCatalogIds"].is_array());
+    assert_eq!(
+        doc["custom"][A2UI_EXTENSION_V1_0]["supportedCatalogIds"],
+        json!(["https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"])
+    );
+    // the retired URI is not a version: a card that lists it declares no A2UI at all
     world
         .plain
-        .set_ui_extensions(&[A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0]);
-    let doc = get().await;
-    assert!(doc["custom"][A2UI_EXTENSION_V1_0]["supportedCatalogIds"].is_array());
+        .set_ui_extensions(&["https://a2ui.org/a2a-extension/a2ui/v0.9.1"]);
+    assert!(get().await.get("custom").is_none(), "one dialect");
     world.plain.set_ui_extensions(&[]);
     assert!(get().await.get("custom").is_none(), "never cached");
 }
 
-/// The `choices` story of the web (ADR 0023): the agent lists `ui-catalog/v1`, is told the screen's
+/// The `choices` story of the web (ADR 0023): the agent lists `ui-catalog/v2`, is told the screen's
 /// catalog, draws a `Choices` under it and asks; the person's answers come back as one action named
 /// `answer` whose `context.answers` the agent reads.
 async fn choices_under_the_screens_catalog_and_the_answers_back(backend: Backend) {
@@ -349,7 +352,7 @@ async fn choices_under_the_screens_catalog_and_the_answers_back(backend: Backend
         backend,
         Setup {
             plain: FakeAgentOptions {
-                ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                ui_extensions: vec![A2UI_EXTENSION_V1_0.to_owned()],
                 extensions: vec![UI_CATALOG_EXTENSION.to_owned()],
                 accepts_inline_catalogs: true,
                 ..FakeAgentOptions::default()
@@ -360,7 +363,7 @@ async fn choices_under_the_screens_catalog_and_the_answers_back(backend: Backend
     .await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
-    let thread = thread_id(7);
+    let thread = thread_id(8);
 
     let first = whole(
         chat.agui_run(
@@ -369,7 +372,7 @@ async fn choices_under_the_screens_catalog_and_the_answers_back(backend: Backend
                 &thread,
                 "run-1",
                 &[("m-1", "choices now")],
-                with_ui_catalog(2),
+                with_ui_catalog(9),
             ),
         )
         .await,
@@ -388,13 +391,13 @@ async fn choices_under_the_screens_catalog_and_the_answers_back(backend: Backend
     assert_eq!(first.last().unwrap().event["outcome"]["type"], "interrupt");
 
     // the agent was told which catalog, and got it inline in this first message
-    let catalog = ui_catalog(2);
+    let catalog = ui_catalog(9);
     let calls = world.plain.executions();
     // (an A2A server reads the numbers of metadata as doubles: whole ones are made integers again)
     assert_eq!(
         calls[0].ui_catalog.as_ref().map(integral_numbers),
         Some(json!({
-            "catalogId": UI_CATALOG_ID, "version": 2,
+            "catalogId": UI_CATALOG_ID, "version": 9,
             "digest": catalog["digest"], "inline": true,
         }))
     );

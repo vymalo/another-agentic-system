@@ -26,7 +26,8 @@
 #     administrator) is 404 and changes nothing: the thread still reads, its link still opens, its files are still in the
 #     volume;
 #   * FILES, LINK, FORK: the `coder-share` thread ends `done` with three files (a directory of three in the volume, and
-#     one under the fork's own directory, which the fork copied when it was made), has a fork (`forkThread`) and a link
+#     one under the fork's own directory, which the fork copied when it was made), its log's first event is the screen's
+#     `ui-catalog/v2` document (`protocolVersion` "1.0") that the orchestrator checked and recorded, it has a fork (`forkThread`) and a link
 #     (`shareThread`, `internal`, opened by another user: 200). The owner's DELETE is 204. Then: the thread is a 404 for
 #     `getThread` and `exportThread`; the link is a 404 for the other user and for the owner (the nonce went with the
 #     row); the thread's directory is gone from the volume and its file is a 404 through the API; the FORK survives: it
@@ -225,6 +226,8 @@ run_input "$thread" '[mock:share] make me a small chart as an SVG, a picture and
 expect "the run is accepted" "$(post_run coder-share "$tmp/share.json" "$tmp/share.sse")" 200
 if wait_state "$thread" "done"; then ok "the thread ends done"; else bad "the thread did not end done (it is '$(state_of "$thread")')"; fi
 api GET "/api/threads/$thread/export" >"$tmp/export.json" || echo '{"events":[]}' >"$tmp/export.json"
+expect "the log's ui_catalog is a ui-catalog/v2 document (protocolVersion \"1.0\")" \
+  "$(jq -r '[.events[] | select(.kind == "ui_catalog") | .data.catalog.protocolVersion] | first // empty' "$tmp/export.json")" "1.0"
 shas=$(jq -r '[.events[] | select(.kind == "artifact" and .data.file != null) | .data.file.sha256] | unique | .[]' "$tmp/export.json")
 expect "the log has three files" "$(printf '%s\n' "$shas" | grep -c .)" 3
 first_sha=$(printf '%s\n' "$shas" | head -n 1)

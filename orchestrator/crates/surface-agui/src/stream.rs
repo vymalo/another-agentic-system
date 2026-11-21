@@ -197,6 +197,7 @@ mod tests {
                 release: None,
             },
             gate: orch_core::GatePolicy::default(),
+            child: None,
         }
     }
 

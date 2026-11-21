@@ -950,6 +950,33 @@ describe("ThreadAgent.run", () => {
     expect(agent.takeSendError()).toBeNull();
   });
 
+  it("carries the problem's code on the failure, so a screen can say it in its own words", async () => {
+    const { agent } = agentWith(() =>
+      problem(409, "Conflict", "the session is closed", "session_closed"),
+    );
+    const error = await new Promise<unknown>((resolve) => {
+      agent.run(input()).subscribe({ error: resolve });
+    });
+    expect(error).toBeInstanceOf(SendError);
+    expect(error).toMatchObject({ status: 409, code: "session_closed" });
+  });
+
+  it("has no code when the problem has none, or one that is not text", async () => {
+    for (const body of [
+      problem(409, "Conflict", "busy"),
+      new Response(JSON.stringify({ title: "Conflict", status: 409, code: 7 }), {
+        status: 409,
+        headers: { "content-type": "application/problem+json" },
+      }),
+    ]) {
+      const { agent } = agentWith(() => body.clone());
+      const error = await new Promise<SendError>((resolve) => {
+        agent.run(input()).subscribe({ error: resolve });
+      });
+      expect(error.code).toBeUndefined();
+    }
+  });
+
   it("needs an agent to send to", async () => {
     const { agent, calls } = agentWith(() => problem(500, "x"), {
       target: () => ({ agentId: null, release: null }),

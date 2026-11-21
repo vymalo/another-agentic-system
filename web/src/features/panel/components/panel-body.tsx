@@ -5,6 +5,8 @@ import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEarlierControl } from "@/features/chat/components/earlier";
+import { SessionsPanel, subagentsCount } from "@/features/sessions/components/sessions-panel";
+import { useSessions } from "@/features/sessions/components/sessions-provider";
 import { usePanel } from "../hooks/use-panel";
 import { useThreadPlan } from "../hooks/use-plan";
 import { useSources, useTurnsHeld } from "../hooks/use-sources";
@@ -26,11 +28,17 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
   const turnsHeld = useTurnsHeld(panel?.open ?? false);
   // the plan of the thread, when it has one: a third tab (docs/api/ui-catalog-v1.md, "The plan")
   const plan = useThreadPlan();
+  // the subagents of the thread, when the agent offers them or it has some: a tab of its own (child-sessions/v1)
+  const sessions = useSessions();
+  const subagents = sessions?.visible ? sessions : null;
   if (!panel) return null;
   const count = countSources(groups);
   const planCountText = planCount(plan);
   // a plan that is gone leaves the tab a person had open on it on the first one
-  const tab = panel.tab === "plan" && !plan ? "activity" : panel.tab;
+  const tab =
+    (panel.tab === "plan" && !plan) || (panel.tab === "sessions" && !subagents)
+      ? "activity"
+      : panel.tab;
   return (
     <Tabs
       value={tab}
@@ -59,6 +67,16 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
               {planCountText ? (
                 <span className="text-xs font-normal text-muted-foreground tabular-nums">
                   {planCountText}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          ) : null}
+          {subagents ? (
+            <TabsTrigger value="sessions">
+              Subagents
+              {subagentsCount(subagents.children.openCount) ? (
+                <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                  {subagentsCount(subagents.children.openCount)}
                 </span>
               ) : null}
             </TabsTrigger>
@@ -99,6 +117,11 @@ export function PanelBody({ onClose }: { onClose: () => void }) {
       {plan ? (
         <TabsContent value="plan" className="overflow-y-auto overscroll-contain">
           <PlanTab plan={plan} />
+        </TabsContent>
+      ) : null}
+      {subagents ? (
+        <TabsContent value="sessions" className="overflow-y-auto overscroll-contain">
+          <SessionsPanel />
         </TabsContent>
       ) : null}
     </Tabs>

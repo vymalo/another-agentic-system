@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
-# System-level test of the coder asking with Choices (MVP slice 3, ADR 0023): the screen's UI catalog goes to the
-# coder with the first message, the coder asks three questions at once as ONE form drawn from that catalog, the
-# person answers with one A2UI action, and the coder goes on with what was chosen. A second run with a newer
-# catalog shows a thread that is opened in two versions of the screen records both.
+# System-level test of the coder asking with Choices (MVP slice 3, ADR 0023, ADR 0075): the screen's UI catalog (the web's,
+# version 9, a `ui-catalog/v2` document) goes to the coder with the first message, the coder asks three questions at once as
+# ONE A2UI v1.0 form drawn from that catalog, the person answers with one A2UI action, and the coder goes on with what was
+# chosen. A second run with a newer catalog shows a thread that is opened in two versions of the screen records both. The form
+# is itself the proof that the message carried `a2uiRendererCapabilities["1.0"]`: an adam agent draws nothing without it.
 #
 #   dev/choices-e2e.sh
 #
@@ -20,12 +21,12 @@
 # GitHub or OpenCode is involved.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
-#   * the screen's catalog is what its lock says (the digest below is computed here with jq and sha256sum, as the
-#     second run needs), the coder is listed by GET /api/agents and its card lists A2UI v0.9.1 (with inline catalogs),
-#     ui-catalog/v1 and thread-tools/v1;
+#   * the screen's catalog is a `ui-catalog/v2` document (its `protocolVersion` is "1.0") and what its lock says (the digest
+#     below is computed here with jq and sha256sum, as the second run needs), the coder is listed by GET /api/agents and its
+#     card lists A2UI v1.0 (with inline catalogs), ui-catalog/v2 and thread-tools/v1;
 #   * RUN 1, "[mock:choices] set up the project" with the catalog: the run ends RUN_FINISHED (interrupt) and the
-#     thread `blocked`; the coder's words are the question; there is exactly one `a2ui-surface`, which names the
-#     screen's catalogId (createSurface) and holds one `Choices` of three questions (db, auth, deploy); the state of the
+#     thread `blocked`; the coder's words are the question; there is exactly one `a2ui-surface`, whose operations all say
+#     `"version": "1.0"`, which names the screen's catalogId (createSurface) and holds one `Choices` of three questions (db, auth, deploy); the state of the
 #     thread says which catalog it holds (`thread.uiCatalog`); the model of the coder was offered `ask_user` with a
 #     `choices` parameter, `show` and `ui_catalog`, not `get_ui_catalog` (one catalog tool), and the coder's log says it
 #     listed the thread tools (the grant reached it over plain http, which needs MCP_ALLOW_INSECURE on the coder);
@@ -102,7 +103,7 @@ sha256_hex() { # the SHA-256 of stdin, as 64 lower-case hex digits
 }
 
 # canonical_digest FILE: "sha256:" and the hash of the canonical JSON of FILE: keys sorted, no whitespace, no trailing
-# newline. For a catalog (ASCII keys, integers) this is what the web computes (docs/api/ui-catalog-v1.md, "Digest").
+# newline. For a catalog (ASCII keys, integers) this is what the web computes (docs/api/ui-catalog-v2.md, "Digest").
 canonical_digest() {
   printf 'sha256:%s' "$(printf '%s' "$(jq -cS . "$1")" | sha256_hex)"
 }
@@ -112,6 +113,13 @@ catalog_id=$(jq -r '.catalogId' "$catalog_file")
 version=$(jq -r '.version' "$catalog_lock")
 digest=$(jq -r '.digest' "$catalog_lock")
 echo "the screen's catalog: $catalog_id, version $version, $digest"
+protocol=$(jq -r '.protocolVersion // "nothing"' "$catalog_file")
+if [ "$protocol" = "1.0" ]; then
+  ok "the screen's catalog is a ui-catalog/v2 document (protocolVersion \"1.0\")"
+else
+  bad "the screen's catalog says protocolVersion '$protocol', want \"1.0\": a v0.9 catalog cannot be drawn by A2UI v1.0 (docs/api/ui-catalog-v2.md)"
+  finish
+fi
 computed=$(canonical_digest "$catalog_file")
 if [ "$computed" = "$digest" ]; then
   ok "the lock matches the catalog (the digest computed here with jq and sha256sum is the lock's)"
@@ -138,8 +146,8 @@ else
   bad "GET /api/agents: $(head -c 300 "$tmp/err") $agents"
   finish
 fi
-a2ui_uri=https://a2ui.org/a2a-extension/a2ui/v0.9.1
-ui_uri=https://agents.vymalo.com/a2a/extensions/ui-catalog/v1
+a2ui_uri=https://a2ui.org/a2a-extension/a2ui/v1.0
+ui_uri=https://agents.vymalo.com/a2a/extensions/ui-catalog/v2
 tools_uri=https://agents.vymalo.com/a2a/extensions/thread-tools/v1
 code=$(curl -s -o "$tmp/card.json" -w '%{http_code}' --max-time 30 "$coder/.well-known/agent-card.json" || true)
 if [ "$code" != 200 ]; then
@@ -258,6 +266,12 @@ else
 fi
 # The last snapshot of the surface holds all of it (replace: true).
 operations=$(jq -c '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "a2ui-surface")] | last | .content.a2ui_operations // []' "$events" 2>/dev/null || echo '[]')
+versions=$(printf '%s' "$operations" | jq -r 'map(.version // "none") | unique | join(" ")')
+if [ "$versions" = "1.0" ]; then
+  ok "run 1: every operation of the surface says \"version\": \"1.0\""
+else
+  bad "run 1: the operations say version '${versions:-nothing}', want only \"1.0\" (operations: $(printf '%s' "$operations" | head -c 400))"
+fi
 surface_catalog=$(printf '%s' "$operations" | jq -r '[.[] | .createSurface? // empty] | first | .catalogId // empty')
 surface_id=$(printf '%s' "$operations" | jq -r '[.[] | .createSurface? // empty] | first | .surfaceId // empty')
 if [ "$surface_catalog" = "$catalog_id" ]; then

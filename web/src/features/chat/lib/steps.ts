@@ -12,6 +12,8 @@ import {
   parseStep,
   type ReworkContent,
 } from "@/features/chat/lib/agui/vymalo";
+import { parseSession } from "@/features/sessions/lib/cards";
+import { isHomeCard } from "@/features/sessions/lib/words";
 import { detectPullRequest, locatePullRequest } from "./artifact";
 import { sourceLabel, truncate } from "./findings";
 
@@ -106,6 +108,10 @@ export function drawsPart(part: PartLike): boolean {
   }
   if (part.name === activityPartName(ACTIVITY.status)) {
     return parseStatus(part.data)?.status === "failed";
+  }
+  // the card of a subagent: drawn in its home run only, from the stream's latest word of it
+  if (part.name === activityPartName(ACTIVITY.session)) {
+    return isHomeCard(part.data) && parseSession(part.data) !== null;
   }
   return (
     part.name === activityPartName(ACTIVITY.error) ||

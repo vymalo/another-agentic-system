@@ -14,10 +14,17 @@ use serde_json::{Value, json};
 /// about the question's `show` member.
 const ALLOWED: &str = "a surface you show with show";
 
+/// The catalog the web ships, as the `ui-catalog/v2` document a run carries (ADR 0075): the file
+/// itself is still the v1 document — catalog 8, without `protocolVersion` — until the web's slice
+/// moves it to 9, and these tests are about the `Choices` of its components, which are the same.
 fn web_catalog() -> Value {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../web/src/features/chat/lib/a2ui/catalog/catalog.json");
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    let mut catalog: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    if catalog.get("protocolVersion").is_none() {
+        catalog["protocolVersion"] = json!("1.0");
+    }
+    catalog
 }
 
 fn screen(catalog: Value, version: u64) -> UiCatalogData {
@@ -32,7 +39,7 @@ fn screen(catalog: Value, version: u64) -> UiCatalogData {
 
 /// Everything the forms catalog of `catalog` must be; the first rule it breaks, as text.
 fn forms_catalog_is_honest(catalog: Value) -> Result<(), String> {
-    let forms = screen(catalog, 8).forms_only().ok_or("no forms catalog")?;
+    let forms = screen(catalog, 9).forms_only().ok_or("no forms catalog")?;
     let choices = &forms.catalog["components"]["Choices"];
     let question = &choices["properties"]["questions"]["items"];
     if question["properties"].get("show").is_some() {

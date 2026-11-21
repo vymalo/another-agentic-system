@@ -1470,7 +1470,7 @@ The rule is v1's, over the v2 document:
   `"protocolVersion": "1.0"` added (v1's is `sha256:a237e931c3a02fc72b214561e3a52d33eaf0e29c9306bbe0ef7b3da238507293`).
   Every implementation (the orchestrator's core, the web, adam-rs) pins it in a test.
 - **The digest of catalog 9** is `sha256:5f174ee91c50759d59a0d7e91e3a1dc2e7c110b82ee91d858f4a23a944ed72b2`, over a
-  canonical form of 19,411 bytes (computed the same three ways). Taking `protocolVersion` out of catalog 9 gives back
+  canonical form of 19,413 bytes (computed the same three ways). Taking `protocolVersion` out of catalog 9 gives back
   catalog 8's digest, `sha256:22c333102bed676791dc9d47f21fc0a39be6e5062ef2c52f5a599ecca1b8341d`; a test can pin both.
 - To recompute a vector by hand:
 
@@ -1660,9 +1660,10 @@ v1's [section 7](ui-catalog-v1.md#7-in-ag-ui), unchanged: `ui_catalog` produces 
 v1's [section 8](ui-catalog-v1.md#8-what-the-web-does-with-a-surface), with A2UI v1.0 underneath. Slice S2 builds it.
 
 1. The surface's catalog is its `createSurface.catalogId`. A2UI v1.0 makes `catalogId` optional (a component then
-   names its catalog with `@catalogId`); a surface that mixes catalogs is [out of scope](#out-of-scope). What the web
-   does with a `createSurface` that names no `catalogId` (v1 read it as the basic catalog) is not settled by ADR 0075:
-   S2 settles it and writes it here.
+   names its catalog with `@catalogId`); a surface that mixes catalogs is [out of scope](#out-of-scope). **A
+   `createSurface` that names no `catalogId` is refused, rule `catalog`** (S2's settlement, 2026-11-20): this app
+   draws one catalog per surface, and a surface that names none cannot be checked against one. v1's reading of no id
+   as the basic catalog goes with the cutover.
 2. **Ours.** Every component is a key of the web's catalog, and each instance is validated against its schema and v1's
    rules (uniqueness, URLs, files of the thread, the rules JSON Schema cannot say, plans).
 3. **Ours, but the component is not known here**, and the thread's version is higher than the web's: the visible

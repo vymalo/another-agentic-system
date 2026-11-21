@@ -3,6 +3,7 @@
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  BotIcon,
   CornerLeftUpIcon,
   EllipsisVerticalIcon,
   GitForkIcon,
@@ -21,6 +22,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { type ChildOf, childOf } from "@/features/sessions/lib/cards";
+import { subagentStateWords } from "@/features/sessions/lib/words";
 import { ShareMark } from "@/features/sharing/components/share-chip";
 import type { ArrangeAction } from "@/features/threads/hooks/use-threads";
 import { actionsFor, type RowAction, type Section } from "@/features/threads/lib/rail";
@@ -49,6 +52,24 @@ function LiveMark({ state }: { state: ApiThread["state"] }) {
     );
   }
   return null;
+}
+
+/**
+ * A subagent's state in words, for its row: a thread that waits for the person says so, else the words the
+ * panel uses for the session (`subagentStateWords`). Words, never a colour alone; nothing when the row does not say.
+ */
+function subagentWords(helper: ChildOf, state: ApiThread["state"]): string | undefined {
+  if (state === "blocked") return "Waiting for you";
+  const words = subagentStateWords({
+    session: helper.session,
+    agent: helper.agent ?? "",
+    description: "",
+    keepOpen: helper.keepOpen,
+    state: helper.state ?? "idle",
+    closing: helper.closing,
+    closeAsked: helper.closeAsked,
+  });
+  return helper.state === undefined ? undefined : words;
 }
 
 const ICONS: Record<RowAction, typeof PinIcon> = {
@@ -188,6 +209,10 @@ export function ThreadRow({
 } & RowHandlers) {
   const open = active || family;
   const descriptionId = useId();
+  // a subagent's thread (child-sessions/v1): its title is the description it was started for; it is no fork
+  const helper = childOf(thread);
+  const words = helper ? subagentWords(helper, thread.state) : undefined;
+  const fork = helper === null && thread.forkedFrom?.kind === "fork";
   const link = (
     <Link
       href={`/threads/${thread.id}`}
@@ -202,16 +227,35 @@ export function ThreadRow({
         open && "bg-sidebar-accent font-medium text-foreground",
       )}
     >
-      {thread.forkedFrom?.kind === "fork" ? (
+      {fork ? (
         // a conversation made from another (ADR 0029): "Fork from here", or another agent's
         <GitForkIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
       ) : null}
+      {helper ? (
+        <BotIcon
+          aria-hidden="true"
+          data-slot="subagent-mark"
+          className="size-3.5 shrink-0 text-muted-foreground"
+        />
+      ) : null}
       <span className="min-w-0 flex-1 truncate">
         {thread.title || "Untitled"}
-        {thread.forkedFrom?.kind === "fork" ? <span className="sr-only"> (fork)</span> : null}
+        {fork ? <span className="sr-only"> (fork)</span> : null}
+        {helper ? <span className="sr-only"> (subagent)</span> : null}
       </span>
       {thread.share ? <ShareMark share={thread.share} /> : null}
-      <LiveMark state={thread.state} />
+      {helper ? (
+        words ? (
+          <span
+            data-slot="subagent-state"
+            className="shrink-0 text-xs font-normal text-muted-foreground"
+          >
+            {words}
+          </span>
+        ) : null
+      ) : (
+        <LiveMark state={thread.state} />
+      )}
     </Link>
   );
   return (

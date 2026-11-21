@@ -871,6 +871,7 @@ fn fork_id(n: u128) -> ThreadId {
 fn catalog() -> UiCatalogData {
     let value = serde_json::json!({
         "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "protocolVersion": "1.0",
         "components": {"Note": {
             "type": "object",
             "properties": {"component": {"const": "Note"}},
@@ -878,7 +879,7 @@ fn catalog() -> UiCatalogData {
     });
     UiCatalogData {
         catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".to_owned(),
-        version: 1,
+        version: 9,
         digest: orch_core::catalog_digest(&value).unwrap(),
         catalog: value,
     }

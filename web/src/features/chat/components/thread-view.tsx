@@ -2,6 +2,7 @@
 
 import { createContext, type ReactNode, useContext } from "react";
 import type { KeptFile } from "@/features/chat/lib/files";
+import type { SessionCard, SessionStartCard } from "@/features/sessions/lib/cards";
 import type { ApiThread, ThreadState } from "@/lib/api/types";
 
 /** What the transcript needs to know about the thread beyond its messages. */
@@ -32,6 +33,11 @@ export type ThreadView = {
   turnsBefore?: number | undefined;
   /** The thread's kept files before the first turn the transcript holds: an `Image` may name them too. */
   carriedFiles?: readonly KeptFile[] | undefined;
+  /** The helper sessions' cards by card id and the starts by request, as the stream said them last (child-sessions/v1). */
+  sessions?: ReadonlyMap<string, SessionCard> | undefined;
+  sessionStarts?: ReadonlyMap<string, SessionStartCard> | undefined;
+  /** In a subagent's own thread: the live `session-self` card, its state as the stream said it last. */
+  self?: SessionCard | null | undefined;
 };
 
 const Context = createContext<ThreadView>({ state: undefined, waiting: false, agentId: null });

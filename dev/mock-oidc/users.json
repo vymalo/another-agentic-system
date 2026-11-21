@@ -66,6 +66,12 @@
         "user"
       ]
     },
+    "child-sessions-person@example.com": {
+      "name": "Child Sessions Person",
+      "roles": [
+        "user"
+      ]
+    },
     "usage-bystander@example.com": {
       "name": "Usage Bystander",
       "roles": [

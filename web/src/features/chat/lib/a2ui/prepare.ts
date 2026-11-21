@@ -1,8 +1,5 @@
 import type { UIElement } from "@assistant-ui/react-generative-ui";
-import {
-  applyA2uiOperations,
-  convertSurfaceToUISpec,
-} from "@assistant-ui/react-generative-ui/a2ui";
+import { convertSurfaceToUISpec } from "@assistant-ui/react-generative-ui/a2ui";
 import type { KeptFile } from "@/features/chat/lib/files";
 import { firstBadUrl, readCards } from "./cards";
 import { OWN_CATALOG, type OwnCatalog } from "./catalog";
@@ -15,6 +12,7 @@ import {
   CHECK_BOX,
   CHECKLIST,
   CHOICES,
+  EARLIER_VERSIONS,
   FIELD,
   IMAGE,
   isPlanSurface,
@@ -38,6 +36,7 @@ import {
   VOCABULARY,
 } from "./limits";
 import { isBinding, resolvePointer, resolveValue } from "./pointer";
+import { applyA2uiOperations } from "./reducer";
 import { progressOf, readItems } from "./status";
 import { safeHttpUrl } from "./url";
 
@@ -48,7 +47,7 @@ import { safeHttpUrl } from "./url";
  * what the renderer draws. It never returns part of a surface.
  *
  * Order, so that a cheap check comes before an expensive one: size, the shape of every operation,
- * the operations applied (the library's reducer, which only sees operations that already have the
+ * the operations applied (this app's A2UI 1.0 reducer, which only sees operations that already have the
  * right shape), the number of components, the vocabulary, function values, actions and inputs, and
  * last the walk from `root` that counts levels and nodes after expansion (early exit at the limit,
  * so an expansion bomb costs `MAX_NODES` steps, not its size). Only then is the library's
@@ -59,6 +58,13 @@ import { safeHttpUrl } from "./url";
  * each checked against its JSON Schema; a surface that names any other catalog is refused. An
  * instance of our catalog that names a component this build does not have, in a thread whose
  * catalog is newer than this build's, is not an error of the agent's: it comes back as `newer`.
+ *
+ * **The version boundary is here, in the shape check, and not in the reducer.** A2UI 1.0 is the one
+ * dialect this app draws (ADR 0075), and an operation of an earlier version is a surface of a thread
+ * from before the cutover: refused with the rule `version` and a reason that names the version found,
+ * which is what the "earlier version" card shows. It is the validator's rule because the reducer
+ * answers for one dialect only (and refuses anything else, defensively); the words of the refusal are
+ * the validator's, as every other rule's are.
  *
  * Pure: no React, no I/O, no clock.
  */
@@ -133,10 +139,25 @@ const URL_KEYS = ["url", "href", "src", "uri", "link", "iconUrl", "imageUrl"];
 /** Nesting of the JSON inside one component: far beyond any real interface. */
 const MAX_PROP_DEPTH = 32;
 
+/**
+ * Why an operation's version is not drawn (ADR 0075, decision 6): a surface of a thread from before the
+ * cutover keeps its operations in the log, and this app draws A2UI 1.0 only. The reason names the version
+ * it found, so the card can say which one made the surface.
+ */
+function versionReason(index: number, version: unknown): string {
+  if (typeof version !== "string") {
+    return `operation ${index} has no A2UI version; this app draws A2UI "1.0" only`;
+  }
+  const earlier = (EARLIER_VERSIONS as readonly string[]).includes(version);
+  return earlier
+    ? `operation ${index} is A2UI ${clip(version)}, an earlier version: this app draws A2UI "1.0" only`
+    : `operation ${index} is A2UI ${clip(version)}, which this app does not read: it draws A2UI "1.0" only`;
+}
+
 const isTemplate = (v: unknown): { componentId: string; path: string } | undefined => {
   if (!isRecord(v)) return undefined;
   const keys = Object.keys(v);
-  // the pinned converter reads {template:{componentId,path}}; A2UI v0.9.1 writes {componentId,path}
+  // the pinned converter reads {template:{componentId,path}}; A2UI 1.0 writes {componentId,path}
   if (keys.length === 1 && keys[0] === "template" && isRecord(v.template))
     return isTemplate(v.template);
   if (keys.length === 2 && typeof v.componentId === "string" && typeof v.path === "string") {
@@ -359,11 +380,12 @@ function shownBy(c: Rec): { id: string; question: string }[] {
 }
 
 /**
- * The operations that are alive. A `createSurface` for a surface that exists starts it over (A2UI's own
- * rule, which the reducer of the web follows): what came before the last one is dead, so an agent that
- * sends a plan again whole each time does not count the copies it replaced against the size limit. Only
- * operations of the very surface the last `createSurface` names are dropped; a payload that mixes
- * surfaces is left whole, for the shape check to refuse.
+ * The operations that are alive. A `createSurface` for a surface that exists starts it over — the validator's
+ * own rule, kept from v1 and applied before the reducer, whose A2UI 1.0 rule is that a second `createSurface`
+ * for a live surface is refused: what came before the last one is dead, so an agent that sends a plan again
+ * whole each time does not count the copies it replaced against the size limit. Only operations of the very
+ * surface the last `createSurface` names are dropped; a payload that mixes surfaces is left whole, for the
+ * shape check to refuse.
  */
 export function aliveOperations(operations: unknown[]): unknown[] {
   let last = -1;
@@ -608,19 +630,23 @@ function firstUnknown(components: ReadonlyMap<string, Rec>, catalog: CompiledCat
 }
 
 /**
- * The catalog the surface names, by its `createSurface` operations (all of them: a later one
- * starts the surface over, so a catalog that changes half way would change what the earlier
- * checks meant). None named is the basic catalog, as it always was; the basic ids are the basic
- * catalog; the id of `own` is ours; any other is refused.
+ * The catalog the surface names, by its `createSurface` operations (all of them: a later one starts the
+ * surface over, so a catalog that changes half way would change what the earlier checks meant). Every
+ * `createSurface` must name one (A2UI 1.0 makes `catalogId` optional and lets a component name its catalog
+ * with `@catalogId`; this app draws one catalog per surface, so a surface that names none is refused). The
+ * basic ids are the basic catalog; the id of `own` is ours; any other is refused.
  */
 function catalogOf(operations: readonly Rec[], own: OwnCatalog): "basic" | "own" {
-  const named = new Set<string | undefined>();
+  const named = new Set<string>();
   for (const op of operations) {
     const body = op.createSurface;
     if (!isRecord(body)) continue;
     const id = body.catalogId;
-    if (id !== undefined && typeof id !== "string") {
-      return refuse("catalog", "the surface names a catalog that is not text");
+    if (typeof id !== "string" || id === "") {
+      return refuse(
+        "catalog",
+        "the surface names no catalog: every createSurface names the catalog it is drawn with",
+      );
     }
     named.add(id);
   }
@@ -653,7 +679,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
     if (!isRecord(op)) return refuse("shape", `operation ${i} is not an object`);
     const version = op.version;
     if (typeof version !== "string" || !(VERSIONS as readonly string[]).includes(version)) {
-      return refuse("version", `operation ${i} has a version the renderer does not read`);
+      return refuse("version", versionReason(i, version));
     }
     const keys = Object.keys(op).filter((k) => k !== "version");
     const key = keys[0];
@@ -672,7 +698,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
     }
     surfaceId = id;
     if (key === "deleteSurface") deleted = true;
-    normalised.push({ ...op, version: version === "v0.9.1" ? "v0.9" : version });
+    normalised.push(op);
   }
   if (normalised.length === 0 || surfaceId === undefined) return { kind: "pending" };
   const mode = catalogOf(normalised, own);
@@ -882,6 +908,7 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
   });
   if (conversion[0] !== undefined) return refuse("shape", conversion[0]);
   if (!spec) return { kind: "pending" };
+  nameActions(spec, surfaceId);
   const progress = isPlanSurface(surfaceId) ? progressOfPlan(components) : undefined;
   return {
     kind: "surface",
@@ -891,6 +918,22 @@ function prepare(operations: unknown, options: PrepareOptions): Prepared {
     eventActions,
     ...(progress ? { progress } : {}),
   };
+}
+
+/**
+ * The converter reads a surface's id from a symbol its own reducer attaches, which is private to the package.
+ * Our reducer builds the surface, so the id is put back on every action the converter made: it is what the
+ * package's own pipeline carried, and what `SurfaceView` names when it sends one.
+ */
+function nameActions(node: unknown, surfaceId: string): void {
+  if (Array.isArray(node)) {
+    for (const child of node) nameActions(child, surfaceId);
+    return;
+  }
+  if (!isRecord(node)) return;
+  const action = node.$action;
+  if (isRecord(action) && action.type === "a2ui:action") action.surfaceId = surfaceId;
+  for (const value of Object.values(node)) nameActions(value, surfaceId);
 }
 
 /** How far the checklists of a plan have got, all together; `undefined` when it holds none. */

@@ -7,7 +7,7 @@ mod support;
 
 use orch_agui_projection::RELEASE_CHANNELS_URI;
 use orch_agui_proto::testkit::assert_capabilities_json_conforms;
-use orch_core::{A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, MAX_ACTION_CONTEXT_BYTES, UiVersion};
+use orch_core::{A2UI_EXTENSION_V1_0, MAX_ACTION_CONTEXT_BYTES, UiVersion};
 use orch_ports::memory::Call;
 use serde_json::{Value, json};
 use support::*;
@@ -141,7 +141,7 @@ async fn an_action_is_delivered_to_the_same_task_and_answers_the_wait() {
     let logged = &events[5];
     assert_eq!(logged["actor"]["type"], "user");
     assert_eq!(logged["data"]["runId"], "run-act");
-    assert_eq!(logged["data"]["version"], "v0.9.1");
+    assert_eq!(logged["data"]["version"], "1.0");
     assert!(
         logged["data"].get("timestamp").is_none(),
         "the log's own time is the action's time"
@@ -161,7 +161,7 @@ async fn an_action_is_delivered_to_the_same_task_and_answers_the_wait() {
     assert_eq!(action.name, "go");
     assert_eq!(action.surface_id, "s1");
     assert_eq!(action.source_component_id, "go");
-    assert_eq!(action.version, UiVersion::V0_9_1);
+    assert_eq!(action.version, UiVersion::V1_0);
 }
 
 #[tokio::test]
@@ -313,18 +313,15 @@ async fn the_capabilities_declare_a2ui_only_while_the_live_card_lists_it() {
         "the card does not list A2UI"
     );
 
-    h.agent.set_ui("plain", &[UiVersion::V0_9_1]);
+    h.agent.set_ui("plain", &[UiVersion::V1_0]);
     let doc = get().await;
-    let ids = &doc["custom"][A2UI_EXTENSION_V0_9_1]["supportedCatalogIds"];
-    assert!(ids.as_array().is_some_and(|a| !a.is_empty()), "{doc}");
-    assert!(doc["custom"].get(A2UI_EXTENSION_V1_0).is_none());
+    let ids = &doc["custom"][A2UI_EXTENSION_V1_0]["supportedCatalogIds"];
+    assert_eq!(
+        ids,
+        &json!(["https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"]),
+        "the one basic catalog of v1.0"
+    );
     assert!(doc["custom"].get(RELEASE_CHANNELS_URI).is_none());
-
-    h.agent
-        .set_ui("plain", &[UiVersion::V1_0, UiVersion::V0_9_1]);
-    let doc = get().await;
-    assert!(doc["custom"].get(A2UI_EXTENSION_V0_9_1).is_some());
-    assert!(doc["custom"].get(A2UI_EXTENSION_V1_0).is_some());
 
     // The card cannot be read: fail closed, nothing is declared.
     h.agent.set_card_down("plain", true);

@@ -7,7 +7,7 @@ mod support;
 
 use orch_agui_projection::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, Audience, Frame, Projector,
-    ThreadView,
+    SurfaceDialect, ThreadView,
 };
 use orch_agui_proto::Event as Agui;
 use orch_core::{
@@ -99,7 +99,7 @@ fn action(seq: i64, run_id: Option<&str>) -> Event {
             name: "go".into(),
             source_component_id: "btn".into(),
             context,
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: run_id.map(str::to_owned),
         }),
     )
@@ -269,19 +269,20 @@ fn a_delete_and_a_create_in_one_payload_are_two_snapshots_of_two_surfaces() {
 }
 
 #[test]
-fn the_projection_knows_the_surfaces_the_thread_has_and_their_version() {
-    let v10 = json!({"version": "v1.0", "createSurface": {"surfaceId": "late"}});
+fn the_projection_knows_the_surfaces_the_thread_has_and_their_dialect() {
+    // a surface of a thread from before the cutover, in the log beside this build's
+    let earlier = json!({"version": "v0.9.1", "createSurface": {"surfaceId": "late"}});
     let (projector, _) = project(&[
         user(1),
         working(2),
-        surface(3, vec![surface_op(0, 0), v10]),
+        surface(3, vec![surface_op(0, 0), earlier]),
         asks(4),
         blocked(5),
     ]);
     let k = known(&projector);
     assert_eq!(k.surfaces.len(), 2);
-    assert_eq!(k.surfaces["s0"], UiVersion::V0_9_1);
-    assert_eq!(k.surfaces["late"], UiVersion::V1_0);
+    assert_eq!(k.surfaces["s0"], SurfaceDialect::V1_0);
+    assert_eq!(k.surfaces["late"], SurfaceDialect::Earlier);
     // Activity ids join the ids the thread holds, so a client that echoes them back is not
     // sending a new message.
     assert!(k.message_ids.contains("a2ui-3"));
@@ -297,26 +298,90 @@ fn the_projection_knows_the_surfaces_the_thread_has_and_their_version() {
     );
 }
 
+/// ADR 0075, section 9: a thread from before the cutover keeps its `v0.9.1` surface **and its
+/// `ui_action` events** in the log, and nothing is migrated. The old action still reads — the log,
+/// its export and a fork of it are history — and a new action on that surface is refused with 422
+/// before anything is written.
+#[test]
+fn a_thread_from_before_the_cutover_reads_and_its_surface_takes_no_action() {
+    let logged: UiActionData = serde_json::from_value(json!({
+        "surfaceId": "s9", "name": "go", "sourceComponentId": "btn",
+        "context": {"choice": "a"}, "version": "v0.9.1", "runId": "run-1",
+    }))
+    .expect("an action of a log written before the cutover");
+    assert_eq!(logged.version, UiVersion::V1_0, "the event reads");
+    let (projector, frames) = project(&[
+        user(1),
+        working(2),
+        surface(
+            3,
+            vec![json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s9"}})],
+        ),
+        ev(4, alice(), EventBody::UiAction(logged)),
+        asks(5),
+        blocked(6),
+    ]);
+    // the log says what it said: the surface and the person's click
+    assert!(snapshots(&frames).len() == 1, "the surface is relayed");
+    let view = projector.view(&UserId::new("alice@example.com"));
+    assert_eq!(known(&projector).surfaces["s9"], SurfaceDialect::Earlier);
+
+    // and a click on it now is refused, with the code the codebase gives its 422s
+    let input: orch_agui_proto::RunAgentInput = serde_json::from_value(json!({
+        "threadId": THREAD, "runId": "run-2", "messages": [],
+        "forwardedProps": {"a2uiAction": {"userAction": {
+            "name": "go", "surfaceId": "s9", "sourceComponentId": "btn", "context": {}}}},
+    }))
+    .unwrap();
+    let refused = orch_agui_projection::translate(&input, &view).unwrap_err();
+    assert_eq!(
+        refused,
+        orch_agui_projection::InputError::EarlierSurface {
+            surface_id: "s9".to_owned()
+        }
+    );
+    assert_eq!(refused.http_status(), 422);
+}
+
 #[test]
 fn an_operation_that_fails_the_envelope_is_never_relayed() {
     // The log holds only checked payloads; a foreign event with junk in it is skipped.
     let junk = vec![
-        json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s0"}}),
         json!({"nonsense": true}),
         json!("a string"),
+        json!(1),
+        json!({"version": "1.0"}),
+        json!({"createSurface": {"surfaceId": "s0"}}),
+        json!({"version": "1.0", "createSurface": {"surfaceId": "s0"},
+               "deleteSurface": {"surfaceId": "s0"}}),
+        json!({"version": "1.0", "callRendererFunction": {"surfaceId": "s0"}}),
+        json!({"version": "1.0", "createSurface": {"surfaceId": ""}}),
     ];
     let (_, frames) = project(&[user(1), working(2), surface(3, junk)]);
+    assert!(snapshots(&frames).is_empty(), "{:?}", snapshots(&frames));
+}
+
+/// ADR 0075, section 9: a thread from before the cutover keeps its v0.9.1 surfaces in the log,
+/// and nothing is migrated. They are relayed as they were sent — a viewer draws them as made by
+/// an earlier version — and the projection knows them as such, so an action on one is refused.
+#[test]
+fn a_surface_from_before_the_cutover_is_relayed_as_it_was_sent_and_known_as_earlier() {
+    let earlier = vec![
+        json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s9", "catalogId": "c"}}),
+        json!({"version": "v0.9.1", "updateComponents": {"surfaceId": "s9", "components": [
+            {"id": "root", "component": "Text", "text": "before the cutover"}]}}),
+    ];
+    let (projector, frames) = project(&[user(1), working(2), surface(3, earlier.clone())]);
     let got = snapshots(&frames);
     assert_eq!(got.len(), 1);
-    assert_eq!(got[0].2.len(), 1, "{:?}", got[0].2);
-    let (_, frames) = project(&[user(1), working(2), surface(3, vec![json!(1)])]);
-    assert!(snapshots(&frames).is_empty());
+    assert_eq!(got[0].2, earlier, "relayed byte for byte");
+    assert_eq!(known(&projector).surfaces["s9"], SurfaceDialect::Earlier);
 }
 
 #[test]
 fn a_surface_that_outgrows_the_replay_cap_stops_and_the_viewer_is_told_once() {
     let filler = |n: usize| {
-        json!({"version": "v0.9.1", "updateDataModel": {
+        json!({"version": "1.0", "updateDataModel": {
             "surfaceId": "s0", "value": "x".repeat(MAX_SURFACE_BYTES / 2 - 200 + n)}})
     };
     let (_, frames) = project(&[
@@ -469,20 +534,20 @@ fn resuming_with_a_cursor_yields_exactly_the_rest() {
 // ---- the replay buffer holds only what is alive (UI catalog v1, "A surface sent again", rule 2)
 
 fn plan_create(id: &str) -> Value {
-    json!({"version": "v0.9.1", "createSurface": {"surfaceId": id, "catalogId": "c"}})
+    json!({"version": "1.0", "createSurface": {"surfaceId": id, "catalogId": "c"}})
 }
 
 fn plan_text(id: &str, text: &str) -> Value {
-    json!({"version": "v0.9.1", "updateComponents": {"surfaceId": id, "components": [
+    json!({"version": "1.0", "updateComponents": {"surfaceId": id, "components": [
         {"id": "root", "component": "Text", "text": text}]}})
 }
 
 fn plan_delete(id: &str) -> Value {
-    json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": id}})
+    json!({"version": "1.0", "deleteSurface": {"surfaceId": id}})
 }
 
 fn filler(id: &str, bytes: usize) -> Value {
-    json!({"version": "v0.9.1", "updateDataModel": {"surfaceId": id, "value": "x".repeat(bytes)}})
+    json!({"version": "1.0", "updateDataModel": {"surfaceId": id, "value": "x".repeat(bytes)}})
 }
 
 fn errors(frames: &[Frame]) -> usize {
@@ -666,7 +731,7 @@ fn two_surfaces_interleaved_keep_their_own_buffers() {
 }
 
 fn data_value(id: &str, value: Value) -> Value {
-    json!({"version": "v0.9.1", "updateDataModel": {"surfaceId": id, "value": value}})
+    json!({"version": "1.0", "updateDataModel": {"surfaceId": id, "value": value}})
 }
 
 fn data_of(ops: &[Value]) -> Vec<Value> {
@@ -835,7 +900,7 @@ mod replay_property {
         let id = format!("s{s}");
         match kind % 4 {
             0 => {
-                json!({"version": "v0.9.1", "createSurface": {"surfaceId": id, "catalogId": format!("c{n}")}})
+                json!({"version": "1.0", "createSurface": {"surfaceId": id, "catalogId": format!("c{n}")}})
             }
             1 => plan_text(&id, &format!("t{n}")),
             2 => data_value(&id, json!({"n": n})),

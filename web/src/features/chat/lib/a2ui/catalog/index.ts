@@ -2,18 +2,22 @@ import catalogJson from "./catalog.json";
 import lock from "./catalog.lock.json";
 
 /**
- * The UI catalog of this build (ADR 0023, docs/api/ui-catalog-v1.md): the components an agent may
- * name in a surface under `catalogId`, each as a JSON Schema of its whole instance, in the shape
- * of an A2UI inline catalog. `catalog.json` is the source; `catalog.lock.json` says which version
- * it is and what its digest is (`pnpm catalog:lock`), and a test keeps the two honest.
+ * The UI catalog of this build (ADR 0023, ADR 0075, docs/api/ui-catalog-v2.md): the components an agent
+ * may name in a surface under `catalogId`, each as a JSON Schema of its whole instance, in the shape of an
+ * A2UI 1.0 inline catalog. `catalog.json` is the source; `catalog.lock.json` says which version it is and
+ * what its digest is (`pnpm catalog:lock`), and a test keeps the two honest.
  */
 
 /** A JSON Schema (draft 2020-12), as a catalog holds it. */
 export type ComponentSchema = Record<string, unknown>;
 
-/** The A2UI inline catalog: exactly what travels to the agents. */
+/**
+ * The A2UI 1.0 inline catalog: exactly what travels to the agents. `protocolVersion` is required and is
+ * exactly `"1.0"` — A2UI reads a catalog without it as a v0.9 one, which a v1.0 runtime cannot use.
+ */
 export type UiCatalog = {
   catalogId: string;
+  protocolVersion: string;
   components: Record<string, ComponentSchema>;
 };
 

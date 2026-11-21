@@ -46,7 +46,7 @@ const form = (questions: Rec[], extra: Rec = {}) =>
       { id: "pick", component: "Choices", questions, ...extra },
     ],
     undefined,
-    "v0.9.1",
+    "1.0",
     OWN_CATALOG.catalogId,
   );
 

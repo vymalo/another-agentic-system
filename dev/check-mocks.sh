@@ -407,8 +407,8 @@ card=$(curl -fsS "$SESSIONS/.well-known/agent-card.json")
 check "mock-sessions card: its name, streaming, a JSONRPC interface on the same host" \
   "$(printf '%s' "$card" | jq -r '[.name, .capabilities.streaming, (.supportedInterfaces[0].url | startswith("'"$SESSIONS"'/")), .supportedInterfaces[0].protocolVersion] | join(",")')" \
   "mock-sessions,true,true,1.0"
-check "mock-sessions card: it lists child-sessions/v1, steps/v1 and usage/v1, none required" \
-  "$(printf '%s' "$card" | jq -r '[.capabilities.extensions[] | "\(.uri | split("/") | .[-2])=\(.required)"] | join(",")')" "child-sessions=false,steps=false,usage=false"
+check "mock-sessions card: it lists child-sessions/v1, steps/v1, usage/v1 and steer/v1, none required" \
+  "$(printf '%s' "$card" | jq -r '[.capabilities.extensions[] | "\(.uri | split("/") | .[-2])=\(.required)"] | join(",")')" "child-sessions=false,steps=false,usage=false,steer=false"
 check "mock-sessions card: the params of child-sessions/v1 are one helper, planner, and maxOpen 4" \
   "$(printf '%s' "$card" | jq -r --arg u "$SESSIONS_EXT" '.capabilities.extensions[] | select(.uri == $u) | .params | [(.agents | map(.name) | join("+")), .maxOpen] | join(" ")')" "planner 4"
 check "mock-sessions: no token -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SESSIONS/a2a" -d '{}')" "401"
@@ -449,6 +449,33 @@ check "mock-sessions: SubscribeToTask of the round, not activated -> InvalidPara
 check "mock-sessions: SubscribeToTask of any other task -> task not found (-32001)" "$(sessions SubscribeToTask task-m1 yes | jq -r .error.code)" "-32001"
 check "mock-sessions: CancelTask -> canceled" "$(rpc "$SESSIONS" CancelTask | jq -r .result.status.state)" "TASK_STATE_CANCELED"
 check "mock-sessions: unknown method -> -32601" "$(rpc "$SESSIONS" 'message/send' | jq -r .error.code)" "-32601"
+# person TEXT CONTEXT METADATA: a person's SendStreamingMessage to mock-sessions (activated), METADATA the object under the extension.
+person() {
+  jq -n --arg t "$1" --arg c "$2" --argjson md "$3" --arg u "$SESSIONS_EXT" --arg task "" \
+    '{jsonrpc: "2.0", id: "check-1", method: "SendStreamingMessage", params: {message: ({role: "ROLE_USER", messageId: "msg-person", contextId: $c, parts: [{text: $t}], metadata: {($u): $md}, extensions: [$u]} + (if $task == "" then {} else {taskId: $task} end))}}' |
+    curl -fsS -X POST "$SESSIONS/a2a" -H 'Authorization: Bearer dev-mock-token' -H 'content-type: application/json' -H "A2A-Extensions: $SESSIONS_EXT" --data-binary @-
+}
+PSESSION=ctx-task-parent.keep-true.msg-person
+check "mock-sessions: a person's start -> round 1's task, in a context of its own, whose object says by person, keepOpen and the parent's context" \
+  "$(person 'list the writers' ctx-task-parent '{"start":{"agent":"planner","description":"Find the writers","keepOpen":true}}' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '[.[0].result.task | .id, .contextId, (.metadata[$u] | "\(.round) \(.by) \(.keepOpen) \(.parentContextId) \(.session)")] | join(" ; ")')" \
+  "$PSESSION ; ctx-$PSESSION ; 1 person true ctx-task-parent $PSESSION"
+check "mock-sessions: a start with no description -> InvalidParams (-32602), adam's words" \
+  "$(person 'x' ctx-task-parent '{"start":{"agent":"planner","keepOpen":true}}' | jq -r '[.error.code, .error.message] | join(" ")')" "-32602 \`start.description\` is missing: it is a string"
+check "mock-sessions: a start whose text starts [mock:refuse-working] -> UnsupportedOperation (-32004), adam's words" \
+  "$(person '[mock:refuse-working] x' ctx-task-parent '{"start":{"agent":"planner","description":"d"}}' | jq -r '[.error.code, (.error.message | .[0:30])] | join(" ")')" "-32004 4 rounds are already working i"
+check "mock-sessions: a message to the child context -> round 2 of the session, working, by person" \
+  "$(person 'now the editors' "ctx-$PSESSION" '{}' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '[.[0].result.task | .id, (.metadata[$u] | "\(.round) \(.state)")] | join(" ")')" "$PSESSION.r2 2 working"
+check "mock-sessions: a message whose text starts [mock:refuse-rounds] -> UnsupportedOperation (-32004), adam's words" \
+  "$(person '[mock:refuse-rounds] x' "ctx-$PSESSION" '{}' | jq -r '[.error.code, (.error.message | .[0:30])] | join(" ")')" "-32004 session S has had 20 rounds, t"
+check "mock-sessions: a close -> a task of the child context whose session says closed" \
+  "$(person close "ctx-$PSESSION" '{"close":{"cancel":false}}' | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '.[0].result.task | [.id, .contextId, .metadata[$u].state] | join(" ")')" "$PSESSION.close ctx-$PSESSION closed"
+check "mock-sessions: SubscribeToTask of round 2 of a kept-open session -> working, working, then completed with the session idle" \
+  "$(sessions SubscribeToTask "$PSESSION.r2" yes | sed -n 's/^data: //p' | jq -rs --arg u "$SESSIONS_EXT" '[.[].result | (.task // .statusUpdate) | (.status.state | sub("TASK_STATE_"; "") | ascii_downcase) + ((.metadata[$u].state // "") | if . == "" then "" else ":" + . end)] | join(",")')" \
+  "working:working,working,completed:idle"
+check "mock-sessions: GetTask of round 1 of a one-shot session -> completed, the session closed" \
+  "$(sessions GetTask ctx-task-parent.keep-false.msg-x yes | jq -r --arg u "$SESSIONS_EXT" '.result | [.status.state, .metadata[$u].round, .metadata[$u].state, .metadata[$u].parentContextId] | join(" ")')" "TASK_STATE_COMPLETED 1 closed ctx-task-parent"
+check "mock-sessions: CancelTask of round 2 of a person's kept-open session -> canceled, in the child's context, the session idle" \
+  "$(sessions CancelTask ctx-task-parent.keep-true.msg-x.r2 yes | jq -r --arg u "$SESSIONS_EXT" '.result | [.status.state, .contextId, .metadata[$u].round, .metadata[$u].state] | join(" ")')" "TASK_STATE_CANCELED ctx-ctx-task-parent.keep-true.msg-x 2 idle"
 
 [ "$fail" -eq 0 ] && echo "all checks passed"
 exit "$fail"

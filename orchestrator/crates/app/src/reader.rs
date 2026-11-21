@@ -228,6 +228,10 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         | EventBody::ChildSessionOpened(_)
         | EventBody::ChildSessionReported(_)
         | EventBody::ChildSessionClosed(_)
+        | EventBody::ChildSessionStartAsked(_)
+        | EventBody::ChildSessionStartEnded(_)
+        | EventBody::ChildSessionCloseAsked(_)
+        | EventBody::ChildSessionState(_)
         | EventBody::ThreadForked(_)
         | EventBody::ThreadShared(_)
         | EventBody::ThreadUnshared(_) => return inert(event),
@@ -535,6 +539,10 @@ mod tests {
                     | EventBody::ChildSessionOpened(_)
                     | EventBody::ChildSessionReported(_)
                     | EventBody::ChildSessionClosed(_)
+                    | EventBody::ChildSessionStartAsked(_)
+                    | EventBody::ChildSessionStartEnded(_)
+                    | EventBody::ChildSessionCloseAsked(_)
+                    | EventBody::ChildSessionState(_)
             );
             assert_eq!(is_inert(&out), expect_inert, "{:?}", event.kind());
             if !expect_inert {

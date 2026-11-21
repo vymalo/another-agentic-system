@@ -470,7 +470,7 @@ async fn usage_is_counted_once_when_the_round_is_read_after_it_ended(backend: Ba
     orch.shutdown().await;
 }
 
-async fn a_child_thread_takes_no_run_and_no_fork(backend: Backend) {
+async fn a_child_thread_takes_no_fork_and_a_closed_one_no_run(backend: Backend) {
     let world = world_with_events(backend, false).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
@@ -480,12 +480,13 @@ async fn a_child_thread_takes_no_run_and_no_fork(backend: Backend) {
     chat.wait_state(&id, "done").await;
     let child = child_of(&chat, &id).await;
     chat.wait_state(&child, "done").await;
-    // an AG-UI run on the child's thread: well formed, and what it names cannot be done
-    let body = Chat::agui_input(&child, "run-2", &[("msg-2", "hello helper")], json!({}));
+    // the session closed with its round: an AG-UI run on the child's thread is refused (a person
+    // talks to a helper session that is open, ADR 0072, S3)
+    let body = Chat::agui_input(&child, "run-99", &[("msg-2", "hello helper")], json!({}));
     let response = chat.agui_post("plain", &body).await;
-    assert_eq!(response.status().as_u16(), 422);
+    assert_eq!(response.status().as_u16(), 409);
     let problem: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(problem["code"], "child_thread", "{problem}");
+    assert_eq!(problem["code"], "session_closed", "{problem}");
     // and nothing was written or sent
     let log = chat.events(&child).await;
     assert_eq!(count(&log, "user_message"), 0);
@@ -502,7 +503,7 @@ async fn a_child_thread_takes_no_run_and_no_fork(backend: Backend) {
 }
 
 backends!(
-    a_child_thread_takes_no_run_and_no_fork,
+    a_child_thread_takes_no_fork_and_a_closed_one_no_run,
     a_session_is_a_child_thread,
     the_same_result_with_the_agent_saying_events,
     a_kept_open_round_two_lands_in_the_same_child_as_job_two,

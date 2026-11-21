@@ -157,7 +157,7 @@ describe("what is drawn", () => {
     cleanup();
     resetSeq();
     const d = mountSurfaces();
-    const deleted = [...complete, { version: "v0.9", deleteSurface: { surfaceId: SURFACE } }];
+    const deleted = [...complete, { version: "1.0", deleteSurface: { surfaceId: SURFACE } }];
     await feed(d, surfaceRun([complete, deleted]));
     await waitFor(() => expect(regions()).toHaveLength(0));
     expect(screen.queryByText("Pick one")).toBeNull();
@@ -357,8 +357,8 @@ describe("actions: a control acts on a click of its own and on nothing else", ()
     const updated = [
       ...many,
       {
-        version: "v0.9",
-        updateDataModel: { surfaceId: SURFACE, path: "/name", contents: "changed" },
+        version: "1.0",
+        updateDataModel: { surfaceId: SURFACE, path: "/name", value: "changed" },
       },
     ];
     await act(async () => {
@@ -538,7 +538,7 @@ describe("a surface of this app's catalog (ADR 0023)", () => {
     surface(
       [column("root", ["t", "g"]), text("t", "Before the gizmo"), { id: "g", component: "Gizmo" }],
       undefined,
-      "v0.9.1",
+      "1.0",
       OWN_CATALOG_ID,
     );
   const NEWER = "This part of the answer needs a newer version of the app.";
@@ -595,7 +595,7 @@ describe("a surface of this app's catalog (ADR 0023)", () => {
             text("t", "Words"),
           ],
           undefined,
-          "v0.9.1",
+          "1.0",
           OWN_CATALOG_ID,
         ),
       ]),
@@ -603,6 +603,25 @@ describe("a surface of this app's catalog (ADR 0023)", () => {
     const ui = region();
     expect(within(ui).getByText("Heading")).toBeTruthy();
     expect(within(ui).getByText("Words")).toBeTruthy();
+    m.agent.stop();
+  });
+});
+
+describe("a surface of an earlier A2UI version (ADR 0075, decision 6)", () => {
+  it("is not drawn: the card says an earlier version made it, names it, and folds the operations", async () => {
+    const m = mountSurfaces();
+    const ops = surface([column("root", ["t"]), text("t", "From before")], undefined, "v0.9.1");
+    await feed(m, surfaceRun([ops]));
+    // nothing of it is drawn, and no interface stands in its place
+    expect(regions()).toHaveLength(0);
+    const card = document.querySelector('[data-rule="version"]') as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(within(card).getByText(/Interface not shown:/)).toBeTruthy();
+    expect(card.textContent).toContain('A2UI "v0.9.1"');
+    expect(card.textContent).toContain("earlier version");
+    // the operations are folded, as text, with no live control
+    expect(within(card).getByText("Raw operations")).toBeTruthy();
+    expect(within(card).queryByRole("button")).toBeNull();
     m.agent.stop();
   });
 });

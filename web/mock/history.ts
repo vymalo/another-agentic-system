@@ -14,8 +14,10 @@ import { type Frame, Projector, type ThreadInfo } from "./projection";
 
 type Event = components["schemas"]["Event"];
 
-/** The version of the projection the mock says its frames are (`ui.history.projection`). */
-export const PROJECTION_VERSION = 2;
+/** The version of the projection the mock says its frames are (`ui.history.projection`). The real fold's
+ * `PROJECTION_VERSION` (`orchestrator/crates/agui-projection/src/history.rs`): 3 since the A2UI v1.0 cutover
+ * (ADR 0075), because a pre-cutover surface is relayed as the log holds it instead of being skipped. */
+export const PROJECTION_VERSION = 3;
 
 /** The most chains kept for a thread whose turns do not bound it. */
 const MAX_KEPT_CHAINS = 512;

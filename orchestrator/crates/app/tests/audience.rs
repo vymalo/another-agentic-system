@@ -578,7 +578,7 @@ async fn a_thread_whose_agent_the_person_may_no_longer_use_is_read_only_not_hidd
             name: "go".to_owned(),
             source_component_id: "go".to_owned(),
             context: serde_json::Map::new(),
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: None,
         },
         catalog: None,

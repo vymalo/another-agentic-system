@@ -9,8 +9,8 @@ import { BASIC_CATALOG_IDS } from "./limits";
 type Rec = Record<string, unknown>;
 
 export const SURFACE = "s1";
-/** The id the basic catalog goes by in the surfaces the tests build (the `v0_9_1` spelling). */
-export const BASIC_CATALOG: string = BASIC_CATALOG_IDS[1];
+/** The id the basic catalog goes by in the surfaces the tests build: the one A2UI 1.0 spelling. */
+export const BASIC_CATALOG: string = BASIC_CATALOG_IDS[0];
 /** The id of this app's own catalog. */
 export const OWN_CATALOG_ID = OWN_CATALOG.catalogId;
 
@@ -18,14 +18,14 @@ export const OWN_CATALOG_ID = OWN_CATALOG.catalogId;
 export function surface(
   components: Rec[],
   dataModel?: unknown,
-  version = "v0.9",
+  version = "1.0",
   catalogId: string = BASIC_CATALOG,
 ): Rec[] {
   return [
     { version, createSurface: { surfaceId: SURFACE, catalogId } },
     { version, updateComponents: { surfaceId: SURFACE, components } },
     ...(dataModel !== undefined
-      ? [{ version, updateDataModel: { surfaceId: SURFACE, path: "/", contents: dataModel } }]
+      ? [{ version, updateDataModel: { surfaceId: SURFACE, path: "/", value: dataModel } }]
       : []),
   ];
 }

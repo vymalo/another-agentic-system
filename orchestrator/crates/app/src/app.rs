@@ -39,6 +39,8 @@ mod echo;
 pub use echo::TierStats;
 mod history;
 pub use history::{HistorySettings, HistoryStats};
+mod sessions;
+pub use sessions::{ChildCloseState, StartChildSession};
 mod share;
 pub use share::{AGENT_NAME_WAIT, SharedRead};
 mod uploads;
@@ -2299,16 +2301,6 @@ impl<P: Ports> App<P> {
     ) -> Result<ApplyOutcome, AppError> {
         let access = self.access(who);
         let thread = self.writable_thread(&access, id).await?;
-        // A child session's thread is read-only until a person may talk to its helper (ADR 0072,
-        // S3): no message, steer, Stop & send or action. A cancel is allowed.
-        if thread.child_of.is_some()
-            && matches!(
-                input,
-                Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
-            )
-        {
-            return Err(AppError::child_thread());
-        }
         // What starts the agent's work takes the right to invoke it.
         if matches!(
             input,
@@ -2316,6 +2308,9 @@ impl<P: Ports> App<P> {
         ) {
             self.may_invoke(&access, &thread).await?;
         }
+        // A message to a helper session's thread (ADR 0072, S3) is refused by the core before
+        // anything is written when the session cannot take it: closed, a mention, or a Stop & send
+        // of a session that closes when its round is stopped.
         match &input {
             Input::UserMessage { text, catalog, .. } | Input::StopAndSend { text, catalog, .. } => {
                 validate_text(text)?;
@@ -2366,6 +2361,14 @@ impl<P: Ports> App<P> {
             | Input::ChildSession { .. }
             | Input::ChildSessionSaid(_)
             | Input::RoundStarted { .. }
+            // A person's start and close, and what comes back for them, are the application's
+            // own methods (`start_child_session`, `close_child_session`) and the dispatcher's: a
+            // surface submits a message to a child, never these
+            | Input::StartSession { .. }
+            | Input::SessionStartEnded { .. }
+            | Input::CloseSession { .. }
+            | Input::SessionCloseFailed { .. }
+            | Input::RoundSent { .. }
             | Input::TimerFired(_) => {
                 return Err(AppError::Invalid(
                     "this input cannot be submitted by a user".to_owned(),
@@ -2900,6 +2903,32 @@ impl<P: Ports> App<P> {
                         by,
                     },
                 }),
+                // A person's start and close of a session (ADR 0072): `steer` rows, which the
+                // dispatcher takes to a send of its own and never to a steer.
+                Command::StartSession {
+                    request,
+                    agent,
+                    description,
+                    text,
+                    keep_open,
+                    tier,
+                    tier_cap,
+                } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::SessionStart {
+                        request,
+                        agent,
+                        description,
+                        text,
+                        keep_open,
+                        tier,
+                        tier_cap,
+                    },
+                }),
+                Command::CloseSession { cancel } => outbox.push(NewOutbox {
+                    id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                    payload: OutboxPayload::SessionClose { cancel },
+                }),
                 Command::RequestCancel { job } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Cancel { job: Some(job) },
@@ -3246,12 +3275,9 @@ impl<P: Ports> App<P> {
             }
             let has_outbox = !commit.outbox.is_empty();
             let has_watches = !commit.watches.is_empty();
-            match self
-                .ports
-                .store()
-                .commit(thread, record.version, commit)
-                .await
-            {
+            // boxed: a store's commit is a large future (a transaction of several statements) and
+            // sits under every path that writes
+            match Box::pin(self.ports.store().commit(thread, record.version, commit)).await {
                 Ok(CommitOutcome::Applied { thread: t, events }) => {
                     if !events.is_empty() || t.state != record.state {
                         self.notify(Topic::Thread(thread)).await;
@@ -3438,12 +3464,9 @@ impl<P: Ports> App<P> {
                 sharing: None,
                 skip_unsent_delegates: false,
             };
-            match self
-                .ports
-                .store()
-                .commit(thread, record.version, commit)
-                .await
-            {
+            // boxed: a store's commit is a large future (a transaction of several statements) and
+            // sits under every path that writes
+            match Box::pin(self.ports.store().commit(thread, record.version, commit)).await {
                 Ok(CommitOutcome::Applied { thread, events }) => {
                     return Ok(ApplyOutcome::Applied { thread, events });
                 }

@@ -320,15 +320,21 @@ fn apply_binding(binding: &mut AgentBinding, update: &BindingUpdate) {
     }
 }
 
-/// Finishes the thread's unsent `delegate` and `steer` rows as `skipped`: those `pending`, and
-/// those `inflight` whose lease expired before `now`. Returns the count.
+/// Finishes the thread's unsent messages (`delegate` and `steer` rows) as `skipped`: those
+/// `pending`, and those `inflight` whose lease expired before `now`. A round to follow and a
+/// person's start or close of a session are no messages and stay. Returns the count.
 fn skip_unsent(inner: &mut Inner, thread: ThreadId, now: Timestamp) -> u32 {
     let mut n = 0;
     for row in inner.outbox.iter_mut().filter(|r| {
         r.thread_id == thread
             && matches!(r.kind, OutboxKind::Delegate | OutboxKind::Steer)
-            // a round to follow is no message (ADR 0072)
-            && !matches!(r.payload, crate::OutboxPayload::Observe { .. })
+            // a round to follow, and a person's start or close of a session, are no messages (ADR 0072)
+            && !matches!(
+                r.payload,
+                crate::OutboxPayload::Observe { .. }
+                    | crate::OutboxPayload::SessionStart { .. }
+                    | crate::OutboxPayload::SessionClose { .. }
+            )
             && r.sent_at.is_none()
     }) {
         let skippable = match row.status {

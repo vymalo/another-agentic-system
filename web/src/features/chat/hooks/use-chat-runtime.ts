@@ -34,7 +34,7 @@ type Args = {
   /** `lastSeq` of `GET /api/threads/{id}`: how far the conversation is; null until fetched. */
   threadLastSeq: number | null;
   notFound: boolean;
-  onSendFailed: (message: string, status: number | undefined) => void;
+  onSendFailed: (message: string, status: number | undefined, code?: string) => void;
   onSending: () => void;
   /** The mentions of the message in the box, asked for by the text of every message sent (ADR 0026). */
   mentions?: MentionsSource;
@@ -192,7 +192,7 @@ export function useChatRuntime({
       // the composer takes its text back by itself (the failure is a MessageNotSentError); an
       // A2UI action carried no message, so there is nothing to take back
       if (!failure.action) dropFailedSend(current);
-      onSendFailedRef.current(failure.message, failure.status);
+      onSendFailedRef.current(failure.message, failure.status, failure.code);
     },
     adapters: {
       threadList: {

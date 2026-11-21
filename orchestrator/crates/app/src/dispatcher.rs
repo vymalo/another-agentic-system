@@ -15,7 +15,8 @@ use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     AccessTier, AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, Mention,
-    ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history, report,
+    SessionNews, ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history,
+    report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, ClaimOrder,
@@ -33,6 +34,7 @@ mod ask;
 mod description;
 mod files;
 mod live;
+mod sessions;
 mod title;
 mod utility;
 mod verify;
@@ -170,6 +172,9 @@ struct Loaded {
     /// The ids of the MCP servers attached to the thread when it was read (ADR 0024).
     tools: Vec<String>,
     binding: orch_ports::AgentBinding,
+    /// The thread is a helper session's (ADR 0072): what is sent to it goes to the session's
+    /// context, naming no earlier round.
+    is_child: bool,
     /// The last event the thread copied from its parent, when it is a fork (ADR 0029): the
     /// events `1..=cut` are the conversation its first task is told.
     forked_at: Option<i64>,
@@ -411,6 +416,7 @@ impl<P: Ports> Dispatcher<P> {
         let attempt = row.attempts;
         let thread = row.thread_id;
         let lease = self.lease(&row);
+        let kept = row.clone();
         tokio::select! {
             () = token.cancelled() => tracing::debug!(%id, "worker stopped by shutdown"),
             () = self.heartbeat(&lease) => {
@@ -422,9 +428,18 @@ impl<P: Ports> Dispatcher<P> {
                     tracing::warn!(%id, "lost the lease; worker stopped");
                 }
             }
-            result = self.process(row) => match result {
+            result = Box::pin(self.process(row)) => match result {
                 Ok(()) => {}
                 Err(DispatchError::Fenced) => tracing::warn!(%id, attempt, "lease lost; the late agent result was dropped"),
+                // A helper's message answered from another context (ADR 0072): nothing of it was
+                // applied, and sending the same message again would be answered the same way, so
+                // the job fails with a word instead of waiting for a lease to lapse.
+                Err(DispatchError::ForeignContext) => {
+                    let why = "the agent answered with a task of another context than this helper's".to_owned();
+                    if let Err(e) = self.give_up(&kept, why.clone(), why, false).await {
+                        tracing::error!(%id, error = %report(&e), "could not fail a row answered from a foreign context");
+                    }
+                }
                 // The thread was deleted while the worker held a result for it (ADR 0043): drop it,
                 // with a line and a counter. The row went with the thread, so nothing retries it.
                 Err(e) if is_not_found(&e) && self.thread_is_gone(thread).await => {
@@ -459,20 +474,31 @@ impl<P: Ports> Dispatcher<P> {
         }
     }
 
+    /// Every arm is boxed: the futures of the paths below are large and nest (a delegation reads a
+    /// stream, applies envelopes, follows sessions), so one boxed boundary per row kind keeps what
+    /// a worker polls on its stack to the size of a pointer, whichever arm runs.
     async fn process(&self, row: OutboxItem) -> Done {
         match row.kind {
             // A round of a child session is followed, never sent (ADR 0072): a path of its own, so
             // that the frame of a delegation is not under it
             OutboxKind::Delegate if matches!(row.payload, OutboxPayload::Observe { .. }) => {
-                self.observe(row).await
+                Box::pin(self.observe(row)).await
             }
-            OutboxKind::Delegate => self.delegate(row).await,
-            OutboxKind::Steer => self.steer(row).await,
-            OutboxKind::Cancel => self.cancel(row).await,
-            OutboxKind::Verify => self.verify(row).await,
-            OutboxKind::Title => self.title(row).await,
-            OutboxKind::Description => self.description(row).await,
-            OutboxKind::Ask => self.ask(row).await,
+            OutboxKind::Delegate => Box::pin(self.delegate(row)).await,
+            // A person's start and close of a helper session (ADR 0072) share the lane and are
+            // never steers
+            OutboxKind::Steer if matches!(row.payload, OutboxPayload::SessionStart { .. }) => {
+                Box::pin(self.start_session(row)).await
+            }
+            OutboxKind::Steer if matches!(row.payload, OutboxPayload::SessionClose { .. }) => {
+                Box::pin(self.close_session(row)).await
+            }
+            OutboxKind::Steer => Box::pin(self.steer(row)).await,
+            OutboxKind::Cancel => Box::pin(self.cancel(row)).await,
+            OutboxKind::Verify => Box::pin(self.verify(row)).await,
+            OutboxKind::Title => Box::pin(self.title(row)).await,
+            OutboxKind::Description => Box::pin(self.description(row)).await,
+            OutboxKind::Ask => Box::pin(self.ask(row)).await,
         }
     }
 
@@ -578,10 +604,25 @@ impl<P: Ports> Dispatcher<P> {
         let entry = match self.app.resolve_agent(&binding.agent_id).await {
             Ok(Some(entry)) => entry,
             Ok(None) => {
+                let reason = format!("agent '{}' is no longer listed", binding.agent_id);
+                // A person's start or close of a session is no delegation: it ends with the
+                // word, and the job it was asked beside is not failed (ADR 0072)
+                match &row.payload {
+                    OutboxPayload::SessionStart { request, .. } => {
+                        self.end_start_failed(row, request, reason.clone(), reason)
+                            .await?;
+                        return Ok(None);
+                    }
+                    OutboxPayload::SessionClose { .. } => {
+                        self.close_failed(row, reason.clone(), reason).await?;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
                 self.apply_quiet(
                     row,
                     Input::DeliveryFailed {
-                        reason: format!("agent '{}' is no longer listed", binding.agent_id),
+                        reason,
                         retryable: false,
                     },
                     format!("dead:{}", row.id),
@@ -617,8 +658,11 @@ impl<P: Ports> Dispatcher<P> {
             endpoint: entry.endpoint.clone(),
             revision: binding.revision.clone(),
             files: files::Budget::default(),
-            expected_context: matches!(row.payload, OutboxPayload::Observe { .. })
-                .then(|| binding.context_id.clone().unwrap_or_default()),
+            // every row of a child thread, not only the follow of a round: nothing of another
+            // context may be applied to a helper's thread (fail closed)
+            expected_context: (thread.child_of.is_some()
+                || matches!(row.payload, OutboxPayload::Observe { .. }))
+            .then(|| binding.context_id.clone().unwrap_or_default()),
         };
         Ok(Some(Loaded {
             ctx,
@@ -626,6 +670,7 @@ impl<P: Ports> Dispatcher<P> {
             job: thread.job.number,
             tools: thread.job.tools,
             binding,
+            is_child: thread.child_of.is_some(),
             forked_at: thread.forked_from.map(|origin| origin.seq),
         }))
     }
@@ -703,6 +748,8 @@ impl<P: Ports> Dispatcher<P> {
                         .await;
                 }
                 OutboxPayload::Steer { .. }
+                | OutboxPayload::SessionStart { .. }
+                | OutboxPayload::SessionClose { .. }
                 | OutboxPayload::Cancel { .. }
                 | OutboxPayload::Verify { .. }
                 | OutboxPayload::Title { .. }
@@ -724,6 +771,7 @@ impl<P: Ports> Dispatcher<P> {
             job,
             tools,
             binding,
+            is_child,
             forked_at,
         }) = self.load(&row).await?
         else {
@@ -831,9 +879,10 @@ impl<P: Ports> Dispatcher<P> {
         // A task that does not continue one waiting for the user is a new task of the thread (a
         // rework, a follow-up after the turn ended, the first task of a new job): it names the
         // previous task, so the agent can tell what the message is about (ADR 0021).
+        // A helper session's rounds name no earlier round: the session is the context (ADR 0072).
         let reference_task_ids = match (&continues, &binding.task_id) {
-            (None, Some(previous)) => vec![previous.clone()],
-            (Some(_) | None, _) => Vec::new(),
+            (None, Some(previous)) if !is_child => vec![previous.clone()],
+            _ => Vec::new(),
         };
         // The first task of a fork has no task to continue (a fork is a context of its own), so
         // it is told the conversation it continues, which is derived from the thread's own log
@@ -1017,7 +1066,14 @@ impl<P: Ports> Dispatcher<P> {
             // stopped before it began, or a task the thread has seen end: nothing to follow
             let over = binding.task_id.as_deref() == Some(task_id.as_str())
                 && binding.task_state.is_some_and(AgentTaskState::is_terminal);
-            if state == ThreadState::Cancelled || over {
+            // a round this thread sent itself (its message's, or the close's) is no round to
+            // follow: its job, if any, follows it already
+            let ledger = child.job.child.as_ref();
+            let sent_itself = ledger.is_some_and(|c| {
+                (c.started >= round && child.job.observed.as_ref().map(|o| o.number) != Some(round))
+                    || (c.close_asked && c.track.close_round == round)
+            });
+            if state == ThreadState::Cancelled || over || sent_itself {
                 return self.finish(&row, OutboxFinal::Skipped).await;
             }
             let lease = self.lease(&row);
@@ -1197,6 +1253,7 @@ impl<P: Ports> Dispatcher<P> {
             job,
             tools,
             binding,
+            is_child: _,
             forked_at: _,
         }) = self.load(&row).await?
         else {
@@ -1512,7 +1569,7 @@ impl<P: Ports> Dispatcher<P> {
                     if !seen_working && state.is_some_and(AgentTaskState::is_interrupted) {
                         continue;
                     }
-                    self.apply_envelope(ctx, &env).await?;
+                    Box::pin(self.apply_envelope(ctx, &env)).await?;
                     // The whole text of a reply is in the log: no more of it is relayed.
                     if let Some(
                         AgentUpdate::Message { message_id, .. }
@@ -1574,10 +1631,49 @@ impl<P: Ports> Dispatcher<P> {
                 return Ok(());
             }
             Some(AgentUpdate::ChildSessions(news)) => {
-                return if self
-                    .app
-                    .child_sessions_news(ctx.thread, Some(&ctx.lease), news.clone())
-                    .await?
+                // The answer to a message this helper thread sent names its round: the round is
+                // followed already (it is this job's), never observed (ADR 0072, S3).
+                if let SessionNews::OfRound(report) = news
+                    && ctx.expected_context.is_some()
+                    && !matches!(ctx.row.payload, OutboxPayload::Observe { .. })
+                    && let Some(round) = &report.round
+                    && let Some(task_id) = round.task_id.clone().filter(|t| *t == env.task_id)
+                {
+                    let sent = Input::RoundSent {
+                        session: report.session.clone(),
+                        number: round.number,
+                        task_id,
+                    };
+                    match Box::pin(self.app.apply(
+                        ctx.thread,
+                        sent,
+                        Some(format!("roundsent:{}:{}", ctx.row.id, round.number)),
+                        None,
+                        Some(&ctx.lease),
+                    ))
+                    .await
+                    {
+                        Ok(ApplyOutcome::Fenced) => return Err(DispatchError::Fenced),
+                        Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => {}
+                        // a thread that is no child (`NotAChild` is the coded `not_child_thread`),
+                        // or gone: the news says what it says
+                        Err(
+                            AppError::Transition(_)
+                            | AppError::NotFound
+                            | AppError::Arrangement {
+                                code: "not_child_thread",
+                                ..
+                            },
+                        ) => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                return if Box::pin(self.app.child_sessions_news(
+                    ctx.thread,
+                    Some(&ctx.lease),
+                    news.clone(),
+                ))
+                .await?
                 {
                     Ok(())
                 } else {
@@ -1723,6 +1819,7 @@ impl<P: Ports> Dispatcher<P> {
             job,
             tools: _,
             binding,
+            is_child: _,
             forked_at: _,
         }) = self.load(&row).await?
         else {

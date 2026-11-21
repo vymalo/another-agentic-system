@@ -1,21 +1,25 @@
-//! The A2UI extension on the A2A client side (ADR 0013, ADR 0008): reading it from a live card,
-//! the capabilities the orchestrator tells an agent it renders, and the data part that carries a
-//! user's action back.
+//! The A2UI extension on the A2A client side (ADR 0013, ADR 0008, ADR 0075): reading it from a live
+//! card, the capabilities the orchestrator tells an agent it renders, and the data part that carries
+//! a user's action back.
 //!
-//! Detection is strict and fails closed: an extension entry counts only when its `uri` is exactly
-//! one of the URIs of [`UiVersion::extension_uri`]. Both the current release (`v0.9.1`) and the
-//! candidate (`v1.0`) are detected (open question 22); when a card lists both, `v0.9.1` is
-//! spoken. Nothing is cached: the card is read for every call, so a card that gains or loses the
-//! extension changes the next message.
+//! **A2UI v1.0 only** (ADR 0075, a hard cutover): this build speaks one dialect, and a card that
+//! lists another one is a card that does not speak A2UI to us. Detection is strict and fails
+//! closed: an entry counts only when its `uri` is exactly
+//! `https://a2ui.org/a2a-extension/a2ui/v1.0` ([`UiVersion::extension_uri`]). Nothing is cached: the
+//! card is read for every call, so a card that gains or loses the extension changes the next
+//! message.
 //!
-//! *Verified 2026-09-29* (<https://a2ui.org/specification/v0.9.1-a2ui-extension-specification/>,
+//! *Verified 2026-11-19* (`a2ui-project/a2ui` at `b4f91c2`,
+//! `specification/v1_0/json/agent_to_renderer.json`, `renderer_to_agent.json` and
+//! `renderer_capabilities.json`, and
 //! <https://a2ui.org/specification/v1.0-a2ui-extension-specification/>):
 //!
-//! | | v0.9.1 | v1.0 |
-//! |---|---|---|
-//! | extension URI | `https://a2ui.org/a2a-extension/a2ui/v0.9.1` | `https://a2ui.org/a2a-extension/a2ui/v1.0` |
-//! | `message.metadata` key | `a2uiClientCapabilities` | `a2uiRendererCapabilities` |
-//! | value | `{"v0.9.1": {"supportedCatalogIds": [...]}}` | `{"v1.0": {"supportedCatalogIds": [...]}}` |
+//! | | A2UI v1.0 |
+//! |---|---|
+//! | extension URI | `https://a2ui.org/a2a-extension/a2ui/v1.0` |
+//! | `message.metadata` key | `a2uiRendererCapabilities` |
+//! | value | `{"1.0": {"supportedCatalogIds": [...], "inlineCatalogs"?: [...]}}` |
+//! | `version` of a message and of an action | `"1.0"` |
 //!
 //! Activation through the extension mechanism is optional; agents built on the A2UI SDK check it,
 //! so the URI is also sent in the `A2A-Extensions` header and `message.extensions`.
@@ -25,21 +29,24 @@ use orch_core::{A2UI_MEDIA_TYPE, Timestamp, UiActionData, UiCatalogData, UiDeliv
 use orch_ports::UiSupport;
 use serde_json::{Value, json};
 
+/// The `message.metadata` key of the renderer's capabilities in A2UI v1.0 (ADR 0013, ADR 0075):
+/// `{"1.0": {supportedCatalogIds, inlineCatalogs?}}`. `a2uiClientCapabilities`, the key of
+/// `v0.9.1`, is never sent.
+pub const RENDERER_CAPABILITIES_KEY: &str = "a2uiRendererCapabilities";
+
 /// The versions a card advertises, or `None` when it advertises none this build knows.
+///
+/// A2UI v1.0 is the only dialect (ADR 0075): a card that lists `…/a2ui/v0.9.1` (or any other
+/// near miss) speaks no A2UI this build can use, and is sent no capabilities.
 pub fn ui_from_card(card: &AgentCard) -> Option<UiSupport> {
-    let listed: Vec<UiVersion> = card
+    let listed = card
         .capabilities
         .extensions
         .iter()
         .flatten()
         .filter_map(|e| UiVersion::from_extension_uri(&e.uri))
-        .collect();
-    // The current release first, whatever the order of the card.
-    let versions: Vec<UiVersion> = [UiVersion::V0_9_1, UiVersion::V1_0]
-        .into_iter()
-        .filter(|v| listed.contains(v))
-        .collect();
-    let spoken = versions.first().copied()?;
+        .next()?;
+    let versions = vec![listed];
     // The entry of the version we speak says whether the agent takes a catalog inline: only a
     // boolean `true` counts (A2UI: absent means false).
     let accepts_inline_catalogs = card
@@ -47,7 +54,7 @@ pub fn ui_from_card(card: &AgentCard) -> Option<UiSupport> {
         .extensions
         .iter()
         .flatten()
-        .filter(|e| spoken.extension_uri() == Some(e.uri.as_str()))
+        .filter(|e| listed.extension_uri() == Some(e.uri.as_str()))
         .any(|e| {
             e.params
                 .as_ref()
@@ -76,25 +83,20 @@ pub fn inline_catalog(
 }
 
 /// The message metadata that tells the agent which catalogs the renderer supports, as `(key,
-/// value)`, for the version spoken. `None` for a version that has no extension.
+/// value)`: [`RENDERER_CAPABILITIES_KEY`], `{"1.0": {supportedCatalogIds, inlineCatalogs?}}`
+/// (ADR 0013, ADR 0075).
 ///
-/// With a `delivery` (the card lists `ui-catalog/v1`, ADR 0023) our own catalog id is listed
+/// With a `delivery` (the card lists `ui-catalog/v2`, ADR 0023) our own catalog id is listed
 /// **first** in `supportedCatalogIds`, in every such message, so that an agent that follows A2UI
-/// strictly never takes the screen for one that lost the catalog; then the basic ids. The catalog
-/// itself is in `inlineCatalogs` only when [`inline_catalog`] says so.
-pub fn client_capabilities(
-    version: UiVersion,
+/// strictly never takes the screen for one that lost the catalog; then the basic catalog id of
+/// v1.0. The catalog itself is in `inlineCatalogs` only when [`inline_catalog`] says so.
+pub fn renderer_capabilities(
     delivery: Option<&UiDelivery>,
     accepts_inline: bool,
-) -> Option<(&'static str, Value)> {
-    let key = match version {
-        UiVersion::V0_9_1 => "a2uiClientCapabilities",
-        UiVersion::V1_0 => "a2uiRendererCapabilities",
-        UiVersion::V0_9 => return None,
-    };
+) -> (&'static str, Value) {
     let ours = delivery.map(|d| d.reference().catalog_id);
     let mut ids: Vec<String> = ours.into_iter().collect();
-    for id in version.basic_catalog_ids() {
+    for id in UiVersion::V1_0.basic_catalog_ids() {
         if !ids.iter().any(|known| known == id) {
             ids.push((*id).to_owned());
         }
@@ -103,11 +105,14 @@ pub fn client_capabilities(
     if let Some(catalog) = inline_catalog(delivery, accepts_inline) {
         capabilities["inlineCatalogs"] = json!([catalog.catalog]);
     }
-    Some((key, json!({ version.as_str(): capabilities })))
+    (
+        RENDERER_CAPABILITIES_KEY,
+        json!({ UiVersion::V1_0.as_str(): capabilities }),
+    )
 }
 
-/// The value of the message's `metadata["https://agents.vymalo.com/a2a/extensions/ui-catalog/v1"]`
-/// (ADR 0023): which catalog is current, and whether this message carries it in
+/// The value of the message's `metadata["https://agents.vymalo.com/a2a/extensions/ui-catalog/v2"]`
+/// (ADR 0023, ADR 0075): which catalog is current, and whether this message carries it in
 /// `inlineCatalogs`. On every message of an agent whose card lists the extension, so the agent can
 /// tell its copy is stale.
 pub fn ui_catalog_metadata(delivery: &UiDelivery, inline: bool) -> Value {
@@ -123,6 +128,11 @@ pub fn ui_catalog_metadata(delivery: &UiDelivery, inline: bool) -> Value {
 /// The data part that carries the user's action to the agent: one `action` message in an
 /// `application/a2ui+json` part (the media type on the part, as A2A 1.0 has it, and the
 /// extension's own `metadata.mimeType`).
+///
+/// **Exactly the five members** of an A2UI v1.0 action — `name`, `surfaceId`,
+/// `sourceComponentId`, `timestamp` and `context` (ADR 0075, decision 4). A2UI v1.0 also defines
+/// an optional `userMessage` and `metadata`; neither is ever forwarded: a line an agent wrote for a
+/// click is never sent as the person's words (ADR 0013, rule 7).
 pub fn action_part(action: &UiActionData, at: Timestamp) -> Part {
     let message = json!([{
         "version": action.version.as_str(),
@@ -145,10 +155,8 @@ pub fn action_part(action: &UiActionData, at: Timestamp) -> Part {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::collections::HashMap;
-
     use a2a::{AgentCapabilities, AgentExtension};
-    use orch_core::{A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0, UiCatalogRef};
+    use orch_core::{A2UI_EXTENSION_V1_0, UiCatalogRef};
 
     use super::*;
 
@@ -191,16 +199,19 @@ mod tests {
         assert_eq!(ui_from_card(&card_with(&[other])), None);
     }
 
+    /// ADR 0075: A2UI v1.0 only. A card that lists `v0.9.1` — the release this system spoke
+    /// before the cutover — is a card that speaks no A2UI to this build, and neither is any near
+    /// miss of the v1.0 URI.
     #[test]
-    fn each_uri_is_detected_and_only_the_exact_uri() {
-        let v091 = ui_from_card(&card_with(&[A2UI_EXTENSION_V0_9_1])).unwrap();
-        assert_eq!(v091.versions, vec![UiVersion::V0_9_1]);
+    fn only_the_v1_0_uri_is_detected_and_a_near_miss_is_not() {
         let v10 = ui_from_card(&card_with(&[A2UI_EXTENSION_V1_0])).unwrap();
         assert_eq!(v10.versions, vec![UiVersion::V1_0]);
         for near in [
             "https://a2ui.org/a2a-extension/a2ui/v0.9",
+            "https://a2ui.org/a2a-extension/a2ui/v0.9.1",
             "https://a2ui.org/a2a-extension/a2ui/v0.9.1/",
-            "http://a2ui.org/a2a-extension/a2ui/v0.9.1",
+            "https://a2ui.org/a2a-extension/a2ui/v1.0/",
+            "http://a2ui.org/a2a-extension/a2ui/v1.0",
             "https://a2ui.org/a2a-extension/a2ui/v2.0",
             "https://a2ui.org/a2a-extension/a2ui/V1.0",
         ] {
@@ -209,40 +220,33 @@ mod tests {
     }
 
     #[test]
-    fn both_uris_prefer_the_current_release_whatever_the_order() {
-        for order in [
-            [A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0],
-            [A2UI_EXTENSION_V1_0, A2UI_EXTENSION_V0_9_1],
-        ] {
-            let s = ui_from_card(&card_with(&order)).unwrap();
-            assert_eq!(s.versions, vec![UiVersion::V0_9_1, UiVersion::V1_0]);
-            assert_eq!(s.preferred(), Some(UiVersion::V0_9_1));
-        }
-        // A repeated entry is one version.
-        let s = ui_from_card(&card_with(&[A2UI_EXTENSION_V1_0, A2UI_EXTENSION_V1_0])).unwrap();
-        assert_eq!(s.versions, vec![UiVersion::V1_0]);
+    fn the_version_listed_twice_is_one_version_and_v0_9_1_beside_it_changes_nothing() {
+        let twice = ui_from_card(&card_with(&[A2UI_EXTENSION_V1_0, A2UI_EXTENSION_V1_0])).unwrap();
+        assert_eq!(twice.versions, vec![UiVersion::V1_0]);
+        assert_eq!(twice.preferred(), Some(UiVersion::V1_0));
+        // the retired URI beside it is not a second dialect: it is not detected at all
+        let both = ui_from_card(&card_with(&[
+            "https://a2ui.org/a2a-extension/a2ui/v0.9.1",
+            A2UI_EXTENSION_V1_0,
+        ]))
+        .unwrap();
+        assert_eq!(both.versions, vec![UiVersion::V1_0]);
     }
 
     #[test]
-    fn capabilities_are_keyed_by_the_version_spoken() {
-        let (key, value) = client_capabilities(UiVersion::V0_9_1, None, false).unwrap();
-        assert_eq!(key, "a2uiClientCapabilities");
-        assert_eq!(
-            value,
-            json!({"v0.9.1": {"supportedCatalogIds": [
-                "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
-                "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"]}})
-        );
-        let (key, value) = client_capabilities(UiVersion::V1_0, None, false).unwrap();
+    fn the_capabilities_are_the_v1_0_renderer_capabilities_and_nothing_else_is_sent() {
+        let (key, value) = renderer_capabilities(None, false);
         assert_eq!(key, "a2uiRendererCapabilities");
+        assert_eq!(key, RENDERER_CAPABILITIES_KEY);
         assert_eq!(
             value,
-            json!({"v1.0": {"supportedCatalogIds": [
+            json!({"1.0": {"supportedCatalogIds": [
                 "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"]}})
         );
-        assert_eq!(client_capabilities(UiVersion::V0_9, None, false), None);
-        let one = Some(&UiDelivery::Ref(reference(1)));
-        assert_eq!(client_capabilities(UiVersion::V0_9, one, true), None);
+        // no `a2uiClientCapabilities`, no `"v0.9.1"`, no `a2uiRendererDataModel`: the web does not
+        // implement data-model sync (ADR 0075)
+        assert!(value.get("v0.9.1").is_none());
+        assert!(value.get("v1.0").is_none());
     }
 
     fn reference(version: u32) -> UiCatalogRef {
@@ -255,6 +259,7 @@ mod tests {
 
     fn inline(version: u32) -> UiDelivery {
         let catalog = json!({"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+            "protocolVersion": "1.0",
             "components": {"Note": {"type": "object"}}});
         UiDelivery::Inline(UiCatalogData {
             catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".to_owned(),
@@ -285,7 +290,7 @@ mod tests {
     #[test]
     fn a_card_says_whether_it_takes_a_catalog_inline_and_only_a_true_counts() {
         let takes = |params: Option<Value>| {
-            ui_from_card(&card_with_params(A2UI_EXTENSION_V0_9_1, params))
+            ui_from_card(&card_with_params(A2UI_EXTENSION_V1_0, params))
                 .unwrap()
                 .accepts_inline_catalogs
         };
@@ -303,28 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn only_the_entry_of_the_version_we_speak_counts() {
-        // v0.9.1 is spoken when the card lists both: v1.0's `true` is not for it
-        let mut card = card_with(&[A2UI_EXTENSION_V0_9_1, A2UI_EXTENSION_V1_0]);
-        let entries = card.capabilities.extensions.as_mut().unwrap();
-        entries[1].params = Some(HashMap::from([(
-            "acceptsInlineCatalogs".to_owned(),
-            json!(true),
-        )]));
-        let ui = ui_from_card(&card).unwrap();
-        assert_eq!(ui.preferred(), Some(UiVersion::V0_9_1));
-        assert!(!ui.accepts_inline_catalogs);
-        // and when it is the only entry, it is the one
-        let only = card_with_params(
-            A2UI_EXTENSION_V1_0,
-            Some(json!({"acceptsInlineCatalogs": true})),
-        );
-        assert!(ui_from_card(&only).unwrap().accepts_inline_catalogs);
-    }
-
-    #[test]
     fn our_catalog_is_listed_first_in_every_message_and_the_catalog_rides_only_where_it_is_taken() {
-        let basic = UiVersion::V0_9_1.basic_catalog_ids();
+        let basic = UiVersion::V1_0.basic_catalog_ids();
         let ours = "https://agents.vymalo.com/a2ui/catalogs/chat";
         let expected_ids = || {
             let mut ids = vec![ours];
@@ -333,63 +318,56 @@ mod tests {
         };
 
         // inline, to an agent that takes it
-        let delivery = inline(2);
-        let (key, value) = client_capabilities(UiVersion::V0_9_1, Some(&delivery), true).unwrap();
-        assert_eq!(key, "a2uiClientCapabilities");
+        let delivery = inline(9);
+        let (key, value) = renderer_capabilities(Some(&delivery), true);
+        assert_eq!(key, "a2uiRendererCapabilities");
         let UiDelivery::Inline(data) = &delivery else {
             unreachable!()
         };
         assert_eq!(
             value,
-            json!({"v0.9.1": {"supportedCatalogIds": expected_ids(), "inlineCatalogs": [data.catalog]}})
+            json!({"1.0": {"supportedCatalogIds": expected_ids(), "inlineCatalogs": [data.catalog]}})
         );
         // inline, to one that does not: the id is listed, the catalog is not sent
-        let (_, value) = client_capabilities(UiVersion::V0_9_1, Some(&delivery), false).unwrap();
+        let (_, value) = renderer_capabilities(Some(&delivery), false);
         assert_eq!(
             value,
-            json!({"v0.9.1": {"supportedCatalogIds": expected_ids()}})
+            json!({"1.0": {"supportedCatalogIds": expected_ids()}})
         );
         // a reference is never sent as a catalog
-        let by_ref = UiDelivery::Ref(reference(2));
-        let (_, value) = client_capabilities(UiVersion::V0_9_1, Some(&by_ref), true).unwrap();
+        let by_ref = UiDelivery::Ref(reference(9));
+        let (_, value) = renderer_capabilities(Some(&by_ref), true);
         assert_eq!(
             value,
-            json!({"v0.9.1": {"supportedCatalogIds": expected_ids()}})
-        );
-        // the other dialect, the same shape
-        let (key, value) = client_capabilities(UiVersion::V1_0, Some(&delivery), true).unwrap();
-        assert_eq!(key, "a2uiRendererCapabilities");
-        let mut v1 = vec![ours];
-        v1.extend(UiVersion::V1_0.basic_catalog_ids().iter().copied());
-        assert_eq!(
-            value,
-            json!({"v1.0": {"supportedCatalogIds": v1, "inlineCatalogs": [data.catalog]}})
+            json!({"1.0": {"supportedCatalogIds": expected_ids()}})
         );
         // no delivery: exactly what the message had before the catalog existed
-        let (_, plain) = client_capabilities(UiVersion::V0_9_1, None, true).unwrap();
-        assert_eq!(plain, json!({"v0.9.1": {"supportedCatalogIds": basic}}));
+        let (_, plain) = renderer_capabilities(None, true);
+        assert_eq!(plain, json!({"1.0": {"supportedCatalogIds": basic}}));
     }
 
     #[test]
     fn the_extension_metadata_names_the_current_catalog_and_says_whether_it_is_inline() {
         assert_eq!(
-            ui_catalog_metadata(&inline(2), true),
-            json!({"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "version": 2,
+            ui_catalog_metadata(&inline(9), true),
+            json!({"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "version": 9,
                    "digest": format!("sha256:{}", "b".repeat(64)), "inline": true})
         );
         assert_eq!(
-            ui_catalog_metadata(&UiDelivery::Ref(reference(3)), false),
-            json!({"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "version": 3,
+            ui_catalog_metadata(&UiDelivery::Ref(reference(9)), false),
+            json!({"catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat", "version": 9,
                    "digest": format!("sha256:{}", "a".repeat(64)), "inline": false})
         );
-        assert!(inline_catalog(Some(&inline(1)), true).is_some());
-        assert!(inline_catalog(Some(&inline(1)), false).is_none());
-        assert!(inline_catalog(Some(&UiDelivery::Ref(reference(1))), true).is_none());
+        assert!(inline_catalog(Some(&inline(9)), true).is_some());
+        assert!(inline_catalog(Some(&inline(9)), false).is_none());
+        assert!(inline_catalog(Some(&UiDelivery::Ref(reference(9))), true).is_none());
         assert!(inline_catalog(None, true).is_none());
     }
 
+    /// ADR 0075, decision 4: exactly the five members of a v1.0 action. `userMessage` and
+    /// `metadata`, which A2UI v1.0 also allows, are never forwarded.
     #[test]
-    fn an_action_part_is_the_specs_action_message() {
+    fn an_action_part_is_the_specs_action_message_with_five_members() {
         let mut context = serde_json::Map::new();
         context.insert("choice".into(), json!("a"));
         let action = UiActionData {
@@ -399,15 +377,15 @@ mod tests {
             name: "go".into(),
             source_component_id: "btn".into(),
             context,
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: Some("run-3".into()),
         };
-        let at: Timestamp = "2026-09-29T12:00:00Z".parse().unwrap();
+        let at: Timestamp = "2026-11-19T12:00:00Z".parse().unwrap();
         let part = action_part(&action, at);
         assert_eq!(part.media_type.as_deref(), Some("application/a2ui+json"));
         assert_eq!(
             part.metadata,
-            Some(HashMap::from([(
+            Some(std::collections::HashMap::from([(
                 "mimeType".to_owned(),
                 json!("application/a2ui+json")
             )]))
@@ -415,14 +393,16 @@ mod tests {
         let a2a::PartContent::Data(data) = &part.content else {
             panic!("not a data part");
         };
+        let sent = json!([{
+            "version": "1.0",
+            "action": {"name": "go", "surfaceId": "s1", "sourceComponentId": "btn",
+                       "timestamp": "2026-11-19T12:00:00Z", "context": {"choice": "a"}}
+        }]);
+        assert_eq!(*data, sent, "the run id is ours and is not sent");
         assert_eq!(
-            *data,
-            json!([{
-                "version": "v0.9.1",
-                "action": {"name": "go", "surfaceId": "s1", "sourceComponentId": "btn",
-                           "timestamp": "2026-09-29T12:00:00Z", "context": {"choice": "a"}}
-            }]),
-            "the run id is ours and is not sent"
+            data[0]["action"].as_object().unwrap().len(),
+            5,
+            "exactly the five members: no userMessage, no metadata"
         );
         // What the agent gets is what we would accept from an agent: a checked envelope.
         assert!(

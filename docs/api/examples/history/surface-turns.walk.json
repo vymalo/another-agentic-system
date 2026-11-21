@@ -135,7 +135,7 @@
                   "deleteSurface": {
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -164,7 +164,7 @@
                       "n": 2
                     }
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -235,7 +235,7 @@
         }
       ],
       "head": 34,
-      "projection": 2,
+      "projection": 3,
       "start": 28
     },
     {
@@ -372,7 +372,7 @@
                     "catalogId": "c",
                     "surfaceId": "s1"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -405,7 +405,7 @@
                     ],
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -476,7 +476,7 @@
         }
       ],
       "head": 34,
-      "projection": 2,
+      "projection": 3,
       "start": 21
     },
     {
@@ -615,7 +615,7 @@
                       "n": 2
                     }
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -717,7 +717,7 @@
         }
       ],
       "head": 34,
-      "projection": 2,
+      "projection": 3,
       "start": 14
     },
     {
@@ -862,7 +862,7 @@
                     ],
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -895,7 +895,7 @@
                     ],
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 },
                 {
                   "updateDataModel": {
@@ -904,7 +904,7 @@
                       "n": 2
                     }
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -975,7 +975,7 @@
         }
       ],
       "head": 34,
-      "projection": 2,
+      "projection": 3,
       "start": 7
     },
     {
@@ -1090,7 +1090,7 @@
                     "catalogId": "c",
                     "surfaceId": "s0"
                   },
-                  "version": "v0.9.1"
+                  "version": "1.0"
                 }
               ]
             },
@@ -1191,7 +1191,7 @@
         }
       ],
       "head": 34,
-      "projection": 2,
+      "projection": 3,
       "start": 1
     }
   ]

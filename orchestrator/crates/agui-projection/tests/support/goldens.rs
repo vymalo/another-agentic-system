@@ -16,7 +16,7 @@ pub const PARENT: &str = "00000000-0000-7000-8000-000000000002";
 pub const CHILD: &str = "00000000-0000-7000-8000-000000000003";
 /// The second child thread of the session scenarios.
 pub const CHILD_2: &str = "00000000-0000-7000-8000-000000000004";
-pub const SCENARIOS: [&str; 36] = [
+pub const SCENARIOS: [&str; 39] = [
     "echo",
     "file",
     "ask",
@@ -53,10 +53,21 @@ pub const SCENARIOS: [&str; 36] = [
     "sessions",
     "sessions-failed",
     "sessions-child",
+    "sessions-person",
+    "sessions-person-child",
+    "sessions-start-failed",
 ];
 
 pub fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/examples")
+}
+
+/// The helper a child thread's golden is a session of (the events carry none of it).
+pub fn child_of(name: &str) -> Option<orch_agui_projection::ChildMeta> {
+    (name == "sessions-person-child").then(|| orch_agui_projection::ChildMeta {
+        agent: "helper".to_owned(),
+        keep_open: true,
+    })
 }
 
 /// The thread record the scenario ran against: the events goldens carry no title or target.
@@ -95,6 +106,7 @@ pub fn meta_of(name: &str, events: &[Event]) -> ThreadMeta {
             release,
         },
         gate,
+        child: child_of(name),
     }
 }
 

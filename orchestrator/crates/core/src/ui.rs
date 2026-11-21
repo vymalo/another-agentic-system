@@ -6,8 +6,9 @@
 //!
 //! - the payload is a non-empty JSON array of at most [`MAX_OPERATIONS`] objects, at most
 //!   [`MAX_OPERATIONS_BYTES`] serialised;
-//! - every object has a `version` this build knows ([`UiVersion`]) and exactly one surface
-//!   operation ([`SurfaceOp`]) whose body names a `surfaceId`.
+//! - every object has a `version` this build knows ([`UiVersion`]) — A2UI v1.0, the only
+//!   dialect (ADR 0075) — and exactly one surface operation ([`SurfaceOp`]) whose body names a
+//!   `surfaceId`.
 //!
 //! Components are not validated against a catalog here; the renderer does that (ADR 0013). Anything
 //! that fails the envelope is refused whole, never passed on.
@@ -31,89 +32,74 @@ pub const MAX_ACTION_CONTEXT_BYTES: usize = 16 * 1024;
 
 /// An A2UI protocol version, as spelled in the `version` member of every message.
 ///
-/// The set is closed on purpose: a version this build has not reviewed is refused (fail closed),
-/// and the set moves with A2UI releases in a reviewed change (open question 22).
+/// The set is closed on purpose, and it has **one** member: A2UI v1.0, the hard cutover of
+/// [ADR 0075](../../../docs/decisions/0075-a2ui-v1-0-cutover.md). `v0.9` and `v0.9.1` are gone, so
+/// an operation written for them fails the envelope check as an unknown version does, and every
+/// `match` on a version had to be reviewed when they left. A later A2UI version is another
+/// reviewed cutover, never a second dialect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum UiVersion {
-    /// `v0.9`.
-    #[serde(rename = "v0.9")]
-    V0_9,
-    /// `v0.9.1`, the current release.
-    #[serde(rename = "v0.9.1")]
-    V0_9_1,
-    /// `v1.0`, a candidate.
-    #[serde(rename = "v1.0")]
+    /// `1.0`, the release this build speaks.
+    #[serde(rename = "1.0")]
     V1_0,
 }
 
 impl UiVersion {
-    /// The wire spelling.
+    /// The wire spelling: `"1.0"`, not `"v1.0"` (*verified 2026-11-19*:
+    /// `specification/v1_0/json/agent_to_renderer.json` of `a2ui-project/a2ui` at `b4f91c2` has
+    /// `"version": {"const": "1.0"}`).
     pub fn as_str(self) -> &'static str {
         match self {
-            UiVersion::V0_9 => "v0.9",
-            UiVersion::V0_9_1 => "v0.9.1",
-            UiVersion::V1_0 => "v1.0",
+            UiVersion::V1_0 => "1.0",
         }
     }
 
-    /// The version spelled `s`, if this build knows it.
+    /// The version spelled `s`, if this build knows it. `"v0.9"`, `"v0.9.1"` and `"v1.0"` are not
+    /// versions of anything this build speaks (ADR 0075).
     pub fn parse(s: &str) -> Option<Self> {
-        [UiVersion::V0_9, UiVersion::V0_9_1, UiVersion::V1_0]
-            .into_iter()
-            .find(|v| v.as_str() == s)
+        [UiVersion::V1_0].into_iter().find(|v| v.as_str() == s)
     }
 }
 
 impl UiVersion {
-    /// The URI of the A2A extension for this version, when the extension is defined for it.
-    /// `v0.9` predates the extension (ADR 0013); an agent that sends it is relayed all the same,
-    /// but its card is never read for it.
+    /// The URI of the A2A extension for this version.
     ///
-    /// *Verified 2026-09-29*: <https://a2ui.org/specification/v0.9.1-a2ui-extension-specification/>
-    /// and <https://a2ui.org/specification/v1.0-a2ui-extension-specification/>.
+    /// *Verified 2026-11-19*:
+    /// <https://a2ui.org/specification/v1.0-a2ui-extension-specification/>.
     pub fn extension_uri(self) -> Option<&'static str> {
         match self {
-            UiVersion::V0_9 => None,
-            UiVersion::V0_9_1 => Some(A2UI_EXTENSION_V0_9_1),
             UiVersion::V1_0 => Some(A2UI_EXTENSION_V1_0),
         }
     }
 
-    /// The version whose extension URI is `uri`.
+    /// The version whose extension URI is `uri`: the exact URI, never a near miss. A card that
+    /// lists `…/a2ui/v0.9.1` speaks no A2UI this build can use.
     pub fn from_extension_uri(uri: &str) -> Option<Self> {
-        [UiVersion::V0_9_1, UiVersion::V1_0]
+        [UiVersion::V1_0]
             .into_iter()
             .find(|v| v.extension_uri() == Some(uri))
     }
 
     /// The catalog ids the web renderer supports for this version: the basic catalog, which is
     /// what `@assistant-ui/react-generative-ui` maps onto our vocabulary (ADR 0013). This is what
-    /// the orchestrator tells an agent it may generate. For `v0.9.1` both spellings of the basic
-    /// catalog's id are listed, because the specification's own pages disagree
-    /// (`v0_9_1` in the protocol page, `v0_9` in the extension page; *verified 2026-09-29*).
+    /// the orchestrator tells an agent it may generate. v1.0 has one basic catalog
+    /// (*verified 2026-11-19*: `catalogs/basic/v1/catalog.json` at `b4f91c2`).
     pub fn basic_catalog_ids(self) -> &'static [&'static str] {
         match self {
-            UiVersion::V0_9 => &["https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"],
-            UiVersion::V0_9_1 => &[
-                "https://a2ui.org/specification/v0_9_1/catalogs/basic/catalog.json",
-                "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
-            ],
             UiVersion::V1_0 => &["https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"],
         }
     }
 }
 
-/// The A2A extension URI of A2UI v0.9.1, the current release (ADR 0013).
-pub const A2UI_EXTENSION_V0_9_1: &str = "https://a2ui.org/a2a-extension/a2ui/v0.9.1";
-/// The A2A extension URI of A2UI v1.0, a candidate (open question 22).
+/// The A2A extension URI of A2UI v1.0, the only release this build speaks (ADR 0013, ADR 0075).
 pub const A2UI_EXTENSION_V1_0: &str = "https://a2ui.org/a2a-extension/a2ui/v1.0";
 /// The media type of an A2A part that carries A2UI messages.
 pub const A2UI_MEDIA_TYPE: &str = "application/a2ui+json";
 
-/// The surface operations the orchestrator relays: the four every A2UI version has.
+/// The surface operations the orchestrator relays: the four of A2UI v1.0 that carry a surface.
 ///
-/// `v1.0` adds `callRendererFunction` and `agentFunctionResponse`, which need a reply from the
-/// renderer; they are not relayed (refused as unknown operations).
+/// `v1.0` also defines `callRendererFunction` and `agentFunctionResponse`, which need a reply from
+/// the renderer; they are not relayed (refused as unknown operations, ADR 0075 decision 8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfaceOp {
     /// `createSurface`.
@@ -316,7 +302,11 @@ pub struct UiActionData {
     pub source_component_id: String,
     /// The context the component's action declared, already resolved by the renderer.
     pub context: Map<String, Value>,
-    /// The A2UI version of the surface, so the agent gets the action in the dialect it spoke.
+    /// The A2UI version of the surface, so the agent gets the action in the dialect it spoke:
+    /// `"1.0"`, the only one this build writes. A log written before the cutover holds an older
+    /// spelling, which is read (the event, its export and a fork of its thread stay whole) and
+    /// never written again — the surface's own dialect decides what an action on it may do.
+    #[serde(deserialize_with = "version_of_a_logged_action")]
     pub version: UiVersion,
     /// The id of the run the action started or continued, when the surface named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,6 +322,20 @@ pub struct UiActionData {
     /// [`UserMessageData::tier_cap`](crate::UserMessageData::tier_cap)). Set like `tier`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_cap: Option<crate::AccessTier>,
+}
+
+/// The `version` of an action, read leniently: A2UI v1.0 is what this build writes, and a log
+/// written before the cutover holds `"v0.9.1"` or `"v0.9"` in events that are still its history
+/// (ADR 0075, section 9). Reading them as the only version there is keeps an old thread's log, its
+/// export and a fork of it readable; what the orchestrator writes is always `"1.0"`, and an action
+/// on a surface of the old dialect is refused at the surface level, never here.
+fn version_of_a_logged_action<'de, D>(deserializer: D) -> Result<UiVersion, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // the spelling is not read again, only the fact that a version was there
+    let _ = String::deserialize(deserializer)?;
+    Ok(UiVersion::V1_0)
 }
 
 /// Why an action is refused.
@@ -413,31 +417,38 @@ mod tests {
     use super::*;
 
     fn create() -> Value {
-        json!({"version": "v0.9.1", "createSurface": {"surfaceId": "s1", "catalogId": "c"}})
+        json!({"version": "1.0", "createSurface": {"surfaceId": "s1", "catalogId": "c"}})
     }
 
     #[test]
     fn a_valid_payload_is_returned_unchanged() {
         let payload = json!([
             create(),
-            {"version": "v0.9.1", "updateComponents": {"surfaceId": "s1", "components": []}},
-            {"version": "v0.9.1", "updateDataModel": {"surfaceId": "s1", "value": 1}},
-            {"version": "v0.9.1", "deleteSurface": {"surfaceId": "s1"}},
+            {"version": "1.0", "updateComponents": {"surfaceId": "s1", "components": []}},
+            {"version": "1.0", "updateDataModel": {"surfaceId": "s1", "value": 1}},
+            {"version": "1.0", "deleteSurface": {"surfaceId": "s1"}},
         ]);
         let ops = check_operations(&payload).unwrap();
         assert_eq!(Value::Array(ops), payload);
     }
 
+    /// ADR 0075: one dialect, spelled `"1.0"`. The retired spellings are not versions.
     #[test]
-    fn every_known_version_is_accepted_and_round_trips() {
-        for v in ["v0.9", "v0.9.1", "v1.0"] {
-            let op = json!({"version": v, "deleteSurface": {"surfaceId": "s"}});
-            let info = inspect(&op).unwrap();
-            assert_eq!(info.version.as_str(), v);
-            assert_eq!(info.op, SurfaceOp::Delete);
-            assert_eq!(UiVersion::parse(v), Some(info.version));
-            let json = serde_json::to_value(info.version).unwrap();
-            assert_eq!(json, json!(v));
+    fn the_one_version_is_accepted_and_round_trips() {
+        let op = json!({"version": "1.0", "deleteSurface": {"surfaceId": "s"}});
+        let info = inspect(&op).unwrap();
+        assert_eq!(info.version.as_str(), "1.0");
+        assert_eq!(info.op, SurfaceOp::Delete);
+        assert_eq!(UiVersion::parse("1.0"), Some(info.version));
+        assert_eq!(serde_json::to_value(info.version).unwrap(), json!("1.0"));
+        for retired in ["v0.9", "v0.9.1", "v1.0", "1", "1.0.0"] {
+            assert_eq!(UiVersion::parse(retired), None, "{retired}");
+            let op = json!({"version": retired, "deleteSurface": {"surfaceId": "s"}});
+            assert_eq!(
+                inspect(&op),
+                Err(OperationError::UnsupportedVersion(retired.to_owned())),
+                "{retired}"
+            );
         }
     }
 
@@ -469,49 +480,56 @@ mod tests {
                 },
             ),
             (
-                json!([{"version": "v0.8", "createSurface": {"surfaceId": "s"}}]),
+                json!([{"version": "v0.9.1", "createSurface": {"surfaceId": "s"}}]),
                 UiRejection::Operation {
                     index: 0,
-                    why: OperationError::UnsupportedVersion("v0.8".into()),
+                    why: OperationError::UnsupportedVersion("v0.9.1".into()),
                 },
             ),
             (
-                json!([{"version": "v0.9.1"}]),
+                json!([{"version": "1.0"}]),
                 UiRejection::Operation {
                     index: 0,
                     why: OperationError::NoOperation,
                 },
             ),
             (
-                json!([{"version": "v0.9.1", "createSurface": {"surfaceId": "s"}, "deleteSurface": {"surfaceId": "s"}}]),
+                json!([{"version": "1.0", "createSurface": {"surfaceId": "s"}, "deleteSurface": {"surfaceId": "s"}}]),
                 UiRejection::Operation {
                     index: 0,
                     why: OperationError::SeveralOperations,
                 },
             ),
             (
-                json!([{"version": "v1.0", "callRendererFunction": {"surfaceId": "s"}}]),
+                json!([{"version": "1.0", "callRendererFunction": {"surfaceId": "s"}}]),
                 UiRejection::Operation {
                     index: 0,
                     why: OperationError::UnknownOperation("callRendererFunction".into()),
                 },
             ),
             (
-                json!([{"version": "v0.9.1", "createSurface": "s"}]),
+                json!([{"version": "1.0", "agentFunctionResponse": {"surfaceId": "s"}}]),
+                UiRejection::Operation {
+                    index: 0,
+                    why: OperationError::UnknownOperation("agentFunctionResponse".into()),
+                },
+            ),
+            (
+                json!([{"version": "1.0", "createSurface": "s"}]),
                 UiRejection::Operation {
                     index: 0,
                     why: OperationError::BadSurfaceId,
                 },
             ),
             (
-                json!([{"version": "v0.9.1", "createSurface": {"surfaceId": ""}}]),
+                json!([{"version": "1.0", "createSurface": {"surfaceId": ""}}]),
                 UiRejection::Operation {
                     index: 0,
                     why: OperationError::BadSurfaceId,
                 },
             ),
             (
-                json!([{"version": "v0.9.1", "createSurface": {"surfaceId": 7}}]),
+                json!([{"version": "1.0", "createSurface": {"surfaceId": 7}}]),
                 UiRejection::Operation {
                     index: 0,
                     why: OperationError::BadSurfaceId,
@@ -526,16 +544,16 @@ mod tests {
     #[test]
     fn a_surface_id_longer_than_the_limit_is_refused() {
         let id = "s".repeat(MAX_ID_BYTES + 1);
-        let op = json!({"version": "v0.9.1", "createSurface": {"surfaceId": id}});
+        let op = json!({"version": "1.0", "createSurface": {"surfaceId": id}});
         assert_eq!(inspect(&op), Err(OperationError::BadSurfaceId));
         let ok = "s".repeat(MAX_ID_BYTES);
-        let op = json!({"version": "v0.9.1", "createSurface": {"surfaceId": ok}});
+        let op = json!({"version": "1.0", "createSurface": {"surfaceId": ok}});
         assert!(inspect(&op).is_ok());
     }
 
     #[test]
     fn size_and_count_are_capped() {
-        let big = json!([{"version": "v0.9.1", "updateDataModel": {
+        let big = json!([{"version": "1.0", "updateDataModel": {
             "surfaceId": "s", "value": "x".repeat(MAX_OPERATIONS_BYTES)}}]);
         assert!(matches!(
             check_operations(&big),
@@ -566,7 +584,7 @@ mod tests {
             name: "submit".into(),
             source_component_id: "btn".into(),
             context: Map::new(),
-            version: UiVersion::V0_9_1,
+            version: UiVersion::V1_0,
             run_id: None,
         }
     }
@@ -590,6 +608,34 @@ mod tests {
         assert!(err.is_oversized());
     }
 
+    /// ADR 0075, section 9: a log written before the cutover keeps its `ui_action` events, and
+    /// they must still read — the thread, its export and a fork of it are history. What the
+    /// orchestrator writes is the one spelling.
+    #[test]
+    fn an_action_logged_before_the_cutover_still_reads() {
+        for old in ["v0.9", "v0.9.1", "v1.0", "1.0"] {
+            let read: UiActionData = serde_json::from_value(json!({
+                "surfaceId": "s1", "name": "go", "sourceComponentId": "btn",
+                "context": {"choice": "a"}, "version": old, "runId": "run-1",
+            }))
+            .unwrap_or_else(|e| panic!("{old}: {e}"));
+            assert_eq!(read.version, UiVersion::V1_0, "{old}");
+            assert_eq!(read.name, "go");
+            assert_eq!(read.run_id.as_deref(), Some("run-1"));
+            // and it is written back as the one version there is
+            let written = serde_json::to_value(&read).unwrap();
+            assert_eq!(written["version"], json!("1.0"), "{old}");
+        }
+        // a member that is not a string is still refused: only the spelling is lenient
+        assert!(
+            serde_json::from_value::<UiActionData>(json!({
+                "surfaceId": "s1", "name": "go", "sourceComponentId": "btn",
+                "context": {}, "version": 1.0,
+            }))
+            .is_err()
+        );
+    }
+
     #[test]
     fn an_action_serialises_as_the_contract_says() {
         let mut a = action();
@@ -599,7 +645,7 @@ mod tests {
         assert_eq!(
             v,
             json!({"surfaceId": "s1", "name": "submit", "sourceComponentId": "btn",
-                   "context": {"email": "a@b.c"}, "version": "v0.9.1", "runId": "run-9"})
+                   "context": {"email": "a@b.c"}, "version": "1.0", "runId": "run-9"})
         );
         assert_eq!(serde_json::from_value::<UiActionData>(v).unwrap(), a);
     }

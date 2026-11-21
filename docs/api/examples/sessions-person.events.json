@@ -1,0 +1,151 @@
+[
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "text": "survey the options"
+    },
+    "kind": "user_message",
+    "seq": 1,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "status": "working"
+    },
+    "kind": "agent_status",
+    "seq": 2,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "final": true,
+      "messageId": "<message-id>",
+      "text": "Surveyed; ask a helper to go deeper."
+    },
+    "kind": "agent_message",
+    "seq": 3,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "detail": "Surveyed; ask a helper to go deeper.",
+      "status": "completed"
+    },
+    "kind": "agent_status",
+    "seq": 4,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "state": "done"
+    },
+    "kind": "thread_state",
+    "seq": 5,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "alice@example.com",
+      "type": "user"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "agent": "researcher",
+      "description": "Find the writers",
+      "keepOpen": true,
+      "request": "00000000-0000-7000-8000-0000000000a1"
+    },
+    "kind": "child_session_start_asked",
+    "seq": 6,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "agent": "researcher",
+      "by": "person",
+      "description": "Find the writers",
+      "keepOpen": true,
+      "round": 1,
+      "session": "s1",
+      "thread": "00000000-0000-7000-8000-000000000003"
+    },
+    "kind": "child_session_opened",
+    "seq": 7,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "orchestrator",
+      "type": "system"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "outcome": "opened",
+      "request": "00000000-0000-7000-8000-0000000000a1",
+      "session": "s1",
+      "thread": "00000000-0000-7000-8000-000000000003"
+    },
+    "kind": "child_session_start_ended",
+    "seq": 8,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "report": "done",
+      "round": 1,
+      "session": "s1",
+      "thread": "00000000-0000-7000-8000-000000000003"
+    },
+    "kind": "child_session_reported",
+    "seq": 9,
+    "threadId": "<thread-id>"
+  },
+  {
+    "actor": {
+      "name": "plain",
+      "type": "agent"
+    },
+    "at": "<timestamp>",
+    "data": {
+      "session": "s1",
+      "thread": "00000000-0000-7000-8000-000000000003"
+    },
+    "kind": "child_session_closed",
+    "seq": 10,
+    "threadId": "<thread-id>"
+  }
+]

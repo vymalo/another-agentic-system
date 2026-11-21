@@ -216,6 +216,70 @@ describe("the sections of the list (ADR 0042): Pinned, Chats, Archived", () => {
     expect(linkTitles(sectionOf("Chats"))).toEqual(["Chat one"]);
   });
 
+  it("draws a subagent's thread as a helper: its state in words, the description as the title, no fork mark", () => {
+    const helper = (id: string, childOf: Record<string, unknown>, extra: Partial<ApiThread> = {}) =>
+      ({
+        ...child(thread(id, "Plan the migration"), "p-1"),
+        // a helper is never a fork, but a row that says both must not show the fork mark
+        forkedFrom: { kind: "fork", threadId: "p-1" },
+        childOf: { session: "s1", agent: "planner", keepOpen: true, ...childOf },
+        ...extra,
+      }) as ApiThread;
+    sidebar([
+      thread("p-1", "Parent"),
+      helper("h-1", { state: "working" }),
+      helper("h-2", { state: "idle" }),
+      helper("h-3", { state: "closed" }),
+      helper("h-4", { state: "working" }, { state: "blocked" }),
+    ]);
+    const rows = [...document.querySelectorAll('[data-slot="thread-row"]')].filter((r) =>
+      r.getAttribute("data-thread-id")?.startsWith("h-"),
+    ) as HTMLElement[];
+    expect(rows).toHaveLength(4);
+    const words = rows.map((r) => r.querySelector('[data-slot="subagent-state"]')?.textContent);
+    expect(words).toEqual(["Working", "Idle", "Closed", "Waiting for you"]);
+    for (const row of rows) {
+      expect(row.querySelector('[data-slot="subagent-mark"]')).toBeTruthy();
+      expect(row.querySelector(".lucide-git-fork")).toBeNull();
+      expect(row.textContent).not.toContain("(fork)");
+      // the title is the description, and the state is not only a colour: a screen reader hears "subagent"
+      expect(row.textContent).toContain("Plan the migration");
+      expect(row.querySelector(".sr-only")?.textContent).toContain("subagent");
+    }
+    // a screen reader hears the state once
+    expect(rows[0]?.textContent?.match(/working/gi)?.length).toBe(1);
+  });
+
+  it("says Closing… for a subagent whose close a person asked, as the panel does", () => {
+    const helper = (id: string, childOf: Record<string, unknown>) =>
+      ({
+        ...child(thread(id, "Plan the migration"), "p-1"),
+        childOf: { session: "s1", agent: "planner", keepOpen: true, ...childOf },
+      }) as ApiThread;
+    sidebar([
+      thread("p-1", "Parent"),
+      helper("h-1", { state: "working", closeAsked: true }),
+      helper("h-2", { state: "idle", closing: true }),
+    ]);
+    const words = [...document.querySelectorAll('[data-slot="subagent-state"]')].map(
+      (e) => e.textContent,
+    );
+    expect(words).toEqual(["Closing…", "Closing…"]);
+  });
+
+  it("says nothing of a subagent's state when its thread does not say one", () => {
+    sidebar([
+      thread("p-1", "Parent"),
+      {
+        ...child(thread("h-1", "Plan the migration"), "p-1"),
+        childOf: { session: "s1", agent: "planner", keepOpen: true },
+      } as ApiThread,
+    ]);
+    const row = document.querySelector('[data-thread-id="h-1"]') as HTMLElement;
+    expect(row.querySelector('[data-slot="subagent-mark"]')).toBeTruthy();
+    expect(row.querySelector('[data-slot="subagent-state"]')).toBeNull();
+  });
+
   it("keeps the highlight on the open thread, a child included", () => {
     sidebar([thread("t-1", "Open one"), child(thread("t-9", "A fork"), "t-1")]);
     expect(screen.getByRole("link", { name: "Open one" }).getAttribute("aria-current")).toBe(
@@ -233,6 +297,24 @@ describe("the sections of the list (ADR 0042): Pinned, Chats, Archived", () => {
     const v = sidebar([thread("c-1", "Chat one")], { hasMore: true });
     fireEvent.click(screen.getByRole("button", { name: "Load older" }));
     expect(v.loadMore).toHaveBeenCalled();
+  });
+});
+
+describe("the menu of a subagent's row", () => {
+  it("offers Eject from parent, Archive and Delete, and nothing about forking", async () => {
+    sidebar([
+      thread("p-1", "Parent"),
+      {
+        ...child(thread("h-1", "Plan the migration"), "p-1"),
+        childOf: { session: "s1", agent: "planner", state: "idle", keepOpen: true },
+      } as ApiThread,
+    ]);
+    const row = document.querySelector('[data-thread-id="h-1"]') as HTMLElement;
+    const trigger = within(row).getByRole("button", { name: /More actions/ });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    fireEvent.click(trigger);
+    const items = (await screen.findAllByRole("menuitem")).map((i) => i.textContent);
+    expect(items).toEqual(["Eject from parent", "Archive", "Delete"]);
   });
 });
 

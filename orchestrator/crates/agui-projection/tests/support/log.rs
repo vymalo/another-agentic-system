@@ -33,6 +33,7 @@ pub fn meta_under(gate: GatePolicy) -> orch_agui_projection::ThreadMeta {
             release: None,
         },
         gate,
+        child: None,
     }
 }
 
@@ -309,11 +310,11 @@ pub fn ci_report(name: &str, commit: u8, conclusion: CiConclusion) -> CiReport {
 pub fn surface_op(surface: u8, op: u8) -> serde_json::Value {
     let id = format!("s{surface}");
     match op % 4 {
-        0 => json!({"version": "v0.9.1", "createSurface": {"surfaceId": id, "catalogId": "c"}}),
-        1 => json!({"version": "v0.9.1", "updateComponents": {"surfaceId": id, "components": [
+        0 => json!({"version": "1.0", "createSurface": {"surfaceId": id, "catalogId": "c"}}),
+        1 => json!({"version": "1.0", "updateComponents": {"surfaceId": id, "components": [
             {"id": "root", "component": "Text", "text": "hi"}]}}),
-        2 => json!({"version": "v0.9.1", "updateDataModel": {"surfaceId": id, "value": {"n": op}}}),
-        _ => json!({"version": "v0.9.1", "deleteSurface": {"surfaceId": id}}),
+        2 => json!({"version": "1.0", "updateDataModel": {"surfaceId": id, "value": {"n": op}}}),
+        _ => json!({"version": "1.0", "deleteSurface": {"surfaceId": id}}),
     }
 }
 
@@ -825,6 +826,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                             task_id: None,
                             state,
                         }),
+                        parent_context_id: None,
                     },
                     child: format!("00000000-0000-7000-8000-00000000010{session}")
                         .parse()
@@ -855,7 +857,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                         name: "go".to_owned(),
                         source_component_id: "btn".to_owned(),
                         context: serde_json::Map::new(),
-                        version: UiVersion::V0_9_1,
+                        version: UiVersion::V1_0,
                         run_id: ids.then(|| format!("r-{users}")),
                     },
                     catalog: None,

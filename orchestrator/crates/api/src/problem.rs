@@ -172,7 +172,8 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Invalid` | 400, the domain message |
 /// | `Rejected` | 409 |
 /// | something well formed that cannot be done: a tool server that is unknown or not offered for the thread's agent, or too many (`AppError::Unprocessable`) | 422 |
-/// | a change of the person's list that cannot be made (`AppError::Arrangement`), or a fork or a share of a child session's thread (ADR 0072) | 422 with `code: bad_anchor`, `code: nested_row` or `code: child_thread` |
+/// | a change of the person's list that cannot be made (`AppError::Arrangement`), a fork or a share of a child session's thread, or what a person asks of a helper session that its state or the card does not allow (ADR 0072) | 422 with `code: bad_anchor`, `code: nested_row`, `code: child_thread`, `child_mentions`, `session_closes_on_stop`, `not_child_thread`, `no_child_sessions`, `unknown_helper` or `bad_description` |
+/// | a helper session that is closed, a start the agent has no context for, or four starts that wait, or a thread that notes 256 sessions (`AppError::Blocked`) | 409 with `code: session_closed`, `no_context`, `too_many_starts` or `too_many_sessions` |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
@@ -244,6 +245,13 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
     if let AppError::Arrangement { code, detail } = err {
         return (
             Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()).with_code(code),
+            None,
+        );
+    }
+    // A helper session (ADR 0072, S3): what is in the way has a code of its own.
+    if let AppError::Blocked { code, detail } = err {
+        return (
+            Problem::new(StatusCode::CONFLICT, detail.clone()).with_code(code),
             None,
         );
     }
@@ -438,6 +446,48 @@ mod tests {
     }
 
     #[test]
+    fn a_helper_sessions_refusals_carry_their_codes() {
+        for (error, status, code) in [
+            (
+                AppError::blocked("session_closed", "closed"),
+                409,
+                "session_closed",
+            ),
+            (AppError::blocked("no_context", "first"), 409, "no_context"),
+            (
+                AppError::blocked("too_many_starts", "wait"),
+                409,
+                "too_many_starts",
+            ),
+            (
+                AppError::arrangement("child_mentions"),
+                422,
+                "child_mentions",
+            ),
+            (
+                AppError::arrangement("session_closes_on_stop"),
+                422,
+                "session_closes_on_stop",
+            ),
+            (
+                AppError::arrangement("not_child_thread"),
+                422,
+                "not_child_thread",
+            ),
+            (
+                AppError::arrangement("no_child_sessions"),
+                422,
+                "no_child_sessions",
+            ),
+        ] {
+            let (problem, retry) = problem_for(&error);
+            assert_eq!(problem.status, status, "{error}");
+            assert_eq!(problem.code.as_deref(), Some(code), "{error}");
+            assert_eq!(retry, None);
+        }
+    }
+
+    #[test]
     fn status_mapping_table() {
         let coder = AgentId::new("coder");
         let table: Vec<(AppError, u16, Option<&str>)> = vec![
@@ -448,6 +498,10 @@ mod tests {
             (AppError::arrangement("bad_anchor"), 422, None),
             (AppError::arrangement("nested_row"), 422, None),
             (AppError::child_thread(), 422, None),
+            (AppError::arrangement("child_mentions"), 422, None),
+            (AppError::arrangement("session_closes_on_stop"), 422, None),
+            (AppError::arrangement("not_child_thread"), 422, None),
+            (AppError::blocked("session_closed", "closed"), 409, None),
             (AppError::Finished, 409, None),
             (
                 AppError::Transition(TransitionError::InvalidInState {

@@ -151,21 +151,21 @@ async fn the_endpoint_gives_the_newest_catalog_and_any_replica_serves_it(backend
     let (is_error, _) = get_ui_catalog(&client, json!({})).await;
     assert!(is_error);
 
-    // version 1 reaches the log through a run: the other process gives it, with the same token
-    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(1)).await;
+    // version 9 reaches the log through a run: the other process gives it, with the same token
+    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(9)).await;
     wait_for_jobs(&chat, &thread, 2).await;
     let (is_error, got) = get_ui_catalog(&client, json!({})).await;
     assert!(!is_error, "{got}");
-    let v1 = ui_catalog(1);
-    assert_eq!(got["version"], 1);
+    let v1 = ui_catalog(9);
+    assert_eq!(got["version"], 9);
     assert_eq!(got["digest"], v1["digest"]);
     assert_eq!(got["catalog"], v1["catalog"]);
     assert_eq!(got["unchanged"], false);
 
-    // version 2: the newest, from either process, and a known digest leaves the catalog out
-    run(&chat, &thread, "run-2", "echo two", with_ui_catalog(2)).await;
+    // version 10: the newest, from either process, and a known digest leaves the catalog out
+    run(&chat, &thread, "run-2", "echo two", with_ui_catalog(10)).await;
     wait_for_jobs(&chat, &thread, 3).await;
-    let v2 = ui_catalog(2);
+    let v2 = ui_catalog(10);
     for instance in [&orch, &replica] {
         let client = connect(&url(instance, &thread), &token).await;
         let (_, got) = get_ui_catalog(&client, json!({})).await;
@@ -175,20 +175,20 @@ async fn the_endpoint_gives_the_newest_catalog_and_any_replica_serves_it(backend
         assert_eq!(
             got,
             json!({
-                "catalogId": v2["catalogId"], "version": 2, "digest": v2["digest"],
+                "catalogId": v2["catalogId"], "version": v2["version"], "digest": v2["digest"],
                 "unchanged": true,
             })
         );
         let (_, got) = get_ui_catalog(&client, json!({"knownDigest": v1["digest"]})).await;
         assert_eq!(got["unchanged"], false);
-        assert_eq!(got["version"], 2);
+        assert_eq!(got["version"], 10);
     }
 
     // the older screen comes back: the thread keeps the newest
-    run(&chat, &thread, "run-3", "echo three", with_ui_catalog(1)).await;
+    run(&chat, &thread, "run-3", "echo three", with_ui_catalog(9)).await;
     wait_for_jobs(&chat, &thread, 4).await;
     let (_, got) = get_ui_catalog(&client, json!({})).await;
-    assert_eq!(got["version"], 2);
+    assert_eq!(got["version"], 10);
     assert_eq!(chat.thread(&thread).await["state"], "done");
 }
 
@@ -197,8 +197,8 @@ async fn a_token_that_is_not_the_threads_is_refused_and_nothing_is_written(backe
     let orch = world.instance_with_thread_tools("orch-1", true).await;
     let chat = world.chat(&orch);
     let (a, b) = (Uuid::now_v7().to_string(), Uuid::now_v7().to_string());
-    run(&chat, &a, "run-a", "echo a", with_ui_catalog(1)).await;
-    run(&chat, &b, "run-b", "echo b", with_ui_catalog(2)).await;
+    run(&chat, &a, "run-a", "echo a", with_ui_catalog(9)).await;
+    run(&chat, &b, "run-b", "echo b", with_ui_catalog(10)).await;
     chat.wait_state(&a, "done").await;
     chat.wait_state(&b, "done").await;
     let (log_a, log_b) = (chat.events(&a).await, chat.events(&b).await);
@@ -206,7 +206,7 @@ async fn a_token_that_is_not_the_threads_is_refused_and_nothing_is_written(backe
 
     // the good token opens its own thread, and only that
     let client = connect(&url_a, &token_for(&a, "plain")).await;
-    assert_eq!(get_ui_catalog(&client, json!({})).await.1["version"], 1);
+    assert_eq!(get_ui_catalog(&client, json!({})).await.1["version"], 9);
 
     let keys = thread_tools_keys();
     let good = claims(&a, "plain");
@@ -269,7 +269,7 @@ async fn a_token_that_is_not_the_threads_is_refused_and_nothing_is_written(backe
     let old =
         ThreadToolsKeys::new(SecretString::from(THREAD_TOOLS_OLD_KEY.to_owned()), None).unwrap();
     let client = connect(&url_a, &token_with(&old, &good)).await;
-    assert_eq!(get_ui_catalog(&client, json!({})).await.1["version"], 1);
+    assert_eq!(get_ui_catalog(&client, json!({})).await.1["version"], 9);
 
     // nothing was written by any of it
     assert_eq!(chat.events(&a).await, log_a);
@@ -321,7 +321,7 @@ async fn the_agent_calls_the_endpoint_back_with_the_grant_of_its_message_and_get
     let replica = world.instance_with_thread_tools("orch-2", false).await;
     let chat = world.chat(&orch);
     let thread = Uuid::now_v7().to_string();
-    let (v1, v2) = (ui_catalog(1), ui_catalog(2));
+    let (v1, v2) = (ui_catalog(9), ui_catalog(10));
     let said = |version: &Value| {
         format!(
             "thread-tools: tools=get_ui_catalog,turn_output; catalog={UI_CATALOG_ID} v{} {}; again unchanged=true",
@@ -330,24 +330,24 @@ async fn the_agent_calls_the_endpoint_back_with_the_grant_of_its_message_and_get
         )
     };
 
-    // job 1: the screen sends version 1; the agent lists the tools and gets it
+    // job 1: the screen sends version 9; the agent lists the tools and gets it
     let mut frames = run(
         &chat,
         &thread,
         "run-1",
         "thread-tools one",
-        with_ui_catalog(1),
+        with_ui_catalog(9),
     )
     .await;
     wait_for_jobs(&chat, &thread, 1).await;
-    // job 2: version 2 (a newer screen)
+    // job 2: version 10 (a newer screen)
     frames.extend(
         run(
             &chat,
             &thread,
             "run-2",
             "thread-tools two",
-            with_ui_catalog(2),
+            with_ui_catalog(10),
         )
         .await,
     );
@@ -359,7 +359,7 @@ async fn the_agent_calls_the_endpoint_back_with_the_grant_of_its_message_and_get
             &thread,
             "run-3",
             "thread-tools three",
-            with_ui_catalog(1),
+            with_ui_catalog(9),
         )
         .await,
     );
@@ -432,7 +432,7 @@ async fn the_agent_calls_the_endpoint_back_with_the_grant_of_its_message_and_get
     for base in [&orch.base_url, &replica.base_url] {
         let client = connect(&format!("{base}/thread-tools/{thread}/mcp"), &token).await;
         let (_, got) = get_ui_catalog(&client, json!({})).await;
-        assert_eq!(got["version"], 2);
+        assert_eq!(got["version"], 10);
     }
     // another thread's URL: refused (the token is for this thread)
     let other = Uuid::now_v7().to_string();
@@ -461,7 +461,7 @@ async fn the_agent_calls_the_endpoint_back_with_the_grant_of_its_message_and_get
     let old =
         ThreadToolsKeys::new(SecretString::from(THREAD_TOOLS_OLD_KEY.to_owned()), None).unwrap();
     let client = connect(&url, &token_with(&old, &claims(&thread, "plain"))).await;
-    assert_eq!(get_ui_catalog(&client, json!({})).await.1["version"], 2);
+    assert_eq!(get_ui_catalog(&client, json!({})).await.1["version"], 10);
 }
 
 async fn an_agent_that_does_not_list_the_extension_or_an_adapter_without_keys_gives_no_grant(
@@ -477,7 +477,7 @@ async fn an_agent_that_does_not_list_the_extension_or_an_adapter_without_keys_gi
         &thread,
         "run-1",
         "thread-tools one",
-        with_ui_catalog(1),
+        with_ui_catalog(9),
     )
     .await;
     wait_for_jobs(&chat, &thread, 1).await;

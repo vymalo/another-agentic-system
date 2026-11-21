@@ -2,9 +2,11 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import {
   animationsDone,
+  aPerson,
   badge,
   conversation,
   expectNoHorizontalScroll,
+  MOCK_URL,
   panel,
   panelResizer,
   panelTab,
@@ -92,14 +94,16 @@ test("the new-chat page has no panel", async ({ page }) => {
   await expect(page.locator("#thread-panel")).toHaveCount(0);
 });
 
-test("the tabs are Activity and Sources, and the arrows move between them", async ({
+test("the tabs are Activity, Sources and Subagents, and the arrows cycle through them", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name === "mobile", "the phone's sheet is its own test");
+  // the mock's agent offers subagents (child-sessions/v1), so the third tab is there
   await startThread(page, "Implement the thing");
   await expect(badge(page)).toHaveText("Done");
   const tabs = panel(page).getByRole("tablist", { name: "Sections" }).getByRole("tab");
-  await expect(tabs).toHaveCount(2);
+  await expect(tabs).toHaveCount(3);
+  await expect(tabs).toHaveText([/^Activity/, /^Sources/, /^Subagents/]);
   // the Activity tab holds the agent's steps (one turn here)
   await expect(panel(page).getByRole("tabpanel")).toContainText("Turn 1");
 
@@ -110,11 +114,43 @@ test("the tabs are Activity and Sources, and the arrows move between them", asyn
   // the echo scenario shares one thing: its pull request
   await expect(panelTab(page, "Sources")).toHaveText("Sources1");
   await expect(panel(page).getByRole("link", { name: /^acme\/demo#1/ })).toBeVisible();
+  await page.keyboard.press("ArrowRight");
+  await expect(panelTab(page, "Subagents")).toHaveAttribute("aria-selected", "true");
+  await expect(panelTab(page, "Subagents")).toBeFocused();
+  // past the last, the first; before the first, the last
+  await page.keyboard.press("ArrowRight");
+  await expect(panelTab(page, "Activity")).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowLeft");
+  await expect(panelTab(page, "Subagents")).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowLeft");
+  await expect(panelTab(page, "Sources")).toHaveAttribute("aria-selected", "true");
 
   // the tab is remembered
   await page.reload();
   await expect(badge(page)).toHaveText("Done");
   await expect(panelTab(page, "Sources")).toHaveAttribute("aria-selected", "true");
+});
+
+test("the tabs are Activity and Sources alone when the agent offers no subagents", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "mobile", "the phone's sheet is its own test");
+  const person = await aPerson(page, testInfo);
+  const session = person.cookie.split("=")[1] ?? "";
+  expect(
+    (await page.request.post(`${MOCK_URL}/__mock/config?sessions=off&session=${session}`)).ok(),
+  ).toBe(true);
+  await startThread(page, "Implement the thing");
+  await expect(badge(page)).toHaveText("Done");
+  const tabs = panel(page).getByRole("tablist", { name: "Sections" }).getByRole("tab");
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs).toHaveText([/^Activity/, /^Sources/]);
+  await panelTab(page, "Activity").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(panelTab(page, "Sources")).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowRight");
+  await expect(panelTab(page, "Activity")).toHaveAttribute("aria-selected", "true");
+  await expect(panelTab(page, "Subagents")).toHaveCount(0);
 });
 
 test("Sources lists what the agent shared, each once: the pull request, the branch, the run, the links in its words", async ({

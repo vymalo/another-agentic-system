@@ -12,8 +12,11 @@ export const PANEL_TAB_KEY = "chat.panel.tab";
 /** The id the toggle's `aria-controls` points to: the docked panel's `<aside>` or the sheet. */
 export const PANEL_ID = "thread-panel";
 
-/** `plan` is there only while the thread has a plan (docs/api/ui-catalog-v1.md, "The plan"). */
-export const PANEL_TABS = ["activity", "sources", "plan"] as const;
+/**
+ * `plan` is there only while the thread has a plan (docs/api/ui-catalog-v1.md, "The plan"), and `sessions`
+ * (shown as "Subagents") only while the agent offers subagents or the thread has some (child-sessions/v1).
+ */
+export const PANEL_TABS = ["activity", "sources", "plan", "sessions"] as const;
 export type PanelTab = (typeof PANEL_TABS)[number];
 
 export const PANEL_MIN_WIDTH = 300;

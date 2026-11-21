@@ -1,0 +1,41 @@
+{
+  "name": "SubscribeToTask of round 2 after a message that held it ([mock:hold]): works for 60 s, then completes, so a stop reaches it (the state stays `held`, a later round 2 is held too)",
+  "priority": 2,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      },
+      "A2A-Extensions": {
+        "contains": "https://agents.vymalo.com/a2a/extensions/child-sessions/v1"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "SubscribeToTask"
+        }
+      },
+      {
+        "matchesJsonPath": {
+          "expression": "$.params.id",
+          "matches": ".+\\.keep-(true|false)\\..+\\.r2"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    "bodyFileName": "stream-person-round-2.sse",
+    "fixedDelayMilliseconds": 60000
+  },
+  "scenarioName": "sessions-hold",
+  "requiredScenarioState": "held"
+}

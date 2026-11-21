@@ -1,0 +1,1 @@
+{{#assign 'rpcId'}}{{jsonPath request.body '$.id' default='0'}}{{/assign}}{"jsonrpc":"2.0","id":"{{rpcId}}","error":{"code":-32004,"message":"4 rounds are already working in this context; wait for one to finish","data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"UNSUPPORTED_OPERATION","domain":"a2a-protocol.org"}]}}

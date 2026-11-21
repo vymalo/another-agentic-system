@@ -1,6 +1,7 @@
-//! The UI catalog end to end (ADR 0023), on both stores: the web's catalog on an AG-UI run reaches
-//! the log, first in its commit and once per digest, and the state snapshot says which one is
-//! current, through the real route, dispatcher and A2A adapter against the fake agent.
+//! The UI catalog end to end (ADR 0023, ADR 0075), on both stores: the web's `ui-catalog/v2`
+//! catalog on an AG-UI run reaches the log, first in its commit and once per digest, and the state
+//! snapshot says which one is current, through the real route, dispatcher and A2A adapter against
+//! the fake agent.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 #[macro_use]
@@ -9,7 +10,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use orch_core::{A2UI_EXTENSION_V0_9_1, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION};
+use orch_core::{A2UI_EXTENSION_V1_0, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION};
 use orch_testsupport::{
     Chat, FakeAgentOptions, Frame, UI_CATALOG_ID, integral_numbers, ui_catalog, with_ui_catalog,
 };
@@ -52,34 +53,34 @@ async fn the_screens_catalog_is_recorded_once_per_digest_and_the_snapshot_names_
     let chat = world.chat(&orch);
     let thread = Uuid::now_v7().to_string();
 
-    // the first run of the thread carries version 1: one event, first in its commit
-    let frames = run(&chat, &thread, "run-1", "echo one", with_ui_catalog(1)).await;
+    // the first run of the thread carries version 9: one event, first in its commit
+    let frames = run(&chat, &thread, "run-1", "echo one", with_ui_catalog(9)).await;
     assert_eq!(frames[0].event["type"], "RUN_STARTED");
     let snapshots = snapshot_catalogs(&frames);
     assert!(!snapshots.is_empty());
     assert!(
-        snapshots.iter().all(|c| *c == reference(1)),
+        snapshots.iter().all(|c| *c == reference(9)),
         "{snapshots:?}"
     );
     chat.wait_state(&thread, "done").await;
     let events = chat.events(&thread).await;
     assert_eq!(kinds(&events)[..2], ["ui_catalog", "user_message"]);
-    assert_eq!(events[0]["data"], ui_catalog(1));
+    assert_eq!(events[0]["data"], ui_catalog(9));
     assert_eq!(events[0]["actor"]["type"], "user");
 
     // the same request again: an attach, nothing written twice
     let before = chat.events(&thread).await;
-    let again = run(&chat, &thread, "run-1", "echo one", with_ui_catalog(1)).await;
+    let again = run(&chat, &thread, "run-1", "echo one", with_ui_catalog(9)).await;
     assert_eq!(again[0].event["type"], "RUN_STARTED");
     assert_eq!(chat.events(&thread).await, before);
     assert_eq!(world.plain.executions().len(), 1, "nothing was sent twice");
 
-    // version 2 on the next job: a second event, and the snapshots name version 2
-    let frames = run(&chat, &thread, "run-2", "echo two", with_ui_catalog(2)).await;
+    // version 10 on the next job: a second event, and the snapshots name version 10
+    let frames = run(&chat, &thread, "run-2", "echo two", with_ui_catalog(10)).await;
     assert!(
         snapshot_catalogs(&frames)
             .iter()
-            .all(|c| *c == reference(2))
+            .all(|c| *c == reference(10))
     );
     wait_for_jobs(&chat, &thread, 2).await;
     let events = chat.events(&thread).await;
@@ -91,19 +92,19 @@ async fn the_screens_catalog_is_recorded_once_per_digest_and_the_snapshot_names_
     assert_eq!(events[second + 1]["kind"], "user_message");
     assert_eq!(events[second + 2]["kind"], "job_started");
 
-    // the older screen comes back with version 1: known, so nothing is written, and the thread
+    // the older screen comes back with version 9: known, so nothing is written, and the thread
     // keeps the newest
-    let frames = run(&chat, &thread, "run-3", "echo three", with_ui_catalog(1)).await;
+    let frames = run(&chat, &thread, "run-3", "echo three", with_ui_catalog(9)).await;
     assert!(
         snapshot_catalogs(&frames)
             .iter()
-            .all(|c| *c == reference(2))
+            .all(|c| *c == reference(10))
     );
     wait_for_jobs(&chat, &thread, 3).await;
     assert_eq!(count(&chat.events(&thread).await, "ui_catalog"), 2);
 
-    // a viewer that connects later reads the history as it was: version 1 until the thread was
-    // shown version 2, then version 2 to the end (the third job's older catalog changed nothing)
+    // a viewer that connects later reads the history as it was: version 9 until the thread was
+    // shown version 10, then version 10 to the end (the third job's older catalog changed nothing)
     let viewer = chat
         .agui_connect(&thread, None, true)
         .await
@@ -113,8 +114,8 @@ async fn the_screens_catalog_is_recorded_once_per_digest_and_the_snapshot_names_
         .iter()
         .map(|c| c["version"].as_i64().unwrap())
         .collect();
-    assert_eq!(versions.first(), Some(&1));
-    assert_eq!(versions.last(), Some(&2));
+    assert_eq!(versions.first(), Some(&9));
+    assert_eq!(versions.last(), Some(&10));
     assert!(versions.windows(2).all(|w| w[0] <= w[1]), "{versions:?}");
     assert_eq!(chat.thread(&thread).await["state"], "done");
 }
@@ -141,7 +142,7 @@ async fn a_catalog_that_breaks_a_rule_is_refused_before_anything_is_written(back
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
 
-    let mut forged = ui_catalog(1);
+    let mut forged = ui_catalog(9);
     forged["digest"] = json!(format!("sha256:{}", "0".repeat(64)));
     let thread = Uuid::now_v7().to_string();
     let body = Chat::agui_input(
@@ -152,7 +153,7 @@ async fn a_catalog_that_breaks_a_rule_is_refused_before_anything_is_written(back
     );
     assert_eq!(chat.agui_post("plain", &body).await.status().as_u16(), 400);
 
-    let mut big = ui_catalog(1);
+    let mut big = ui_catalog(9);
     big["catalog"]["components"]["Text"]["description"] = json!("x".repeat(70_000));
     let body = Chat::agui_input(
         &thread,
@@ -167,15 +168,15 @@ async fn a_catalog_that_breaks_a_rule_is_refused_before_anything_is_written(back
     assert!(world.plain.executions().is_empty());
 }
 
-// ---- the extension: what the agent is told (ADR 0023, ui-catalog/v1) ------------------------------
+// ---- the extension: what the agent is told (ADR 0023, ui-catalog/v2) ------------------------------
 
-/// A world whose `plain` agent lists A2UI (taking catalogs inline) and `ui-catalog/v1`.
+/// A world whose `plain` agent lists A2UI v1.0 (taking catalogs inline) and `ui-catalog/v2`.
 async fn world_with_the_extension(backend: Backend) -> World {
     World::with(
         backend,
         Setup {
             plain: FakeAgentOptions {
-                ui_extensions: vec![A2UI_EXTENSION_V0_9_1.to_owned()],
+                ui_extensions: vec![A2UI_EXTENSION_V1_0.to_owned()],
                 extensions: vec![UI_CATALOG_EXTENSION.to_owned()],
                 accepts_inline_catalogs: true,
                 ..FakeAgentOptions::default()
@@ -191,16 +192,16 @@ async fn two_screens_of_different_versions_reach_the_agent_as_the_extension_says
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let thread = Uuid::now_v7().to_string();
-    let (v1, v2) = (ui_catalog(1), ui_catalog(2));
+    let (v1, v2) = (ui_catalog(9), ui_catalog(10));
 
-    // the first message of the context: the agent gets version 1 inline
-    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(1)).await;
+    // the first message of the context: the agent gets version 9 inline
+    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(9)).await;
     wait_for_jobs(&chat, &thread, 1).await;
-    // a newer screen opens the chat: version 2 inline
-    run(&chat, &thread, "run-2", "echo two", with_ui_catalog(2)).await;
+    // a newer screen opens the chat: version 10 inline
+    run(&chat, &thread, "run-2", "echo two", with_ui_catalog(10)).await;
     wait_for_jobs(&chat, &thread, 2).await;
-    // an older screen joins with version 1: the agent is told the newest, with no catalog
-    run(&chat, &thread, "run-3", "echo three", with_ui_catalog(1)).await;
+    // an older screen joins with version 9: the agent is told the newest, with no catalog
+    run(&chat, &thread, "run-3", "echo three", with_ui_catalog(9)).await;
     wait_for_jobs(&chat, &thread, 3).await;
     // a message that carries none: the same reference
     run(&chat, &thread, "run-4", "echo four", json!({})).await;
@@ -235,7 +236,7 @@ async fn two_screens_of_different_versions_reach_the_agent_as_the_extension_says
     assert!(calls[3].inline_catalogs.is_empty());
     // our catalog is listed first in every message, whether or not it is inline
     for call in &calls {
-        let ids = &call.a2ui_capabilities.as_ref().unwrap()["v0.9.1"]["supportedCatalogIds"];
+        let ids = &call.a2ui_capabilities.as_ref().unwrap()["1.0"]["supportedCatalogIds"];
         assert_eq!(ids[0], UI_CATALOG_ID);
     }
 }
@@ -247,7 +248,7 @@ async fn a_card_without_the_extension_is_sent_no_catalog_though_the_log_holds_it
     let chat = world.chat(&orch);
     let thread = Uuid::now_v7().to_string();
 
-    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(1)).await;
+    run(&chat, &thread, "run-1", "echo one", with_ui_catalog(9)).await;
     wait_for_jobs(&chat, &thread, 1).await;
 
     assert_eq!(
@@ -297,16 +298,35 @@ fn the_web_catalog() -> (Value, Value) {
     (sent, lock)
 }
 
-async fn the_catalog_the_web_ships_is_accepted_as_it_sends_it(backend: Backend) {
+/// The catalog the web ships, as `ThreadAgent` sends it: a `ui-catalog/v2` document, which declares
+/// `"protocolVersion": "1.0"` (ADR 0075). Its own lock digest is the digest the orchestrator
+/// computes over it, every component schema is JSON Schema, and each names itself.
+///
+/// **Cross-slice:** `web/src/features/chat/lib/a2ui/catalog/catalog.json` is still catalog 8, the
+/// v1 document, until slice S2 moves it to catalog 9. A v2 reader refuses a v1 document with 400
+/// (`ui-catalog-v2.md`, section 3), so this test asserts whichever of the two the tree holds — it
+/// is never skipped, and it starts asserting acceptance as soon as S2 lands.
+async fn the_catalog_the_web_ships_is_taken_or_refused_as_the_contract_says(backend: Backend) {
     let (sent, lock) = the_web_catalog();
     let world = World::start(backend).await;
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let thread = Uuid::now_v7().to_string();
-
-    // the web's own lock digest is the digest the orchestrator computes over catalog.json (the two
-    // canonical JSONs agree), every component schema is JSON Schema, and each names itself
     let extra = json!({"forwardedProps": {"vymalo.uiCatalog": sent}});
+
+    if sent["catalog"]["protocolVersion"] != json!("1.0") {
+        // a v1 document: refused before anything is written
+        let body = Chat::agui_input(&thread, "run-1", &[("m-1", "echo hi")], extra);
+        assert_eq!(
+            chat.agui_post("plain", &body).await.status().as_u16(),
+            400,
+            "a v1 catalog is refused by a v2 reader (ADR 0075): S2 moves the web's catalog to 9"
+        );
+        assert_eq!(chat.get(&format!("/api/threads/{thread}")).await.0, 404);
+        assert!(world.plain.executions().is_empty());
+        return;
+    }
+
     let frames = run(&chat, &thread, "run-1", "echo hi", extra).await;
     assert_eq!(frames[0].event["type"], "RUN_STARTED", "{frames:?}");
     let named = json!({"catalogId": sent["catalogId"], "version": lock["version"], "digest": lock["digest"]});
@@ -330,7 +350,7 @@ async fn the_catalog_the_web_ships_is_accepted_as_it_sends_it(backend: Backend) 
 }
 
 backends!(
-    the_catalog_the_web_ships_is_accepted_as_it_sends_it,
+    the_catalog_the_web_ships_is_taken_or_refused_as_the_contract_says,
     the_screens_catalog_is_recorded_once_per_digest_and_the_snapshot_names_the_newest,
     a_catalog_that_breaks_a_rule_is_refused_before_anything_is_written,
     two_screens_of_different_versions_reach_the_agent_as_the_extension_says,

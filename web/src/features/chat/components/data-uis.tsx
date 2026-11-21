@@ -9,6 +9,7 @@ import {
   parseError,
   parseStatus,
 } from "@/features/chat/lib/agui/vymalo";
+import { SessionCard } from "@/features/sessions/components/session-card";
 import { ErrorCallout, FailedCallout } from "./parts/error-callout";
 import { SurfaceActivity } from "./surface/surface-activity";
 
@@ -71,6 +72,16 @@ const SurfaceDataUI = makeAssistantDataUI<unknown>({
   render: ({ data }) => <SurfaceActivity data={data} />,
 });
 
+/**
+ * `vymalo.session`: the card of a subagent (child-sessions/v1). It is said again in runs of its own; it
+ * draws only in its home run and nothing elsewhere. `vymalo.sessionStart` is the line above a turn
+ * (`StartLine`, drawn by the turn), so it has no renderer here.
+ */
+const SessionDataUI = makeAssistantDataUI<unknown>({
+  name: activityPartName(ACTIVITY.session),
+  render: ({ data }) => <SessionCard data={data} />,
+});
+
 /** Mounted once inside the runtime provider (chat-shell.tsx). */
 export function DataUIs() {
   return (
@@ -81,6 +92,7 @@ export function DataUIs() {
       <PurposeDataUI />
       <JobDataUI />
       <SurfaceDataUI />
+      <SessionDataUI />
     </>
   );
 }

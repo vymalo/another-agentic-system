@@ -140,7 +140,7 @@ export const panel = (page: Page) =>
   page
     .getByRole("complementary", { name: "Thread details" })
     .or(page.getByRole("dialog", { name: "Thread details" }));
-export const panelTab = (page: Page, name: "Activity" | "Sources") =>
+export const panelTab = (page: Page, name: "Activity" | "Sources" | "Subagents") =>
   panel(page).getByRole("tab", { name: new RegExp(`^${name}`) });
 export const panelResizer = (page: Page) =>
   page.getByRole("separator", { name: "Resize the details panel" });
