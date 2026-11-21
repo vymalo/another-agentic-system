@@ -30,6 +30,8 @@ data:
             self.wfile.write(data)
 
         def do_GET(self):
+            if self.path == "/healthz":
+                return self._reply(200, {"ok": True})
             self._check()
 
         def do_POST(self):
