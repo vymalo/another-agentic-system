@@ -63,6 +63,11 @@ fn principal(email: &str, roles: &[&str]) -> Principal {
 
 impl Rig {
     async fn start(policy: Policy) -> Self {
+        Self::start_with_lifetime(policy, Duration::from_secs(60)).await
+    }
+
+    /// With streams that end after `sse_lifetime` (ADR 0082; a minute by default, shorter here).
+    async fn start_with_lifetime(policy: Policy, sse_lifetime: Duration) -> Self {
         let entry = |id: &str| AgentEntry {
             endpoint: AgentEndpoint::a2a(
                 AgentId::new(id),
@@ -123,13 +128,19 @@ impl Rig {
         let addr = listener.local_addr().unwrap();
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
+            sse_lifetime,
             ..ApiConfig::default()
         };
         let keepalive = api.sse_keepalive;
+        let lifetime = api.sse_lifetime;
         let router = orch_api::router_with_surfaces(
             Arc::clone(&app),
             api,
-            vec![orch_surface_agui::routes(Arc::clone(&app), keepalive)],
+            vec![orch_surface_agui::routes(
+                Arc::clone(&app),
+                keepalive,
+                lifetime,
+            )],
         );
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -429,8 +440,10 @@ async fn a_person_whose_roles_grant_nothing_is_refused_before_any_stream() {
 }
 
 #[tokio::test]
-async fn a_stream_lasts_as_long_as_the_token_it_was_opened_with() {
-    let rig = Rig::start(chat_policy()).await;
+async fn a_stream_ends_at_the_earliest_of_its_token_an_hour_and_the_deployment_lifetime() {
+    // ADR 0082: every stream ends, whatever credential it was opened with; ADR 0033 keeps the
+    // token as one of the bounds. This test used to encode "stays open" for two of the three.
+    let rig = Rig::start_with_lifetime(chat_policy(), Duration::from_millis(1500)).await;
     let thread = rig.finished_thread_of_alice().await;
     let url = format!("{}/agui/threads/{thread}/connect", rig.base);
     let open = |token: &'static str| {
@@ -454,13 +467,16 @@ async fn a_stream_lasts_as_long_as_the_token_it_was_opened_with() {
     let first = expired.next(Duration::from_secs(2)).await;
     assert!(first.is_none(), "{first:?}");
     assert!(expired.ended(), "the stream of an expired token is over");
-    // A token for a day gets the whole thread, and the stream stays open after it.
-    let mut live = open("for-a-day").await;
-    let frames = live.until(|f| f.kind() == "RUN_FINISHED").await;
+    // A token for a day gets the whole thread, and then the stream ends at the deployment's
+    // lifetime: the client reopens it with its last `id:`.
+    let live = open("for-a-day").await;
+    let frames = live.all().await;
     assert_eq!(frames.first().unwrap().kind(), "RUN_STARTED");
-    assert!(live.is_quiet_for(Duration::from_millis(400)).await);
-    // So does a credential that does not run out (the same token without an expiry).
-    let mut forever = open("alice").await;
-    forever.until(|f| f.kind() == "RUN_FINISHED").await;
-    assert!(forever.is_quiet_for(Duration::from_millis(400)).await);
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+    // So does a credential that does not run out (the same token without an expiry): that is the
+    // case that used to leave a stream open for ever.
+    let forever = open("alice").await;
+    let frames = forever.all().await;
+    assert_eq!(frames.first().unwrap().kind(), "RUN_STARTED");
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
 }
