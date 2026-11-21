@@ -109,11 +109,11 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-20 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-e2bfda9` is one linux/amd64 OCI manifest (3.13 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision e2bfda93429bb36895cc0fdb318f3fdb67bd3451, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `7418467` plus adam-rs #209 to #253 (ADR 0014's status note
-# of 2026-11-21 lists what this stack sees), the A2UI v1.0 cutover among them (adam-rs #251, adam-rs ADR 0056; ADR 0075 and epic #380 here):
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-21 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-8501494` is one linux/amd64 OCI manifest (3.14 GB of compressed layers, fourteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 85014942d6de62f94c7dc4ccec82d780e2df9e38, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `7418467` plus adam-rs #209 to #290 (ADR 0014's status note
+# of 2026-11-21 lists what this stack sees), the A2UI v1.0 cutover among them (adam-rs #251, adam-rs ADR 0056; ADR 0075 and epic #380 here), and #273 (a reply the output limit cuts while the model is only thinking is continued, never `input_required`):
 # every adam agent writes A2UI v1.0 only (`"version": "1.0"`, the extension URI `https://a2ui.org/a2a-extension/a2ui/v1.0`, the basic catalog
 # `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`), reads only `ui-catalog/v2` documents, and draws nothing in a turn whose
 # message carries no `a2uiRendererCapabilities["1.0"]` — so a card that still lists the retired v0.9.1 URI gets words, never a form. The run
@@ -165,7 +165,7 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-e2bfda9@sha256:0541ee92cd14904652d38a569cf7d263ab0b97bbdddc7f06947ccf4e1957f883
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-8501494@sha256:a56cc45ca67d132981503db85016746aae5f131409dfda41ea63d05b7e45083e
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
