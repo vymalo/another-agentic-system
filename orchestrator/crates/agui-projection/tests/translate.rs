@@ -49,6 +49,7 @@ fn known(state: ThreadState) -> KnownThread {
         run_open: matches!(state, ThreadState::Queued | ThreadState::Working),
         open_interrupts: Vec::new(),
         message_ids: BTreeSet::new(),
+        message_runs: BTreeMap::new(),
         run_ids: BTreeSet::new(),
         surfaces: BTreeMap::new(),
     }
@@ -383,9 +384,64 @@ fn nothing_new_and_a_run_that_exists_attaches() {
         t,
         Translation {
             inputs: vec![],
-            warnings: vec![]
+            warnings: vec![],
+            attach: None,
         }
     );
+}
+
+#[test]
+fn a_resend_of_a_known_message_under_a_new_run_id_attaches_to_the_run_it_opened() {
+    // ADR 0082, decision 5: the id is the client's, so a retry cannot be expected to remember the
+    // run id too. The log's `user_message` says which run the message opened, and that is the run
+    // the resend is shown.
+    let view = KnownThread {
+        message_ids: ["m-1".to_owned()].into(),
+        message_runs: [("m-1".to_owned(), "r-1".to_owned())].into(),
+        run_ids: ["r-1".to_owned()].into(),
+        ..known(ThreadState::Done)
+    };
+    let resend = request(json!({"runId": "r-retry", "messages": [user_msg("m-1", "first")]}));
+    let t = translate_with_warnings(&resend, &ThreadView::Known(view)).unwrap();
+    assert!(t.inputs.is_empty(), "nothing is written twice: {t:?}");
+    assert_eq!(t.attach.as_deref(), Some("r-1"));
+}
+
+#[test]
+fn a_resend_attaches_to_the_last_message_of_the_request_the_log_has() {
+    // The client resends its whole transcript: the message it is sending again is the last one.
+    let view = KnownThread {
+        message_ids: ["m-1".to_owned(), "m-2".to_owned()].into(),
+        message_runs: [
+            ("m-1".to_owned(), "r-1".to_owned()),
+            ("m-2".to_owned(), "r-2".to_owned()),
+        ]
+        .into(),
+        run_ids: ["r-1".to_owned(), "r-2".to_owned()].into(),
+        ..known(ThreadState::Done)
+    };
+    let resend = request(json!({
+        "runId": "r-retry",
+        "messages": [user_msg("m-1", "first"), user_msg("m-2", "second")]
+    }));
+    let t = translate_with_warnings(&resend, &ThreadView::Known(view)).unwrap();
+    assert_eq!(t.attach.as_deref(), Some("r-2"));
+}
+
+#[test]
+fn a_resend_of_a_message_that_opened_no_run_is_still_nothing_to_run() {
+    // A known id whose log entry opened no run (an agent's message, an activity): there is no run
+    // to attach to, and the 422 stays the guard it was.
+    let view = KnownThread {
+        message_ids: ["evt-2".to_owned()].into(),
+        run_ids: ["r-1".to_owned()].into(),
+        ..known(ThreadState::Done)
+    };
+    let resend = request(json!({"runId": "r-retry", "messages": [user_msg("evt-2", "echo")]}));
+    assert!(matches!(
+        err(&resend, view),
+        InputError::NothingToRun { .. }
+    ));
 }
 
 #[test]

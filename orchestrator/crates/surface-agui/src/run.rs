@@ -574,8 +574,11 @@ async fn attempt<P: Ports>(
         )
         .into());
     }
-    let Translation { inputs, warnings } =
-        translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
+    let Translation {
+        inputs,
+        warnings,
+        attach,
+    } = translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
     for warning in &warnings {
         tracing::warn!(%thread, %warning, "part of the run input was ignored");
     }
@@ -598,12 +601,18 @@ async fn attempt<P: Ports>(
                 run_id: input.run_id.to_string(),
             }));
         };
-        tracing::debug!(%thread, run = %input.run_id, "attaching to a run");
+        // The run the request names, or, for a resend of a message the log holds under another run
+        // id, the run that message opened (ADR 0082). The replay of a fork is the fork's own run.
+        let run = match (replay, attach) {
+            (false, Some(opened)) => opened,
+            (false, None) | (true, _) => input.run_id.to_string(),
+        };
+        tracing::debug!(%thread, run = %run, "attaching to a run");
         return Ok(Some(Feed {
             projector: Projector::new(meta_of(&record)),
             backlog: events.into(),
             live: app.thread_feed(principal, thread, last_seq).await?,
-            start: Start::Run(input.run_id.to_string()),
+            start: Start::Run(run),
             held,
         }));
     }

@@ -394,6 +394,10 @@ pub struct Projector {
     /// the next event.
     pending_error: Option<String>,
     message_ids: BTreeSet<String>,
+    /// The run each user message the log holds opened or continued, by message id (ADR 0082): the
+    /// log's `user_message` carries both ids, and this is what lets a resend of that message under a
+    /// run id of its own attach to the run it belongs to.
+    message_runs: BTreeMap<String, String>,
     /// The ids of the reasoning the log has said (ADR 0044): live reasoning for one is late.
     reasoning_ids: BTreeSet<String>,
     run_ids: BTreeSet<String>,
@@ -575,6 +579,7 @@ impl Projector {
             failure: None,
             pending_error: None,
             message_ids: BTreeSet::new(),
+            message_runs: BTreeMap::new(),
             reasoning_ids: BTreeSet::new(),
             run_ids: BTreeSet::new(),
             surfaces: BTreeMap::new(),
@@ -689,6 +694,7 @@ impl Projector {
                 _ => Vec::new(),
             },
             message_ids: self.message_ids.clone(),
+            message_runs: self.message_runs.clone(),
             run_ids: self.run_ids.clone(),
             surfaces: self
                 .surfaces
@@ -932,8 +938,11 @@ impl Projector {
             .run_id
             .clone()
             .unwrap_or_else(|| format!("run-{}", ev.seq));
-        self.open_run(run_id, true, out);
+        self.open_run(run_id.clone(), true, out);
         self.message_ids.insert(message_id.clone());
+        // The log's `user_message` says which run the message opened (ADR 0082): a resend of it
+        // under another run id attaches to that one.
+        self.message_runs.insert(message_id.clone(), run_id);
         if audience.holds(&message_id) {
             return;
         }

@@ -117,3 +117,61 @@ async fn a_retried_answer_attaches_instead_of_answering_twice() {
     assert_eq!(user_messages(&h.events(ALICE, &thread).await), 2);
     assert_eq!(h.agent.sends().len(), 2);
 }
+
+#[tokio::test]
+async fn five_sends_of_one_message_under_five_run_ids_are_one_message_one_run_and_one_charge() {
+    // ADR 0082, decision 5, and C4: the message id is the client's and is reused for every send of
+    // the same text, whether the transport retries or the person presses Send again. A send under a
+    // run id of its own is a resend, not a new run: it is shown the run its message opened.
+    let h = Harness::start().await;
+    // The agent reports its model's tokens (`usage/v1`, ADR 0056): one delivery is one charge.
+    h.agent
+        .set_extensions("plain", &[orch_core::KnownExtension::Usage]);
+    let thread = new_thread_id();
+    let bodies: Vec<Value> = (0..5)
+        .map(|n| input(&thread, &format!("run-{n}"), &[("msg-1", "usage")]))
+        .collect();
+
+    // The first send opens the run and answers it.
+    let first = h.run("plain", ALICE, &bodies[0]).await.all().await;
+    assert_eq!(first.first().unwrap().event["runId"], "run-0");
+    assert_eq!(first.last().unwrap().kind(), "RUN_FINISHED");
+    h.wait_state(ALICE, &thread, "done").await;
+
+    // The four resends carry a run id of their own and each is shown the run the message opened,
+    // from its `RUN_STARTED` to its `RUN_FINISHED`: the person sees their answer, not a 422.
+    for body in &bodies[1..] {
+        let frames = h.run("plain", ALICE, body).await.all().await;
+        assert_eq!(frames.first().unwrap().kind(), "RUN_STARTED");
+        assert_eq!(
+            frames.first().unwrap().event["runId"],
+            "run-0",
+            "the run the message opened, not the one the request names"
+        );
+        assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+    }
+
+    let events = h.events(ALICE, &thread).await;
+    assert_eq!(user_messages(&events), 1, "one message: {events:?}");
+    // One run in the log: the `user_message` records the run id of the request that wrote it.
+    let opened: Vec<Value> = events
+        .iter()
+        .filter(|e| e["kind"] == "user_message")
+        .map(|e| e["data"]["runId"].clone())
+        .collect();
+    assert_eq!(opened, [serde_json::json!("run-0")]);
+    // One charge: the agent reported its tokens once, for one delivery.
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["kind"] == "model_usage_total")
+            .count(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(
+        h.agent.sends().len(),
+        1,
+        "the agent was sent the message once"
+    );
+}
