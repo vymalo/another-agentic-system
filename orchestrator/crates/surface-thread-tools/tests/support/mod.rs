@@ -321,6 +321,39 @@ impl Harness {
         .await;
     }
 
+    /// Alice sends a message to `thread` that carries `catalog` **as a log written before the A2UI
+    /// v1.0 cutover holds it**, and the agent finishes it: `apply` is the dispatcher's door, which
+    /// does not re-read what a surface checked, so a `ui-catalog/v1` document — which `submit`
+    /// refuses now (ADR 0075) — can be recorded the way it was recorded then.
+    pub async fn show_as_written_before_the_cutover(
+        &self,
+        thread: ThreadId,
+        catalog: &UiCatalogData,
+    ) {
+        let alice = UserId::new(ALICE);
+        self.app
+            .apply(
+                thread,
+                Input::UserMessage {
+                    tier_cap: None,
+                    user: alice.clone(),
+                    text: "echo again".to_owned(),
+                    message_id: None,
+                    run_id: None,
+                    origin: Origin::Agui,
+                    catalog: Some(catalog.clone()),
+                    mentions: Vec::new(),
+                    tier: None,
+                },
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        self.wait_done(thread).await;
+    }
+
     /// Alice sends a message to `thread` that carries `catalog`, and the agent finishes it.
     pub async fn show(&self, thread: ThreadId, catalog: &UiCatalogData) {
         let alice = UserId::new(ALICE);

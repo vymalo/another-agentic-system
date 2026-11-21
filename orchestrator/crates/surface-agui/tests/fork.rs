@@ -134,6 +134,7 @@ async fn the_mentions_and_the_catalog_of_the_run_apply_to_the_first_message() {
     let fork = new_thread_id();
     let catalog = json!({
         "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
+        "protocolVersion": "1.0",
         "components": {"Note": {
             "type": "object",
             "properties": {"component": {"const": "Note"}},
@@ -148,7 +149,7 @@ async fn the_mentions_and_the_catalog_of_the_run_apply_to_the_first_message() {
             "vymalo.mentions": [{"agentId": "coder", "label": "@coder", "start": 0, "end": 6}],
             "vymalo.uiCatalog": {
                 "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
-                "version": 1,
+                "version": 9,
                 "digest": orch_core::catalog_digest(&catalog).unwrap(),
                 "catalog": catalog,
             },

@@ -4,7 +4,7 @@
 
 mod support;
 
-use orch_core::{Caller, ThreadId};
+use orch_core::{Caller, Input, Origin, ThreadId};
 use serde_json::{Value, json};
 use support::*;
 
@@ -53,8 +53,9 @@ async fn a_thread_with_no_catalog_answers_with_an_error_to_read() {
     assert_eq!(out.text, "this thread has no UI catalog; answer in text");
 }
 
-/// ADR 0075, section 4: a thread from before the cutover keeps its `ui-catalog/v1` document in the
-/// log, and it is never served — a v1.0 reader refuses a v1 document, so the agent is told to
+/// ADR 0075, sections 4 and 9: the **write is strict** — a `ui-catalog/v1` document is refused by
+/// the door a run goes through — and a thread from before the cutover, whose log holds one all the
+/// same, is **never served** it: a v1.0 reader refuses a v1 document, so the agent is told to
 /// answer in words, exactly as for a thread that has no catalog.
 #[tokio::test]
 async fn a_catalog_from_before_the_cutover_is_never_served() {
@@ -62,7 +63,33 @@ async fn a_catalog_from_before_the_cutover_is_never_served() {
     let thread = h.thread("plain").await;
     let client = client_for(&h, thread, "plain").await;
     let old = catalog_v1(8, "before");
-    h.show(thread, &old).await;
+    // the write is strict: the run route refuses the document before anything is written
+    let refused = h
+        .app
+        .submit(
+            &orch_core::UserId::new(ALICE),
+            thread,
+            Input::UserMessage {
+                tier_cap: None,
+                user: orch_core::UserId::new(ALICE),
+                text: "echo again".to_owned(),
+                message_id: None,
+                run_id: None,
+                origin: Origin::Agui,
+                catalog: Some(old.clone()),
+                mentions: Vec::new(),
+                tier: None,
+            },
+            None,
+        )
+        .await;
+    assert!(
+        matches!(&refused, Err(orch_app::AppError::Invalid(why)) if why.contains("protocolVersion")),
+        "{refused:?}"
+    );
+    // and a log written before the cutover — through the dispatcher's door, which does not re-read
+    // what a surface checked — keeps its v1 document, which is not served
+    h.show_as_written_before_the_cutover(thread, &old).await;
     let out = call(&client, "get_ui_catalog", json!({})).await;
     assert!(out.is_error, "{out:?}");
     assert!(out.text.contains("before A2UI v1.0"), "{}", out.text);

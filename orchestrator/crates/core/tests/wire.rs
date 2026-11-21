@@ -160,7 +160,7 @@ fn note_catalog() -> UiCatalogData {
     });
     UiCatalogData {
         catalog_id: "https://agents.vymalo.com/a2ui/catalogs/chat".into(),
-        version: 2,
+        version: 9,
         digest: catalog_digest(&catalog).unwrap(),
         catalog,
     }
@@ -187,7 +187,7 @@ fn a_ui_catalog_is_the_persons_event_and_its_data_is_what_the_web_sent() {
             "actor": {"type": "user", "name": "me@example.com"},
             "data": {
                 "catalogId": "https://agents.vymalo.com/a2ui/catalogs/chat",
-                "version": 2,
+                "version": 9,
                 "digest": data.digest,
                 "catalog": data.catalog,
             }

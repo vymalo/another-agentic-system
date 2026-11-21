@@ -26,7 +26,7 @@ fn note(tag: &str) -> Value {
 /// The object the web sends for a catalog of `components`, with its real digest (a dummy one when
 /// the catalog cannot be canonicalised: the rule that refuses it comes first).
 fn sent(version: u64, components: &Value) -> Value {
-    let catalog = json!({"catalogId": ID, "components": components});
+    let catalog = json!({"catalogId": ID, "protocolVersion": "1.0", "components": components});
     let digest = catalog_digest(&catalog).unwrap_or_else(|_| format!("sha256:{}", "0".repeat(64)));
     json!({"catalogId": ID, "version": version, "digest": digest, "catalog": catalog})
 }
