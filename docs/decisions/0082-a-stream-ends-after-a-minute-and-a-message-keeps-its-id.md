@@ -1,7 +1,7 @@
 # ADR 0082 — A stream ends after a minute and is reopened; a message keeps the id its client made
 
-- **Status:** **proposed (2026-11-21)**. The orchestrator half is built (branch `stream-hardening`, off `d9258d2c`); the web's half
-  is another change. The owner decided on 2026-11-21 to
+- **Status:** **proposed (2026-11-21)**. **Both halves are built in this change** (branch `stream-hardening`, off `d9258d2c`): the
+  orchestrator's lifetime and attach, and the web's dead-stream detection, jitter and draft-owned message id. The owner decided on 2026-11-21 to
   *"propose the generic stream changes in the open source, in neutral wording"* (another-context, the persona answers, decision 52):
   a heartbeat every 15 s, streams that end and reopen, and a client-made message id — **with no market in the text**. The
   constraints it answers are **C3** and **C4** of `spec/personas/the-normal-cameroonian.md` in another-context.
@@ -30,8 +30,8 @@ What exists today, read at `ebcee350` and changed by this ADR (the last column i
 | Idempotency | **Done server-side**, keyed on the **client's** message id: `agui:<thread>:msg:<id>`, a unique index, `Duplicate` folds to an attach | `surface-agui/src/run.rs:409-431`, `agui-projection/src/translate.rs:389-404,519-548`, `store-postgres/src/store.rs:1852-1868`, `migrations/0001_init.sql:32` | unchanged: the key is the message id, never the run id |
 | A resend with a **new** `runId` | **422 `nothing to run`**: the message is already in the log, so there is nothing to start, and it is *not* an attach | `agui-projection/src/translate.rs:539-548`; `docs/api/agui.md:476-478` | **attach to the run that message opened**, when the words are the same: the log's `user_message` records the run and the text, and the projector folds both into `KnownThread` (`message_runs`, `message_texts`); a resend with other words is 422 `message_id_reused` |
 | A resend with **other words** under a known id | **Silently dropped**: reconciliation by id kept the logged message and discarded the new text (or answered 422 `nothing to run` when the run id was new) | `agui-projection/src/translate.rs:389-404,539-548` | **422 `message_id_reused`**, before anything is written: an id is bound to its text |
-| The web's send | Mints a **fresh** `runId` per send and a fresh message id (the library's), and on a refusal keeps only the **text** | `web/src/features/chat/lib/agui/thread-agent.ts:1495-1515,1540-1541`, `failed-send.ts:8-17`, `use-chat-runtime.ts:192-194` | not this change (the web's half) |
-| The web's reconnect | On the stream **ending**, with `Last-Event-ID` and a backoff of `min(30 s, 1 s · 2^attempt)` — **no jitter, no dead-stream detection** | `thread-agent.ts:383,593-637`; comments are parsed and discarded at `lib/agui/sse.ts:41` | not this change (the web's half) |
+| The web's send | Mints a **fresh** `runId` per send and a fresh message id (the library's), and on a refusal keeps only the **text** | `web/src/features/chat/lib/agui/thread-agent.ts:1495-1515,1540-1541`, `failed-send.ts:8-17`, `use-chat-runtime.ts:192-194` | **the id is the draft's**: `DraftIds` binds one id to one text, `post()` sends it in place of the runtime's, and an edit mints a new one (`lib/agui/draft-ids.ts`) |
+| The web's reconnect | On the stream **ending**, with `Last-Event-ID` and a backoff of `min(30 s, 1 s · 2^attempt)` — **no jitter, no dead-stream detection** | `thread-agent.ts:383,593-637`; comments are parsed and discarded at `lib/agui/sse.ts:41` | **built**: `readSse` takes a `silenceMs` window re-armed by any bytes, so two missed heartbeats close the reader and the existing loop reopens from the cursor; the wait is `floor(random() × min(30 s, 1 s · 2^attempt))` (`lib/agui/backoff.ts`) |
 
 Invariants (`CLAUDE.md`): **3, stateless** — a lifetime is a property of a connection, nothing is stored; the resume point is the
 log's `seq`, which is already the client's. **5, the core is pure** — untouched: a lifetime is the transport's, and the id is
@@ -56,13 +56,14 @@ already an input of `translate`. **1, protocols only** — SSE and the AG-UI con
    reopen from the cursor says each later event once and none twice (`orchestrator/crates/surface-agui/tests/lifetime.rs`).
 3. **The client reopens after two missed heartbeats** (≈30 s of silence) even though the socket is open, and its wait grows
    **and is randomised**, so a fleet of clients cut by one proxy does not return in one wave.
-   *Not this change:* the keepalive already exists; the client's dead-stream detection, jitter and growth are the web's half. This
-   ADR fixes the server's side of C3 (a heartbeat, and a stream that ends on its own terms) and leaves the client's side to the
-   change that owns it.
+   *Built:* the keepalive already existed; the client's side is `readSse`'s silence window (any byte re-arms it, so a `: keepalive`
+   is enough and a slow reply is not a dead stream), 30 s = two 15 s intervals taken from this contract, and the full-jitter wait.
+   The run's own POST response is deliberately **not** watched: a watchdog there could turn a slow accept into a second send.
 4. **A message's id is minted once, by the client, when the text is first written** — kept with the draft, reused on every send
    of that text, including a manual press of Send after a refusal.
-   *Not this change:* the server already keys idempotency on the client's message id; the web's half (mint it with the draft and
-   keep it across sends) is another change.
+   *Built:* the server already keyed idempotency on the client's message id; the web now binds one id to one text (`DraftIds`) and
+   sends it in place of the runtime's, so a resend after a refusal carries the same id. The binding is by **text**, because the
+   server refuses a known id sent with other words (`message_id_reused`): an edited draft is a new message, which is C4's own rule.
 5. **A resend of a known message id attaches to the run that message opened**, whatever `runId` it carries. This replaces the
    422 `nothing to run` for that case: five sends are one message, one run, one charge, and the person sees their answer
    instead of an error.
@@ -93,10 +94,10 @@ already an input of `translate`. **1, protocols only** — SSE and the AG-UI con
 - The web's reconnect loop stops being an exception handler and becomes the ordinary path once a minute: every stream test that
   asserts "stays open" now asserts "ends, and reopens where it stopped". In this repository that was
   `surface-agui/tests/roles.rs` (the stream of a day-long token and of a credential with no expiry), rewritten to prove the bound.
-- **The web's half is not in this change.** Its mock server (`web/mock/`) must end its streams at the same lifetime and its client
-  must reopen with jitter and detect a dead stream (two missed keepalives), or the web's tests prove a behaviour the orchestrator
-  does not have. Until it lands, the web works as before against a server that ends its stream every 60 s: it already reconnects
-  on the stream ending, with `Last-Event-ID` — without jitter, and with no dead-stream detection.
+- **The web is in this change, and so is its mock.** `web/mock/` ends a followed stream at the same 60 s
+  (`MOCK_STREAM_LIFETIME_MS`) and can go silent on demand (`POST /__mock/silence-streams`), so the Playwright specs prove the
+  end-and-reopen path and the dead-stream path against a server that behaves like the orchestrator. The client reopens with
+  `Last-Event-ID` and a jittered wait; the message it sends carries its draft's id.
 - `dev/split-e2e.sh` already reconnects mid-stream; it has not been extended with the lifetime case, so no scenario script proves
   the end-and-reopen path end to end yet. The orchestrator's own tests do.
 - Billing does not move: usage is folded from the log, and the log gains nothing from a reopen. Five sends of one message now
