@@ -54,15 +54,18 @@ orch-agui-projection = { path = "crates/agui-projection" }
 # binary's off-by-default feature `agent-local`: the durable runtime, the A2A task backend over it,
 # and the Postgres store and notifier.
 #
-# The two Postgres crates turn off their default `tls-rustls` feature: it selects sqlx's
-# `tls-rustls-ring`, and this workspace uses `tls-rustls-aws-lc-rs` (one TLS backend per process).
-adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "74184670e082766990aff5393ab84ce7f49829b6", default-features = false, features = ["supervisor"] }
-adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "74184670e082766990aff5393ab84ce7f49829b6" }
-adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "74184670e082766990aff5393ab84ce7f49829b6" }
-adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "74184670e082766990aff5393ab84ce7f49829b6" }
-adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "74184670e082766990aff5393ab84ce7f49829b6" }
-adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "74184670e082766990aff5393ab84ce7f49829b6", default-features = false }
-adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "74184670e082766990aff5393ab84ce7f49829b6", default-features = false }
+# The Postgres store and notifier are on tokio-postgres and deadpool-postgres (adam-rs ADR 0053), with
+# rustls on aws-lc-rs, the one TLS backend of this process. `orch-agent-adam` builds their pools with
+# `orch-pg-connect`; `adam-postgres` is named for the one thing that needs it, the `PgConfig` the
+# notifier's listener connects with (`PgNotify::new` takes nothing else).
+adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0", default-features = false, features = ["supervisor"] }
+adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0" }
+adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0" }
+adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0" }
+adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0" }
+adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0" }
+adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0" }
+adam-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ac32810c0be5d1ab590c8f24d78eceb205865b0" }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -90,8 +93,6 @@ http = "1"
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy"] }
 sse-stream = "0.2.6"
 tower-http = { version = "0.7.1", features = ["trace", "request-id", "timeout", "limit", "cors"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "json", "uuid", "migrate", "macros"] }
-jiff-sqlx = { version = "0.2", features = ["postgres"] }
 a2a-lf = "0.3.1"
 a2a-client-lf = "0.2.5"
 a2a-server-lf = "0.4.4"
@@ -108,7 +109,6 @@ regex = "1"
 # Unicode normalisation (NFKD) of the keys of a search (`orch-core`, ADR 0068); already in the lock through `url`.
 unicode-normalization = "0.1"
 url = "2"
-chrono = { version = "0.4", default-features = false }
 # The MCP server surface (ADR 0019). `server` brings the handler traits and the JSON Schema
 # derivation, `transport-streamable-http-server` the tower service that `orch-surface-mcp` mounts.
 # The tests add the client side as a dev-dependency.

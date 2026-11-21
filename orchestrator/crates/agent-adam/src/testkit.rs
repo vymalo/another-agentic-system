@@ -14,7 +14,6 @@
 //! | `fail` | `failed` with [`FAILURE_MESSAGE`] |
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::str::FromStr as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,20 +23,20 @@ use adam_runtime::{
     Agent, AgentError, AgentStarter, BroadcastSink, Ctx, Inbound, RunEvent, Transition,
 };
 use async_trait::async_trait;
+use deadpool_postgres::Pool;
 use orch_core::AgentId;
 use orch_ports::AgentEndpoint;
 use orch_ports::testkit::agent_client::AgentFixture;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Connection as _, PgConnection, PgPool};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub use orch_ports::testkit::agent_client::FAILURE_MESSAGE;
 
-use crate::agents::Hosted;
+use crate::DIRECT_CONNECTIONS;
+use crate::agents::{Hosted, POOL_WAIT, options};
 use crate::{LocalAgentClient, LocalAgents, LocalAgentsError, LocalKind, LocalOptions};
 
 /// The name of the scripted agent (the `name` of its endpoints).
@@ -145,7 +144,7 @@ impl Agent for Scripted {
                 error: FAILURE_MESSAGE.to_owned(),
             }),
             "slow" => {
-                let wake_at = ctx.now() + chrono::Duration::milliseconds(50);
+                let wake_at = ctx.now() + jiff::SignedDuration::from_millis(50);
                 state.phase += 1;
                 Ok(Transition::Park {
                     state,
@@ -241,8 +240,9 @@ pub fn scripted_endpoint(id: &str) -> AgentEndpoint {
 }
 
 /// A creation of a fresh, private schema in the test database, so tests run in parallel against
-/// one database. `None` when [`DATABASE_URL_VAR`] is unset.
-async fn private_schema() -> Option<PgConnectOptions> {
+/// one database: the URL of the test database with the schema as its `search_path`. `None` when
+/// [`DATABASE_URL_VAR`] is unset.
+async fn private_schema() -> Option<String> {
     let url = std::env::var(DATABASE_URL_VAR)
         .ok()
         .filter(|v| !v.is_empty())?;
@@ -252,32 +252,41 @@ async fn private_schema() -> Option<PgConnectOptions> {
     // The `t_` prefix and the timestamp are the convention of the workspace's other test
     // helpers, which drop the schemas an hour after they were made.
     let schema = format!("t_{secs}_{}", uuid::Uuid::now_v7().simple());
-    let mut conn = PgConnection::connect(&url)
+    let client = options(&url)
+        .expect("a valid ORCH_TEST_DATABASE_URL")
+        .connect()
         .await
         .expect("connect to the test database");
-    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA \"{schema}\"")))
-        .execute(&mut conn)
+    client
+        .batch_execute(&format!("CREATE SCHEMA \"{schema}\""))
         .await
         .expect("create the test schema");
-    Some(
-        PgConnectOptions::from_str(&url)
-            .expect("a valid ORCH_TEST_DATABASE_URL")
-            .options([("search_path", schema.as_str())]),
-    )
+    let sep = if url.contains('?') { '&' } else { '?' };
+    Some(format!("{url}{sep}options=-c%20search_path%3D{schema}"))
 }
 
-async fn connect(options: &PgConnectOptions, name: &str, max_connections: u32) -> PgPool {
-    PgPoolOptions::new()
-        .max_connections(max_connections)
-        .connect_with(options.clone().application_name(name))
-        .await
-        .expect("connect the pool")
+/// A pool of at most `max_connections` to `url`, its sessions named `name` (`application_name`).
+fn connect(url: &str, name: &str, max_connections: u32) -> Pool {
+    let mut options = options(url).expect("a valid connection string");
+    options.config_mut().application_name(name);
+    options
+        .pool(
+            usize::try_from(max_connections).unwrap_or(usize::MAX),
+            POOL_WAIT,
+        )
+        .expect("build the pool")
 }
 
 enum Journal {
     Memory(Arc<MemoryStore>),
-    /// One schema of the test database; every process opens its own pool on it.
-    Postgres(Box<PgConnectOptions>),
+    /// One schema of the test database, or one database, by a URL that names it; every process
+    /// opens its own pool on it, and its notifier's listener a connection of its own. With
+    /// `direct`, `url` is a pooler's and `direct` the database itself, which the migrations and
+    /// the notifier take, as a deployment behind a pooler does.
+    Postgres {
+        url: String,
+        direct: Option<String>,
+    },
 }
 
 /// The journal, the gate and the schema that several [`LocalInstance`]s share, the way several
@@ -302,12 +311,37 @@ impl LocalWorld {
         Some(Self::postgres_over(private_schema().await?))
     }
 
-    /// Processes that share the schema `options` connect to (an end-to-end test that keeps the
-    /// orchestrator's own tables in the same schema passes its options).
-    pub fn postgres_over(options: PgConnectOptions) -> Self {
+    /// Processes that share the database (and the schema) `url` connects to: an end-to-end test
+    /// that keeps the orchestrator's own tables in the same schema passes a URL that pins it (its
+    /// `options=-c search_path=...`).
+    pub fn postgres_over(url: impl Into<String>) -> Self {
         LocalWorld {
-            journal: Journal::Postgres(Box::new(options)),
+            journal: Journal::Postgres {
+                url: url.into(),
+                direct: None,
+            },
             shared: Shared::new(),
+        }
+    }
+
+    /// Processes behind a transaction-mode pooler: the journal's queries through `url` (the
+    /// pooler's), the migrations and the notifier on `direct_url`, the same database itself.
+    pub fn postgres_direct_over(url: impl Into<String>, direct_url: impl Into<String>) -> Self {
+        LocalWorld {
+            journal: Journal::Postgres {
+                url: url.into(),
+                direct: Some(direct_url.into()),
+            },
+            shared: Shared::new(),
+        }
+    }
+
+    /// The URL of the shared database and schema (`None` for the in-memory journal), for a test
+    /// that connects to it in its own way.
+    pub fn url(&self) -> Option<&str> {
+        match &self.journal {
+            Journal::Memory(_) => None,
+            Journal::Postgres { url, .. } => Some(url),
         }
     }
 
@@ -342,12 +376,10 @@ impl LocalWorld {
 
     /// A pool on the shared schema (`None` for the in-memory journal), for a test that looks at
     /// the tables and channels themselves.
-    pub async fn pool(&self, application_name: &str, max_connections: u32) -> Option<PgPool> {
+    pub fn pool(&self, application_name: &str, max_connections: u32) -> Option<Pool> {
         match &self.journal {
             Journal::Memory(_) => None,
-            Journal::Postgres(options) => {
-                Some(connect(options, application_name, max_connections).await)
-            }
+            Journal::Postgres { url, .. } => Some(connect(url, application_name, max_connections)),
         }
     }
 
@@ -364,9 +396,19 @@ impl LocalWorld {
                 let events = BroadcastSink::default();
                 LocalAgents::assemble(store.clone(), None, events, opts, hosted)
             }
-            Journal::Postgres(options) => {
-                let pool = connect(options, &id, 8).await;
-                LocalAgents::postgres_hosting(pool, opts, hosted).expect("build the local agents")
+            Journal::Postgres { url, direct } => {
+                let pool = connect(url, &id, 8);
+                match direct {
+                    None => LocalAgents::postgres_hosting(pool, url, opts, hosted),
+                    Some(direct_url) => LocalAgents::postgres_direct_hosting(
+                        pool,
+                        connect(direct_url, &id, DIRECT_CONNECTIONS),
+                        direct_url,
+                        opts,
+                        hosted,
+                    ),
+                }
+                .expect("build the local agents")
             }
         };
         agents.migrate().await.expect("migrate the journal");

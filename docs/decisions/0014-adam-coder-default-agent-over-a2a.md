@@ -831,3 +831,46 @@ read as `adam-upgrade` says:
   Coder E2E workflow of the pull request that pins it (the coder's form on v1.0, the researcher's cards and graph, the artifact
   surface, the workspace's consent forms, the delete's catalog); the chart deployed by `deploy.yml`; the chat on netcup on the new
   image.
+
+### Status note, 2026-11-21: one adam again, the image and the crates at the same commit, sqlx out (adam-rs 7ac3281)
+
+The pin moves to adam-rs `7ac3281`, which is `8501494` (the image since sys#418) plus adam-rs #254, #272 and #294 to #313 and
+their bump commits. The crates of `agent-local` move with it, from `7418467`, so the residual named in the note of `e2bfda9`
+above is closed: the image, the vendored files and the `rev` lines name one commit. `git log --format='%h %s'
+7418467..7ac3281 | grep '!:'` is empty. What this stack sees of it, read as `adam-upgrade` says:
+
+- **The coder's commands run where the coder runs** (#272, adam-rs ADR 0052): no devcontainer environment, no
+  `rebuild_environment` tool, and the removed `DEVCONTAINER_*` variables are ignored with a warning that names them (nothing
+  here sets one). A repository's own image is `use_repository_environment`, offered only with run pods, which this stack
+  does not run.
+- **Re-copied: `dev/coder/agent/instructions.md`**, the one vendored file that changed (`git diff --stat 8501494 7ac3281 --
+  dev bin/adam-coder/agent`): its section "The work environment" follows #272. No mapping, seed or script changed.
+- **Model settings this stack leaves unset**: reasoning effort per agent and the per-model profiles of `MODEL_ALIASES_FILE`
+  (#308, #311, adam-rs ADR 0063 and 0064), `MODEL_AUTH=injector` and a refusal that may park a run (#312, #313, adam-rs ADR
+  0067; with no injector the OpenAI client keeps today's errors). A model's response body and every SSE buffer are capped
+  (#297). The `adam-engine` slices (#295, #300, #302) are not used here.
+- **The crates.** The seven `rev` lines name `7ac3281` and an eighth, `adam-postgres`, is named beside them: adam's Postgres
+  store and notifier are on tokio-postgres and deadpool-postgres (adam-rs ADR 0053), and `PgNotify::new` takes the
+  `PgConfig` its listener connects with. `orch-agent-adam` builds their pools with `orch-pg-connect` (its README), its
+  errors keep no driver error, and the in-process agents' journal moves to adam's schema version 6 at its first migrate,
+  under a session lock of its prefix (on `directUrl` behind a pooler). adam's listener reads the URL alone, no `PG*`
+  variable and no password file, where sqlx read both for the pool and the listener alike: so `orch-agent-adam` refuses,
+  at startup and as `Invalid`, a URL that leaves part of its server to the environment (`agent-local` only; the chart puts
+  everything in the URL). Rolling an `agent-local` build back to `7418467` after the journal moved to version 6 is
+  *unverified*: nothing here tried an older adam on a newer journal. With it the last `sqlx` leaves the orchestrator's workspace
+  ([ADR 0076](0076-the-orchestrator-as-a-library-in-an-application.md)'s note of the same day). Nothing here implements
+  adam's `Store` or `Notifier`.
+- **The vendored `adam-*` skills** move with the skills CLI (`skills@1.9.0 add`, as `bump-adam` says) from `7375087` to
+  adam-rs's head, `94a25a5`, which is `7ac3281` plus #314 and #316: the skills describe one thing this pin does not have
+  yet, the output cap that follows the model (adam-rs ADR 0064 slice 2, in `adam-agent-folder`, `adam-coder-deploy`,
+  `adam-embed` and `adam-upgrade`).
+- *Verified 2026-11-21* (anonymous ghcr API, HTTP 200): `coder:sha-7ac3281` is one `linux/amd64` OCI image manifest (no
+  index; 3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, `/opt/obscura/bin` on its
+  PATH, label `org.opencontainers.image.revision` `7ac32810c0be5d1ab590c8f24d78eceb205865b0`, digest `sha256:5e5d70db...`
+  (the registry's `Docker-Content-Digest` and the sha-256 of the manifest it returned). `dev/coder/check-vendored.sh` passes
+  (`vendored files match vymalo/another-adam-rs@7ac3281`); `docker compose --profile '*' config -q` is clean, with
+  `compose.live.yaml` (dummy values for its required variables) and `dev/compose.github-app.yaml` too;
+  `sh deploy/chart/tests/render-check.sh` and `helm lint` (helm v3.19.0, as `deploy.yml`) pass on the new `chat.image`. The Rust gates the
+  pull request lists passed against a local Postgres 16, directly and through PgBouncer in transaction mode.
+- *Unverified where this was written* (no Docker daemon): every scenario in containers on the new image, first run by the
+  Coder E2E workflow of the pull request that pins it; the chat and the browser on netcup on the new image.

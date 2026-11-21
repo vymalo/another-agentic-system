@@ -20,6 +20,8 @@ use orch_ports::{
     SendContent, SendRequest, TaskHandle, TaskSnapshot,
 };
 
+use crate::error::DbFailure;
+
 /// One hosted kind: its card text and the backend that runs its tasks.
 #[derive(Debug)]
 pub(crate) struct Entry {
@@ -93,9 +95,11 @@ fn agent_error(err: BackendError) -> AgentError {
         }
         BackendError::InvalidParams(detail) => AgentError::Rejected(detail),
         err @ BackendError::Unavailable { .. } => {
-            AgentError::unreachable("the local agents' runtime is unavailable").with_source(err)
+            AgentError::unreachable("the local agents' runtime is unavailable")
+                .with_source(DbFailure::of(&err))
         }
-        err => AgentError::protocol("the local agents' runtime failed").with_source(err),
+        err => AgentError::protocol("the local agents' runtime failed")
+            .with_source(DbFailure::of(&err)),
     }
 }
 

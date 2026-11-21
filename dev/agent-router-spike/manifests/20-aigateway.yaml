@@ -1,0 +1,45 @@
+# The AI Gateway's objects: the backend (the mock model), its OpenAI schema, and the route that
+# sends a model named by `x-ai-eg-model: spike-model` to it. This is the route whose generated form
+# the spike inspects: the external authorization's header must arrive at the mock through it.
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: spike-model
+  namespace: default
+spec:
+  schema:
+    name: OpenAI
+  backendRef:
+    name: spike-model
+    kind: Backend
+    group: gateway.envoyproxy.io
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: spike-model
+  namespace: default
+spec:
+  endpoints:
+    - fqdn:
+        hostname: spike-mock.default.svc.cluster.local
+        port: 80
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: spike
+  namespace: default
+spec:
+  parentRefs:
+    - name: spike
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: spike-model
+      backendRefs:
+        - name: spike-model

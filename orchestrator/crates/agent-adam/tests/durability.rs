@@ -10,10 +10,12 @@ use futures::StreamExt as _;
 use orch_agent_adam::testkit::{LocalWorld, scripted_endpoint};
 use orch_agent_adam::{LocalAgents, LocalKind, LocalOptions, TABLE_PREFIX};
 use orch_core::AgentTaskState;
+use orch_pg_connect::PgOptions;
 use orch_ports::{
     AgentClient as _, AgentEnvelope, AgentStream, IdemKey, SendContent, SendRequest, TaskHandle,
 };
-use sqlx::postgres::PgListener;
+use tokio::sync::mpsc;
+use tokio_postgres::AsyncMessage;
 
 /// Polls `f` until it returns `Some`, or panics after 15 s.
 async fn eventually<T, Fut: std::future::Future<Output = Option<T>>>(
@@ -102,6 +104,47 @@ async fn postgres() -> Option<LocalWorld> {
     world
 }
 
+/// The first column of every row `sql` returns, on a connection of `pool`.
+async fn column(pool: &deadpool_postgres::Pool, sql: &str) -> Vec<String> {
+    pool.get()
+        .await
+        .unwrap()
+        .query(sql, &[])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+/// A session of its own to `url` that listens on `channels`: the channel of every notification
+/// it receives, in order. The session lives as long as the returned client.
+async fn listen(
+    url: &str,
+    channels: &[&str],
+) -> (tokio_postgres::Client, mpsc::UnboundedReceiver<String>) {
+    let options: PgOptions = url.parse().unwrap();
+    let (client, mut connection) = options
+        .wire_config()
+        .connect(options.tls_connector().unwrap())
+        .await
+        .unwrap();
+    let (tx, rx) = mpsc::unbounded_channel();
+    // A pooled connection's task drops notifications: this one reads them itself.
+    tokio::spawn(async move {
+        while let Some(Ok(message)) =
+            futures::future::poll_fn(|cx| connection.poll_message(cx)).await
+        {
+            if let AsyncMessage::Notification(note) = message {
+                let _ = tx.send(note.channel().to_owned());
+            }
+        }
+    });
+    let statements: String = channels.iter().map(|c| format!("LISTEN {c}; ")).collect();
+    client.batch_execute(&statements).await.unwrap();
+    (client, rx)
+}
+
 #[tokio::test]
 async fn a_task_survives_its_worker_dying_mid_step() {
     for (backend, world) in worlds().await {
@@ -175,16 +218,15 @@ async fn tables_and_channels_carry_the_prefix() {
     let Some(world) = postgres().await else {
         return;
     };
-    let pool = world.pool("prefix-test", 4).await.unwrap();
+    let pool = world.pool("prefix-test", 4).unwrap();
     let instance = world.instance(LocalWorld::options("prefix")).await;
 
-    let tables: Vec<String> = sqlx::query_scalar(
+    let tables = column(
+        &pool,
         "SELECT table_name::text FROM information_schema.tables \
          WHERE table_schema = current_schema() ORDER BY 1",
     )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    .await;
     for table in ["runs", "journal", "meta"] {
         let name = format!("{TABLE_PREFIX}{table}");
         assert!(tables.contains(&name), "{name} is missing from {tables:?}");
@@ -200,16 +242,16 @@ async fn tables_and_channels_carry_the_prefix() {
 
     // The channels: a started task is announced on `orch_agent_signals`, and nothing is sent on
     // the default `adam_` channels.
-    let mut listener = PgListener::connect_with(&pool).await.unwrap();
-    listener
-        .listen_all([
+    let (_session, mut notes) = listen(
+        world.url().unwrap(),
+        &[
             "orch_agent_events",
             "orch_agent_signals",
             "adam_events",
             "adam_signals",
-        ])
-        .await
-        .unwrap();
+        ],
+    )
+    .await;
     let stream = instance
         .client
         .send_stream(request("echo channels", "m-channels", "ctx-channels"))
@@ -217,9 +259,10 @@ async fn tables_and_channels_carry_the_prefix() {
         .unwrap();
     drain(stream).await;
     let mut channels = Vec::new();
-    while let Ok(Ok(note)) = tokio::time::timeout(Duration::from_millis(300), listener.recv()).await
+    while let Ok(Some(channel)) =
+        tokio::time::timeout(Duration::from_millis(300), notes.recv()).await
     {
-        channels.push(note.channel().to_owned());
+        channels.push(channel);
     }
     assert!(
         channels.iter().any(|c| c == "orch_agent_signals"),
@@ -240,23 +283,18 @@ async fn two_prefixes_do_not_collide() {
     let Some(world) = postgres().await else {
         return;
     };
-    let pool = world.pool("collide", 8).await.unwrap();
-    // The orchestrator's own tables, adam's default prefix and ours, in one schema. The thread
-    // store is on tokio-postgres (#382 E1) and this pool is sqlx's, so its migrations reach the
-    // same schema through a URL that names it.
-    let schema: String = sqlx::query_scalar("SELECT current_schema()::text")
-        .fetch_one(&pool)
+    let pool = world.pool("collide", 8).unwrap();
+    let url = world.url().unwrap();
+    // The orchestrator's own tables, adam's default prefix and ours, in one schema: the thread
+    // store's migrations on a pool of its own over the same URL, which names the schema.
+    let options: PgOptions = url.parse().unwrap();
+    orch_store_postgres::PgStore::from_pool(orch_store_postgres::PgPool::new(options, 2).unwrap())
+        .migrate()
         .await
         .unwrap();
-    let url = std::env::var("ORCH_TEST_DATABASE_URL").unwrap();
-    let sep = if url.contains('?') { '&' } else { '?' };
-    orch_store_postgres::PgStore::migrate_direct(&format!(
-        "{url}{sep}options=-c%20search_path%3D{schema}"
-    ))
-    .await
-    .unwrap();
     let ours = LocalAgents::postgres(
         pool.clone(),
+        url,
         LocalWorld::options("ours"),
         &[LocalKind::Echo],
     )
@@ -265,13 +303,12 @@ async fn two_prefixes_do_not_collide() {
     let theirs = PgStore::from_pool(pool.clone());
     theirs.migrate().await.unwrap();
 
-    let tables: Vec<String> = sqlx::query_scalar(
+    let tables = column(
+        &pool,
         "SELECT table_name::text FROM information_schema.tables \
          WHERE table_schema = current_schema() ORDER BY 1",
     )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    .await;
     for table in [
         "threads",
         "events",
@@ -310,12 +347,14 @@ async fn migrate_twice_and_concurrently_is_idempotent() {
     let Some(world) = postgres().await else {
         return;
     };
-    let pool = world.pool("migrate", 12).await.unwrap();
+    let pool = world.pool("migrate", 12).unwrap();
+    let url = world.url().unwrap();
     // Replicas booting together: each holds its own LocalAgents over the same database.
     let replicas: Vec<LocalAgents> = (0..6)
         .map(|i| {
             LocalAgents::postgres(
                 pool.clone(),
+                url,
                 LocalOptions::new(format!("replica-{i}")),
                 &[LocalKind::Echo],
             )
@@ -332,9 +371,13 @@ async fn migrate_twice_and_concurrently_is_idempotent() {
     for outcome in again {
         outcome.unwrap();
     }
-    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM orch_agent_runs")
-        .fetch_one(&pool)
+    let runs: i64 = pool
+        .get()
         .await
-        .unwrap();
+        .unwrap()
+        .query_one("SELECT count(*) FROM orch_agent_runs", &[])
+        .await
+        .unwrap()
+        .get(0);
     assert_eq!(runs, 0);
 }

@@ -47,14 +47,21 @@ above, `Execute { version, source }` when a migration's SQL fails (its transacti
 
 * Unit: a file name read as sqlx reads it (`-- no-transaction` included; bad names, `.up.sql` and `.down.sql`
   refused), the table name and versions checked, and the lock key against CRC-32's check value.
-* `tests/sqlx_compat.rs`, with sqlx as a dev-dependency until it leaves the workspace at the end of E1:
-  * `every_migration_of_the_workspace_reads_as_sqlx_reads_it`: every `crates/*/migrations` directory has the
-    versions, descriptions, checksums and transactions sqlx gives it (no database needed);
+* `tests/sqlx_history.rs`, against what sqlx 0.9 did, recorded before sqlx left the workspace at the end of E1:
+  * `every_migration_sqlx_read_reads_as_sqlx_read_it`: every migration of `tests/sqlx-0.9-history.txt` (each one
+    the workspace had on 2026-11-21, with the version, description, SHA-384 and transaction sqlx gave it, recorded by
+    sqlx itself and never edited) reads to the same values here; a migration added since needs no line (no database
+    needed);
+  * `the_lock_key_is_the_one_sqlx_took`: the advisory lock key sqlx's migrator took for four database names, read
+    from `pg_locks` and recorded by running sqlx itself, is `lock_id`'s (no database needed);
   * `a_list_is_checked_against_its_directory`: a file left out of the list, and one the directory lacks;
   * against Postgres (`ORCH_TEST_DATABASE_URL`, skipped without it; a database of its own each):
-    `each_continues_the_others_history` (sqlx migrates, this runner is a no-op and then applies only the new
-    ones, a `CREATE INDEX CONCURRENTLY` outside a transaction among them, and sqlx is a no-op after it),
-    `the_history_is_checked_before_anything_runs` (the three refusals, a failed migration leaves no row and none of
-    its work, the lock is free after each refusal), `the_lock_is_sqlx_s_lock` (while sqlx's migrator holds its lock
-    the server shows this runner's request for it, not granted; it runs once sqlx lets go). Each drops its database,
+    `a_history_sqlx_wrote_is_continued` (the history written with sqlx's own statements, quoted from `sqlx-postgres`
+    0.9.0 `src/migrate.rs`: its table, each migration and its row in one transaction, the execution time set after;
+    this runner is a no-op on it and then applies only the new ones, a `CREATE INDEX CONCURRENTLY` outside a
+    transaction among them, and sqlx's two reads of a history, quoted, find no dirty row and sqlx's checksums in what
+    this runner wrote), `the_history_is_checked_before_anything_runs` (the three refusals, a failed migration
+    leaves no row and none of its work, the lock is free after each refusal), `the_lock_is_sqlx_s_lock` (while a
+    session holds sqlx's lock, `pg_advisory_lock` of `lock_id`, which is held to sqlx's recorded keys, the server shows this runner's request for it, not
+    granted; it runs once the lock is let go). Each drops its database,
     and the databases a killed run left are dropped by the next.

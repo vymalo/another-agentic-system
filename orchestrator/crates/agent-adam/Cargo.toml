@@ -5,34 +5,37 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Local agents for the orchestrator (ADR 0015): AgentClient over adam-rs agents hosted in the orchestrator's own process, journaled in its Postgres under the prefix orch_agent_."
+description = "Local agents for the orchestrator (ADR 0015): AgentClient over adam-rs agents hosted in the orchestrator's own process, journaled in its Postgres under the prefix orch_agent_, on pools of orch-pg-connect."
 readme = "README.md"
 
 [features]
 default = []
 # The scripted agent, `LocalFixture`, `LocalWorld` and a Postgres test schema: what the
 # conformance, durability and end-to-end tests run on. Enable as a dev-dependency feature.
-testkit = ["orch-ports/testkit", "dep:chrono", "dep:uuid"]
+testkit = ["orch-ports/testkit", "dep:jiff", "dep:uuid"]
 
 [dependencies]
 orch-core.workspace = true
 orch-ports.workspace = true
 orch-a2a-mapping.workspace = true
+orch-pg-connect.workspace = true
 adam-core.workspace = true
 adam-runtime.workspace = true
 adam-a2a.workspace = true
 adam-a2a-runtime.workspace = true
 adam-store-postgres.workspace = true
 adam-notify-postgres.workspace = true
+adam-postgres.workspace = true
 a2a-lf.workspace = true
 async-trait.workspace = true
-chrono = { workspace = true, optional = true }
+deadpool-postgres.workspace = true
 futures.workspace = true
+jiff = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-postgres.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 uuid = { workspace = true, optional = true }

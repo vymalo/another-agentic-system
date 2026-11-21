@@ -1,0 +1,71 @@
+# What sqlx 0.9 (sqlx-postgres 0.9.0, PgConnectOptions::from_str) read from each connection string, recorded
+# 2026-11-21 by running sqlx itself, before it left the workspace (sys#382 E1). tests/parse.rs reads it; never edit
+# a line: it is what sqlx did, and orch-pg-connect must keep reading every URL the same way.
+#
+# case, url, host, port, user, password, dbname, application_name, options, sslmode; tab-separated.
+# case "-" is an environment with no PG* variable, the others one each (tests/parse.rs sets their PG* variables).
+# <os-user> is the operating system's user (sqlx's default). Tcp("localhost") where no host is named is sqlx's
+# default when no local server's socket exists (tests/parse.rs also accepts the socket's directory where one does).
+-	postgres://app:pw@db.example:5433/orch	Tcp("db.example")	5433	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgresql://app:pw@db.example/orch	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgres://app@db.example:6432/orch?sslmode=require	Tcp("db.example")	6432	"app"	None	Some("orch")	None	None	Require
+-	postgres://app:p%40ss@db.example/orch?application_name=orchestrator	Tcp("db.example")	5432	"app"	Some("p@ss")	Some("orch")	Some("orchestrator")	None	Prefer
+-	postgres://app:pw@db.example/orch?sslmode=verify-full&sslrootcert=/etc/ca.pem	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	None	VerifyFull
+-	postgres://app:pw@db.example/orch?options=-c%20search_path%3Dorch	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	Some("-c search_path=orch")	Prefer
+-	postgres://app:pw@db.example/orch?sslmode=disable&connect_timeout=5	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	None	Disable
+-	postgres://app:pw@db.example/orch?application_name=a+b	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	Some("a b")	None	Prefer
+-	postgres://app:pw@db.example/orch?host=other.example&port=7000&host=third.example	Tcp("third.example")	7000	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgres://app:pw@db.example/orch?options=-c%20a%3D1&options=-c%20b%3D2	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	Some("-c a=1 -c b=2")	Prefer
+-	postgres://app:pw@db.example/orch?options%5Bsearch_path%5D=my%20schema&options=-c%20c%3D3	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	Some("-c search_path=my\\ schema -c c=3")	Prefer
+-	postgres://app:pw@db.example/orch?application_name=a@b	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	Some("a@b")	None	Prefer
+-	postgres://app:pw@db.example/orch#fragment	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgres://app:pw@db.example/orch?hostaddr=192.0.2.7	Tcp("192.0.2.7")	5432	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgres://app:pw@db.example/orch?ssl-mode=VERIFY-CA&ssl-ca=/etc/ca.pem	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	None	VerifyCa
+-	postgres://app:pw@db.example/orch?sslmode=Require&statement-cache-capacity=10&unknown=1	Tcp("db.example")	5432	"app"	Some("pw")	Some("orch")	None	None	Require
+-	postgres://app:pw@db.example/orch?dbname=other&user=someone&password=else	Tcp("db.example")	5432	"someone"	Some("else")	Some("other")	None	None	Prefer
+-	postgres://app:pw@%2Frun%2Fpostgresql/orch	Unix("/run/postgresql")	5432	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgres://app:pw@db.example/orch?host=/run/postgresql	Unix("/run/postgresql")	5432	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgres://app:pw@[::1]:5433/orch	Tcp("::1")	5433	"app"	Some("pw")	Some("orch")	None	None	Prefer
+-	postgres://app:pw@db.example/my%20db	Tcp("db.example")	5432	"app"	Some("pw")	Some("my db")	None	None	Prefer
+none	postgres://	Tcp("localhost")	5432	<os-user>	None	None	None	None	Prefer
+none	postgres:///db	Tcp("localhost")	5432	<os-user>	None	Some("db")	None	None	Prefer
+none	postgres://h:1/d?options=-c%20b%3D2	Tcp("h")	1	<os-user>	None	Some("d")	None	Some("-c b=2")	Prefer
+none	postgres://u@%2Fsock%2Fdir/d	Unix("/sock/dir")	5432	"u"	None	Some("d")	None	None	Prefer
+none	postgres://u@h/d	Tcp("h")	5432	"u"	None	Some("d")	None	None	Prefer
+none	postgres://pgpass@h/d	Tcp("h")	5432	"pgpass"	None	Some("d")	None	None	Prefer
+all	postgres://	Tcp("envhost")	6000	"envuser"	Some("envpw")	Some("envdb")	Some("envapp")	Some("-c a=1")	VerifyFull
+all	postgres:///db	Tcp("envhost")	6000	"envuser"	Some("envpw")	Some("db")	Some("envapp")	Some("-c a=1")	VerifyFull
+all	postgres://h:1/d?options=-c%20b%3D2	Tcp("h")	1	"envuser"	Some("envpw")	Some("d")	Some("envapp")	Some("-c a=1 -c b=2")	VerifyFull
+all	postgres://u@%2Fsock%2Fdir/d	Unix("/sock/dir")	6000	"u"	Some("envpw")	Some("d")	Some("envapp")	Some("-c a=1")	VerifyFull
+all	postgres://u@h/d	Tcp("h")	6000	"u"	Some("envpw")	Some("d")	Some("envapp")	Some("-c a=1")	VerifyFull
+all	postgres://pgpass@h/d	Tcp("h")	6000	"pgpass"	Some("envpw")	Some("d")	Some("envapp")	Some("-c a=1")	VerifyFull
+hostaddr	postgres://	Tcp("10.1.2.3")	5432	<os-user>	None	None	None	None	Require
+hostaddr	postgres:///db	Tcp("10.1.2.3")	5432	<os-user>	None	Some("db")	None	None	Require
+hostaddr	postgres://h:1/d?options=-c%20b%3D2	Tcp("h")	1	<os-user>	None	Some("d")	None	Some("-c b=2")	Require
+hostaddr	postgres://u@%2Fsock%2Fdir/d	Unix("/sock/dir")	5432	"u"	None	Some("d")	None	None	Require
+hostaddr	postgres://u@h/d	Tcp("h")	5432	"u"	None	Some("d")	None	None	Require
+hostaddr	postgres://pgpass@h/d	Tcp("h")	5432	"pgpass"	None	Some("d")	None	None	Require
+socket	postgres://	Unix("/run/postgresql")	5432	<os-user>	None	None	None	None	Prefer
+socket	postgres:///db	Unix("/run/postgresql")	5432	<os-user>	None	Some("db")	None	None	Prefer
+socket	postgres://h:1/d?options=-c%20b%3D2	Tcp("h")	1	<os-user>	None	Some("d")	None	Some("-c b=2")	Prefer
+socket	postgres://u@%2Fsock%2Fdir/d	Unix("/sock/dir")	5432	"u"	None	Some("d")	None	None	Prefer
+socket	postgres://u@h/d	Tcp("h")	5432	"u"	None	Some("d")	None	None	Prefer
+socket	postgres://pgpass@h/d	Tcp("h")	5432	"pgpass"	None	Some("d")	None	None	Prefer
+pgpassfile	postgres://	Tcp("localhost")	5432	<os-user>	Some("any")	None	None	None	Prefer
+pgpassfile	postgres:///db	Tcp("localhost")	5432	<os-user>	Some("any")	Some("db")	None	None	Prefer
+pgpassfile	postgres://h:1/d?options=-c%20b%3D2	Tcp("h")	1	<os-user>	Some("any")	Some("d")	None	Some("-c b=2")	Prefer
+pgpassfile	postgres://u@%2Fsock%2Fdir/d	Unix("/sock/dir")	5432	"u"	Some("any")	Some("d")	None	None	Prefer
+pgpassfile	postgres://u@h/d	Tcp("h")	5432	"u"	Some("any")	Some("d")	None	None	Prefer
+pgpassfile	postgres://pgpass@h/d	Tcp("h")	5432	"pgpass"	Some("from:file")	Some("d")	None	None	Prefer
+pgpass-open	postgres://	Tcp("localhost")	5432	<os-user>	None	None	None	None	Prefer
+pgpass-open	postgres:///db	Tcp("localhost")	5432	<os-user>	None	Some("db")	None	None	Prefer
+pgpass-open	postgres://h:1/d?options=-c%20b%3D2	Tcp("h")	1	<os-user>	None	Some("d")	None	Some("-c b=2")	Prefer
+pgpass-open	postgres://u@%2Fsock%2Fdir/d	Unix("/sock/dir")	5432	"u"	None	Some("d")	None	None	Prefer
+pgpass-open	postgres://u@h/d	Tcp("h")	5432	"u"	None	Some("d")	None	None	Prefer
+pgpass-open	postgres://pgpass@h/d	Tcp("h")	5432	"pgpass"	None	Some("d")	None	None	Prefer
+pgpass-home	postgres://	Tcp("localhost")	5432	<os-user>	Some("home-only-if-private")	None	None	None	Prefer
+pgpass-home	postgres:///db	Tcp("localhost")	5432	<os-user>	Some("home-only-if-private")	Some("db")	None	None	Prefer
+pgpass-home	postgres://h:1/d?options=-c%20b%3D2	Tcp("h")	1	<os-user>	Some("home-only-if-private")	Some("d")	None	Some("-c b=2")	Prefer
+pgpass-home	postgres://u@%2Fsock%2Fdir/d	Unix("/sock/dir")	5432	"u"	Some("home-only-if-private")	Some("d")	None	None	Prefer
+pgpass-home	postgres://u@h/d	Tcp("h")	5432	"u"	Some("home-only-if-private")	Some("d")	None	None	Prefer
+pgpass-home	postgres://pgpass@h/d	Tcp("h")	5432	"pgpass"	Some("home-only-if-private")	Some("d")	None	None	Prefer

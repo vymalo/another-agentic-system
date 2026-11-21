@@ -34,6 +34,13 @@ Read as sqlx's `PgConnectOptions::from_str` read it, in three layers:
 back to `prefer`); an `sslrootcert` that holds no certificate (sqlx trusted the Mozilla roots alone). An error never
 holds the URL: it may carry a password.
 
+**What the URL leaves to the environment.** `PgOptions::left_to_the_environment(url)` names the first part of the
+server (host, port, user, password, database, `sslmode`, and `sslrootcert` under `verify-ca` or `verify-full`) that
+`url.parse()` takes from a `PG*` variable, the password file or the operating system's user and the URL alone names
+differently, or `None`. A caller whose string is also read by a client that reads only the URL (adam-rs's
+`adam-postgres`, `orch-agent-adam`'s notifier) refuses such a string, so the two never reach different servers. It
+returns a part's name, never a value.
+
 ## TLS
 
 rustls on aws-lc-rs, the Mozilla roots (`webpki-roots`) and `sslrootcert` (a PEM file, or the PEM itself), as sqlx's
@@ -89,10 +96,18 @@ caller drives itself with `tls_connector()`.
   the query key by key (aliases, the last one winning, `options` growing, `options[...]` escaped, a socket kept apart
   from the host), the password file (`PGPASSFILE` before `~/.pgpass`, wildcards, escapes, comments, malformed lines),
   `sslrootcert` as a path or PEM; each `sslmode` with the mode `tokio-postgres` is given, and `config_mut` unable to
-  change it; every refusal, none showing the password; an `sslrootcert` that cannot be read or holds no certificate.
-* `tests/parse.rs` (sqlx as a dev-dependency until it leaves the workspace): 21 URLs name the same host (a socket
-  included), port, user, password, database, `application_name`, `options` and `sslmode` to both; and in seven child
-  processes, each with its own `PG*` variables and password files, six more URLs do.
+  change it; every refusal, none showing the password; an `sslrootcert` that cannot be read or holds no certificate;
+  `left_to_the_environment` names each part a variable, the password file or the OS user supplies, and nothing for a
+  URL that names them all.
+* `tests/parse.rs`: 21 URLs name the host (a socket included), port, user, password, database, `application_name`,
+  `options` and `sslmode` that sqlx 0.9 read from them in an environment with no `PG*` variable; and in seven more
+  environments, each with its own `PG*` variables and password files, six more URLs do. Each case runs in a child
+  process whose environment is cleared, so the machine's own `PG*` variables and `~/.pgpass` change nothing. What
+  sqlx read was recorded by running sqlx itself on 2026-11-21, before it left the workspace (sys#382 E1), in
+  `tests/sqlx-0.9-reads.tsv`, whose recorded lines are never edited (sqlx's default user is `<os-user>`, read as
+  sqlx read it: the operating system's user, else `unknown`, as in a container whose uid has no name; where no host
+  is named, sqlx's `localhost` also matches the directory of a local server's socket, which sqlx would have taken
+  where one exists).
 * `tests/tls.rs`, against a server with TLS on and a certificate for `localhost` from a test CA
   (`ORCH_TEST_TLS_DATABASE_URL`, `ORCH_TEST_TLS_ROOT_CERT`; skipped without them, and **CI does not set them**: they
   are run by hand, as the pull request that changes this crate says): `disable` is plain; `prefer` and `require` take

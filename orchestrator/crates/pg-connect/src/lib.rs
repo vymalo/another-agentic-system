@@ -114,6 +114,16 @@ impl FromStr for PgOptions {
 }
 
 impl PgOptions {
+    /// The first part of the server that `url` leaves to the process's environment: its host,
+    /// port, user, password, database, `sslmode` or (for `verify-ca` and `verify-full`) `sslrootcert`, which `url.parse()` takes from a
+    /// `PG*` variable, the password file or the operating system's user and `url` alone names
+    /// differently; `None` when `url` names them all. For a connection string that a client which
+    /// reads only the URL connects with too (adam-rs's `adam-postgres`), so the two cannot reach
+    /// different servers or log in differently. The answer is a part's name, never a value.
+    pub fn left_to_the_environment(url: &str) -> Result<Option<&'static str>, ParseError> {
+        parse::left_to_the_environment(url, &parse::Process)
+    }
+
     fn from_parsed(parsed: parse::Parsed) -> Self {
         let mut config = tokio_postgres::Config::new();
         match parsed.target() {

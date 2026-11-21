@@ -66,6 +66,63 @@ pub(crate) trait Source {
     fn exists(&self, path: &Path) -> bool;
 }
 
+/// The connection string alone: no variable, no password file, no home, no operating system
+/// user and no socket, what a client that reads only the URL sees.
+pub(crate) struct UrlAlone;
+
+impl Source for UrlAlone {
+    fn var(&self, _name: &str) -> Option<String> {
+        None
+    }
+
+    fn password_file(&self, _path: &Path) -> Option<String> {
+        None
+    }
+
+    fn home(&self) -> Option<PathBuf> {
+        None
+    }
+
+    fn os_user(&self) -> Option<String> {
+        None
+    }
+
+    fn exists(&self, _path: &Path) -> bool {
+        false
+    }
+}
+
+/// The first part of the server `url` names in `source` (host, port, user, password, database,
+/// `sslmode`, and `sslrootcert` when the mode checks the chain) that `url` alone names
+/// differently, or `None` when it names all of them. Never a value: it may be a password.
+pub(crate) fn left_to_the_environment(
+    url: &str,
+    source: &dyn Source,
+) -> Result<Option<&'static str>, ParseError> {
+    let full = parse(url, source)?;
+    let alone = parse(url, &UrlAlone)?;
+    Ok(if full.target() != alone.target() {
+        Some("host")
+    } else if full.port != alone.port {
+        Some("port")
+    } else if full.user != alone.user {
+        Some("user")
+    } else if full.password != alone.password {
+        Some("password")
+    } else if full.dbname != alone.dbname {
+        Some("database")
+    } else if full.tls != alone.tls {
+        Some("sslmode")
+    } else if matches!(full.tls, TlsMode::VerifyCa | TlsMode::VerifyFull)
+        && full.root_cert != alone.root_cert
+    {
+        // Only a mode that checks the chain reads the root certificate.
+        Some("sslrootcert")
+    } else {
+        None
+    })
+}
+
 /// The process's environment, home and files.
 pub(crate) struct Process;
 
@@ -385,6 +442,60 @@ mod tests {
 
     fn tcp(host: &str) -> Host {
         Host::Tcp(host.to_owned())
+    }
+
+    #[test]
+    fn what_only_the_environment_names_is_found() {
+        let full = "postgres://u:pw@h:5432/d?sslmode=require";
+        assert_eq!(
+            left_to_the_environment(full, &Fake::default()).unwrap(),
+            None
+        );
+        let all = with(&[
+            ("PGHOST", "envhost"),
+            ("PGUSER", "envuser"),
+            ("PGPASSWORD", "envpw"),
+            ("PGDATABASE", "envdb"),
+            ("PGSSLMODE", "verify-full"),
+            ("PGSSLROOTCERT", "/etc/ca.pem"),
+        ]);
+        // The URL wins over every variable, so a full URL leaves nothing to them.
+        assert_eq!(left_to_the_environment(full, &all).unwrap(), None);
+        let cases = [
+            ("postgres:///d?user=u&password=pw&sslmode=require", "host"),
+            ("postgres://u@h/d?sslmode=require", "password"),
+            ("postgres://:pw@h/d?sslmode=require", "user"),
+            ("postgres://u:pw@h?sslmode=require", "database"),
+            ("postgres://u:pw@h/d", "sslmode"),
+            ("postgres://u:pw@h/d?sslmode=verify-full", "sslrootcert"),
+        ];
+        for (url, part) in cases {
+            assert_eq!(
+                left_to_the_environment(url, &all).unwrap(),
+                Some(part),
+                "{url}"
+            );
+        }
+        let port = with(&[("PGPORT", "6000")]);
+        assert_eq!(
+            left_to_the_environment("postgres://u:pw@h/d", &port).unwrap(),
+            Some("port")
+        );
+        // The operating system's user, and the password file, are the environment too.
+        let os = Fake {
+            os_user: Some("me"),
+            ..Fake::default()
+        };
+        assert_eq!(
+            left_to_the_environment("postgres://h/d", &os).unwrap(),
+            Some("user")
+        );
+        let mut file = with(&[("PGPASSFILE", "/p")]);
+        file.files.insert(PathBuf::from("/p"), "*:*:*:*:secret\n");
+        assert_eq!(
+            left_to_the_environment("postgres://u@h/d", &file).unwrap(),
+            Some("password")
+        );
     }
 
     #[test]

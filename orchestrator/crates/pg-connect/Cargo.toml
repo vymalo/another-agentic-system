@@ -22,9 +22,5 @@ url.workspace = true
 webpki-roots.workspace = true
 whoami.workspace = true
 
-[dev-dependencies]
-# The proof that a connection string means what it meant to sqlx: removed with sqlx at the end of E1.
-sqlx.workspace = true
-
 [lints]
 workspace = true

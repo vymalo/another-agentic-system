@@ -1,13 +1,18 @@
 //! A connection string names the server, the user, the password, the database and the session
-//! parameters it named to sqlx 0.9: the same URLs read by both, in this process's environment and,
-//! in a child process each, in environments of `PG*` variables and a password file.
+//! parameters it named to sqlx 0.9: what sqlx read from each of these URLs, in an environment with
+//! no `PG*` variable and, in a child process each, in environments of `PG*` variables and a password
+//! file, was recorded by sqlx itself before it left the workspace (`tests/sqlx-0.9-reads.tsv`, sys#382
+//! E1), and every URL must still read the same. Every case runs in a child process whose
+//! environment is cleared, so a `PG*` variable or a `~/.pgpass` of the machine running the tests
+//! changes nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
-use std::path::PathBuf;
+use std::path::Path;
 
-use orch_pg_connect::{PgOptions, TlsMode};
-use sqlx::postgres::{PgConnectOptions, PgSslMode};
-use tokio_postgres::config::Host;
+use orch_pg_connect::PgOptions;
+
+/// What sqlx 0.9 read, one line per case and URL.
+const SQLX_READS: &str = include_str!("sqlx-0.9-reads.tsv");
 
 const URLS: &[&str] = &[
     "postgres://app:pw@db.example:5433/orch",
@@ -34,91 +39,115 @@ const URLS: &[&str] = &[
     "postgres://app:pw@db.example/my%20db",
 ];
 
-/// What sqlx connects to: its socket, else its host when it starts with `/`, else its host (an
-/// IPv6 address without its brackets).
-fn their_host(theirs: &PgConnectOptions) -> Host {
-    match theirs.get_socket() {
-        Some(dir) => Host::Unix(dir.clone()),
-        None if theirs.get_host().starts_with('/') => Host::Unix(PathBuf::from(theirs.get_host())),
-        None => Host::Tcp(
-            theirs
-                .get_host()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .to_owned(),
-        ),
-    }
-}
-
-/// sqlx keeps the password private; its `Debug` shows it.
-fn their_password(theirs: &PgConnectOptions) -> String {
-    let debug = format!("{theirs:?}");
-    let start = debug.find("password: ").unwrap() + "password: ".len();
-    let end = start + debug[start..].find(", database: ").unwrap();
-    debug[start..end].to_owned()
-}
-
-fn same(url: &str, context: &str) {
-    let theirs: PgConnectOptions = url.parse().unwrap();
-    let ours: PgOptions = url.parse().unwrap();
+/// What `ours` reads, in the columns of the recording: the host, the port, the user, the password,
+/// the database, the `application_name`, the `options` and the `sslmode`, each as the recording
+/// wrote sqlx's (`Debug`).
+fn reading(ours: &PgOptions) -> Vec<String> {
     let config = ours.config();
-    assert_eq!(
-        config.get_hosts(),
-        [their_host(&theirs)],
-        "{context} {url}: host"
-    );
-    assert_eq!(
-        config.get_ports(),
-        [theirs.get_port()],
-        "{context} {url}: port"
-    );
-    assert_eq!(
-        config.get_user(),
-        Some(theirs.get_username()),
-        "{context} {url}: user"
-    );
+    let user = format!("{:?}", config.get_user().unwrap_or_default());
     let password = config
         .get_password()
         .map(|p| std::str::from_utf8(p).unwrap());
-    assert_eq!(
+    vec![
+        format!("{:?}", config.get_hosts()[0]),
+        config.get_ports()[0].to_string(),
+        user,
         format!("{password:?}"),
-        their_password(&theirs),
-        "{context} {url}: password"
-    );
+        format!("{:?}", config.get_dbname()),
+        format!("{:?}", config.get_application_name()),
+        format!("{:?}", config.get_options()),
+        format!("{:?}", ours.tls()),
+    ]
+}
+
+/// sqlx 0.9's user where neither the URL nor `PGUSER` names one (`PgConnectOptions::new_without_pgpass`):
+/// the operating system's, else `unknown`. The recording wrote it `<os-user>`, because it depends on
+/// the machine (a container's uid may have no name).
+fn sqlx_default_user() -> String {
+    whoami::username().unwrap_or_else(|_| "unknown".to_owned())
+}
+
+/// The recorded reading of `url` in `case`, `<os-user>` replaced by this machine's.
+fn recorded(case: &str, url: &str) -> Vec<String> {
+    SQLX_READS
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .find(|fields| fields[0] == case && fields[1] == url)
+        .unwrap_or_else(|| panic!("no recording of {url} in case {case}"))[2..]
+        .iter()
+        .map(|field| match *field {
+            "<os-user>" => format!("{:?}", sqlx_default_user()),
+            field => field.to_owned(),
+        })
+        .collect()
+}
+
+/// sqlx's default host where no host is named: the first of these directories that holds the
+/// server's socket, else `localhost`. The recording was made where none did; where one does, sqlx
+/// would have said its directory, as this crate does.
+fn default_host_here(theirs: &str, ours: &str, port: &str) -> bool {
+    theirs == "Tcp(\"localhost\")"
+        && ["/var/run/postgresql", "/private/tmp", "/tmp"]
+            .iter()
+            .any(|dir| {
+                ours == format!("Unix({dir:?})")
+                    && Path::new(dir).join(format!(".s.PGSQL.{port}")).exists()
+            })
+}
+
+fn same(url: &str, case: &str) {
+    let ours: PgOptions = url.parse().unwrap();
+    let mut ours = reading(&ours);
+    let theirs = recorded(case, url);
+    if default_host_here(&theirs[0], &ours[0], &ours[1]) {
+        ours[0] = theirs[0].clone();
+    }
     assert_eq!(
-        config.get_dbname(),
-        theirs.get_database(),
-        "{context} {url}: database"
+        ours, theirs,
+        "case {case}, {url}: host, port, user, password, database, application_name, options, sslmode"
     );
-    assert_eq!(
-        config.get_application_name(),
-        theirs.get_application_name(),
-        "{context} {url}: application_name"
+}
+
+/// Set in the child processes of the tests below, to the case they check.
+const CASE: &str = "ORCH_PG_CONNECT_ENV_CASE";
+
+/// Runs `test` of this binary again in a child process whose environment holds only `CASE`, a
+/// `HOME` with no password file, `PATH` and `vars`, and asserts it passed.
+fn in_child(test: &str, case: &str, vars: &[(&str, &str)]) {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", test, "--nocapture"])
+        .env_clear()
+        .env(CASE, case)
+        .env("HOME", "/nonexistent-home");
+    if let Some(path) = std::env::var_os("PATH") {
+        child.env("PATH", path);
+    }
+    child.envs(vars.iter().copied());
+    let output = child.output().unwrap();
+    assert!(
+        output.status.success(),
+        "case {case}:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        config.get_options(),
-        theirs.get_options(),
-        "{context} {url}: options"
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "case {case}: the child ran the test"
     );
-    let mode = match theirs.get_ssl_mode() {
-        PgSslMode::Disable | PgSslMode::Allow => TlsMode::Disable,
-        PgSslMode::Prefer => TlsMode::Prefer,
-        PgSslMode::Require => TlsMode::Require,
-        PgSslMode::VerifyCa => TlsMode::VerifyCa,
-        PgSslMode::VerifyFull => TlsMode::VerifyFull,
-    };
-    assert_eq!(ours.tls(), mode, "{context} {url}: sslmode");
 }
 
 #[test]
 fn every_url_names_what_it_named_to_sqlx() {
-    for url in URLS {
-        same(url, "");
+    if std::env::var(CASE).is_ok() {
+        for url in URLS {
+            same(url, "-");
+        }
+        return;
     }
+    in_child("every_url_names_what_it_named_to_sqlx", "-", &[]);
 }
-
-/// Set in the child processes of the test below, to the case they check.
-const CASE: &str = "ORCH_PG_CONNECT_ENV_CASE";
 
 /// The URLs read in each environment: one that names nothing, and some that name a part.
 const ENV_URLS: &[&str] = &[
@@ -200,33 +229,8 @@ fn the_environment_is_read_as_sqlx_reads_it() {
         let path = dir.join(".pgpass");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let me = std::env::current_exe().unwrap();
     for (name, vars) in cases {
-        let mut child = std::process::Command::new(&me);
-        child
-            .args([
-                "--exact",
-                "the_environment_is_read_as_sqlx_reads_it",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env(CASE, name)
-            .env("HOME", "/nonexistent-home");
-        if let Some(path) = std::env::var_os("PATH") {
-            child.env("PATH", path);
-        }
-        child.envs(vars);
-        let output = child.output().unwrap();
-        assert!(
-            output.status.success(),
-            "case {name}:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-            "case {name}: the child ran the test"
-        );
+        in_child("the_environment_is_read_as_sqlx_reads_it", name, &vars);
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }

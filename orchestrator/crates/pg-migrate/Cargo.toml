@@ -15,9 +15,6 @@ thiserror.workspace = true
 tokio-postgres.workspace = true
 
 [dev-dependencies]
-# The proof that this runner continues sqlx's history, and sqlx this runner's: removed with sqlx
-# at the end of E1, when no history is written by sqlx any more.
-sqlx.workspace = true
 tokio.workspace = true
 
 [lints]
