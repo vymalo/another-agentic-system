@@ -32,6 +32,7 @@ orch-model-openai = { path = "crates/model-openai" }
 orch-tools-mcp = { path = "crates/tools-mcp" }
 orch-credential-broker = { path = "crates/credential-broker" }
 orch-secrets-pg = { path = "crates/secrets-pg" }
+orch-pg-migrate = { path = "crates/pg-migrate" }
 orch-artifacts-fs = { path = "crates/artifacts-fs" }
 orch-artifacts-s3 = { path = "crates/artifacts-s3" }
 orch-svg-clean = { path = "crates/svg-clean" }
@@ -117,6 +118,7 @@ subtle = "2.6"
 # The operating system's random bytes, for the nonce of a share link (`orch-ports`, ADR 0040).
 getrandom = "0.3"
 sha2 = "0.10"
+tokio-postgres = "0.7.18"
 # Wipes the bytes of a secret when it is dropped (`orch-ports`, `SecretMaterial`, ADR 0046).
 zeroize = "1"
 # The AES-256-GCM of the sealed secrets (`orch-secrets-pg`, ADR 0046): RustCrypto's, pure Rust, `Apache-2.0 OR MIT`.
