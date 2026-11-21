@@ -2839,7 +2839,7 @@ sequenceDiagram
   S->>A: get_thread(user, id): missing, malformed and foreign ids are one 404, before any byte
   S->>A: thread_feed(user, id, 0): event_stream and live text
   A->>W: subscribe, before the first read
-  loop until the client closes, or Connect says the stream is over
+  loop until the client closes, the lifetime ends it, or Connect says the stream is over
     A->>DB: list_events(after the cursor, 500)
     DB-->>A: events, in seq order
     A-->>S: each event
@@ -2850,6 +2850,7 @@ sequenceDiagram
     DB-->>W: NOTIFY orch_thread, from any replica's commit
     W-->>A: Topic::Thread(id)
   end
+  Note over C,S: the lifetime (60 s) or the token's expiry ends the stream,<br/>and the client reopens it with its last id: to see each later event once (ADR 0082)
 ```
 
 ```mermaid
@@ -2859,7 +2860,9 @@ stateDiagram-v2
   Reading --> Waiting: caught up
   Waiting --> Reading: NOTIFY for this thread, Resync, or the 5 s poll
   Reading --> [*]: caught up and the process is shutting down (a truncated stream: the client reconnects)
+  Reading --> [*]: the lifetime or the token's expiry (ADR 0082), and the client reopens with its last id
   Reading --> [*]: the client closes
+  Waiting --> [*]: the lifetime or the token's expiry (ADR 0082)
   Waiting --> [*]: the client closes
 ```
 
@@ -2872,6 +2875,18 @@ stateDiagram-v2
   preamble re-opens the run that is open there, and the rest is exactly what an uninterrupted stream
   would have written. Any replica serves any viewer, and a hundred viewers of a thread are a hundred
   independent folds. The cost is a read of the thread's log from its start on every connect.
+- **Every stream ends** after the deployment's lifetime (60 s by default, `ApiConfig::sse_lifetime`,
+  [ADR 0082](decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)): the budget
+  is the shortest of the token's expiry plus its leeway, an hour, and the lifetime, and it is never
+  unbounded — a credential without an expiry is bounded by the lifetime like any other. The response
+  closes and nothing leaves the log; the client reopens with the last `id:` it holds and is shown
+  each later event once. The public shared stream, which has no credential, is bounded by the
+  lifetime and the hour alone.
+- **A resend of a known message attaches to the run that message opened**, whatever `runId` it
+  carries ([ADR 0082](decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)):
+  the idempotency key is the message id, the log's `user_message` records the run the message
+  started, and the projector folds that into a message→run map (`KnownThread::message_runs`) that
+  `translate` reads. Five sends of one message are one message, one run and one charge.
 - **Every id is derived from the log** (run, message, activity, subagent, interrupt), so replicas and
   replays emit identical frames; `id:` is the log's `seq`, written only on the last frame of an
   event and only when no text message is open, so a resume never splits a message.

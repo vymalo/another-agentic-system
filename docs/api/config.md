@@ -653,9 +653,11 @@ auth:
   `agents`; `auth.roles: {}` is an error (leave the key out for the built-ins). An agent id that no agent has matches
   nothing (the roles are read before the agents are). A `role` of the MCP tokens file that `auth.roles` does not define
   is exit 78 too: a typo would otherwise hand the token the default role.
-- **A stream lasts as long as the token it was opened with**: an AG-UI connect or run stream is ended at the token's
-  `exp` plus 60 s, and after an hour at most; the client reconnects with `Last-Event-ID`. A credential that does not run
-  out (the proxy header, an MCP token) does not bound a stream.
+- **A stream ends at the shortest of its token, an hour and the deployment's lifetime**: an AG-UI connect or run stream is
+  ended at the token's `exp` plus 60 s, at most an hour, and at most the lifetime (60 s by default, `ApiConfig::sse_lifetime`,
+  the contract's own and not a key of this file: [ADR 0082](../decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md));
+  the client reopens it with `Last-Event-ID`. A credential that does not run out (the proxy header, an MCP token) is bounded by
+  the lifetime like any other: no stream is unbounded.
 - **The proxy header** carries no roles, so every request of `auth.mode: proxy_header` has the default role: with the
   built-ins, everybody is a `user`, as before roles existed. To have an administrator in that mode, name `admin` the
   default role (everybody is one: for one person on a local machine, and it adds nothing to what a user reads) or use `jwt`.

@@ -253,8 +253,9 @@ Prose for what the diagram compresses:
 - **The stream is the log.** `App::event_stream` replays every event with `seq >` the cursor, then
   follows; a clamped cursor, a poll under the `NOTIFY`, and a subscribe-before-read order mean no
   gap and no duplicate. The projection is a function of the log prefix, so frames are identical on
-  every replica and on every replay. When the process shuts down and the stream has caught up, it
-  ends without a terminal event, so the client reconnects to another replica with `Last-Event-ID`.
+  every replica and on every replay. A stream ends at its lifetime (60 s by default, ADR 0082) and
+  when the process shuts down, either way without a terminal event, so the client reopens it with
+  `Last-Event-ID` and is shown each later event once.
   The web hands frames to its runtime in whole groups (an `id:` closes one) and drops groups it has
   delivered, so a cut connection never leaves half a message.
 - **Closing a stream never cancels a run.** Truncation is not cancellation (the AG-UI rule). Cancel is
@@ -488,6 +489,8 @@ stateDiagram-v2
   Folding --> Writing: the event at c is folded (preamble if a run is open)
   Writing --> Writing: next event, frames with id seq
   Writing --> Over: mode=run, replay done, no run open
+  Writing --> Expired: the lifetime, the token's expiry, or an hour (ADR 0082)
+  Expired --> Folding: reopen with the last id: each later event once
   Writing --> Truncated: the process shuts down, or the connection is lost
   Truncated --> Folding: reconnect with the last id
   Over --> [*]
@@ -504,8 +507,8 @@ produced from the log, and why no replica remembers a connection, is
 | `RunAgentInput` → input | `orch-agui-projection::translate` (new message, `resume`, cancel, attach, refusals with their HTTP status) |
 | Live text | The words of a reply that is still being written ([ADR 0027](decisions/0027-live-text-relayed-not-stored.md), [`api/text-stream-v1.md`](api/text-stream-v1.md)): the dispatcher that holds the agent's stream relays each piece on the wakeup port (Postgres `NOTIFY orch_live`, every process listens, never stored), `App::thread_feed` mixes the pieces of a thread into its events, and `LiveOverlay` turns them into frames beside the projection (never resume points, merged by message id with the log's final message); the `split` profile works because every role listens ([`api/agui.md`](api/agui.md#live-text)) |
 | Conformance | Schema validation of every frame; well-formedness properties; resume-from-any-point property; goldens read through `@ag-ui/client` 1.0.0 by `tools/agui-conformance` in CI |
-| HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `GET /agui/threads/{id}/connect` (replay, `Last-Event-ID`, `?mode=run`, keepalive, follows across runs and replicas); `GET /agui/threads/{id}/history` and its two shared variants (a page of settled chains from the newest back, a catch-up; [`api/history.md`](api/history.md)); `GET /agui/agents/{agentId}/capabilities`; `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature |
-| Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (the inbox is for machine input only: webhook reports and timers) |
+| HTTP routes | `orch-surface-agui`: `POST /agui/agents/{agentId}` (a consumer-minted thread id, id reconciliation, `resume`, refusals as RFC 9457 problems before the stream); `GET /agui/threads/{id}/connect` (replay, `Last-Event-ID`, `?mode=run`, keepalive, a stream that ends at its lifetime — 60 s by default, [ADR 0082](decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md) — and is reopened from the cursor, follows across runs and replicas); `GET /agui/threads/{id}/history` and its two shared variants (a page of settled chains from the newest back, a catch-up; [`api/history.md`](api/history.md)); `GET /agui/agents/{agentId}/capabilities`; `agui` as an `ORCH_SURFACES` value and a `surface-agui` feature |
+| Idempotent runs | A retried POST attaches instead of duplicating: the idempotency key `agui:<threadId>:msg:<messageId>` on the event log (the inbox is for machine input only: webhook reports and timers). A resend of a known message under a **fresh** `runId` attaches to the run that message opened, which the log's `user_message` records ([ADR 0082](decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)): five sends of one message are one message, one run and one charge |
 | The web | `@assistant-ui/react-ag-ui` (pinned, one patch) over a `ThreadAgent`: the newest turns by `history` and the connect stream with `Last-Event-ID` from where the page ends, runs by `POST /agui/agents/{agentId}`, interrupts by `resume`, Cancel by the resource API ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-web)) |
 | Generative UI | A2UI ([ADR 0013](decisions/0013-a2ui-generative-ui.md)) on the orchestrator side: `ui_surface` and `ui_action` events, the A2A adapter's `application/a2ui+json` parts (envelope check, size caps), capability detection of both extension URIs, `a2ui-surface` snapshots of the whole surface, `forwardedProps.a2uiAction` validated and delivered to the same A2A task, the capabilities document ([`api/agui.md`](api/agui.md#a2ui-generative-ui)); in the web, the validator, the shadcn vocabulary and actions on a user gesture only ([`web/README.md`](../web/README.md#a2ui-surfaces)) |
 | MCP server | `orch-surface-mcp` ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)): `list_agents`, `start_job`, `get_job`, `answer` and `cancel_job` at `/mcp` over streamable HTTP, stateless (any replica serves any call), a machine route behind static bearer tokens that map to users; straight to `App`, not through the inbox; `mcp` as an `ORCH_SURFACES` value and a `surface-mcp` feature (default). `wait_for_job` follows a job through the event log with `notifications/progress` (one per event, a heartbeat every 60 s), returns when the job is finished or blocked or on a timeout with `resume_after_seq`, and continues on any replica with `after_seq` |

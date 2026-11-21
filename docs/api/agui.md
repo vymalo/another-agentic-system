@@ -474,7 +474,8 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | `a2uiAction` with a `name`, `surfaceId` or `sourceComponentId` over 256 bytes, or a `context` over 16 KiB | 413 before the stream |
 | `resume` on a thread that is not blocked, or naming an unknown id | Entries ignored with a warning |
 | Nothing new, no resume, `runId` already recorded | Attach: stream that run from its start (an idempotent retry) |
-| Nothing new, no resume, unknown `runId` | 422 (nothing to run) |
+| Nothing new, no resume, a resent message the log holds, `runId` not recorded | Attach to **the run that message opened**, whatever `runId` the request carries (ADR 0082, decision 5): five sends of one message are one message, one run and one charge, and the person is shown the answer rather than a refusal. The run is the log's (`user_message.run_id`), not the request's |
+| Nothing new, no resume, neither a recorded `runId` nor a message whose run the log knows | 422 (nothing to run) |
 | A new message or answer under a `runId` the thread already used | 422: a run id is never reused |
 | A run already open on the thread | 409 before the stream, **unless** the run carries one new user message and `forwardedProps["vymalo.send"]` (next row) |
 | `forwardedProps["vymalo.send"]` (ADR 0036) on a run | How a message sent **while a run is open** is delivered: `"steer"` (Send) is `Input::UserMessage`, which the core logs `delivery: steer`; `"interrupt"` (Stop & send) is `Input::StopAndSend`. Served only for one new user message: an A2UI action, nothing new, a second new message or a reused `runId` are refused as always. Read on every run, so any other value (`"stop"`, a boolean, an object) is **400** whatever the thread is doing; `null` is no member. With no run open the member changes nothing, except that `"interrupt"` is `Input::StopAndSend` for a thread that exists (the core treats it as a plain message when nothing runs, ADR 0036 row 4). The response is a run of its own, [see below](#sending-while-an-agent-works) |
@@ -485,7 +486,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | `state` | Ignored (producer-owned) |
 | `parentRunId` | Recorded in metadata, no effect |
 | Non-text content parts | Skipped with a warning; the run does not fail |
-| Idempotency | The event the input writes carries the key `agui:<threadId>:msg:<messageId>` (`agui:<threadId>:run:<runId>` for an answer with no message id of its own); a retried POST, even a concurrent one, attaches instead of duplicating. There is no inbox table yet: the key is the log's per-thread `idempotency_key` |
+| Idempotency | The event the input writes carries the key `agui:<threadId>:msg:<messageId>` (`agui:<threadId>:run:<runId>` for an answer with no message id of its own); a retried POST, even a concurrent one, attaches instead of duplicating. There is no inbox table yet: the key is the log's per-thread `idempotency_key`. The key is the **message id**, so a retry that names a fresh `runId` is the same input (ADR 0082): the log's `user_message` records the run it opened, and that is the run the retry attaches to |
 | Cancel | `POST /api/threads/{id}/cancel`; the outcome arrives as `RUN_FINISHED{outcome:{type:"cancelled"}}` |
 
 ## Sending while an agent works
@@ -1567,7 +1568,7 @@ was streamed and nothing was written.
 | 409 | With `vymalo.fork`: the turn to copy is still going on (`code: turn_open`), or the thread exists and is not the fork this request made. The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
-| 422 | A `vymalo.fork` whose `after` is not an event of the parent; a `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run; more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, names one whose operations are not `"1.0"`, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
+| 422 | A `vymalo.fork` whose `after` is not an event of the parent; a `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run (no new message, no answer, and a `runId` the thread does not hold — a resent message the log holds attaches to the run it opened, whatever `runId` it carries, ADR 0082); more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, names one whose operations are not `"1.0"`, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
 | 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`); the agent registry cannot say whether the `agentId` exists, or whether a mentioned agent does (503, "the agent registry is unreachable", `Retry-After`: never a 404 or a 422 while the registry is down, ADR 0022) |
 
 ## Connect binding
@@ -1583,7 +1584,7 @@ sequence and state diagrams are in [ADR 0012](../decisions/0012-ag-ui-user-facin
 | Input | Meaning |
 |---|---|
 | `Last-Event-ID` header | Resume after this seq: the `id:` of the last frame the client holds. Absent or empty: replay the whole thread. |
-| `?mode=run` | Close after the active run's terminal event, or right after the replay when no run is open. Default: stay open. Any other value of `mode` is a 400. |
+| `?mode=run` | Close after the active run's terminal event, or right after the replay when no run is open. Default: follow across runs until the deployment's lifetime ends the stream (ADR 0082). Any other value of `mode` is a 400. |
 
 **Errors before the stream.** Each is an RFC 9457 problem and nothing was streamed.
 
@@ -1608,10 +1609,21 @@ for new events.
    opened again with what it had said. None of the preamble frames has an `id:`. When the thread is
    idle at the cursor there is no preamble, and the stream begins with the `RUN_STARTED` of the
    next run. Every stream thus begins with `RUN_STARTED`, as the spec requires.
-2. **Tail.** New log events, projected the same way, across runs, until the client closes (or the
-   active run closes, with `mode=run`). Between runs the stream is idle, not closed. It also
-   carries runs nobody asked for (an event the orchestrator wrote itself).
+2. **Tail.** New log events, projected the same way, across runs, until the stream ends (see the
+   next item) or the client closes, or, with `mode=run`, the active run closes. Between runs the
+   stream is idle, not closed. It also carries runs nobody asked for (an event the orchestrator
+   wrote itself).
 3. **Keepalive.** A comment line (`: keepalive`) at least every 15 s.
+4. **Lifetime.** The stream ends after the deployment's lifetime (60 s by default, ADR 0082),
+   always, whatever credential it was opened with: the budget is the shortest of the token's
+   expiry plus its leeway, an hour, and the lifetime. A credential that never expires — a proxy
+   header, a static token — used to leave the stream unbounded; it is bounded by the lifetime like
+   any other. **Ending is not losing:** nothing leaves the log, the response simply closes, and the
+   client reopens it with the last `id:` it saw (the cursor above) and is shown every later event
+   once. The reopen is the ordinary path, not an error path: a proxy, a phone radio or a NAT table
+   drops a quiet connection long before an hour, and the client cannot tell, so a stream that ends
+   on its own terms and says where it stopped is what lets the client tell a quiet stream from a
+   dead one (the keepalive does the same for a stream that is open).
 
 `?mode=run` ends the stream at the first point at which the thread's log, as it stood when the
 client connected, has been replayed and no run is open: right after the replay of an idle thread
@@ -1682,6 +1694,8 @@ stateDiagram-v2
   Writing --> Writing: next event, frames with id seq
   Writing --> Writing: caught up, or a later event, with no frame: an id alone, the seq read (no text message open)
   Writing --> Over: mode=run, replay done, no run open
+  Writing --> Expired: the lifetime, the token's expiry plus its leeway, or an hour (ADR 0082)
+  Expired --> Folding: reopen with the last id, once and exactly
   Writing --> Truncated: the process shuts down, or the connection is lost
   Truncated --> Folding: reconnect with the last id
   Over --> [*]
@@ -1696,8 +1710,8 @@ person (any role that holds `thread.read`; the identity layer applies) and `GET 
 link's capability, not the thread's id; a thread's own `/agui/threads/{id}/connect` is still the owner's.
 
 **What is the same as the connect binding:** the request (`Last-Event-ID`, `?mode=run`, `Accept`), the frames (the same
-projection, `id:` on resume points), the replay from the start or a cursor, the follow across runs, keepalive comments. What the
-owner writes after sharing is shown too (a link is live, not a snapshot).
+projection, `id:` on resume points), the replay from the start or a cursor, the follow across runs, keepalive comments, and the
+lifetime that ends the stream (ADR 0082). What the owner writes after sharing is shown too (a link is live, not a snapshot).
 
 **What is different:**
 
@@ -1713,10 +1727,11 @@ owner writes after sharing is shown too (a link is live, not a snapshot).
 - **Read-only.** The stream starts no run and takes no input; a run `POST` with the thread's id by anybody but the owner is the 404 it
   always was.
 - **The stream ends** when the link is taken down, replaced by a new one (`POST …/share/rotate`), or narrowed below what the stream was
-  opened for (`public` for the public route, `internal` for the signed-in one), and when the one-hour cap passes (a signed-in stream
-  also at its token's expiry). The share is read again when a `thread_shared` or `thread_unshared` event passes, so a revocation ends a
-  stream as soon as it is committed, and at least every 30 s whatever else happens (*unverified* under load; the number is the
-  planner's); a store that cannot answer ends it too. The client's reconnect then gets the 404.
+  opened for (`public` for the public route, `internal` for the signed-in one), at the deployment's lifetime like every stream
+  (ADR 0082; a signed-in stream also at its token's expiry, and an hour at most either way). A reader whose stream ended at its
+  lifetime reopens it with its last `id:`; one whose link was revoked gets the 404. The share is read again when a `thread_shared`
+  or `thread_unshared` event passes, so a revocation ends a stream as soon as it is committed, and at least every 30 s whatever
+  else happens (*unverified* under load; the number is the planner's); a store that cannot answer ends it too.
 - **One 404** for every way a link can fail: an unknown or malformed token, a bad MAC, a private or revoked thread, a cap that was
   lowered, an `internal` link on the public route. The same body for each, before any stream byte.
 - **The public route is rate limited** per link and in all, and holds one of the link's **stream permits** while open (5 per link and

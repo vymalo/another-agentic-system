@@ -1787,7 +1787,7 @@ paths:
         "409": { description: "`code: turn_open`: the turn a `vymalo.fork` would copy is still going on, try again when it has ended; a `vymalo.fork` on a thread that exists and is not the fork this request made. Or: the thread targets another agent, a run is already open on it and the run is not one new message that says how it is delivered (`forwardedProps[\"vymalo.send\"]`: `steer` or `interrupt`, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md), [`agui.md`](agui.md#sending-while-an-agent-works)), the run carries an A2UI action for a finished thread (`done`, `failed`, `cancelled`; a **message** on a finished thread is served and starts the thread's next job, ADR 0020), `code: session_closed`: the thread is a helper session that is closed and takes no more messages, or the run continues the thread and asks for a verification gate different from the thread's (a thread's gate is fixed when it is created)", $ref: "#/components/responses/Problem" }
         "413": { description: "The body is larger than 8 MiB, or an A2UI action's `name`, `surfaceId` or `sourceComponentId` is longer than 256 bytes or its `context` larger than 16 KiB", $ref: "#/components/responses/Problem" }
         "415": { description: "`Content-Type` is not `application/json`", $ref: "#/components/responses/Problem" }
-        "422": { description: "A `vymalo.fork` whose `after` is not an event of the parent, or whose mentions or UI catalog do not hold; `code: child_mentions`: a message to a helper session's thread mentions agents; `code: session_closes_on_stop`: a Stop & send on a helper session that is not kept open (it closes when its round is stopped); nothing to run; more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation; a `vymalo.tier` above what the caller's roles allow (`the tier 'bypass' is above what your role allows`) or one the agent's live card does not honour (`this agent does not take the tier 'plan'`)", $ref: "#/components/responses/Problem" }
+        "422": { description: "A `vymalo.fork` whose `after` is not an event of the parent, or whose mentions or UI catalog do not hold; `code: child_mentions`: a message to a helper session's thread mentions agents; `code: session_closes_on_stop`: a Stop & send on a helper session that is not kept open (it closes when its round is stopped); nothing to run (no new message, no answer, and a run the thread does not hold — a resend of a message the log holds attaches to the run that message opened, whatever `runId` it carries, [ADR 0082](../decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)); more than one new message; a new message that is not from the user or has no text; a `resume` payload without `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, or comes with a message, an answer or a cancellation; a `vymalo.tier` above what the caller's roles allow (`the tier 'bypass' is above what your role allows`) or one the agent's live card does not honour (`this agent does not take the tier 'plan'`)", $ref: "#/components/responses/Problem" }
         "502": { description: "The target agent could not be reached to validate the release (its live card is unavailable, or the agent refused the card request)", $ref: "#/components/responses/Problem" }
         "503": { description: "Storage is unavailable, the thread is contended, the target agent is rate limiting, or the agent registry cannot say whether the agent exists (\"the agent registry is unreachable\", ADR 0022), or the agent's live card cannot be read to check a `vymalo.tier` (\"the card of the agent <id> could not be read\"); retry after the number of seconds in the Retry-After header", $ref: "#/components/responses/Problem" }
   /agui/threads/{threadId}/connect:
@@ -1804,6 +1804,11 @@ paths:
         stream after the active run's terminal event, or right after the replay when no run is open.
         Closing the stream never cancels a run.
 
+        **The stream ends after the deployment's lifetime** (60 s by default, [ADR 0082](../decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)),
+        whatever credential it was opened with: the shortest of the token's expiry plus its leeway, an hour, and the
+        lifetime. Ending is the ordinary path, not an error: nothing leaves the log, and a client that reopens the
+        stream with the last `id:` it saw is shown every later event exactly once.
+
         **Where the log ends.** A frame carries an `id:` (a resume point) and some events have no frame, so a log can
         end in events (`thread_shared`, `thread_unshared`, `ui_catalog`) that no `id:` names. When the replay has
         reached the thread's last event and the last `id:` written is below it, and after any later event that has no
@@ -1813,7 +1818,7 @@ paths:
         message of the log is open, and never to a client that holds the head already.
       parameters:
         - { name: Last-Event-ID, in: header, description: "Resume after this seq: the id of the last frame the client holds", schema: { type: string, pattern: "^[0-9]*$" } }
-        - { name: mode, in: query, description: "`run`: close after the active run; absent: stay open", schema: { type: string, enum: [run] } }
+        - { name: mode, in: query, description: "`run`: close after the active run; absent: follow across runs until the lifetime ends the stream", schema: { type: string, enum: [run] } }
       responses:
         "200":
           description: The thread's events (`text/event-stream`); frames carry `id:` on resume points
@@ -1837,7 +1842,9 @@ paths:
         [`agui.md`](agui.md#reading-a-shared-thread)): the connect stream over the reader projection, replayed from the
         start or from `Last-Event-ID` and then followed, so what the owner writes after sharing is shown too. It
         starts no run and takes no input. **The stream ends** when the link is taken down, replaced by a new one, or
-        narrowed below `internal`, and at the token's expiry (an hour at most); the client's reconnect then gets the 404.
+        narrowed below `internal`, at the token's expiry, and at the deployment's lifetime like every stream (an hour
+        at most, [ADR 0082](../decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)); a reader
+        whose stream ended at its lifetime reopens it with its last `id:`, and one whose link was revoked gets the 404.
         The `href` of a kept file in its frames is `getSharedArtifact`'s route, and where the log ends is told as
         `connectThread` tells it (an `id:` with no `data:`), which for this thread is usually the share itself.
       parameters:
@@ -1863,7 +1870,9 @@ paths:
       description: |
         `connectSharedThread` for **anybody**, outside the identity layer, for a thread served as `public`, over the public
         projection. Rate limited like `getPublicSharedThread`, and each open stream holds one of the link's stream
-        permits (5 per link and 50 in all, by default): 429 when they are taken. At most an hour, like any stream.
+        permits (5 per link and 50 in all, by default): 429 when they are taken. It ends at the deployment's lifetime,
+        like any stream (an hour at most, [ADR 0082](../decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)),
+        and the reader reopens it with its last `id:`.
         The `href` of a kept file in its frames is `getPublicSharedArtifact`'s route, and where the log ends is told
         as `connectThread` tells it.
       security: []
