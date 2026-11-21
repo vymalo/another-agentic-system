@@ -15,10 +15,9 @@ use std::time::{Duration, Instant};
 use orch_core::{Classify as _, ErrorClass};
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore as _, UserToolServerId};
 use orch_secrets_pg::{LOCK_TIMEOUT, PgSecretStore, advisory_lock_key};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use support::{
-    TestDb, hold_lock, holders, ring, ring_k1, wait_for_a_waiter, wait_for_waiters, waiters,
+    Held, Pool, TestDb, execute, fetch_all, fetch_one, hold_lock, holders, ring, ring_k1,
+    wait_for_a_waiter, wait_for_waiters, waiters,
 };
 use tokio::task::JoinHandle;
 
@@ -31,7 +30,7 @@ fn material(text: &str) -> SecretMaterial {
 }
 
 /// The first thing a test checks about a write: that it queues behind the lock and stays there.
-async fn queues_and_stays_queued<T>(raw: &PgPool, key: i64, call: &JoinHandle<T>) {
+async fn queues_and_stays_queued<T>(raw: &Pool, key: i64, call: &JoinHandle<T>) {
     wait_for_a_waiter(raw, key).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(
@@ -42,31 +41,24 @@ async fn queues_and_stays_queued<T>(raw: &PgPool, key: i64, call: &JoinHandle<T>
 
 /// A row as an in-flight `put` has just written it, in the transaction that holds the lock and has
 /// not committed.
-async fn write_a_row_in(
-    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
-    owner: &str,
-    server: &SecretServer,
-    version: i64,
-) {
-    sqlx::query(
+async fn write_a_row_in(tx: &Held, owner: &str, server: &SecretServer, version: i64) {
+    execute(
+        tx,
         "INSERT INTO user_secrets (owner, server, version, v, kid, nonce, ciphertext) \
          VALUES ($1, $2, $3, 1, 'k1', $4, $5)",
+        &[
+            &owner,
+            &server.to_string(),
+            &version,
+            &vec![0_u8; 12],
+            &vec![0_u8; 16],
+        ],
     )
-    .bind(owner)
-    .bind(server.to_string())
-    .bind(version)
-    .bind(vec![0_u8; 12])
-    .bind(vec![0_u8; 16])
-    .execute(&mut **tx)
-    .await
-    .unwrap();
+    .await;
 }
 
-async fn rows(raw: &PgPool) -> i64 {
-    let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM user_secrets")
-        .fetch_one(raw)
-        .await
-        .unwrap();
+async fn rows(raw: &Pool) -> i64 {
+    let (count,): (i64,) = fetch_one(raw, "SELECT count(*) FROM user_secrets", &[]).await;
     count
 }
 
@@ -84,8 +76,8 @@ async fn a_delete_waits_for_the_lock_of_its_key_and_removes_what_the_writer_ahea
 
     // a `put` of the first secret of this key is under way: it holds the lock, its row is not
     // committed
-    let mut writer = hold_lock(&raw, key).await;
-    write_a_row_in(&mut writer, alice.as_str(), &server, 5).await;
+    let writer = hold_lock(&raw, key).await;
+    write_a_row_in(&writer, alice.as_str(), &server, 5).await;
 
     let delete = {
         let (store, alice, server) = (store.clone(), alice.clone(), server.clone());
@@ -140,26 +132,25 @@ async fn a_rotate_waits_for_the_lock_of_its_key_and_compares_versions_after_it()
         .unwrap();
 
     // a writer is under way; it is going to commit another version of the key
-    let mut writer = hold_lock(&raw, key).await;
+    let writer = hold_lock(&raw, key).await;
     let rotate = {
         let (store, alice, server) = (store.clone(), alice.clone(), server.clone());
         tokio::spawn(async move { store.rotate(&alice, &server, read, &material("mine")).await })
     };
     queues_and_stays_queued(&raw, key, &rotate).await;
-    sqlx::query("UPDATE user_secrets SET version = version + 1000")
-        .execute(&mut *writer)
-        .await
-        .unwrap();
+    execute(
+        &writer,
+        "UPDATE user_secrets SET version = version + 1000",
+        &[],
+    )
+    .await;
     writer.commit().await.unwrap();
 
     assert!(
         matches!(rotate.await.unwrap(), Err(SecretError::Conflict)),
         "the rotate read the version before the writer's commit"
     );
-    let (version,): (i64,) = sqlx::query_as("SELECT version FROM user_secrets")
-        .fetch_one(&raw)
-        .await
-        .unwrap();
+    let (version,): (i64,) = fetch_one(&raw, "SELECT version FROM user_secrets", &[]).await;
     assert_eq!(
         version,
         i64::try_from(read.get()).unwrap() + 1000,
@@ -168,13 +159,12 @@ async fn a_rotate_waits_for_the_lock_of_its_key_and_compares_versions_after_it()
 }
 
 /// A pool as `PgSecretStore::connect` makes it: four connections, ten seconds to get one.
-async fn pool_of_four(db: &TestDb) -> PgPool {
-    PgPoolOptions::new()
-        .max_connections(4)
-        .acquire_timeout(Duration::from_secs(10))
-        .connect_with(db.options().application_name("orch-secrets-pool-of-four"))
-        .await
-        .unwrap()
+async fn pool_of_four(db: &TestDb) -> Pool {
+    let mut options = db.options();
+    options
+        .config_mut()
+        .application_name("orch-secrets-pool-of-four");
+    options.pool(4, Duration::from_secs(10)).unwrap()
 }
 
 /// One key's lock held for long (a wedged replica, a paused VM, a repair that was never committed)
@@ -278,7 +268,7 @@ async fn a_key_whose_lock_is_held_makes_its_writers_unavailable_and_leaves_the_p
     // when the lock is let go, the key is written again
     wedged.commit().await.unwrap();
     store.put(&alice, &stuck, &material("back")).await.unwrap();
-    pool.close().await;
+    pool.close();
 }
 
 /// A wait for a lock that ends is the same for a rewrap: it stops there, `Unavailable`, and the rows
@@ -308,10 +298,8 @@ async fn a_rewrap_that_meets_a_wedged_key_stops_there_and_has_done_the_rows_befo
         matches!(error, SecretError::Unavailable { .. }),
         "{error:?}"
     );
-    let kids: Vec<(String,)> = sqlx::query_as("SELECT kid FROM user_secrets ORDER BY server")
-        .fetch_all(&raw)
-        .await
-        .unwrap();
+    let kids: Vec<(String,)> =
+        fetch_all(&raw, "SELECT kid FROM user_secrets ORDER BY server", &[]).await;
     assert_eq!(
         kids.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
         ["k2", "k1", "k1"]
@@ -348,11 +336,8 @@ async fn writers_of_one_key_do_not_depend_on_the_isolation_the_database_defaults
         .await;
     // the setting is in force: an ordinary transaction on these sessions is REPEATABLE READ
     for pool in [&pool, &other] {
-        let mut tx = pool.begin().await.unwrap();
-        let (level,): (String,) = sqlx::query_as("SHOW transaction_isolation")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
+        let tx = Held::begin(pool).await;
+        let (level,): (String,) = fetch_one(&tx, "SHOW transaction_isolation", &[]).await;
         assert_eq!(level, "repeatable read");
     }
     let stores = [

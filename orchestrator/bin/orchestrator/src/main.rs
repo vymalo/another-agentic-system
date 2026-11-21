@@ -285,22 +285,6 @@ mod tests {
             anyhow::Error::from(SecretError::unavailable("the database cannot be reached"))
                 .context("cannot connect the secret store to Postgres (secrets)");
         assert_eq!(exit_code(&secrets_down), 69);
-        // a statement the database refused is the thread store's `Internal`: exit 1, not 69
-        #[cfg(feature = "secrets-pg")]
-        {
-            let refused = anyhow::Error::from(
-                SecretError::unavailable("the database refused the request")
-                    .with_source(sqlx::Error::RowNotFound),
-            )
-            .context("cannot apply the migrations of the secret store (secrets)");
-            assert_eq!(exit_code(&refused), 1, "{refused:#}");
-            let busy = anyhow::Error::from(
-                SecretError::unavailable("the database cannot be reached")
-                    .with_source(sqlx::Error::PoolTimedOut),
-            )
-            .context("cannot apply the migrations of the secret store (secrets)");
-            assert_eq!(exit_code(&busy), 69, "{busy:#}");
-        }
         let secrets_corrupt =
             anyhow::Error::from(SecretError::corrupt("the applied migrations do not match"))
                 .context("cannot apply the migrations of the secret store (secrets)");
@@ -343,6 +327,51 @@ mod tests {
         assert_eq!(exit_code(&anyhow::anyhow!("something else")), 1);
     }
 
+    /// The secret store's errors at startup, as its adapter makes them (no database needed): a
+    /// server that cannot be reached is the outage (69); a connection string the driver cannot send
+    /// is a refusal, the thread store's `Internal` (1), never a restart for ever.
+    #[cfg(feature = "secrets-pg")]
+    #[tokio::test]
+    async fn the_secret_store_s_own_errors_have_their_exit_codes() {
+        use std::time::Duration;
+
+        use orch_secrets_pg::{KeyBytes, KeyId, Keyring, PgSecretStore};
+
+        let keys = || {
+            Keyring::new(
+                KeyId::parse("k1").unwrap(),
+                [(KeyId::parse("k1").unwrap(), KeyBytes::from_bytes([1; 32]))],
+            )
+            .unwrap()
+        };
+        let migrate = |url: String| {
+            let keys = keys();
+            async move {
+                let options: orch_pg_connect::PgOptions = url.parse().unwrap();
+                let pool = options.pool(1, Duration::from_millis(200)).unwrap();
+                let error = PgSecretStore::from_pool(pool, keys)
+                    .migrate()
+                    .await
+                    .unwrap_err();
+                anyhow::Error::from(error)
+                    .context("cannot apply the migrations of the secret store (secrets)")
+            }
+        };
+
+        // nothing listens on port 1: the database is down, tried again until the wait runs out
+        let down = migrate("postgres://u@127.0.0.1:1/db?sslmode=disable".to_owned()).await;
+        assert_eq!(exit_code(&down), 69, "{down:#}");
+
+        // a listener that never answers takes the connection; a NUL in the user cannot be sent
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let refused = migrate(format!(
+            "postgres://a%00b@127.0.0.1:{port}/db?sslmode=disable"
+        ))
+        .await;
+        assert_eq!(exit_code(&refused), 1, "{refused:#}");
+        drop(listener);
+    }
     #[tokio::test]
     async fn a_panicked_task_is_a_software_error_wherever_it_sits() {
         let join = tokio::spawn(async { panic!("boom") }).await.unwrap_err();
