@@ -244,8 +244,10 @@ async fn only_a_message_is_served_while_a_run_is_open() {
         json!("steer"),
     );
     h.refused("plain", Some(ALICE), &two).await.problem(422);
-    // nothing new under an unknown run: nothing to run
-    let none = send(&thread, "r2", &[("m1", "gate wait")], json!("steer"));
+    // nothing new under an unknown run: nothing to run. No message at all, because a resent message
+    // the log holds with its own words now attaches to the run it opened (ADR 0082); the attach of
+    // a send is `a_retried_send_attaches_to_its_run_and_is_never_written_twice` below.
+    let none = send(&thread, "r2", &[], json!("steer"));
     h.refused("plain", Some(ALICE), &none).await.problem(422);
     // a run id is never reused
     let reused = send(
