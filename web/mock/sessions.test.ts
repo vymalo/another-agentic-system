@@ -870,7 +870,19 @@ describe("the streams of a started subagent", () => {
     const parent = await p.answered();
     const { child, request, session } = await p.opened(parent, { keepOpen: true });
     await p.reaches(child, ["done"]);
+    // A round ending and its session going idle are two steps of the mock. Closing between them is
+    // the close of a working session: the mock writes `closing: true` and closes when the round ends,
+    // so a stream read at that moment still says `working`. Wait for the session to be idle, then for
+    // the close the child's own log records, rather than for a clock.
+    await p.until(
+      async () => (await p.thread(child)).childOf?.state === "idle",
+      "the session idle",
+    );
     await p.close(child);
+    await p.until(
+      async () => (await p.of(child, "child_session_state")).some((e) => e.data.state === "closed"),
+      "the child's close in its own log",
+    );
     const parentFrames = await frames(
       await connect(mock.base, parent, { mode: "run", headers: p.who.headers }),
     );
