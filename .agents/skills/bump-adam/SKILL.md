@@ -15,6 +15,7 @@ to prevent:
 | `dev/coder/{agent,wiremock,git-server,coder-agent}/` | byte-for-byte copies (the file list and the upstream path of each are in `UPSTREAM` and `dev/coder/check-vendored.sh`) |
 | `compose.yaml`, `x-adam-image` | `ghcr.io/vymalo/another-adam-rs/coder:sha-<7>@sha256:<digest>`, one pin for the coder and for every agent that is only a folder |
 | `orchestrator/Cargo.toml` (+ `Cargo.lock`) | seven `rev = "<40-hex>"` lines (`adam-host`, `adam-core`, `adam-runtime`, `adam-a2a`, `adam-a2a-runtime`, `adam-store-postgres`, `adam-notify-postgres`), used by the off-by-default feature `agent-local` (ADR 0015) |
+| `.agents/skills/adam-*/` and `skills-lock.json` | the six `adam-*` skills, vendored from adam-rs and pinned per skill (`commit`, format 2); the skills CLI writes them and a hand edit is overwritten by the next update |
 
 The worked example is the bump `af1e715` to `b64e3fe`, vymalo/another-agentic-system#136 (two commits on its
 branch, the image and the crates, squashed into one on `main`). `git log --oneline -3 -- dev/coder/UPSTREAM`
@@ -84,7 +85,26 @@ finds it; `git show <sha>` is the shape of a bump.
    method `lease_until` in `7e5dcc3`; nothing here implements adam's `Store`, the orchestrator
    uses adam's Postgres store as it is, so nothing had to change). Read `orchestrator/crates/agent-adam/README.md`
    for the surface this repository uses; `adam-embed` describes the crates.
-7. **Say it in the docs** (the repository's rules: dated, with *verified*/*unverified*):
+7. **Update the vendored `adam-*` skills.** They are the place that drifted silently until 2026-11-21:
+   a day after the A2UI v1.0 cutover they still taught v0.9.1 and `ui-catalog/v1`, which is the worst
+   kind of stale — an agent reads them and writes code for a surface that no longer exists. They are
+   vendored from adam-rs and pinned per skill in `skills-lock.json`; **update them with the skills CLI,
+   never by hand**:
+
+   ```sh
+   npx --yes skills@1.9.0 update -p -y
+   npx --yes skills@1.9.0 add vymalo/another-adam-rs -s adam-a2a-extensions -s adam-agent-folder \
+     -s adam-coder-deploy -s adam-embed -s adam-store-adapter -s adam-upgrade \
+     -a claude-code -a goose -a kiro-cli -y
+   ```
+
+   The CLI takes no `@<ref>`: it vendors adam-rs's head, which is at or after B. Say which commit the
+   lock now names, and `git diff B <that commit> -- .agents/skills` tells you whether the skills
+   describe something B does not have yet (the bump to `8501494` found `adam-embed` one paragraph
+   ahead, on `EngineBuilder::tools` of adam-rs #295). A skill upstream no longer lists (the
+   `docker/skills` quirk of `docker-sandboxes-env`) keeps its entry without a `commit`: say so
+   instead of inventing one.
+8. **Say it in the docs** (the repository's rules: dated, with *verified*/*unverified*):
    - an ADR **status note** at the end of `docs/decisions/0014-adam-coder-default-agent-over-a2a.md`
      (amend, never rewrite: `write-adr`): `### Status note, <date>: <what the bump brings> (adam-rs <B7>)`, B as A plus which
      adam-rs pull requests, whether a vendored file changed
@@ -99,13 +119,14 @@ finds it; `git show <sha>` is the shape of a bump.
      notes in the ADRs and in `dev/README.md` stay as they are: they say what was true then;
    - a crate's README changes in the same commit as its public API, environment variables or tests
      (CLAUDE.md, *Code*).
-8. **Commit in two** on the branch, as in #136 (the merge squashes them): `build(compose): pin the coder to adam-rs <B7> (<what it brings>)`
+9. **Commit in two** on the branch, as in #136 (the merge squashes them): `build(compose): pin the coder to adam-rs <B7> (<what it brings>)`
    (`compose.yaml`, `UPSTREAM`, vendored copies, the ADR 0014 note) and
    `build(orchestrator): move the adam-rs crates of agent-local to <B7>` (`Cargo.toml`, `Cargo.lock`, the READMEs, the other ADR note).
 
 ## Verify
 
 ```sh
+git diff --stat skills-lock.json .agents/skills     # the six adam-* skills and their pins, nothing else
 dev/coder/check-vendored.sh                          # the copies equal upstream at B, nothing missing, compose.yaml pins sha-<7>@sha256 (network)
 docker compose --profile '*' config -q               # compose.yaml is valid for every profile
 cd orchestrator
