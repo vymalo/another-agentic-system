@@ -396,7 +396,10 @@ layers only serve it. It is built per audience and tested as a table.
 input: a shared page sends nothing, and `POST /agui/agents/{id}` with the thread's id by a non-owner is refused as
 today. The stream **ends** when the follow sees `thread_unshared`, a narrowing below what the stream was opened with, or
 the one-hour cap; the follow re-reads the thread's visibility at each wake-up and at least every 30 seconds
-(*unverified* until built; the number is the planner's), and the client's reconnect then gets the 404. Nothing is stored
+(*unverified* until built; the number is the planner's), and the client's reconnect then gets the 404. *Amended
+2026-11-21 ([ADR 0082](0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)): the cap is no longer an hour but
+the deployment's lifetime (60 s by default), and a reader whose stream ended at it reopens with its last `id:` and is shown
+each later event once — the 404 is for a link that stopped working, not for a stream that ended.* Nothing is stored
 for it: the live text of an agent's working message is relayed, not stored ([ADR 0027](0027-live-text-relayed-not-stored.md)),
 so a reader joining late sees the working message once it is committed to the log, not the text in flight. The wire is
 described in [`agui.md`](../api/agui.md) when it is built.

@@ -255,6 +255,11 @@ The token is validated when a stream connects. A stream is capped at the token's
 the client reconnects with `Last-Event-ID` and gets a fresh token from oauth2-proxy's session
 ([ADR 0012](0012-ag-ui-user-facing-protocol.md), the connect stream is resumable).
 
+*Amended 2026-11-21 ([ADR 0082](0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)): an hour is no longer the longest stream.
+A stream ends after the deployment's lifetime — 60 s by default, `ApiConfig::sse_lifetime` — and its budget is the shortest of the
+token's `exp` plus its leeway, an hour, and that lifetime. A credential with no expiry is bounded by the lifetime like any other, so no
+stream is unbounded here; ending is the ordinary path, and the client reopens with the last `id:` it saw and is shown each later event once.*
+
 ### 7. `GET /api/me` (the web reads it, built in S17)
 
 `{user, roles, permissions, agents}`, so the web hides what its person cannot do. It is a convenience, never a check:
@@ -319,6 +324,9 @@ to 7 planned:
 10. **Streams** (section 6) end at the token's `exp` plus 60 s, and after an hour at most, for the AG-UI connect and run
     streams: `Principal.expires_at` carries the `exp`. A stream of a credential with no expiry (the proxy header, an MCP
     static token) is not bounded here. The MCP `wait_for_job` is bounded by `mcp.waitMaxSecs` as before.
+    *Amended 2026-11-21 ([ADR 0082](0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)): a credential with no expiry is
+    bounded too — by the deployment's lifetime (60 s by default), like every other stream, and the budget is the shortest of the
+    three. `sse::stream_budget` returns a duration, never "unbounded".*
 11. **A fork needs the parent to be the person's own**: it is an act (`thread.write`), and the store copies a thread
     into its owner's threads, so a role with `thread.write` of scope `any` that forks another's thread is refused by the
     store (404). No built-in role has that scope.
@@ -385,6 +393,7 @@ Where the build differs from, or settles, what section 8 planned:
    hour at most, so an hour is the longest stream there is, and a session of the web ends with its token (a request is then a 401 until the page is reloaded, which
    signs in again: S17's re-login redirect is the web's own answer, item 10). The mock issues no refresh token.
    *Amended 2026-10-04: the web no longer waits for a reload; it asks the person to sign in again in a popup, with the page kept.*
+   *Amended 2026-11-21: an hour is still the most, but a stream now ends at the deployment's lifetime (60 s by default) long before it, and reopens with its last `id:` ([ADR 0082](0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)).*
 7. **`login_hint`** is how `authorize` picks a user, but oauth2-proxy sends none, so a person chooses before signing in with `/login-as?user=` on the mock (a cookie
    for the host `127.0.0.1`), then signs out and in. With nothing chosen the user is `dev@example.com`, so a person who changes nothing is the user they were before.
 8. **MCP tokens stay static**; the one of the dev stack has `role: user` (S15). **The roles**: `user` and `admin` as the built-ins, and `chat-only`
