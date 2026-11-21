@@ -144,6 +144,12 @@ sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one 
   sed -n 's/^data: *//p' "$1"
 }
 
+# A stream that ends is not a run that ended: the orchestrator ends every SSE stream after a minute (ADR 0082), and the
+# coder's run (a scratch project, a build, a question) takes minutes, so the client reopens the run from the last `id:`
+# it saw and sees each later event once (dev/sse.sh).
+# shellcheck disable=SC1091
+. "$(dirname "$0")/sse.sh"
+
 # --- the agent -----------------------------------------------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
   if printf '%s' "$agents" | jq -e 'any(.[]; .id == "adam")' >/dev/null 2>&1; then
@@ -178,6 +184,7 @@ stream() {
     events=$tmp/events.json
     return 0
   fi
+  sse_run_to_end "$base" "$thread" "$tmp/run.sse" "$id_header" "$timeout"
   outcome=$(sse_events "$tmp/run.sse" | jq -rs '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | last
     | if . == null then "" elif .type == "RUN_ERROR" then "error: \(.code // "")" else (.outcome.type // "success") end' 2>/dev/null || true)
   # A live delta continues from its offset (UTF-16 code units; the mock's words are ASCII, so jq's string positions), any other delta is appended.

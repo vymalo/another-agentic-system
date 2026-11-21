@@ -91,13 +91,23 @@ uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f
 
 sse_events() { sed -n 's/^data: *//p' "$1"; }
 
+# A stream that ends is not a run that ended: the orchestrator ends every SSE stream after a minute (ADR 0082), and a
+# browser run (a real adam-agent beside obscura) outlives that, so the client reopens the run from the last `id:` it saw
+# and sees each later event once (dev/sse.sh).
+# shellcheck disable=SC1091
+. "$here/sse.sh"
+
 # run_agui AGENT THREAD TEXT FORWARDED_PROPS_JSON: one run (a message) on the thread, to its end. Prints the HTTP status; the body is $tmp/run.sse.
 run_agui() {
   _input=$(jq -n --arg thread "$2" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$3" --argjson props "$4" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: $props}')
-  curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST "$base/agui/agents/$1" -H "$id_header" \
-    -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$tmp/err" || true
+  _code=$(curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST "$base/agui/agents/$1" -H "$id_header" \
+    -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$tmp/err" || true)
+  if [ "$_code" = 200 ]; then
+    sse_run_to_end "$base" "$2" "$tmp/run.sse" "$id_header" "$timeout"
+  fi
+  echo "$_code"
 }
 
 run_outcome() { # run_outcome FILE: how the run saved in FILE ended

@@ -393,7 +393,7 @@ person can paste anything into a chat. Only the owner of a thread can export it 
 
 ### Run the scenarios
 
-Each scenario is one script of this directory, and `e2e-all.sh` runs them all against the running stack and prints a summary. Every script signs in the way the stack does: it gets a token of the mock issuer for `AUTH_EMAIL` (default `dev@example.com`) from [`auth-header.sh`](auth-header.sh) and sends it as `Authorization: Bearer`; `MOCK_OIDC_PORT` or `OIDC_URL` say where the issuer is:
+Each scenario is one script of this directory, and `e2e-all.sh` runs them all against the running stack and prints a summary. Every script signs in the way the stack does: it gets a token of the mock issuer for `AUTH_EMAIL` (default `dev@example.com`) from [`auth-header.sh`](auth-header.sh) and sends it as `Authorization: Bearer`; `MOCK_OIDC_PORT` or `OIDC_URL` say where the issuer is. A script that reads a run to its end reads it the way a client must: **a stream that ends is not a run that ended**, so when the POST's stream closes without `RUN_FINISHED` (the orchestrator ends every stream after a minute, [ADR 0082](../docs/decisions/0082-a-stream-ends-after-a-minute-and-a-message-keeps-its-id.md)) it reopens `GET /agui/threads/{id}/connect?mode=run` with `Last-Event-ID` and sees each later event once. [`sse.sh`](sse.sh) is that client; the coder's, the browser's and kagent's scenarios source it (their runs outlive a minute), the mock agents' runs do not need it:
 
 ```sh
 dev/e2e-all.sh                 # every scenario below, one after the other, then a summary

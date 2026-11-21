@@ -98,8 +98,12 @@ already an input of `translate`. **1, protocols only** — SSE and the AG-UI con
   (`MOCK_STREAM_LIFETIME_MS`) and can go silent on demand (`POST /__mock/silence-streams`), so the Playwright specs prove the
   end-and-reopen path and the dead-stream path against a server that behaves like the orchestrator. The client reopens with
   `Last-Event-ID` and a jittered wait; the message it sends carries its draft's id.
-- `dev/split-e2e.sh` already reconnects mid-stream; it has not been extended with the lifetime case, so no scenario script proves
-  the end-and-reopen path end to end yet. The orchestrator's own tests do.
+- The scenario scripts are clients of this contract too, and they were the first thing it broke: `dev/chat-browser-e2e.sh` read a
+  run's POST stream once and lost the terminal event of a run that outlived the minute (CI job 136915064539). `dev/sse.sh` is that
+  client now — it reopens with `Last-Event-ID`, drops what the cut stream wrote after its last resume point, and drops the reopen's
+  preamble — and the scenarios whose run outlives a minute (the coder's, the browser's, kagent's) read it to its end through it.
+  `dev/split-e2e.sh` still proves a viewer's mid-stream reconnect with `Last-Event-ID`; the orchestrator's own tests prove the bound
+  and the once-only replay (`surface-agui/tests/lifetime.rs`).
 - Billing does not move: usage is folded from the log, and the log gains nothing from a reopen. Five sends of one message now
   add one `model_usage_total` (proven in `surface-agui/tests/attach.rs`).
 - The 422 row of the run route narrows to "the message id is known but its run cannot be attached" — a case that should now be

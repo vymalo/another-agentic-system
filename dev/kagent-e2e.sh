@@ -119,6 +119,12 @@ sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, as a
   sed -n 's/^data: *//p' "$1" | jq -s '.' 2>/dev/null || echo '[]'
 }
 
+# A stream that ends is not a run that ended: the orchestrator ends every SSE stream after a minute (ADR 0082), and a
+# kagent run (an agent on a kind cluster, which can pause for the person) outlives that, so the client reopens the run
+# from the last `id:` it saw and sees each later event once (dev/sse.sh).
+# shellcheck disable=SC1091
+. "$(dirname "$0")/sse.sh"
+
 # --- what is up ------------------------------------------------------------------------------------------
 ready=
 for _ in $(seq 1 60); do
@@ -277,8 +283,12 @@ run_message() {
   _input=$(jq -n --arg thread "$1" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$2" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
-  curl -sS -N --max-time "$timeout" -o "$3" -w '%{http_code}' -X POST "$base/agui/agents/kagent" -H "$id_header" \
-    -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$3.err" || true
+  _code=$(curl -sS -N --max-time "$timeout" -o "$3" -w '%{http_code}' -X POST "$base/agui/agents/kagent" -H "$id_header" \
+    -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$3.err" || true)
+  if [ "$_code" = 200 ]; then
+    sse_run_to_end "$base" "$1" "$3" "$id_header" "$timeout"
+  fi
+  echo "$_code"
 }
 
 outcome_of() { # outcome_of EVENTS_JSON_FILE: how the run ended (success, interrupt, error: <code>, or empty)

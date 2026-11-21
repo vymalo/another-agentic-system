@@ -136,6 +136,12 @@ sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one 
   sed -n 's/^data: *//p' "$1"
 }
 
+# A stream that ends is not a run that ended: the orchestrator ends every SSE stream after a minute (ADR 0082), and the
+# coder's run (a clone, a commit, a push and a pull request over MCP) takes minutes, so the client reopens the run from
+# the last `id:` it saw and sees each later event once (dev/sse.sh).
+# shellcheck disable=SC1091
+. "$(dirname "$0")/sse.sh"
+
 # --- the default agent -----------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
   default_agent=$(printf '%s' "$agents" | jq -r '.[0].id // empty')
@@ -214,6 +220,7 @@ if [ "$code" != 200 ]; then
   bad "POST /agui/agents/$agent_id answered HTTP ${code:-none}: $(head -c 300 "$tmp/err") $(head -c 300 "$tmp/run.sse")"
   finish
 fi
+sse_run_to_end "$base" "$thread" "$tmp/run.sse" "$id_header" "$timeout"
 outcome=$(sse_events "$tmp/run.sse" | jq -rs '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | last
   | if . == null then "" elif .type == "RUN_ERROR" then "error: \(.code // "")" else (.outcome.type // "success") end' 2>/dev/null || true)
 if [ "$outcome" = success ]; then

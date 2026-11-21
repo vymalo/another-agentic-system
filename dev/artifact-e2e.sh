@@ -113,6 +113,12 @@ sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one 
   sed -n 's/^data: *//p' "$1"
 }
 
+# A stream that ends is not a run that ended: the orchestrator ends every SSE stream after a minute (ADR 0082), and a
+# coder run that makes three files and shares them takes minutes, so the client reopens the run from the last `id:` it
+# saw and sees each later event once (dev/sse.sh).
+# shellcheck disable=SC1091
+. "$(dirname "$0")/sse.sh"
+
 sha256_hex() { # the SHA-256 of stdin, as 64 lower-case hex digits
   if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d ' ' -f 1; else shasum -a 256 | cut -d ' ' -f 1; fi
 }
@@ -181,6 +187,7 @@ stream() {
     bad "$2: POST /agui/agents/$3 answered HTTP ${_code:-none}: $(head -c 300 "$tmp/err") $(head -c 400 "$tmp/run.sse" 2>/dev/null)"
     finish
   fi
+  sse_run_to_end "$base" "$thread" "$tmp/run.sse" "$id_header" "$timeout"
   outcome=$(sse_events "$tmp/run.sse" | jq -rs '[.[] | select(.type == "RUN_FINISHED" or .type == "RUN_ERROR")] | last
     | if . == null then "" elif .type == "RUN_ERROR" then "error: \(.code // "")" else (.outcome.type // "success") end' 2>/dev/null || true)
   # The words of each assistant message as a client keeps them (live deltas continue from their offset: docs/api/agui.md, "Live text").
