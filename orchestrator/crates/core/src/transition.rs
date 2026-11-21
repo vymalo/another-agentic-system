@@ -2157,6 +2157,18 @@ fn agent_input(
         AgentUpdate::ChildSessions(_) | AgentUpdate::ChildSessionsRejected(_) => {
             Ok((state, vec![]))
         }
+        // An agent asked the client to draw a trusted component (ADR 0083): a request, never a
+        // secret. Checked again at this door, whatever adapter sent it; one out of bounds is
+        // dropped and nothing is drawn (fail closed).
+        AgentUpdate::TrustedRequest(request) => {
+            if request.check().is_err() {
+                return Ok((state, vec![]));
+            }
+            Ok((
+                state,
+                vec![append(actor, EventBody::TrustedRequest(request.clone()))],
+            ))
+        }
         // What the model thought: logged as it came, bounded again here (the door is checked at the
         // door, whatever adapter sent it). Not an answer and not a summary: it touches nothing else.
         AgentUpdate::Reasoning {
