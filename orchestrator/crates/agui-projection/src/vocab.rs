@@ -85,6 +85,14 @@ pub const ACTIVITY_SESSION: &str = "vymalo.session";
 /// words, untrusted text). It holds no prompt: that is the child thread's first message.
 pub const ACTIVITY_SESSION_START: &str = "vymalo.sessionStart";
 
+/// Activity type of a trusted component an agent asked the client to draw (`vymalo.trustedRequest`,
+/// ADR 0083): its id is `trusted-<seq>` of the `trusted_request` event, and it does not `replace`.
+/// The content is `{component, hints, at}`: `component` is one this build draws (`McpCredential`),
+/// and `hints` is `{name?, scopes?, expiresInDays?}`, the agent's bounded suggestions (untrusted
+/// text) that the person edits before anything is granted. The client draws the interface and its
+/// frame; the agent never does.
+pub const ACTIVITY_TRUSTED_REQUEST: &str = "vymalo.trustedRequest";
+
 /// Metadata member of a session's `SUBAGENT_STARTED`: the id of the child thread that holds its log.
 pub const CHILD_THREAD_KEY: &str = "vymalo.childThread";
 

@@ -56,8 +56,8 @@ use orch_core::{
     MAX_SURFACE_BYTES, MessagePurpose, ModelUsageData, ModelUsageTotalData, Preview, Recognised,
     ReworkData, SessionBy, SessionOutcome, SessionState, StartOutcomeKind, StepKind, StepPhase,
     SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData,
-    ToolsData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId, UserMessageData,
-    recognise_artifact, serialized_len,
+    ToolsData, TrustedRequestData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
+    UserMessageData, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -69,10 +69,11 @@ use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK,
     ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
     ACTIVITY_SESSION, ACTIVITY_SESSION_START, ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS,
-    AT_KEY, CHILD_THREAD_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED, CODE_ASK_TIMED_OUT,
-    CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_SESSION_FAILED, CODE_STEP_FAILED,
-    CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, SESSION_KEY, WHEN_KEY, actor_metadata,
-    message_metadata, problem_metadata, response_schema, status_content, user_message_metadata,
+    ACTIVITY_TRUSTED_REQUEST, AT_KEY, CHILD_THREAD_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED,
+    CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_SESSION_FAILED,
+    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, SESSION_KEY,
+    WHEN_KEY, actor_metadata, message_metadata, problem_metadata, response_schema, status_content,
+    user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -795,6 +796,7 @@ impl Projector {
             EventBody::CheckResult(d) => self.on_check_result(event, d, &mut out),
             EventBody::Rework(d) => self.on_rework(event, d, &mut out),
             EventBody::CiResult(d) => self.on_ci_result(event, d, &mut out),
+            EventBody::TrustedRequest(d) => self.on_trusted_request(event, d, &mut out),
             EventBody::JobStarted(d) => self.on_job_started(event, d, &mut out),
             // The UI's catalog is not part of the transcript: the ledger moves, nothing is said,
             // and an `error` before it still explains the `thread_state` that follows.
@@ -1780,6 +1782,39 @@ impl Projector {
         }
         content.insert(AT_KEY.to_owned(), at_of(ev));
         let mut snapshot = ActivitySnapshotEvent::new(id.clone(), ACTIVITY_CI, content);
+        snapshot.replace = Some(false);
+        snapshot.base.metadata = Some(actor_metadata(&ev.actor));
+        self.message_ids.insert(id);
+        out.push(snapshot.into());
+        if opened {
+            self.settle(ev, out);
+        }
+    }
+
+    /// A trusted component an agent asked the client to draw (ADR 0083): a
+    /// `vymalo.trustedRequest` card, for every request, with the agent's bounded hints. Its id is
+    /// `trusted-<seq>` and it does not `replace`: two requests are two cards. The client draws the
+    /// interface and its frame from it; the card itself is the agent's request, and no secret is in
+    /// it (the secret is the client's, kept out of the data model by the client's own state). A
+    /// request that arrives when no run is open opens one of its own and closes it, like any late
+    /// event.
+    fn on_trusted_request(
+        &mut self,
+        ev: &Event,
+        d: &TrustedRequestData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        let opened = self.ensure_run(ev, out);
+        let id = format!("trusted-{}", ev.seq);
+        let mut content = Metadata::new();
+        content.insert("component".to_owned(), Value::from(d.component.as_str()));
+        content.insert(
+            "hints".to_owned(),
+            serde_json::to_value(&d.hints).unwrap_or(Value::Null),
+        );
+        content.insert(AT_KEY.to_owned(), at_of(ev));
+        let mut snapshot =
+            ActivitySnapshotEvent::new(id.clone(), ACTIVITY_TRUSTED_REQUEST, content);
         snapshot.replace = Some(false);
         snapshot.base.metadata = Some(actor_metadata(&ev.actor));
         self.message_ids.insert(id);
