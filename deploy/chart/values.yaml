@@ -322,7 +322,7 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-8501494 (since 2026-11-21; sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-7ac3281 (since 2026-11-21: adam-rs 8501494 plus #254, #272 and #294 to #313, ADR 0014's status note "adam-rs 7ac3281"; sha-8501494 and sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
   # epic #380 here): every adam agent writes A2UI v1.0 only (`"version": "1.0"`, the URI `https://a2ui.org/a2a-extension/a2ui/v1.0`, the basic catalog of v1.0),
   # reads only `ui-catalog/v2` documents, and draws nothing in a turn whose message carries no `a2uiRendererCapabilities["1.0"]` — which the orchestrator
   # of this chart sends on every message, the chat's included. It also carries adam-rs ADR 0020
@@ -349,8 +349,8 @@ chat:
   # startup. A2UI stayed v0.9.1 there. No new variable is required.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-8501494
-    digest: sha256:a56cc45ca67d132981503db85016746aae5f131409dfda41ea63d05b7e45083e
+    tag: sha-7ac3281
+    digest: sha256:5e5d70db308beb91c916a8af493a45abacf19299e7f83867887fd62d817cd4fd
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""
