@@ -26,7 +26,7 @@ pub use fixtures::{FixedClock, SeqIds, sample_releases};
 pub use model::{ModelStep, ScriptedModel};
 pub use pending::MemoryPendingAuthorizations;
 pub use registry::{MEMORY_SOURCE, MemoryRegistry};
-pub use run_leases::MemoryRunLeases;
+pub use run_leases::{MemoryModelCredentials, MemoryRunBindingStore, MemoryRunLeases};
 pub use secrets::MemorySecretStore;
 pub use store::MemoryStore;
 pub use tools::{MemoryToolServer, MemoryToolServers, ToolScript};

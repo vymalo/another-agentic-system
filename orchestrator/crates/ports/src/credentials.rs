@@ -859,3 +859,32 @@ pub trait RunLeases: Send + Sync + 'static {
         caller: &RunCaller,
     ) -> impl Future<Output = Result<RunLease, RunLeaseError>> + Send;
 }
+
+/// The binding store the broker keeps: one row per run, and the same binding written again is
+/// idempotent (ADR 0084 decision 1).
+pub trait RunBindingStore: Send + Sync + 'static {
+    /// Writes `binding`; [`RunLeaseError::Conflict`] when the run is bound to something else.
+    fn upsert(
+        &self,
+        binding: &RunBinding,
+    ) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+
+    /// Removes the run's binding; idempotent.
+    fn delete(&self, run: &RunId) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+
+    /// The run's binding, if it has one.
+    fn get(
+        &self,
+        run: &RunId,
+    ) -> impl Future<Output = Result<Option<RunBinding>, RunLeaseError>> + Send;
+}
+
+/// The deployment's model credentials by model name: the bearer token the injector adds upstream
+/// (ADR 0084: the deployment's provider key, never the person's).
+pub trait ModelCredentials: Send + Sync + 'static {
+    /// The token for `model`, if the deployment has one.
+    fn bearer(
+        &self,
+        model: &str,
+    ) -> impl Future<Output = Result<Option<ToolSecret>, RunLeaseError>> + Send;
+}

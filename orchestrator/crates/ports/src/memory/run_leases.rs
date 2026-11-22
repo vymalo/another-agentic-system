@@ -94,3 +94,58 @@ impl RunLeases for MemoryRunLeases {
         Ok(RunLease::bearer(token, expires_at))
     }
 }
+
+/// The binding store in memory, for the broker's tests.
+#[derive(Debug, Default)]
+pub struct MemoryRunBindingStore {
+    bindings: Mutex<BTreeMap<RunId, RunBinding>>,
+}
+
+impl crate::RunBindingStore for MemoryRunBindingStore {
+    async fn upsert(&self, binding: &RunBinding) -> Result<(), RunLeaseError> {
+        let mut bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
+        match bindings.get(&binding.run) {
+            Some(existing) if existing != binding => Err(RunLeaseError::Conflict),
+            _ => {
+                bindings.insert(binding.run.clone(), binding.clone());
+                Ok(())
+            }
+        }
+    }
+
+    async fn delete(&self, run: &RunId) -> Result<(), RunLeaseError> {
+        self.bindings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(run);
+        Ok(())
+    }
+
+    async fn get(&self, run: &RunId) -> Result<Option<RunBinding>, RunLeaseError> {
+        Ok(self
+            .bindings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(run)
+            .cloned())
+    }
+}
+
+/// The deployment's model credentials in memory, by model name.
+#[derive(Debug, Default)]
+pub struct MemoryModelCredentials {
+    tokens: BTreeMap<String, ToolSecret>,
+}
+
+impl MemoryModelCredentials {
+    /// The credentials by model name.
+    pub fn new(tokens: BTreeMap<String, ToolSecret>) -> Self {
+        MemoryModelCredentials { tokens }
+    }
+}
+
+impl crate::ModelCredentials for MemoryModelCredentials {
+    async fn bearer(&self, model: &str) -> Result<Option<ToolSecret>, RunLeaseError> {
+        Ok(self.tokens.get(model).cloned())
+    }
+}
