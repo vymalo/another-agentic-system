@@ -10,14 +10,11 @@ use std::collections::BTreeSet;
 
 use orch_agui_projection::{Frame, Page, Window};
 use orch_agui_proto as agui;
-use orch_core::{
-    Actor, AgentId, AgentTaskState, Event, EventBody, Timestamp, TrustedComponent, TrustedHints,
-    TrustedRequestData,
-};
+use orch_core::{AgentTaskState, Event};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use support::goldens::{SCENARIOS, load_events, meta_of};
-use support::log::{Action, arb_actions, meta, thread_id, world};
+use support::log::{Action, arb_actions, world};
 use support::pages::{limits, read, walk};
 use support::usage_ref::Usage;
 
@@ -566,19 +563,24 @@ fn form_turns() -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
 /// loses the turn that only asked for a credential.
 #[test]
 fn a_turn_that_only_draws_a_trusted_card_is_counted() {
-    let request = |seq: i64| Event {
-        seq,
-        thread_id: thread_id(),
-        at: "2026-01-01T00:00:00Z".parse::<Timestamp>().unwrap(),
-        actor: Actor::agent(&AgentId::new("coder"), None),
-        body: EventBody::TrustedRequest(TrustedRequestData {
-            component: TrustedComponent::McpCredential,
-            hints: TrustedHints::default(),
-        }),
+    let user = |n: usize| Action::User {
+        text: format!("turn {n}"),
+        ids: true,
     };
-    // two cards, two turns; the newest page holds the second, the first is the carry's
-    let events = [request(1), request(2)];
-    let pages = walk(&events, &meta(), 1, limits(100, 4 << 20));
+    // Turn 1 draws only the card (no `working` status: a status that says the agent works draws
+    // on its own); turn 2 draws words. The newest page holds turn 2, so the carry must say that
+    // one turn came before it.
+    let actions = vec![
+        user(1),
+        Action::Trusted,
+        done(),
+        user(2),
+        Action::Status(AgentTaskState::Working, None),
+        say(0, "an answer", true),
+        done(),
+    ];
+    let (events, meta) = world(0, &actions);
+    let pages = walk(&events, &meta, 1, limits(100, 4 << 20));
     assert_eq!(pages[0].carry.as_ref().unwrap().turns, 1);
 }
 
