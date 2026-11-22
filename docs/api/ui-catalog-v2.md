@@ -1514,11 +1514,21 @@ the digests differ. A web of catalog 9 so sends it on the next run of every thre
 | The member is an object of the shape above; `catalog.catalogId` equals `catalogId`; `catalogId` is an absolute https URL of at most 256 bytes; `version` is 1 to 1,000,000; `digest` matches `^sha256:[0-9a-f]{64}$` **and** equals the recomputed digest | 400, naming the rule |
 | `catalog.protocolVersion` is the string `"1.0"`, and `catalog` has no member but `catalogId`, `protocolVersion` and `components` | 400, naming the rule |
 | The serialised `catalog` is at most 64 KiB | 413 |
-| At most 64 components; keys match `^[A-Z][A-Za-z0-9]{0,63}$` and are not `Surface`; nesting at most 32 deep; section 1's rules hold (no `$ref`, ASCII keys, integers only, no `@` property, no top-level `anyOf` or `oneOf`) | 400, naming the rule |
+| At most 64 components; keys match `^[A-Z][A-Za-z0-9]{0,63}$` and are not `Surface`; nesting at most 32 deep; section 1's rules hold (no `$ref`, ASCII keys, integers only, no `@` property, no top-level `anyOf` or `oneOf`, no `allowedParents` or `allowedChildren`) | 400, naming the rule |
 | Each component schema compiles as JSON Schema 2020-12 (no remote resolution) and has `properties.component.const` equal to its key | 400, naming the component |
 
 A v1 document (no `protocolVersion`) is refused with 400. The member is read on every run and applies only when the run
 applies an input, as in v1.
+
+*Amended 2026-11-22 (issue #431):* until this date the orchestrator refused none of four rules of section 1 that this
+table names: a key that starts with `@`, a top-level `anyOf` or `oneOf`, `allowedParents` or `allowedChildren`, and a
+component named `Surface`. The page was right and the check was not, so the check now refuses each with 400, naming the
+rule (`orchestrator/crates/core/src/ui_catalog.rs`, `check_component_schemas` and `check_envelope`). The first two and
+`Surface` are A2UI v1.0's own rules (`catalog_definition.json`, `ComponentDefinition`; the `@` prefix reserved), so a
+catalog that broke them was relayed to agents as a catalog no A2UI v1.0 runtime accepts. The composition rules are
+allowed by A2UI v1.0 and refused here by ADR 0075 (decision 5: a later version may add them), because the web enforces
+none of them. The `@` rule is read as any object key under a component, at any depth, as `$ref` is: no JSON Schema
+keyword starts with `@`. The web's catalog and adam-rs's reader break none of them, so no client sees a change.
 
 ## 4. In the log
 
