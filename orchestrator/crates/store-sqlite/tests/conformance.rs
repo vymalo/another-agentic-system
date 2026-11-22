@@ -41,3 +41,33 @@ async fn make() -> Option<SqliteStore> {
 }
 
 orch_ports::thread_store_conformance!(make);
+
+/// The log as a build without the ledger left it (ADR 0065): the ledger is emptied and no thread
+/// has been gone through.
+async fn forget_usage_ledger(store: &SqliteStore) {
+    store
+        .forget_usage_ledger()
+        .await
+        .unwrap_or_else(|e| panic!("empty the ledger: {e}"));
+}
+
+/// The log as a build without the search index left it (ADR 0068): the rows are gone and no thread
+/// has been gone through.
+async fn forget_search_index(store: &SqliteStore) {
+    store
+        .forget_search_index()
+        .await
+        .unwrap_or_else(|e| panic!("empty the index: {e}"));
+}
+
+/// An index made under an older fold version (ADR 0068): every thread's stored version is lower, so
+/// it is unindexed until a commit or the backfill indexes it again.
+async fn age_search_index(store: &SqliteStore) {
+    store
+        .age_search_index()
+        .await
+        .unwrap_or_else(|e| panic!("lower the fold version: {e}"));
+}
+
+orch_ports::usage_ledger_conformance!(make, forget = forget_usage_ledger);
+orch_ports::thread_search_conformance!(make, forget = forget_search_index, age = age_search_index);
