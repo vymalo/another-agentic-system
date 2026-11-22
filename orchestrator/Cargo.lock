@@ -2761,6 +2761,7 @@ dependencies = [
  "futures",
  "jiff",
  "orch-core",
+ "orch-credential-broker",
  "orch-pg-connect",
  "orch-pg-migrate",
  "orch-ports",
