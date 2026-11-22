@@ -40,6 +40,7 @@
 mod codec;
 mod error;
 mod pending_authorizations;
+mod run_leases;
 mod prompts;
 mod search;
 pub mod sql;
@@ -50,6 +51,7 @@ mod wakeup;
 
 pub use error::DbFailure;
 pub use pending_authorizations::{PENDING_LOCK_TIMEOUT, PgPendingAuthorizations};
+pub use run_leases::PgRunBindings;
 pub use prompts::{
     LOCK_TIMEOUT as PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, list_sql as prompt_list_sql,
 };
