@@ -96,6 +96,7 @@ async fn start(app: &TestApp, text: &str) -> Result<ThreadId, AppError> {
 fn message(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -465,6 +466,7 @@ async fn a_steer_the_card_cannot_give_a_tier_within_the_cap_is_not_sent_into_the
                     r.payload,
                     OutboxPayload::Delegate {
                         tier_cap: Some(Edits),
+                        locale: None,
                         ..
                     }
                 ) && r.sent_at.is_none()

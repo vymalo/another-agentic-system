@@ -51,6 +51,7 @@ fn request(text: &str, message_id: &str, context_id: &str) -> SendRequest {
         mentions: Vec::new(),
         tier: None,
         tier_cap: None,
+        locale: None,
     }
 }
 

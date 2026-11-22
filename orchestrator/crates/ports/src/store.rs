@@ -280,6 +280,13 @@ pub enum OutboxPayload {
         /// existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier_cap: Option<orch_core::AccessTier>,
+        /// The interface locale the person's screen named for the message (ADR 0085, `locale/v1`).
+        /// Absent when the message names none and in a row written before the field existed. The
+        /// dispatcher puts it on the request; the adapter sends it only to an agent whose live card
+        /// lists the extension. A hint, not a promise: a card without the extension gets the plain
+        /// message, and the log never holds it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locale: Option<orch_core::LocaleHint>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -369,6 +376,11 @@ pub enum OutboxPayload {
         /// with the reason.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier_cap: Option<orch_core::AccessTier>,
+        /// The interface locale the person's screen named for the message, as for
+        /// [`OutboxPayload::Delegate`]: a steer carries it into the running task, and the delegation
+        /// it becomes keeps it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locale: Option<orch_core::LocaleHint>,
     },
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
@@ -490,6 +502,7 @@ impl OutboxPayload {
                 mentions,
                 tier,
                 tier_cap,
+                locale,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
                 release: release.clone(),
@@ -498,6 +511,7 @@ impl OutboxPayload {
                 mentions: mentions.clone(),
                 tier: *tier,
                 tier_cap: *tier_cap,
+                locale: locale.clone(),
             }),
             OutboxPayload::Delegate { .. }
             | OutboxPayload::Action { .. }
@@ -1483,6 +1497,7 @@ mod payload_tests {
 
         let with = OutboxPayload::Steer {
             tier_cap: None,
+            locale: None,
             text: "echo @coder".to_owned(),
             release: None,
             ui_catalog: None,

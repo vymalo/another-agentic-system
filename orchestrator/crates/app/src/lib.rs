@@ -11,6 +11,7 @@ mod dispatcher;
 mod error;
 mod gate_config;
 mod inbox;
+pub mod locale;
 pub mod mentions;
 mod prompts;
 mod purge;
@@ -55,6 +56,7 @@ pub use inbox::{
     DEFAULT_LEASE_SECS, DEFAULT_MAX_ATTEMPTS, DEFAULT_PARKED_TTL_SECS, DEFAULT_POLL_SECS,
     InboxConfig, InboxWorker,
 };
+pub use locale::THREAD_LOCALE_KEY;
 pub use mentions::THREAD_MENTIONS_KEY;
 pub use prompts::{EditPrompt, PromptRefusal, RenderPrompt, RenderedPrompt};
 pub use purge::{DEFAULT_PURGE_LEASE_SECS, DEFAULT_PURGE_POLL_SECS, PurgeConfig, PurgeWorker};

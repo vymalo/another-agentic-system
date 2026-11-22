@@ -51,6 +51,7 @@ fn message(id: &str, text: &str, purpose: Option<MessagePurpose>) -> Input {
 fn user_says(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: UserId::new("me@example.com"),
         text: text.into(),
         message_id: None,

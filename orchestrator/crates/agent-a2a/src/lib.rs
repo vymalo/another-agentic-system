@@ -69,6 +69,11 @@
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
 //! namespaced message metadata. Nothing here depends on a specific agent host.
 //!
+//! The interface locale of a message (`locale/v1`, ADR 0085) is a hint, not a promise: when the
+//! message names a BCP 47 tag and the live card read for the call lists the extension well formed
+//! ([`locale_from_card`]), the tag rides in the message metadata under the URI and the URI is
+//! activated; a card that does not list it, or lists it badly, gets the plain message.
+//!
 //! Trusted components (`trusted-components/v1`, ADR 0083) are activated on a send and a
 //! resubscribe when the card read for that very call offers the extension well formed
 //! ([`trusted_components_from_card`]); the agent then asks the client to draw one in its
@@ -83,6 +88,7 @@ mod commands;
 mod errors;
 mod extensions;
 mod files;
+mod locale;
 mod mentions;
 mod releases;
 mod thread_tools;
@@ -100,6 +106,7 @@ pub use extensions::{
     build_from_card, extensions_from_card, steps_from_card, text_stream_from_card, usage_from_card,
 };
 pub use files::FileFetch;
+pub use locale::locale_from_card;
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
 pub use thread_tools::thread_tools_metadata;
 pub use trusted::trusted_components_from_card;

@@ -23,6 +23,7 @@ fn request(text: &str, message_id: &str, history: Option<ForkHistory>) -> SendRe
         mentions: Vec::new(),
         tier: None,
         tier_cap: None,
+        locale: None,
     }
 }
 

@@ -22,6 +22,7 @@ mod gate;
 mod ids;
 mod language;
 mod live;
+mod locale;
 mod mention;
 mod pricing;
 pub mod prompt;
@@ -109,6 +110,9 @@ pub use language::{
     script_mismatch, script_mismatch_fixed, scripts_of,
 };
 pub use live::{LiveChunk, LiveEnd, LiveKind, LiveText, MAX_LIVE_PIECE_BYTES};
+pub use locale::{
+    LOCALE_EXTENSION, LocaleError, LocaleHint, LocaleListing, LocaleOffer, MAX_LOCALE_LEN,
+};
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
 pub use pricing::{
     Currency, CurrencyError, LinePrice, MAX_PRICE_MICROS, MAX_PRICED_MODELS, MICROS_PER_UNIT,

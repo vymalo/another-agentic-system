@@ -22,6 +22,7 @@ fn rename(title: &str) -> Input {
 fn message(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: None,

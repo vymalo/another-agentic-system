@@ -63,6 +63,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
     prop_oneof![
         2 => "[a-z]{1,6}".prop_map(|text| Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,

@@ -430,6 +430,7 @@ pub fn fork_commit(
             mentions: replacement.mentions,
             tier: replacement.tier,
             tier_cap: replacement.tier_cap,
+            locale: None,
         },
     )?;
     commands.extend(more);

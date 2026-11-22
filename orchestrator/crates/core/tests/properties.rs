@@ -23,6 +23,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
     prop_oneof![
         "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -323,6 +324,7 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
     prop_oneof![
         4 => ("[a-z]{1,8}", carried.clone()).prop_map(|(text, catalog)| Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -439,6 +441,7 @@ fn arb_step_input() -> impl Strategy<Value = Input> {
         }),
         1 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -573,6 +576,7 @@ fn arb_turn_input() -> impl Strategy<Value = Input> {
         }),
         2 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -670,11 +674,13 @@ fn arb_mentions_input() -> impl Strategy<Value = Input> {
     prop_oneof![
         4 => arb_mentioning_message().prop_map(|(text, mentions)| Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
             origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
         }),
         3 => arb_mentioning_message().prop_map(|(text, mentions)| Input::StopAndSend {
             tier_cap: None,
+            locale: None,
             user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
             origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
         }),

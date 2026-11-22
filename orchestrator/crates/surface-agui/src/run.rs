@@ -16,12 +16,12 @@ use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
-    THREAD_GATE_KEY, THREAD_MENTIONS_KEY, THREAD_TIER_KEY, THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY,
-    check_catalog_schemas, mentions, tier,
+    THREAD_GATE_KEY, THREAD_LOCALE_KEY, THREAD_MENTIONS_KEY, THREAD_TIER_KEY, THREAD_TOOLS_KEY,
+    THREAD_UI_CATALOG_KEY, check_catalog_schemas, locale, mentions, tier,
 };
 use orch_core::{
-    AccessTier, AgentId, AgentTarget, Event, Input, Mention, Origin, ThreadId, ThreadRecord,
-    UiCatalogData, fork_message, is_fork_at, report,
+    AccessTier, AgentId, AgentTarget, Event, Input, LocaleHint, Mention, Origin, ThreadId,
+    ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -65,6 +65,7 @@ pub(crate) async fn run<P: Ports>(
     let tools = tools_request(&input)?;
     let mentioned = mentions_request(&input)?;
     let tiered = tier_request(&input)?;
+    let locale = locale_request(&input)?;
     let fork = fork_request(&input, gate.is_some(), &tools)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     // A request that names an agent by an alias is about the agent (ADR 0049).
@@ -93,6 +94,7 @@ pub(crate) async fn run<P: Ports>(
                 tools: &tools,
                 mentions: &mentioned,
                 tier: tiered,
+                locale: locale.as_ref(),
                 fork,
             },
         )
@@ -234,6 +236,22 @@ fn tier_request(input: &RunAgentInput) -> Result<Option<AccessTier>, Problem> {
     tier::parse(value).map_err(|e| Problem::bad_request(e.to_string()))
 }
 
+/// The interface locale of the run's message, `forwardedProps["vymalo.locale"]` (ADR 0085,
+/// [`locale-v1`](../../../../docs/api/locale-v1.md)): a BCP 47 tag, `null` or absent for none. Like
+/// the tier it is read on every run, so one that is not a tag is a **400** every time, before
+/// anything is written. Nothing else checks it: it is a hint, carried on the message to an agent
+/// whose live card lists the extension, and it is never written to the log.
+fn locale_request(input: &RunAgentInput) -> Result<Option<LocaleHint>, Problem> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_LOCALE_KEY))
+    else {
+        return Ok(None);
+    };
+    locale::parse(value).map_err(|e| Problem::bad_request(e.to_string()))
+}
+
 /// Where the run's thread is cut from, `forwardedProps["vymalo.fork"]` (ADR 0042, decision 8):
 /// `{from, after}`, the thread to fork (a UUID) and an event of the turn to copy up to the end of.
 /// With it the run creates its thread as a fork of `from` and its message is the fork's first,
@@ -307,6 +325,17 @@ fn tiering(mut input: Input, tier: &mut Option<AccessTier>) -> Input {
     if let Input::UserMessage { tier: own, .. } | Input::StopAndSend { tier: own, .. } = &mut input
     {
         *own = tier.take();
+    }
+    input
+}
+
+/// Gives the interface locale of the run to the first input that is a message (a stop included),
+/// once: it is the message's own, as its tier is. Every other input is left as it is.
+fn localizing(mut input: Input, locale: &mut Option<LocaleHint>) -> Input {
+    if let Input::UserMessage { locale: own, .. } | Input::StopAndSend { locale: own, .. } =
+        &mut input
+    {
+        *own = locale.take();
     }
     input
 }
@@ -480,6 +509,7 @@ struct Requested<'a> {
     tools: &'a [String],
     mentions: &'a [Mention],
     tier: Option<AccessTier>,
+    locale: Option<&'a LocaleHint>,
     fork: Option<ForkRun>,
 }
 
@@ -500,6 +530,7 @@ async fn attempt<P: Ports>(
         tools,
         mentions,
         tier,
+        locale,
         fork,
     } = *requested;
     let user = &principal.user;
@@ -675,6 +706,7 @@ async fn attempt<P: Ports>(
                 tools: tools.to_vec(),
                 mentions: mentions.to_vec(),
                 tier,
+                locale: locale.cloned(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -713,11 +745,14 @@ async fn attempt<P: Ports>(
             let mut mentioned = mentions.to_vec();
             // and the access tier, which is the message's own too
             let mut tiered = tier;
+            // and the interface locale, which is the message's own as well
+            let mut located = locale.cloned();
             for next in inputs {
                 let key = key_of(thread, &next);
                 let next = carrying(next, &mut carried);
                 let next = mentioning(next, &mut mentioned);
                 let next = tiering(next, &mut tiered);
+                let next = localizing(next, &mut located);
                 match app.submit(principal, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
@@ -735,6 +770,9 @@ async fn attempt<P: Ports>(
             }
             if tiered.is_some() {
                 tracing::warn!(%thread, "{THREAD_TIER_KEY} on a run with no message to carry it was ignored");
+            }
+            if located.is_some() {
+                tracing::warn!(%thread, "{THREAD_LOCALE_KEY} on a run with no message to carry it was ignored");
             }
             // An input that writes no event (a cancel) is answered by whatever the log says next.
             let start = if opens_run {
@@ -815,6 +853,7 @@ mod tests {
     fn message() -> Input {
         Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user: UserId::new("a@b.c"),
             text: "hi".to_owned(),
             message_id: None,

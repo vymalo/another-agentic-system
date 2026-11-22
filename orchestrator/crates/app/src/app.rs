@@ -9,12 +9,12 @@ use futures::stream::BoxStream;
 use orch_core::{
     AccessTier, AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint,
     Classify, Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource,
-    GatePolicy, Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin,
-    PersonSaid, PersonSaidBuilder, Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord,
-    ThreadState, TierListing, Timestamp, TitleSource, ToolsError, UiCatalogData, UserId, WatchKey,
-    branch_points, check_answer, check_description, check_servers, check_title, copied,
-    family_root, file_refs, fork_commit, fork_cut, fork_message, is_commit_hash, is_fork_at,
-    rail_parent_of_fork, repo_key, report, start_thread, transition,
+    GatePolicy, Input, Job, LiveText, LocaleHint, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention,
+    Origin, PersonSaid, PersonSaidBuilder, Replacement, TaskKind, ThreadForkedData, ThreadId,
+    ThreadRecord, ThreadState, TierListing, Timestamp, TitleSource, ToolsError, UiCatalogData,
+    UserId, WatchKey, branch_points, check_answer, check_description, check_servers, check_title,
+    copied, family_root, file_refs, fork_commit, fork_cut, fork_message, is_commit_hash,
+    is_fork_at, rail_parent_of_fork, repo_key, report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -337,6 +337,11 @@ pub struct Inbound {
     /// ([`AppError::Unprocessable`], [`AppError::CardUnavailable`]). Recorded on the `user_message`
     /// as sent.
     pub tier: Option<AccessTier>,
+    /// The interface locale the first message names (AG-UI `forwardedProps["vymalo.locale"]`,
+    /// ADR 0085), already read and checked by a surface ([`locale::parse`](crate::locale::parse)).
+    /// A hint: it is carried on the delegation to an agent whose live card lists `locale/v1`, and it
+    /// is **never written to the log** (nothing of it is projected or exported).
+    pub locale: Option<LocaleHint>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -1098,6 +1103,7 @@ impl<P: Ports> App<P> {
                 mentions: inbound.mentions,
                 tier: tier.tier,
                 tier_cap: tier.cap,
+                locale: inbound.locale,
             },
         )?;
         // The servers are attached in the commit that holds the first message, after it, so that
@@ -2255,6 +2261,7 @@ impl<P: Ports> App<P> {
                 mentions: Vec::new(),
                 tier: None,
                 tier_cap: None,
+                locale: None,
             }
         } else {
             Input::UserMessage {
@@ -2267,6 +2274,7 @@ impl<P: Ports> App<P> {
                 mentions: Vec::new(),
                 tier: None,
                 tier_cap: None,
+                locale: None,
             }
         };
         // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
@@ -2832,6 +2840,7 @@ impl<P: Ports> App<P> {
                     mentions,
                     tier,
                     tier_cap,
+                    locale,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -2842,6 +2851,7 @@ impl<P: Ports> App<P> {
                         mentions,
                         tier,
                         tier_cap,
+                        locale,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -2856,6 +2866,7 @@ impl<P: Ports> App<P> {
                     mentions,
                     tier,
                     tier_cap,
+                    locale,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -2865,6 +2876,7 @@ impl<P: Ports> App<P> {
                         mentions,
                         tier,
                         tier_cap,
+                        locale,
                     },
                 }),
                 Command::DelegateAction {

@@ -19,10 +19,11 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, sessions_news, snapshot, usage_totals, wants_task_read};
 use orch_core::{
-    ACCESS_TIER_EXTENSION, BoxError, CHILD_SESSIONS_EXTENSION, KnownExtension, MENTIONS_EXTENSION,
-    STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
-    TRUSTED_COMPONENTS_EXTENSION, TrustedComponentsOffer, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION,
-    USAGE_EXTENSION, UiDelivery, UiVersion, history_preamble,
+    ACCESS_TIER_EXTENSION, BoxError, CHILD_SESSIONS_EXTENSION, KnownExtension, LOCALE_EXTENSION,
+    MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
+    THREAD_TOOLS_EXTENSION, TRUSTED_COMPONENTS_EXTENSION, TrustedComponentsOffer,
+    UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery, UiVersion,
+    history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -40,6 +41,7 @@ use crate::commands::commands_from_card;
 use crate::errors::classify;
 use crate::extensions::{build_from_card, extensions_from_card};
 use crate::files::{Fetcher, FileFetch};
+use crate::locale::{locale_from_card, locale_metadata};
 use crate::mentions::mentions_metadata;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 use crate::thread_tools::{mint, thread_tools_metadata};
@@ -689,12 +691,14 @@ fn reporting_extensions(
 }
 
 /// What rides on a message besides its text, each only when the card read for this very call allows
-/// it (ADR 0008): the thread-tools grant, the mentions, the access tier and the upload limits.
+/// it (ADR 0008): the thread-tools grant, the mentions, the access tier, the interface locale and
+/// the upload limits.
 #[derive(Clone, Copy, Default)]
 struct Riders<'a> {
     thread_tools: Option<&'a ThreadToolsGrant>,
     mentions: Option<&'a Value>,
     tier: Option<&'a Value>,
+    locale: Option<&'a Value>,
     uploads: Option<&'a Value>,
 }
 
@@ -736,6 +740,9 @@ fn extensions_of(
     }
     if riders.tier.is_some() {
         uris.push(ACCESS_TIER_EXTENSION.to_owned());
+    }
+    if riders.locale.is_some() {
+        uris.push(LOCALE_EXTENSION.to_owned());
     }
     if riders.uploads.is_some() {
         uris.push(UPLOADS_EXTENSION.to_owned());
@@ -827,6 +834,11 @@ fn user_message(
     if let Some(tier) = riders.tier {
         metadata.insert(ACCESS_TIER_EXTENSION.to_owned(), tier.clone());
     }
+    // The language of the person's screen, only when the live card lists the extension
+    // (`crate::locale`): a hint, so a card that does not list it is sent the plain message.
+    if let Some(locale) = riders.locale {
+        metadata.insert(LOCALE_EXTENSION.to_owned(), locale.clone());
+    }
     // What the deployment offers for large files, only when the live card lists the extension and
     // the agent has the endpoint the tool is on (`crate::uploads`).
     if let Some(uploads) = riders.uploads {
@@ -857,6 +869,7 @@ impl AgentClient for A2aAgentClient {
             child_sessions: child_sessions_from_card(&card),
             trusted_components: trusted_components_from_card(&card),
             build: build_from_card(&card),
+            locale: locale_from_card(&card),
         })
     }
 
@@ -907,6 +920,9 @@ impl AgentClient for A2aAgentClient {
         check_plain_under_cap(&req, &listing)?;
         let tier = tier_metadata(&req, listing.offer())?;
         // The limits of a large file, when the extension is activated for this message (ADR 0058).
+        // The language of the person's screen, only to an agent that lists the extension
+        // (ADR 0085): a hint, so a card without it is sent the plain message, never nothing.
+        let locale = locale_metadata(&req, &locale_from_card(&card));
         let uploads = uploads_metadata(&req, &known, thread_tools.is_some());
         // a steer asks for no reporting of its own (the task keeps reporting on the stream that
         // started it), but the contract wants `child-sessions/v1` on every request about a child
@@ -930,6 +946,7 @@ impl AgentClient for A2aAgentClient {
             thread_tools: thread_tools.as_ref(),
             mentions: mentions.as_ref(),
             tier: tier.as_ref(),
+            locale: locale.as_ref(),
             uploads: uploads.as_ref(),
         };
         let client = Arc::new(

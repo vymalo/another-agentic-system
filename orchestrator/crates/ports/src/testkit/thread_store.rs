@@ -96,6 +96,7 @@ fn delegate(n: u128) -> NewOutbox {
             // the application sets one of the two; the store keeps whatever it is given, so a row
             // with both pins that each comes back
             tier_cap: Some(orch_core::AccessTier::Edits),
+            locale: None,
         },
     }
 }
@@ -110,6 +111,7 @@ fn steer_row(n: u128) -> NewOutbox {
             mentions: Vec::new(),
             tier: Some(orch_core::AccessTier::Bypass),
             tier_cap: Some(orch_core::AccessTier::Auto),
+            locale: None,
         },
     }
 }
@@ -2575,6 +2577,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             mentions: Vec::new(),
             tier: Some(orch_core::AccessTier::Bypass),
             tier_cap: Some(orch_core::AccessTier::Auto),
+            locale: None,
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -2795,6 +2798,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             mentions: Vec::new(),
             tier: Some(orch_core::AccessTier::Bypass),
             tier_cap: Some(orch_core::AccessTier::Auto),
+            locale: None,
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -3128,6 +3132,7 @@ fn busy_job() -> Job {
     gate.ci.required = ["build".to_owned()].into();
     gate.verifier = Some(AgentId::new("reviewer"));
     let mut job = Job {
+        after_stop_locale: None,
         number: 3,
         gate,
         attempt: 2,
@@ -3979,6 +3984,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         id: outbox_id(n),
         payload: OutboxPayload::Delegate {
             tier_cap: None,
+            locale: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4042,6 +4048,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         id: outbox_id(n),
         payload: OutboxPayload::Steer {
             tier_cap: None,
+            locale: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             ui_catalog: None,
@@ -4094,6 +4101,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         back.payload,
         OutboxPayload::Delegate {
             tier_cap: None,
+            locale: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4131,6 +4139,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         back.payload,
         OutboxPayload::Delegate {
             tier_cap: None,
+            locale: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4157,6 +4166,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
         id: outbox_id(n),
         payload: OutboxPayload::Delegate {
             tier_cap: None,
+            locale: None,
             text: format!("do {n}"),
             release: None,
             new_job: false,
@@ -4194,6 +4204,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
         stored.payload,
         OutboxPayload::Delegate {
             tier_cap: None,
+            locale: None,
             text: "do 1".into(),
             release: None,
             new_job: false,

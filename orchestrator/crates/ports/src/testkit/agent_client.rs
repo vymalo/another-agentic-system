@@ -112,6 +112,7 @@ fn request(
         mentions: Vec::new(),
         tier: None,
         tier_cap: None,
+        locale: None,
     }
 }
 
@@ -670,6 +671,43 @@ pub async fn a_tier_is_refused_by_an_agent_that_does_not_list_the_extension<F: A
         // and the same message without a tier is the first the agent hears
         let envs = drain(send(&fx, Script::Echo, "m-plain", "ctx-tier").await).await;
         assert!(!envs.is_empty(), "a plain message is sent as it was");
+    })
+    .await;
+}
+
+/// A message that names an interface locale is **never held back** for it (ADR 0085: a locale is a
+/// hint, not a promise). The fixture's agent lists no `locale/v1`, so the adapter drops the hint and
+/// sends the message it always sent: the agent sees it and starts its task. The opposite of the tier
+/// above, and the reason the two extensions are not the same shape.
+pub async fn a_locale_never_holds_a_message_back<F: AgentFixture>(fx: F) {
+    within(async {
+        let mut req = request(
+            &fx.endpoint(),
+            "corrige la page".to_owned(),
+            "m-locale",
+            Some("ctx-locale"),
+            None,
+        );
+        req.locale = Some(orch_core::LocaleHint::parse("fr-CM").expect("a tag"));
+        let envs = drain(
+            fx.client()
+                .send_stream(req)
+                .await
+                .expect("a hint is not a refusal"),
+        )
+        .await;
+        assert!(!envs.is_empty(), "the message is sent as it was");
+        // the agent holds the task: the message reached it, without the extension
+        match fx
+            .client()
+            .find_task_by_message(&fx.endpoint(), Some("ctx-locale"), "m-locale")
+            .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("the message that named a locale never reached the agent"),
+            Err(AgentError::Unsupported(_)) => {}
+            Err(e) => panic!("looking the message up failed: {e}"),
+        }
     })
     .await;
 }

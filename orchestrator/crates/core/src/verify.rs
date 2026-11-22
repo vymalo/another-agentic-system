@@ -356,6 +356,7 @@ pub(crate) fn conclude(
                 mentions: Vec::new(),
                 tier: job.tier,
                 tier_cap: job.tier_cap,
+                locale: None,
             });
             job.attempt = next;
             // the agent goes again: a new turn

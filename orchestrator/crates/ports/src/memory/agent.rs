@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::StreamExt;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, ChildSessionsOffer, CommandsListing, CommandsOffer,
-    ForkHistory, KnownExtension, LiveChunk, LiveEnd, Releases, StepKind, StepReport, StepState,
-    TierListing, TierOffer, ToolsGrant, TrustedComponent, TrustedHints, TrustedRequestData,
-    UiActionData, UiDelivery, UiVersion,
+    ForkHistory, KnownExtension, LiveChunk, LiveEnd, LocaleListing, LocaleOffer, Releases,
+    StepKind, StepReport, StepState, TierListing, TierOffer, ToolsGrant, TrustedComponent,
+    TrustedHints, TrustedRequestData, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -115,6 +115,9 @@ pub struct SendCall {
     /// The access tier the request carried (ADR 0061): what an adapter would activate
     /// `access-tier/v1` with.
     pub tier: Option<orch_core::AccessTier>,
+    /// The interface locale the request carried (ADR 0085): what an adapter would activate
+    /// `locale/v1` with, when the card lists it.
+    pub locale: Option<orch_core::LocaleHint>,
 }
 
 /// How a [`ScriptedAgent`] that plays the verifier answers whatever it is asked
@@ -357,6 +360,7 @@ impl ScriptedAgent {
                 ui: None,
                 extensions: BTreeSet::new(),
                 access_tier: TierListing::Absent,
+                locale: LocaleListing::Absent,
                 commands: CommandsListing::Absent,
                 child_sessions: None,
                 trusted_components: None,
@@ -400,6 +404,28 @@ impl ScriptedAgent {
             .entry(AgentId::new(agent))
             .or_insert_with(default_card);
         card.access_tier = offer.map_or(TierListing::Absent, TierListing::Offered);
+    }
+
+    /// Makes `agent`'s card list `locale/v1` with this offer (`None` removes it). Takes effect on
+    /// the next read: nothing is cached.
+    pub fn set_locale(&self, agent: &str, offer: Option<LocaleOffer>) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.locale = offer.map_or(LocaleListing::Absent, LocaleListing::Offered);
+    }
+
+    /// Makes `agent`'s card list `locale/v1` with a `locale` member that is not a tag. Takes
+    /// effect on the next read.
+    pub fn set_locale_malformed(&self, agent: &str) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.locale = LocaleListing::Malformed;
     }
 
     /// Makes `agent`'s card list `access-tier/v1` with `params` that cannot be read. Takes effect
@@ -587,6 +613,7 @@ fn default_card() -> AgentCardInfo {
         ui: None,
         extensions: BTreeSet::new(),
         access_tier: TierListing::Absent,
+        locale: LocaleListing::Absent,
         commands: CommandsListing::Absent,
         child_sessions: None,
         trusted_components: None,
@@ -1721,6 +1748,7 @@ impl AgentClient for ScriptedAgent {
                 steer: req.steer,
                 mentions: req.mentions.clone().into_boxed_slice(),
                 tier: req.tier,
+                locale: req.locale.clone(),
             })));
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));

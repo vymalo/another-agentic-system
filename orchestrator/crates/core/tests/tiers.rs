@@ -16,6 +16,7 @@ fn user() -> UserId {
 fn said(text: &str, tier: Option<AccessTier>) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -29,6 +30,7 @@ fn said(text: &str, tier: Option<AccessTier>) -> Input {
 fn stop(text: &str, tier: Option<AccessTier>) -> Input {
     Input::StopAndSend {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: None,

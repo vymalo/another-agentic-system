@@ -502,6 +502,7 @@ async fn mention_coder(app: &TestApp, id: ThreadId) {
             id,
             Input::UserMessage {
                 tier_cap: None,
+                locale: None,
                 user: alice(),
                 text: "echo @coder later".to_owned(),
                 message_id: Some("m-2".to_owned()),

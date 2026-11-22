@@ -110,6 +110,7 @@ mod tests {
             mentions,
             tier: None,
             tier_cap: None,
+            locale: None,
         }
     }
 

@@ -6,8 +6,8 @@ use std::time::Duration;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, BoxError, ChildSessionsOffer, Classify, CommandsListing,
-    ErrorClass, ForkHistory, KnownExtension, LiveChunk, Releases, TierListing, Timestamp,
-    ToolsGrant, TrustedComponentsOffer, UiActionData, UiDelivery, UiVersion,
+    ErrorClass, ForkHistory, KnownExtension, LiveChunk, LocaleListing, Releases, TierListing,
+    Timestamp, ToolsGrant, TrustedComponentsOffer, UiActionData, UiDelivery, UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -142,6 +142,11 @@ pub struct AgentCardInfo {
     /// that lists none. Read live like the rest of the card, bounded by the core when recorded,
     /// never read as an instruction.
     pub build: BTreeMap<String, String>,
+    /// What the card says about `locale/v1` (ADR 0085): not listed, listed with `params` that
+    /// cannot be read (a message is then sent plain: a hint that cannot be delivered is dropped,
+    /// never guessed at), or listed well formed with the tag the agent writes in when a message
+    /// names none, when it says one. Read live like the rest of the card (ADR 0008).
+    pub locale: LocaleListing,
 }
 
 impl AgentCardInfo {
@@ -277,6 +282,15 @@ pub struct SendRequest {
     /// retryable error and sends nothing, so that the sender decides again from the new card rather
     /// than the agent running the message at its own default. `None` for every other message.
     pub tier_cap: Option<orch_core::AccessTier>,
+    /// The interface locale the person's screen named for the message (ADR 0085, `locale/v1`),
+    /// already checked when the message was written. The adapter activates the extension and puts
+    /// the tag in the message's metadata only when the live card it reads for this very call lists
+    /// the extension well formed; a card that does not list it, or lists it badly, gets the plain
+    /// message, because a hint that cannot be delivered is dropped and is never a reason to send
+    /// nothing (unlike the tier). `None` for a message that names none, and for the messages the
+    /// orchestrator sends on the thread's behalf (a rework, an ask, the verifier), which carry no
+    /// screen's language.
+    pub locale: Option<orch_core::LocaleHint>,
 }
 
 /// One mentioned agent as the addressed agent is told of it (`mentions/v1`,

@@ -239,6 +239,7 @@ async fn an_administrator_reads_and_changes_only_their_own_threads() {
                 thread,
                 Input::UserMessage {
                     tier_cap: None,
+                    locale: None,
                     user: root.user.clone(),
                     text: "hi".into(),
                     message_id: None,
@@ -615,6 +616,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                 on_coder.id,
                 Input::UserMessage {
                     tier_cap: None,
+                    locale: None,
                     user: chat.user.clone(),
                     text: "x".into(),
                     message_id: None,

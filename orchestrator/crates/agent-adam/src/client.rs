@@ -179,6 +179,8 @@ impl AgentClient for LocalAgentClient {
             ui: None,
             extensions: std::collections::BTreeSet::new(),
             access_tier: orch_core::TierListing::Absent,
+            // a local agent is never sent a locale: the card it would list it on is not read
+            locale: orch_core::LocaleListing::Absent,
             commands: orch_core::CommandsListing::Absent,
             child_sessions: None,
             trusted_components: None,

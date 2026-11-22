@@ -688,6 +688,7 @@ impl<P: Ports> Dispatcher<P> {
             mentions: Vec::new(),
             tier,
             tier_cap: plain_cap(tier, a.tier_cap),
+            locale: None,
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)

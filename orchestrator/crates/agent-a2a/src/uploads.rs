@@ -66,6 +66,7 @@ mod tests {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
         }
     }
 

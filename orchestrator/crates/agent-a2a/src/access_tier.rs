@@ -145,6 +145,7 @@ mod tests {
             mentions: Vec::new(),
             tier,
             tier_cap: None,
+            locale: None,
         }
     }
 
@@ -197,6 +198,7 @@ mod tests {
             mentions: Vec::new(),
             tier,
             tier_cap: cap,
+            locale: None,
         }
     }
 

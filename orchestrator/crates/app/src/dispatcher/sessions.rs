@@ -190,6 +190,7 @@ impl<P: Ports> Dispatcher<P> {
             mentions: Vec::new(),
             tier: sent_tier,
             tier_cap: plain_cap(sent_tier, tier_cap),
+            locale: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,
@@ -299,6 +300,7 @@ impl<P: Ports> Dispatcher<P> {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,

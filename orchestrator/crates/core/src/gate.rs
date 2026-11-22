@@ -20,6 +20,7 @@ use crate::ask::Ask;
 use crate::child_sessions::{ChildLedger, ObservedRound, PendingStart, SessionLedger};
 use crate::description::DescriptionLedger;
 use crate::ids::{AgentId, ThreadId};
+use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::step::StepLedger;
 use crate::thread::ThreadState;
@@ -412,6 +413,12 @@ pub struct Job {
     /// decided for the newest message that held (see [`Job::tier_cap`]). Cleared with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_stop_tier_cap: Option<AccessTier>,
+    /// The interface locale of the newest message that named one among those [`Job::after_stop`]
+    /// holds (ADR 0085): the next job's first delegation is sent with it. A message that names none
+    /// leaves it, as a tier does. Cleared with the text. A ledger stored before the field existed
+    /// has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_stop_locale: Option<LocaleHint>,
     /// The access tier the newest message of the person was sent under (ADR 0061), named or not:
     /// what the job is working under. The orchestrator's own messages on the thread's behalf, a
     /// gate's rework and the delegation of an A2UI action, are sent under it, so that an agent
@@ -497,6 +504,7 @@ impl Default for Job {
             after_stop_mentions: Vec::new(),
             after_stop_tier: None,
             after_stop_tier_cap: None,
+            after_stop_locale: None,
             tier: None,
             tier_cap: None,
             asks: Vec::new(),

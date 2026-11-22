@@ -82,6 +82,7 @@ async fn send(client: &A2aAgentClient, fake: &FakeAgent, delivery: Option<UiDeli
         mentions: Vec::new(),
         tier: None,
         tier_cap: None,
+        locale: None,
     };
     drain(client.send_stream(request).await.unwrap()).await;
     fake.executions().pop().unwrap()

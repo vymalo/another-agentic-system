@@ -487,6 +487,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                 users += 1;
                 Input::UserMessage {
                     tier_cap: None,
+                    locale: None,
                     user: user.clone(),
                     text: text.clone(),
                     message_id: ids.then(|| format!("m-{users}")),
@@ -501,6 +502,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                 users += 1;
                 Input::StopAndSend {
                     tier_cap: None,
+                    locale: None,
                     user: user.clone(),
                     text: text.clone(),
                     message_id: ids.then(|| format!("m-{users}")),
@@ -515,6 +517,7 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                 users += 1;
                 Input::UserMessage {
                     tier_cap: None,
+                    locale: None,
                     user: user.clone(),
                     text: "with a catalog".to_owned(),
                     message_id: Some(format!("m-{users}")),

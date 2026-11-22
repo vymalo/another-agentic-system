@@ -38,6 +38,7 @@ fn catalog(version: u32, tag: &str) -> UiCatalogData {
 fn message(text: &str, catalog: Option<&UiCatalogData>) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,

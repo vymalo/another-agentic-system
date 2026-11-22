@@ -1,0 +1,198 @@
+//! The interface locale of a message (ADR 0085, `locale/v1`): what the core carries of it and, above
+//! all, what it does **not** keep. The checks of the tag that arrives (its shape) are the
+//! application's (`orch_app::locale`, `orch_core::LocaleHint::parse`); here they are taken as made.
+//!
+//! The rule this file exists for: a hint is not conversation content. It reaches the delegation (the
+//! steer, the text a Stop & send holds) and the log never sees it.
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
+use orch_core::*;
+use serde_json::json;
+
+use ThreadState::{Blocked, Done, Queued, Working};
+
+fn user() -> UserId {
+    UserId::new("me@example.com")
+}
+
+fn tag(text: &str) -> LocaleHint {
+    LocaleHint::parse(text).expect("a well-formed tag")
+}
+
+fn said(text: &str, locale: Option<&str>) -> Input {
+    Input::UserMessage {
+        user: user(),
+        text: text.into(),
+        message_id: Some("m-1".into()),
+        run_id: Some("r-1".into()),
+        origin: Origin::Agui,
+        catalog: None,
+        mentions: Vec::new(),
+        tier: None,
+        tier_cap: None,
+        locale: locale.map(tag),
+    }
+}
+
+fn stop(text: &str, locale: Option<&str>) -> Input {
+    Input::StopAndSend {
+        user: user(),
+        text: text.into(),
+        message_id: None,
+        run_id: None,
+        origin: Origin::Agui,
+        catalog: None,
+        mentions: Vec::new(),
+        tier: None,
+        tier_cap: None,
+        locale: locale.map(tag),
+    }
+}
+
+fn step(snap: &Snapshot, input: &Input) -> (Snapshot, Vec<Command>) {
+    transition(snap, input).unwrap()
+}
+
+fn logged(cmds: &[Command]) -> &UserMessageData {
+    cmds.iter()
+        .find_map(|c| match c {
+            Command::Append(EventDraft {
+                body: EventBody::UserMessage(m),
+                ..
+            }) => Some(m),
+            _ => None,
+        })
+        .expect("a user_message")
+}
+
+/// The tag of the one delegation or steer in `cmds` (`None` when it names none).
+fn sent(cmds: &[Command]) -> Option<LocaleHint> {
+    cmds.iter()
+        .find_map(|c| match c {
+            Command::Delegate { locale, .. } | Command::Steer { locale, .. } => {
+                Some(locale.clone())
+            }
+            _ => None,
+        })
+        .expect("a delegation or a steer")
+}
+
+#[test]
+fn the_message_that_names_a_locale_carries_it_and_records_none_of_it() {
+    let (snap, cmds) = start_thread(
+        GatePolicy::default(),
+        &said("corrige la page", Some("fr-CM")),
+    )
+    .expect("a first message");
+    assert_eq!(sent(&cmds), Some(tag("fr-CM")), "the delegation carries it");
+    // the log is what it always was: the event has no member for the hint, and the same bytes as a
+    // message that names none
+    assert_eq!(
+        serde_json::to_value(logged(&cmds)).unwrap(),
+        json!({"text": "corrige la page", "messageId": "m-1", "runId": "r-1"}),
+        "no `locale` member"
+    );
+    let (_, quiet) = start_thread(GatePolicy::default(), &said("corrige la page", None)).unwrap();
+    assert_eq!(
+        serde_json::to_value(logged(&cmds)).unwrap(),
+        serde_json::to_value(logged(&quiet)).unwrap()
+    );
+    assert_eq!(snap.state, Queued);
+}
+
+#[test]
+fn a_message_that_names_none_delegates_none() {
+    let (_, cmds) = start_thread(GatePolicy::default(), &said("hi", None)).unwrap();
+    assert_eq!(sent(&cmds), None);
+}
+
+#[test]
+fn every_way_a_message_reaches_the_agent_carries_its_own_locale() {
+    // blocked: an answer re-delegates
+    let (_, cmds) = step(&Snapshot::new(Blocked), &said("oui", Some("fr-CM")));
+    assert_eq!(sent(&cmds), Some(tag("fr-CM")));
+    // done: the next job starts with it
+    let (_, cmds) = step(&Snapshot::new(Done), &said("again", Some("ybb-CM")));
+    assert_eq!(sent(&cmds), Some(tag("ybb-CM")));
+    // working: the message is steered into the running task, with its own tag
+    let (_, cmds) = step(&Snapshot::new(Working), &said("et ici", Some("wes-CM")));
+    assert_eq!(sent(&cmds), Some(tag("wes-CM")));
+}
+
+#[test]
+fn a_stop_and_send_holds_the_newest_locale_for_the_next_job_and_a_cancel_forgets_it() {
+    // the message that stops a running job holds its tag, and the next job's delegation carries it
+    let (snap, cmds) = step(
+        &Snapshot::new(Working),
+        &stop("d'abord ceci", Some("fr-CM")),
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::RequestCancel { .. }))
+    );
+    assert_eq!(snap.job.after_stop_locale, Some(tag("fr-CM")));
+    // a second message joined behind it that names none leaves the held one as it is
+    let (snap, _) = step(&snap, &stop("et cela", None));
+    assert_eq!(snap.job.after_stop_locale, Some(tag("fr-CM")));
+    // the next job starts with it
+    let (_, cmds) = step(&snap, &Input::CancelledBeforeStart);
+    assert_eq!(sent(&cmds), Some(tag("fr-CM")));
+    // a person who cancels instead takes the hint with the text
+    let (snap, _) = step(&Snapshot::new(Working), &stop("jamais", Some("fr-CM")));
+    let (snap, _) = step(&snap, &Input::Cancel { user: user() });
+    assert_eq!(snap.job.after_stop_locale, None);
+}
+
+#[test]
+fn a_redelivery_carries_no_locale_because_nothing_of_it_is_in_the_log() {
+    let (_, cmds) = step(
+        &Snapshot::new(Done),
+        &Input::Redeliver {
+            text: "corrige la page".into(),
+            sent: false,
+            mentions: Vec::new(),
+            tier: None,
+            tier_cap: None,
+        },
+    );
+    assert_eq!(sent(&cmds), None);
+}
+
+#[test]
+fn an_action_carries_no_locale() {
+    // an action is a gesture on a surface, not a message of a screen with a language: the payload
+    // the application writes for it has no member, and the command has none to give
+    let (_, cmds) = step(
+        &Snapshot::new(Blocked),
+        &Input::UiAction {
+            user: user(),
+            action: UiActionData {
+                surface_id: "s-1".into(),
+                name: "go".into(),
+                source_component_id: "b-1".into(),
+                context: serde_json::Map::new(),
+                version: UiVersion::V1_0,
+                run_id: None,
+                tier: None,
+                tier_cap: None,
+            },
+            catalog: None,
+            tier: None,
+            tier_cap: None,
+        },
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::DelegateAction { .. }))
+    );
+    assert!(!cmds.iter().any(|c| matches!(
+        c,
+        Command::Delegate {
+            locale: Some(_),
+            ..
+        } | Command::Steer {
+            locale: Some(_),
+            ..
+        }
+    )));
+}

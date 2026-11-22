@@ -31,6 +31,7 @@ fn said(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         mentions: Vec::new(),
         tier,
         tier_cap: cap,
+        locale: None,
     }
 }
 fn stop(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input {
@@ -44,6 +45,7 @@ fn stop(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         mentions: Vec::new(),
         tier,
         tier_cap: cap,
+        locale: None,
     }
 }
 fn status(state: AgentTaskState) -> Input {
@@ -441,6 +443,7 @@ fn mentioning(text: &str, mentions: Vec<Mention>) -> Input {
         mentions,
         tier: None,
         tier_cap: None,
+        locale: None,
     }
 }
 

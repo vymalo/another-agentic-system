@@ -33,6 +33,7 @@ use crate::gate::{
     cap_findings, recognise_artifact, repo_key, truncate_to,
 };
 use crate::ids::{AgentId, ThreadId, UserId};
+use crate::locale::LocaleHint;
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
 use crate::reasoning::{AgentReasoningData, bound_reasoning};
 use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
@@ -83,6 +84,12 @@ pub enum Input {
         /// job sends on the message's behalf: the dispatcher reads the live card when it sends,
         /// and sends the highest tier within the cap if the card offers tiers by then.
         tier_cap: Option<AccessTier>,
+        /// The interface locale the person's screen named for this message (ADR 0085,
+        /// `locale/v1`), already checked by the caller ([`LocaleHint::parse`](crate::LocaleHint::parse)):
+        /// a hint, carried on the delegation (and on the steer, or the held text of a Stop & send)
+        /// and **never recorded in the log**: it is not conversation content, and the projection
+        /// shows nothing of it. `None` for a message that names none.
+        locale: Option<LocaleHint>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -112,6 +119,10 @@ pub enum Input {
         /// The cap that goes with `tier`, as for [`Input::UserMessage`]
         /// ([`Job::after_stop_tier_cap`]).
         tier_cap: Option<AccessTier>,
+        /// The interface locale of the message, as for [`Input::UserMessage`]. When the message
+        /// stops a running job it goes to **the next job**
+        /// ([`Job::after_stop_locale`]).
+        locale: Option<LocaleHint>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -612,6 +623,11 @@ pub enum Command {
         /// still offers none gets the plain message. A rework carries the job's
         /// ([`Job::tier_cap`]).
         tier_cap: Option<AccessTier>,
+        /// The interface locale the person's screen named for the message (ADR 0085, `locale/v1`):
+        /// the dispatcher puts it on the request and the adapter sends it to an agent whose live
+        /// card lists the extension. `None` for a rework, which is the core's own words, and for a
+        /// redelivery, whose message has nothing of the hint in the log.
+        locale: Option<LocaleHint>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -630,6 +646,9 @@ pub enum Command {
         tier: Option<AccessTier>,
         /// The cap that goes with `tier`, as for [`Command::Delegate`].
         tier_cap: Option<AccessTier>,
+        /// The interface locale of the message, as for [`Command::Delegate`]; the delegation this
+        /// steer may become keeps it.
+        locale: Option<LocaleHint>,
     },
     /// Follow a round of the thread's child session without sending anything (ADR 0072): the
     /// application writes an `observe` row, and the dispatcher answers with
@@ -993,6 +1012,7 @@ struct Said<'a> {
     mentions: &'a [Mention],
     tier: Option<AccessTier>,
     tier_cap: Option<AccessTier>,
+    locale: Option<LocaleHint>,
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -1028,6 +1048,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         mentions: said.mentions.to_vec(),
         tier: said.tier,
         tier_cap: said.tier_cap,
+        locale: said.locale.clone(),
     });
     cmds
 }
@@ -1049,6 +1070,7 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         mentions: said.mentions.to_vec(),
         tier: said.tier,
         tier_cap: said.tier_cap,
+        locale: said.locale.clone(),
     });
     cmds
 }
@@ -1083,6 +1105,10 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
         job.after_stop_tier = said.tier;
         job.after_stop_tier_cap = said.tier_cap;
     }
+    // the newest message that named a locale sets the next job's; one that names none leaves it
+    if said.locale.is_some() {
+        job.after_stop_locale = said.locale.clone();
+    }
     job.tier = said.tier;
     job.tier_cap = said.tier_cap;
     let (record, _) = deliver(job, said.user, said.catalog.as_ref());
@@ -1103,6 +1129,7 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let mentions = std::mem::take(&mut job.after_stop_mentions);
     let tier = job.after_stop_tier.take();
     let tier_cap = job.after_stop_tier_cap.take();
+    let locale = job.after_stop_locale.take();
     let abandoned = job.number;
     *job = job.next();
     job.tier = tier;
@@ -1119,6 +1146,7 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
             mentions,
             tier,
             tier_cap,
+            locale,
         },
     ]
 }
@@ -1152,6 +1180,8 @@ fn redelegate(
         mentions: mentions.to_vec(),
         tier,
         tier_cap,
+        // nothing of a hint is in the log, so a redelivery has none to carry (ADR 0085)
+        locale: None,
     }
 }
 
@@ -1347,6 +1377,7 @@ pub fn start_thread(
             mentions,
             tier,
             tier_cap,
+            locale,
         }
         | Input::StopAndSend {
             user,
@@ -1358,6 +1389,7 @@ pub fn start_thread(
             mentions,
             tier,
             tier_cap,
+            locale,
         } => {
             let said = Said {
                 user,
@@ -1369,6 +1401,7 @@ pub fn start_thread(
                 mentions,
                 tier: *tier,
                 tier_cap: *tier_cap,
+                locale: locale.clone(),
             };
             let mut job = Job::with_gate(gate);
             note_task(&mut job, text);
@@ -1456,6 +1489,7 @@ fn decide(
             mentions,
             tier,
             tier_cap,
+            locale,
         } => {
             let said = Said {
                 user,
@@ -1467,6 +1501,7 @@ fn decide(
                 mentions,
                 tier: *tier,
                 tier_cap: *tier_cap,
+                locale: locale.clone(),
             };
             message(state, job, &said, false)
         }
@@ -1480,6 +1515,7 @@ fn decide(
             mentions,
             tier,
             tier_cap,
+            locale,
         } => {
             let said = Said {
                 user,
@@ -1491,6 +1527,7 @@ fn decide(
                 mentions,
                 tier: *tier,
                 tier_cap: *tier_cap,
+                locale: locale.clone(),
             };
             message(state, job, &said, true)
         }
@@ -1580,6 +1617,7 @@ fn decide(
                 job.after_stop_mentions.clear();
                 job.after_stop_tier = None;
                 job.after_stop_tier_cap = None;
+                job.after_stop_locale = None;
                 Ok((state, vec![Command::RequestCancel { job: job.number }]))
             }
             // The agent's task is over, so there is nothing to ask it to cancel: the thread is
@@ -1700,6 +1738,7 @@ fn decide(
                 let mentions = std::mem::take(&mut job.after_stop_mentions);
                 let tier = job.after_stop_tier.take();
                 let tier_cap = job.after_stop_tier_cap.take();
+                let locale = job.after_stop_locale.take();
                 // the held messages are the job's now, and so is the tier they named
                 job.tier = tier;
                 job.tier_cap = tier_cap;
@@ -1721,6 +1760,7 @@ fn decide(
                             mentions,
                             tier,
                             tier_cap,
+                            locale,
                         },
                     ],
                 ))

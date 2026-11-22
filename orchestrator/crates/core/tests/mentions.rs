@@ -34,6 +34,7 @@ fn set(ids: &[&str]) -> BTreeSet<AgentId> {
 fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -47,6 +48,7 @@ fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
 fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
     Input::StopAndSend {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: None,

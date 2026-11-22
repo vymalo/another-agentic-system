@@ -22,6 +22,7 @@ fn started() -> Snapshot {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
         },
     )
     .unwrap();

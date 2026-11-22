@@ -626,6 +626,7 @@ async fn a_helper_thread_takes_no_mentions() {
                 }],
                 tier: None,
                 tier_cap: None,
+                locale: None,
             },
             None,
         )

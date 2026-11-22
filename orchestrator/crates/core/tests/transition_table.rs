@@ -27,6 +27,7 @@ fn agent() -> AgentId {
 fn um(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -113,6 +114,7 @@ fn row1_user_message_in_queued_or_working() {
             cmds[1],
             Command::Steer {
                 tier_cap: None,
+                locale: None,
                 text: "hi".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -126,6 +128,7 @@ fn row1_user_message_in_queued_or_working() {
 fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
     let input = Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: "hi".into(),
         message_id: Some("m-1".into()),
@@ -162,6 +165,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
             if matches!(s, Queued | Working) {
                 Command::Steer {
                     tier_cap: None,
+                    locale: None,
                     text,
                     catalog: None,
                     mentions: Vec::new(),
@@ -170,6 +174,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
             } else {
                 Command::Delegate {
                     tier_cap: None,
+                    locale: None,
                     text,
                     catalog: None,
                     mentions: Vec::new(),
@@ -184,6 +189,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
 fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
     let input = Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: "hi".into(),
         message_id: None,
@@ -217,6 +223,7 @@ fn row2_user_message_in_blocked_requeues() {
         cmds[1],
         Command::Delegate {
             tier_cap: None,
+            locale: None,
             text: "main".into(),
             catalog: None,
             mentions: Vec::new(),
@@ -253,6 +260,7 @@ fn row3_user_message_in_terminal_starts_the_next_job() {
             cmds[2],
             Command::Delegate {
                 tier_cap: None,
+                locale: None,
                 text: "again".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -344,6 +352,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
             state: s,
             job: Job {
                 after_stop: None,
+                after_stop_locale: None,
                 number: 3,
                 gate: gate.clone(),
                 attempt: 2,
@@ -529,6 +538,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             cmds[1],
             Command::Delegate {
                 tier_cap: None,
+                locale: None,
                 text: "x".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -566,6 +576,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 expected,
                 vec![Command::Delegate {
                     tier_cap: None,
+                    locale: None,
                     text: "x".into(),
                     catalog: None,
                     mentions: Vec::new(),
@@ -1465,6 +1476,7 @@ fn catalog(version: u32, tag: &str) -> UiCatalogData {
 fn um_with(text: &str, catalog: &UiCatalogData) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: None,

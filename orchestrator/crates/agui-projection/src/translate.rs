@@ -582,6 +582,7 @@ pub fn translate_with_warnings(
         (Some(_), Some(_), _) => return Err(InputError::AmbiguousAnswer),
         (Some(text), None, _) => vec![Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user,
             text,
             message_id: None,
@@ -596,6 +597,7 @@ pub fn translate_with_warnings(
         (None, Some((id, text)), _) if send == Some(Delivery::Interrupt) && known.is_some() => {
             vec![Input::StopAndSend {
                 tier_cap: None,
+                locale: None,
                 user,
                 text,
                 message_id: Some(id),
@@ -608,6 +610,7 @@ pub fn translate_with_warnings(
         }
         (None, Some((id, text)), _) => vec![Input::UserMessage {
             tier_cap: None,
+            locale: None,
             user,
             text,
             message_id: Some(id),

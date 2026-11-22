@@ -90,6 +90,7 @@ fn request(fake: &FakeAgent, message_id: &str, thread_tools: Option<ToolsGrant>)
         mentions: Vec::new(),
         tier: None,
         tier_cap: None,
+        locale: None,
     }
 }
 

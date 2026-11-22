@@ -56,6 +56,7 @@ fn request(fake: &FakeAgent, text: &str, tier: Option<AccessTier>) -> SendReques
         mentions: Vec::new(),
         tier,
         tier_cap: None,
+        locale: None,
     }
 }
 
