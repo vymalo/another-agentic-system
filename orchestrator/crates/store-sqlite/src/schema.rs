@@ -149,9 +149,16 @@ mod tests {
                 on_disk.insert(name, text);
             }
         }
+        // The directory names a file `<version>_<description>.sql`, so the key is that stem: a
+        // migration whose description or number drifts from its file fails here.
         let listed: BTreeMap<String, String> = MIGRATIONS
             .iter()
-            .map(|m| (m.description.to_owned(), m.sql.to_owned()))
+            .map(|m| {
+                (
+                    format!("{:04}_{}", m.version, m.description),
+                    m.sql.to_owned(),
+                )
+            })
             .collect();
         assert_eq!(
             listed.keys().collect::<Vec<_>>(),
