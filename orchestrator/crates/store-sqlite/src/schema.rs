@@ -38,11 +38,18 @@ pub struct Migration {
 
 /// The migrations, in order. A file added to `migrations/` and not to this list would never run,
 /// so the test at the bottom of this module fails when the two disagree.
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    description: "init",
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        description: "usage_and_search",
+        sql: include_str!("../migrations/0002_usage_and_search.sql"),
+    },
+];
 
 /// The SHA-256 of a migration's text, lowercase hex: the `checksum` column.
 fn checksum(sql: &str) -> String {
