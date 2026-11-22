@@ -32,7 +32,7 @@ asking for Yemba.
 | Part | Does |
 |---|---|
 | **Client** | Knows the interface's language, as a BCP 47 tag, and sends it with every message: `forwardedProps["vymalo.locale"]` on a run. Never sends one it invented. Draws the agent's answer as text and Markdown, and keeps **every high-risk string its own** ([section 7](#7-security)). |
-| **Orchestrator** | Reads the tag on the run and checks that it is a tag (**400**). Carries it on the message the person's words become. Activates the extension and puts the tag in the metadata only to an agent whose live card, read for that very call, lists it well formed. Records **nothing of it** in the log. |
+| **Orchestrator** | Reads the tag on the run and checks that it is a tag (**400**). Carries it on the message the person's words become, and records it on the `user_message` — the log is the state, so the hint is replayable — while projecting nothing of it. Activates the extension and puts the tag in the metadata only to an agent whose live card, read for that very call, lists it well formed. |
 | **Agent** | Lists the extension in its card, with the language it writes in by itself when it says one. Answers in the language the hint names when it can, in the person's language, else its own default. Says which one it used when it matters. |
 
 ## The flow
@@ -50,7 +50,7 @@ sequenceDiagram
   O->>O: is it a BCP 47 tag? (400, nothing written)
   O->>A: read the card (live, for this call)
   A-->>O: capabilities.extensions: locale/v1, params {locale: "en-CM"}
-  O->>L: user_message {text} — no locale member
+  O->>L: user_message {text, locale: "fr-CM"} — recorded, never shown
   O->>A: SendStreamingMessage, A2A-Extensions: locale/v1, metadata {locale: "fr-CM"}
   A-->>O: the answer, in French, because the person wrote French
   O-->>W: the frames, with no locale in any of them
@@ -191,15 +191,24 @@ the card is read at the send, as it is for every other extension.
 |---|---|
 | the person's message in the web: a first message, a follow-up, a Stop & send (the held text of it included) | the tag the run named |
 | a **steer** into a running task, and the delegation a refused steer becomes | the tag the run named |
-| a **fork's first message**, an **edit**, and a message from the **MCP surface** | none: those requests do not name one yet |
-| a **redelivery** of a message that was never sent | none: nothing of the hint is in the log to redeliver it from |
+| a **fork's first message** (`POST /api/threads/{id}/fork`'s `locale`, or a run's `vymalo.locale` when the fork is made by it) | the tag the request names, as its `tier` is |
+| an **edit** (`replace`) that names none | the tag of the message it replaces, as its `tier` is |
+| a **redelivery** of a message that never reached the agent | the tag its `user_message` recorded: the log is the state |
+| a message from the **MCP surface**, and a person's **start of a child session** | none: neither request has a member for one |
 | the orchestrator's own: a rework of the gate, a verifier's task, an `ask_agent` child task | none: the screen's language is not the core's, and a child task is the agent's own business |
 | an **A2UI action** | none: an action is a gesture on a surface, not a message of a screen |
 
-**Nothing of it is written.** The `user_message` event has no `locale` member, the AG-UI projection has no
-`vymalo.locale`, no activity is emitted for it, and an export holds none of it. The hint lives on the outbox row (the job
-ledger) from the commit that writes the message to the send, and nowhere else. The consequences are stated rather than
-hidden: a redelivery carries none, and a fork starts with none.
+**The log records it, and nothing else does.** The `user_message` carries `locale` (omitted when the message names none), so
+an export shows what the agent was told and a replay sends the same message. **The projection adds nothing**: no
+`vymalo.locale` on a frame, no activity, no badge. That is the one place this extension does not copy the tier, and
+deliberately: the tier is shown in the interface, a locale need not be — but both are recorded, because **the log is the
+state**, and a hint that changes the agent's words must be replayable. Everything that continues a message continues its
+hint: a redelivery carries it, a fork's first message and an edit carry their own or the replaced one's, and a message that
+names none carries none.
+
+**At the send**, the dispatcher puts the row's tag on the request and the adapter reads the card again for that very call: a
+card that lists the extension gets the tag, a card that does not list it — or lists it badly — gets the plain message. The
+dispatcher does not fail the job for a locale, and the adapter never refuses a message over one.
 
 **At the send**, the dispatcher puts the row's tag on the request and the adapter reads the card again for that very call: a
 card that lists the extension gets the tag, a card that does not list it — or lists it badly — gets the plain message. The
@@ -221,8 +230,10 @@ dispatcher does not fail the job for a locale, and the adapter never refuses a m
   - everything the agent writes is drawn as the person's text — Markdown, sanitized — and never as interface chrome.
 - **The tag is untrusted input.** It is validated (a length bound, ASCII only, the grammar's productions), refused rather than
   passed through, and never used to build a path, a key or a query. It travels in one metadata member and in one header.
-- **It is not logged, so it cannot leak from the log.** Nothing of the interface's language reaches the event log, an export, a
-  share link, a fork, a search index or the usage ledger.
+- **What the log holds is the tag, and only the tag.** The `user_message` records it — a BCP 47 tag the validator bounded and
+  checked, never a free string — so an export and a fork carry it, as they carry the tier. It is not shown in the interface,
+  it is not a title, a description or a search word (the search index folds the messages' text, not their members), and it is
+  never used to build a path, a key or a query.
 
 ## What the build changes
 
@@ -245,8 +256,10 @@ side):
 - a card that lists the URI with a `locale` that is not a tag offers nothing, and a message to it is sent plain;
 - a tag that is not a BCP 47 tag is **400** and nothing is written; a tag is accepted whatever the case of its subtags;
 - the tag reaches the agent in the metadata under the URI, with the URI in the header and in `message.extensions`;
-- the log holds no `locale`: the `user_message` has no member, the AG-UI stream has no `vymalo.locale` and no activity, and an
-  export of the thread holds none of it.
+- the log records it **once**, on the `user_message` (omitted when the message names none), an export of the thread holds it
+  there and nowhere else, and the AG-UI stream has no `vymalo.locale` and no activity for it;
+- a redelivery carries the tag its `user_message` recorded, a fork's first message carries the one its request names, and an
+  edit that names none carries the replaced message's.
 
 ## Verified and unverified (2026-11-22)
 

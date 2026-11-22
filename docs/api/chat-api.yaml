@@ -1334,7 +1334,8 @@ paths:
         **Regenerate the last answer** is an edit with the same words; the server has no route of its own for it
         ([ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md), amended 2026-11-14). A client does this:
         1. Take the person's message that began the **newest** turn and `POST` `{id, replace: <its seq>, text: <its words,
-           unchanged>, messageId}`. Send **no `tier`**: the server then keeps the replaced message's tier (below). The
+           unchanged>, messageId}`. Send **no `tier`** and **no `locale`**: the server then keeps the replaced message's tier
+           and interface locale (below). The
            answer is a new version of that message: `listBranches` finds it, and the client goes to the new thread.
         2. `id` and `messageId` are new UUIDs for each regenerate and the **same** ones for a retry after a failure
            (a lost response, a 5xx), so a retry never makes a second thread; the next regenerate, of the same

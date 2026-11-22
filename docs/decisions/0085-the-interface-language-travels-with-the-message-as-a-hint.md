@@ -3,6 +3,9 @@
 - **Status:** **proposed 2026-11-22**, at the owner's decisions of that day (another-context
   `plans/2026-11-22-languages.md`, decision rows 14–17). The orchestrator's side is built (the tag and its checks, the card
   read, the activation, `dev/locale-e2e.sh`); no agent lists the extension yet and the web does not send it yet.
+  **Amended 2026-11-22, the same day** (the coordinator's ruling): decision 4 — the hint **is logged** on the `user_message`
+  and is not kept out of the log, because the log is the state and a hint that changes the agent's words must be replayable;
+  the projection still shows nothing of it. The rest of the record stands.
 - **Contract:** [`docs/api/locale-v1.md`](../api/locale-v1.md). **Pattern:** [ADR 0008](0008-platform-integration-via-a2a-extension.md).
   **The extension this one is deliberately *not* shaped like:** [ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md).
 
@@ -45,12 +48,15 @@ URI in `A2A-Extensions` and `message.extensions`, one member in the message's me
    the person made and is never silently dropped — because a permission that silently widens is a defect, while a language that
    silently falls back to the agent's default is the behaviour every agent has today.
 
-4. **Nothing of it is persisted.** The tag is not in the `user_message`, not in any AG-UI frame, not in an activity, not in an
-   export, not in a share link, not in a fork and not in the search index. It lives from the commit that writes the message to
-   the send, on the outbox row — the job ledger — and nowhere else. Two consequences are stated rather than hidden: a redelivery
-   of a message that never reached the agent carries no locale (nothing in the log to redeliver it from), and a fork's first
-   message carries none (its request body does not name one yet). The interface's language is client state, and the log is the
-   conversation.
+4. **The log records it, and the projection shows nothing of it.** The tag is on the `user_message` (`locale`, omitted when the
+   message names none) and on the outbox row that carries it to the send, and it is nowhere else: no AG-UI frame, no activity,
+   no badge, no title or description, no search word. **The log is the state**: a hint that changes the agent's words must be
+   replayable, so a redelivery of a message that never reached the agent carries the hint its message recorded, a fork's first
+   message carries the one its request names, and an edit that names none continues the replaced message's — each as the tier
+   does. This is the one place the extension deliberately does not copy the tier: the tier is shown in the interface and a locale
+   need not be, so it is recorded without being projected. (An earlier draft of this record kept the hint out of the log
+   altogether; it could not answer a redelivery, and a hint the log cannot replay is a hint the agent's words cannot be
+   explained by.)
 
 5. **The agent's language: the interface's, then the person's.** The agent answers in the language the hint names when it can; a
    message whose text is in another language is answered in that language, because a person who writes Yemba in a French
@@ -69,9 +75,9 @@ URI in `A2A-Extensions` and `message.extensions`, one member in the message's me
 
 - An agent that wants the hint lists one URI and reads one member; an agent that does not is unchanged, byte for byte, and so is
   every deployment whose agents list nothing.
-- The interface's language is not recoverable from a thread's log. That is the intended cost of rule 4: a person who reloads in
-  another language sees the thread in the new language, and nothing in the conversation pretends otherwise. A later reader of an
-  export cannot tell which language the sender's screen was in, and does not need to.
+- A thread's log says which language each message was written on, so an export explains the agent's answer and a replay sends
+  the same message. The interface still shows none of it: a person who reloads in another language sees the thread in the new
+  language, and only the messages written afterwards carry the new tag.
 - A client must not use the hint to justify drawing anything it did not draw before. The rule of decision 6 is what makes a
   multilingual agent safe to talk to: the agent's language ability widens, the client's own surface does not.
 - The four languages of day 0 are configuration, so a fifth is a configuration change and a translated screen — not a protocol
@@ -80,16 +86,19 @@ URI in `A2A-Extensions` and `message.extensions`, one member in the message's me
 ## Alternatives considered
 
 - **A setting of the thread** (a column, an event, a control beside the composer): rejected. The interface's language can change
-  between two messages (a person switches the screen's language, or writes from another device), and the log would then hold a
-  client preference forever, in every export and every fork.
+  between two messages (a person switches the screen's language, or writes from another device), and a thread-level value would
+  then be a stale preference standing for every message, instead of each message's own tag.
 - **`Accept-Language` on the HTTP request only**: rejected. It is a fact about the HTTP call, not about the message; the
   dispatcher sends the message later, from another process, and the header would be lost or invented.
 - **A closed enum of the four languages in the core**: rejected by row 17. It would make a deployment's product decision a
   protocol constant, and refuse `de-DE` from a client that has every right to send it.
 - **Failing closed, as the tier does**: rejected. A hint that cannot be delivered has a defined fallback (the agent's default),
   and holding a person's message back over the language of their screen would be a worse product for no safety.
-- **Logging it, for the export's sake**: rejected. It is client state; the log is the conversation, and an export that carries
-  the sender's screen language would say something about the sender that the conversation does not.
+- **Projecting it, as the tier is**: rejected. The tier is shown as a badge on the message because the person picked it and
+  wants to see it; a locale is ambient, and a badge for it would be interface chrome nobody asked for. Recorded, not shown.
+- **Keeping it out of the log, as an earlier draft did**: rejected. A hint the log does not hold cannot be redelivered, cannot
+  be continued by a fork and cannot explain an agent's words in an export; the log is the state, and this is state that changed
+  what the agent said.
 
 ## References
 
