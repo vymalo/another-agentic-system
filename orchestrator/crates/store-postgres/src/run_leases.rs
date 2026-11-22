@@ -34,6 +34,9 @@ impl PgRunBindings {
     }
 }
 
+/// The columns of a binding: agent, person, model, deadline.
+type BindingRow = (String, String, Option<String>, Timestamp);
+
 fn unavailable(err: SqlError) -> RunLeaseError {
     RunLeaseError::Unavailable(err.to_string())
 }
@@ -87,7 +90,7 @@ impl RunBindingStore for PgRunBindings {
 
     async fn get(&self, run: &RunId) -> Result<Option<RunBinding>, RunLeaseError> {
         let mut conn = Object::take(self.pool.acquire().await.map_err(unavailable)?);
-        let row: Result<Option<(String, String, Option<String>, Timestamp)>, SqlError> =
+        let row: Result<Option<BindingRow>, SqlError> =
             query_as("SELECT agent, person, model, expires_at FROM run_leases WHERE run = $1")
                 .bind(run.as_str())
                 .fetch_optional(&mut *conn)
