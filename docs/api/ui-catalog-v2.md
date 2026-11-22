@@ -1523,12 +1523,13 @@ applies an input, as in v1.
 *Amended 2026-11-22 (issue #431):* until this date the orchestrator refused none of four rules of section 1 that this
 table names: a key that starts with `@`, a top-level `anyOf` or `oneOf`, `allowedParents` or `allowedChildren`, and a
 component named `Surface`. The page was right and the check was not, so the check now refuses each with 400, naming the
-rule (`orchestrator/crates/core/src/ui_catalog.rs`, `check_component_schemas` and `check_envelope`). The first two and
-`Surface` are A2UI v1.0's own rules (`catalog_definition.json`, `ComponentDefinition`; the `@` prefix reserved), so a
-catalog that broke them was relayed to agents as a catalog no A2UI v1.0 runtime accepts. The composition rules are
-allowed by A2UI v1.0 and refused here by ADR 0075 (decision 5: a later version may add them), because the web enforces
-none of them. The `@` rule is read as any object key under a component, at any depth, as `$ref` is: no JSON Schema
-keyword starts with `@`. The web's catalog and adam-rs's reader break none of them, so no client sees a change.
+rule (`orchestrator/crates/core/src/ui_catalog.rs`, `check_component_schemas` and `check_envelope`). A catalog with a
+top-level `anyOf` or `oneOf`, or a component named `Surface`, fails A2UI v1.0's `catalog_definition.json`
+(`ComponentDefinition`, and `components.propertyNames`), so it was relayed to agents as a catalog A2UI v1.0 refuses; an
+`@` property takes a name A2UI v1.0 reserves for its own members. The composition rules are allowed by A2UI v1.0 and
+refused here by ADR 0075 (decision 5: a later version may add them), because the web enforces none of them. The `@`
+rule is read as any object key under a component, at any depth, as `$ref` is: no JSON Schema keyword starts with `@`.
+The web's catalog breaks none of the four, and adam-rs only reads the catalog it is sent, so no client sees a change.
 
 ## 4. In the log
 
