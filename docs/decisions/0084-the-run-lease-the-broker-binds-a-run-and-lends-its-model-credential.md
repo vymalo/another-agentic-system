@@ -1,9 +1,11 @@
 # ADR 0084 — The run lease: the broker binds a run and lends its model credential to the injector
 
-- **Status:** **proposed (2026-11-21).** It fixes the contract of sys#334's slice **B1** (the broker's first part) that
-  S9's injector consumes. Two choices are the owner's and are listed under *Open questions*; the recommended answers are
-  the ones written here, so the morning has something concrete to rule on. The requirements are the epic's own
-  (*Key Assumptions* 3, 14 and 15, and the constraint that the lease route is not at the edge).
+- **Status:** **proposed (2026-11-21); decided 2026-11-22.** The owner answered the two open questions on
+  2026-11-22: the gateway injects **the deployment's provider key**, leased per run and metered against the
+  person's balance; the lease is **30 s, renewed by Authorino's cache**. Both are this record's
+  recommendations; the code follows them. It fixes the contract of sys#334's slice **B1** (the broker's first
+  part) that S9's injector consumes. The requirements are the epic's own (*Key Assumptions* 3, 14 and 15, and
+  the constraint that the lease route is not at the edge).
 
 ## Context
 
