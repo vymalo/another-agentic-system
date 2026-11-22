@@ -185,11 +185,19 @@ const SECTION: &str = "CASE WHEN t.archived_at IS NOT NULL THEN 2 \
      WHEN t.pinned_at IS NOT NULL THEN 0 ELSE 1 END";
 
 /// What follows the cursor in the order of the units, with `?4` the cursor's section, `?5` its rank,
-/// `?6` its archived time and `?7` its id. With no cursor the four are NULL, and a comparison
-/// against NULL is never true, so the clause admits everything.
+/// `?6` its archived time and `?7` its id.
+///
+/// It is only ever used **with** a cursor. Bound to NULLs it admits nothing — every comparison with
+/// NULL is NULL, never true — which is a page that starts at the top coming back empty. A listing
+/// with no cursor takes [`NO_CURSOR`] instead, as `store-postgres` picks between its `after_cursor!`
+/// and `no_cursor!`.
 const AFTER_CURSOR: &str = "AND (u.sec > ?4 \
      OR (u.sec = ?4 AND ?4 < 2 AND (u.rail_rank > ?5 OR (u.rail_rank = ?5 AND u.id < ?7))) \
      OR (u.sec = ?4 AND ?4 = 2 AND (u.archived_at < ?6 OR (u.archived_at = ?6 AND u.id < ?7))))";
+
+/// The clause of a page that starts at the top: the four cursor parameters are all NULL, and this
+/// admits every unit (a statement naming `?4` to `?7` must be given them all).
+const NO_CURSOR: &str = "AND (?4 IS NULL AND ?5 IS NULL AND ?6 IS NULL AND ?7 IS NULL)";
 
 /// The top-level units a filter lists (ADR 0042).
 const UNIT_EXCLUDE: &str = "t.rail_parent IS NULL AND t.archived_at IS NULL";
@@ -207,10 +215,11 @@ fn unit_filter(archived: ArchivedFilter) -> &'static str {
 
 /// The top-level units of a [`ListOrder::Rail`] listing under a filter, after the cursor or from the
 /// start, in the owner's order.
-fn units_sql(archived: ArchivedFilter) -> String {
+fn units_sql(archived: ArchivedFilter, after_cursor: bool) -> String {
+    let cursor = if after_cursor { AFTER_CURSOR } else { NO_CURSOR };
     format!(
         "SELECT {THREAD_COLS} FROM (SELECT t.*, {SECTION} AS sec FROM threads t \
-         WHERE {LISTED} AND {}) u WHERE u.owner = ?1 {AFTER_CURSOR} \
+         WHERE {LISTED} AND {}) u WHERE u.owner = ?1 {cursor} \
          ORDER BY u.sec, CASE WHEN u.sec < 2 THEN u.rail_rank END, \
          u.archived_at DESC NULLS LAST, u.id DESC LIMIT ?3",
         unit_filter(archived)
@@ -308,8 +317,12 @@ fn list_rail(
         }
         None => values.extend([Value::Null, Value::Null, Value::Null, Value::Null]),
     }
-    let units: Vec<ThreadRecord> =
-        dynamic_rows(conn, &units_sql(listing.archived), values, thread_from_row)?;
+    let units: Vec<ThreadRecord> = dynamic_rows(
+        conn,
+        &units_sql(listing.archived, cursor.is_some()),
+        values,
+        thread_from_row,
+    )?;
     if units.is_empty() {
         return Ok(units);
     }
