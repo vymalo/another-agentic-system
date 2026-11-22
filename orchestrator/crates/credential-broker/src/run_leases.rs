@@ -42,9 +42,6 @@ where
         let capped = now
             .checked_add(MAX_BINDING)
             .map_or(binding.expires_at, |end| binding.expires_at.min(end));
-        if capped <= now {
-            return Err(RunLeaseError::Expired);
-        }
         self.bindings
             .upsert(&RunBinding {
                 expires_at: capped,
