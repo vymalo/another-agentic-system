@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "SQLite implementation of the orchestrator's ThreadStore port: one file, one process, WAL, a lock file."
+description = "SQLite implementation of the orchestrator's ThreadStore port with its usage ledger and search index: one file, one process, WAL, a lock file."
 readme = "README.md"
 
 [dependencies]
