@@ -74,11 +74,7 @@ impl RunBindingStore for PgRunBindings {
     }
 
     async fn delete(&self, run: &RunId) -> Result<(), RunLeaseError> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| RunLeaseError::Unavailable(format!("the pool: {e}")))?;
+        let mut conn = self.pool.acquire().await.map_err(unavailable)?;
         query("DELETE FROM run_leases WHERE run = $1")
             .bind(run.as_str())
             .execute(&mut *conn)
@@ -88,11 +84,7 @@ impl RunBindingStore for PgRunBindings {
     }
 
     async fn get(&self, run: &RunId) -> Result<Option<RunBinding>, RunLeaseError> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| RunLeaseError::Unavailable(format!("the pool: {e}")))?;
+        let mut conn = self.pool.acquire().await.map_err(unavailable)?;
         let row: Result<Option<(String, String, Option<String>, Timestamp)>, SqlError> =
             query_as("SELECT agent, person, model, expires_at FROM run_leases WHERE run = $1")
                 .bind(run.as_str())
