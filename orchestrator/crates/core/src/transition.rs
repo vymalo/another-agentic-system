@@ -167,6 +167,10 @@ pub enum Input {
         tier: Option<AccessTier>,
         /// The cap that went with it, as its `user_message` records it.
         tier_cap: Option<AccessTier>,
+        /// The interface locale it was written with, as its `user_message` records it (ADR 0085):
+        /// the redelivery carries it, because the log is the state and the hint changed the words
+        /// the agent is about to be sent.
+        locale: Option<LocaleHint>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -1028,6 +1032,7 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
             mentions: said.mentions.to_vec(),
             tier: said.tier,
             tier_cap: said.tier_cap,
+            locale: said.locale.clone(),
         }),
     )
 }
@@ -1169,6 +1174,7 @@ fn redelegate(
     mentions: &[Mention],
     tier: Option<AccessTier>,
     tier_cap: Option<AccessTier>,
+    locale: Option<LocaleHint>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
@@ -1180,8 +1186,7 @@ fn redelegate(
         mentions: mentions.to_vec(),
         tier,
         tier_cap,
-        // nothing of a hint is in the log, so a redelivery has none to carry (ADR 0085)
-        locale: None,
+        locale,
     }
 }
 
@@ -1194,6 +1199,7 @@ fn redelegation(
     mentions: &[Mention],
     tier: Option<AccessTier>,
     tier_cap: Option<AccessTier>,
+    locale: Option<LocaleHint>,
 ) -> Vec<Command> {
     if sent {
         job.answer.reset();
@@ -1205,7 +1211,7 @@ fn redelegation(
         job.tier_cap = tier_cap;
         Vec::new()
     } else {
-        vec![redelegate(job, text, mentions, tier, tier_cap)]
+        vec![redelegate(job, text, mentions, tier, tier_cap, locale)]
     }
 }
 
@@ -1537,6 +1543,7 @@ fn decide(
             mentions,
             tier,
             tier_cap,
+            locale,
         } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
@@ -1555,7 +1562,7 @@ fn decide(
                 }
                 Ok((
                     state,
-                    redelegation(job, text, *sent, mentions, *tier, *tier_cap),
+                    redelegation(job, text, *sent, mentions, *tier, *tier_cap, locale.clone()),
                 ))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
@@ -1565,14 +1572,22 @@ fn decide(
                 job.hold = None;
                 Ok((
                     ThreadState::Queued,
-                    redelegation(job, text, *sent, mentions, *tier, *tier_cap),
+                    redelegation(job, text, *sent, mentions, *tier, *tier_cap, locale.clone()),
                 ))
             }
             ThreadState::Done | ThreadState::Failed => {
                 *job = job.next();
                 note_task(job, text);
                 let mut cmds = vec![job_started(job)];
-                cmds.extend(redelegation(job, text, *sent, mentions, *tier, *tier_cap));
+                cmds.extend(redelegation(
+                    job,
+                    text,
+                    *sent,
+                    mentions,
+                    *tier,
+                    *tier_cap,
+                    locale.clone(),
+                ));
                 Ok((ThreadState::Queued, cmds))
             }
             // The person asked to stop: a message they wrote before that stays undelivered.

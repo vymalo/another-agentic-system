@@ -590,6 +590,7 @@ fn first_message(text: &str) -> FirstMessage {
         ui_catalog: None,
         mentions: Vec::new(),
         tier: None,
+        locale: None,
     }
 }
 
@@ -689,6 +690,7 @@ async fn an_edit_fork_opens_the_files_before_the_message_it_replaces() {
                     text: "echo edited".to_owned(),
                     message_id: Some("m-edit".to_owned()),
                     tier: None,
+                    locale: None,
                 },
                 target: None,
                 id: None,

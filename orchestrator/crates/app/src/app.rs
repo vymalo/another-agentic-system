@@ -385,6 +385,9 @@ pub enum ForkAt {
         /// The access tier the person names for it (ADR 0061). An edit that names none is sent under
         /// the tier of the message it replaces, as lowered to the person's cap and the agent's card.
         tier: Option<AccessTier>,
+        /// The interface locale the person names for it (ADR 0085). An edit that names none carries
+        /// the one of the message it replaces, as the tier does.
+        locale: Option<LocaleHint>,
     },
 }
 
@@ -409,6 +412,9 @@ pub struct FirstMessage {
     /// The access tier the message names (ADR 0061), checked against the person's cap and the live
     /// card of the fork's agent, as for the first message of a new thread.
     pub tier: Option<AccessTier>,
+    /// The interface locale the message names (ADR 0085): the language the person's screen reads
+    /// in, a hint carried as the tier is, and recorded on the fork's first `user_message`.
+    pub locale: Option<LocaleHint>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -1596,6 +1602,7 @@ impl<P: Ports> App<P> {
                         mentions: first.mentions,
                         tier: first.tier,
                         tier_cap: None,
+                        locale: first.locale,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),
@@ -1606,10 +1613,12 @@ impl<P: Ports> App<P> {
                 text,
                 message_id,
                 tier,
+                locale,
             } => {
                 validate_text(&text)?;
                 let mut edit = Replacement::edit(text, message_id, None);
                 edit.tier = tier;
+                edit.locale = locale;
                 (ForkPoint::Replace(seq), ForkKind::Edit, Some(edit))
             }
         };
@@ -1645,6 +1654,12 @@ impl<P: Ports> App<P> {
                     .await?;
                 replacement.tier = pin.tier;
                 replacement.tier_cap = pin.cap;
+                // An edit that names no interface locale carries the replaced message's, as it
+                // carries its tier: the message it continues was written on a screen that read in
+                // that language (ADR 0085).
+                if replacement.locale.is_none() {
+                    replacement.locale = replaced_seq.and_then(|seq| replaced_locale(&events, seq));
+                }
                 Some(replacement)
             }
             None => None,
@@ -3707,6 +3722,16 @@ fn describe_watch_key(key: &str) -> (&str, &str) {
 }
 
 /// The access tier of the person's message at `seq`, which an edit replaces (ADR 0061).
+fn replaced_locale(events: &[Event], seq: i64) -> Option<LocaleHint> {
+    events
+        .iter()
+        .find(|e| e.seq == seq)
+        .and_then(|e| match &e.body {
+            orch_core::EventBody::UserMessage(m) => m.locale.clone(),
+            _ => None,
+        })
+}
+
 fn replaced_tier(events: &[Event], seq: i64) -> Option<AccessTier> {
     events
         .iter()

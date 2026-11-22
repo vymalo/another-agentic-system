@@ -807,6 +807,7 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
             delivery: None,
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         }),
         Actor::system(),
     );

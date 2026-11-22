@@ -17,6 +17,7 @@ use crate::error::{Classify, ErrorClass};
 use crate::event::{Actor, AgentStatus, Event, EventBody, EventKind, Origin, UserMessageData};
 use crate::gate::{GatePolicy, Job, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
+use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::thread::{AgentTarget, ThreadRecord, ThreadState};
 use crate::title::{TitleLedger, agent_words};
@@ -373,6 +374,9 @@ pub struct Replacement {
     /// The cap of the person's role on the fork's agent when `tier` is `None` because its card
     /// offered no tier (see [`Input::UserMessage`](crate::Input::UserMessage)).
     pub tier_cap: Option<AccessTier>,
+    /// The interface locale the message names (ADR 0085), as for its tier: the language the
+    /// person's screen reads in, a hint.
+    pub locale: Option<LocaleHint>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
     /// Where the message came from.
@@ -390,6 +394,7 @@ impl Replacement {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
             run_id: None,
             origin: Origin::Agui,
         }
@@ -430,7 +435,7 @@ pub fn fork_commit(
             mentions: replacement.mentions,
             tier: replacement.tier,
             tier_cap: replacement.tier_cap,
-            locale: None,
+            locale: replacement.locale,
         },
     )?;
     commands.extend(more);

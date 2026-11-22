@@ -394,6 +394,7 @@ async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_
                     text: "mind the style, please".into(),
                     message_id: None,
                     tier: None,
+                    locale: None,
                 },
                 target: None,
                 id: None,

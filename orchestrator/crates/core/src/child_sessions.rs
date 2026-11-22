@@ -799,6 +799,9 @@ pub fn start_child_for(
                     mentions: Vec::new(),
                     tier: p.tier,
                     tier_cap: None,
+                    // a person's start of a child session names no interface locale: its request
+                    // has no member for one (ADR 0085)
+                    locale: None,
                 }),
             )
         })

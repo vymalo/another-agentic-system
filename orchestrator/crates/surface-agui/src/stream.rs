@@ -224,6 +224,7 @@ mod tests {
                 delivery: None,
                 mentions: Vec::new(),
                 tier: None,
+                locale: None,
             }),
         )
     }

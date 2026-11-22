@@ -860,6 +860,9 @@ struct ForkBody {
     /// The access tier of the fork's message or of the edit (ADR 0061): one of the four words, or
     /// `null`; read as `forwardedProps["vymalo.tier"]` is.
     tier: Option<serde_json::Value>,
+    /// The interface locale of the fork's message or of the edit (ADR 0085): a BCP 47 tag, or
+    /// `null`; read as `forwardedProps["vymalo.locale"]` is.
+    locale: Option<serde_json::Value>,
 }
 
 impl ForkBody {
@@ -879,6 +882,12 @@ impl ForkBody {
             }
             None => None,
         };
+        let locale = match &self.locale {
+            Some(value) => {
+                orch_app::locale::parse(value).map_err(|e| Problem::bad_request(e.to_string()))?
+            }
+            None => None,
+        };
         let at = match (self.after, self.replace) {
             // The fork is made with its first message when there is one (ADR 0042, decision 8):
             // no mentions and no UI catalog travel on this route, the AG-UI run carries them.
@@ -890,6 +899,10 @@ impl ForkBody {
                 if tier.is_some() && self.text.is_none() {
                     return Err(Problem::bad_request("`tier` goes with `text`"));
                 }
+                // a locale is a message's too
+                if locale.is_some() && self.text.is_none() {
+                    return Err(Problem::bad_request("`locale` goes with `text`"));
+                }
                 orch_app::ForkAt::AfterTurn {
                     seq,
                     first: self.text.map(|text| orch_app::FirstMessage {
@@ -900,6 +913,7 @@ impl ForkBody {
                         ui_catalog: None,
                         mentions: Vec::new(),
                         tier,
+                        locale,
                     }),
                 }
             }
@@ -910,6 +924,7 @@ impl ForkBody {
                     .ok_or_else(|| Problem::bad_request("`replace` needs the new `text`"))?,
                 message_id: self.message_id,
                 tier,
+                locale,
             },
             (Some(_), Some(_)) => {
                 return Err(Problem::bad_request("give `after` or `replace`, not both"));

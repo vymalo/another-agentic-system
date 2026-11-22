@@ -1183,6 +1183,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
                 delivery: None,
                 mentions: Vec::new(),
                 tier: None,
+                locale: None,
             }),
         ),
         ev(
@@ -1244,6 +1245,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             delivery: None,
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         }),
     ));
     // ... and a retry of the same POST attaches instead of answering twice.

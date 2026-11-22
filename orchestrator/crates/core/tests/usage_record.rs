@@ -122,6 +122,7 @@ fn only_the_two_usage_events_change_the_ledger() {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
         }),
     };
     assert_eq!(usage_change(&owner(), &message), None);

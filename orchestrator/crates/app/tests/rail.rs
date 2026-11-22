@@ -263,6 +263,7 @@ async fn a_fork_is_nested_under_the_row_the_person_sees() {
                 run_id: None,
                 origin: Origin::Agui,
                 tier: None,
+                locale: None,
             },
         )
         .await
@@ -311,6 +312,7 @@ async fn an_edit_is_not_listed_and_a_fork_of_one_is_nested_under_its_root() {
                     text: "echo instead".to_owned(),
                     message_id: None,
                     tier: None,
+                    locale: None,
                 },
                 target: None,
                 id: None,

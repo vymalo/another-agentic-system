@@ -96,7 +96,14 @@ fn arb_input() -> impl Strategy<Value = Input> {
             retryable
         }),
         1 => Just(Input::CancelledBeforeStart),
-        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver { tier_cap: None, text, sent: false, mentions: Vec::new(), tier: None, }),
+        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver {
+            tier_cap: None,
+            locale: None,
+            text,
+            sent: false,
+            mentions: Vec::new(),
+            tier: None,
+        }),
         1 => (any::<bool>(), "[a-z]{1,5}")
             .prop_map(|(retryable, reason)| Input::CancelRejected {
                 agent: AgentId::new("a"),

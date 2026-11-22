@@ -298,6 +298,7 @@ async fn the_first_message_of_a_fork_keeps_the_cap_when_the_card_offers_no_tier_
                         ui_catalog: None,
                         mentions: Vec::new(),
                         tier: None,
+                        locale: None,
                     }),
                 },
                 target: None,

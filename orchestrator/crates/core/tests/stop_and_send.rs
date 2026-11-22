@@ -214,6 +214,7 @@ fn row1_a_stop_and_send_logs_the_message_asks_for_the_cancel_and_holds_the_text(
                 delivery: Some(Delivery::Interrupt),
                 mentions: Vec::new(),
                 tier: None,
+                locale: None,
             }
         );
         // the message and the cancel: nothing is sent to the agent (no delegation, no steer)
@@ -869,6 +870,7 @@ fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
             sent: false,
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         },
     );
     assert_eq!(next, held);

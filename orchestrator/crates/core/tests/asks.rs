@@ -1587,7 +1587,14 @@ fn arb_input() -> impl Strategy<Value = Input> {
         1 => (any::<bool>(), "[a-z]{1,4}").prop_map(|(retryable, reason)|
             Input::DeliveryFailed { reason, retryable }),
         1 => Just(Input::CancelledBeforeStart),
-        1 => Just(Input::Redeliver { tier_cap: None, text: "again".into(), sent: false, mentions: vec![], tier: None, }),
+        1 => Just(Input::Redeliver {
+            tier_cap: None,
+            locale: None,
+            text: "again".into(),
+            sent: false,
+            mentions: vec![],
+            tier: None,
+        }),
     ]
 }
 

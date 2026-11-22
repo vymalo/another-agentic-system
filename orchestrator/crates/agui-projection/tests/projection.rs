@@ -53,6 +53,7 @@ fn user_ids(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             delivery: None,
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         }),
     )
 }

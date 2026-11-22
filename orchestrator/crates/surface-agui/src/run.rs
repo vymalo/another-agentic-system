@@ -686,6 +686,7 @@ async fn attempt<P: Ports>(
                         ui_catalog: catalog.cloned(),
                         mentions: mentions.to_vec(),
                         tier,
+                        locale: locale.cloned(),
                     },
                     held,
                 )

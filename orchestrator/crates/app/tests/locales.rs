@@ -1,6 +1,7 @@
 //! The interface locale of a message (ADR 0085, `locale/v1`) through the application and the
-//! dispatcher: the tag a surface names reaches the delegation and the send, and **nothing of it is
-//! written**: no `user_message` member, no event, and an export of the thread holds none of it.
+//! dispatcher: the tag a surface names reaches the delegation and the send, and it is **recorded
+//! once, on the `user_message`** — the log is the state, so an export shows what the agent was told
+//! and nothing else of the thread carries it.
 //!
 //! The tag's shape (a **400**) is `orch_app::locale`'s, tested beside it; the metadata an agent is
 //! actually sent is `orch-agent-a2a`'s. What this file pins is the wiring between them, which is
@@ -50,7 +51,7 @@ async fn start(w: &World, text: &str, locale: Option<&str>) -> ThreadId {
 }
 
 #[tokio::test]
-async fn the_locale_reaches_the_delegation_and_the_send_and_is_written_nowhere() {
+async fn the_locale_reaches_the_delegation_and_the_send_and_is_recorded_once() {
     let w = World::new();
     let thread = start(&w, "corrige la page de connexion", Some("fr-CM")).await;
 
@@ -64,7 +65,7 @@ async fn the_locale_reaches_the_delegation_and_the_send_and_is_written_nowhere()
     };
     assert_eq!(locale.as_ref(), Some(&tag("fr-CM")));
 
-    // the log has no member for it: the event is the one a message without a locale writes
+    // the log records it, on the `user_message`, and nowhere else: the log is the state
     let export = w.app().export_thread(&alice(), thread).await.unwrap();
     let logged = serde_json::to_value(
         export
@@ -74,18 +75,19 @@ async fn the_locale_reaches_the_delegation_and_the_send_and_is_written_nowhere()
             .expect("a user_message"),
     )
     .unwrap();
-    assert!(
-        logged["data"].get("locale").is_none(),
-        "the user_message holds no locale: {logged}"
-    );
+    assert_eq!(logged["data"]["locale"], "fr-CM", "{logged}");
     let whole: Vec<serde_json::Value> = export
         .events
         .iter()
         .map(|e| serde_json::to_value(e).unwrap())
         .collect();
-    assert!(
-        !serde_json::to_string(&whole).unwrap().contains("fr-CM"),
-        "nothing of the tag is in the export"
+    let occurrences = serde_json::to_string(&whole)
+        .unwrap()
+        .matches("fr-CM")
+        .count();
+    assert_eq!(
+        occurrences, 1,
+        "the tag is on the user_message and nowhere else"
     );
 
     // and the dispatcher put it on the request: the agent is sent the message, with the tag

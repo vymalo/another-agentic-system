@@ -247,6 +247,7 @@ fn sent(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             delivery: Some(orch_core::Delivery::Steer),
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         }),
     )
 }

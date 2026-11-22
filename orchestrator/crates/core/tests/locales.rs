@@ -1,9 +1,11 @@
-//! The interface locale of a message (ADR 0085, `locale/v1`): what the core carries of it and, above
-//! all, what it does **not** keep. The checks of the tag that arrives (its shape) are the
-//! application's (`orch_app::locale`, `orch_core::LocaleHint::parse`); here they are taken as made.
+//! The interface locale of a message (ADR 0085, `locale/v1`): what the core records of it and what
+//! it carries. The checks of the tag that arrives (its shape) are the application's
+//! (`orch_app::locale`, `orch_core::LocaleHint::parse`); here they are taken as made.
 //!
-//! The rule this file exists for: a hint is not conversation content. It reaches the delegation (the
-//! steer, the text a Stop & send holds) and the log never sees it.
+//! The rule this file exists for: **the log is the state**, so the hint is recorded on the
+//! `user_message` and everything that continues that message carries it — the delegation, the steer,
+//! the text a Stop & send holds, and a redelivery. A message that names none writes what it always
+//! wrote, and a log written before the field existed reads back with none.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use orch_core::*;
@@ -78,31 +80,32 @@ fn sent(cmds: &[Command]) -> Option<LocaleHint> {
 }
 
 #[test]
-fn the_message_that_names_a_locale_carries_it_and_records_none_of_it() {
+fn the_message_that_names_a_locale_records_it_and_carries_it() {
     let (snap, cmds) = start_thread(
         GatePolicy::default(),
         &said("corrige la page", Some("fr-CM")),
     )
     .expect("a first message");
     assert_eq!(sent(&cmds), Some(tag("fr-CM")), "the delegation carries it");
-    // the log is what it always was: the event has no member for the hint, and the same bytes as a
-    // message that names none
+    // the log is the state: the event holds the tag, so an export shows what the agent was told
+    let event = serde_json::to_value(logged(&cmds)).unwrap();
+    assert_eq!(event["locale"], "fr-CM", "{event}");
+    let back: UserMessageData = serde_json::from_value(event).unwrap();
+    assert_eq!(back.locale, Some(tag("fr-CM")), "and it reads back");
+    // a log written before the field existed has none
+    let old: UserMessageData = serde_json::from_value(json!({"text": "hi"})).unwrap();
+    assert_eq!(old.locale, None);
+    assert_eq!(snap.state, Queued);
+}
+
+#[test]
+fn a_message_that_names_none_writes_the_event_it_always_did() {
+    let (_, cmds) = start_thread(GatePolicy::default(), &said("corrige la page", None)).unwrap();
     assert_eq!(
         serde_json::to_value(logged(&cmds)).unwrap(),
         json!({"text": "corrige la page", "messageId": "m-1", "runId": "r-1"}),
         "no `locale` member"
     );
-    let (_, quiet) = start_thread(GatePolicy::default(), &said("corrige la page", None)).unwrap();
-    assert_eq!(
-        serde_json::to_value(logged(&cmds)).unwrap(),
-        serde_json::to_value(logged(&quiet)).unwrap()
-    );
-    assert_eq!(snap.state, Queued);
-}
-
-#[test]
-fn a_message_that_names_none_delegates_none() {
-    let (_, cmds) = start_thread(GatePolicy::default(), &said("hi", None)).unwrap();
     assert_eq!(sent(&cmds), None);
 }
 
@@ -144,7 +147,10 @@ fn a_stop_and_send_holds_the_newest_locale_for_the_next_job_and_a_cancel_forgets
 }
 
 #[test]
-fn a_redelivery_carries_no_locale_because_nothing_of_it_is_in_the_log() {
+fn a_redelivery_carries_the_locale_its_message_recorded() {
+    // The case that was silently wrong before the ruling: the message is in the log already, so the
+    // redelivery writes no `user_message` — the hint comes from what the dispatcher read on its row,
+    // which is what the `user_message` holds, and the delegation must carry it.
     let (_, cmds) = step(
         &Snapshot::new(Done),
         &Input::Redeliver {
@@ -153,6 +159,31 @@ fn a_redelivery_carries_no_locale_because_nothing_of_it_is_in_the_log() {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: Some(tag("fr-CM")),
+        },
+    );
+    assert_eq!(sent(&cmds), Some(tag("fr-CM")), "the delegation carries it");
+    // no event is written for it: the message is in the log already
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Append(EventDraft {
+                body: EventBody::UserMessage(_),
+                ..
+            })
+        )),
+        "{cmds:?}"
+    );
+    // and a redelivery whose message named none carries none
+    let (_, cmds) = step(
+        &Snapshot::new(Done),
+        &Input::Redeliver {
+            text: "hi".into(),
+            sent: false,
+            mentions: Vec::new(),
+            tier: None,
+            tier_cap: None,
+            locale: None,
         },
     );
     assert_eq!(sent(&cmds), None);

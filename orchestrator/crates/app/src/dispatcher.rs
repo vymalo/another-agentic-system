@@ -192,6 +192,9 @@ struct Adopt {
     /// carries it as its own message does, and the cap that went with it.
     tier: Option<AccessTier>,
     tier_cap: Option<AccessTier>,
+    /// The interface locale it was written with (ADR 0085), as its row holds it: the adopted
+    /// message keeps it, as it keeps its tier.
+    locale: Option<orch_core::LocaleHint>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -796,6 +799,7 @@ impl<P: Ports> Dispatcher<P> {
                 mentions,
                 tier,
                 tier_cap,
+                locale,
                 ..
             } = &row.payload
                 && state != ThreadState::Cancelled
@@ -813,6 +817,7 @@ impl<P: Ports> Dispatcher<P> {
                             mentions: mentions.clone(),
                             tier: *tier,
                             tier_cap: *tier_cap,
+                            locale: locale.clone(),
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -955,6 +960,7 @@ impl<P: Ports> Dispatcher<P> {
                     mentions,
                     tier,
                     tier_cap,
+                    locale,
                     ..
                 },
                 None,
@@ -963,6 +969,7 @@ impl<P: Ports> Dispatcher<P> {
                 mentions: mentions.clone(),
                 tier: *tier,
                 tier_cap: *tier_cap,
+                locale: locale.clone(),
                 previous: binding.task_id.clone(),
             }),
             _ => None,
@@ -1210,6 +1217,7 @@ impl<P: Ports> Dispatcher<P> {
             mentions: adopt.mentions.clone(),
             tier: adopt.tier,
             tier_cap: adopt.tier_cap,
+            locale: adopt.locale.clone(),
         };
         match self
             .app

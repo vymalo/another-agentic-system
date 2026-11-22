@@ -298,6 +298,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             // ADR 0061: the tier it was sent under comes back as written
             tier: Some(orch_core::AccessTier::Edits),
             tier_cap: None,
+            locale: None,
         }),
         idempotency_key: None,
     };
@@ -312,6 +313,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             tier: None,
             // ADR 0061: the cap that applied when no tier could be pinned comes back too
             tier_cap: Some(orch_core::AccessTier::Plan),
+            locale: None,
         }),
         ..user_event("unused", None)
     };

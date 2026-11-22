@@ -652,6 +652,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                         text: "again".into(),
                         message_id: None,
                         tier: None,
+                        locale: None,
                     },
                     target: Some(AgentTarget {
                         agent_id: AgentId::new("coder"),
@@ -706,6 +707,7 @@ async fn a_fork_made_with_its_first_message_takes_write_on_the_parent_and_invoke
         ui_catalog: None,
         mentions: Vec::new(),
         tier: None,
+        locale: None,
     };
     let id = ThreadId(uuid::Uuid::from_u128(
         0x0190_0000_0000_7000_8000_0000_0000_0001,

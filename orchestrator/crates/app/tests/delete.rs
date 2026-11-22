@@ -186,6 +186,7 @@ fn replace(seq: i64, text: &str) -> ForkRequest {
             text: text.to_owned(),
             message_id: Some("m-edit".to_owned()),
             tier: None,
+            locale: None,
         },
         target: None,
         id: None,

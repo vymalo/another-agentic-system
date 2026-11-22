@@ -610,6 +610,7 @@ fn mention() -> Mention {
 fn first_message() -> Replacement {
     Replacement {
         tier_cap: None,
+        locale: None,
         text: "@researcher and the docs?".into(),
         message_id: Some("m-first".into()),
         catalog: Some(catalog_data()),

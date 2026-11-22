@@ -13,6 +13,7 @@ use crate::description::ThreadDescribedData;
 use crate::fork::ThreadForkedData;
 use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
+use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::reasoning::AgentReasoningData;
 use crate::share::{ThreadSharedData, ThreadUnsharedData};
@@ -339,6 +340,15 @@ pub struct UserMessageData {
     /// for a person with no cap, and in every log written before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_cap: Option<AccessTier>,
+    /// The interface locale this message was sent with (ADR 0085, `locale/v1`): the BCP 47 tag of
+    /// the language the person was reading, as the client named it. It is recorded because **the
+    /// log is the state**: a hint that changes the agent's words must be replayable, so a
+    /// redelivery carries it, a fork's first message and an edit continue it, and an export shows
+    /// what the agent was told. It stays a hint: the interface shows nothing of it (no frame, no
+    /// activity), and the agent may ignore it. Omitted when the message named none, and in every
+    /// log written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<LocaleHint>,
 }
 
 impl UserMessageData {
@@ -353,6 +363,7 @@ impl UserMessageData {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
         }
     }
 }

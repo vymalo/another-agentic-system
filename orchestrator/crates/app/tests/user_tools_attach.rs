@@ -1048,6 +1048,7 @@ async fn a_fork_made_with_its_first_message_by_an_owner_who_lost_the_permission_
                 ui_catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+                locale: None,
             },
         )
         .await

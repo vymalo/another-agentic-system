@@ -123,8 +123,8 @@ reset_journal() { # reset_journal URL
   if [ "$_code" = 200 ]; then ok "journal reset: $1"; else bad "journal reset: $1 answered HTTP $_code"; fi
 }
 
-# nothing_of_the_locale FILE: how many objects of FILE hold a `locale` member (0 is what a hint leaves behind).
-nothing_of_the_locale() { jq '[.. | objects | select(has("locale"))] | length' "$1" 2>/dev/null || echo unknown; }
+# with_a_locale FILE: how many objects of FILE hold a `locale` member (1 is what a hint leaves: the user_message's data).
+with_a_locale() { jq '[.. | objects | select(has("locale"))] | length' "$1" 2>/dev/null || echo unknown; }
 
 # --- the stack ---------------------------------------------------------------------------------------------------------
 agents=$(api GET /api/agents 2>"$tmp/err" | jq -r '[.[].id] | join(" ")' 2>/dev/null || true)
@@ -155,9 +155,9 @@ api GET "/api/threads/$thread/export" >"$tmp/locale.export.json" 2>/dev/null || 
 expect "the log: the agent's last words name the tag it read" \
   "$(jq -r '[.events[] | select(.kind == "agent_status" and .data.status == "completed") | .data.detail] | first // ""' "$tmp/locale.export.json")" \
   "The interface reads in fr-CM, so I answer in it."
-expect "the log: the user_message has no locale (a hint is not conversation)" \
-  "$(jq -r '[.events[] | select(.kind == "user_message") | has("locale")] | first // "absent"' "$tmp/locale.export.json")" "false"
-expect "the log: nothing of the tag is anywhere in the export" "$(nothing_of_the_locale "$tmp/locale.export.json")" "0"
+expect "the log: the user_message records the tag (the log is the state)" \
+  "$(jq -r '[.events[] | select(.kind == "user_message") | .data.locale // "-"] | first // "-"' "$tmp/locale.export.json")" "fr-CM"
+expect "the log: the tag is on the user_message and nowhere else" "$(with_a_locale "$tmp/locale.export.json")" "1"
 frames "$thread" "$tmp/locale.frames.json"
 expect "AG-UI: the user message's START carries no vymalo.locale" \
   "$(jq -r '[.[] | select(.type == "TEXT_MESSAGE_START" and .role == "user") | .metadata["vymalo.locale"] // "-"] | first // "-"' "$tmp/locale.frames.json")" "-"
@@ -181,6 +181,11 @@ expect "a third message naming no locale answers 200" "$code" "200"
 expect "the thread ends done a third time" "$(wait_state "$thread")" "done"
 expect "mock-locale was sent no tag and no activation, and the metadata has no member for the URI" \
   "$(sent "$localed" "$nonce" | paste -sd, -)" "fr-CM|yes|yes|yes,FR-cm|yes|yes|yes,-|no|no|no"
+api GET "/api/threads/$thread/export" >"$tmp/three.export.json" 2>/dev/null || echo '{"events":[]}' >"$tmp/three.export.json"
+expect "the log: the three messages record two tags and no member for the one that names none" \
+  "$(with_a_locale "$tmp/three.export.json")" "2"
+expect "the log: the message that named none has no locale member" \
+  "$(jq -r '[.events[] | select(.kind == "user_message") | (.data | has("locale"))] | join(",")' "$tmp/three.export.json")" "true,true,false"
 
 # --- a tag that is refused ---------------------------------------------------------------------------------------------
 echo "== a string that is not a tag is refused and writes nothing"

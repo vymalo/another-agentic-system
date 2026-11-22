@@ -145,6 +145,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                 d.body,
                 EventBody::UserMessage(UserMessageData {
                     tier_cap: None,
+                    locale: None,
                     text: "hi".into(),
                     message_id: Some("m-1".into()),
                     run_id: Some("r-1".into()),
@@ -466,6 +467,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
 fn a_redelivery_that_was_sent_changes_the_thread_as_one_that_was_not_and_delegates_nothing() {
     let sent = |text: &str| Input::Redeliver {
         tier_cap: None,
+        locale: None,
         text: text.into(),
         sent: true,
         mentions: Vec::new(),
@@ -519,6 +521,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             s,
             &Input::Redeliver {
                 tier_cap: None,
+                locale: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -551,6 +554,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             Cancelled,
             &Input::Redeliver {
                 tier_cap: None,
+                locale: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -566,6 +570,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 s,
                 &Input::Redeliver {
                     tier_cap: None,
+                    locale: None,
                     text: "x".into(),
                     sent: false,
                     mentions: Vec::new(),
@@ -1699,6 +1704,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             &before,
             &Input::Redeliver {
                 tier_cap: None,
+                locale: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -1719,6 +1725,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             &before,
             &Input::Redeliver {
                 tier_cap: None,
+                locale: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
