@@ -111,7 +111,7 @@ The rules of the document. The first three are new in v2; the rest are v1's.
   which a v1.0 runtime cannot use.
 - **No other member at the root:** no `functions`, `theme`, `instructions`, `metadata`, `$defs`, `$schema`, `$id`, `title`
   or `description`. A later version of this page may add some of them; until then a document that has one is refused.
-- **A component schema declares no property whose name starts with `@`, no top-level `anyOf` or `oneOf`, and no
+- **A component schema has no key whose name starts with `@`, no top-level `anyOf` or `oneOf`, and no
   `allowedParents` or `allowedChildren`.** A2UI v1.0 reserves the `@` prefix for its own keys and forbids a top-level
   `anyOf` or `oneOf` in a component's schema. A component's name is not `Surface`, which A2UI v1.0 reserves.
 - Every component schema is self-contained JSON Schema 2020-12: no `$ref`, `$dynamicRef`, `$id` or `$anchor`, and no
@@ -1523,13 +1523,16 @@ applies an input, as in v1.
 *Amended 2026-11-22 (issue #431):* until this date the orchestrator refused none of four rules of section 1 that this
 table names: a key that starts with `@`, a top-level `anyOf` or `oneOf`, `allowedParents` or `allowedChildren`, and a
 component named `Surface`. The page was right and the check was not, so the check now refuses each with 400, naming the
-rule (`orchestrator/crates/core/src/ui_catalog.rs`, `check_component_schemas` and `check_envelope`). A catalog with a
-top-level `anyOf` or `oneOf`, or a component named `Surface`, fails A2UI v1.0's `catalog_definition.json`
+rule (`orchestrator/crates/core/src/ui_catalog.rs`, `check_envelope` and `check_reserved_keys`). What A2UI v1.0 says
+about them is in [Verified and unverified (2026-11-19)](#verified-and-unverified-2026-11-19): a catalog with a
+top-level `anyOf` or `oneOf`, or a component named `Surface`, fails its `catalog_definition.json`
 (`ComponentDefinition`, and `components.propertyNames`), so it was relayed to agents as a catalog A2UI v1.0 refuses; an
-`@` property takes a name A2UI v1.0 reserves for its own members. The composition rules are allowed by A2UI v1.0 and
-refused here by ADR 0075 (decision 5: a later version may add them), because the web enforces none of them. The `@`
-rule is read as any object key under a component, at any depth, as `$ref` is: no JSON Schema keyword starts with `@`.
-The web's catalog breaks none of the four, and adam-rs only reads the catalog it is sent, so no client sees a change.
+`@` key takes a name A2UI v1.0 reserves for its own members. The composition rules are allowed by A2UI v1.0 and
+refused here by ADR 0075, decision 5, which says only that a later version may add them; the reason this change gives
+for enforcing the refusal is that the web enforces no composition rule, so a catalog would state a rule nothing
+applies. The `@` rule is read as any object key under a component, at any depth, as `$ref` is: no JSON Schema keyword
+starts with `@`. The web's catalog breaks none of the four, and adam-rs only reads the catalog it is sent, so no client
+sees a change.
 
 ## 4. In the log
 

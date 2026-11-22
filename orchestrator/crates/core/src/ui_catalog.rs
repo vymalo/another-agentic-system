@@ -237,7 +237,7 @@ impl UiCatalogData {
             return Err(CatalogError::TooLarge);
         }
         check_keywords(&wire.catalog)?;
-        check_component_schemas(&wire.catalog)?;
+        check_reserved_keys(&wire.catalog)?;
         let expected = digest_of_canonical(&canonical);
         if expected != wire.digest {
             return Err(CatalogError::DigestMismatch { expected });
@@ -555,8 +555,25 @@ fn check_envelope(catalog: &Value, catalog_id: &str) -> Result<(), CatalogError>
         if name == RESERVED_COMPONENT_NAME {
             return Err(CatalogError::ReservedComponentName(name.clone()));
         }
-        if !schema.is_object() {
+        let Some(top) = schema.as_object() else {
             return Err(CatalogError::ComponentSchema(name.clone()));
+        };
+        // A2UI v1.0's rule on a component's definition (`catalog_definition.json`,
+        // `ComponentDefinition`), and the contract's own on the composition rules.
+        if let Some(keyword) = TOP_LEVEL_ALTERNATIVES
+            .iter()
+            .find(|k| top.contains_key(**k))
+        {
+            return Err(CatalogError::TopLevelAlternative {
+                component: name.clone(),
+                keyword: (*keyword).to_owned(),
+            });
+        }
+        if let Some(keyword) = COMPOSITION_RULES.iter().find(|k| top.contains_key(**k)) {
+            return Err(CatalogError::CompositionRule {
+                component: name.clone(),
+                keyword: (*keyword).to_owned(),
+            });
         }
     }
     Ok(())
@@ -589,36 +606,15 @@ fn check_keywords(value: &Value) -> Result<(), CatalogError> {
     }
 }
 
-/// The rules A2UI v1.0 puts on a component's definition, and the one this contract adds
-/// (`docs/api/ui-catalog-v2.md`, section 1): no `anyOf` or `oneOf` and no composition rule at the
-/// top of a component's schema, and no key that starts with `@` at any depth. Like
-/// [`check_keywords`] it does not tell a property name from a keyword: no JSON Schema keyword starts
-/// with `@`, and A2UI reserves the prefix for its own members, so either way the key is refused.
+/// No key of a component's schema starts with `@`, at any depth (`docs/api/ui-catalog-v2.md`,
+/// section 1). Like [`check_keywords`] it does not tell a property name from a keyword: no JSON
+/// Schema keyword starts with `@`, and A2UI v1.0 reserves the prefix for its own members, so either
+/// way the key is refused.
 ///
 /// It runs after [`canonical_json`], which bounds the depth.
-fn check_component_schemas(catalog: &Value) -> Result<(), CatalogError> {
-    let Some(components) = catalog.get("components").and_then(Value::as_object) else {
-        return Ok(());
-    };
-    for (component, schema) in components {
-        let Some(top) = schema.as_object() else {
-            continue;
-        };
-        if let Some(keyword) = TOP_LEVEL_ALTERNATIVES
-            .iter()
-            .find(|k| top.contains_key(**k))
-        {
-            return Err(CatalogError::TopLevelAlternative {
-                component: component.clone(),
-                keyword: (*keyword).to_owned(),
-            });
-        }
-        if let Some(keyword) = COMPOSITION_RULES.iter().find(|k| top.contains_key(**k)) {
-            return Err(CatalogError::CompositionRule {
-                component: component.clone(),
-                keyword: (*keyword).to_owned(),
-            });
-        }
+fn check_reserved_keys(catalog: &Value) -> Result<(), CatalogError> {
+    let components = catalog.get("components").and_then(Value::as_object);
+    for (component, schema) in components.into_iter().flatten() {
         if let Some(key) = reserved_key(schema) {
             return Err(CatalogError::ReservedKey {
                 component: component.clone(),
@@ -1317,8 +1313,12 @@ mod tests {
                 "{key}"
             );
         }
-        // in a value it is only text
-        let catalog = catalog_with(json!({"Note": {"description": "@mention", "enum": ["@a"]}}));
+        // in a value it is only text, and a key that has `@` elsewhere than first is a name
+        let catalog = catalog_with(json!({"Note": {
+            "description": "@mention",
+            "enum": ["@a"],
+            "properties": {"user@host": {"type": "string"}},
+        }}));
         assert!(UiCatalogData::from_json(&envelope(1, &catalog)).is_ok());
     }
 
