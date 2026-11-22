@@ -136,9 +136,10 @@ pub async fn unbinds(broker: &impl RunLeases) {
 
 /// A run is bound once: the same binding is idempotent, a different one is a conflict.
 pub async fn binds_once(broker: &impl RunLeases) {
-    broker.bind(binding("run-6", 60)).await.expect("bind");
+    let same = binding("run-6", 60);
+    broker.bind(same.clone()).await.expect("bind");
     broker
-        .bind(binding("run-6", 60))
+        .bind(same)
         .await
         .expect("the same binding is idempotent");
     let mut different = binding("run-6", 60);

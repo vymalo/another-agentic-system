@@ -48,8 +48,17 @@ impl RunLeases for MemoryRunLeases {
     async fn bind(&self, binding: RunBinding) -> Result<(), RunLeaseError> {
         let mut bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
         match bindings.get(&binding.run) {
-            Some(existing) if existing != &binding => Err(RunLeaseError::Conflict),
-            Some(_) => Ok(()),
+            Some(existing)
+                if existing.agent != binding.agent
+                    || existing.person != binding.person
+                    || existing.model != binding.model =>
+            {
+                Err(RunLeaseError::Conflict)
+            }
+            Some(_) => {
+                bindings.insert(binding.run.clone(), binding);
+                Ok(())
+            }
             None => {
                 bindings.insert(binding.run.clone(), binding);
                 Ok(())
@@ -106,7 +115,13 @@ impl crate::RunBindingStore for MemoryRunBindingStore {
     async fn upsert(&self, binding: &RunBinding) -> Result<(), RunLeaseError> {
         let mut bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
         match bindings.get(&binding.run) {
-            Some(existing) if existing != binding => Err(RunLeaseError::Conflict),
+            Some(existing)
+                if existing.agent != binding.agent
+                    || existing.person != binding.person
+                    || existing.model != binding.model =>
+            {
+                Err(RunLeaseError::Conflict)
+            }
             _ => {
                 bindings.insert(binding.run.clone(), binding.clone());
                 Ok(())
