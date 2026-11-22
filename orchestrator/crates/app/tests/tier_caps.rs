@@ -20,7 +20,7 @@ use orch_core::{
     AccessTier, AgentId, EventBody, EventKind, Input, KnownExtension, Origin, ThreadId,
     ThreadState, TierOffer,
 };
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use orch_ports::{
     AgentEndpoint, OutboxPayload, OutboxStatus, PortSet, Role, SystemClock, ThreadStore,
 };
@@ -113,9 +113,12 @@ fn sent(w: &World) -> Vec<(String, bool, Option<AccessTier>)> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                text, steer, tier, ..
-            } => Some((text, steer, tier)),
+            Call::Send(call) => {
+                let SendCall {
+                    text, steer, tier, ..
+                } = *call;
+                Some((text, steer, tier))
+            }
             _ => None,
         })
         .collect()

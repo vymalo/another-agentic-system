@@ -225,7 +225,7 @@ fn coder_tiers(w: &World) -> Vec<Option<AccessTier>> {
         .sends()
         .into_iter()
         .filter_map(|c| match c {
-            Call::Send { agent, tier, .. } if agent.as_str() == "coder" => Some(tier),
+            Call::Send(call) if call.agent.as_str() == "coder" => Some(call.tier),
             _ => None,
         })
         .collect()
@@ -445,7 +445,7 @@ async fn an_ask_that_ends_while_the_card_is_read_is_not_sent() {
         !w.agent
             .calls()
             .iter()
-            .any(|c| matches!(c, Call::Send { .. } | Call::Cancel { .. })),
+            .any(|c| matches!(c, Call::Send(_) | Call::Cancel { .. })),
         "no task was started, so none is cancelled"
     );
     run.shutdown().await;

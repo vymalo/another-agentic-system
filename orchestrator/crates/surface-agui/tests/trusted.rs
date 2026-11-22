@@ -7,7 +7,7 @@
 mod support;
 
 use orch_core::UiVersion;
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use serde_json::{Value, json};
 use support::*;
 
@@ -130,15 +130,15 @@ async fn a_receipt_naming_a_trusted_card_is_accepted_and_forwarded_and_an_unknow
 
     // And the agent got the action, with the five members of an A2UI v1.0 action.
     let sends = h.agent.sends();
-    let Call::Send {
+    let Call::Send(call) = sends.last().unwrap() else {
+        panic!("{sends:?}");
+    };
+    let SendCall {
         action,
         action_at,
         task_id,
         ..
-    } = sends.last().unwrap()
-    else {
-        panic!("{sends:?}");
-    };
+    } = &**call;
     assert!(
         task_id.is_some(),
         "the action answers the task the agent was waiting on"

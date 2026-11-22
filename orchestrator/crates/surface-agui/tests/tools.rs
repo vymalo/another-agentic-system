@@ -6,7 +6,7 @@
 
 mod support;
 
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use serde_json::{Value, json};
 use support::*;
 
@@ -79,9 +79,10 @@ async fn a_run_that_creates_a_thread_attaches_its_servers_after_the_message_and_
 
     // the agent was told what is attached, with no URL
     let sends = h.agent.sends();
-    let Call::Send { thread_tools, .. } = &sends[0] else {
+    let Call::Send(call) = &sends[0] else {
         panic!("{sends:?}");
     };
+    let SendCall { thread_tools, .. } = &**call;
     let grant = thread_tools.as_ref().expect("a grant");
     assert_eq!(
         grant

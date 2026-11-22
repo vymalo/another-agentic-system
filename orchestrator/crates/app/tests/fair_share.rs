@@ -8,7 +8,7 @@ mod support;
 use orch_app::DispatcherConfig;
 use orch_core::{ThreadId, ThreadState};
 use orch_ports::ClaimOrder;
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use support::*;
 
 /// The texts of the messages sent to the agent so far, in the order they were sent.
@@ -17,7 +17,10 @@ fn sent(w: &World) -> Vec<String> {
         .sends()
         .into_iter()
         .map(|c| match c {
-            Call::Send { text, .. } => text,
+            Call::Send(call) => {
+                let SendCall { text, .. } = *call;
+                text
+            }
             other => panic!("{other:?}"),
         })
         .collect()

@@ -26,7 +26,7 @@ use orch_core::{
     AskOutcome, Caller, Delivery, EventBody, EventKind, Input, Mention, Origin, ThreadId,
     ThreadRecord, ThreadState, ToolsGrant, UiCatalogData, UiDelivery, catalog_digest,
 };
-use orch_ports::memory::{Call, MemoryRegistry};
+use orch_ports::memory::{Call, MemoryRegistry, SendCall};
 use orch_ports::{
     AgentAudience, AgentClient, AgentEndpoint, AgentError, Clock as _, CompositeRegistry,
     FixedRegistry, Lease, OutboxItem, OutboxKind, OutboxStatus, PortSet, RegistryEntry,
@@ -298,7 +298,7 @@ fn sends_to(w: &World, agent: &str) -> Vec<Call> {
     w.agent
         .sends()
         .into_iter()
-        .filter(|c| matches!(c, Call::Send { agent: a, .. } if a.as_str() == agent))
+        .filter(|c| matches!(c, Call::Send(call) if call.agent.as_str() == agent))
         .collect()
 }
 
@@ -307,7 +307,10 @@ fn catalogs_sent_to(w: &World, agent: &str) -> Vec<Option<UiDelivery>> {
     sends_to(w, agent)
         .into_iter()
         .filter_map(|c| match c {
-            Call::Send { ui_catalog, .. } => Some(ui_catalog.map(|boxed| *boxed)),
+            Call::Send(call) => {
+                let SendCall { ui_catalog, .. } = *call;
+                Some(ui_catalog.map(|boxed| *boxed))
+            }
             _ => None,
         })
         .collect()
@@ -318,7 +321,10 @@ fn grants_sent_to(w: &World, agent: &str) -> Vec<Option<ToolsGrant>> {
     sends_to(w, agent)
         .into_iter()
         .filter_map(|c| match c {
-            Call::Send { thread_tools, .. } => Some(thread_tools.map(|boxed| *boxed)),
+            Call::Send(call) => {
+                let SendCall { thread_tools, .. } = *call;
+                Some(thread_tools.map(|boxed| *boxed))
+            }
             _ => None,
         })
         .collect()
@@ -441,7 +447,10 @@ async fn an_ask_is_sent_in_a_context_of_its_own_and_the_answer_ends_it() {
     // person's screen or mentions
     let sent = sends_to(&w, "coder");
     assert_eq!(sent.len(), 1);
-    let Call::Send {
+    let Call::Send(call) = &sent[0] else {
+        unreachable!()
+    };
+    let SendCall {
         message_id,
         context_id,
         task_id,
@@ -455,10 +464,7 @@ async fn an_ask_is_sent_in_a_context_of_its_own_and_the_answer_ends_it() {
         mentions,
         tier,
         ..
-    } = &sent[0]
-    else {
-        unreachable!()
-    };
+    } = &**call;
     assert_eq!(message_id, &row.id.to_string());
     // nothing is passed down (ADR 0061): an asked agent works under its own default
     assert_eq!(tier, &None);
@@ -689,15 +695,13 @@ async fn a_question_back_ends_the_ask_and_the_next_ask_to_the_agent_continues_it
     let shape: Vec<_> = sent
         .iter()
         .map(|c| {
-            let Call::Send {
+            let Call::Send(call) = c else { unreachable!() };
+            let SendCall {
                 context_id,
                 task_id,
                 reference_task_ids,
                 ..
-            } = c
-            else {
-                unreachable!()
-            };
+            } = &**call;
             (
                 context_id.clone(),
                 task_id.clone(),

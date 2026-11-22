@@ -18,7 +18,7 @@ use orch_core::{
     AccessTier, Classify, ErrorClass, EventBody, EventKind, Input, Origin, ThreadId, ThreadState,
     TierOffer, UiActionData, UiVersion,
 };
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use orch_ports::{OutboxPayload, OutboxStatus, Principal, Role, ThreadStore};
 use serde_json::json;
 use support::*;
@@ -107,9 +107,12 @@ fn sent(w: &World) -> Vec<(String, bool, Option<AccessTier>)> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                text, steer, tier, ..
-            } => Some((text, steer, tier)),
+            Call::Send(call) => {
+                let SendCall {
+                    text, steer, tier, ..
+                } = *call;
+                Some((text, steer, tier))
+            }
             _ => None,
         })
         .collect()
@@ -1317,11 +1320,7 @@ async fn an_action_continues_the_tier_of_the_job_lowered_to_the_cap_and_the_card
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                action: Some(_),
-                tier,
-                ..
-            } => Some(tier),
+            Call::Send(call) if call.action.is_some() => Some(call.tier),
             _ => None,
         })
         .collect();

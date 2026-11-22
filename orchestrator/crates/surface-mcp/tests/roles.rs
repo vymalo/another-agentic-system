@@ -227,7 +227,7 @@ async fn eventually_sent(h: &Harness, tier: AccessTier) {
             .sends()
             .into_iter()
             .filter_map(|call| match call {
-                orch_ports::memory::Call::Send { tier, .. } => Some(tier),
+                orch_ports::memory::Call::Send(call) => Some(call.tier),
                 _ => None,
             })
             .collect();

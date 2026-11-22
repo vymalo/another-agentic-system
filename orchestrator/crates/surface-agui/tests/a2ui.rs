@@ -8,7 +8,7 @@ mod support;
 use orch_agui_projection::RELEASE_CHANNELS_URI;
 use orch_agui_proto::testkit::assert_capabilities_json_conforms;
 use orch_core::{A2UI_EXTENSION_V1_0, MAX_ACTION_CONTEXT_BYTES, UiVersion};
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use serde_json::{Value, json};
 use support::*;
 
@@ -150,12 +150,12 @@ async fn an_action_is_delivered_to_the_same_task_and_answers_the_wait() {
     // The agent got an action, on the task it was waiting on.
     let sends = h.agent.sends();
     assert_eq!(sends.len(), 2);
-    let Call::Send {
-        task_id, action, ..
-    } = &sends[1]
-    else {
+    let Call::Send(call) = &sends[1] else {
         panic!("{sends:?}");
     };
+    let SendCall {
+        task_id, action, ..
+    } = &**call;
     assert!(task_id.is_some());
     let action = action.as_ref().unwrap();
     assert_eq!(action.name, "go");

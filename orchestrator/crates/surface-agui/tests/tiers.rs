@@ -55,7 +55,7 @@ fn tier_sent(h: &Harness) -> Vec<Option<AccessTier>> {
         .sends()
         .into_iter()
         .map(|call| match call {
-            Call::Send { tier, .. } => tier,
+            Call::Send(call) => call.tier,
             other => panic!("{other:?}"),
         })
         .collect()

@@ -6,7 +6,7 @@
 mod support;
 
 use orch_core::catalog_digest;
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use serde_json::{Value, json};
 use support::*;
 
@@ -87,14 +87,14 @@ async fn a_first_run_with_a_catalog_records_it_first_and_says_which_in_every_sna
 
     // the agent was told: the catalog inline, and given the grant of the thread it is about
     let sends = h.agent.sends();
-    let Call::Send {
+    let Call::Send(call) = &sends[0] else {
+        panic!("{sends:?}");
+    };
+    let SendCall {
         ui_catalog,
         thread_tools: grant,
         ..
-    } = &sends[0]
-    else {
-        panic!("{sends:?}");
-    };
+    } = &**call;
     assert_eq!(
         serde_json::to_value(ui_catalog).unwrap()["inline"]["digest"],
         v1["digest"]
@@ -229,7 +229,7 @@ async fn a_newer_catalog_on_a_later_run_is_recorded_and_an_older_one_never_becom
         .sends()
         .into_iter()
         .map(|call| match call {
-            Call::Send { ui_catalog, .. } => serde_json::to_value(ui_catalog).unwrap(),
+            Call::Send(call) => serde_json::to_value(&call.ui_catalog).unwrap(),
             other => panic!("{other:?}"),
         })
         .collect();

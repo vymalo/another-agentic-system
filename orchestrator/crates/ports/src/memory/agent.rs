@@ -48,43 +48,7 @@ const STREAM_PAUSE: std::time::Duration = std::time::Duration::from_millis(40);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
     /// `send_stream`.
-    Send {
-        /// Agent the request targeted.
-        agent: AgentId,
-        /// Message id (the outbox row id).
-        message_id: String,
-        /// The A2A context the request named: `None` for the first message of a conversation
-        /// (ADR 0055), the context the agent assigned for every later one.
-        context_id: Option<String>,
-        /// Task continued, if any.
-        task_id: Option<String>,
-        /// The earlier tasks the message says it is about (A2A `referenceTaskIds`, ADR 0021).
-        reference_task_ids: Vec<String>,
-        /// Text (for an action: `ui-action <name>`).
-        text: String,
-        /// The A2UI action delivered instead of text, if any.
-        action: Option<Box<UiActionData>>,
-        /// The time an A2UI action carries as its `timestamp` member (the log's own time, ADR
-        /// 0013): `None` for anything that is not an action.
-        action_at: Option<orch_core::Timestamp>,
-        /// Selected release.
-        release: Option<String>,
-        /// What the request told the agent of the person's UI catalog (ADR 0023).
-        ui_catalog: Option<Box<UiDelivery>>,
-        /// The grant of the thread's tools the request carried (`None` for the verifier): who the
-        /// agent is to be given the thread's tools as.
-        thread_tools: Option<Box<ToolsGrant>>,
-        /// The conversation the request told the agent, for the first task of a fork (ADR 0029).
-        history: Option<Box<ForkHistory>>,
-        /// The message was sent into the running task `task_id` as a steer (`steer/v1`, ADR 0036).
-        steer: bool,
-        /// The agents the message mentions, as the dispatcher resolved them (ADR 0026): what an
-        /// adapter would tell an agent whose card lists `mentions/v1`.
-        mentions: Box<[MentionInfo]>,
-        /// The access tier the request carried (ADR 0061): what an adapter would activate
-        /// `access-tier/v1` with.
-        tier: Option<orch_core::AccessTier>,
-    },
+    Send(Box<SendCall>),
     /// `resubscribe`.
     Resubscribe {
         /// Task.
@@ -110,6 +74,47 @@ pub enum Call {
         /// Agent.
         agent: AgentId,
     },
+}
+
+/// What a `send_stream` call carried (the `Call::Send` payload; boxed, because it is much larger
+/// than any other call the scripted agent records).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendCall {
+    /// Agent the request targeted.
+    pub agent: AgentId,
+    /// Message id (the outbox row id).
+    pub message_id: String,
+    /// The A2A context the request named: `None` for the first message of a conversation
+    /// (ADR 0055), the context the agent assigned for every later one.
+    pub context_id: Option<String>,
+    /// Task continued, if any.
+    pub task_id: Option<String>,
+    /// The earlier tasks the message says it is about (A2A `referenceTaskIds`, ADR 0021).
+    pub reference_task_ids: Vec<String>,
+    /// Text (for an action: `ui-action <name>`).
+    pub text: String,
+    /// The A2UI action delivered instead of text, if any.
+    pub action: Option<Box<UiActionData>>,
+    /// The time an A2UI action carries as its `timestamp` member (the log's own time, ADR
+    /// 0013): `None` for anything that is not an action.
+    pub action_at: Option<orch_core::Timestamp>,
+    /// Selected release.
+    pub release: Option<String>,
+    /// What the request told the agent of the person's UI catalog (ADR 0023).
+    pub ui_catalog: Option<Box<UiDelivery>>,
+    /// The grant of the thread's tools the request carried (`None` for the verifier): who the
+    /// agent is to be given the thread's tools as.
+    pub thread_tools: Option<Box<ToolsGrant>>,
+    /// The conversation the request told the agent, for the first task of a fork (ADR 0029).
+    pub history: Option<Box<ForkHistory>>,
+    /// The message was sent into the running task `task_id` as a steer (`steer/v1`, ADR 0036).
+    pub steer: bool,
+    /// The agents the message mentions, as the dispatcher resolved them (ADR 0026): what an
+    /// adapter would tell an agent whose card lists `mentions/v1`.
+    pub mentions: Box<[MentionInfo]>,
+    /// The access tier the request carried (ADR 0061): what an adapter would activate
+    /// `access-tier/v1` with.
+    pub tier: Option<orch_core::AccessTier>,
 }
 
 /// How a [`ScriptedAgent`] that plays the verifier answers whatever it is asked
@@ -561,7 +566,7 @@ impl ScriptedAgent {
     pub fn sends(&self) -> Vec<Call> {
         self.calls()
             .into_iter()
-            .filter(|c| matches!(c, Call::Send { .. }))
+            .filter(|c| matches!(c, Call::Send(_)))
             .collect()
     }
 
@@ -1700,7 +1705,7 @@ impl AgentClient for ScriptedAgent {
         let script = text.split_whitespace().next().unwrap_or("").to_owned();
         let (task, resumed, from, stale, session_news) = {
             let mut st = self.state();
-            st.calls.push(Call::Send {
+            st.calls.push(Call::Send(Box::new(SendCall {
                 agent: req.endpoint.id.clone(),
                 message_id: req.message_id.clone(),
                 context_id: req.context_id.clone(),
@@ -1716,7 +1721,7 @@ impl AgentClient for ScriptedAgent {
                 steer: req.steer,
                 mentions: req.mentions.clone().into_boxed_slice(),
                 tier: req.tier,
-            });
+            })));
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));
             }

@@ -88,20 +88,14 @@ async fn a_surface_is_recorded_before_the_question_and_an_action_answers_it() {
     // The agent got the action as an action, on the same task, not as text.
     let sends = w.agent.sends();
     assert_eq!(sends.len(), 2);
-    match (&sends[0], &sends[1]) {
-        (
-            Call::Send { task_id: None, .. },
-            Call::Send {
-                task_id: Some(task),
-                action: Some(a),
-                ..
-            },
-        ) => {
-            assert_eq!(task, "task-1");
-            assert_eq!(**a, action("go"));
-        }
-        other => panic!("{other:?}"),
-    }
+    let (Call::Send(first), Call::Send(second)) = (&sends[0], &sends[1]) else {
+        panic!("not two sends: {sends:?}");
+    };
+    assert!(first.task_id.is_none(), "the message starts no task");
+    let task = second.task_id.as_ref().unwrap();
+    let a = second.action.as_ref().unwrap();
+    assert_eq!(task, "task-1");
+    assert_eq!(**a, action("go"));
     assert!(w.store.list_open_outbox(t.id).await.unwrap().is_empty());
     run.shutdown().await;
 }

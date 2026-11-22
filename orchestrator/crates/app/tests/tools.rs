@@ -14,7 +14,7 @@ use orch_core::{
     AgentId, AgentTarget, AttachedServer, Classify, ErrorClass, EventBody, EventKind, ThreadId,
     ThreadRecord, ToolsData, UserId,
 };
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use orch_ports::{Principal, ThreadListing};
 use support::*;
 
@@ -358,7 +358,10 @@ async fn an_agent_is_told_the_servers_attached_that_it_may_use_each_time_a_messa
         .sends()
         .into_iter()
         .map(|call| match call {
-            Call::Send { thread_tools, .. } => thread_tools.expect("a grant").attached,
+            Call::Send(call) => {
+                let SendCall { thread_tools, .. } = *call;
+                thread_tools.expect("a grant").attached
+            }
             other => panic!("not a send: {other:?}"),
         })
         .collect();
