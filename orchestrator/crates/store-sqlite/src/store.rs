@@ -216,7 +216,11 @@ fn unit_filter(archived: ArchivedFilter) -> &'static str {
 /// The top-level units of a [`ListOrder::Rail`] listing under a filter, after the cursor or from the
 /// start, in the owner's order.
 fn units_sql(archived: ArchivedFilter, after_cursor: bool) -> String {
-    let cursor = if after_cursor { AFTER_CURSOR } else { NO_CURSOR };
+    let cursor = if after_cursor {
+        AFTER_CURSOR
+    } else {
+        NO_CURSOR
+    };
     format!(
         "SELECT {THREAD_COLS} FROM (SELECT t.*, {SECTION} AS sec FROM threads t \
          WHERE {LISTED} AND {}) u WHERE u.owner = ?1 {cursor} \
