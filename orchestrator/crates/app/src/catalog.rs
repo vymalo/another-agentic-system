@@ -1,8 +1,9 @@
 //! The UI catalog's schema check (ADR 0023).
 //!
 //! `orch-core` checks the envelope of a catalog the web sends: the shape, the limits, the
-//! keywords that point outside a schema, and the digest. It has no schema library, so it cannot
-//! say whether a component's schema **is** JSON Schema; that is this check, which the surfaces
+//! keywords that point outside a schema, A2UI v1.0's rules and the contract's on a component's
+//! definition, and the digest. It has no schema library, so it cannot say whether a component's
+//! schema **is** JSON Schema; that is this check, which the surfaces
 //! (and [`App::submit`](crate::App::submit)) make before anything is stored: every component schema
 //! must be a valid JSON Schema (draft 2020-12), and must describe the component it is the entry
 //! of, with `properties.component.const` equal to its name. The orchestrator does not interpret

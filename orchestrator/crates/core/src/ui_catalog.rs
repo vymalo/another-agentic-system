@@ -61,6 +61,14 @@ const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
 /// Keywords that point outside the schema they are in, or name it. A catalog is self-contained
 /// (ADR 0023): each component schema is read alone, with no resolution of references.
 const FORBIDDEN_KEYWORDS: [&str; 5] = ["$ref", "$dynamicRef", "$id", "$anchor", "$schema"];
+/// The component name A2UI v1.0 reserves for the surface itself (`allowedParents: ["Surface"]`).
+const RESERVED_COMPONENT_NAME: &str = "Surface";
+/// The keywords A2UI v1.0 forbids at the top of a component's schema (`catalog_definition.json`,
+/// `ComponentDefinition`).
+const TOP_LEVEL_ALTERNATIVES: [&str; 2] = ["anyOf", "oneOf"];
+/// The composition rules A2UI v1.0 allows beside a component's schema and this contract refuses
+/// (`docs/api/ui-catalog-v2.md`, section 1; ADR 0075: a later version may add them).
+const COMPOSITION_RULES: [&str; 2] = ["allowedParents", "allowedChildren"];
 
 /// Why a catalog was refused. Every variant is the sender's mistake ([`ErrorClass::Invalid`]),
 /// except [`CatalogError::TooLarge`], which surfaces name apart (HTTP 413).
@@ -115,9 +123,44 @@ pub enum CatalogError {
         "the component name '{0}' is not valid: an uppercase letter, then up to 63 letters or digits"
     )]
     ComponentName(String),
+    /// A component is named `Surface`, which A2UI v1.0 reserves.
+    #[error("the component name '{0}' is reserved by A2UI v1.0")]
+    ReservedComponentName(String),
     /// A component's schema is not an object.
     #[error("the schema of component '{0}' must be a JSON object")]
     ComponentSchema(String),
+    /// A key of a component's schema starts with `@`, the prefix A2UI v1.0 reserves for its own
+    /// keys (`@catalogId`, `@accessibility`, `@metadata`, ...).
+    #[error(
+        "the schema of component '{component}' has the key '{key}'; A2UI v1.0 reserves the @ prefix"
+    )]
+    ReservedKey {
+        /// The component.
+        component: String,
+        /// The key.
+        key: String,
+    },
+    /// A component's schema has `anyOf` or `oneOf` at its top level, which A2UI v1.0 forbids.
+    #[error(
+        "the schema of component '{component}' has a top-level '{keyword}', which A2UI v1.0 forbids"
+    )]
+    TopLevelAlternative {
+        /// The component.
+        component: String,
+        /// `anyOf` or `oneOf`.
+        keyword: String,
+    },
+    /// A component's schema has the composition rule `allowedParents` or `allowedChildren`, which
+    /// this contract does not accept (yet): the web does not enforce one.
+    #[error(
+        "the schema of component '{component}' has '{keyword}'; composition rules are not accepted in a catalog"
+    )]
+    CompositionRule {
+        /// The component.
+        component: String,
+        /// `allowedParents` or `allowedChildren`.
+        keyword: String,
+    },
     /// The catalog nests deeper than [`MAX_CATALOG_DEPTH`].
     #[error("the catalog nests deeper than {MAX_CATALOG_DEPTH} levels")]
     TooDeep,
@@ -194,6 +237,7 @@ impl UiCatalogData {
             return Err(CatalogError::TooLarge);
         }
         check_keywords(&wire.catalog)?;
+        check_reserved_keys(&wire.catalog)?;
         let expected = digest_of_canonical(&canonical);
         if expected != wire.digest {
             return Err(CatalogError::DigestMismatch { expected });
@@ -508,8 +552,28 @@ fn check_envelope(catalog: &Value, catalog_id: &str) -> Result<(), CatalogError>
         if !is_component_name(name) {
             return Err(CatalogError::ComponentName(name.clone()));
         }
-        if !schema.is_object() {
+        if name == RESERVED_COMPONENT_NAME {
+            return Err(CatalogError::ReservedComponentName(name.clone()));
+        }
+        let Some(top) = schema.as_object() else {
             return Err(CatalogError::ComponentSchema(name.clone()));
+        };
+        // A2UI v1.0's rule on a component's definition (`catalog_definition.json`,
+        // `ComponentDefinition`), and the contract's own on the composition rules.
+        if let Some(keyword) = TOP_LEVEL_ALTERNATIVES
+            .iter()
+            .find(|k| top.contains_key(**k))
+        {
+            return Err(CatalogError::TopLevelAlternative {
+                component: name.clone(),
+                keyword: (*keyword).to_owned(),
+            });
+        }
+        if let Some(keyword) = COMPOSITION_RULES.iter().find(|k| top.contains_key(**k)) {
+            return Err(CatalogError::CompositionRule {
+                component: name.clone(),
+                keyword: (*keyword).to_owned(),
+            });
         }
     }
     Ok(())
@@ -539,6 +603,40 @@ fn check_keywords(value: &Value) -> Result<(), CatalogError> {
         }
         Value::Array(items) => items.iter().try_for_each(check_keywords),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(()),
+    }
+}
+
+/// No key of a component's schema starts with `@`, at any depth (`docs/api/ui-catalog-v2.md`,
+/// section 1). Like [`check_keywords`] it does not tell a property name from a keyword: no JSON
+/// Schema keyword starts with `@`, and A2UI v1.0 reserves the prefix for its own members, so either
+/// way the key is refused.
+///
+/// It runs after [`canonical_json`], which bounds the depth.
+fn check_reserved_keys(catalog: &Value) -> Result<(), CatalogError> {
+    let components = catalog.get("components").and_then(Value::as_object);
+    for (component, schema) in components.into_iter().flatten() {
+        if let Some(key) = reserved_key(schema) {
+            return Err(CatalogError::ReservedKey {
+                component: component.clone(),
+                key: key.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The first object key under `value` that starts with `@`.
+fn reserved_key(value: &Value) -> Option<&str> {
+    match value {
+        Value::Object(map) => map.iter().find_map(|(key, inner)| {
+            if key.starts_with('@') {
+                Some(key.as_str())
+            } else {
+                reserved_key(inner)
+            }
+        }),
+        Value::Array(items) => items.iter().find_map(reserved_key),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
     }
 }
 
@@ -1182,6 +1280,119 @@ mod tests {
         // as a value, not a keyword, it is only text
         let catalog = catalog_with(json!({"Note": {"description": "see $ref in the docs"}}));
         assert!(UiCatalogData::from_json(&envelope(1, &catalog)).is_ok());
+    }
+
+    /// `docs/api/ui-catalog-v2.md`, section 1: A2UI v1.0 reserves the `@` prefix, so no key of a
+    /// component schema starts with one, at any depth (#431).
+    #[test]
+    fn a_key_that_starts_with_at_is_refused_at_any_depth() {
+        for (schema, key) in [
+            // a member of the schema itself
+            (
+                json!({"type": "object", "@foo": true, "properties": {"component": {"const": "Note"}}}),
+                "@foo",
+            ),
+            // a property the instance would carry at its root, beside A2UI's own
+            (
+                json!({"type": "object", "properties": {"component": {"const": "Note"}, "@catalogId": {"type": "string"}}}),
+                "@catalogId",
+            ),
+            // a property of a nested object, and an escaped one
+            (
+                json!({"type": "object", "properties": {"a": {"items": [{"properties": {"@@x": {}}}]}}}),
+                "@@x",
+            ),
+        ] {
+            let catalog = catalog_with(json!({"Note": schema}));
+            assert_eq!(
+                refused(&envelope(1, &catalog)),
+                CatalogError::ReservedKey {
+                    component: "Note".to_owned(),
+                    key: key.to_owned()
+                },
+                "{key}"
+            );
+        }
+        // in a value it is only text, and a key that has `@` elsewhere than first is a name
+        let catalog = catalog_with(json!({"Note": {
+            "description": "@mention",
+            "enum": ["@a"],
+            "properties": {"user@host": {"type": "string"}},
+        }}));
+        assert!(UiCatalogData::from_json(&envelope(1, &catalog)).is_ok());
+    }
+
+    /// `docs/api/ui-catalog-v2.md`, section 1, and A2UI v1.0's `catalog_definition.json`
+    /// (`ComponentDefinition`): no `anyOf` or `oneOf` at the top of a component schema (#431).
+    #[test]
+    fn a_top_level_any_of_or_one_of_is_refused_and_a_nested_one_is_not() {
+        for keyword in ["anyOf", "oneOf"] {
+            let schema = json!({"type": "object", keyword: [note(), {"type": "object"}]});
+            let catalog = catalog_with(json!({"Note": schema}));
+            assert_eq!(
+                refused(&envelope(1, &catalog)),
+                CatalogError::TopLevelAlternative {
+                    component: "Note".to_owned(),
+                    keyword: keyword.to_owned()
+                },
+                "{keyword}"
+            );
+            // below the top it is a property's schema, which A2UI leaves alone
+            let nested = json!({"type": "object", "properties": {
+                "component": {"const": "Note"},
+                "size": { keyword: [{"type": "string"}, {"type": "integer"}] },
+            }});
+            let catalog = catalog_with(json!({"Note": nested}));
+            assert!(
+                UiCatalogData::from_json(&envelope(1, &catalog)).is_ok(),
+                "{keyword}"
+            );
+        }
+    }
+
+    /// `docs/api/ui-catalog-v2.md`, section 1 and *Out of scope*: the composition rules A2UI v1.0
+    /// allows are refused here until a later version adds them (ADR 0075; #431).
+    #[test]
+    fn a_composition_rule_is_refused_and_a_property_of_that_name_is_not() {
+        for keyword in ["allowedParents", "allowedChildren"] {
+            let mut schema = note();
+            schema[keyword] = json!(["Surface"]);
+            let catalog = catalog_with(json!({"Note": schema}));
+            assert_eq!(
+                refused(&envelope(1, &catalog)),
+                CatalogError::CompositionRule {
+                    component: "Note".to_owned(),
+                    keyword: keyword.to_owned()
+                },
+                "{keyword}"
+            );
+            // a property the instance carries is a name like any other
+            let mut property = note();
+            property["properties"][keyword] = json!({"type": "array"});
+            let catalog = catalog_with(json!({"Note": property}));
+            assert!(
+                UiCatalogData::from_json(&envelope(1, &catalog)).is_ok(),
+                "{keyword}"
+            );
+        }
+    }
+
+    /// `docs/api/ui-catalog-v2.md`, section 1: a component is not named `Surface`, which A2UI
+    /// v1.0 reserves (#431).
+    #[test]
+    fn surface_is_not_a_component_name() {
+        let catalog = catalog_with(json!({"Note": note(), "Surface": note()}));
+        assert_eq!(
+            refused(&envelope(1, &catalog)),
+            CatalogError::ReservedComponentName("Surface".to_owned())
+        );
+        for ok in ["Surfaces", "MySurface"] {
+            let catalog = catalog_with(json!({ ok: note() }));
+            assert!(
+                UiCatalogData::from_json(&envelope(1, &catalog)).is_ok(),
+                "{ok}"
+            );
+        }
     }
 
     #[test]

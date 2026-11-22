@@ -111,7 +111,7 @@ The rules of the document. The first three are new in v2; the rest are v1's.
   which a v1.0 runtime cannot use.
 - **No other member at the root:** no `functions`, `theme`, `instructions`, `metadata`, `$defs`, `$schema`, `$id`, `title`
   or `description`. A later version of this page may add some of them; until then a document that has one is refused.
-- **A component schema declares no property whose name starts with `@`, no top-level `anyOf` or `oneOf`, and no
+- **A component schema has no key whose name starts with `@`, no top-level `anyOf` or `oneOf`, and no
   `allowedParents` or `allowedChildren`.** A2UI v1.0 reserves the `@` prefix for its own keys and forbids a top-level
   `anyOf` or `oneOf` in a component's schema. A component's name is not `Surface`, which A2UI v1.0 reserves.
 - Every component schema is self-contained JSON Schema 2020-12: no `$ref`, `$dynamicRef`, `$id` or `$anchor`, and no
@@ -1514,11 +1514,25 @@ the digests differ. A web of catalog 9 so sends it on the next run of every thre
 | The member is an object of the shape above; `catalog.catalogId` equals `catalogId`; `catalogId` is an absolute https URL of at most 256 bytes; `version` is 1 to 1,000,000; `digest` matches `^sha256:[0-9a-f]{64}$` **and** equals the recomputed digest | 400, naming the rule |
 | `catalog.protocolVersion` is the string `"1.0"`, and `catalog` has no member but `catalogId`, `protocolVersion` and `components` | 400, naming the rule |
 | The serialised `catalog` is at most 64 KiB | 413 |
-| At most 64 components; keys match `^[A-Z][A-Za-z0-9]{0,63}$` and are not `Surface`; nesting at most 32 deep; section 1's rules hold (no `$ref`, ASCII keys, integers only, no `@` property, no top-level `anyOf` or `oneOf`) | 400, naming the rule |
+| At most 64 components; keys match `^[A-Z][A-Za-z0-9]{0,63}$` and are not `Surface`; nesting at most 32 deep; section 1's rules hold (no `$ref`, ASCII keys, integers only, no `@` property, no top-level `anyOf` or `oneOf`, no `allowedParents` or `allowedChildren`) | 400, naming the rule |
 | Each component schema compiles as JSON Schema 2020-12 (no remote resolution) and has `properties.component.const` equal to its key | 400, naming the component |
 
 A v1 document (no `protocolVersion`) is refused with 400. The member is read on every run and applies only when the run
 applies an input, as in v1.
+
+*Amended 2026-11-22 (issue #431):* until this date the orchestrator refused none of four rules of section 1 that this
+table names: a key that starts with `@`, a top-level `anyOf` or `oneOf`, `allowedParents` or `allowedChildren`, and a
+component named `Surface`. The page was right and the check was not, so the check now refuses each with 400, naming the
+rule (`orchestrator/crates/core/src/ui_catalog.rs`, `check_envelope` and `check_reserved_keys`). What A2UI v1.0 says
+about them is in [Verified and unverified (2026-11-19)](#verified-and-unverified-2026-11-19): a catalog with a
+top-level `anyOf` or `oneOf`, or a component named `Surface`, fails its `catalog_definition.json`
+(`ComponentDefinition`, and `components.propertyNames`), so it was relayed to agents as a catalog A2UI v1.0 refuses; an
+`@` key takes a name A2UI v1.0 reserves for its own members. The composition rules are allowed by A2UI v1.0 and
+refused here by ADR 0075, decision 5, which says only that a later version may add them; the reason this change gives
+for enforcing the refusal is that the web enforces no composition rule, so a catalog would state a rule nothing
+applies. The `@` rule is read as any object key under a component, at any depth, as `$ref` is: no JSON Schema keyword
+starts with `@`. The web's catalog breaks none of the four, and adam-rs only reads the catalog it is sent, so no client
+sees a change.
 
 ## 4. In the log
 
