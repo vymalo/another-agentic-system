@@ -9,13 +9,18 @@
 //! `RETURNING` is SQLite's own (3.35 and later; the bundled build is 3.54.1), which is what the
 //! claims, the version check and the commit are written on. A CTE whose result a statement must not
 //! re-read after it starts changing rows is `AS MATERIALIZED` (3.35 and later).
+//!
+//! The commit and the creation of a thread also write the usage ledger ([`crate::usage`], ADR 0065)
+//! and the search index ([`crate::search`], ADR 0068) **in the same transaction**, so the log and
+//! the two derived stores cannot disagree; [`delete`] clears the usage rows' thread and lets the
+//! index's rows cascade.
 
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, RankError, ThreadId,
-    ThreadRecord, UserId, WatchKey, between, spread,
+    ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
@@ -35,12 +40,13 @@ use crate::codec::{
     inbox_from_row, job_json, outbox_from_row, parse_enum, thread_from_row, to_db,
 };
 use crate::error::{store_err, unique_on};
+use crate::{search, usage};
 
 // ------------------------------------------------------------------------------ the statements
 
 /// One write, as one `BEGIN IMMEDIATE` transaction: `f` either writes all of it or, by returning an
 /// error, none of it (the transaction is rolled back when it is dropped).
-fn write<T>(
+pub(crate) fn write<T>(
     conn: &mut Connection,
     f: impl FnOnce(&Transaction<'_>) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
@@ -53,7 +59,7 @@ fn write<T>(
 }
 
 /// Every row `sql` gives, decoded by `decode`.
-fn rows<T>(
+pub(crate) fn rows<T>(
     conn: &Connection,
     sql: &str,
     params: &[&dyn ToSql],
@@ -69,7 +75,7 @@ fn rows<T>(
 }
 
 /// The first row `sql` gives, if any.
-fn row_opt<T>(
+pub(crate) fn row_opt<T>(
     conn: &Connection,
     sql: &str,
     params: &[&dyn ToSql],
@@ -79,7 +85,11 @@ fn row_opt<T>(
 }
 
 /// A count, or any single integer column.
-fn scalar(conn: &Connection, sql: &str, params: &[&dyn ToSql]) -> Result<i64, StoreError> {
+pub(crate) fn scalar(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn ToSql],
+) -> Result<i64, StoreError> {
     let mut stmt = conn.prepare(sql).map_err(store_err)?;
     let mut rows = stmt.query(params).map_err(store_err)?;
     match rows.next().map_err(store_err)? {
@@ -90,12 +100,16 @@ fn scalar(conn: &Connection, sql: &str, params: &[&dyn ToSql]) -> Result<i64, St
     }
 }
 
-fn exec(conn: &Connection, sql: &str, params: &[&dyn ToSql]) -> Result<usize, StoreError> {
+pub(crate) fn exec(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn ToSql],
+) -> Result<usize, StoreError> {
     conn.execute(sql, params).map_err(store_err)
 }
 
 /// A statement whose `IN` list is built from values.
-fn dynamic_rows<T>(
+pub(crate) fn dynamic_rows<T>(
     conn: &Connection,
     sql: &str,
     values: Vec<Value>,
@@ -119,7 +133,11 @@ fn dynamic_row_opt<T>(
     Ok(dynamic_rows(conn, sql, values, decode)?.into_iter().next())
 }
 
-fn dynamic_exec(conn: &Connection, sql: &str, values: Vec<Value>) -> Result<usize, StoreError> {
+pub(crate) fn dynamic_exec(
+    conn: &Connection,
+    sql: &str,
+    values: Vec<Value>,
+) -> Result<usize, StoreError> {
     conn.execute(sql, params_from_iter(values))
         .map_err(store_err)
 }
@@ -127,7 +145,7 @@ fn dynamic_exec(conn: &Connection, sql: &str, values: Vec<Value>) -> Result<usiz
 /// `?from, ?from+1, ...` for `n` numbered placeholders, to build an `IN` list beside other
 /// parameters. SQLite gives a bare `?` the index after the largest one used so far, so a statement
 /// that names any parameter by number must number every one of them.
-fn numbered(from: usize, n: usize) -> String {
+pub(crate) fn numbered(from: usize, n: usize) -> String {
     (from..from + n)
         .map(|i| format!("?{i}"))
         .collect::<Vec<_>>()
@@ -135,12 +153,12 @@ fn numbered(from: usize, n: usize) -> String {
 }
 
 /// `?, ?, ?` for `n` placeholders, to build an `IN` list in a statement that names none by number.
-fn placeholders(n: usize) -> String {
+pub(crate) fn placeholders(n: usize) -> String {
     std::iter::repeat_n("?", n).collect::<Vec<_>>().join(", ")
 }
 
 /// `n` text values, for an `IN` list of ids.
-fn texts(items: &[String]) -> Vec<Value> {
+pub(crate) fn texts(items: &[String]) -> Vec<Value> {
     items.iter().map(|t| Value::Text(t.clone())).collect()
 }
 
@@ -161,12 +179,12 @@ fn attempt(lease_attempt: u32) -> i64 {
     i64::from(lease_attempt)
 }
 
-fn parse_id(text: &str) -> Result<uuid::Uuid, StoreError> {
+pub(crate) fn parse_id(text: &str) -> Result<uuid::Uuid, StoreError> {
     uuid::Uuid::parse_str(text)
         .map_err(|e| StoreError::corrupt_with("a stored id is not a uuid", e))
 }
 
-fn archived_name(filter: ArchivedFilter) -> &'static str {
+pub(crate) fn archived_name(filter: ArchivedFilter) -> &'static str {
     match filter {
         ArchivedFilter::Exclude => "exclude",
         ArchivedFilter::Only => "only",
@@ -748,6 +766,10 @@ fn delete(
             &[id, &to_db(now)?],
         )?;
     }
+    // The usage of the threads stays, naming no thread any more (ADR 0065): in the transaction that
+    // deletes the log, so the ledger never points at a thread that is gone. The index needs no
+    // statement: `message_terms` cascades from `events` and `thread_terms` from `threads`.
+    usage::forget_threads(tx, &id_text)?;
     // Cascades the events, outbox, binding and watches; nulls `forked_from` and `rail_parent` of the
     // forks; the child reference is deferred, so a parent and its named children go in one
     // statement.
@@ -856,9 +878,9 @@ fn insert_thread(
         let inserted = tx.execute(
             "INSERT INTO threads (id, owner, title, description, agent_id, release, state, job, \
              version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind, \
-             rail_parent, rail_rank, child_of, child_session) \
+             rail_parent, rail_rank, child_of, child_session, search_fold) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?10, ?11, ?12, ?13, ?14, ?15, \
-             ?16, ?17)",
+             ?16, ?17, ?18)",
             params![
                 thread,
                 owner,
@@ -877,6 +899,7 @@ fn insert_thread(
                 rail_rank,
                 new.child_of.as_ref().map(|of| of.thread.0.to_string()),
                 new.child_of.as_ref().map(|of| of.session.as_str()),
+                orch_core::search::FOLD_VERSION,
             ],
         );
         if let Err(e) = inserted {
@@ -937,17 +960,38 @@ fn insert_thread(
             }
         }
         let events = insert_events(tx, new.id, cut + 1, first.events)?;
+        // The usage ledger, in the transaction of the events (ADR 0065); what a fork copied was
+        // counted in its parent, so only the events of its own are folded in.
+        usage::fold_events(tx, &new.owner, &events)?;
+        // The search index, in the same transaction (ADR 0068): what a fork copied is indexed from
+        // the fork's own log (the parent's rows may no longer hold a message it replaced), then the
+        // events of its own.
+        let search_reached = if cut > 0 {
+            search::catch_up_before_commit(tx, new.id, &new.owner, 0, cut)?
+        } else {
+            0
+        };
+        search::index_events(tx, new.id, &new.owner, &events)?;
+        search::write_thread_keys(tx, new.id, "title", &search::keys_of(Some(&new.title)))?;
+        search::write_thread_keys(tx, new.id, "description", &search::keys_of(description))?;
         insert_outbox(tx, new.id, &owner, first.outbox, first.now)?;
         let rearmed =
             insert_watches_and_timers(tx, new.id, &first.watches, first.timers, first.now)?;
         let last_seq = cut + i64::try_from(events.len()).unwrap_or(i64::MAX - cut);
+        // The ledger is through the whole log: what a fork copied was counted in its parent, and
+        // `usage_counted_through` says the same with the cut.
+        let search_through = if search_reached >= cut {
+            last_seq
+        } else {
+            search_reached
+        };
         let record = row_opt(
             tx,
             &format!(
-                "UPDATE threads SET last_seq = ?2, updated_at = ?3 WHERE id = ?1 \
-                 RETURNING {THREAD_COLS}"
+                "UPDATE threads SET last_seq = ?2, usage_through = ?2, search_through = ?3, \
+                 updated_at = ?4 WHERE id = ?1 RETURNING {THREAD_COLS}"
             ),
-            &[&thread, &last_seq, &to_db(first.now)?],
+            &[&thread, &last_seq, &search_through, &to_db(first.now)?],
             thread_from_row,
         )?
         .ok_or(StoreError::NotFound)?;
@@ -1242,7 +1286,8 @@ fn commit_in(
     // no duplicates.
     let locked = row_opt(
         tx,
-        "SELECT version, last_seq, state, owner FROM threads WHERE id = ?1",
+        "SELECT version, last_seq, state, owner, usage_through, forked_at, search_through, \
+         search_fold, title, description FROM threads WHERE id = ?1",
         &[&thread_text],
         |row| {
             Ok((
@@ -1250,10 +1295,28 @@ fn commit_in(
                 row.get::<_, i64>(1).map_err(store_err)?,
                 row.get::<_, String>(2).map_err(store_err)?,
                 row.get::<_, String>(3).map_err(store_err)?,
+                row.get::<_, i64>(4).map_err(store_err)?,
+                row.get::<_, Option<i64>>(5).map_err(store_err)?,
+                row.get::<_, i64>(6).map_err(store_err)?,
+                row.get::<_, i32>(7).map_err(store_err)?,
+                row.get::<_, String>(8).map_err(store_err)?,
+                row.get::<_, Option<String>>(9).map_err(store_err)?,
             ))
         },
     )?;
-    let Some((version, last_seq, state, owner)) = locked else {
+    let Some((
+        version,
+        last_seq,
+        state,
+        owner,
+        usage_through,
+        forked_at,
+        search_through,
+        search_fold,
+        title,
+        description,
+    )) = locked
+    else {
         return Err(StoreError::NotFound);
     };
     if let Some(lease) = &commit.lease {
@@ -1333,8 +1396,51 @@ fn commit_in(
         }
     }
     let has_outbox = !commit.outbox.is_empty() || commit.finishes_outbox.is_some();
+    // The usage ledger is written in this transaction (ADR 0065). First what it has not been
+    // through: events a build without the ledger appended, or the log a thread had before migration
+    // `0002`; none in steady state, when `usage_through` is the log.
+    let owner_id = UserId::new(&owner);
+    let behind = usage_counted_through(usage_through, forked_at);
+    if behind < last_seq {
+        usage::catch_up(tx, thread, &owner_id, behind, last_seq)?;
+    }
+    // The search index (ADR 0068), the same way, but **bounded**: some of what it has not been
+    // through first (at most `COMMIT_CATCH_UP_EVENTS` events, the watermark advancing only as far as
+    // it got), with the title and the description of the row, then this commit's events, always. A
+    // thread stored under another fold version starts again from nothing.
+    let mut search_through = search_through;
+    if search_fold != orch_core::search::FOLD_VERSION {
+        search::delete_index(tx, thread)?;
+        search_through = 0;
+    }
+    let search_behind = search_through < last_seq || search_fold != orch_core::search::FOLD_VERSION;
+    let mut title_keys = None;
+    let mut description_keys = None;
+    let mut search_reached = last_seq;
+    if search_behind {
+        search_reached =
+            search::catch_up_before_commit(tx, thread, &owner_id, search_through, last_seq)?;
+        title_keys = Some(search::keys_of(Some(&title)));
+        description_keys = Some(search::keys_of(description.as_deref()));
+    }
     let events = insert_events(tx, thread, last_seq + 1, commit.events)?;
+    usage::fold_events(tx, &owner_id, &events)?;
+    search::index_events(tx, thread, &owner_id, &events)?;
+    // a title or description this commit writes is the one that is searched
+    if let Some(title) = &commit.title {
+        title_keys = Some(search::keys_of(Some(title)));
+    }
+    if let Some(description) = &commit.description {
+        description_keys = Some(search::keys_of(Some(description)));
+    }
     let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
+    // The index is through the whole log only if the old part was finished; else exactly where it
+    // stopped, so a later commit or the backfill continues from there.
+    let search_through_after = if search_reached >= last_seq {
+        new_last_seq
+    } else {
+        search_reached
+    };
     // The job is written with the state, under the same version check; a commit without one leaves
     // the stored job alone.
     let job = commit.job.as_ref().map(job_json).transpose()?;
@@ -1358,7 +1464,8 @@ fn commit_in(
          share_nonce = CASE ?6 WHEN 'set' THEN ?8 WHEN 'clear' THEN NULL \
              ELSE share_nonce END, \
          shared_at = CASE ?6 WHEN 'set' THEN ?9 WHEN 'clear' THEN NULL ELSE shared_at END, \
-         version = version + 1, last_seq = ?10, updated_at = ?9 \
+         version = version + 1, last_seq = ?10, usage_through = ?10, search_through = ?11, \
+         search_fold = ?12, updated_at = ?9 \
          WHERE id = ?1 RETURNING {THREAD_COLS}"
     );
     let mut stmt = tx.prepare(&sql).map_err(store_err)?;
@@ -1373,6 +1480,8 @@ fn commit_in(
         &sharing_nonce,
         &now,
         &new_last_seq,
+        &search_through_after,
+        &orch_core::search::FOLD_VERSION,
     ];
     let mut cursor = stmt.query(values).map_err(|e| {
         // The unique index of the link's nonce: a capability is one thread's.
@@ -1387,6 +1496,12 @@ fn commit_in(
         None => return Err(StoreError::NotFound),
     };
     drop(cursor);
+    if let Some(keys) = &title_keys {
+        search::write_thread_keys(tx, thread, "title", keys)?;
+    }
+    if let Some(keys) = &description_keys {
+        search::write_thread_keys(tx, thread, "description", keys)?;
+    }
     // The abandoned job's unsent delegations are finished before this commit's own rows exist, in
     // the same transaction (ADR 0036).
     if commit.skip_unsent_delegates {

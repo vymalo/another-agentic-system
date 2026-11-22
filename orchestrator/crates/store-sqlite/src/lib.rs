@@ -15,15 +15,29 @@
 //! **`ThreadStore`, all of it**: threads, the append-only log, the binding, the outbox, the inbox,
 //! the watches and the purge rows, with the leases and the fences the port's contract states.
 //!
-//! The port's three supertraits — [`UsageLedger`](orch_ports::UsageLedger),
-//! [`ThreadSearch`](orch_ports::ThreadSearch) and [`PromptStore`](orch_ports::PromptStore) — are
-//! **declared and not built** (a `ThreadStore` that did not implement them would not compile). Each
-//! of their methods answers [`StoreError::Internal`] naming this milestone, and
-//! [`PromptStoreError::Internal`](orch_ports::PromptStoreError) for the prompt library: never an
-//! empty answer, which a caller could not tell from "nothing matches". They follow as their own
-//! commits, with their own tables, their own conformance suites and the `forget` and `age` hooks
-//! those suites need. `Wakeup`, `UserToolServerStore` and `PendingAuthorizations` are not part of
-//! this crate yet either.
+//! **`UsageLedger`** (ADR 0065, migration `0002`): what each person used, per task and UTC month,
+//! written in the transaction that appends the usage event, kept when the thread is erased, folded
+//! in for a log older than the ledger by the next commit or by the backfill, and swept by month.
+//!
+//! **`ThreadSearch`** (ADR 0068, migration `0002`): the index of the folded words of a person's
+//! titles, descriptions and messages, a function of the log written with the event, erased with the
+//! thread, rebuilt from the log by the backfill. It is a table of the keys
+//! [`orch_core::search::document_keys`] makes, matched by prefix: **not** FTS5, which is not
+//! compiled into every bundled SQLite and whose folding is not `fold`'s.
+//!
+//! The third supertrait, [`PromptStore`](orch_ports::PromptStore) (the prompt library, ADR 0070),
+//! is **declared and not built**: its methods answer [`PromptStoreError::Internal`](orch_ports::PromptStoreError)
+//! naming milestone 2b, never an empty page, which a caller could not tell from "nothing was
+//! saved". `Wakeup`, `UserToolServerStore` and `PendingAuthorizations` are not part of this crate
+//! yet either.
+//!
+//! # Conformance hooks
+//!
+//! [`SqliteStore::forget_usage_ledger`], [`SqliteStore::forget_search_index`] and
+//! [`SqliteStore::age_search_index`] make the store behave as if the log predated the ledger or the
+//! index, or as if every thread had been indexed under an older fold version. They are **test
+//! hooks, not production paths**: the conformance testkit's `forget` and `age` arguments are the
+//! only callers, and without them the cases that play an older log are skipped, which is not green.
 //!
 //! # Concurrency
 //!
@@ -31,8 +45,8 @@
 //! ([`tokio::task::spawn_blocking`]) and takes the one connection behind a semaphore of one, so the
 //! async runtime never waits on the file and the calls of one process serialise instead of racing
 //! for the write lock. Each change is one `BEGIN IMMEDIATE` transaction; the version check, the
-//! outbox and inbox fences, the events, the ledger's rows and the fences' completions are all in
-//! it, so a crash leaves none of them.
+//! outbox and inbox fences, the events, the ledger's rows, the index's keys and the fences'
+//! completions are all in it, so a crash leaves none of them.
 //!
 //! # Schema
 //!
@@ -45,8 +59,10 @@
 mod codec;
 mod error;
 mod schema;
+mod search;
 mod store;
 mod unbuilt;
+mod usage;
 
 pub use schema::MIGRATIONS_TABLE;
 
@@ -138,6 +154,71 @@ impl SqliteStore {
     /// [`StoreError::Internal`] when SQLite rejects a migration's statements.
     pub async fn migrate(&self) -> Result<(), StoreError> {
         self.call(schema::migrate).await
+    }
+
+    /// Makes the store behave as if the usage events already in its log had been written before the
+    /// ledger existed, or by a build without it: the ledger is emptied and no thread has been gone
+    /// through. What the conformance cases that play a log older than the ledger need, as the
+    /// Postgres adapter's test deletes its rows and zeroes the column.
+    ///
+    /// **A conformance hook, not a production path**: the `forget` argument of
+    /// `orch_ports::usage_ledger_conformance!` is its only caller. A deployment has no way to empty
+    /// a person's ledger, and must not gain one.
+    ///
+    /// # Errors
+    /// [`StoreError::Unavailable`] when the file stays locked past the busy timeout;
+    /// [`StoreError::Internal`] when SQLite rejects a statement.
+    pub async fn forget_usage_ledger(&self) -> Result<(), StoreError> {
+        self.call(|conn| {
+            store::write(conn, |tx| {
+                store::exec(tx, "DELETE FROM usage_tasks", &[])?;
+                store::exec(tx, "UPDATE threads SET usage_through = 0", &[])?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Makes the store behave as if the search index had never been written for what is in its log:
+    /// no title, description or message is indexed and no thread has been gone through, so nothing
+    /// is found until a commit to the thread or [`ThreadSearch::backfill_search`] indexes it.
+    ///
+    /// **A conformance hook, not a production path**, like
+    /// [`forget_usage_ledger`](Self::forget_usage_ledger).
+    ///
+    /// # Errors
+    /// As [`forget_usage_ledger`](Self::forget_usage_ledger).
+    pub async fn forget_search_index(&self) -> Result<(), StoreError> {
+        self.call(|conn| {
+            store::write(conn, |tx| {
+                store::exec(tx, "DELETE FROM message_terms", &[])?;
+                store::exec(tx, "DELETE FROM thread_terms", &[])?;
+                store::exec(tx, "UPDATE threads SET search_through = 0", &[])?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Makes the store behave as if every thread had been indexed under an **older fold version**,
+    /// as a build whose [`FOLD_VERSION`](orch_core::search::FOLD_VERSION) was lower left it: such a
+    /// thread is unindexed (not found, whatever its keys hold) until a commit to it or
+    /// [`ThreadSearch::backfill_search`] indexes it again.
+    ///
+    /// **A conformance hook, not a production path**, like
+    /// [`forget_search_index`](Self::forget_search_index).
+    ///
+    /// # Errors
+    /// As [`forget_usage_ledger`](Self::forget_usage_ledger).
+    pub async fn age_search_index(&self) -> Result<(), StoreError> {
+        let stale = orch_core::search::FOLD_VERSION - 1;
+        self.call(move |conn| {
+            store::write(conn, |tx| {
+                store::exec(tx, "UPDATE threads SET search_fold = ?1", &[&stale])?;
+                Ok(())
+            })
+        })
+        .await
     }
 
     /// Runs `f` on a blocking thread with the one connection.
