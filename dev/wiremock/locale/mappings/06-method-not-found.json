@@ -1,0 +1,20 @@
+{
+  "name": "Any other JSON-RPC method (with a bearer token) -> -32601",
+  "priority": 20,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "error-method-not-found.json"
+  }
+}

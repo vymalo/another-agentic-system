@@ -41,6 +41,10 @@ name: Coder E2E
 #              dev/orchestrator.yaml, an unpriced model named, the same answer after one thread is deleted, another user's month empty),
 #              the access tier (dev/tier-e2e.sh: `mock-tiered`, a WireMock agent that lists access-tier/v1; a message that names a tier is logged with it and sent
 #              under the extension's URI, the tier the agent echoes is logged, a tier the plain agent does not list is refused before anything is written),
+#              the interface locale (dev/locale-e2e.sh: `mock-locale`, a WireMock agent that lists locale/v1; a message that names a tag is sent
+#              under the extension's URI with the tag in its metadata and the agent answers in it, a message that names none activates nothing and
+#              carries no member, a string that is not a tag is refused before anything is written, the plain agent gets the plain message, and
+#              nothing of the tag is in the log or in the AG-UI stream),
 #              child sessions (dev/child-sessions-e2e.sh, ADR 0072: `mock-sessions`, a WireMock agent that lists child-sessions/v1, opens a session of its helper
 #              and ends before it does; the helper is one child thread nested under the parent whose log is its round, read by task with nothing sent for it, the parent's log
 #              says it opened, then reported and closed once each, the helper's tokens are logged `counted: false` and the month counts the parent's totals once (exact
@@ -220,6 +224,10 @@ jobs:
         # The access tier (dev/tier-e2e.sh, ADR 0061): `mock-tiered` lists access-tier/v1 and echoes the tier it is told; a message that names one is logged
         # with it and sent under the extension's URI (the header and `message.extensions`), each message names its own, one that names none activates nothing,
         # a word that is not a tier is 400 and a tier for `mock-coder`, whose card does not list it, is 422 with no thread written.
+        # The interface locale (dev/locale-e2e.sh, ADR 0085): `mock-locale` lists locale/v1 and answers with the tag it is told; a message that names
+        # one is sent under the extension's URI (the header and `message.extensions`) with the tag in its metadata, one that names none activates nothing and
+        # carries no member, a string that is not a BCP 47 tag is 400 with no thread written, and `mock-coder`, whose card does not list it, gets the plain
+        # message; nothing of the tag is in the log or in the AG-UI stream.
         # Child sessions (dev/child-sessions-e2e.sh, ADR 0072): `mock-sessions` lists child-sessions/v1 opens a session of its helper `planner` by an event and ends before it does;
         # its round is served by SubscribeToTask; the helper is one child thread nested under the parent (`childOf`, `nestedUnder`) whose log
         # is the round (nothing sent for it), the parent's log has `child_session_opened`, `child_session_reported` and `child_session_closed` once each, the helper's usage is

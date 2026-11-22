@@ -1,0 +1,58 @@
+{
+  "name": "mock-locale",
+  "description": "WireMock stand-in for an A2A 1.0 agent that answers in the language of the interface a message names (locale/v1, ADR 0085; local development only). It lists the extension and says which tag it was told.",
+  "version": "0.0.0-mock",
+  "supportedInterfaces": [
+    {
+      "url": "{{request.baseUrl}}/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://agents.vymalo.com/a2a/extensions/locale/v1",
+        "description": "Answers in the language of the interface the person reads, and says which tag it was told.",
+        "required": false,
+        "params": {
+          "locale": "en-CM"
+        }
+      }
+    ]
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "answer",
+      "name": "Answer in a language",
+      "description": "Answers in the language the message names, and says which tag it read.",
+      "tags": [
+        "mock",
+        "locale"
+      ],
+      "examples": [
+        "Corrige la page de connexion."
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "opaque"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "bearer": []
+    }
+  ]
+}

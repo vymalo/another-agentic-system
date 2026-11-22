@@ -79,6 +79,13 @@
 #                     names none activates nothing; a word that is not a tier is 400 and
 #                     a tier for mock-coder, whose card does not list it, is 422, with no
 #                     thread written
+#   locale            the interface locale (ADR 0085): mock-locale (a WireMock agent    locale-e2e.sh
+#                     that lists locale/v1) is sent the tag a message names, with the
+#                     extension activated and the tag in its metadata, and answers in it;
+#                     a message that names none activates nothing and carries no member;
+#                     a string that is not a BCP 47 tag is 400 and writes nothing; the
+#                     plain agent, whose card does not list it, gets the plain message;
+#                     and nothing of the tag is in the log or in the AG-UI stream
 #   child-sessions    child sessions (ADR 0072): mock-sessions (a WireMock agent that  child-sessions-e2e.sh
 #                     lists child-sessions/v1) opens a session of its helper `planner`
 #                     and ends before it does; the helper is a child thread, nested
@@ -244,7 +251,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier locale child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -357,6 +364,13 @@ for s in "$@"; do
           *) echo "scenario tier needs the agents mock-tiered and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    locale)
+      for a in mock-locale mock-coder; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario locale needs the agents mock-locale and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     child-sessions)
       case " $agents " in
         *" mock-sessions "*) ;;
@@ -441,6 +455,7 @@ for s in "$@"; do
     usage) run usage sh "$here/usage-e2e.sh" ;;
     usage-ledger) run usage-ledger sh "$here/usage-ledger-e2e.sh" ;;
     tier) run tier sh "$here/tier-e2e.sh" ;;
+    locale) run locale sh "$here/locale-e2e.sh" ;;
     child-sessions) run child-sessions sh "$here/child-sessions-e2e.sh" ;;
     title) run title sh "$here/title-e2e.sh" ;;
     description) run description sh "$here/description-e2e.sh" ;;
