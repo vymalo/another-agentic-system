@@ -16,7 +16,7 @@ use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, CheckStatus, EventBody, EventKind, Hold, Input, Job,
     ThreadRecord, ThreadState, Timer, Verdict,
 };
-use orch_ports::memory::{Call, VerdictScript};
+use orch_ports::memory::{Call, SendCall, VerdictScript};
 use orch_ports::{
     AgentEndpoint, AgentError, Clock as _, Lease, OutboxItem, OutboxKind, OutboxPayload,
     OutboxStatus, PortSet, SystemClock, ThreadStore,
@@ -170,7 +170,7 @@ fn sends_to(w: &World, agent: &str) -> Vec<Call> {
     w.agent
         .sends()
         .into_iter()
-        .filter(|c| matches!(c, Call::Send { agent: a, .. } if a.as_str() == agent))
+        .filter(|c| matches!(c, Call::Send(call) if call.agent.as_str() == agent))
         .collect()
 }
 
@@ -260,7 +260,10 @@ async fn a_passing_verdict_finishes_the_job_and_is_never_the_workers_update() {
     // The verifier was asked once, in its own context, with the row as the message id.
     let sends = sends_to(&w, "reviewer");
     assert_eq!(sends.len(), 1);
-    let Call::Send {
+    let Call::Send(call) = &sends[0] else {
+        unreachable!()
+    };
+    let SendCall {
         message_id,
         context_id,
         task_id,
@@ -268,10 +271,7 @@ async fn a_passing_verdict_finishes_the_job_and_is_never_the_workers_update() {
         text,
         release,
         ..
-    } = &sends[0]
-    else {
-        unreachable!()
-    };
+    } = &**call;
     assert_eq!(message_id, &row.id.to_string());
     assert_eq!(
         context_id, &None,
@@ -350,14 +350,14 @@ async fn the_verifier_is_told_nothing_of_the_authors_screen_and_gets_no_thread()
     wait_state(&app, &alice(), t.id, ThreadState::Done).await;
     let sends = sends_to(&w, "reviewer");
     assert_eq!(sends.len(), 1);
-    let Call::Send {
+    let Call::Send(call) = &sends[0] else {
+        unreachable!()
+    };
+    let SendCall {
         ui_catalog,
         thread_tools,
         ..
-    } = &sends[0]
-    else {
-        unreachable!()
-    };
+    } = &**call;
     // the verifier is told nothing of the author's screen and gets no tools on the author's thread
     assert_eq!((ui_catalog, thread_tools), (&None, &None));
     run.shutdown().await;
@@ -437,15 +437,15 @@ async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_
     wait_state(&app, &alice(), fork.id, ThreadState::Done).await;
     let sends = sends_to(&w, "reviewer");
     assert_eq!(sends.len(), 1, "one verification, of the fork's commit");
-    let Call::Send {
+    let Call::Send(call) = &sends[0] else {
+        unreachable!()
+    };
+    let SendCall {
         history,
         text,
         context_id,
         ..
-    } = &sends[0]
-    else {
-        unreachable!()
-    };
+    } = &**call;
     assert_eq!(history, &None);
     assert!(!text.contains("<<<conversation"), "{text}");
     assert_eq!(context_id, &None, "a context of its own: none is named");
@@ -1163,7 +1163,7 @@ async fn the_verifier_is_asked_under_no_tier_whatever_the_authors_message_named(
     let sends = sends_to(&w, "reviewer");
     assert_eq!(sends.len(), 1);
     assert!(
-        matches!(&sends[0], Call::Send { tier: None, .. }),
+        matches!(&sends[0], Call::Send(call) if call.tier.is_none()),
         "{:?}",
         sends[0]
     );

@@ -41,6 +41,7 @@ mod codec;
 mod error;
 mod pending_authorizations;
 mod prompts;
+mod run_leases;
 mod search;
 pub mod sql;
 mod store;
@@ -53,6 +54,7 @@ pub use pending_authorizations::{PENDING_LOCK_TIMEOUT, PgPendingAuthorizations};
 pub use prompts::{
     LOCK_TIMEOUT as PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, list_sql as prompt_list_sql,
 };
+pub use run_leases::PgRunBindings;
 pub use sql::PgPool;
 pub use store::{MIGRATIONS_TABLE, PgStore};
 pub use user_tool_servers::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgUserToolServers};

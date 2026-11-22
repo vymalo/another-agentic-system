@@ -12,7 +12,7 @@ use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, GateLayer};
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, EventBody, Input, KnownExtension, ThreadId, ThreadState,
 };
-use orch_ports::memory::{Call, VerdictScript};
+use orch_ports::memory::{Call, SendCall, VerdictScript};
 use orch_ports::{
     AgentEndpoint, AgentError, Clock as _, OutboxKind, OutboxStatus, PortSet, SystemClock,
     ThreadStore,
@@ -33,14 +33,15 @@ fn messages(w: &World) -> Vec<(Option<String>, Vec<String>, String)> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                agent,
-                task_id,
-                reference_task_ids,
-                text,
-                steer: false,
-                ..
-            } if agent.as_str() == "plain" => Some((task_id, reference_task_ids, text)),
+            Call::Send(call) if call.agent.as_str() == "plain" && !call.steer => {
+                let SendCall {
+                    task_id,
+                    reference_task_ids,
+                    text,
+                    ..
+                } = *call;
+                Some((task_id, reference_task_ids, text))
+            }
             _ => None,
         })
         .collect()
@@ -55,14 +56,16 @@ fn steers(w: &World) -> Vec<Steer> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                task_id,
-                context_id,
-                reference_task_ids,
-                text,
-                steer: true,
-                ..
-            } => Some((task_id, context_id, reference_task_ids, text)),
+            Call::Send(call) if call.steer => {
+                let SendCall {
+                    task_id,
+                    context_id,
+                    reference_task_ids,
+                    text,
+                    ..
+                } = *call;
+                Some((task_id, context_id, reference_task_ids, text))
+            }
             _ => None,
         })
         .collect()
@@ -521,12 +524,10 @@ fn mentions_sent(w: &World, steer: bool) -> Vec<(String, Vec<orch_ports::Mention
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                text,
-                steer: s,
-                mentions,
-                ..
-            } if s == steer => Some((text, mentions.into_vec())),
+            Call::Send(call) if call.steer == steer => {
+                let SendCall { text, mentions, .. } = *call;
+                Some((text, mentions.into_vec()))
+            }
             _ => None,
         })
         .collect()

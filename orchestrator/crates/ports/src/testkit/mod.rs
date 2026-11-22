@@ -21,6 +21,7 @@ pub mod credential_broker;
 pub mod pending_authorizations;
 pub mod prompt_store;
 pub mod registry;
+pub mod run_leases;
 pub mod secret_store;
 pub mod thread_search;
 pub mod thread_store;
@@ -955,5 +956,91 @@ macro_rules! bearer_token_conformance {
                 }
             }
         )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per [`RunLeases`](crate::RunLeases) conformance case (ADR 0084).
+/// `$make` is an `async fn() -> Option<F>` returning a fresh broker whose deployment token for
+/// `glm-5.3` is [`run_leases::token`](crate::testkit::run_leases::token); `None` skips the suite.
+/// The calling crate needs `tokio` (with `macros` and `rt`) as a dev-dependency.
+#[macro_export]
+macro_rules! run_leases_conformance {
+    ($make:path) => {
+        #[tokio::test]
+        async fn binds_then_leases_to_the_bound_agent() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::binds_then_leases_to_the_bound_agent(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_another_agent() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::refuses_another_agent(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_the_orchestrator_lease() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::refuses_the_orchestrator_lease(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_an_unknown_run() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::refuses_an_unknown_run(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_an_expired_binding() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::refuses_an_expired_binding(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn unbinds() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::unbinds(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn binds_once() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::binds_once(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_a_binding_with_no_model() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::refuses_a_binding_with_no_model(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_a_model_with_no_credential() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::refuses_a_model_with_no_credential(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn a_lease_never_outlives_its_binding() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::a_lease_never_outlives_its_binding(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
     };
 }

@@ -574,14 +574,14 @@ fn sends_in(w: &World, thread: ThreadId) -> Vec<Call> {
     w.agent
         .sends()
         .into_iter()
-        .filter(|c| matches!(c, Call::Send { message_id, .. } if rows.contains(message_id)))
+        .filter(|c| matches!(c, Call::Send(call) if rows.contains(&call.message_id)))
         .collect()
 }
 
 /// What a send told the agent of the conversation, and the message it carried.
 fn told(call: &Call) -> (Option<ForkHistory>, &str) {
     match call {
-        Call::Send { history, text, .. } => (history.as_deref().cloned(), text),
+        Call::Send(call) => (call.history.as_deref().cloned(), call.text.as_str()),
         other => panic!("not a send: {other:?}"),
     }
 }
@@ -642,13 +642,10 @@ async fn the_first_task_of_a_fork_is_told_the_conversation_and_a_later_one_is_no
     // the second task of the fork follows the first, in its context: nothing more to tell
     let (second, text) = told(&sends[1]);
     assert_eq!((second, text), (None, "echo four"));
-    let Call::Send {
-        reference_task_ids, ..
-    } = &sends[1]
-    else {
+    let Call::Send(call) = &sends[1] else {
         unreachable!()
     };
-    assert_eq!(reference_task_ids.len(), 1);
+    assert_eq!(call.reference_task_ids.len(), 1);
 
     // the parent's own tasks are told nothing: it is not a fork
     for call in sends_in(&w, parent.id) {

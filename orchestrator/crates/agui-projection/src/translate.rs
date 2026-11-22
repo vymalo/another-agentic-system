@@ -57,6 +57,10 @@ pub struct KnownThread {
     /// The A2UI surfaces the thread has now, with the dialect each one speaks. An action is
     /// accepted only for one of these, and only when it is [`SurfaceDialect::V1_0`].
     pub surfaces: BTreeMap<String, SurfaceDialect>,
+    /// The trusted cards the thread has now, by id (`trusted-<seq>` of each `trusted_request`,
+    /// ADR 0083). A card is not a surface: an action may name one of these (the client's receipt)
+    /// with no surface check and no dialect check, and nothing else beyond `surfaces`.
+    pub trusted_cards: BTreeSet<String>,
 }
 
 /// The A2UI dialect the operations of a surface are written in, as far as the orchestrator cares
@@ -216,11 +220,12 @@ pub enum InputError {
         /// Which limit.
         why: String,
     },
-    /// The action names a surface the thread does not have (422): it never had it, or the agent
-    /// deleted it. Nothing is sent to the agent.
-    #[error("this thread has no surface {surface_id:?}")]
+    /// The action names neither a surface the thread has nor a trusted card it asked for (422):
+    /// it never had the surface, the agent deleted it, or no `trusted_request` of this thread has
+    /// that id. Nothing is sent to the agent.
+    #[error("this thread has no surface or trusted card {surface_id:?}")]
     UnknownSurface {
-        /// The surface the action named, cut to a short excerpt.
+        /// The surface or card the action named, cut to a short excerpt.
         surface_id: String,
     },
     /// The action names a surface whose operations are not A2UI `"1.0"` (422): a surface of a
@@ -540,18 +545,22 @@ pub fn translate_with_warnings(
         if answer.is_some() || new_user.is_some() || cancelled {
             return Err(InputError::AmbiguousAction);
         }
-        // Only a surface the thread has: nothing an agent did not send can be acted on.
-        let dialect = known
-            .and_then(|k| k.surfaces.get(&action.surface_id))
-            .ok_or_else(|| InputError::UnknownSurface {
-                surface_id: action.surface_id.chars().take(64).collect(),
-            })?;
-        // And only one of this build's dialect: a surface from before the cutover is shown, never
-        // acted on (ADR 0075, decision 4).
-        if *dialect == SurfaceDialect::Earlier {
-            return Err(InputError::EarlierSurface {
-                surface_id: action.surface_id.chars().take(64).collect(),
-            });
+        // Only a surface the thread has, or a trusted card it asked for: nothing an agent did not
+        // send can be acted on. A card is not a surface (ADR 0083), so it has no dialect and is
+        // accepted as it is; an id that is neither is refused, and nothing is widened.
+        if !known.is_some_and(|k| k.trusted_cards.contains(&action.surface_id)) {
+            let dialect = known
+                .and_then(|k| k.surfaces.get(&action.surface_id))
+                .ok_or_else(|| InputError::UnknownSurface {
+                    surface_id: action.surface_id.chars().take(64).collect(),
+                })?;
+            // And only one of this build's dialect: a surface from before the cutover is shown,
+            // never acted on (ADR 0075, decision 4).
+            if *dialect == SurfaceDialect::Earlier {
+                return Err(InputError::EarlierSurface {
+                    surface_id: action.surface_id.chars().take(64).collect(),
+                });
+            }
         }
         action.version = UiVersion::V1_0;
         action.run_id = run_id;

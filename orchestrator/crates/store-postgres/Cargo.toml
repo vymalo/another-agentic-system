@@ -29,6 +29,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true
+orch-credential-broker = { workspace = true }
 orch-ports = { workspace = true, features = ["testkit"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util", "test-util"] }
 tracing-subscriber = { workspace = true }

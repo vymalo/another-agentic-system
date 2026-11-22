@@ -1,0 +1,21 @@
+# The pins of the S9 spike (sys#334 S9). Move one by hand, from the source named, and update the
+# script's expected value in the same commit. The OCI digests are the ones `helm pull` prints; the
+# image digests are the manifest lists' (`docker buildx imagetools inspect`).
+
+# kind v0.33.0's node image for Kubernetes 1.35.0 (Agent Router needs 1.32 or later).
+KIND_NODE=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+
+# Envoy Gateway, the gateway Agent Router is built on.
+ENVOY_GATEWAY_CHART=oci://docker.io/envoyproxy/gateway-helm
+ENVOY_GATEWAY_VERSION=v1.10.0
+ENVOY_GATEWAY_DIGEST=sha256:dcb82a14c04b426615a71d97222c7edf9f5ff58b800d241e71ac5784ae6dc7b7
+
+# Agent Router (formerly Envoy AI Gateway): the CRDs chart, then the controller.
+AI_GATEWAY_CRDS_CHART=oci://docker.io/envoyproxy/ai-gateway-crds-helm
+AI_GATEWAY_CHART=oci://docker.io/envoyproxy/ai-gateway-helm
+AI_GATEWAY_VERSION=v1.3.0
+AI_GATEWAY_CRDS_DIGEST=sha256:03a81d91fc93a2b47b03779f71b7e2b2180dccfdf6561d2fbccafc598125aa80
+AI_GATEWAY_DIGEST=sha256:a78d01521215b0a3fe9fe2ab3eaa35991e6b571fe00969765a0abce3ca3b9dde
+
+# The mock model and the external authorizer run the same pinned Python: their code is a ConfigMap.
+PYTHON_IMAGE=python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89

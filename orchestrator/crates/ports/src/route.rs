@@ -131,9 +131,8 @@ mod tests {
         calls
             .iter()
             .filter_map(|c| match c {
-                Call::Send { agent, .. } | Call::ReadCard { agent } => {
-                    Some(agent.as_str().to_owned())
-                }
+                Call::Send(call) => Some(call.agent.as_str().to_owned()),
+                Call::ReadCard { agent } => Some(agent.as_str().to_owned()),
                 Call::Resubscribe { .. }
                 | Call::GetTask { .. }
                 | Call::Cancel { .. }

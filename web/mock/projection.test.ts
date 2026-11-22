@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { CatalogLedger, Projector, repoKey, typedArtifact } from "./projection";
+import {
+  CatalogLedger,
+  Projector,
+  repoKey,
+  surfacesOf,
+  trustedCardsOf,
+  typedArtifact,
+} from "./projection";
 
 /**
  * The typed artifact fields of the mock's projection, on the same cases as the real one's
@@ -291,5 +298,66 @@ describe("the mentions of a user message (ADR 0026)", () => {
   it("counts the offsets in UTF-16 code units, which is what a string of this runtime indexes", () => {
     const text = "\u{1F604} @researcher then @coder";
     for (const m of mentions) expect(text.slice(m.start, m.end)).toBe(m.label);
+  });
+});
+
+describe("a trusted request (ADR 0083, trusted-components/v1)", () => {
+  const info = {
+    threadId: "00000000-0000-7000-8000-000000000001",
+    title: "t",
+    target: { agentId: "coder" },
+  };
+  const at = "2026-01-01T00:00:00Z";
+  const agent = { type: "agent" as const, name: "coder" };
+  const request = (seq: number, hints: Record<string, unknown>) => ({
+    seq,
+    threadId: info.threadId,
+    at,
+    kind: "trusted_request" as const,
+    actor: agent,
+    data: { component: "McpCredential" as const, hints },
+  });
+
+  it("is a card of its own, with the component, the hints and the agent, and it never replaces", () => {
+    const projector = new Projector(info);
+    const frames = projector.apply(request(7, { name: "My search", scopes: ["search.read"] }));
+    const cards = frames.filter(
+      (f) =>
+        f.event.type === "ACTIVITY_SNAPSHOT" && f.event.activityType === "vymalo.trustedRequest",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.event).toMatchObject({
+      messageId: "trusted-7",
+      activityType: "vymalo.trustedRequest",
+      replace: false,
+      content: {
+        component: "McpCredential",
+        hints: { name: "My search", scopes: ["search.read"] },
+        at,
+      },
+      metadata: { "vymalo.actor": { type: "agent", name: "coder" } },
+    });
+    // two requests are two cards, and the thread's state does not move
+    const more = projector.apply(request(8, {}));
+    expect(
+      more
+        .filter((f) => f.event.activityType === "vymalo.trustedRequest")
+        .map((f) => f.event.messageId),
+    ).toEqual(["trusted-8"]);
+    const last = more.at(-1)?.event as { snapshot?: { thread?: { state?: string } } } | undefined;
+    expect(last?.snapshot?.thread?.state).toBeUndefined();
+  });
+
+  it("says empty hints as an empty object", () => {
+    const frames = new Projector(info).apply(request(9, {}));
+    const card = frames.find((f) => f.event.activityType === "vymalo.trustedRequest");
+    const content = card?.event.content as { hints?: unknown } | undefined;
+    expect(content?.hints).toEqual({});
+  });
+
+  it("is what a receipt's action names, which is not a surface", () => {
+    const log = [request(7, {})];
+    expect(trustedCardsOf(log)).toEqual(new Set(["trusted-7"]));
+    expect(surfacesOf(log).size).toBe(0);
   });
 });

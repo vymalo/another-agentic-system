@@ -293,7 +293,7 @@ async fn the_dispatcher_follows_the_round_without_sending_and_the_parent_hears_o
         .agent
         .calls()
         .into_iter()
-        .filter(|c| matches!(c, Call::Send { .. }))
+        .filter(|c| matches!(c, Call::Send(_)))
         .collect();
     assert_eq!(sends.len(), 1, "{sends:?}");
     assert!(

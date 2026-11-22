@@ -9,6 +9,7 @@ mod model;
 mod pending;
 mod prompts;
 mod registry;
+mod run_leases;
 mod secrets;
 mod store;
 mod tools;
@@ -16,7 +17,8 @@ mod user_tools;
 mod wakeup;
 
 pub use agent::{
-    AnswerFault, Call, STREAM_PIECES, ScriptedAgent, VerdictScript, stream_id, stream_text,
+    AnswerFault, Call, STREAM_PIECES, ScriptedAgent, SendCall, VerdictScript, stream_id,
+    stream_text,
 };
 pub use artifacts::{Download, MemoryArtifacts};
 pub use auth::MemoryAuth;
@@ -24,6 +26,7 @@ pub use fixtures::{FixedClock, SeqIds, sample_releases};
 pub use model::{ModelStep, ScriptedModel};
 pub use pending::MemoryPendingAuthorizations;
 pub use registry::{MEMORY_SOURCE, MemoryRegistry};
+pub use run_leases::{MemoryModelCredentials, MemoryRunBindingStore, MemoryRunLeases};
 pub use secrets::MemorySecretStore;
 pub use store::MemoryStore;
 pub use tools::{MemoryToolServer, MemoryToolServers, ToolScript};

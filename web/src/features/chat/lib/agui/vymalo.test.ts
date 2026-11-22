@@ -15,6 +15,7 @@ import {
   parseStep,
   parseToolIds,
   parseTools,
+  parseTrustedRequest,
   parseUiCatalog,
   serverOfIcon,
 } from "./vymalo";
@@ -781,5 +782,76 @@ describe("vymalo.ask (ADR 0026)", () => {
     expect(parseAsk({ ...started, by: "ask:0" })?.by).toBe("main");
     expect(parseAsk({ ...started, by: "somebody" })?.by).toBe("main");
     expect(parseAsk({ ...started, depth: -1 })?.depth).toBe(1);
+  });
+});
+
+describe("a trusted request (ADR 0083)", () => {
+  const request = {
+    component: "McpCredential",
+    hints: { name: "My search", scopes: ["search.read"], expiresInDays: 30 },
+    at: "2027-01-15T08:00:00Z",
+    actor: { type: "agent", name: "coder" },
+  };
+
+  it("reads the component, the agent's hints, the time and who asked", () => {
+    expect(parseTrustedRequest(request)).toEqual({
+      component: "McpCredential",
+      hints: { name: "My search", scopes: ["search.read"], expiresInDays: 30 },
+      actor: { type: "agent", name: "coder" },
+      at: "2027-01-15T08:00:00Z",
+    });
+  });
+
+  it("reads a component this build does not draw, so the card can say so in words", () => {
+    expect(parseTrustedRequest({ component: "ApiKeyCreate", hints: {} })?.component).toBe(
+      "ApiKeyCreate",
+    );
+  });
+
+  it("is nothing without a component, and a request with no hints has an empty object", () => {
+    expect(parseTrustedRequest({ hints: { name: "x" } })).toBeNull();
+    expect(parseTrustedRequest({ component: "" })).toBeNull();
+    expect(parseTrustedRequest({ component: 7 })).toBeNull();
+    expect(parseTrustedRequest(null)).toBeNull();
+    expect(parseTrustedRequest({ component: "McpCredential" })?.hints).toEqual({});
+  });
+
+  it("drops a hint out of the contract's bounds and keeps the card", () => {
+    const long = "x".repeat(81);
+    const read = parseTrustedRequest({
+      component: "McpCredential",
+      hints: {
+        name: long,
+        scopes: ["search.read", "has space", "back\\slash", 'quo"te', 7, ""],
+        expiresInDays: 3651,
+      },
+    });
+    expect(read?.hints).toEqual({ scopes: ["search.read"] });
+    expect(
+      parseTrustedRequest({ component: "McpCredential", hints: { name: long } })?.hints,
+    ).toEqual({});
+    // 32 scopes at most, each of at most 128 visible ASCII characters
+    const many = Array.from({ length: 40 }, (_, i) => `s${i}`);
+    expect(
+      parseTrustedRequest({ component: "McpCredential", hints: { scopes: many } })?.hints.scopes,
+    ).toHaveLength(32);
+    expect(
+      parseTrustedRequest({ component: "McpCredential", hints: { scopes: ["a".repeat(129)] } })
+        ?.hints.scopes,
+    ).toBeUndefined();
+    expect(
+      parseTrustedRequest({ component: "McpCredential", hints: { expiresInDays: 1.5 } })?.hints
+        .expiresInDays,
+    ).toBeUndefined();
+    expect(
+      parseTrustedRequest({ component: "McpCredential", hints: { expiresInDays: 0 } })?.hints
+        .expiresInDays,
+    ).toBeUndefined();
+  });
+
+  it("a name with a control character is dropped, as the contract refuses it", () => {
+    expect(
+      parseTrustedRequest({ component: "McpCredential", hints: { name: "a\nb" } })?.hints.name,
+    ).toBeUndefined();
   });
 });

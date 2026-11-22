@@ -22,6 +22,7 @@ orch-log-filter = { path = "crates/log-filter" }
 orch-core = { path = "crates/core" }
 orch-ports = { path = "crates/ports" }
 orch-store-postgres = { path = "crates/store-postgres" }
+orch-store-sqlite = { path = "crates/store-sqlite" }
 orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-agent-adam = { path = "crates/agent-adam" }

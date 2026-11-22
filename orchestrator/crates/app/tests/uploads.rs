@@ -23,7 +23,7 @@ use orch_core::{
     ThreadState, UploadOffer,
 };
 use orch_ports::memory::{Call, MemoryArtifacts, MemoryStore, MemoryWakeup, ScriptedAgent};
-use orch_ports::memory::{ScriptedModel, SeqIds};
+use orch_ports::memory::{ScriptedModel, SendCall, SeqIds};
 use orch_ports::{
     ArtifactKey, ArtifactStore, FixedRegistry, NoArtifacts, PortSet, PresignedPut, SystemClock,
 };
@@ -258,9 +258,10 @@ async fn the_grant_offers_uploads_only_when_the_deployment_does_and_the_store_ca
         token.cancel();
         handle.await.unwrap();
         let sent = w.agent.sends();
-        let Call::Send { thread_tools, .. } = &sent[0] else {
+        let Call::Send(call) = &sent[0] else {
             panic!("{sent:?}")
         };
+        let SendCall { thread_tools, .. } = &**call;
         let grant = thread_tools.as_ref().expect("a grant");
         assert_eq!(grant.uploads.is_some(), offered, "{grant:?}");
         assert_eq!(grant.uploads, app.upload_offer());

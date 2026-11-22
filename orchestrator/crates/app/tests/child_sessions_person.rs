@@ -14,7 +14,7 @@ use orch_core::{
     SessionBy, SessionEvent, SessionNews, SessionReport, SessionState, StartOutcomeKind, ThreadId,
     ThreadRecord, ThreadState,
 };
-use orch_ports::memory::{AnswerFault, Call};
+use orch_ports::memory::{AnswerFault, Call, SendCall};
 use orch_ports::{AgentError, OutboxPayload, OutboxStatus, ThreadStore};
 use serde_json::json;
 use support::*;
@@ -72,14 +72,14 @@ fn sent_to(w: &World, context: &str) -> Vec<(Option<String>, String, bool)> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                context_id,
-                task_id,
-                text,
-                steer,
-                reference_task_ids,
-                ..
-            } if context_id.as_deref() == Some(context) => {
+            Call::Send(call) if call.context_id.as_deref() == Some(context) => {
+                let SendCall {
+                    task_id,
+                    text,
+                    steer,
+                    reference_task_ids,
+                    ..
+                } = *call;
                 assert!(
                     reference_task_ids.is_empty(),
                     "nothing references an earlier round of a session: {reference_task_ids:?}"
@@ -1199,7 +1199,7 @@ async fn the_first_message_of_a_started_helper_keeps_the_requests_id_and_tier() 
         .sends()
         .into_iter()
         .filter_map(|c| match c {
-            Call::Send { text, tier, .. } if text == "echo x" => Some(tier),
+            Call::Send(call) if call.text == "echo x" => Some(call.tier),
             _ => None,
         })
         .collect();

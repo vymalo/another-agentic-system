@@ -1,0 +1,36 @@
+[package]
+name = "orch-store-sqlite"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "SQLite implementation of the orchestrator's ThreadStore port: one file, one process, WAL, a lock file."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+# SQLite (ADR 0076 decision 3, sys#382 E2): the same minor adam-rs's `adam-store-sqlite` takes at
+# our pin (0.41.1, `libsqlite3-sys` 0.39.1), with `bundled` SQLite, so a process that links both has
+# one `sqlite3` and the same version of it (adam ADR 0053 decision 2).
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
+# The exclusive `flock` of the lock file that refuses a second process: the same crate
+# `adam-store-sqlite` takes for it, and a safe wrapper (this workspace forbids `unsafe`).
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+jiff.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+# The hash of each migration file, kept in the version table (see `schema`).
+sha2.workspace = true
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

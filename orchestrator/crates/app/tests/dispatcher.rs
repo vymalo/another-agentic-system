@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use orch_app::NewThread;
 use orch_core::{AgentId, AgentTarget, EventBody, ThreadState, ToolsGrant};
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use orch_ports::{AgentError, Clock, OutboxStatus, SystemClock, ThreadStore};
 use support::*;
 
@@ -84,7 +84,7 @@ async fn a_thread_that_began_with_its_own_id_as_context_keeps_using_it() {
         .sends()
         .into_iter()
         .map(|c| match c {
-            Call::Send { context_id, .. } => context_id,
+            Call::Send(call) => call.context_id,
             other => panic!("{other:?}"),
         })
         .collect();
@@ -215,30 +215,21 @@ async fn blocked_then_follow_up_continues_the_same_task() {
     assert_contiguous(&ev);
     let sends = w.agent.sends();
     assert_eq!(sends.len(), 2);
-    match (&sends[0], &sends[1]) {
-        (
-            Call::Send {
-                task_id: None,
-                context_id: None,
-                ..
-            },
-            Call::Send {
-                task_id: Some(t2),
-                reference_task_ids,
-                text,
-                context_id,
-                ..
-            },
-        ) => {
-            assert_eq!(t2, "task-1");
-            assert_eq!(text, "main");
-            // the first message named no context, and the answer is sent in the one the agent assigned (ADR 0055)
-            assert_eq!(context_id.as_deref(), Some("ctx-1"));
-            // the answer continues the task: it is not a new task, so it references none
-            assert!(reference_task_ids.is_empty());
-        }
-        other => panic!("{other:?}"),
-    }
+    let (Call::Send(first), Call::Send(second)) = (&sends[0], &sends[1]) else {
+        panic!("{sends:?}");
+    };
+    assert!(first.task_id.is_none());
+    assert!(first.context_id.is_none());
+    let t2 = second.task_id.as_ref().unwrap();
+    let reference_task_ids = &second.reference_task_ids;
+    let text = &second.text;
+    let context_id = &second.context_id;
+    assert_eq!(t2, "task-1");
+    assert_eq!(text, "main");
+    // the first message named no context, and the answer is sent in the one the agent assigned (ADR 0055)
+    assert_eq!(context_id.as_deref(), Some("ctx-1"));
+    // the answer continues the task: it is not a new task, so it references none
+    assert!(reference_task_ids.is_empty());
     run.shutdown().await;
 }
 
@@ -444,7 +435,10 @@ async fn a_delegation_carries_the_grant_of_the_threads_tools_and_no_secret() {
         .sends()
         .into_iter()
         .map(|call| match call {
-            Call::Send { thread_tools, .. } => thread_tools.map(|grant| *grant),
+            Call::Send(call) => {
+                let SendCall { thread_tools, .. } = *call;
+                thread_tools.map(|grant| *grant)
+            }
             other => panic!("not a send: {other:?}"),
         })
         .collect();
@@ -493,38 +487,29 @@ async fn a_follow_up_after_done_is_a_new_task_in_the_same_context() {
     assert_eq!(record.job.number, 2);
     let sends = w.agent.sends();
     assert_eq!(sends.len(), 2);
-    match (&sends[0], &sends[1]) {
-        (
-            Call::Send {
-                task_id: None,
-                reference_task_ids: first_refs,
-                context_id: c1,
-                ..
-            },
-            Call::Send {
-                task_id: None,
-                reference_task_ids,
-                text,
-                context_id: c2,
-                ..
-            },
-        ) => {
-            assert!(
-                first_refs.is_empty(),
-                "a thread's first task references nothing"
-            );
-            assert_eq!(text, "echo again");
-            assert_eq!(c1, &None, "the first message of a thread names no context");
-            assert_eq!(
-                c2.as_deref(),
-                Some("ctx-1"),
-                "the next, the one the agent gave"
-            );
-            // a new task of the thread names the one before it (ADR 0021)
-            assert_eq!(reference_task_ids, &["task-1".to_owned()]);
-        }
-        other => panic!("{other:?}"),
-    }
+    let (Call::Send(first), Call::Send(second)) = (&sends[0], &sends[1]) else {
+        panic!("{sends:?}");
+    };
+    assert!(first.task_id.is_none());
+    assert!(second.task_id.is_none());
+    let first_refs = &first.reference_task_ids;
+    let c1 = &first.context_id;
+    let reference_task_ids = &second.reference_task_ids;
+    let text = &second.text;
+    let c2 = &second.context_id;
+    assert!(
+        first_refs.is_empty(),
+        "a thread's first task references nothing"
+    );
+    assert_eq!(text, "echo again");
+    assert_eq!(c1, &None, "the first message of a thread names no context");
+    assert_eq!(
+        c2.as_deref(),
+        Some("ctx-1"),
+        "the next, the one the agent gave"
+    );
+    // a new task of the thread names the one before it (ADR 0021)
+    assert_eq!(reference_task_ids, &["task-1".to_owned()]);
     run.shutdown().await;
 }
 
@@ -862,9 +847,9 @@ async fn the_selected_release_is_sent_and_echoed_on_agent_events() {
         .unwrap();
     wait_state(&app, &alice(), t.id, ThreadState::Done).await;
     match &w.agent.sends()[0] {
-        Call::Send { release, agent, .. } => {
-            assert_eq!(release.as_deref(), Some("staging"));
-            assert_eq!(agent.as_str(), "coder");
+        Call::Send(call) => {
+            assert_eq!(call.release.as_deref(), Some("staging"));
+            assert_eq!(call.agent.as_str(), "coder");
         }
         other => panic!("{other:?}"),
     }
@@ -1052,15 +1037,15 @@ async fn a_new_job_opens_a_new_task_even_when_the_last_one_still_waits_for_input
         .unwrap();
     wait_state(&app, &alice(), t.id, ThreadState::Done).await;
     let sends = w.agent.sends();
-    let Some(Call::Send {
+    let Some(Call::Send(call)) = sends.last() else {
+        panic!("{sends:?}")
+    };
+    let SendCall {
         task_id,
         reference_task_ids,
         text,
         ..
-    }) = sends.last()
-    else {
-        panic!("{sends:?}")
-    };
+    } = &**call;
     assert_eq!(text, "echo start over");
     assert_eq!(task_id, &None, "a new job never continues a task");
     assert_eq!(reference_task_ids, &["task-1".to_owned()]);

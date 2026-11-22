@@ -77,9 +77,16 @@ fn turns_in<'a>(frames: impl IntoIterator<Item = &'a Frame>) -> u64 {
                     "vymalo.status" => {
                         status.is_some_and(|s| s != "completed" && s != "input_required")
                     }
-                    "vymalo.artifact" | "vymalo.step" | "vymalo.ask" | "vymalo.check"
-                    | "vymalo.ci" | "vymalo.rework" | "vymalo.action" | "vymalo.error"
-                    | "a2ui-surface" => true,
+                    "vymalo.artifact"
+                    | "vymalo.step"
+                    | "vymalo.ask"
+                    | "vymalo.check"
+                    | "vymalo.ci"
+                    | "vymalo.rework"
+                    | "vymalo.action"
+                    | "vymalo.error"
+                    | "a2ui-surface"
+                    | "vymalo.trustedRequest" => true,
                     _ => false,
                 };
             }
@@ -549,6 +556,32 @@ fn form_turns() -> (Vec<Event>, orch_agui_projection::ThreadMeta) {
         ask("which commit?"),
     ));
     world(0, &actions)
+}
+
+/// A turn whose only output is a trusted request is a turn: the web's `drawsPart` counts the
+/// `vymalo.trustedRequest` card, so the carry must count it too (ADR 0083), or a page of history
+/// loses the turn that only asked for a credential.
+#[test]
+fn a_turn_that_only_draws_a_trusted_card_is_counted() {
+    let user = |n: usize| Action::User {
+        text: format!("turn {n}"),
+        ids: true,
+    };
+    // Turn 1 draws only the card (no `working` status: a status that says the agent works draws
+    // on its own); turn 2 draws words. The newest page holds turn 2, so the carry must say that
+    // one turn came before it.
+    let actions = vec![
+        user(1),
+        Action::Trusted,
+        done(),
+        user(2),
+        Action::Status(AgentTaskState::Working, None),
+        say(0, "an answer", true),
+        done(),
+    ];
+    let (events, meta) = world(0, &actions);
+    let pages = walk(&events, &meta, 1, limits(100, 4 << 20));
+    assert_eq!(pages[0].carry.as_ref().unwrap().turns, 1);
 }
 
 #[test]

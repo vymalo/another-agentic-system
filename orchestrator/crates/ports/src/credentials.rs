@@ -90,7 +90,7 @@ use std::fmt;
 use std::future::Future;
 
 use jiff::Timestamp;
-use orch_core::{BoxError, Classify, ErrorClass, UserId};
+use orch_core::{AgentId, BoxError, Classify, ErrorClass, UserId};
 use subtle::ConstantTimeEq;
 use url::{Host, Url};
 
@@ -732,4 +732,156 @@ impl CredentialBroker for NoBroker {
     ) -> Result<(), CredentialError> {
         Self::refuse()
     }
+}
+
+// ---------------------------------------------------------------- the run lease (B1, ADR 0084)
+
+/// A run's id: the root run's — the A2A task id the orchestrator binds (ADR 0067 decision 1), the
+/// same value `X-Run-Id` carries. Opaque to the broker: no format is assumed.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RunId(String);
+
+impl RunId {
+    /// The id as the orchestrator holds it.
+    pub fn new(id: impl Into<String>) -> Self {
+        RunId(id.into())
+    }
+
+    /// The id as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RunId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Who calls the run-lease route. The orchestrator binds and unbinds a run; the agent the run is
+/// bound to leases its credential. A lookup from any other identity is refused (ADR 0084).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunCaller {
+    /// The orchestrator itself (bind and unbind).
+    Orchestrator,
+    /// The agent the run is bound to (lease).
+    Agent(AgentId),
+}
+
+/// What the orchestrator binds at run creation: the run, the agent it belongs to, the person it
+/// spends for, the model endpoint it may use (when the binding names one), and its deadline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunBinding {
+    /// The root run's id.
+    pub run: RunId,
+    /// The agent the run is bound to.
+    pub agent: AgentId,
+    /// The person the run spends for.
+    pub person: UserId,
+    /// The model endpoint the lease is for, when the binding names one (ADR 0084 open question 4).
+    pub model: Option<String>,
+    /// When the binding ends; the broker caps it.
+    pub expires_at: Timestamp,
+}
+
+/// What the injector gets: the model endpoint's bearer token and the moment it stops being valid.
+/// At most 30 s, never past the binding's deadline, `no-store`, and never logged. No `Clone`: a
+/// lease is used once and moved.
+#[derive(Debug)]
+pub struct RunLease {
+    token: ToolSecret,
+    expires_at: Timestamp,
+}
+
+impl RunLease {
+    /// A lease of `token` until `expires_at`.
+    pub fn bearer(token: ToolSecret, expires_at: Timestamp) -> Self {
+        RunLease { token, expires_at }
+    }
+
+    /// The token, without the `Bearer ` scheme.
+    pub fn token(&self) -> &ToolSecret {
+        &self.token
+    }
+
+    /// When the token stops being valid.
+    pub fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+}
+
+/// Why a binding or a lease was refused. The slugs are the contract's (`run_not_bound`,
+/// `lease_expired`, `unavailable`); `Conflict` is a different binding for a run already bound.
+#[derive(Debug)]
+pub enum RunLeaseError {
+    /// No live binding for the run (unknown, unbound, or revoked).
+    NotBound,
+    /// The binding exists and has ended.
+    Expired,
+    /// The run is already bound to something else; a run is bound once.
+    Conflict,
+    /// The store or the credential source failed; the caller fails closed.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for RunLeaseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunLeaseError::NotBound => f.write_str("run_not_bound"),
+            RunLeaseError::Expired => f.write_str("lease_expired"),
+            RunLeaseError::Conflict => f.write_str("run_already_bound"),
+            RunLeaseError::Unavailable(reason) => write!(f, "unavailable: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for RunLeaseError {}
+
+/// The broker's first part (B1, ADR 0084): the binding the orchestrator makes at run creation, and
+/// the lease the injector asks for, answered only to the agent the run is bound to.
+pub trait RunLeases: Send + Sync + 'static {
+    /// Binds `binding`. Idempotent for the same binding; [`RunLeaseError::Conflict`] for a different
+    /// one on the same run.
+    fn bind(&self, binding: RunBinding) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+
+    /// Removes the run's binding; idempotent, and a no-op for a run that was never bound.
+    fn unbind(&self, run: &RunId) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+
+    /// Leases the run's model credential to `caller`, which must be the bound agent (or, for the
+    /// orchestrator, refused: the orchestrator binds and unbinds, it does not lease).
+    fn lease(
+        &self,
+        run: &RunId,
+        caller: &RunCaller,
+    ) -> impl Future<Output = Result<RunLease, RunLeaseError>> + Send;
+}
+
+/// The binding store the broker keeps: one row per run, and the same binding written again is
+/// idempotent (ADR 0084 decision 1).
+pub trait RunBindingStore: Send + Sync + 'static {
+    /// Writes `binding`; [`RunLeaseError::Conflict`] when the run is bound to something else.
+    fn upsert(
+        &self,
+        binding: &RunBinding,
+    ) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+
+    /// Removes the run's binding; idempotent.
+    fn delete(&self, run: &RunId) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+
+    /// The run's binding, if it has one.
+    fn get(
+        &self,
+        run: &RunId,
+    ) -> impl Future<Output = Result<Option<RunBinding>, RunLeaseError>> + Send;
+}
+
+/// The deployment's model credentials by model name: the bearer token the injector adds upstream
+/// (ADR 0084: the deployment's provider key, never the person's).
+pub trait ModelCredentials: Send + Sync + 'static {
+    /// The token for `model`, if the deployment has one.
+    fn bearer(
+        &self,
+        model: &str,
+    ) -> impl Future<Output = Result<Option<ToolSecret>, RunLeaseError>> + Send;
 }

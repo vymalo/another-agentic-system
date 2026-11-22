@@ -6,8 +6,9 @@ use orch_core::{
     Actor, AgentId, AgentTarget, AgentTaskState, AgentUpdate, CheckSource, CiConclusion,
     CiProvider, CiReport, Command, DescriptionLedger, Event, EventBody, ForkKind, ForkPoint,
     ForkSource, GatePolicy, Input, ModelTokens, StepKind, StepReport, StepState, ThreadForkedData,
-    ThreadId, ThreadState, Timestamp, TitleLedger, TokenCounts, UiActionData, UiCatalogData,
-    UiVersion, UsageCall, UsageTotals, UsageUpdate, UserId, fork_cut, forked_snapshot,
+    ThreadId, ThreadState, Timestamp, TitleLedger, TokenCounts, TrustedComponent, TrustedHints,
+    TrustedRequestData, UiActionData, UiCatalogData, UiVersion, UsageCall, UsageTotals,
+    UsageUpdate, UserId, fork_cut, forked_snapshot,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -130,6 +131,9 @@ pub enum Action {
     UiAct {
         ids: bool,
     },
+    /// The agent asks the client to draw a trusted `McpCredential` card (`trusted-components/v1`,
+    /// ADR 0083).
+    Trusted,
     /// The agent reports the branch it pushed (a commit named by `commit`).
     Branch {
         commit: u8,
@@ -574,6 +578,10 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
             Action::SurfaceRefused => agent_input(AgentUpdate::UiRejected {
                 reason: "message 0: no version".to_owned(),
             }),
+            Action::Trusted => agent_input(AgentUpdate::TrustedRequest(TrustedRequestData {
+                component: TrustedComponent::McpCredential,
+                hints: TrustedHints::default(),
+            })),
             Action::Branch { commit } => agent_input(AgentUpdate::Artifact {
                 name: "branch".to_owned(),
                 mime_type: None,

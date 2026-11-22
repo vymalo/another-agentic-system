@@ -326,12 +326,9 @@ async fn an_ask_waits_for_the_asked_agent_and_its_answer_is_the_result() {
         .sends()
         .into_iter()
         .filter_map(|c| match c {
-            Call::Send {
-                agent,
-                context_id,
-                thread_tools,
-                ..
-            } if agent.as_str() == "coder" => Some((context_id, thread_tools)),
+            Call::Send(call) if call.agent.as_str() == "coder" => {
+                Some((call.context_id.clone(), call.thread_tools.clone()))
+            }
             _ => None,
         })
         .collect();
@@ -367,7 +364,7 @@ async fn a_question_back_is_an_answer_and_the_next_ask_continues_the_task() {
         .sends()
         .into_iter()
         .filter_map(|c| match c {
-            Call::Send { agent, task_id, .. } if agent.as_str() == "coder" => Some(task_id),
+            Call::Send(call) if call.agent.as_str() == "coder" => Some(call.task_id.clone()),
             _ => None,
         })
         .collect();
@@ -387,7 +384,7 @@ async fn a_form_is_the_persons_to_answer_and_the_agent_that_showed_it_is_not_ask
         h.agent
             .sends()
             .into_iter()
-            .filter(|c| matches!(c, Call::Send { agent, .. } if agent.as_str() == "coder"))
+            .filter(|c| matches!(c, Call::Send(call) if call.agent.as_str() == "coder"))
             .count()
     };
     // the script `ui` draws a form and waits: the result says so, and keeps the question
@@ -669,7 +666,7 @@ async fn a_repeat_of_a_call_re_attaches_to_the_same_ask() {
         .agent
         .sends()
         .into_iter()
-        .filter(|c| matches!(c, Call::Send { agent, .. } if agent.as_str() == "coder"))
+        .filter(|c| matches!(c, Call::Send(call) if call.agent.as_str() == "coder"))
         .count();
     assert_eq!(asked, 1);
 }
@@ -733,7 +730,7 @@ async fn the_deadline_ends_the_ask_timed_out_and_the_call_says_so() {
         h.agent
             .sends()
             .iter()
-            .any(|c| matches!(c, Call::Send { agent, .. } if agent.as_str() == "coder"))
+            .any(|c| matches!(c, Call::Send(call) if call.agent.as_str() == "coder"))
             .then_some(())
     })
     .await;
@@ -835,7 +832,7 @@ async fn the_persons_cancel_ends_every_ask_and_every_call_that_waits_for_one() {
         (h.agent
             .sends()
             .iter()
-            .filter(|c| matches!(c, Call::Send { agent, .. } if agent.as_str() != "plain"))
+            .filter(|c| matches!(c, Call::Send(call) if call.agent.as_str() != "plain"))
             .count()
             == 2)
             .then_some(())

@@ -12,7 +12,7 @@ use orch_core::{
     UiVersion, catalog_digest,
 };
 use orch_ports::ThreadStore;
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use support::*;
 
 /// A version of the screen's catalog with its real digest; `tag` tells two of a version apart.
@@ -55,14 +55,17 @@ fn deliveries(w: &World) -> Vec<(Option<UiDelivery>, Option<ThreadId>)> {
         .sends()
         .into_iter()
         .map(|call| match call {
-            Call::Send {
-                ui_catalog,
-                thread_tools,
-                ..
-            } => (
-                ui_catalog.map(|boxed| *boxed),
-                thread_tools.map(|grant| grant.thread),
-            ),
+            Call::Send(call) => {
+                let SendCall {
+                    ui_catalog,
+                    thread_tools,
+                    ..
+                } = *call;
+                (
+                    ui_catalog.map(|boxed| *boxed),
+                    thread_tools.map(|grant| grant.thread),
+                )
+            }
             other => panic!("not a send: {other:?}"),
         })
         .collect()
@@ -196,15 +199,16 @@ async fn an_action_carries_the_catalog_like_a_message_does() {
         "the catalog first, then the action it came with"
     );
     let sends = w.agent.sends();
-    let Call::Send {
-        action: Some(_),
+    let Call::Send(call) = &sends[1] else {
+        panic!("the action is the second send: {sends:?}");
+    };
+    let SendCall {
+        action,
         ui_catalog,
         thread_tools,
         ..
-    } = &sends[1]
-    else {
-        panic!("the action is the second send: {sends:?}");
-    };
+    } = &**call;
+    assert!(action.is_some(), "the second send is the action");
     assert_eq!(ui_catalog.as_deref(), Some(&UiDelivery::Inline(v1)));
     assert_eq!(thread_tools.as_ref().map(|grant| grant.thread), Some(t.id));
     run.shutdown().await;

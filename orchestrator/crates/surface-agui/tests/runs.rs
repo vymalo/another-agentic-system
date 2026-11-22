@@ -142,15 +142,12 @@ async fn a_question_ends_the_run_in_an_interrupt_and_resume_answers_it() {
     // Same A2A task, continued.
     let sends = h.agent.sends();
     assert_eq!(sends.len(), 2);
-    let (
-        Call::Send { task_id: t1, .. },
-        Call::Send {
-            task_id: t2, text, ..
-        },
-    ) = (&sends[0], &sends[1])
-    else {
+    let (Call::Send(first), Call::Send(second)) = (&sends[0], &sends[1]) else {
         panic!("sends");
     };
+    let t1 = &first.task_id;
+    let t2 = &second.task_id;
+    let text = &second.text;
     assert_eq!(t1, &None);
     assert!(t2.is_some(), "the second send continues the task");
     assert_eq!(text, "main");
@@ -345,10 +342,10 @@ async fn the_release_comes_from_forwarded_props_and_reaches_the_agent() {
         json!({"agentId": "coder", "release": "staging"})
     );
     assert_eq!(outcome(&frames), json!({"type": "success"}));
-    let Call::Send { release, .. } = &h.agent.sends()[0] else {
+    let Call::Send(call) = &h.agent.sends()[0] else {
         panic!("send");
     };
-    assert_eq!(release.as_deref(), Some("staging"));
+    assert_eq!(call.release.as_deref(), Some("staging"));
     assert_eq!(
         h.thread(ALICE, &thread).await["target"]["release"],
         "staging"

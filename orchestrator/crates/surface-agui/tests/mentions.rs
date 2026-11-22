@@ -7,7 +7,7 @@
 mod support;
 
 use orch_core::{AgentId, AgentSource};
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use orch_ports::{AgentAudience, AgentEndpoint, RegistryEntry};
 use serde_json::{Value, json};
 use support::*;
@@ -78,14 +78,14 @@ async fn a_run_with_mentions_records_them_as_sent_shows_them_on_the_message_and_
 
     // the agent: named from the registry as it was when the message was sent
     let sends = h.agent.sends();
-    let Call::Send {
+    let Call::Send(call) = &sends[0] else {
+        panic!("a send");
+    };
+    let SendCall {
         text,
         mentions: told,
         ..
-    } = &sends[0]
-    else {
-        panic!("a send");
-    };
+    } = &**call;
     assert_eq!(text, TEXT, "the text is not rewritten");
     assert_eq!(told.len(), 1);
     assert_eq!(told[0].agent_id, AgentId::new("coder"));
@@ -129,10 +129,10 @@ async fn a_run_without_mentions_or_with_none_is_the_run_it_always_was() {
         assert!(start.event["metadata"].get("vymalo.mentions").is_none());
     }
     for send in h.agent.sends() {
-        let Call::Send { mentions, .. } = send else {
+        let Call::Send(call) = send else {
             unreachable!()
         };
-        assert!(mentions.is_empty());
+        assert!(call.mentions.is_empty());
     }
 }
 
@@ -441,10 +441,10 @@ async fn an_agent_that_the_registry_lists_can_be_mentioned_the_moment_it_is_list
         .await;
     assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
     let sends = h.agent.sends();
-    let Call::Send { mentions, .. } = &sends[0] else {
+    let Call::Send(call) = &sends[0] else {
         panic!("a send")
     };
-    assert_eq!(mentions[0].name.as_deref(), Some("Helper"));
+    assert_eq!(call.mentions[0].name.as_deref(), Some("Helper"));
 }
 
 #[tokio::test]

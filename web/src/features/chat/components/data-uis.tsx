@@ -10,6 +10,7 @@ import {
   parseStatus,
 } from "@/features/chat/lib/agui/vymalo";
 import { SessionCard } from "@/features/sessions/components/session-card";
+import { TrustedRequestCard } from "@/features/trusted/components/trusted-request";
 import { ErrorCallout, FailedCallout } from "./parts/error-callout";
 import { SurfaceActivity } from "./surface/surface-activity";
 
@@ -82,6 +83,17 @@ const SessionDataUI = makeAssistantDataUI<unknown>({
   render: ({ data }) => <SessionCard data={data} />,
 });
 
+/**
+ * `vymalo.trustedRequest`: an agent asked the client to draw a trusted component (ADR 0083,
+ * `trusted-components/v1`). The card is the client's own — its mark, its words, its form and the
+ * sentence that the agent cannot see what is typed — and an agent-drawn surface can never produce it,
+ * because a trusted component is not a catalog component at all.
+ */
+const TrustedRequestDataUI = makeAssistantDataUI<unknown>({
+  name: activityPartName(ACTIVITY.trustedRequest),
+  render: ({ data }) => <TrustedRequestCard data={data} />,
+});
+
 /** Mounted once inside the runtime provider (chat-shell.tsx). */
 export function DataUIs() {
   return (
@@ -93,6 +105,7 @@ export function DataUIs() {
       <JobDataUI />
       <SurfaceDataUI />
       <SessionDataUI />
+      <TrustedRequestDataUI />
     </>
   );
 }

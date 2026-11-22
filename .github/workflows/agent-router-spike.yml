@@ -1,0 +1,71 @@
+name: Agent Router spike
+
+# The S9 spike (sys#334 S9): does a header added by external authorization reach the model endpoint
+# through Agent Router's generated routes? dev/agent-router-spike/README.md has the question, the
+# objects and the pins; this job is the proof on a machine that can run a kind cluster.
+#
+# It runs only when the spike changes, so it costs nothing on other pull requests; it is not part of
+# any release gate.
+
+on:
+  pull_request:
+    paths:
+      - "dev/agent-router-spike/**"
+      - ".github/workflows/agent-router-spike.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-router-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null
+          df -h /
+      - name: Install kind, kubectl and helm at pinned versions (checksums checked)
+        # The versions of the kagent job: kind v0.33.0 and helm v3.18.0, kubectl the newest 1.35.
+        env:
+          KIND_VERSION: v0.33.0
+          KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          KUBECTL_VERSION: v1.35.9
+          KUBECTL_SHA256: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+          HELM_VERSION: v3.18.0
+          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/bin/kind" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $RUNNER_TEMP/bin/kubectl" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP/helm"
+          cp "$RUNNER_TEMP/helm/linux-amd64/helm" "$RUNNER_TEMP/bin/helm"
+          chmod +x "$RUNNER_TEMP/bin/"*
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: The cluster, Envoy Gateway, Agent Router and the spike's objects (dev/agent-router-spike/up.sh)
+        run: sh dev/agent-router-spike/up.sh
+      - name: The proof (dev/agent-router-spike/spike.sh)
+        run: sh dev/agent-router-spike/spike.sh
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl --context kind-agent-router-spike get pods -A -o wide || true
+          kubectl --context kind-agent-router-spike -n kube-system logs -l k8s-app=kube-proxy --tail=40 || true
+          kubectl --context kind-agent-router-spike -n envoy-gateway-system logs -l job-name=eg-gateway-helm-certgen --tail=40 || true
+          kubectl --context kind-agent-router-spike -n envoy-ai-gateway-system logs -l app.kubernetes.io/name=ai-gateway --tail=40 || true
+      - name: Delete the cluster
+        if: always()
+        run: sh dev/agent-router-spike/down.sh || true

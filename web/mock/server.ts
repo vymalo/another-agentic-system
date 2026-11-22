@@ -53,6 +53,7 @@ import {
   type GateInfo,
   Projector,
   surfacesOf,
+  trustedCardsOf,
 } from "./projection";
 import {
   addShared,
@@ -3795,7 +3796,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     const log = events.get(thread.id) ?? [];
     const version = surfacesOf(log).get(strings.surfaceId as string);
-    if (version === undefined) {
+    // A receipt answers a trusted card, which is not a surface (ADR 0083, trusted-components/v1 §5): the id the client
+    // sends is the card's `messageId` (`trusted-<seq>`). **The orchestrator does not accept this yet** — its
+    // `agui-projection/src/translate.rs` requires a surface of the thread (`InputError::UnknownSurface`) — so this is the
+    // one place the mock is ahead of it, and the receipt path cannot work end to end until the orchestrator has it too.
+    const card = trustedCardsOf(log).has(strings.surfaceId as string);
+    if (version === undefined && !card) {
       return problem(res, 422, "Unprocessable", "the thread has no such surface");
     }
     if (log.some((e) => e.data.runId === runId)) {
@@ -3823,7 +3829,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       thread.id,
       "ui_action",
       { type: "user", name: who },
-      { ...strings, context, version, runId },
+      { ...strings, context, version: version ?? "1.0", runId },
     );
     setState(thread, "queued");
     const resumeScript = runs.get(thread.id)?.resume;

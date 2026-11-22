@@ -217,7 +217,7 @@ export async function aPerson(
   page: Page,
   info: TestInfo,
   options: {
-    me?: "user" | "read-only" | "admin";
+    me?: "user" | "read-only" | "admin" | "tool-maker";
     /** A second person in one test needs a name that tells them apart. */
     label?: string;
     /** Their address, where it is on show (a screenshot); by default one made of the test's own name. */

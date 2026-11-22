@@ -6,7 +6,7 @@
 mod support;
 
 use orch_core::{EventBody, ThreadState};
-use orch_ports::memory::Call;
+use orch_ports::memory::{Call, SendCall};
 use orch_ports::{OutboxStatus, ThreadStore};
 use support::*;
 
@@ -16,14 +16,16 @@ fn sends(w: &World) -> Vec<(Option<String>, Vec<String>, String)> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send {
-                task_id,
-                reference_task_ids,
-                text,
-                steer: false,
-                ..
-            } => Some((task_id, reference_task_ids, text)),
-            Call::Send { steer: true, .. } => None,
+            Call::Send(call) if !call.steer => {
+                let SendCall {
+                    task_id,
+                    reference_task_ids,
+                    text,
+                    ..
+                } = *call;
+                Some((task_id, reference_task_ids, text))
+            }
+            Call::Send(_) => None,
             other => panic!("{other:?}"),
         })
         .collect()
