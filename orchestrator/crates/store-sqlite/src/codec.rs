@@ -42,9 +42,9 @@ pub(crate) fn ts(t: Timestamp) -> Timestamp {
 
 /// What is written for a time.
 pub(crate) fn to_db(t: Timestamp) -> Result<i64, StoreError> {
-    let micros = ts(t).as_microsecond();
-    i64::try_from(micros)
-        .map_err(|_| StoreError::internal("a timestamp does not fit in the store's microseconds"))
+    // `as_microsecond` is already an `i64`: nothing can fail here, and the `Result` stays so the
+    // call sites keep one shape for every column.
+    Ok(ts(t).as_microsecond())
 }
 
 /// The time a column holds.
