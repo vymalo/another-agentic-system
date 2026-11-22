@@ -81,9 +81,10 @@ impl RunLeases for MemoryRunLeases {
             RunCaller::Agent(agent) if agent == &binding.agent => {}
             _ => return Err(RunLeaseError::NotBound),
         }
-        let model = binding.model.clone().ok_or_else(|| {
-            RunLeaseError::Unavailable("the binding names no model".to_owned())
-        })?;
+        let model = binding
+            .model
+            .clone()
+            .ok_or_else(|| RunLeaseError::Unavailable("the binding names no model".to_owned()))?;
         let token = self.tokens.get(&model).cloned().ok_or_else(|| {
             RunLeaseError::Unavailable(format!("no credential for the model {model}"))
         })?;

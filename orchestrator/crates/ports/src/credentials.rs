@@ -843,10 +843,7 @@ impl std::error::Error for RunLeaseError {}
 pub trait RunLeases: Send + Sync + 'static {
     /// Binds `binding`. Idempotent for the same binding; [`RunLeaseError::Conflict`] for a different
     /// one on the same run.
-    fn bind(
-        &self,
-        binding: RunBinding,
-    ) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+    fn bind(&self, binding: RunBinding) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
 
     /// Removes the run's binding; idempotent, and a no-op for a run that was never bound.
     fn unbind(&self, run: &RunId) -> impl Future<Output = Result<(), RunLeaseError>> + Send;

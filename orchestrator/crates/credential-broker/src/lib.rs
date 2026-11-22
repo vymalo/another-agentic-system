@@ -5,22 +5,22 @@
 //! See the README for the flow, the egress guard, the secrets hygiene and the tests.
 
 mod broker;
-mod run_leases;
 mod config;
 mod discovery;
 mod flights;
 mod http;
 mod material;
 mod oauth;
+mod run_leases;
 
 pub use broker::{Broker, BrokerBuilder, egress_refusal};
-pub use run_leases::{LEASE_TTL, MAX_BINDING, RunLeaseBroker};
 pub use config::{
     BrokerConfig, DEFAULT_CLIENT_NAME, DEFAULT_CONNECT_TIMEOUT, DEFAULT_FLOW_TTL,
     DEFAULT_LEASE_TTL, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_REFRESH_MARGIN, DEFAULT_REQUEST_TIMEOUT,
     MAX_FLOW_TTL, MAX_LEASE_TTL, MAX_REFRESH_MARGIN, MAX_RESPONSE_BYTES, MAX_TIMEOUT,
 };
 pub use http::{HostLookup, LookupFuture, SystemLookup};
+pub use run_leases::{LEASE_TTL, MAX_BINDING, RunLeaseBroker};
 
 /// Why a broker could not be built.
 #[derive(Debug, thiserror::Error)]

@@ -969,7 +969,9 @@ macro_rules! run_leases_conformance {
         #[tokio::test]
         async fn binds_then_leases_to_the_bound_agent() {
             match $make().await {
-                Some(b) => $crate::testkit::run_leases::binds_then_leases_to_the_bound_agent(&b).await,
+                Some(b) => {
+                    $crate::testkit::run_leases::binds_then_leases_to_the_bound_agent(&b).await
+                }
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
@@ -1025,14 +1027,18 @@ macro_rules! run_leases_conformance {
         #[tokio::test]
         async fn refuses_a_model_with_no_credential() {
             match $make().await {
-                Some(b) => $crate::testkit::run_leases::refuses_a_model_with_no_credential(&b).await,
+                Some(b) => {
+                    $crate::testkit::run_leases::refuses_a_model_with_no_credential(&b).await
+                }
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
         #[tokio::test]
         async fn a_lease_never_outlives_its_binding() {
             match $make().await {
-                Some(b) => $crate::testkit::run_leases::a_lease_never_outlives_its_binding(&b).await,
+                Some(b) => {
+                    $crate::testkit::run_leases::a_lease_never_outlives_its_binding(&b).await
+                }
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
