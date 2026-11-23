@@ -53,7 +53,7 @@ async fn start(w: &World, text: &str, locale: Option<&str>) -> ThreadId {
 #[tokio::test]
 async fn the_locale_reaches_the_delegation_and_the_send_and_is_recorded_once() {
     let w = World::new();
-    let thread = start(&w, "corrige la page de connexion", Some("fr-CM")).await;
+    let thread = start(&w, "corrige la page de connexion", Some("fr-FR")).await;
 
     // the row the commit wrote carries it for the dispatcher
     let rows = w.store.list_open_outbox(thread).await.unwrap();
@@ -63,7 +63,7 @@ async fn the_locale_reaches_the_delegation_and_the_send_and_is_recorded_once() {
     let OutboxPayload::Delegate { locale, .. } = &row.payload else {
         panic!("{:?}", row.payload)
     };
-    assert_eq!(locale.as_ref(), Some(&tag("fr-CM")));
+    assert_eq!(locale.as_ref(), Some(&tag("fr-FR")));
 
     // the log records it, on the `user_message`, and nowhere else: the log is the state
     let export = w.app().export_thread(&alice(), thread).await.unwrap();
@@ -75,7 +75,7 @@ async fn the_locale_reaches_the_delegation_and_the_send_and_is_recorded_once() {
             .expect("a user_message"),
     )
     .unwrap();
-    assert_eq!(logged["data"]["locale"], "fr-CM", "{logged}");
+    assert_eq!(logged["data"]["locale"], "fr-FR", "{logged}");
     let whole: Vec<serde_json::Value> = export
         .events
         .iter()
@@ -83,7 +83,7 @@ async fn the_locale_reaches_the_delegation_and_the_send_and_is_recorded_once() {
         .collect();
     let occurrences = serde_json::to_string(&whole)
         .unwrap()
-        .matches("fr-CM")
+        .matches("fr-FR")
         .count();
     assert_eq!(
         occurrences, 1,
@@ -103,7 +103,7 @@ async fn the_locale_reaches_the_delegation_and_the_send_and_is_recorded_once() {
             _ => None,
         })
         .collect();
-    assert_eq!(sent, [Some(tag("fr-CM"))], "the send carries it");
+    assert_eq!(sent, [Some(tag("fr-FR"))], "the send carries it");
 }
 
 #[tokio::test]
@@ -134,7 +134,7 @@ async fn a_message_that_names_no_locale_carries_none_and_writes_the_event_it_alw
 #[tokio::test]
 async fn a_message_the_person_sends_into_the_thread_carries_its_own_locale() {
     let w = World::new();
-    let thread = start(&w, "hi", Some("en-CM")).await;
+    let thread = start(&w, "hi", Some("en-GB")).await;
     let app = w.app();
     let run = spawn_dispatcher(&app, fast(), "d1");
     wait_state(&app, &alice(), thread, ThreadState::Done).await;
@@ -153,7 +153,7 @@ async fn a_message_the_person_sends_into_the_thread_carries_its_own_locale() {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
-            locale: Some(tag("ybb-CM")),
+            locale: Some(tag("fur-IT")),
         },
         None,
     )
@@ -169,5 +169,5 @@ async fn a_message_the_person_sends_into_the_thread_carries_its_own_locale() {
             _ => None,
         })
         .collect();
-    assert_eq!(carried, [Some(tag("ybb-CM"))]);
+    assert_eq!(carried, [Some(tag("fur-IT"))]);
 }

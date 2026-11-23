@@ -39,21 +39,21 @@ impl LocaleError {
     }
 }
 
-/// The interface locale of one message: a BCP 47 language tag (`en-CM`, `fr-CM`, `wes-CM`,
-/// `ybb-CM`, `de-DE`, `zh-Hant-TW`, `es-419`), validated when it is read and carried as the client
+/// The interface locale of one message: a BCP 47 language tag (`en-GB`, `fr-FR`, `gsw-CH`,
+/// `fur-IT`, `de-DE`, `zh-Hant-TW`, `es-419`), validated when it is read and carried as the client
 /// wrote it.
 ///
 /// **Accepted:** the `langtag` production of RFC 5646 (a language of 2 to 8 letters, up to three
 /// three-letter extlangs, an optional script, an optional region, variants, extensions and a
 /// private-use part), and a private-use-only tag (`x-twain`). Subtags are matched
-/// case-insensitively: `EN-cm` is the tag `en-CM`, and [`as_str`](Self::as_str) gives it back as
+/// case-insensitively: `EN-GB` is the tag `en-GB`, and [`as_str`](Self::as_str) gives it back as
 /// it was written, because the client's spelling is what the agent is sent.
 ///
 /// **Refused:** anything else, rather than passed through — an empty tag, a tag longer than
 /// [`MAX_LOCALE_LEN`], a non-ASCII letter, a separator other than `-` (`en_CM`, `en CM`), an empty
 /// subtag (`en--CM`, `-en`, `en-`), a subtag longer than its production allows
-/// (`en-CM-abcdefghi`), a repeated variant or extension singleton, a private-use part with no
-/// subtag (`en-CM-x`), a first subtag that is not a language, and the irregular grandfathered tags
+/// (`en-GB-abcdefghi`), a repeated variant or extension singleton, a private-use part with no
+/// subtag (`en-GB-x`), a first subtag that is not a language, and the irregular grandfathered tags
 /// (`i-klingon`, `en-GB-oed`), which no interface produces. A tag that is refused is a **400**:
 /// the orchestrator never guesses what a client meant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,7 +84,7 @@ impl fmt::Display for LocaleHint {
     }
 }
 
-/// Subtags are case-insensitive (RFC 5646 section 2.1.1): `en-CM` and `EN-cm` are the same tag.
+/// Subtags are case-insensitive (RFC 5646 section 2.1.1): `en-GB` and `EN-GB` are the same tag.
 impl PartialEq for LocaleHint {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq_ignore_ascii_case(&other.0)
@@ -279,10 +279,10 @@ mod tests {
     fn the_tags_a_deployment_offers_and_the_ones_a_client_brings_are_accepted() {
         for tag in [
             // the deployment's own, from day 0 (ADR 0085)
-            "en-CM",
-            "fr-CM",
-            "wes-CM",
-            "ybb-CM",
+            "en-GB",
+            "fr-FR",
+            "gsw-CH",
+            "fur-IT",
             // the plain language, and the tags of the wider world
             "en",
             "fr",
@@ -304,10 +304,10 @@ mod tests {
 
     #[test]
     fn a_tag_is_read_case_insensitively_and_carried_as_it_was_written() {
-        let written = LocaleHint::parse("EN-cm").unwrap();
-        assert_eq!(written.as_str(), "EN-cm");
-        assert_eq!(written, LocaleHint::parse("en-CM").unwrap());
-        assert_eq!(written.to_string(), "EN-cm");
+        let written = LocaleHint::parse("EN-GB").unwrap();
+        assert_eq!(written.as_str(), "EN-GB");
+        assert_eq!(written, LocaleHint::parse("en-GB").unwrap());
+        assert_eq!(written.to_string(), "EN-GB");
         // the same tag hashes the same, whatever the case of its subtags
         let hashed = |h: &LocaleHint| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -316,7 +316,7 @@ mod tests {
         };
         assert_eq!(
             hashed(&written),
-            hashed(&LocaleHint::parse("en-CM").unwrap())
+            hashed(&LocaleHint::parse("en-GB").unwrap())
         );
     }
 
@@ -330,24 +330,24 @@ mod tests {
             "en--CM",
             "-en",
             "en-",
-            "en-CM-",
+            "en-GB-",
             "1234",
             "en-12",
-            "en-CM-abcdefghi",
+            "en-GB-abcdefghi",
             "fr-é",
-            "en-CM-x",
+            "en-GB-x",
             "en-a-bbb-a-ccc",
-            "en-CM-CM-CM",
+            "en-GB-CM-CM",
             "i-klingon",
             "en-GB-oed",
-            "en-CM;q=1",
-            " en-CM",
-            "en-CM ",
+            "en-GB;q=1",
+            " en-GB",
+            "en-GB ",
         ] {
             assert!(LocaleHint::parse(tag).is_err(), "{tag:?}");
         }
         // the bound is the one the type names, in bytes
-        let long = format!("en-CM-{}", "a".repeat(MAX_LOCALE_LEN));
+        let long = format!("en-GB-{}", "a".repeat(MAX_LOCALE_LEN));
         assert!(LocaleHint::parse(&long).is_err());
         assert!(LocaleHint::parse(&"a".repeat(MAX_LOCALE_LEN)).is_err());
     }
@@ -360,11 +360,11 @@ mod tests {
 
     #[test]
     fn a_tag_is_its_json_string() {
-        let hint = LocaleHint::parse("en-CM").unwrap();
-        assert_eq!(serde_json::to_value(&hint).unwrap(), json!("en-CM"));
+        let hint = LocaleHint::parse("en-GB").unwrap();
+        assert_eq!(serde_json::to_value(&hint).unwrap(), json!("en-GB"));
         assert_eq!(
-            serde_json::from_value::<LocaleHint>(json!("fr-CM")).unwrap(),
-            LocaleHint::parse("fr-CM").unwrap()
+            serde_json::from_value::<LocaleHint>(json!("fr-FR")).unwrap(),
+            LocaleHint::parse("fr-FR").unwrap()
         );
         // and a stored one that is not a tag is refused when it is read back
         assert!(serde_json::from_value::<LocaleHint>(json!("en_CM")).is_err());
@@ -372,13 +372,13 @@ mod tests {
 
     #[test]
     fn an_offer_is_read_from_well_formed_params() {
-        let offered = LocaleOffer::from_params(&json!({"locale": "en-CM", "x": 1})).unwrap();
+        let offered = LocaleOffer::from_params(&json!({"locale": "en-GB", "x": 1})).unwrap();
         assert_eq!(
             offered.default_locale().map(LocaleHint::as_str),
-            Some("en-CM")
+            Some("en-GB")
         );
         // a card that says nothing of its own language takes a hint all the same
-        for quiet in [json!({}), json!({"locales": ["en-CM"]})] {
+        for quiet in [json!({}), json!({"locales": ["en-GB"]})] {
             let offered = LocaleOffer::from_params(&quiet).unwrap();
             assert_eq!(offered.default_locale(), None, "{quiet}");
         }
@@ -391,7 +391,7 @@ mod tests {
             json!({"locale": ""}),
             json!({"locale": 3}),
             json!({"locale": null}),
-            json!({"locale": ["en-CM"]}),
+            json!({"locale": ["en-GB"]}),
         ] {
             assert_eq!(LocaleOffer::from_params(&bad), None, "{bad}");
         }

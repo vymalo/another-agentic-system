@@ -17,7 +17,7 @@
         "description": "Answers in the language of the interface the person reads, and says which tag it was told.",
         "required": false,
         "params": {
-          "locale": "en-CM"
+          "locale": "en-GB"
         }
       }
     ]

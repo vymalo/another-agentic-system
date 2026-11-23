@@ -688,7 +688,7 @@ pub async fn a_locale_never_holds_a_message_back<F: AgentFixture>(fx: F) {
             Some("ctx-locale"),
             None,
         );
-        req.locale = Some(orch_core::LocaleHint::parse("fr-CM").expect("a tag"));
+        req.locale = Some(orch_core::LocaleHint::parse("fr-FR").expect("a tag"));
         let envs = drain(
             fx.client()
                 .send_stream(req)

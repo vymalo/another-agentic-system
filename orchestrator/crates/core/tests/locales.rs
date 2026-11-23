@@ -83,15 +83,15 @@ fn sent(cmds: &[Command]) -> Option<LocaleHint> {
 fn the_message_that_names_a_locale_records_it_and_carries_it() {
     let (snap, cmds) = start_thread(
         GatePolicy::default(),
-        &said("corrige la page", Some("fr-CM")),
+        &said("corrige la page", Some("fr-FR")),
     )
     .expect("a first message");
-    assert_eq!(sent(&cmds), Some(tag("fr-CM")), "the delegation carries it");
+    assert_eq!(sent(&cmds), Some(tag("fr-FR")), "the delegation carries it");
     // the log is the state: the event holds the tag, so an export shows what the agent was told
     let event = serde_json::to_value(logged(&cmds)).unwrap();
-    assert_eq!(event["locale"], "fr-CM", "{event}");
+    assert_eq!(event["locale"], "fr-FR", "{event}");
     let back: UserMessageData = serde_json::from_value(event).unwrap();
-    assert_eq!(back.locale, Some(tag("fr-CM")), "and it reads back");
+    assert_eq!(back.locale, Some(tag("fr-FR")), "and it reads back");
     // a log written before the field existed has none
     let old: UserMessageData = serde_json::from_value(json!({"text": "hi"})).unwrap();
     assert_eq!(old.locale, None);
@@ -112,14 +112,14 @@ fn a_message_that_names_none_writes_the_event_it_always_did() {
 #[test]
 fn every_way_a_message_reaches_the_agent_carries_its_own_locale() {
     // blocked: an answer re-delegates
-    let (_, cmds) = step(&Snapshot::new(Blocked), &said("oui", Some("fr-CM")));
-    assert_eq!(sent(&cmds), Some(tag("fr-CM")));
+    let (_, cmds) = step(&Snapshot::new(Blocked), &said("oui", Some("fr-FR")));
+    assert_eq!(sent(&cmds), Some(tag("fr-FR")));
     // done: the next job starts with it
-    let (_, cmds) = step(&Snapshot::new(Done), &said("again", Some("ybb-CM")));
-    assert_eq!(sent(&cmds), Some(tag("ybb-CM")));
+    let (_, cmds) = step(&Snapshot::new(Done), &said("again", Some("fur-IT")));
+    assert_eq!(sent(&cmds), Some(tag("fur-IT")));
     // working: the message is steered into the running task, with its own tag
-    let (_, cmds) = step(&Snapshot::new(Working), &said("et ici", Some("wes-CM")));
-    assert_eq!(sent(&cmds), Some(tag("wes-CM")));
+    let (_, cmds) = step(&Snapshot::new(Working), &said("et ici", Some("gsw-CH")));
+    assert_eq!(sent(&cmds), Some(tag("gsw-CH")));
 }
 
 #[test]
@@ -127,21 +127,21 @@ fn a_stop_and_send_holds_the_newest_locale_for_the_next_job_and_a_cancel_forgets
     // the message that stops a running job holds its tag, and the next job's delegation carries it
     let (snap, cmds) = step(
         &Snapshot::new(Working),
-        &stop("d'abord ceci", Some("fr-CM")),
+        &stop("d'abord ceci", Some("fr-FR")),
     );
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Command::RequestCancel { .. }))
     );
-    assert_eq!(snap.job.after_stop_locale, Some(tag("fr-CM")));
+    assert_eq!(snap.job.after_stop_locale, Some(tag("fr-FR")));
     // a second message joined behind it that names none leaves the held one as it is
     let (snap, _) = step(&snap, &stop("et cela", None));
-    assert_eq!(snap.job.after_stop_locale, Some(tag("fr-CM")));
+    assert_eq!(snap.job.after_stop_locale, Some(tag("fr-FR")));
     // the next job starts with it
     let (_, cmds) = step(&snap, &Input::CancelledBeforeStart);
-    assert_eq!(sent(&cmds), Some(tag("fr-CM")));
+    assert_eq!(sent(&cmds), Some(tag("fr-FR")));
     // a person who cancels instead takes the hint with the text
-    let (snap, _) = step(&Snapshot::new(Working), &stop("jamais", Some("fr-CM")));
+    let (snap, _) = step(&Snapshot::new(Working), &stop("jamais", Some("fr-FR")));
     let (snap, _) = step(&snap, &Input::Cancel { user: user() });
     assert_eq!(snap.job.after_stop_locale, None);
 }
@@ -159,10 +159,10 @@ fn a_redelivery_carries_the_locale_its_message_recorded() {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
-            locale: Some(tag("fr-CM")),
+            locale: Some(tag("fr-FR")),
         },
     );
-    assert_eq!(sent(&cmds), Some(tag("fr-CM")), "the delegation carries it");
+    assert_eq!(sent(&cmds), Some(tag("fr-FR")), "the delegation carries it");
     // no event is written for it: the message is in the log already
     assert!(
         !cmds.iter().any(|c| matches!(
