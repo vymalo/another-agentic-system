@@ -15,6 +15,7 @@ on:
   pull_request:
     paths:
       - "compose.yaml"
+      - "tools/check-compose-project.sh"
       - "compose.live.yaml"
       - ".env.example"
       - "dev/**"
@@ -28,6 +29,7 @@ on:
     branches: [main]
     paths:
       - "compose.yaml"
+      - "tools/check-compose-project.sh"
       - "compose.live.yaml"
       - ".env.example"
       - "dev/**"
@@ -55,6 +57,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "orchestrator -> target"
+      - name: Two checkouts get two project names
+        run: sh tools/check-compose-project.sh
       - name: Every profile parses
         run: |
           docker compose config -q

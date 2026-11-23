@@ -553,6 +553,15 @@ a GitHub token. They hold no state and are not a substitute for the agent contra
 host. The `app` profile also runs a real agent, adam-coder, the default agent
 ([below](#the-default-agent)).
 
+### One project per checkout
+
+`compose.yaml` pins no project `name:`, so Compose names the project after the checkout's directory:
+the main clone (`another-agentic-system`) gets `another-agentic-system`, a worktree at `/tmp/wt-a` gets `wt-a`.
+Containers, networks and volumes are prefixed with it, so `docker compose up` in one worktree never
+recreates another's stack, and `docker compose down -v` removes only that project's volumes.
+Host ports are not per project: two stacks side by side need different `*_PORT` values (`POSTGRES_PORT=15432`, ...).
+`sh tools/check-compose-project.sh` checks that two checkouts give two names (also in CI).
+
 ## Services
 
 | Service | Image | Host port (127.0.0.1) | Profile | What it is |

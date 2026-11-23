@@ -39,7 +39,6 @@
 #
 # compose.live.yaml (an override, `-f compose.yaml -f compose.live.yaml`) points the coder at a real model
 # and a real GitHub, reading .env (copy .env.example): dev/README.md, "Going live".
-name: another-agentic-system
 
 x-wiremock: &wiremock
   image: wiremock/wiremock:3.13.2 # verified 2026-09-29 (Docker Hub registry API); newest 3.x stable
