@@ -903,3 +903,16 @@ context key `vymalo.locale` and its place among the protected keys, and — #335
 - *Unverified where this was written*: the 3.11 GB image was not pulled locally; every scenario on it is the Coder E2E workflow's, in the
   pull request that pins it. The hint reaches the model only once adam-rs renders `vymalo.locale` into a request, which no slice does today
   (the run's context is read by tools, not by the prompt): the card, the rule and the tag are in place, the words are not yet.
+
+### Status note, 2026-11-23 (later): the interface language reaches the model (adam-rs 945208e)
+
+The pin moves from `7ea653f` to `945208e`, which is `7ea653f` plus adam-rs #347 (the interface language is sent to the model
+as one more turn after the history of every request of a run whose context names `vymalo.locale`, never in `system`; ADR
+0069's status note of the same day). No file under `bin/adam-coder/agent` changed, so nothing is re-copied and
+`dev/coder/check-vendored.sh` still matches. Nothing in the run store moved.
+
+- *Verified 2026-11-23* (anonymous ghcr API, HTTP 200): `coder:sha-945208e` is one `linux/amd64` OCI manifest (no index;
+  3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, label
+  `org.opencontainers.image.revision` `945208ef3ed8f4bbef60b7d1286f08f4e7624c38`, digest `sha256:ef440f7e...`.
+- *Unverified where this was written*: the image was not pulled locally; `dev/locale-real-e2e.sh`, which proves the chain
+  on the real chat agent, is run by `Coder E2E` only.
