@@ -492,3 +492,77 @@ mod tests {
         assert!(serde_json::from_value::<ModelPick>(json!({"model": "Bad Id"})).is_err());
     }
 }
+
+/// What an agent's card lists for a pick, as a screen reads it (`GET /api/agents`): the model
+/// aliases and the reasoning levels the card offers, with the agent's own defaults. An axis the
+/// card does not list well is empty, and a client that finds neither draws no picker. It is a
+/// listing, never a check: a request that names something else is still refused by
+/// [`PickListings::check`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPick {
+    /// The model aliases the card offers, in its order. Omitted when it offers none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<AgentModelChoice>,
+    /// The agent's own default alias, when the card names one. Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_default: Option<String>,
+    /// The reasoning levels the card offers, in its order. Omitted when it offers none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    /// The agent's own default level, when the card names one. Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_default: Option<String>,
+}
+
+/// One model alias a card offers, with the label to show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelChoice {
+    /// The alias, which a run sends.
+    pub id: String,
+    /// The label a screen shows; the alias when the card gave none.
+    pub label: String,
+}
+
+impl AgentPick {
+    /// The listing a screen reads, or `None` when the card offers neither axis: an extension it
+    /// does not list, or lists badly, says nothing to a client (ADR 0008, fail closed).
+    #[must_use]
+    pub fn of(listings: &PickListings) -> Option<AgentPick> {
+        let model = listings.model.offer();
+        let effort = listings.effort.offer();
+        if model.is_none() && effort.is_none() {
+            return None;
+        }
+        Some(AgentPick {
+            models: model
+                .map(|offer| {
+                    offer
+                        .choices
+                        .iter()
+                        .map(|choice| AgentModelChoice {
+                            id: choice.id.as_str().to_owned(),
+                            label: choice.label.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            model_default: model
+                .and_then(|offer| offer.default.as_ref())
+                .map(|id| id.as_str().to_owned()),
+            efforts: effort
+                .map(|offer| {
+                    offer
+                        .efforts
+                        .iter()
+                        .map(|level| level.as_str().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            effort_default: effort
+                .and_then(|offer| offer.default)
+                .map(|level| level.as_str().to_owned()),
+        })
+    }
+}

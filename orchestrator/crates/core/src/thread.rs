@@ -299,4 +299,8 @@ pub struct AgentInfo {
     /// authorise and select nothing. Omitted when there are none (a static agent has none).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// What the live card lists for a pick (`model-pick/v1`, `reasoning/v1`), so a screen draws
+    /// the chips it can actually use. Omitted when the card lists neither (ADR 0086).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<crate::AgentPick>,
 }

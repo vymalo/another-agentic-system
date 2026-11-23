@@ -116,8 +116,9 @@ pub use locale::{
 };
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
 pub use pick::{
-    EffortOffer, Listing, MAX_MODEL_ID_LEN, MODEL_PICK_EXTENSION, ModelChoice, ModelId, ModelPick,
-    ModelPickOffer, PickError, PickListings, PickRefusal, REASONING_EXTENSION, ReasoningEffort,
+    AgentModelChoice, AgentPick, EffortOffer, Listing, MAX_MODEL_ID_LEN, MODEL_PICK_EXTENSION,
+    ModelChoice, ModelId, ModelPick, ModelPickOffer, PickError, PickListings, PickRefusal,
+    REASONING_EXTENSION, ReasoningEffort,
 };
 pub use pricing::{
     Currency, CurrencyError, LinePrice, MAX_PRICE_MICROS, MAX_PRICED_MODELS, MICROS_PER_UNIT,

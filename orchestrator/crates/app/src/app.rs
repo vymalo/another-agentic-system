@@ -852,9 +852,13 @@ impl<P: Ports> App<P> {
             )
         });
         let lookups = entries.map(|entry| async move {
-            let (description, releases) = match self.live_card(&entry.endpoint).await {
-                Some(card) => (card.description, card.releases),
-                None => (None, None),
+            let (description, releases, pick) = match self.live_card(&entry.endpoint).await {
+                Some(card) => (
+                    card.description,
+                    card.releases,
+                    orch_core::AgentPick::of(&card.pick),
+                ),
+                None => (None, None, None),
             };
             // Only an A2A agent has a card URL; the contract's `cardUrl` is optional for that.
             let card_url = match &entry.endpoint.transport {
@@ -870,6 +874,7 @@ impl<P: Ports> App<P> {
                 releases,
                 source: entry.origin,
                 tags: entry.tags,
+                pick,
             }
         });
         // `buffered` keeps the registry's order, which is the display order.

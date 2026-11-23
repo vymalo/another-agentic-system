@@ -2278,6 +2278,27 @@ components:
             defaultChannel: { type: string }
             channels: { type: object, additionalProperties: { type: string } }
             revisions: { type: array, items: { type: string } }
+        pick:
+          type: object
+          description: |
+            What the live card lists for a pick: `model-pick/v1` aliases and `reasoning/v1` levels, with
+            the agent's own defaults ([ADR 0086](../decisions/0086-the-model-and-the-reasoning-effort-are-a-pick-on-the-message.md)). It is a
+            listing for a screen to draw its chips, never a check: a run that names something else is
+            refused. Absent when the card lists neither (or lists one badly).
+          properties:
+            models:
+              type: array
+              items:
+                type: object
+                required: [id, label]
+                properties:
+                  id: { type: string, description: "The alias a run sends" }
+                  label: { type: string }
+            modelDefault: { type: string, description: "The agent's own default alias, when the card names one" }
+            efforts:
+              type: array
+              items: { type: string, enum: [none, minimal, low, medium, high, xhigh, max] }
+            effortDefault: { type: string, enum: [none, minimal, low, medium, high, xhigh, max], description: "The agent's own default level, when the card names one" }
     HistoryPage:
       type: object
       description: |

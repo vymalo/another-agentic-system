@@ -719,6 +719,7 @@ fn agent_info_card_url_is_optional_and_absent_when_none() {
         releases: None,
         source: AgentSource::Static,
         tags: Vec::new(),
+        pick: None,
     };
     assert_eq!(
         serde_json::to_value(&info).unwrap(),
@@ -751,6 +752,7 @@ fn agent_info_says_where_it_is_listed_from_and_carries_the_registry_tags() {
         releases: None,
         source: AgentSource::Registry,
         tags: vec!["coding".into(), "git".into()],
+        pick: None,
     };
     let wire = serde_json::to_value(&info).unwrap();
     assert_eq!(
@@ -1327,4 +1329,72 @@ fn a_thread_says_what_the_owner_did_to_their_list_only_when_they_did_it() {
     for member in ["pinnedAt", "archivedAt", "railParent", "railRank"] {
         assert!(set.get(member).is_none(), "{member} in {set}");
     }
+}
+
+#[test]
+fn agent_pick_lists_the_models_and_levels_the_card_offers() {
+    use orch_core::{
+        AgentModelChoice, AgentPick, EffortOffer, Listing, ModelChoice, ModelId, ModelPickOffer,
+        PickListings, ReasoningEffort,
+    };
+
+    // A card that lists neither draws nothing.
+    assert_eq!(AgentPick::of(&PickListings::default()), None);
+    assert_eq!(
+        AgentPick::of(&PickListings {
+            model: Listing::Malformed,
+            effort: Listing::Absent,
+        }),
+        None
+    );
+
+    let listings = PickListings {
+        model: Listing::Offered(ModelPickOffer {
+            choices: vec![
+                ModelChoice {
+                    id: ModelId::parse("deep").expect("an alias"),
+                    label: "Deep".into(),
+                },
+                ModelChoice {
+                    id: ModelId::parse("fast").expect("an alias"),
+                    label: "Fast".into(),
+                },
+            ],
+            default: Some(ModelId::parse("fast").expect("an alias")),
+        }),
+        effort: Listing::Offered(EffortOffer {
+            efforts: vec![ReasoningEffort::Low, ReasoningEffort::High],
+            default: Some(ReasoningEffort::Low),
+        }),
+    };
+    let pick = AgentPick::of(&listings).expect("a listing");
+    assert_eq!(
+        pick.models,
+        vec![
+            AgentModelChoice {
+                id: "deep".into(),
+                label: "Deep".into()
+            },
+            AgentModelChoice {
+                id: "fast".into(),
+                label: "Fast".into()
+            },
+        ]
+    );
+    assert_eq!(pick.model_default.as_deref(), Some("fast"));
+    assert_eq!(pick.efforts, vec!["low".to_owned(), "high".to_owned()]);
+    assert_eq!(pick.effort_default.as_deref(), Some("low"));
+
+    // On the wire it is camelCase, and an empty axis is omitted rather than empty.
+    let wire = serde_json::to_value(&pick).expect("JSON");
+    assert_eq!(wire["modelDefault"], "fast");
+    assert_eq!(wire["efforts"], serde_json::json!(["low", "high"]));
+    let model_only = AgentPick::of(&PickListings {
+        effort: Listing::Absent,
+        ..listings
+    })
+    .expect("a listing");
+    let wire = serde_json::to_value(&model_only).expect("JSON");
+    assert!(wire.get("efforts").is_none(), "{wire}");
+    assert!(wire.get("effortDefault").is_none(), "{wire}");
 }
