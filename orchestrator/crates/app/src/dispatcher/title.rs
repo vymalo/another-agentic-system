@@ -38,7 +38,9 @@
 use orch_core::{
     Event, Input, TaskKind, TaskPrompt, TitleSource, check_task_language, clean_title, task_prompt,
 };
-use orch_ports::{ChatRequest, OutboxFinal, OutboxItem, OutboxPayload, Ports, ThreadStore};
+use orch_ports::{
+    ChatRequest, OutboxFinal, OutboxItem, OutboxPayload, Ports, RunBindings, ThreadStore,
+};
 
 use super::{DispatchError, Dispatcher, Done};
 use crate::{AppError, ApplyOutcome, LateSource, TaskSettings};
@@ -46,7 +48,7 @@ use crate::{AppError, ApplyOutcome, LateSource, TaskSettings};
 /// How many events of the head of the log the conversation is read from.
 const TITLE_EVENTS: u32 = 128;
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Processes one `title` row. See the module documentation.
     pub(super) async fn title(&self, row: OutboxItem) -> Done {
         let OutboxPayload::Title { ask } = row.payload.clone() else {

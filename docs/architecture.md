@@ -239,6 +239,13 @@ Prose for what the diagram compresses:
   replica re-claims the row; because `sent_at` is set it resumes the agent's task
   (`SubscribeToTask`, else polling `GetTask`) instead of sending again, and the agent's own ids
   make each stored update idempotent.
+- **The run is bound when its task id is first seen.** With `RUN_BINDING_URL` set, the dispatcher tells
+  the credential broker who spends for a run (the thread's owner), which agent it is and its deadline
+  (24 h, the broker's own cap) on the **first frame** of the delegation's stream, before that frame is
+  applied, and unbinds it once the thread is `done`, `failed` or `cancelled`
+  ([ADR 0084](decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)).
+  The run's first model call can beat that: the injector answers `run_not_bound` and adam parks and
+  retries it (ADR 0067 decision 9). A broker that cannot be reached is logged and the run goes on.
 - **An `input-required` turn ends the run and the delegation, not the thread.** The thread becomes
   `blocked` and the run ends `RUN_FINISHED{outcome: interrupt}`, carrying an interrupt id and the
   agent's question. The user's answer is the next run: `resume` (or, as accepted today, a plain user

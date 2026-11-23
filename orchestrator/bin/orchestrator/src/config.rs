@@ -71,6 +71,9 @@ const MAX_REGISTRY_TIMEOUT_SECS: u64 = 60;
 /// `AGENT_REGISTRY_MAX_AGE_SECS`, when unset, and the most it may be.
 const DEFAULT_REGISTRY_MAX_AGE_SECS: u64 = 60;
 const MAX_REGISTRY_MAX_AGE_SECS: u64 = 3600;
+/// `RUN_BINDING_TIMEOUT_SECS`, when unset, and the most it may be.
+const DEFAULT_RUN_BINDING_TIMEOUT_SECS: u64 = 5;
+const MAX_RUN_BINDING_TIMEOUT_SECS: u64 = 30;
 #[cfg(feature = "agent-local")]
 const DEFAULT_AGENT_LOCAL_CONCURRENCY: usize = 4;
 const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 15;
@@ -1019,6 +1022,28 @@ pub struct Args {
     #[arg(long, env = "INBOX_MAX_ATTEMPTS", value_name = "N")]
     pub inbox_max_attempts: Option<String>,
 
+    /// The credential broker's internal address, where a run is bound and unbound (ADR 0084): an
+    /// absolute `http(s)` URL with a host and no query, fragment or user name (for example
+    /// `http://another-agentic-broker.ns.svc:8080`). Unset (the default): nothing is bound
+    /// (`NoRunBindings`), and every run goes on with no binding.
+    #[arg(long, env = "RUN_BINDING_URL", value_name = "URL")]
+    pub run_binding_url: Option<String>,
+
+    /// The orchestrator's bearer token at the broker's internal run routes, required with
+    /// `RUN_BINDING_URL`. Never logged.
+    #[arg(
+        long,
+        env = "RUN_BINDING_TOKEN",
+        value_name = "TOKEN",
+        hide_env_values = true
+    )]
+    pub run_binding_token: Option<String>,
+
+    /// Seconds one bind or one unbind may take, 1 to 30 (default 5). A run does not wait longer
+    /// for a binding it can live without today (S9 parks it instead).
+    #[arg(long, env = "RUN_BINDING_TIMEOUT_SECS", value_name = "SECS")]
+    pub run_binding_timeout_secs: Option<String>,
+
     /// Seconds a graceful shutdown may take, at least 1 (default 15).
     #[arg(long, env = "SHUTDOWN_GRACE_SECS", value_name = "SECS")]
     pub shutdown_grace_secs: Option<String>,
@@ -1324,6 +1349,10 @@ pub struct Config {
     /// `dispatcher.order` (ADR 0066): which due rows a claim takes first. `Fair` from the
     /// environment alone (the key has no variable).
     pub dispatcher_order: orch_ports::ClaimOrder,
+    /// `RUN_BINDING_URL` and the variables that go with it (ADR 0084): the broker's internal run
+    /// routes, where each run is bound when its task id is first seen and unbound when it ends.
+    /// `None` when the URL is unset: nothing is bound. Its `Debug` never shows the token.
+    pub run_binding: Option<RunBindingSettings>,
 }
 
 impl fmt::Debug for Config {
@@ -1359,6 +1388,7 @@ impl fmt::Debug for Config {
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("history", &self.history)
             .field("dispatcher_order", &self.dispatcher_order)
+            .field("run_binding", &self.run_binding)
             .field("tool_servers", &self.tool_servers)
             .field(
                 "tool_endpoints",
@@ -1458,6 +1488,13 @@ impl Config {
         let registry_url_set = refuse_registry(registry_vars)?;
         #[cfg(feature = "registry-platform")]
         let registry_url_set = registry.is_some();
+        // The broker's run routes (ADR 0084): nothing is bound without a URL, and the token and the
+        // timeout are checked either way.
+        let run_binding = run_binding_settings(
+            clean(args.run_binding_url),
+            clean(args.run_binding_token),
+            clean(args.run_binding_timeout_secs),
+        )?;
         // Without a registry the agents are the file's, which must list some. With one, the file
         // may be unset or empty: the registry is where the agents come from.
         let ParsedAgents {
@@ -1785,6 +1822,7 @@ impl Config {
             cors_allowed_origins: resolved.cors_allowed_origins,
             history: resolved.history,
             dispatcher_order: resolved.dispatcher_order,
+            run_binding,
         })
     }
 }
@@ -2074,6 +2112,29 @@ impl fmt::Debug for RegistrySettings {
     }
 }
 
+/// The broker's internal run routes (`RUN_BINDING_URL` and the variables that go with it, ADR
+/// 0084): where a run is bound when its task id is first seen and unbound when it ends. `None`
+/// when the URL is unset, and then nothing is bound. Its `Debug` never shows the token.
+#[derive(Clone)]
+pub struct RunBindingSettings {
+    /// `RUN_BINDING_URL`: the broker's internal address, an absolute `http(s)` URL with a host.
+    pub url: String,
+    /// `RUN_BINDING_TOKEN`: the orchestrator's bearer token at those routes.
+    pub token: SecretString,
+    /// `RUN_BINDING_TIMEOUT_SECS`: how long one bind or unbind may take.
+    pub timeout: Duration,
+}
+
+impl fmt::Debug for RunBindingSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RunBindingSettings")
+            .field("url", &self.url)
+            .field("token", &"<redacted>")
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
 /// A number of seconds in `min..=max`.
 fn seconds_between(
     raw: Option<String>,
@@ -2090,6 +2151,58 @@ fn seconds_between(
         });
     }
     Ok(value)
+}
+
+/// The broker's internal run routes (ADR 0084): none when `RUN_BINDING_URL` is unset (and then
+/// `RUN_BINDING_TOKEN` says nothing), else the URL — an absolute `http(s)` URL with a host and no
+/// query, fragment or user name — the orchestrator's token and the timeout of one call.
+fn run_binding_settings(
+    url: Option<String>,
+    token: Option<String>,
+    timeout_secs: Option<String>,
+) -> Result<Option<RunBindingSettings>, ConfigError> {
+    let timeout = seconds_between(
+        timeout_secs,
+        "RUN_BINDING_TIMEOUT_SECS",
+        DEFAULT_RUN_BINDING_TIMEOUT_SECS,
+        1,
+        MAX_RUN_BINDING_TIMEOUT_SECS,
+    )?;
+    let Some(url) = url else {
+        if token.is_some() {
+            return Err(ConfigError::Invalid {
+                var: "RUN_BINDING_TOKEN",
+                reason: "is set and RUN_BINDING_URL is not: no run would be bound".to_owned(),
+            });
+        }
+        return Ok(None);
+    };
+    let bad = |reason: &str| ConfigError::Invalid {
+        var: "RUN_BINDING_URL",
+        reason: reason.to_owned(),
+    };
+    let parsed = Url::parse(&url).map_err(|_| {
+        bad("expected an absolute http:// or https:// URL, like http://broker.namespace.svc:8080")
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() {
+        return Err(bad(
+            "expected an absolute http:// or https:// URL, like http://broker.namespace.svc:8080",
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(bad("must not carry a query or a fragment"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(bad(
+            "must not carry a user name or password (the token is RUN_BINDING_TOKEN)",
+        ));
+    }
+    let token = token.ok_or(ConfigError::Missing("RUN_BINDING_TOKEN"))?;
+    Ok(Some(RunBindingSettings {
+        url,
+        token: SecretString::from(token),
+        timeout: Duration::from_secs(timeout),
+    }))
 }
 
 /// The registry's settings: none when `AGENT_REGISTRY_URL` is unset (the other variables are then
@@ -3115,6 +3228,9 @@ mod tests {
                 "AGENT_REGISTRY_AGENT_TOKEN" => &mut args.registry_agent_token,
                 "AGENT_REGISTRY_TIMEOUT_SECS" => &mut args.registry_timeout_secs,
                 "AGENT_REGISTRY_MAX_AGE_SECS" => &mut args.registry_max_age_secs,
+                "RUN_BINDING_URL" => &mut args.run_binding_url,
+                "RUN_BINDING_TOKEN" => &mut args.run_binding_token,
+                "RUN_BINDING_TIMEOUT_SECS" => &mut args.run_binding_timeout_secs,
                 "LISTEN_ADDR" => &mut args.listen_addr,
                 "ORCH_ROLE" => &mut args.role,
                 "ORCH_SURFACES" => &mut args.surfaces,
@@ -3531,6 +3647,114 @@ mod tests {
                 ConfigError::Invalid { var: got, .. } => assert_eq!(*got, var, "{bad}"),
                 other => panic!("{var}={bad}: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn there_is_no_run_binding_unless_its_url_is_set() {
+        let cfg = load(&base(), AGENTS).unwrap();
+        assert!(cfg.run_binding.is_none());
+        // the token alone turns nothing on, and says so rather than being ignored
+        let mut env = base();
+        env.push(("RUN_BINDING_TOKEN", "broker-secret"));
+        let err = load(&env, AGENTS).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::Invalid {
+                    var: "RUN_BINDING_TOKEN",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("broker-secret"), "{err}");
+    }
+
+    #[test]
+    fn a_run_binding_is_read_with_its_defaults_and_its_token_stays_out_of_every_debug() {
+        let mut env = base();
+        env.extend([
+            (
+                "RUN_BINDING_URL",
+                "http://another-agentic-broker.agents.svc:8080",
+            ),
+            ("RUN_BINDING_TOKEN", "broker-secret"),
+        ]);
+        let cfg = load(&env, AGENTS).unwrap();
+        let run_binding = cfg.run_binding.as_ref().unwrap();
+        assert_eq!(
+            run_binding.url,
+            "http://another-agentic-broker.agents.svc:8080"
+        );
+        assert_eq!(run_binding.timeout, Duration::from_secs(5));
+        for text in [format!("{cfg:?}"), format!("{run_binding:?}")] {
+            assert!(!text.contains("broker-secret"), "{text}");
+            assert!(text.contains("<redacted>"), "{text}");
+            assert!(
+                text.contains("another-agentic-broker.agents.svc:8080"),
+                "{text}"
+            );
+        }
+        env.push(("RUN_BINDING_TIMEOUT_SECS", "30"));
+        let cfg = load(&env, AGENTS).unwrap();
+        assert_eq!(cfg.run_binding.unwrap().timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_run_binding_url_must_be_an_absolute_http_url_without_credentials() {
+        for bad in [
+            "another-agentic-broker.agents.svc:8080",
+            "/internal/runs",
+            "ftp://another-agentic-broker.agents.svc",
+            "https://",
+            "https://broker.agents.svc:8080?tenant=x",
+            "https://broker.agents.svc:8080#frag",
+            "https://user:pw@broker.agents.svc:8080",
+        ] {
+            let mut env = base();
+            env.extend([
+                ("RUN_BINDING_URL", bad),
+                ("RUN_BINDING_TOKEN", "broker-secret"),
+            ]);
+            let err = load(&env, AGENTS).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "RUN_BINDING_URL",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
+            assert!(!err.to_string().contains("pw"), "{err}");
+        }
+        // the token is required with the URL
+        let mut env = base();
+        env.push(("RUN_BINDING_URL", "https://broker.agents.svc:8080"));
+        assert!(matches!(
+            load(&env, AGENTS),
+            Err(ConfigError::Missing("RUN_BINDING_TOKEN"))
+        ));
+    }
+
+    #[test]
+    fn the_run_binding_numbers_are_validated_whether_or_not_a_url_is_set() {
+        for bad in ["0", "31", "soon"] {
+            let mut env = base();
+            env.push(("RUN_BINDING_TIMEOUT_SECS", bad));
+            let err = load(&env, AGENTS).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::Invalid {
+                        var: "RUN_BINDING_TIMEOUT_SECS",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
         }
     }
 
@@ -4679,6 +4903,9 @@ mod tests {
             "SHUTDOWN_GRACE_SECS",
             "ORCH_INSTANCE_ID",
             "LOG_FORMAT",
+            "RUN_BINDING_URL",
+            "RUN_BINDING_TOKEN",
+            "RUN_BINDING_TIMEOUT_SECS",
         ] {
             assert!(help.contains(var), "--help does not mention {var}:\n{help}");
         }

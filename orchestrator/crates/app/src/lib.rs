@@ -47,6 +47,7 @@ pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schem
 pub use directory::{AgentDirectory, AgentEntry};
 pub use dispatcher::{
     Dispatcher, DispatcherConfig, FileLimits, MAX_FILES_PER_JOB, MAX_OBSERVED_PER_PARENT,
+    RUN_BINDING_TTL,
 };
 pub use error::AppError;
 pub use gate_config::{

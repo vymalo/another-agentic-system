@@ -27,7 +27,9 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use jiff::Timestamp;
 use orch_core::{AgentUpdate, FileRef, FileRefusal, report};
-use orch_ports::{ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, Clock, Ports};
+use orch_ports::{
+    ArtifactError, ArtifactKey, ArtifactMeta, ArtifactStore, Clock, Ports, RunBindings,
+};
 use orch_thread_token::{UploadClaims, verify_upload_id};
 use sha2::{Digest, Sha256};
 
@@ -101,7 +103,7 @@ impl Budget {
     }
 }
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// The update the core is given for a file an adapter reported: with the file put in the store, a
     /// reference to it; or a refusal. `None` for any update that is not a file.
     pub(super) async fn ingest(&self, ctx: &Ctx, update: &AgentUpdate) -> Option<AgentUpdate> {
@@ -196,7 +198,7 @@ const ARRIVAL_SKEW_SECS: i64 = 30;
 /// and for an SVG after its declaration, comments and DOCTYPE.
 const SNIFF_BYTES: usize = 4096;
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// What the core is given for a file the agent put in the bucket and names by `upload_id`: the
     /// reference an inline file gets, or a refusal. In order, each failure a refusal (and the turn
     /// goes on):
@@ -343,7 +345,7 @@ impl<P: Ports> Dispatcher<P> {
     }
 }
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Deletes the object under `key` that a refused upload left in the bucket, unless a file of
     /// this thread uses the key: the delegation has kept the content, or the log holds (or, for a
     /// log too long to read whole, may hold) an artifact with that hash. A failure to read the log

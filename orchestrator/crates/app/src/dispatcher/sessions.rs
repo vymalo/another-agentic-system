@@ -22,7 +22,7 @@ use orch_ports::{
 use super::{DispatchError, Dispatcher, Done, Loaded, plain_cap};
 use crate::{AppError, ApplyOutcome, ChildSessionDrop};
 use orch_core::report;
-use orch_ports::Ports;
+use orch_ports::{Ports, RunBindings};
 
 /// How long the agent has to answer a start or a close with the round it made: its first event is
 /// the task (`child-sessions/v1`), so this is the time to make a task, not to run one.
@@ -42,7 +42,7 @@ struct Answer {
     report: Option<SessionReport>,
 }
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Reads the answer to a start or a close: the first envelopes of the task it made, up to the
     /// round's own word about its session. A stream that says no session is read once more as a
     /// task (`GetTask`): the contract puts the session on the task as well.

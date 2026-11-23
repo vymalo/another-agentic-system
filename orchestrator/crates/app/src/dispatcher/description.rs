@@ -29,7 +29,9 @@ use orch_core::{
     DescriptionSource, Event, Input, TaskKind, TaskPrompt, check_task_language, clean_description,
     messages_since_description, task_prompt,
 };
-use orch_ports::{ChatRequest, OutboxFinal, OutboxItem, OutboxPayload, Ports, ThreadStore};
+use orch_ports::{
+    ChatRequest, OutboxFinal, OutboxItem, OutboxPayload, Ports, RunBindings, ThreadStore,
+};
 
 use super::{DispatchError, Dispatcher, Done};
 use crate::{AppError, ApplyOutcome, LateSource, TaskSettings};
@@ -40,7 +42,7 @@ const HEAD_EVENTS: u32 = 16;
 /// `thread_described`.
 const TAIL_EVENTS: i64 = 512;
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Processes one `description` row. See the module documentation.
     pub(super) async fn description(&self, row: OutboxItem) -> Done {
         let OutboxPayload::Description { job } = row.payload.clone() else {

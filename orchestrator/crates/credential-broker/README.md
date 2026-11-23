@@ -283,8 +283,15 @@ configuration. A deployment with no broker uses `NoRunBindings`, which accepts e
 nothing. The address must be an `http(s)` URL with a host and no query, fragment or user
 information (`BuildError::BrokerUrl`).
 
+**Called by the dispatcher since ANR-417.** `orch-app`'s `Dispatcher` binds a run the moment its
+stream first names the A2A task id (the person, the agent, no model endpoint, and `expiresAt` 24 h,
+the cap above) and unbinds it once the thread is `done`, `failed` or `cancelled`, idempotently. The
+binary builds the client when `RUN_BINDING_URL` is set (`RUN_BINDING_TOKEN`, `RUN_BINDING_TIMEOUT_SECS`),
+and puts `NoRunBindings` in its place when it is not.
 
-The broker's first part (B1): the orchestrator binds a run at its creation, and the injector leases
+
+The broker's first part (B1): the orchestrator binds a run as soon as it knows the run's id (the
+first frame of the delegation's stream), and the injector leases
 the run's model credential for 30 s, on the broker's **internal listener only**. `src/run_leases.rs`
 is the port implementation (`RunLeases`, with its conformance cases in `orch-ports`), and
 `src/routes.rs` is the HTTP surface:

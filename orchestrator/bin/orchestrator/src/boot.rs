@@ -51,6 +51,7 @@ use crate::auth::ConfiguredAuth;
 use crate::config::{Config, ConfigError, Surface};
 use crate::local::{self, Agents, Local};
 use crate::model::ConfiguredModel;
+use crate::run_bindings::ConfiguredRunBindings;
 use crate::user_tools::ConfiguredUserTools;
 
 /// How long the wakeup listener may take to attach before the service starts anyway. It keeps
@@ -681,13 +682,19 @@ async fn serve(
 }
 
 /// The worker's dispatcher over `app`. It runs until its token is cancelled, then stops its
-/// workers and releases their leases.
-fn dispatcher(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<Dispatcher<Stack>> {
-    Dispatcher::new(
+/// workers and releases their leases. The broker that binds each run comes from the configuration
+/// (ADR 0084): [`ConfiguredRunBindings::Off`] when no URL is set, so nothing is bound.
+fn dispatcher(
+    cfg: &Config,
+    app: &Arc<App<Stack>>,
+) -> Result<Arc<Dispatcher<Stack, ConfiguredRunBindings>>, ConfigError> {
+    let run_bindings = ConfiguredRunBindings::build(cfg.run_binding.as_ref())?;
+    Ok(Dispatcher::with_run_bindings(
         Arc::clone(app),
         dispatcher_config(cfg),
         cfg.instance_id.clone(),
-    )
+        run_bindings,
+    ))
 }
 
 /// The dispatcher's settings from the configuration: the slots, the order a claim takes the due rows
@@ -813,7 +820,7 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
         })
     };
 
-    let dispatcher = dispatcher(&cfg, &app);
+    let dispatcher = dispatcher(&cfg, &app)?;
     let mark = MarkStopping(Arc::clone(&app));
     let ready_when_started = (!cfg.role.runs_control_plane()).then(|| Arc::clone(&app));
     if ready_when_started.is_some() {
