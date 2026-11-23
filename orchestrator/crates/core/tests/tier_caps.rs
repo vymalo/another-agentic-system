@@ -32,6 +32,7 @@ fn said(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         tier,
         tier_cap: cap,
         locale: None,
+        pick: None,
     }
 }
 fn stop(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input {
@@ -46,6 +47,7 @@ fn stop(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         tier,
         tier_cap: cap,
         locale: None,
+        pick: None,
     }
 }
 fn status(state: AgentTaskState) -> Input {
@@ -303,6 +305,7 @@ fn a_redelivered_message_carries_the_cap_its_row_held() {
                 tier: None,
                 tier_cap: Some(Plan),
                 locale: None,
+                pick: None,
             },
         );
         assert_eq!(sent(&cmds), (None, Some(Plan)), "{state:?}");
@@ -317,6 +320,7 @@ fn a_redelivered_message_carries_the_cap_its_row_held() {
                 tier: None,
                 tier_cap: Some(Edits),
                 locale: None,
+                pick: None,
             },
         );
         assert_eq!(sent(&cmds), (None, Some(Edits)), "{state:?}");
@@ -337,6 +341,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_cap_it_went_out_unde
                 tier: None,
                 tier_cap: Some(Plan),
                 locale: None,
+                pick: None,
             },
         );
         assert!(
@@ -447,6 +452,7 @@ fn mentioning(text: &str, mentions: Vec<Mention>) -> Input {
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 

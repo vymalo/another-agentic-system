@@ -464,9 +464,11 @@ pub(crate) async fn patch_thread<P: Ports>(
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
-) -> ApiResult<Json<ThreadRecord>> {
+) -> ApiResult<Json<serde_json::Value>> {
     let id = parse_thread_id(&id)?;
     let (mut title, mut description) = (None, None);
+    // The thread's default model and reasoning effort (ADR 0086): absent leaves it, `null` clears it.
+    let (mut model, mut effort) = (None, None);
     for (member, value) in body {
         match (member.as_str(), value) {
             ("title", serde_json::Value::String(text)) => title = Some(text),
@@ -475,13 +477,24 @@ pub(crate) async fn patch_thread<P: Ports>(
             ("description", _) => {
                 return Err(Problem::bad_request("`description` must be a string").into());
             }
+            ("model", value) => {
+                model =
+                    Some(orch_app::pick::parse_model(&value).map_err(orch_app::AppError::from)?);
+            }
+            ("reasoningEffort", value) => {
+                effort =
+                    Some(orch_app::pick::parse_effort(&value).map_err(orch_app::AppError::from)?);
+            }
             (other, _) => {
                 return Err(Problem::bad_request(format!("unknown member `{other}`")).into());
             }
         }
     }
-    if title.is_none() && description.is_none() {
-        return Err(Problem::bad_request("`title` or `description` is required").into());
+    if title.is_none() && description.is_none() && model.is_none() && effort.is_none() {
+        return Err(Problem::bad_request(
+            "`title`, `description`, `model` or `reasoningEffort` is required",
+        )
+        .into());
     }
     // Both are checked before either is written (the application checks again).
     if let Some(title) = &title {
@@ -491,6 +504,15 @@ pub(crate) async fn patch_thread<P: Ports>(
         check_description(description).map_err(|e| Problem::bad_request(e.to_string()))?;
     }
     let mut thread = None;
+    // The default pick first: it is the one that can be refused (422), and a refusal changes nothing.
+    let mut pick = None;
+    if model.is_some() || effort.is_some() {
+        let (record, now) = state
+            .app
+            .set_thread_pick(&principal, id, model, effort)
+            .await?;
+        (thread, pick) = (Some(record), Some(now));
+    }
     if let Some(title) = title {
         thread = Some(state.app.rename_thread(&principal, id, &title).await?);
     }
@@ -502,10 +524,23 @@ pub(crate) async fn patch_thread<P: Ports>(
                 .await?,
         );
     }
-    match thread {
-        Some(thread) => Ok(Json(thread)),
-        None => Err(Problem::bad_request("`title` or `description` is required").into()),
+    let Some(thread) = thread else {
+        return Err(Problem::bad_request(
+            "`title`, `description`, `model` or `reasoningEffort` is required",
+        )
+        .into());
+    };
+    let mut body = serde_json::to_value(&thread)
+        .map_err(|_| orch_app::AppError::internal("the thread cannot be shown"))?;
+    if let (Some(pick), Some(object)) = (pick, body.as_object_mut()) {
+        // what the thread's default is now, in the words the request used
+        object.insert("model".into(), serde_json::json!(pick.model));
+        object.insert(
+            "reasoningEffort".into(),
+            serde_json::json!(pick.reasoning_effort),
+        );
     }
+    Ok(Json(body))
 }
 
 /// Contract `ToolServer`: a server a person may attach to a conversation (ADR 0024). The URL, the
@@ -863,6 +898,12 @@ struct ForkBody {
     /// The interface locale of the fork's message or of the edit (ADR 0085): a BCP 47 tag, or
     /// `null`; read as `forwardedProps["vymalo.locale"]` is.
     locale: Option<serde_json::Value>,
+    /// The model alias of the fork's message or of the edit (ADR 0086), or `null`; read as
+    /// `forwardedProps["vymalo.model"]` is.
+    model: Option<serde_json::Value>,
+    /// The reasoning effort of the fork's message or of the edit (ADR 0086), or `null`; read as
+    /// `forwardedProps["vymalo.reasoningEffort"]` is.
+    reasoning_effort: Option<serde_json::Value>,
 }
 
 impl ForkBody {
@@ -888,6 +929,8 @@ impl ForkBody {
             }
             None => None,
         };
+        let pick = orch_app::pick::parse(self.model.as_ref(), self.reasoning_effort.as_ref())
+            .map_err(|e| Problem::bad_request(e.to_string()))?;
         let at = match (self.after, self.replace) {
             // The fork is made with its first message when there is one (ADR 0042, decision 8):
             // no mentions and no UI catalog travel on this route, the AG-UI run carries them.
@@ -903,6 +946,12 @@ impl ForkBody {
                 if locale.is_some() && self.text.is_none() {
                     return Err(Problem::bad_request("`locale` goes with `text`"));
                 }
+                // so is a pick, and it is checked against the card, never dropped
+                if pick.is_some() && self.text.is_none() {
+                    return Err(Problem::bad_request(
+                        "`model` and `reasoningEffort` go with `text`",
+                    ));
+                }
                 orch_app::ForkAt::AfterTurn {
                     seq,
                     first: self.text.map(|text| orch_app::FirstMessage {
@@ -914,6 +963,7 @@ impl ForkBody {
                         mentions: Vec::new(),
                         tier,
                         locale,
+                        pick,
                     }),
                 }
             }
@@ -925,6 +975,7 @@ impl ForkBody {
                 message_id: self.message_id,
                 tier,
                 locale,
+                pick,
             },
             (Some(_), Some(_)) => {
                 return Err(Problem::bad_request("give `after` or `replace`, not both"));

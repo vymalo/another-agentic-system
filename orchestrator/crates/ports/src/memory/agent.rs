@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::StreamExt;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, ChildSessionsOffer, CommandsListing, CommandsOffer,
-    ForkHistory, KnownExtension, LiveChunk, LiveEnd, LocaleListing, LocaleOffer, Releases,
-    StepKind, StepReport, StepState, TierListing, TierOffer, ToolsGrant, TrustedComponent,
-    TrustedHints, TrustedRequestData, UiActionData, UiDelivery, UiVersion,
+    ForkHistory, KnownExtension, LiveChunk, LiveEnd, LocaleListing, LocaleOffer, PickListings,
+    Releases, StepKind, StepReport, StepState, TierListing, TierOffer, ToolsGrant,
+    TrustedComponent, TrustedHints, TrustedRequestData, UiActionData, UiDelivery, UiVersion,
 };
 use tokio::sync::Notify;
 
@@ -118,6 +118,8 @@ pub struct SendCall {
     /// The interface locale the request carried (ADR 0085): what an adapter would activate
     /// `locale/v1` with, when the card lists it.
     pub locale: Option<orch_core::LocaleHint>,
+    /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+    pub pick: Option<orch_core::ModelPick>,
 }
 
 /// How a [`ScriptedAgent`] that plays the verifier answers whatever it is asked
@@ -361,6 +363,7 @@ impl ScriptedAgent {
                 extensions: BTreeSet::new(),
                 access_tier: TierListing::Absent,
                 locale: LocaleListing::Absent,
+                pick: PickListings::default(),
                 commands: CommandsListing::Absent,
                 child_sessions: None,
                 trusted_components: None,
@@ -415,6 +418,25 @@ impl ScriptedAgent {
             .entry(AgentId::new(agent))
             .or_insert_with(default_card);
         card.locale = offer.map_or(LocaleListing::Absent, LocaleListing::Offered);
+    }
+
+    /// Makes `agent`'s card list `model-pick/v1` with these choices (`None` removes it) and
+    /// `reasoning/v1` with these levels (`None` removes it). Takes effect on the next read.
+    pub fn set_pick(
+        &self,
+        agent: &str,
+        models: Option<orch_core::ModelPickOffer>,
+        efforts: Option<orch_core::EffortOffer>,
+    ) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.pick = PickListings {
+            model: models.map_or(orch_core::Listing::Absent, orch_core::Listing::Offered),
+            effort: efforts.map_or(orch_core::Listing::Absent, orch_core::Listing::Offered),
+        };
     }
 
     /// Makes `agent`'s card list `locale/v1` with a `locale` member that is not a tag. Takes
@@ -614,6 +636,7 @@ fn default_card() -> AgentCardInfo {
         extensions: BTreeSet::new(),
         access_tier: TierListing::Absent,
         locale: LocaleListing::Absent,
+        pick: PickListings::default(),
         commands: CommandsListing::Absent,
         child_sessions: None,
         trusted_components: None,
@@ -1749,6 +1772,7 @@ impl AgentClient for ScriptedAgent {
                 mentions: req.mentions.clone().into_boxed_slice(),
                 tier: req.tier,
                 locale: req.locale.clone(),
+                pick: req.pick.clone(),
             })));
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));
@@ -1768,6 +1792,18 @@ impl AgentClient for ScriptedAgent {
                 return Err(AgentError::Unsupported(format!(
                     "the agent no longer takes the access tier '{tier}'"
                 )));
+            }
+            // a pick is never dropped either (ADR 0086): nothing is sent to a card that does not
+            // offer it
+            if let Some(pick) = &req.pick {
+                let listings = st
+                    .cards
+                    .get(&req.endpoint.id)
+                    .map(|card| card.pick.clone())
+                    .unwrap_or_default();
+                if let Err(refusal) = listings.check(pick) {
+                    return Err(AgentError::Unsupported(refusal.to_string()));
+                }
             }
             // a message the sender sent plain under a cap, because the card it read listed no tier,
             // is not sent to an agent that lists the extension by the time of this read (the

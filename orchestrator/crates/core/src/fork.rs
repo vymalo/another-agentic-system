@@ -19,6 +19,7 @@ use crate::gate::{GatePolicy, Job, Snapshot};
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
+use crate::pick::ModelPick;
 use crate::thread::{AgentTarget, ThreadRecord, ThreadState};
 use crate::title::{TitleLedger, agent_words};
 use crate::tools::attached_by;
@@ -377,6 +378,8 @@ pub struct Replacement {
     /// The interface locale the message names (ADR 0085), as for its tier: the language the
     /// person's screen reads in, a hint.
     pub locale: Option<LocaleHint>,
+    /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+    pub pick: Option<ModelPick>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
     /// Where the message came from.
@@ -395,6 +398,7 @@ impl Replacement {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
             run_id: None,
             origin: Origin::Agui,
         }
@@ -436,6 +440,7 @@ pub fn fork_commit(
             tier: replacement.tier,
             tier_cap: replacement.tier_cap,
             locale: replacement.locale,
+            pick: replacement.pick,
         },
     )?;
     commands.extend(more);

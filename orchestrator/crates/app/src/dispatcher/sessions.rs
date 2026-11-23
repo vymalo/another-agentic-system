@@ -191,6 +191,7 @@ impl<P: Ports> Dispatcher<P> {
             tier: sent_tier,
             tier_cap: plain_cap(sent_tier, tier_cap),
             locale: None,
+            pick: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,
@@ -301,6 +302,7 @@ impl<P: Ports> Dispatcher<P> {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,

@@ -97,6 +97,7 @@ fn delegate(n: u128) -> NewOutbox {
             // with both pins that each comes back
             tier_cap: Some(orch_core::AccessTier::Edits),
             locale: None,
+            pick: None,
         },
     }
 }
@@ -112,6 +113,7 @@ fn steer_row(n: u128) -> NewOutbox {
             tier: Some(orch_core::AccessTier::Bypass),
             tier_cap: Some(orch_core::AccessTier::Auto),
             locale: None,
+            pick: None,
         },
     }
 }
@@ -299,6 +301,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             tier: Some(orch_core::AccessTier::Edits),
             tier_cap: None,
             locale: None,
+            pick: None,
         }),
         idempotency_key: None,
     };
@@ -314,6 +317,7 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             // ADR 0061: the cap that applied when no tier could be pinned comes back too
             tier_cap: Some(orch_core::AccessTier::Plan),
             locale: None,
+            pick: None,
         }),
         ..user_event("unused", None)
     };
@@ -2580,6 +2584,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             tier: Some(orch_core::AccessTier::Bypass),
             tier_cap: Some(orch_core::AccessTier::Auto),
             locale: None,
+            pick: None,
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -2801,6 +2806,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             tier: Some(orch_core::AccessTier::Bypass),
             tier_cap: Some(orch_core::AccessTier::Auto),
             locale: None,
+            pick: None,
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -3135,6 +3141,7 @@ fn busy_job() -> Job {
     gate.verifier = Some(AgentId::new("reviewer"));
     let mut job = Job {
         after_stop_locale: None,
+        after_stop_pick: None,
         number: 3,
         gate,
         attempt: 2,
@@ -3987,6 +3994,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         payload: OutboxPayload::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4051,6 +4059,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         payload: OutboxPayload::Steer {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             ui_catalog: None,
@@ -4104,6 +4113,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         OutboxPayload::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4142,6 +4152,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
         OutboxPayload::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4169,6 +4180,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
         payload: OutboxPayload::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: format!("do {n}"),
             release: None,
             new_job: false,
@@ -4207,6 +4219,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
         OutboxPayload::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "do 1".into(),
             release: None,
             new_job: false,
@@ -7367,6 +7380,70 @@ pub async fn nested_children_keep_the_section_of_a_deleted_parent<S: ThreadStore
     let mut archived = listed(&store, &alice(), rail_of(Only)).await;
     archived.sort_unstable();
     assert_eq!(archived, vec![5, 6]);
+}
+
+/// A thread's default model and reasoning effort (ADR 0086) is its owner's alone: it reads back as
+/// written, the empty pick clears it, another person's thread and a thread that does not exist are
+/// not found, it changes neither the version nor the log, and it goes with the thread.
+pub async fn a_threads_default_pick_is_its_owners_and_goes_with_the_thread<S: ThreadStore>(
+    store: S,
+) {
+    use orch_core::{ModelId, ModelPick, ReasoningEffort};
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 2).await;
+    // a thread with no default has the empty pick; so does one that does not exist
+    assert_eq!(
+        store.thread_pick(thread_id(1)).await.unwrap(),
+        ModelPick::default()
+    );
+    assert_eq!(
+        store.thread_pick(thread_id(99)).await.unwrap(),
+        ModelPick::default()
+    );
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let pick = ModelPick {
+        model: Some(ModelId::parse("deep").unwrap()),
+        reasoning_effort: Some(ReasoningEffort::High),
+    };
+    store
+        .set_thread_pick(&alice(), thread_id(1), pick.clone())
+        .await
+        .unwrap();
+    assert_eq!(store.thread_pick(thread_id(1)).await.unwrap(), pick);
+    // it is a setting of the row: no new version, no new event
+    let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        (after.version, after.last_seq),
+        (before.version, before.last_seq)
+    );
+    // another person's thread, and one that does not exist, are not found; nothing was written
+    for (who, n) in [(&alice(), 2), (&alice(), 99), (&bob(), 1)] {
+        let err = store.set_thread_pick(who, thread_id(n), pick.clone()).await;
+        assert_eq!(class_of(&err), Some(ErrorClass::NotFound), "{n}: {err:?}");
+    }
+    assert_eq!(
+        store.thread_pick(thread_id(2)).await.unwrap(),
+        ModelPick::default()
+    );
+    // the empty pick clears it
+    store
+        .set_thread_pick(&alice(), thread_id(1), ModelPick::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.thread_pick(thread_id(1)).await.unwrap(),
+        ModelPick::default()
+    );
+    // and it is erased with the thread
+    store
+        .set_thread_pick(&alice(), thread_id(1), pick)
+        .await
+        .unwrap();
+    delete_now(&store, &[1], 60).await.unwrap();
+    assert_eq!(
+        store.thread_pick(thread_id(1)).await.unwrap(),
+        ModelPick::default()
+    );
 }
 
 /// Another owner's thread, and a thread that does not exist, are not found, and nothing named with

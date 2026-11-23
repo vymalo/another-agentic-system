@@ -13,6 +13,7 @@ mod gate_config;
 mod inbox;
 pub mod locale;
 pub mod mentions;
+pub mod pick;
 mod prompts;
 mod purge;
 pub mod reader;
@@ -58,6 +59,7 @@ pub use inbox::{
 };
 pub use locale::THREAD_LOCALE_KEY;
 pub use mentions::THREAD_MENTIONS_KEY;
+pub use pick::{THREAD_MODEL_KEY, THREAD_REASONING_KEY};
 pub use prompts::{EditPrompt, PromptRefusal, RenderPrompt, RenderedPrompt};
 pub use purge::{DEFAULT_PURGE_LEASE_SECS, DEFAULT_PURGE_POLL_SECS, PurgeConfig, PurgeWorker};
 pub use reader::{

@@ -22,6 +22,7 @@ fn said(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -36,6 +37,7 @@ fn stop(text: &str) -> Input {
     Input::StopAndSend {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -179,6 +181,7 @@ fn next_job(text: &str, abandoned: u32) -> [Command; 2] {
         Command::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: text.into(),
             catalog: None,
             mentions: Vec::new(),
@@ -215,6 +218,7 @@ fn row1_a_stop_and_send_logs_the_message_asks_for_the_cancel_and_holds_the_text(
                 mentions: Vec::new(),
                 tier: None,
                 locale: None,
+                pick: None,
             }
         );
         // the message and the cancel: nothing is sent to the agent (no delegation, no steer)
@@ -244,6 +248,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
     let input = Input::StopAndSend {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: "go".into(),
         message_id: None,
@@ -259,6 +264,7 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
     assert!(cmds.contains(&Command::Delegate {
         tier_cap: None,
         locale: None,
+        pick: None,
         text: "go".into(),
         catalog: Some(UiDelivery::Ref(catalog.reference())),
         mentions: Vec::new(),
@@ -364,6 +370,7 @@ fn row3_a_message_to_a_running_job_is_a_steer_and_the_job_goes_on() {
             [&Command::Steer {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "you were wrong since line 1".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -400,6 +407,7 @@ fn the_first_message_of_a_thread_is_delegated_with_no_delivery() {
             [&Command::Delegate {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "hi".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -742,6 +750,7 @@ fn row6_the_cancel_that_follows_still_starts_the_next_job() {
     assert!(cmds.contains(&Command::Delegate {
         tier_cap: None,
         locale: None,
+        pick: None,
         text: "do X".into(),
         catalog: None,
         mentions: Vec::new(),
@@ -767,6 +776,7 @@ fn row7_a_cancel_refused_for_good_sends_the_text_to_the_agent_as_a_steer() {
             [&Command::Steer {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "do X instead".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -871,6 +881,7 @@ fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
             mentions: Vec::new(),
             tier: None,
             locale: None,
+            pick: None,
         },
     );
     assert_eq!(next, held);

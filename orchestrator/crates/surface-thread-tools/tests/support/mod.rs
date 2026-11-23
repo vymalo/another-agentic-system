@@ -337,6 +337,7 @@ impl Harness {
                 Input::UserMessage {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     user: alice.clone(),
                     text: "echo again".to_owned(),
                     message_id: None,
@@ -372,6 +373,7 @@ impl Harness {
                 Input::UserMessage {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     user: alice.clone(),
                     text: "echo again".to_owned(),
                     message_id: None,

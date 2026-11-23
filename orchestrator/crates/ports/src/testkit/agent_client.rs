@@ -113,6 +113,7 @@ fn request(
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 
@@ -670,6 +671,48 @@ pub async fn a_tier_is_refused_by_an_agent_that_does_not_list_the_extension<F: A
         }
         // and the same message without a tier is the first the agent hears
         let envs = drain(send(&fx, Script::Echo, "m-plain", "ctx-tier").await).await;
+        assert!(!envs.is_empty(), "a plain message is sent as it was");
+    })
+    .await;
+}
+
+/// A message that names a model or a reasoning effort is **never sent without it** (ADR 0086,
+/// ADR 0008: a pick fails closed, unlike a locale). The fixture's agent lists neither `model-pick/v1`
+/// nor `reasoning/v1`, so the adapter sends **nothing** and answers `Unsupported`; the same message
+/// that names no pick is sent as it always was.
+pub async fn a_pick_is_refused_by_an_agent_that_does_not_offer_it<F: AgentFixture>(fx: F) {
+    within(async {
+        let mut req = request(
+            &fx.endpoint(),
+            "think harder".to_owned(),
+            "m-pick",
+            Some("ctx-pick"),
+            None,
+        );
+        req.pick = Some(orch_core::ModelPick {
+            model: Some(orch_core::ModelId::parse("deep").expect("an alias")),
+            reasoning_effort: Some(orch_core::ReasoningEffort::High),
+        });
+        let err = match fx.client().send_stream(req).await {
+            Ok(_) => panic!("a pick reached an agent that offers none"),
+            Err(e) => e,
+        };
+        assert_class(
+            &err,
+            &[ErrorClass::Unsupported],
+            "a pick to an agent without the extensions",
+        );
+        assert!(!err.is_retryable(), "never retried without the pick");
+        match fx
+            .client()
+            .find_task_by_message(&fx.endpoint(), Some("ctx-pick"), "m-pick")
+            .await
+        {
+            Ok(None) | Err(AgentError::Unsupported(_)) => {}
+            Ok(Some(task)) => panic!("the refused message started the task {task}"),
+            Err(e) => panic!("looking the refused message up failed: {e}"),
+        }
+        let envs = drain(send(&fx, Script::Echo, "m-plain", "ctx-pick").await).await;
         assert!(!envs.is_empty(), "a plain message is sent as it was");
     })
     .await;

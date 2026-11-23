@@ -28,6 +28,7 @@ fn um(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -115,6 +116,7 @@ fn row1_user_message_in_queued_or_working() {
             Command::Steer {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "hi".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -129,6 +131,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
     let input = Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: "hi".into(),
         message_id: Some("m-1".into()),
@@ -146,6 +149,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                 EventBody::UserMessage(UserMessageData {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     text: "hi".into(),
                     message_id: Some("m-1".into()),
                     run_id: Some("r-1".into()),
@@ -167,6 +171,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                 Command::Steer {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     text,
                     catalog: None,
                     mentions: Vec::new(),
@@ -176,6 +181,7 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                 Command::Delegate {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     text,
                     catalog: None,
                     mentions: Vec::new(),
@@ -191,6 +197,7 @@ fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
     let input = Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: "hi".into(),
         message_id: None,
@@ -225,6 +232,7 @@ fn row2_user_message_in_blocked_requeues() {
         Command::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "main".into(),
             catalog: None,
             mentions: Vec::new(),
@@ -262,6 +270,7 @@ fn row3_user_message_in_terminal_starts_the_next_job() {
             Command::Delegate {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "again".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -354,6 +363,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
             job: Job {
                 after_stop: None,
                 after_stop_locale: None,
+                after_stop_pick: None,
                 number: 3,
                 gate: gate.clone(),
                 attempt: 2,
@@ -468,6 +478,7 @@ fn a_redelivery_that_was_sent_changes_the_thread_as_one_that_was_not_and_delegat
     let sent = |text: &str| Input::Redeliver {
         tier_cap: None,
         locale: None,
+        pick: None,
         text: text.into(),
         sent: true,
         mentions: Vec::new(),
@@ -522,6 +533,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             &Input::Redeliver {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -542,6 +554,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             Command::Delegate {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "x".into(),
                 catalog: None,
                 mentions: Vec::new(),
@@ -555,6 +568,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
             &Input::Redeliver {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -571,6 +585,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 &Input::Redeliver {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     text: "x".into(),
                     sent: false,
                     mentions: Vec::new(),
@@ -582,6 +597,7 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 vec![Command::Delegate {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     text: "x".into(),
                     catalog: None,
                     mentions: Vec::new(),
@@ -1482,6 +1498,7 @@ fn um_with(text: &str, catalog: &UiCatalogData) -> Input {
     Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -1705,6 +1722,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             &Input::Redeliver {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),
@@ -1726,6 +1744,7 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
             &Input::Redeliver {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 text: "x".into(),
                 sent: false,
                 mentions: Vec::new(),

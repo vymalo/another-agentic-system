@@ -10,11 +10,11 @@ use orch_core::{
     AccessTier, AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint,
     Classify, Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource,
     GatePolicy, Input, Job, LiveText, LocaleHint, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention,
-    Origin, PersonSaid, PersonSaidBuilder, Replacement, TaskKind, ThreadForkedData, ThreadId,
-    ThreadRecord, ThreadState, TierListing, Timestamp, TitleSource, ToolsError, UiCatalogData,
-    UserId, WatchKey, branch_points, check_answer, check_description, check_servers, check_title,
-    copied, family_root, file_refs, fork_commit, fork_cut, fork_message, is_commit_hash,
-    is_fork_at, rail_parent_of_fork, repo_key, report, start_thread, transition,
+    ModelPick, Origin, PersonSaid, PersonSaidBuilder, Replacement, TaskKind, ThreadForkedData,
+    ThreadId, ThreadRecord, ThreadState, TierListing, Timestamp, TitleSource, ToolsError,
+    UiCatalogData, UserId, WatchKey, branch_points, check_answer, check_description, check_servers,
+    check_title, copied, family_root, file_refs, fork_commit, fork_cut, fork_message,
+    is_commit_hash, is_fork_at, rail_parent_of_fork, repo_key, report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -342,6 +342,8 @@ pub struct Inbound {
     /// A hint: it is carried on the delegation to an agent whose live card lists `locale/v1`, and it
     /// is **never written to the log** (nothing of it is projected or exported).
     pub locale: Option<LocaleHint>,
+    /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+    pub pick: Option<ModelPick>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -388,6 +390,8 @@ pub enum ForkAt {
         /// The interface locale the person names for it (ADR 0085). An edit that names none carries
         /// the one of the message it replaces, as the tier does.
         locale: Option<LocaleHint>,
+        /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+        pick: Option<ModelPick>,
     },
 }
 
@@ -415,6 +419,8 @@ pub struct FirstMessage {
     /// The interface locale the message names (ADR 0085): the language the person's screen reads
     /// in, a hint carried as the tier is, and recorded on the fork's first `user_message`.
     pub locale: Option<LocaleHint>,
+    /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+    pub pick: Option<ModelPick>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -766,6 +772,30 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// What the live card of `endpoint` says about `model-pick/v1` and `reasoning/v1`, read **now**
+    /// (never cached, ADR 0008).
+    ///
+    /// # Errors
+    /// The card could not be read in [`AppConfig::card_timeout`](crate::AppConfig::card_timeout).
+    pub(crate) async fn card_pick_listings(
+        &self,
+        endpoint: &AgentEndpoint,
+    ) -> Result<orch_core::PickListings, AgentError> {
+        let card = tokio::time::timeout(
+            self.cfg.card_timeout,
+            self.ports.agents().read_card(endpoint),
+        )
+        .await;
+        match card {
+            Ok(Ok(card)) => Ok(card.pick),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(AgentError::unreachable(format!(
+                "the agent card did not arrive within {:?}",
+                self.cfg.card_timeout
+            ))),
+        }
+    }
+
     /// Notes in the thread's job ledger what `agent`'s live card says now, as the build the thread
     /// works with (ADR 0053): called by the dispatcher just before it gives an agent work (a
     /// delegation, an ask, a verification). **Never fails and never waits long**: a card that
@@ -1090,6 +1120,11 @@ impl<P: Ports> App<P> {
         let tier = self
             .resolve_tier(&access, &req.target.agent_id, inbound.tier, None)
             .await?;
+        // the model and reasoning effort it names, checked against the live card (ADR 0086); a new
+        // thread has no default of its own yet
+        let pick = self
+            .resolve_pick(&req.target.agent_id, inbound.pick, &ModelPick::default())
+            .await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
         let tools = self
@@ -1110,6 +1145,7 @@ impl<P: Ports> App<P> {
                 tier: tier.tier,
                 tier_cap: tier.cap,
                 locale: inbound.locale,
+                pick,
             },
         )?;
         // The servers are attached in the commit that holds the first message, after it, so that
@@ -1603,6 +1639,7 @@ impl<P: Ports> App<P> {
                         tier: first.tier,
                         tier_cap: None,
                         locale: first.locale,
+                        pick: first.pick,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),
@@ -1614,11 +1651,13 @@ impl<P: Ports> App<P> {
                 message_id,
                 tier,
                 locale,
+                pick,
             } => {
                 validate_text(&text)?;
                 let mut edit = Replacement::edit(text, message_id, None);
                 edit.tier = tier;
                 edit.locale = locale;
+                edit.pick = pick;
                 (ForkPoint::Replace(seq), ForkKind::Edit, Some(edit))
             }
         };
@@ -1660,6 +1699,16 @@ impl<P: Ports> App<P> {
                 if replacement.locale.is_none() {
                     replacement.locale = replaced_seq.and_then(|seq| replaced_locale(&events, seq));
                 }
+                // The model and effort are checked against the fork's agent before anything is
+                // written (ADR 0086): the pick it names, or for an edit that names none the one of
+                // the message it replaces, which the card must still offer.
+                let named = replacement
+                    .pick
+                    .take()
+                    .or_else(|| replaced_seq.and_then(|seq| replaced_pick(&events, seq)));
+                replacement.pick = self
+                    .resolve_pick(&target.agent_id, named, &ModelPick::default())
+                    .await?;
                 Some(replacement)
             }
             None => None,
@@ -2277,6 +2326,7 @@ impl<P: Ports> App<P> {
                 tier: None,
                 tier_cap: None,
                 locale: None,
+                pick: None,
             }
         } else {
             Input::UserMessage {
@@ -2290,6 +2340,7 @@ impl<P: Ports> App<P> {
                 tier: None,
                 tier_cap: None,
                 locale: None,
+                pick: None,
             }
         };
         // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
@@ -2424,6 +2475,7 @@ impl<P: Ports> App<P> {
             tier,
             tier_cap,
             origin,
+            pick,
             ..
         }
         | Input::StopAndSend {
@@ -2432,6 +2484,7 @@ impl<P: Ports> App<P> {
             tier,
             tier_cap,
             origin,
+            pick,
             ..
         } = &mut input
         {
@@ -2452,6 +2505,12 @@ impl<P: Ports> App<P> {
                 .resolve_tier(&access, &thread.target.agent_id, *tier, inherited)
                 .await?;
             (*tier, *tier_cap) = (pin.tier, pin.cap);
+            // The model and effort (ADR 0086): the message's own over the thread's default, checked
+            // against the live card, and written on the message as resolved.
+            let default = self.ports.store().thread_pick(id).await?;
+            *pick = self
+                .resolve_pick(&thread.target.agent_id, pick.take(), &default)
+                .await?;
         }
         // The action of a person on a surface continues the job's task: its tier is the job's,
         // lowered to the person's cap and the agent's card as an answer's is. What a surface put
@@ -2550,6 +2609,43 @@ impl<P: Ports> App<P> {
                 "a commit without a lease was reported as fenced",
             )),
         }
+    }
+
+    /// Changes the thread's default model and reasoning effort (ADR 0086): what a message that names
+    /// none is sent with. `None` leaves an axis as it is, `Some(None)` clears it, `Some(Some(x))` sets
+    /// it. A default is **checked when it is set** against the live card of the thread's agent
+    /// ([`AppError::PickNotOffered`]), and again whenever a message resolves to it. Nothing is
+    /// written to the log. Returns the thread and the default as it is afterwards.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`] for a thread that is not the user's, [`AppError::Forbidden`] without
+    /// `thread.write`, [`AppError::PickNotOffered`] and [`AppError::CardUnavailable`] as for a
+    /// message.
+    pub async fn set_thread_pick(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+        model: Option<Option<orch_core::ModelId>>,
+        effort: Option<Option<orch_core::ReasoningEffort>>,
+    ) -> Result<(ThreadRecord, ModelPick), AppError> {
+        let thread = self.writable_thread(&self.access(who), id).await?;
+        let store = self.ports.store();
+        let mut pick = store.thread_pick(id).await?;
+        if let Some(model) = model {
+            pick.model = model;
+        }
+        if let Some(effort) = effort {
+            pick.reasoning_effort = effort;
+        }
+        // Only what is set is checked: clearing needs no card.
+        self.resolve_pick(
+            &thread.target.agent_id,
+            Some(pick.clone()),
+            &ModelPick::default(),
+        )
+        .await?;
+        store.set_thread_pick(who.user(), id, pick.clone()).await?;
+        Ok((thread, pick))
     }
 
     /// The servers a person may attach, in the order the deployment lists them: what
@@ -2856,6 +2952,7 @@ impl<P: Ports> App<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -2867,6 +2964,7 @@ impl<P: Ports> App<P> {
                         tier,
                         tier_cap,
                         locale,
+                        pick,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -2882,6 +2980,7 @@ impl<P: Ports> App<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -2892,6 +2991,7 @@ impl<P: Ports> App<P> {
                         tier,
                         tier_cap,
                         locale,
+                        pick,
                     },
                 }),
                 Command::DelegateAction {
@@ -3722,6 +3822,16 @@ fn describe_watch_key(key: &str) -> (&str, &str) {
 }
 
 /// The access tier of the person's message at `seq`, which an edit replaces (ADR 0061).
+fn replaced_pick(events: &[Event], seq: i64) -> Option<ModelPick> {
+    events
+        .iter()
+        .find(|e| e.seq == seq)
+        .and_then(|e| match &e.body {
+            orch_core::EventBody::UserMessage(m) => m.pick.clone(),
+            _ => None,
+        })
+}
+
 fn replaced_locale(events: &[Event], seq: i64) -> Option<LocaleHint> {
     events
         .iter()

@@ -39,6 +39,7 @@ async fn start(w: &World, text: &str, locale: Option<&str>) -> ThreadId {
             new_thread(text),
             Inbound {
                 locale: locale.map(tag),
+                pick: None,
                 ..Inbound::default()
             },
         )
@@ -154,6 +155,7 @@ async fn a_message_the_person_sends_into_the_thread_carries_its_own_locale() {
             tier: None,
             tier_cap: None,
             locale: Some(tag("ybb-CM")),
+            pick: None,
         },
         None,
     )

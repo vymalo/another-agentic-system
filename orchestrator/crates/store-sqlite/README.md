@@ -21,7 +21,7 @@ root of ADR 0076 decision 4 will.
 
 | Port | State |
 |---|---|
-| `ThreadStore` — all 41 methods | **built**, and green on `thread_store_conformance!` (no skip) |
+| `ThreadStore` — all 43 methods | **built**, and green on `thread_store_conformance!` (no skip); the thread's default model and reasoning effort ([ADR 0086](../../../docs/decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md)) is `threads.pick`, migration `0003_thread_pick.sql` |
 | `UsageLedger` (ADR 0065) | **built** (milestone 2a, migration `0002`), green on `usage_ledger_conformance!` with its `forget` hook (no skip) |
 | `ThreadSearch` (ADR 0068) | **built** (milestone 2a, migration `0002`), green on `thread_search_conformance!` with its `forget` and `age` hooks (no skip) |
 | `PromptStore` (ADR 0070) | **declared, not built** (milestone 2b): `ThreadStore`'s third supertrait, so it must exist for it to compile. Every method answers `PromptStoreError::Internal` naming milestone 2b. Deliberately not an empty page: an empty library is something a caller cannot tell from "nothing was saved" |

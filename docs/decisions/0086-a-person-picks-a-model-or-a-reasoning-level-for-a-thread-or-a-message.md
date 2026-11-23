@@ -1,7 +1,8 @@
 # ADR 0086 — A person picks a model or a reasoning level, for a thread or a message
 
-- **Status:** **proposed 2026-11-23** (task ANR-14, issue #415, parity gap 15). Nothing is built yet; this record fixes the
-  names and the rules the build follows. **Contract:** [`docs/api/model-pick-v1.md`](../api/model-pick-v1.md).
+- **Status:** **proposed 2026-11-23** (task ANR-14, issue #415, parity gap 15). **The orchestrator's side is built (slice 2,
+  2026-11-23)**: the card read, the activation, the checks and the typed `422`s, the log, the thread default and its `PATCH`;
+  the web's chips are slice 3 and the adam half is ANR-139. This record fixes the names and the rules the build follows. **Contract:** [`docs/api/model-pick-v1.md`](../api/model-pick-v1.md).
   **Pattern:** [ADR 0008](0008-platform-integration-via-a2a-extension.md); the closest working examples are the access tier
   ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)) and the locale hint
   ([ADR 0085](0085-the-interface-language-travels-with-the-message-as-a-hint.md)).
@@ -53,8 +54,13 @@ two halves on its side, and this record uses its names rather than inventing oth
 
 - adam-rs needs a served-agent `model-pick/v1` (card, activation, `InvalidParams`, echo) over `vymalo.model`; until then no card
   lists it and the model control never shows. The effort control works as soon as an agent lists `reasoning/v1`.
+- **The adam half is ANR-139:** adam serves `model-pick/v1` (card, activation, `InvalidParams`, echo) over `vymalo.model`; it
+  waits on ANR-117 / adam-rs#338. Until it lands no card lists the extension, so every model pick is a `422 model_not_offered`
+  with an empty `offered` and the web shows no model chip; the effort control works as soon as an agent lists `reasoning/v1`.
 - `chat-api.yaml` changes are additive only (two optional members on the message and the thread; two error codes).
-- A new `LocaleHint`-like value type in the core carries the pick; every constructor of the send request gains a `None`.
+- A new value type in the core, `ModelPick` (a validated alias and a closed `ReasoningEffort` enum), carries the pick; every
+  constructor of the send request gains a `None`. The log holds it as `user_message.pick` (one member, `{model?, reasoningEffort?}`);
+  the thread's default is a `threads.pick` column (Postgres `0031`, SQLite `0003`), set by two `ThreadStore` methods.
 
 ## Alternatives rejected
 

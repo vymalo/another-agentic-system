@@ -64,6 +64,7 @@ fn the_conversation_keeps_its_builds_into_the_next_job_and_records_the_job_it_wa
         &Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: UserId::new("u@x.io"),
             text: "go on".into(),
             message_id: None,

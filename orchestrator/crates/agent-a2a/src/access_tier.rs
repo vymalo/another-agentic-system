@@ -146,6 +146,7 @@ mod tests {
             tier,
             tier_cap: None,
             locale: None,
+            pick: None,
         }
     }
 
@@ -199,6 +200,7 @@ mod tests {
             tier,
             tier_cap: cap,
             locale: None,
+            pick: None,
         }
     }
 

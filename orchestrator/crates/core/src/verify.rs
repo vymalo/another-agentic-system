@@ -357,6 +357,7 @@ pub(crate) fn conclude(
                 tier: job.tier,
                 tier_cap: job.tier_cap,
                 locale: None,
+                pick: None,
             });
             job.attempt = next;
             // the agent goes again: a new turn

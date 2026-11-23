@@ -24,6 +24,7 @@ fn request(text: &str, message_id: &str, history: Option<ForkHistory>) -> SendRe
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 

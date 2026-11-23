@@ -33,6 +33,7 @@ fn said(text: &str, locale: Option<&str>) -> Input {
         tier: None,
         tier_cap: None,
         locale: locale.map(tag),
+        pick: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn stop(text: &str, locale: Option<&str>) -> Input {
         tier: None,
         tier_cap: None,
         locale: locale.map(tag),
+        pick: None,
     }
 }
 
@@ -160,6 +162,7 @@ fn a_redelivery_carries_the_locale_its_message_recorded() {
             tier: None,
             tier_cap: None,
             locale: Some(tag("fr-CM")),
+            pick: None,
         },
     );
     assert_eq!(sent(&cmds), Some(tag("fr-CM")), "the delegation carries it");
@@ -184,6 +187,7 @@ fn a_redelivery_carries_the_locale_its_message_recorded() {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         },
     );
     assert_eq!(sent(&cmds), None);
@@ -220,9 +224,11 @@ fn an_action_carries_no_locale() {
         c,
         Command::Delegate {
             locale: Some(_),
+            pick: None,
             ..
         } | Command::Steer {
             locale: Some(_),
+            pick: None,
             ..
         }
     )));

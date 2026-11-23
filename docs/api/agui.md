@@ -82,6 +82,11 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > `locale/v1`. It is a hint: it is **not** on `TEXT_MESSAGE_START` and no activity is emitted for it, but the log records it on the
 > `user_message` (the log is the state), so an export shows it.
 
+> **Model pick** (2026-11-23, [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md), contract
+> [`model-pick-v1.md`](model-pick-v1.md), the orchestrator's side built, no agent lists `model-pick/v1` yet): `forwardedProps["vymalo.model"]`
+> and `["vymalo.reasoningEffort"]` on the run that carries a message, checked against the agent's live card before anything is
+> written (**422** `model_not_offered` / `reasoning_not_offered` with `offered`; not a hint); see [Model pick](#model-pick).
+
 > **Commands** (2026-11-19, [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md), contract
 > [`commands-v1.md`](commands-v1.md), the orchestrator's card read and capabilities key built, adam's side built, the web's `/` menu
 > next): the capabilities document's `custom[<commands/v1 URI>] = {commands: [{name, description, argumentHint?}]}` while the live card
@@ -1467,6 +1472,30 @@ contract [`locale-v1.md`](locale-v1.md)); no agent lists the extension yet and t
 POST /agui/agents/coder   forwardedProps: {"vymalo.locale": "fr-CM"}
                           messages: [{role: "user", content: "corrige la page de connexion"}]
 → A2A metadata {"https://agents.vymalo.com/a2a/extensions/locale/v1": {"locale": "fr-CM"}}
+```
+
+## Model pick
+
+**Built 2026-11-23, on the orchestrator's side only** ([ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md),
+contract [`model-pick-v1.md`](model-pick-v1.md)); no agent lists `model-pick/v1` yet and the web has no control yet.
+
+- **In:** `forwardedProps["vymalo.model"]` (an alias the agent offers: 1 to 64 characters of `a-z0-9._-`) and
+  `forwardedProps["vymalo.reasoningEffort"]` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) on the run that carries
+  the message; `null` or no member: none. Each is read on every run, so a value that is not one is **400** before the stream.
+  A message that names none is sent with the thread's default (`PATCH /api/threads/{id}`), then the agent's own.
+- **Checked:** the resolved pick against the thread's agent's **live** card, before anything is written. **Not a hint**: a choice
+  the card does not list (or a card that lists the extension not at all) is **422** `model_not_offered` or `reasoning_not_offered`
+  with `offered`, and nothing is written; a card that cannot be read is **503**.
+- **Log:** the `user_message` holds `pick: {model?, reasoningEffort?}` (omitted when none): the log is the state, so a
+  redelivery, a fork's first message, an edit and an export carry it. **No frame carries it yet** and no activity is emitted for
+  it; the chip is the web's (slice 3).
+- **To the agent:** `metadata[model-pick/v1] = {"model": id}` and `metadata[reasoning/v1] = {"effort": level}`, each URI activated
+  for that message alone and only when it names that axis; an agent whose card no longer offers it is sent nothing.
+
+```
+POST /agui/agents/coder   forwardedProps: {"vymalo.model": "deep", "vymalo.reasoningEffort": "high"}
+                          messages: [{role: "user", content: "think about the migration"}]
+→ A2A metadata {".../model-pick/v1": {"model": "deep"}, ".../reasoning/v1": {"effort": "high"}}
 ```
 
 ## Commands

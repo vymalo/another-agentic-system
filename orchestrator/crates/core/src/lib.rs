@@ -24,6 +24,7 @@ mod language;
 mod live;
 mod locale;
 mod mention;
+mod pick;
 mod pricing;
 pub mod prompt;
 mod rank;
@@ -114,6 +115,10 @@ pub use locale::{
     LOCALE_EXTENSION, LocaleError, LocaleHint, LocaleListing, LocaleOffer, MAX_LOCALE_LEN,
 };
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
+pub use pick::{
+    EffortOffer, Listing, MAX_MODEL_ID_LEN, MODEL_PICK_EXTENSION, ModelChoice, ModelId, ModelPick,
+    ModelPickOffer, PickError, PickListings, PickRefusal, REASONING_EXTENSION, ReasoningEffort,
+};
 pub use pricing::{
     Currency, CurrencyError, LinePrice, MAX_PRICE_MICROS, MAX_PRICED_MODELS, MICROS_PER_UNIT,
     Micros, ModelKey, ModelPrice, PriceTable, PriceTableError, PriceTableId, PricedModel,

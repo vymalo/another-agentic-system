@@ -51,6 +51,7 @@ fn request(ep: &AgentEndpoint, context: &str, content: SendContent) -> SendReque
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 

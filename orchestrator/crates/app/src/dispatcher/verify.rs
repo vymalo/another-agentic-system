@@ -267,6 +267,7 @@ impl<P: Ports> Dispatcher<P> {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         };
         self.app.record_agent_build(v.thread, &v.endpoint).await;
         match self.app.ports().agents().send_stream(request).await {

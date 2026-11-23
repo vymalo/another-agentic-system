@@ -22,6 +22,7 @@ use crate::description::DescriptionLedger;
 use crate::ids::{AgentId, ThreadId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
+use crate::pick::ModelPick;
 use crate::step::StepLedger;
 use crate::thread::ThreadState;
 use crate::title::TitleLedger;
@@ -419,6 +420,10 @@ pub struct Job {
     /// has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_stop_locale: Option<LocaleHint>,
+    /// The model and reasoning effort of the newest message that named one among those
+    /// [`Job::after_stop`] holds (ADR 0086), as for the locale. Cleared with the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_stop_pick: Option<ModelPick>,
     /// The access tier the newest message of the person was sent under (ADR 0061), named or not:
     /// what the job is working under. The orchestrator's own messages on the thread's behalf, a
     /// gate's rework and the delegation of an A2UI action, are sent under it, so that an agent
@@ -505,6 +510,7 @@ impl Default for Job {
             after_stop_tier: None,
             after_stop_tier_cap: None,
             after_stop_locale: None,
+            after_stop_pick: None,
             tier: None,
             tier_cap: None,
             asks: Vec::new(),

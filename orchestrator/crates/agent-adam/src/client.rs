@@ -181,6 +181,7 @@ impl AgentClient for LocalAgentClient {
             access_tier: orch_core::TierListing::Absent,
             // a local agent is never sent a locale: the card it would list it on is not read
             locale: orch_core::LocaleListing::Absent,
+            pick: orch_core::PickListings::default(),
             commands: orch_core::CommandsListing::Absent,
             child_sessions: None,
             trusted_components: None,

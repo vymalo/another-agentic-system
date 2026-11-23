@@ -583,6 +583,7 @@ pub fn translate_with_warnings(
         (Some(text), None, _) => vec![Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user,
             text,
             message_id: None,
@@ -598,6 +599,7 @@ pub fn translate_with_warnings(
             vec![Input::StopAndSend {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 user,
                 text,
                 message_id: Some(id),
@@ -611,6 +613,7 @@ pub fn translate_with_warnings(
         (None, Some((id, text)), _) => vec![Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user,
             text,
             message_id: Some(id),

@@ -90,6 +90,7 @@ macro_rules! thread_store_conformance {
             eject_lands_after_the_former_block a_bad_anchor_or_a_nested_row_is_refused
             arranging_is_the_owners_alone rail_pages_never_split_a_block
             an_arrangement_that_changes_nothing_writes_nothing
+            a_threads_default_pick_is_its_owners_and_goes_with_the_thread
             a_rank_that_would_pass_the_cap_re_spreads_the_list
             ties_of_rank_are_broken_by_newest_first
             a_thread_is_nested_under_a_top_level_thread_of_its_owner
@@ -212,6 +213,7 @@ macro_rules! agent_client_conformance {
             a_tier_is_refused_by_an_agent_that_does_not_list_the_extension
             a_plain_message_under_a_cap_is_not_sent_to_an_agent_that_lists_tiers
             a_locale_never_holds_a_message_back
+            a_pick_is_refused_by_an_agent_that_does_not_offer_it
         );
     };
     (@cases $make:path; $($case:ident)*) => {

@@ -74,6 +74,12 @@
 //! ([`locale_from_card`]), the tag rides in the message metadata under the URI and the URI is
 //! activated; a card that does not list it, or lists it badly, gets the plain message.
 //!
+//! The model and the reasoning effort of a message (`model-pick/v1` and adam's `reasoning/v1`,
+//! ADR 0086) are **not** hints: when the message names either, the live card read for the call must
+//! offer it ([`pick_from_card`]); the choice then rides in the message metadata under each URI
+//! and each URI is activated, and a card that does not offer it is [`AgentError::Unsupported`] and
+//! nothing is sent.
+//!
 //! Trusted components (`trusted-components/v1`, ADR 0083) are activated on a send and a
 //! resubscribe when the card read for that very call offers the extension well formed
 //! ([`trusted_components_from_card`]); the agent then asks the client to draw one in its
@@ -90,6 +96,7 @@ mod extensions;
 mod files;
 mod locale;
 mod mentions;
+mod pick;
 mod releases;
 mod thread_tools;
 mod trusted;
@@ -107,6 +114,7 @@ pub use extensions::{
 };
 pub use files::FileFetch;
 pub use locale::locale_from_card;
+pub use pick::pick_from_card;
 pub use releases::{RELEASE_CHANNELS_URI, releases_from_card};
 pub use thread_tools::thread_tools_metadata;
 pub use trusted::trusted_components_from_card;

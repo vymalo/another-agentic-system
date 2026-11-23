@@ -35,6 +35,7 @@ use crate::gate::{
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
+use crate::pick::ModelPick;
 use crate::reasoning::{AgentReasoningData, bound_reasoning};
 use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
 use crate::step::{StepReport, StepSource, record_step};
@@ -90,6 +91,8 @@ pub enum Input {
         /// and **never recorded in the log**: it is not conversation content, and the projection
         /// shows nothing of it. `None` for a message that names none.
         locale: Option<LocaleHint>,
+        /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+        pick: Option<ModelPick>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -123,6 +126,8 @@ pub enum Input {
         /// stops a running job it goes to **the next job**
         /// ([`Job::after_stop_locale`]).
         locale: Option<LocaleHint>,
+        /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+        pick: Option<ModelPick>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -171,6 +176,8 @@ pub enum Input {
         /// the redelivery carries it, because the log is the state and the hint changed the words
         /// the agent is about to be sent.
         locale: Option<LocaleHint>,
+        /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+        pick: Option<ModelPick>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -632,6 +639,8 @@ pub enum Command {
         /// card lists the extension. `None` for a rework, which is the core's own words, and for a
         /// redelivery, whose message has nothing of the hint in the log.
         locale: Option<LocaleHint>,
+        /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+        pick: Option<ModelPick>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -653,6 +662,8 @@ pub enum Command {
         /// The interface locale of the message, as for [`Command::Delegate`]; the delegation this
         /// steer may become keeps it.
         locale: Option<LocaleHint>,
+        /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+        pick: Option<ModelPick>,
     },
     /// Follow a round of the thread's child session without sending anything (ADR 0072): the
     /// application writes an `observe` row, and the dispatcher answers with
@@ -1017,6 +1028,7 @@ struct Said<'a> {
     tier: Option<AccessTier>,
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
+    pick: Option<ModelPick>,
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -1033,6 +1045,7 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
             tier: said.tier,
             tier_cap: said.tier_cap,
             locale: said.locale.clone(),
+            pick: said.pick.clone(),
         }),
     )
 }
@@ -1054,6 +1067,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier: said.tier,
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
+        pick: said.pick.clone(),
     });
     cmds
 }
@@ -1076,6 +1090,7 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier: said.tier,
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
+        pick: said.pick.clone(),
     });
     cmds
 }
@@ -1114,6 +1129,10 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
     if said.locale.is_some() {
         job.after_stop_locale = said.locale.clone();
     }
+    // a pick is held as the tier is: the newest message that named one sets the next job's
+    if said.pick.is_some() {
+        job.after_stop_pick = said.pick.clone();
+    }
     job.tier = said.tier;
     job.tier_cap = said.tier_cap;
     let (record, _) = deliver(job, said.user, said.catalog.as_ref());
@@ -1135,6 +1154,7 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let tier = job.after_stop_tier.take();
     let tier_cap = job.after_stop_tier_cap.take();
     let locale = job.after_stop_locale.take();
+    let pick = job.after_stop_pick.take();
     let abandoned = job.number;
     *job = job.next();
     job.tier = tier;
@@ -1152,6 +1172,7 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
             tier,
             tier_cap,
             locale,
+            pick,
         },
     ]
 }
@@ -1175,6 +1196,7 @@ fn redelegate(
     tier: Option<AccessTier>,
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
+    pick: Option<ModelPick>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
@@ -1187,11 +1209,13 @@ fn redelegate(
         tier,
         tier_cap,
         locale,
+        pick,
     }
 }
 
 /// What a redelivered message asks of the application: its delegation, or nothing when it was
 /// sent already (the agent has the task, the dispatcher follows it: open question 33).
+#[allow(clippy::too_many_arguments)]
 fn redelegation(
     job: &mut Job,
     text: &str,
@@ -1200,6 +1224,7 @@ fn redelegation(
     tier: Option<AccessTier>,
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
+    pick: Option<ModelPick>,
 ) -> Vec<Command> {
     if sent {
         job.answer.reset();
@@ -1211,7 +1236,9 @@ fn redelegation(
         job.tier_cap = tier_cap;
         Vec::new()
     } else {
-        vec![redelegate(job, text, mentions, tier, tier_cap, locale)]
+        vec![redelegate(
+            job, text, mentions, tier, tier_cap, locale, pick,
+        )]
     }
 }
 
@@ -1384,6 +1411,7 @@ pub fn start_thread(
             tier,
             tier_cap,
             locale,
+            pick,
         }
         | Input::StopAndSend {
             user,
@@ -1396,6 +1424,7 @@ pub fn start_thread(
             tier,
             tier_cap,
             locale,
+            pick,
         } => {
             let said = Said {
                 user,
@@ -1408,6 +1437,7 @@ pub fn start_thread(
                 tier: *tier,
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
+                pick: pick.clone(),
             };
             let mut job = Job::with_gate(gate);
             note_task(&mut job, text);
@@ -1496,6 +1526,7 @@ fn decide(
             tier,
             tier_cap,
             locale,
+            pick,
         } => {
             let said = Said {
                 user,
@@ -1508,6 +1539,7 @@ fn decide(
                 tier: *tier,
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
+                pick: pick.clone(),
             };
             message(state, job, &said, false)
         }
@@ -1522,6 +1554,7 @@ fn decide(
             tier,
             tier_cap,
             locale,
+            pick,
         } => {
             let said = Said {
                 user,
@@ -1534,6 +1567,7 @@ fn decide(
                 tier: *tier,
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
+                pick: pick.clone(),
             };
             message(state, job, &said, true)
         }
@@ -1544,6 +1578,7 @@ fn decide(
             tier,
             tier_cap,
             locale,
+            pick,
         } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
@@ -1562,7 +1597,16 @@ fn decide(
                 }
                 Ok((
                     state,
-                    redelegation(job, text, *sent, mentions, *tier, *tier_cap, locale.clone()),
+                    redelegation(
+                        job,
+                        text,
+                        *sent,
+                        mentions,
+                        *tier,
+                        *tier_cap,
+                        locale.clone(),
+                        pick.clone(),
+                    ),
                 ))
             }
             ThreadState::Blocked | ThreadState::Verifying => {
@@ -1572,7 +1616,16 @@ fn decide(
                 job.hold = None;
                 Ok((
                     ThreadState::Queued,
-                    redelegation(job, text, *sent, mentions, *tier, *tier_cap, locale.clone()),
+                    redelegation(
+                        job,
+                        text,
+                        *sent,
+                        mentions,
+                        *tier,
+                        *tier_cap,
+                        locale.clone(),
+                        pick.clone(),
+                    ),
                 ))
             }
             ThreadState::Done | ThreadState::Failed => {
@@ -1587,6 +1640,7 @@ fn decide(
                     *tier,
                     *tier_cap,
                     locale.clone(),
+                    pick.clone(),
                 ));
                 Ok((ThreadState::Queued, cmds))
             }
@@ -1633,6 +1687,7 @@ fn decide(
                 job.after_stop_tier = None;
                 job.after_stop_tier_cap = None;
                 job.after_stop_locale = None;
+                job.after_stop_pick = None;
                 Ok((state, vec![Command::RequestCancel { job: job.number }]))
             }
             // The agent's task is over, so there is nothing to ask it to cancel: the thread is
@@ -1754,6 +1809,7 @@ fn decide(
                 let tier = job.after_stop_tier.take();
                 let tier_cap = job.after_stop_tier_cap.take();
                 let locale = job.after_stop_locale.take();
+                let pick = job.after_stop_pick.take();
                 // the held messages are the job's now, and so is the tier they named
                 job.tier = tier;
                 job.tier_cap = tier_cap;
@@ -1776,6 +1832,7 @@ fn decide(
                             tier,
                             tier_cap,
                             locale,
+                            pick,
                         },
                     ],
                 ))

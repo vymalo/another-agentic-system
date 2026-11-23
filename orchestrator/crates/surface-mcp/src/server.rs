@@ -440,6 +440,7 @@ impl<P: Ports> McpServer<P> {
         let input = Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: who.user.clone(),
             text: args.text,
             message_id: None,

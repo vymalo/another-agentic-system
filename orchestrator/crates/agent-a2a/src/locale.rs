@@ -112,6 +112,7 @@ mod tests {
             tier: None,
             tier_cap: None,
             locale: locale.map(|tag| LocaleHint::parse(tag).unwrap()),
+            pick: None,
         }
     }
 

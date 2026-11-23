@@ -287,6 +287,12 @@ pub enum OutboxPayload {
         /// message, and the log never holds it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         locale: Option<orch_core::LocaleHint>,
+        /// The model and reasoning effort the person picked for the message (ADR 0086, `model-pick/v1`),
+        /// resolved and checked against the live card when the message was written, as its
+        /// `user_message` records it. The adapter sends it and refuses a card that no longer
+        /// offers it: a pick is never dropped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pick: Option<orch_core::ModelPick>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -381,6 +387,12 @@ pub enum OutboxPayload {
         /// it becomes keeps it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         locale: Option<orch_core::LocaleHint>,
+        /// The model and reasoning effort the person picked for the message (ADR 0086, `model-pick/v1`),
+        /// resolved and checked against the live card when the message was written, as its
+        /// `user_message` records it. The adapter sends it and refuses a card that no longer
+        /// offers it: a pick is never dropped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pick: Option<orch_core::ModelPick>,
     },
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
@@ -503,6 +515,7 @@ impl OutboxPayload {
                 tier,
                 tier_cap,
                 locale,
+                pick,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
                 release: release.clone(),
@@ -512,6 +525,7 @@ impl OutboxPayload {
                 tier: *tier,
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
+                pick: pick.clone(),
             }),
             OutboxPayload::Delegate { .. }
             | OutboxPayload::Action { .. }
@@ -1188,6 +1202,24 @@ pub trait ThreadStore:
         digest: &str,
     ) -> impl Future<Output = Result<Option<Event>, StoreError>> + Send;
 
+    /// The thread's default model and reasoning effort (ADR 0086), the empty pick when it has none
+    /// or no thread has this id. One row read: a default is the orchestrator's convenience and no
+    /// event records it, so what reaches an agent is always the one pick a message recorded.
+    fn thread_pick(
+        &self,
+        thread: ThreadId,
+    ) -> impl Future<Output = Result<orch_core::ModelPick, StoreError>> + Send;
+
+    /// Replaces the thread's default pick (ADR 0086), in no event and with no change of `version` or
+    /// `updated_at`; the empty pick clears it. A thread that is not the owner's, or does not exist, is
+    /// [`StoreError::NotFound`]. The default is erased with the thread.
+    fn set_thread_pick(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        pick: orch_core::ModelPick,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// The thread's A2A binding.
     fn get_binding(
         &self,
@@ -1498,6 +1530,7 @@ mod payload_tests {
         let with = OutboxPayload::Steer {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "echo @coder".to_owned(),
             release: None,
             ui_catalog: None,

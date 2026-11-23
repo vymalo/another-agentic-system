@@ -195,6 +195,8 @@ struct Adopt {
     /// The interface locale it was written with (ADR 0085), as its row holds it: the adopted
     /// message keeps it, as it keeps its tier.
     locale: Option<orch_core::LocaleHint>,
+    /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+    pick: Option<orch_core::ModelPick>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -705,7 +707,7 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release, new_job, ui_catalog, mentions, tier, tier_cap, locale) =
+        let (content, release, new_job, ui_catalog, mentions, tier, tier_cap, locale, pick) =
             match row.payload.clone() {
                 OutboxPayload::Delegate {
                     text,
@@ -716,6 +718,7 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                 } => (
                     SendContent::Text(text),
                     release,
@@ -725,6 +728,7 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                 ),
                 OutboxPayload::Action {
                     action,
@@ -742,7 +746,8 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     // an action is the person's act on a surface, not a message of a screen with a
-                    // language (ADR 0085)
+                    // language (ADR 0085), and names no model (ADR 0086)
+                    None,
                     None,
                 ),
                 // taken before this function (`process`): it is followed, never sent
@@ -800,6 +805,7 @@ impl<P: Ports> Dispatcher<P> {
                 tier,
                 tier_cap,
                 locale,
+                pick,
                 ..
             } = &row.payload
                 && state != ThreadState::Cancelled
@@ -818,6 +824,7 @@ impl<P: Ports> Dispatcher<P> {
                             tier: *tier,
                             tier_cap: *tier_cap,
                             locale: locale.clone(),
+                            pick: pick.clone(),
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -950,6 +957,7 @@ impl<P: Ports> Dispatcher<P> {
             // hint, so nothing is read from the card here and a card without the extension gets the
             // plain message
             locale,
+            pick,
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
@@ -961,6 +969,7 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                     ..
                 },
                 None,
@@ -970,6 +979,7 @@ impl<P: Ports> Dispatcher<P> {
                 tier: *tier,
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
+                pick: pick.clone(),
                 previous: binding.task_id.clone(),
             }),
             _ => None,
@@ -1218,6 +1228,7 @@ impl<P: Ports> Dispatcher<P> {
             tier: adopt.tier,
             tier_cap: adopt.tier_cap,
             locale: adopt.locale.clone(),
+            pick: adopt.pick.clone(),
         };
         match self
             .app
@@ -1254,6 +1265,7 @@ impl<P: Ports> Dispatcher<P> {
             tier,
             tier_cap,
             locale,
+            pick,
             ..
         } = row.payload.clone()
         else {
@@ -1334,6 +1346,7 @@ impl<P: Ports> Dispatcher<P> {
             tier_cap: plain_cap(sent_tier, tier_cap),
             // the language of the screen the message came from, as the row holds it (ADR 0085)
             locale,
+            pick,
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;

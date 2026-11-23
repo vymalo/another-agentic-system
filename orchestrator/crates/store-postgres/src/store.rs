@@ -67,6 +67,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0028_child_sessions_person.sql",
         "0029_trusted_requests.sql",
         "0030_run_leases.sql",
+        "0031_thread_pick.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -2116,6 +2117,48 @@ impl ThreadStore for PgStore {
         .iter()
         .map(|row| event_from_row(thread, row))
         .collect()
+    }
+
+    async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
+        let row = query("SELECT pick FROM threads WHERE id = $1")
+            .bind(thread.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_err)?;
+        let Some(row) = row else {
+            return Ok(orch_core::ModelPick::default());
+        };
+        let value = row
+            .try_get::<_, Option<serde_json::Value>>("pick")
+            .map_err(store_err)?;
+        value
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| StoreError::corrupt_with("cannot read the thread's pick", e))
+            .map(Option::unwrap_or_default)
+    }
+
+    async fn set_thread_pick(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        pick: orch_core::ModelPick,
+    ) -> Result<(), StoreError> {
+        let value = (!pick.is_empty())
+            .then(|| serde_json::to_value(&pick))
+            .transpose()
+            .map_err(|e| StoreError::corrupt_with("cannot serialise the thread's pick", e))?;
+        let done = query("UPDATE threads SET pick = $3 WHERE id = $1 AND owner = $2")
+            .bind(thread.0)
+            .bind(owner.as_str())
+            .bind(value)
+            .execute(&self.pool)
+            .await
+            .map_err(store_err)?;
+        if done.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
     }
 
     async fn get_binding(&self, thread: ThreadId) -> Result<Option<AgentBinding>, StoreError> {

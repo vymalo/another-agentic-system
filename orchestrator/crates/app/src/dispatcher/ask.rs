@@ -689,6 +689,7 @@ impl<P: Ports> Dispatcher<P> {
             tier,
             tier_cap: plain_cap(tier, a.tier_cap),
             locale: None,
+            pick: None,
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)

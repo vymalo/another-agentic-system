@@ -71,6 +71,7 @@ fn user_message(text: &str) -> Input {
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 
@@ -86,6 +87,7 @@ fn stop_and_send(text: &str) -> Input {
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 
@@ -232,6 +234,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
                     tier: None,
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                 }
             } else {
                 Input::UserMessage {
@@ -245,6 +248,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
                     tier: None,
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                 }
             };
             assert_eq!(
@@ -267,6 +271,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     };
     assert!(transition(&Snapshot::new(Done), &plain).is_ok());
 }

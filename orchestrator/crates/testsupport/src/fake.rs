@@ -392,6 +392,10 @@ pub struct FakeAgentOptions {
     /// JSON so that a test can list them badly; `None` (the default): the card does not list the
     /// extension.
     pub access_tier: Option<Value>,
+    /// Further extensions the card lists, each `(uri, params)` with the params as plain JSON so that
+    /// a test can list them badly: how a test makes an agent list `model-pick/v1` and `reasoning/v1`
+    /// (ADR 0086), which this fake plays no script for. Empty (the default): none.
+    pub card_extensions: Vec<(String, Value)>,
     /// The `params` of the card's `child-sessions/v1` entry (`{agents, maxOpen}`, ADR 0072), as
     /// plain JSON so that a test can list them badly; `None` (the default): the card does not list
     /// the extension. The scripts `child-sessions*` serve sessions.
@@ -421,6 +425,7 @@ impl Default for FakeAgentOptions {
             verifier: None,
             strict_contexts: false,
             access_tier: None,
+            card_extensions: Vec::new(),
             child_sessions: None,
             child_session_events: false,
             child_sessions_leak: false,
@@ -495,6 +500,10 @@ pub struct Call {
     /// when it carried one (ADR 0061). Recorded as received, so a test can assert what an agent is
     /// told, and that an agent whose card does not list the extension is told nothing.
     pub access_tier: Option<Value>,
+    /// The whole `metadata` of the message, as received: how a test reads the members of an extension
+    /// this fake has no field for (`model-pick/v1`, `reasoning/v1`, ADR 0086). `None` when the
+    /// message carried none.
+    pub message_metadata: Option<Value>,
     /// `metadata[<uploads/v1 URI>]` of the message: `{maxBytes, ttlSecs}`, what the deployment
     /// offers for large files, when the message activated the extension (ADR 0058). Recorded as
     /// received, so a test can assert what an agent is told, and that an agent whose card does not
@@ -623,6 +632,8 @@ struct Shared {
     strict_contexts: bool,
     /// The `params` of the card's `access-tier/v1` entry right now.
     access_tier: Mutex<Option<Value>>,
+    /// Further extensions the card lists ([`FakeAgentOptions::card_extensions`]).
+    card_extensions: Vec<(String, Value)>,
     /// The `params` of the card's `child-sessions/v1` entry right now.
     child_sessions: Mutex<Option<Value>>,
     /// The parent says the events of its sessions.
@@ -953,6 +964,7 @@ impl FakeAgent {
             contexts: Mutex::new(HashSet::new()),
             strict_contexts: opts.strict_contexts,
             access_tier: Mutex::new(opts.access_tier.clone()),
+            card_extensions: opts.card_extensions.clone(),
             child_sessions: Mutex::new(opts.child_sessions.clone()),
             child_session_events: opts.child_session_events,
             child_sessions_leak: opts.child_sessions_leak,
@@ -1164,6 +1176,17 @@ impl a2a_server::agent_card::AgentCardProducer for LiveCard {
                 },
             });
         }
+        for (uri, params) in &self.shared.card_extensions {
+            extensions.push(AgentExtension {
+                uri: uri.clone(),
+                description: None,
+                required: Some(false),
+                params: match params {
+                    Value::Object(map) => Some(map.clone().into_iter().collect()),
+                    _ => None,
+                },
+            });
+        }
         if let Some(params) = lock(&self.shared.child_sessions).clone() {
             extensions.push(AgentExtension {
                 uri: orch_core::CHILD_SESSIONS_EXTENSION.to_owned(),
@@ -1310,6 +1333,7 @@ impl Front {
             thread_tools: thread_tools_of(Some(message)),
             mentions: mentions_of(Some(message)),
             access_tier: access_tier_of(Some(message)),
+            message_metadata: metadata_of(Some(message)),
             uploads: uploads_of(Some(message)),
             child_sessions: child_sessions_of(Some(message)),
             requested_task: message.task_id.clone().filter(|t| !t.is_empty()),
@@ -2065,6 +2089,14 @@ fn mentions_of(message: Option<&Message>) -> Option<Value> {
         .map(whole_numbers)
 }
 
+/// The whole `metadata` of the message, as an object.
+fn metadata_of(message: Option<&Message>) -> Option<Value> {
+    message?
+        .metadata
+        .as_ref()
+        .map(|m| Value::Object(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()))
+}
+
 /// `metadata[access-tier/v1]` of the message (ADR 0061): the tier the person picked.
 fn access_tier_of(message: Option<&Message>) -> Option<Value> {
     message?
@@ -2207,6 +2239,7 @@ impl Shared {
             thread_tools: thread_tools_of(ctx.message.as_ref()),
             mentions: mentions_of(ctx.message.as_ref()),
             access_tier: access_tier_of(ctx.message.as_ref()),
+            message_metadata: metadata_of(ctx.message.as_ref()),
             uploads: uploads_of(ctx.message.as_ref()),
             child_sessions: child_sessions_of(ctx.message.as_ref()),
             requested_task: ctx

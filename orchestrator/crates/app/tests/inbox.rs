@@ -1061,6 +1061,9 @@ impl ThreadStore for RacyStore {
             -> Result<(), StoreError>;
         claim_purges(owner: &str, limit: u32, lease: Duration, now: Timestamp)
             -> Result<Vec<ThreadId>, StoreError>;
+        thread_pick(thread: ThreadId) -> Result<orch_core::ModelPick, StoreError>;
+        set_thread_pick(owner: &orch_core::UserId, thread: ThreadId, pick: orch_core::ModelPick)
+            -> Result<(), StoreError>;
         finish_purge(thread: ThreadId) -> Result<(), StoreError>;
         purges_pending() -> Result<u64, StoreError>;
         fork_thread(new: orch_ports::NewThreadRecord, origin: orch_ports::ForkOrigin, first: orch_ports::Commit)

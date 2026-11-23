@@ -119,6 +119,7 @@ fn the_set_is_carried_to_the_next_job() {
         &Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: user(),
             text: "again".into(),
             message_id: None,

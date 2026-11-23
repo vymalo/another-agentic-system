@@ -64,6 +64,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
         2 => "[a-z]{1,6}".prop_map(|text| Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: UserId::new("u@x.io"),
             text,
             message_id: None,
@@ -99,6 +100,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
         1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver {
             tier_cap: None,
             locale: None,
+            pick: None,
             text,
             sent: false,
             mentions: Vec::new(),

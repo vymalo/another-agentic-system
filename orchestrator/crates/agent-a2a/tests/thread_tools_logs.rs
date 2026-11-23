@@ -105,6 +105,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     };
     let req = request();
     let shown_request = format!("{req:?}");
