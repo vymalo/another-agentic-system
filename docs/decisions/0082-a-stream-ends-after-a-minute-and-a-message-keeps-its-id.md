@@ -4,7 +4,7 @@
   orchestrator's lifetime and attach, and the web's dead-stream detection, jitter and draft-owned message id. The owner decided on 2026-11-21 to
   *"propose the generic stream changes in the open source, in neutral wording"* (another-context, the persona answers, decision 52):
   a heartbeat every 15 s, streams that end and reopen, and a client-made message id — **with no market in the text**. The
-  constraints it answers are **C3** and **C4** of `spec/personas/the-normal-cameroonian.md` in another-context.
+  constraints it answers are two requirements of a private persona analysis.
   Amends [ADR 0012](0012-ag-ui-user-facing-protocol.md) (the connect stream) and [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md)
   §6 and §10 (an hour is the longest stream; a credential with no expiry is unbounded). Number `0081` is claimed by another session;
   this is `0082`.
