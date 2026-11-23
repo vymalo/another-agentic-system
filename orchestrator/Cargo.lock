@@ -2803,6 +2803,7 @@ dependencies = [
 name = "orch-store-sqlite"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "jiff",
  "orch-core",
  "orch-ports",
@@ -2813,6 +2814,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
  "uuid",
 ]

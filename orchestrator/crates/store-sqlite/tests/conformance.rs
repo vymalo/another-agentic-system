@@ -71,3 +71,12 @@ async fn age_search_index(store: &SqliteStore) {
 
 orch_ports::usage_ledger_conformance!(make, forget = forget_usage_ledger);
 orch_ports::thread_search_conformance!(make, forget = forget_search_index, age = age_search_index);
+
+/// A fresh in-process wakeup: nothing here needs a file.
+async fn make_wakeup() -> Option<orch_store_sqlite::SqliteWakeup> {
+    Some(orch_store_sqlite::SqliteWakeup::new())
+}
+
+orch_ports::wakeup_conformance!(make_wakeup);
+
+orch_ports::prompt_store_conformance!(make);

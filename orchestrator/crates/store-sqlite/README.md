@@ -24,11 +24,14 @@ root of ADR 0076 decision 4 will.
 | `ThreadStore` — all 41 methods | **built**, and green on `thread_store_conformance!` (no skip) |
 | `UsageLedger` (ADR 0065) | **built** (milestone 2a, migration `0002`), green on `usage_ledger_conformance!` with its `forget` hook (no skip) |
 | `ThreadSearch` (ADR 0068) | **built** (milestone 2a, migration `0002`), green on `thread_search_conformance!` with its `forget` and `age` hooks (no skip) |
-| `PromptStore` (ADR 0070) | **declared, not built** (milestone 2b): `ThreadStore`'s third supertrait, so it must exist for it to compile. Every method answers `PromptStoreError::Internal` naming milestone 2b. Deliberately not an empty page: an empty library is something a caller cannot tell from "nothing was saved" |
-| `Wakeup`, `UserToolServerStore`, `PendingAuthorizations` | not in this crate yet |
+| `PromptStore` (ADR 0070) | **built** (milestone 2b, migration `0003`), green on `prompt_store_conformance!` (no skip; the suite needs no hook) |
+| `Wakeup` | **built** (`SqliteWakeup`, in-process broadcast channels: one file belongs to one process, so no `LISTEN`/`NOTIFY`), green on `wakeup_conformance!` (no skip) |
+| `UserToolServerStore`, `PendingAuthorizations` | not in this crate yet |
 
-The prompt library follows in 2b, with its own migration, its own conformance suite, and the hooks
-that suite needs (a store that supplies no hook has those cases **skipped**, which is not green).
+The prompt library (`src/prompts.rs`, `migrations/0003_user_prompts.sql`) mirrors
+[`store-postgres/src/prompts.rs`](../store-postgres/src/prompts.rs): one transaction per write in place
+of the owner's advisory lock, one counter for revisions, the audience as a JSON array matched with
+`json_each`. `SqliteWakeup` is in-process broadcast channels (`src/wakeup.rs`).
 
 ## The ledger and the index
 
@@ -192,10 +195,10 @@ and a bump of `rusqlite` that lowered it fails that test rather than a statement
 cargo nextest run -p orch-store-sqlite
 ```
 
-`tests/conformance.rs` wires **all three** suites with a `make` that returns `Some`:
+`tests/conformance.rs` wires **every** suite (`thread_store`, `usage_ledger`, `thread_search`, `prompt_store`, `wakeup`) with a `make` that returns `Some`:
 `thread_store_conformance!`, `usage_ledger_conformance!` with its `forget` hook and
 `thread_search_conformance!` with its `forget` and `age` hooks. Every case runs, none is skipped
-(186 cases, `0 skipped`). Each case gets a store of its own on a file of its own in the process's
+(208 cases, `0 skipped`). Each case gets a store of its own on a file of its own in the process's
 temporary directory, so the suite needs **no docker, no Postgres and no
 `ORCH_TEST_DATABASE_URL`**. The crate's own tests cover what the testkit cannot: a second process
 refused (including through a symlink, and the lock released when the store is dropped), WAL on,
