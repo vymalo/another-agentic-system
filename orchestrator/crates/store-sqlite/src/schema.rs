@@ -51,8 +51,13 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 3,
+        description: "user_prompts",
+        sql: include_str!("../migrations/0003_user_prompts.sql"),
+    },
+    Migration {
+        version: 4,
         description: "thread_pick",
-        sql: include_str!("../migrations/0003_thread_pick.sql"),
+        sql: include_str!("../migrations/0004_thread_pick.sql"),
     },
 ];
 

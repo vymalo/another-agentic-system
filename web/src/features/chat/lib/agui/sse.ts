@@ -42,11 +42,19 @@ export async function* readSse(
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Any bytes the body delivers are its heartbeat, a comment as much as a frame: the window is re-armed
   // after each read, and its expiry closes the reader, which resolves the read in flight as `done`.
+  // A hidden tab counts no silence: the browser throttles its timers and may pause the connection, so
+  // the quiet is not the stream's. Becoming visible restarts a whole window.
+  const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
   const rearm = () => {
     if (silenceMs === undefined) return;
     clearTimeout(timer);
+    if (hidden()) return;
     timer = setTimeout(() => void reader.cancel().catch(() => {}), silenceMs);
   };
+  const onVisibility = () => rearm();
+  if (silenceMs !== undefined && typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibility);
+  }
   let buffer = "";
   let id: string | undefined;
   let data: string[] = [];
@@ -95,6 +103,8 @@ export async function* readSse(
     }
   } finally {
     clearTimeout(timer);
+    if (typeof document !== "undefined")
+      document.removeEventListener("visibilitychange", onVisibility);
     signal?.removeEventListener("abort", onAbort);
     await reader.cancel().catch(() => {});
   }

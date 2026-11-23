@@ -25,11 +25,9 @@
 //! [`orch_core::search::document_keys`] makes, matched by prefix: **not** FTS5, which is not
 //! compiled into every bundled SQLite and whose folding is not `fold`'s.
 //!
-//! The third supertrait, [`PromptStore`](orch_ports::PromptStore) (the prompt library, ADR 0070),
-//! is **declared and not built**: its methods answer [`PromptStoreError::Internal`](orch_ports::PromptStoreError)
-//! naming milestone 2b, never an empty page, which a caller could not tell from "nothing was
-//! saved". `Wakeup`, `UserToolServerStore` and `PendingAuthorizations` are not part of this crate
-//! yet either.
+//! **`PromptStore`** (ADR 0070, migration `0003`): a person's saved prompts and the roles they
+//! share each with, in a table beside the log. [`SqliteWakeup`] is the in-process `Wakeup`.
+//! `UserToolServerStore` and `PendingAuthorizations` are not part of this crate yet.
 //!
 //! # Conformance hooks
 //!
@@ -58,13 +56,15 @@
 
 mod codec;
 mod error;
+mod prompts;
 mod schema;
 mod search;
 mod store;
-mod unbuilt;
 mod usage;
+mod wakeup;
 
 pub use schema::MIGRATIONS_TABLE;
+pub use wakeup::SqliteWakeup;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
