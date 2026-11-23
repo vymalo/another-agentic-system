@@ -2726,6 +2726,6 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 30);
+        assert_eq!(migrator.migrations().len(), 31);
     }
 }
