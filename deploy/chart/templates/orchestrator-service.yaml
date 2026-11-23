@@ -16,3 +16,10 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
+    {{- if .Values.orchestrator.internal.enabled }}
+    # The run routes on the cluster network only: no Ingress and no edge route names it (ADR 0084 decision 5).
+    - name: internal
+      port: {{ .Values.orchestrator.internal.port }}
+      targetPort: internal
+      protocol: TCP
+    {{- end }}

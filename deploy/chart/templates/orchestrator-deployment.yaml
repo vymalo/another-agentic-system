@@ -54,6 +54,12 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- if .Values.orchestrator.internal.enabled }}
+            # The run routes (ADR 0084 decision 5, card ANR-378): never through the edge.
+            - name: internal
+              containerPort: {{ .Values.orchestrator.internal.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: ORCH_CONFIG_FILE
               value: /etc/orchestrator/config.yaml

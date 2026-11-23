@@ -1,0 +1,117 @@
+---
+# Source: another-agentic-system/templates/networkpolicy.yaml
+# The orchestrator: the edge (the API and AG-UI), the chat agent and the agents of other charts (the thread tools).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: another-agentic-orchestrator
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: orchestrator
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: another-agentic-system
+      app.kubernetes.io/instance: another-agentic-system
+      app.kubernetes.io/component: orchestrator
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: another-agentic-system
+              app.kubernetes.io/instance: another-agentic-system
+              app.kubernetes.io/component: edge
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: another-agentic-system
+              app.kubernetes.io/instance: another-agentic-system
+              app.kubernetes.io/component: chat
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coder
+      ports:
+        - protocol: TCP
+          port: 8080
+    # The run routes (ADR 0084 decision 5, card ANR-378): the orchestrator's own pods bind, the injector's look up, and
+    # nothing else may reach the port. The injector is another chart's, so its namespace and labels are values.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: another-agentic-system
+              app.kubernetes.io/instance: another-agentic-system
+              app.kubernetes.io/component: orchestrator
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "agent-router"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agent-router
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+# Source: another-agentic-system/templates/networkpolicy.yaml
+# The chat agent: the orchestrator only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: another-agentic-chat
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: chat
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: another-agentic-system
+      app.kubernetes.io/instance: another-agentic-system
+      app.kubernetes.io/component: chat
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: another-agentic-system
+              app.kubernetes.io/instance: another-agentic-system
+              app.kubernetes.io/component: orchestrator
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Source: another-agentic-system/templates/orchestrator-service.yaml
+# ClusterIP only. The edge reaches it for /api and /agui; the agents reach it for the thread tools
+# (http://<this>.<namespace>.svc:8080, `threadTools.url`). The edge never routes /thread-tools.
+apiVersion: v1
+kind: Service
+metadata:
+  name: another-agentic-orchestrator
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: orchestrator
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: orchestrator
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    # The run routes on the cluster network only: no Ingress and no edge route names it (ADR 0084 decision 5).
+    - name: internal
+      port: 8081
+      targetPort: internal
+      protocol: TCP

@@ -1,0 +1,11 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh): the run routes' internal listener and the
+# injector's pods admitted to it. Not a deployment's values: see README.md, "The run routes".
+orchestrator:
+  internal:
+    enabled: true
+    port: 8081
+    injector:
+      enabled: true
+      namespace: agent-router
+      matchLabels:
+        app.kubernetes.io/name: agent-router

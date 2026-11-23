@@ -126,6 +126,22 @@ orchestrator:
   # to the web; thread-tools is reached by the agents inside the cluster, never through the edge.
   # Others (mcp, webhook-*) need keys and edge routes this chart does not have yet: refused.
   surfaces: [agui, thread-tools]
+  # The internal listener the run routes are served on (ADR 0084 decision 5, card ANR-378): a second port that no edge
+  # routes, for the credential broker's run routes (`POST /internal/runs`, `DELETE /internal/runs/{run}`,
+  # `GET /internal/runs/{run}/lease`, ANR-147a). OFF by default, and it stays off until the orchestrator mounts those
+  # routes and a bindings store: today this value only renders the port, the Service port and the policy, so a deployment
+  # can be prepared; with the routes unmounted the port answers nothing.
+  internal:
+    enabled: false
+    # The port the orchestrator would serve them on.
+    port: 8081
+    # Who may reach the port: the orchestrator's own pods always (the bind call), and the injector's pods (the lookup)
+    # behind their own switch. The injector (Authorino or Agent Router, S9) is not this chart's, so its namespace and
+    # labels are values, and an empty selector is refused: a policy that admits every pod is worse than no policy.
+    injector:
+      enabled: false
+      namespace: ""
+      matchLabels: {}
   # `ui.showDescriptions`.
   showDescriptions: true
   # Opening a thread from its history (ADR 0059, docs/api/history.md): the web asks for the newest turns and the older ones as the

@@ -91,6 +91,25 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    {{- if .Values.orchestrator.internal.enabled }}
+    # The run routes (ADR 0084 decision 5, card ANR-378): the orchestrator's own pods bind, the injector's look up, and
+    # nothing else may reach the port. The injector is another chart's, so its namespace and labels are values.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentic.selectorLabels" $orch | nindent 14 }}
+        {{- if .Values.orchestrator.internal.injector.enabled }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.orchestrator.internal.injector.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.orchestrator.internal.injector.matchLabels | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.orchestrator.internal.port }}
+    {{- end }}
 {{- if .Values.chat.enabled }}
 ---
 # The chat agent: the orchestrator only.

@@ -3,6 +3,29 @@ Value checks that must stop a render, not surface as a broken rollout or, worse,
 Included from orchestrator-configmap.yaml, which every render contains, so they always run.
 */}}
 {{- define "agentic.validate" -}}
+{{- /* The internal listener of the run routes (ADR 0084 decision 5, card ANR-378): a port a deployment can prepare, and a
+policy that never admits the whole namespace by accident. */ -}}
+{{- if not (kindIs "bool" .Values.orchestrator.internal.enabled) -}}
+{{- fail (printf "orchestrator.internal.enabled must be true or false, got %v" .Values.orchestrator.internal.enabled) -}}
+{{- end -}}
+{{- if .Values.orchestrator.internal.enabled -}}
+{{- if not (and (kindIs "float64" .Values.orchestrator.internal.port) (gt (int .Values.orchestrator.internal.port) 1024) (lt (int .Values.orchestrator.internal.port) 65536)) -}}
+{{- fail (printf "orchestrator.internal.port must be a number between 1025 and 65535, got %v" .Values.orchestrator.internal.port) -}}
+{{- end -}}
+{{- if eq (int .Values.orchestrator.internal.port) 8080 -}}
+{{- fail "orchestrator.internal.port must differ from 8080, the public listener" -}}
+{{- end -}}
+{{- if .Values.orchestrator.internal.injector.enabled -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" (toString .Values.orchestrator.internal.injector.namespace)) -}}
+{{- fail "orchestrator.internal.injector.namespace is required when the injector may reach the run routes, and is a namespace name" -}}
+{{- end -}}
+{{- if not .Values.orchestrator.internal.injector.matchLabels -}}
+{{- fail "orchestrator.internal.injector.matchLabels is required when the injector may reach the run routes: an empty selector admits every pod of the namespace" -}}
+{{- end -}}
+{{- end -}}
+{{- else if .Values.orchestrator.internal.injector.enabled -}}
+{{- fail "orchestrator.internal.injector.enabled needs orchestrator.internal.enabled" -}}
+{{- end -}}
 {{- /* The deployment's own values: no defaults, so a forgotten one is an error. */ -}}
 {{- if not .Values.host -}}
 {{- fail "host is required: the public hostname, no scheme (for example agentic.servers.segning.pro)" -}}

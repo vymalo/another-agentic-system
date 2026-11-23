@@ -2531,6 +2531,29 @@ check "scale: max_prepared_statements of 1, 200 and 5000 (numbers and strings) a
 rm -f "$out.scale-default" "$out.pool" "$out.keep-default"
 render
 
+# ---- The run routes' internal listener (ADR 0084 decision 5, card ANR-378): off by default, on by values -------------------
+internal_values="$chart/tests/internal.values.yaml"
+render
+check "run routes off by default: no internal port anywhere" lacks 'name: internal|port: 8081|containerPort: 8081'
+check "run routes off by default: no injector selector" lacks 'agent-router'
+check "values.yaml: orchestrator.internal.enabled is false by default" sh -c "awk '/^  internal:/{i=1} i && /^    enabled:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx false"
+render -f "$internal_values"
+check "run routes on: the orchestrator's Service carries the internal port" has '^    - name: internal$'
+check "run routes on: the container declares the port" line_after "$out" '^            - name: internal$' 1 '^              containerPort: 8081$'
+check "run routes on: the policy admits the injector's namespace and labels" out_all 'kubernetes.io/metadata.name: "agent-router"' 'app.kubernetes.io/name: agent-router'
+check "run routes on: the policy's rule is the internal port" line_after "$out" '^          port: 8081$' 0 '^          port: 8081$'
+check "run routes on: the Service and the policy are the golden's, byte for byte" sh -c "sh \"$chart/tests/golden/internal-objects.sh\" < \"$out\" | cmp -s - \"$chart/tests/golden/internal-listener.yaml\""
+edge_lists_no_internal() {
+  doc Ingress | grep -Eq '^ *- path: .*internal' && return 1
+  grep -rq '/internal' "$chart/files/Caddyfile" && return 1
+  return 0
+}
+check "the edge lists no /internal path, in the Ingress and the Caddyfile" edge_lists_no_internal
+check "run routes: an injector without a selector is refused (a policy that admits the whole namespace is worse than none)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.injector.matchLabels=null
+check "run routes: an injector without orchestrator.internal.enabled is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set orchestrator.internal.injector.enabled=true
+check "run routes: the port may not be 8080" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set orchestrator.internal.enabled=true --set orchestrator.internal.port=8080
+render
+
 # ---- The shipped values.yaml --------------------------------------------------------------------------------------------
 check "values.yaml leaves the deployment's own values empty (host, issuer, model)" sh -c "
   grep -Eq '^host: \"\"$' '$chart/values.yaml' && grep -Eq '^  issuer: \"\"$' '$chart/values.yaml' && grep -Eq '^  baseUrl: \"\"$' '$chart/values.yaml'"
