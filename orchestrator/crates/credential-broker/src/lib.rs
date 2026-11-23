@@ -11,6 +11,7 @@ mod flights;
 mod http;
 mod material;
 mod oauth;
+mod routes;
 mod run_leases;
 
 pub use broker::{Broker, BrokerBuilder, egress_refusal};
@@ -20,6 +21,7 @@ pub use config::{
     MAX_FLOW_TTL, MAX_LEASE_TTL, MAX_REFRESH_MARGIN, MAX_RESPONSE_BYTES, MAX_TIMEOUT,
 };
 pub use http::{HostLookup, LookupFuture, SystemLookup};
+pub use routes::{BindBody, MAX_FIELD_CHARS, RunCallerAuth, SharedTokens, router};
 pub use run_leases::{LEASE_TTL, MAX_BINDING, RunLeaseBroker};
 
 /// Why a broker could not be built.
