@@ -28,7 +28,7 @@ use orch_ports::{
 use rusqlite::{OptionalExtension, params};
 
 use crate::SqliteStore;
-use crate::codec::{from_db, to_db};
+use crate::codec::to_db;
 use crate::error::{store_err, unique_on};
 use crate::store::write;
 
