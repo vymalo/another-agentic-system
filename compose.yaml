@@ -893,6 +893,10 @@ services:
       MODEL: mock-persona # greets from the persona lines of the folder
       A2A_BEARER_TOKENS: dev-chat-token # the orchestrator sends it as CHAT_A2A_TOKEN
       PUBLIC_URL: http://chat:8080/ # what the card advertises and the orchestrator posts to: the compose name
+      # The chat's own interface language (locale/v1, adam-rs ADR 0069): its card lists the extension with this
+      # tag, so a message may name one, and adam tells its model the language in one more turn (dev/locale-real-e2e.sh).
+      # The researcher below sets none: its card lists nothing, which is the scenario's negative case.
+      DEFAULT_LOCALE: en-GB
       SEARCH_MCP_TOKEN: dev-search-token # the bearer token of mock-mcp-search, for the researcher helper
     ports:
       - "127.0.0.1:${CHAT_PORT:-8097}:8080"
