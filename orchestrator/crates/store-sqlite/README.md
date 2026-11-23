@@ -25,13 +25,19 @@ root of ADR 0076 decision 4 will.
 | `UsageLedger` (ADR 0065) | **built** (milestone 2a, migration `0002`), green on `usage_ledger_conformance!` with its `forget` hook (no skip) |
 | `ThreadSearch` (ADR 0068) | **built** (milestone 2a, migration `0002`), green on `thread_search_conformance!` with its `forget` and `age` hooks (no skip) |
 | `PromptStore` (ADR 0070) | **built** (milestone 2b, migration `0003`), green on `prompt_store_conformance!` (no skip; the suite needs no hook) |
+| `UserToolServerStore` (ADR 0046) | **built** (migration `0005`), green on `user_tool_server_store_conformance!` (no skip; the suite needs no hook, and the races are kept by the one writing transaction) |
 | `Wakeup` | **built** (`SqliteWakeup`, in-process broadcast channels: one file belongs to one process, so no `LISTEN`/`NOTIFY`), green on `wakeup_conformance!` (no skip) |
-| `UserToolServerStore`, `PendingAuthorizations` | not in this crate yet |
+| `PendingAuthorizations` | not in this crate yet |
 
 The prompt library (`src/prompts.rs`, `migrations/0003_user_prompts.sql`) mirrors
 [`store-postgres/src/prompts.rs`](../store-postgres/src/prompts.rs): one transaction per write in place
 of the owner's advisory lock, one counter for revisions, the audience as a JSON array matched with
-`json_each`. `SqliteWakeup` is in-process broadcast channels (`src/wakeup.rs`).
+`json_each`. The definitions of people's own MCP servers (`src/user_tool_servers.rs`,
+`migrations/0005_user_tool_servers.sql`) mirror
+[`store-postgres/src/user_tool_servers.rs`](../store-postgres/src/user_tool_servers.rs) the same way:
+`BEGIN IMMEDIATE` in place of the owner's advisory lock makes the limit of eight atomic, the id, the
+count and the insert with nobody between them, and the compare and swap of a revision is one
+transaction. `SqliteWakeup` is in-process broadcast channels (`src/wakeup.rs`).
 
 ## The ledger and the index
 
@@ -124,6 +130,8 @@ power loss may lose the last transactions).
 | `impl ThreadStore for SqliteStore` | the 41 methods of the port, with the contract of [`orch_ports::store`](../ports/src/store.rs): one transaction per write, the version check and the outbox and inbox fences inside it, the leases, the rail order, forks, child sessions, the purges, and the per-thread rules of the two claims; the commit also writes the ledger and the index |
 | `impl UsageLedger for SqliteStore` | `month`, `thread_rows`, `backfill`, `sweep` (ADR 0065) |
 | `impl ThreadSearch for SqliteStore` | `search_threads`, `backfill_search`, `search_backlog` (ADR 0068) |
+| `impl PromptStore for SqliteStore` | `insert_prompt`, `get_prompt`, `list_prompts`, `replace_prompt`, `delete_prompt` (ADR 0070) |
+| `impl UserToolServerStore for SqliteStore` | `insert`, `get`, `list`, `replace`, `set_state`, `delete` (ADR 0046): the limit of eight and the compare and swap of a revision, each kept by one `BEGIN IMMEDIATE` transaction |
 | `schema::MIGRATIONS_TABLE` | `schema_migrations`. Not `sqlx`'s `_sqlx_migrations`: a SQLite file of this store has no history to continue, and naming the table after `sqlx` would claim one |
 
 ## The schema is not the Postgres one
@@ -195,11 +203,12 @@ and a bump of `rusqlite` that lowered it fails that test rather than a statement
 cargo nextest run -p orch-store-sqlite
 ```
 
-`tests/conformance.rs` wires **every** suite (`thread_store`, `usage_ledger`, `thread_search`, `prompt_store`, `wakeup`) with a `make` that returns `Some`:
-`thread_store_conformance!`, `usage_ledger_conformance!` with its `forget` hook and
-`thread_search_conformance!` with its `forget` and `age` hooks. Every case runs, none is skipped
-(208 cases, `0 skipped`). Each case gets a store of its own on a file of its own in the process's
-temporary directory, so the suite needs **no docker, no Postgres and no
+`tests/conformance.rs` wires **every** suite (`thread_store`, `usage_ledger`, `thread_search`, `prompt_store`, `wakeup`, `user_tool_server_store`) with a `make` that returns `Some`:
+`thread_store_conformance!`, `usage_ledger_conformance!` with its `forget` hook,
+`thread_search_conformance!` with its `forget` and `age` hooks, `prompt_store_conformance!` and
+`user_tool_server_store_conformance!`, neither of which needs a hook. Every case runs, none is
+skipped. Each case gets a store of its own on a file of its own in the
+process's temporary directory, so the suite needs **no docker, no Postgres and no
 `ORCH_TEST_DATABASE_URL`**. The crate's own tests cover what the testkit cannot: a second process
 refused (including through a symlink, and the lock released when the store is dropped), WAL on,
 the migrations recorded once, an edited migration refused, the bundled version, the time

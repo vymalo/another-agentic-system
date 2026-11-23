@@ -80,3 +80,5 @@ async fn make_wakeup() -> Option<orch_store_sqlite::SqliteWakeup> {
 orch_ports::wakeup_conformance!(make_wakeup);
 
 orch_ports::prompt_store_conformance!(make);
+
+orch_ports::user_tool_server_store_conformance!(make);
