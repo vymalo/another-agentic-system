@@ -1,7 +1,6 @@
 # ADR 0085 — The interface's language travels with the message, as a hint
 
-- **Status:** **proposed 2026-11-22**, at the owner's decisions of that day (another-context
-  `plans/2026-11-22-languages.md`, decision rows 14–17). The orchestrator's side is built (the tag and its checks, the card
+- **Status:** **proposed 2026-11-22**, at the owner's decisions of that day (the owner). The orchestrator's side is built (the tag and its checks, the card
   read, the activation, `dev/locale-e2e.sh`); no agent lists the extension yet and the web does not send it yet.
   **Amended 2026-11-22, the same day** (the coordinator's ruling): decision 4 — the hint **is logged** on the `user_message`
   and is not kept out of the log, because the log is the state and a hint that changes the agent's words must be replayable;
@@ -13,12 +12,12 @@
 
 A person reads the interface in one language and writes to an agent in whatever language they like — and often in a third,
 because the agent's own vocabulary is English. Until now the agent saw only the second: the text of the message. It had no way
-to know which language the person is *reading*, so an agent that can write Yemba, French, Cameroonian Pidgin and English had to
+to know which language the person is *reading*, so an agent that can write German, French, Swiss German and English had to
 guess from the words, and guessed wrong whenever the person wrote a short message, a file name or a code snippet.
 
 The owner decided, on 2026-11-22:
 
-- the interface supports **`en-CM`, `fr-CM`, `wes-CM` and `ybb-CM` from day 0** (rows 14–15);
+- the interface supports **`en-GB`, `fr-FR`, `gsw-CH` and `fur-IT` from day 0** (rows 14–15);
 - **the agent's language is the interface's language by default, then the person's** (row 16);
 - **the list of languages is the deployment's configuration, not code**, and the wording of the public repositories stays
   neutral — nothing about markets or customers (row 17).
@@ -59,15 +58,15 @@ URI in `A2A-Extensions` and `message.extensions`, one member in the message's me
    explained by.)
 
 5. **The agent's language: the interface's, then the person's.** The agent answers in the language the hint names when it can; a
-   message whose text is in another language is answered in that language, because a person who writes Yemba in a French
-   interface is asking for Yemba; and an agent that can write neither answers in its own default and says so in words. The hint
+   message whose text is in another language is answered in that language, because a person who writes German in a French
+   interface is asking for German; and an agent that can write neither answers in its own default and says so in words. The hint
    never changes what the agent may do: it is not a permission, a scope or a tenant.
 
 6. **The agent's own words never fill a high-risk string.** This is a **client rule, not a prompt**, and it holds whatever
    language the hint names. Every string the agent's model writes is *text the person reads*: it is drawn as the person's text
    (Markdown, sanitized), never as interface chrome. The label and the fields of a **trusted component**
    ([ADR 0083](0083-trusted-components-the-agent-names-and-the-client-draws.md)), the wording of a **payment** and the text of
-   a **consent** are the client's own reviewed, static strings, translated by people. A model that writes Yemba barely must not
+   a **consent** are the client's own reviewed, static strings, translated by people. A model that writes German barely must not
    be able to produce the text of a consent screen, or the label of a button that spends money — and the way to guarantee that
    is to give it no path to that string, not to ask it politely in a prompt.
 
