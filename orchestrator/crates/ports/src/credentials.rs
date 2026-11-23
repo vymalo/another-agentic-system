@@ -885,3 +885,57 @@ pub trait ModelCredentials: Send + Sync + 'static {
         model: &str,
     ) -> impl Future<Output = Result<Option<ToolSecret>, RunLeaseError>> + Send;
 }
+
+/// The orchestrator's side of ADR 0084 decisions 1 and 6: the binding it makes when a run starts
+/// and removes when the run ends. The broker's side of the same wire is [`RunLeases`]; a deployment
+/// with no broker behind it uses [`NoRunBindings`], which accepts every call and does nothing.
+///
+/// A binding is not a secret: it names the run, the agent, the person and the model endpoint, and
+/// carries a deadline. The value the lease returns is never part of it.
+pub trait RunBindings: Send + Sync + 'static {
+    /// Binds `binding`; the broker treats the same binding sent again as idempotent and a different
+    /// one for the same run as [`RunBindingError::Conflict`]. The broker caps the deadline.
+    fn bind(&self, binding: RunBinding)
+    -> impl Future<Output = Result<(), RunBindingError>> + Send;
+
+    /// Removes the run's binding; a run that was never bound is not an error.
+    fn unbind(&self, run: &RunId) -> impl Future<Output = Result<(), RunBindingError>> + Send;
+}
+
+/// Why a bind or an unbind did not happen. It holds no URL, no token and no body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunBindingError {
+    /// The broker could not be reached, or did not answer in time. A run that cannot be bound goes
+    /// on today (the failure is logged; S9 makes it park the run).
+    Unreachable,
+    /// The run is already bound to another agent (`409 run_already_bound`): a run is bound once.
+    Conflict,
+    /// The broker answered with a status that is neither a success nor a conflict.
+    Refused(u16),
+}
+
+impl std::fmt::Display for RunBindingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunBindingError::Unreachable => f.write_str("the broker is unreachable"),
+            RunBindingError::Conflict => f.write_str("the run is already bound to another agent"),
+            RunBindingError::Refused(status) => write!(f, "the broker refused the call ({status})"),
+        }
+    }
+}
+
+impl std::error::Error for RunBindingError {}
+
+/// A deployment with no broker behind it: every bind and unbind succeeds and nothing is stored.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoRunBindings;
+
+impl RunBindings for NoRunBindings {
+    async fn bind(&self, _binding: RunBinding) -> Result<(), RunBindingError> {
+        Ok(())
+    }
+
+    async fn unbind(&self, _run: &RunId) -> Result<(), RunBindingError> {
+        Ok(())
+    }
+}

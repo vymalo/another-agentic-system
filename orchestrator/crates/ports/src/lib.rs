@@ -94,8 +94,9 @@ pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
 pub use credentials::{
     CredentialBroker, CredentialError, CredentialLease, CredentialRef, KeepsCredentials,
     MAX_CREDENTIAL_REF_BYTES, MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, ModelCredentials,
-    NoBroker, OAuthStart, OAuthState, OAuthStateError, RedirectUri, RedirectUriError, RunBinding,
-    RunBindingStore, RunCaller, RunId, RunLease, RunLeaseError, RunLeases,
+    NoBroker, NoRunBindings, OAuthStart, OAuthState, OAuthStateError, RedirectUri,
+    RedirectUriError, RunBinding, RunBindingError, RunBindingStore, RunBindings, RunCaller, RunId,
+    RunLease, RunLeaseError, RunLeases,
 };
 pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,

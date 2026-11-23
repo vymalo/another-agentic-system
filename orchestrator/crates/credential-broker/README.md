@@ -270,6 +270,20 @@ stateDiagram-v2
 
 ## Run leases (ADR 0084)
 
+**The orchestrator's side** is `RunBindingClient` (`src/run_client.rs`), implementing the
+`RunBindings` port of `orch-ports`: `bind` sends `POST /internal/runs` with `{run, agent, person,
+model?, expiresAt}` (camelCase, RFC 3339) and `unbind` sends `DELETE /internal/runs/{run}` (the id
+percent-encoded, so a slash cannot address another route). Both present
+`Authorization: Bearer <orchestrator token>` and expect `204`; `409` is
+`RunBindingError::Conflict`, any other status `Refused(u16)`, and a connection that does not answer
+`Unreachable`. The client follows no redirect, times out (5 s by default), reads nothing of the
+answer, and its `Debug` shows the base URL and never the token. It deliberately **does not** go
+through the egress guard: the broker is ours, on the cluster's internal listener, named by
+configuration. A deployment with no broker uses `NoRunBindings`, which accepts every call and does
+nothing. The address must be an `http(s)` URL with a host and no query, fragment or user
+information (`BuildError::BrokerUrl`).
+
+
 The broker's first part (B1): the orchestrator binds a run at its creation, and the injector leases
 the run's model credential for 30 s, on the broker's **internal listener only**. `src/run_leases.rs`
 is the port implementation (`RunLeases`, with its conformance cases in `orch-ports`), and
@@ -353,6 +367,7 @@ connections, cannot then prove that nothing connected).
 | `tests/egress.rs` | A policy that does not name the address, `http` without `allowing_http`; **which endpoint is refused at which address**: the token endpoint at `169.254.169.254` with a policy that does not name it (`allow-list`) and with one that does, so that the class of the address decides (`private-address`); the registration endpoint at `169.254.169.254` (class decides) and at `127.0.0.2`; the revocation endpoint at `127.0.0.2` (and at `169.254.169.254`, whose rule is read from the log: `tests/logs.rs`); the token endpoint at `127.0.0.2`. Where the address is `127.0.0.2` a tripwire listener counts connections: none. Also: a stricter policy at a refresh, a name that resolves to a private address (DNS rebinding), to a mix, to nothing, a resolver that fails, a name admitted by `allow` and connected to only through the hook, a redirect not followed, an authorization endpoint that is not http(s) or has a fragment, a response over the limit with a `Content-Length` and **without one** (chunked), a body that drips, a slow server. |
 | `tests/registration.rs` | The order of the ADR (client id, document, reuse, dynamic), the secret of a registered client, **one registration per hour per issuer and redirect URI** and never at another issuer, the authorization request (PKCE, `state`, `resource` as the definition's URL, scope or none, redirect), the root metadata fallback, OpenID-only issuers, metadata about another resource or issuer, a URL over 2 KiB in the metadata, a request over 8 KiB, a flow too large for the store refused before a client is registered, a token that is not a bearer token, and the settings checks and their upper bounds. |
 | `tests/behaviour.rs` | What is kept, lifetimes and leases (`expires_in: 0`), rotating and non-rotating refresh tokens, **the claim to refresh** (written before the request, waited for, taken over when it runs out, the access token lent while another replica refreshes, released after a failure), **a refusal after another replica rotated**, a hanging refresh that is one request, a rotate that fails once or stays down (and the callers that waited for it hear so), the state the broker writes (and does not write after an edit), revocation upstream, stores that are down, a refresh that outlives its caller, **a revoke that runs beside an authorization (in this process and in another)**, **a flow begun while another ends**, the marker of a used flow, a corrupt record, **a flow for a URL that was edited meanwhile**, and **a callback between an edit's write and its revoke** (a store of definitions that stops after the `replace`: no code is exchanged, no credential and no flow is left once the edit has revoked; slice 4c review). |
+| `tests/run_client.rs` | The orchestrator's client: the method, path, bearer and JSON body of a bind; no `model` key when the binding names none; the run id percent-encoded in an unbind; `409` as `Conflict`, `500` as `Refused(500)`, a closed port as `Unreachable`; a bad base URL refused and the token absent from `Debug`. |
 | `tests/run_routes.rs` | The internal run routes (ADR 0084): the bound agent leases and the answer is `no-store`; a wrong caller holding the right run id is `run_not_bound`, and an agent bound to one run is refused another's; a deleted binding is `run_not_bound` and an expired one `lease_expired` (`410`); the lease never passes the binding's deadline; the same binding is idempotent and a different one is `409 run_already_bound`; an agent may not bind or unbind (`403`) and a bad body is `422`; the routes are absent from `docs/api/chat-api.yaml` and listed above. |
 | `tests/hygiene.rs` | The whole life of a credential under a subscriber that keeps every level, with a planted sentinel (in the tokens, the echoed errors and the `error` code): no secret and no server path in the log. |
 | `tests/logs.rs` | What the operator reads: a store that does not recover (the refresh token is lost, said without the token), the revocation endpoint at `169.254.169.254` refused by the class of the address, for which server. |
