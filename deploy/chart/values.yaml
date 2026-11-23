@@ -322,7 +322,7 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-7ac3281 (since 2026-11-21: adam-rs 8501494 plus #254, #272 and #294 to #313, ADR 0014's status note "adam-rs 7ac3281"; sha-8501494 and sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-7ea653f (since 2026-11-23: adam-rs 7ac3281 plus #321, #324, #327, #328, #329, #333 and #335, ADR 0014's status note "adam-rs 7ea653f2": a lean first request with tool groups and the compaction recap, a typed reasoning level on the model wire, the interface language (locale/v1 on the card from `chat.defaultLocale` -> DEFAULT_LOCALE), and fixes; sha-7ac3281 since 2026-11-21: adam-rs 8501494 plus #254, #272 and #294 to #313, ADR 0014's status note "adam-rs 7ac3281"; sha-8501494 and sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
   # epic #380 here): every adam agent writes A2UI v1.0 only (`"version": "1.0"`, the URI `https://a2ui.org/a2a-extension/a2ui/v1.0`, the basic catalog of v1.0),
   # reads only `ui-catalog/v2` documents, and draws nothing in a turn whose message carries no `a2uiRendererCapabilities["1.0"]` — which the orchestrator
   # of this chart sends on every message, the chat's included. It also carries adam-rs ADR 0020
@@ -349,14 +349,17 @@ chat:
   # startup. A2UI stayed v0.9.1 there. No new variable is required.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-7ac3281
-    digest: sha256:5e5d70db308beb91c916a8af493a45abacf19299e7f83867887fd62d817cd4fd
+    tag: sha-7ea653f
+    digest: sha256:50339821edf5d7dc27fe8311827c21a1639572009f2e08b23a9cc4f68cb81a23
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""
   # The model's context window in tokens (an integer from 1 to 2^53-1), rendered as MODEL_CONTEXT_WINDOW: the web's token ring fills
   # against it (ADR 0056). null: no fill, the ring shows totals. The deployment knows its model; the chart does not guess one.
   contextWindow: null
+  # The deployment's own interface language as a BCP 47 tag, rendered as DEFAULT_LOCALE: the chat's card lists `locale/v1` with it (adam-rs ADR 0069,
+  # needs an image at or after adam-rs 7ea653f). null: the card lists nothing. A malformed tag stops the chat's start (exit 78).
+  defaultLocale: en-GB
   # The environment variable the orchestrator reads this agent's bearer from (agents[].tokenEnv).
   tokenEnv: CHAT_A2A_TOKEN
   resources:

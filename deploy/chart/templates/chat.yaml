@@ -110,6 +110,11 @@ spec:
             - name: MODEL_CONTEXT_WINDOW
               value: {{ printf "%d" (int64 .) | quote }}
             {{- end }}
+            {{- with .Values.chat.defaultLocale }}
+            # The deployment's own language (locale/v1, adam-rs ADR 0069): the card lists the extension with this BCP 47 tag; a malformed tag stops the start.
+            - name: DEFAULT_LOCALE
+              value: {{ . | quote }}
+            {{- end }}
             # The orchestrator's thread tools (`thread-tools/v1`) are plain http on another host, inside the cluster.
             - name: MCP_ALLOW_INSECURE
               value: "true"

@@ -10,20 +10,20 @@
 #
 #   docker compose --profile app up -d --build --wait
 #
-# The agent is `mock-locale` (dev/agents.yaml), a WireMock A2A agent (dev/wiremock/locale, ours): its card lists locale/v1 with `en-CM` as its
-# own language; a request that activates the extension and names a tag is answered with that tag in its words ("The interface reads in fr-CM,
+# The agent is `mock-locale` (dev/agents.yaml), a WireMock A2A agent (dev/wiremock/locale, ours): its card lists locale/v1 with `en-GB` as its
+# own language; a request that activates the extension and names a tag is answered with that tag in its words ("The interface reads in fr-FR,
 # so I answer in it."); any other request is answered in its own. The plain agent is `mock-coder` (`mock-agent`), whose card does not list the
 # extension.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   * GET /agui/agents/mock-locale/capabilities has no custom[<uri>]: nothing in the interface draws a locale control;
-#   * a run on mock-locale naming `fr-CM` is accepted, its thread ends `done`, the agent's last words name fr-CM, mock-locale was sent the tag in
+#   * a run on mock-locale naming `fr-FR` is accepted, its thread ends `done`, the agent's last words name fr-FR, mock-locale was sent the tag in
 #     the message's metadata under the URI with the header and message.extensions, and NOTHING of it is in the log (the user_message has no
 #     `locale`, the export holds none) nor in the AG-UI stream (no `vymalo.locale`, no activity);
-#   * a tag is carried as the client wrote it: `FR-cm` reaches the agent as `FR-cm`;
+#   * a tag is carried as the client wrote it: `FR-FR` reaches the agent as `FR-FR`;
 #   * a second message of the thread naming none activates nothing and carries no member at all;
 #   * `en_CM` and `klingon please` are 400 and write nothing;
-#   * `fr-CM` to mock-coder, whose card does not list the extension, is accepted (a hint never holds a message back) and mock-coder is sent the
+#   * `fr-FR` to mock-coder, whose card does not list the extension, is accepted (a hint never holds a message back) and mock-coder is sent the
 #     plain message.
 # Exit status 0 when every check passed.
 #
@@ -146,17 +146,17 @@ expect "mock-locale: no custom[locale/v1] (nothing draws a locale control)" \
   "$(caps mock-locale | jq -r --arg u "$locale_uri" '(.custom // {}) | has($u)')" "false"
 
 # --- a message that names a locale -------------------------------------------------------------------------------------
-echo "== mock-locale: fr-CM"
+echo "== mock-locale: fr-FR"
 thread=$(uuid)
-code=$(run_agui mock-locale "$thread" "corrige la page de connexion ($nonce)" fr-CM)
-expect "POST /agui/agents/mock-locale naming fr-CM answers 200" "$code" "200"
+code=$(run_agui mock-locale "$thread" "corrige la page de connexion ($nonce)" fr-FR)
+expect "POST /agui/agents/mock-locale naming fr-FR answers 200" "$code" "200"
 expect "the thread ends done" "$(wait_state "$thread")" "done"
 api GET "/api/threads/$thread/export" >"$tmp/locale.export.json" 2>/dev/null || echo '{"events":[]}' >"$tmp/locale.export.json"
 expect "the log: the agent's last words name the tag it read" \
   "$(jq -r '[.events[] | select(.kind == "agent_status" and .data.status == "completed") | .data.detail] | first // ""' "$tmp/locale.export.json")" \
-  "The interface reads in fr-CM, so I answer in it."
+  "The interface reads in fr-FR, so I answer in it."
 expect "the log: the user_message records the tag (the log is the state)" \
-  "$(jq -r '[.events[] | select(.kind == "user_message") | .data.locale // "-"] | first // "-"' "$tmp/locale.export.json")" "fr-CM"
+  "$(jq -r '[.events[] | select(.kind == "user_message") | .data.locale // "-"] | first // "-"' "$tmp/locale.export.json")" "fr-FR"
 expect "the log: the tag is on the user_message and nowhere else" "$(with_a_locale "$tmp/locale.export.json")" "1"
 frames "$thread" "$tmp/locale.frames.json"
 expect "AG-UI: the user message's START carries no vymalo.locale" \
@@ -166,21 +166,21 @@ expect "AG-UI: the user message's START is there, with its actor (the stream is 
 expect "AG-UI: no activity is emitted for a locale" \
   "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT") | (.activityType // "")] | map(select(contains("locale"))) | length' "$tmp/locale.frames.json")" "0"
 expect "mock-locale was sent the tag in the message's metadata, with the header and message.extensions" \
-  "$(sent "$localed" "$nonce" | paste -sd, -)" "fr-CM|yes|yes|yes"
+  "$(sent "$localed" "$nonce" | paste -sd, -)" "fr-FR|yes|yes|yes"
 
 # a tag is carried as the client wrote it, and its subtags are matched case-insensitively
-code=$(run_agui mock-locale "$thread" "et la redirection ? ($nonce)" FR-cm)
-expect "a second message naming FR-cm answers 200" "$code" "200"
+code=$(run_agui mock-locale "$thread" "et la redirection ? ($nonce)" FR-FR)
+expect "a second message naming FR-FR answers 200" "$code" "200"
 expect "the thread ends done again" "$(wait_state "$thread")" "done"
 expect "mock-locale was sent the tag as it was written" "$(sent "$localed" "$nonce" | paste -sd, -)" \
-  "fr-CM|yes|yes|yes,FR-cm|yes|yes|yes"
+  "fr-FR|yes|yes|yes,FR-FR|yes|yes|yes"
 
 # a message that names none activates nothing and carries no member at all
 code=$(run_agui mock-locale "$thread" "and one more thing ($nonce)")
 expect "a third message naming no locale answers 200" "$code" "200"
 expect "the thread ends done a third time" "$(wait_state "$thread")" "done"
 expect "mock-locale was sent no tag and no activation, and the metadata has no member for the URI" \
-  "$(sent "$localed" "$nonce" | paste -sd, -)" "fr-CM|yes|yes|yes,FR-cm|yes|yes|yes,-|no|no|no"
+  "$(sent "$localed" "$nonce" | paste -sd, -)" "fr-FR|yes|yes|yes,FR-FR|yes|yes|yes,-|no|no|no"
 api GET "/api/threads/$thread/export" >"$tmp/three.export.json" 2>/dev/null || echo '{"events":[]}' >"$tmp/three.export.json"
 expect "the log: the three messages record two tags and no member for the one that names none" \
   "$(with_a_locale "$tmp/three.export.json")" "2"
@@ -193,7 +193,7 @@ bad_thread=$(uuid)
 code=$(run_agui mock-locale "$bad_thread" "fix the test ($nonce)" en_CM)
 expect "en_CM is a 400" "$code" "400"
 expect "its detail names the key and an example" "$(jq -r '.detail // ""' "$tmp/run.out")" \
-  "vymalo.locale must be a BCP 47 language tag, for example en-CM"
+  "vymalo.locale must be a BCP 47 language tag, for example en-GB"
 word_thread=$(uuid)
 code=$(run_agui mock-locale "$word_thread" "fix the test ($nonce)" "klingon please")
 expect "a word that is not a tag is a 400" "$code" "400"
@@ -205,7 +205,7 @@ expect "mock-locale was sent nothing for a refused tag" "$(sent "$localed" "$non
 # --- an agent that does not list the extension -------------------------------------------------------------------------
 echo "== a card without the extension gets the plain message"
 plain_thread=$(uuid)
-code=$(run_agui mock-coder "$plain_thread" "add a health endpoint ($nonce)" fr-CM)
+code=$(run_agui mock-coder "$plain_thread" "add a health endpoint ($nonce)" fr-FR)
 expect "a tag for an agent whose card does not list the extension is accepted (a hint never holds a message back)" "$code" "200"
 expect "its thread ends done" "$(wait_state "$plain_thread")" "done"
 expect "mock-coder was sent the plain message: no tag, no activation, no member" \

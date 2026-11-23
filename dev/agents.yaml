@@ -135,7 +135,7 @@
   cardUrl: http://mock-locale:8080/.well-known/agent-card.json
   tokenEnv: MOCK_AGENT_TOKEN
   # A WireMock agent that answers in the language of the interface a message names (locale/v1, ADR 0085, dev/locale-e2e.sh): its card
-  # lists the extension and says its own language is en-CM; it says in its answer which tag it was told, and answers in its own when a
+  # lists the extension and says its own language is en-GB; it says in its answer which tag it was told, and answers in its own when a
   # message names none. Nothing of the tag is logged: the answer is the only trace of it.
 - id: mock-tiered
   name: Mock tiered
