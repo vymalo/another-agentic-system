@@ -103,7 +103,8 @@ export async function* readSse(
     }
   } finally {
     clearTimeout(timer);
-    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+    if (typeof document !== "undefined")
+      document.removeEventListener("visibilitychange", onVisibility);
     signal?.removeEventListener("abort", onAbort);
     await reader.cancel().catch(() => {});
   }
