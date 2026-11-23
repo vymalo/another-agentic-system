@@ -198,6 +198,14 @@ impl AgentClient for LocalAgentClient {
                 "the agent no longer takes the access tier '{tier}'"
             )));
         }
+        if let Some(pick) = req.pick.as_ref() {
+            // The card of a local agent lists nothing (`read_card`: no `model-pick/v1`, no
+            // `reasoning/v1`), and a pick is never dropped (ADR 0086): running the agent's own
+            // default when another model was asked for would be worse than refusing.
+            return Err(AgentError::Unsupported(format!(
+                "a local agent does not offer the model or reasoning effort '{pick:?}'"
+            )));
+        }
         if req.steer {
             // The card of a local agent lists no extension (`read_card`), so a message for a
             // running task is never sent: the dispatcher keeps it and delivers it after the turn
