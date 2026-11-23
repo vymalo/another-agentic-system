@@ -874,3 +874,32 @@ above is closed: the image, the vendored files and the `rev` lines name one comm
   pull request lists passed against a local Postgres 16, directly and through PgBouncer in transaction mode.
 - *Unverified where this was written* (no Docker daemon): every scenario in containers on the new image, first run by the
   Coder E2E workflow of the pull request that pins it; the chat and the browser on netcup on the new image.
+
+### Status note, 2026-11-23: the interface language on the card, a lean first request, the output cap following the model (adam-rs 7ea653f2)
+
+The pin moves from `7ac3281` to `7ea653f2`, which is `7ac3281` plus adam-rs #314 (the output cap follows the model, adam-rs ADR 0064
+slice 2), #321 (a lean first request: tool groups and their loaders, and the compaction recap, adam-rs ADR 0066), #324 (a provider's
+opaque members, bound to the model and endpoint), #327 (a typed reasoning level on the model's wire, adam-rs ADR 0063 decision 6),
+#328, #329 and #335 (the interface language, adam-rs ADR 0069: the `locale/v1` URI, the card entry, the validated BCP 47 tag, the run's
+context key `vymalo.locale` and its place among the protected keys, and — #335, slice 3 — the card that lists the extension from
+`DEFAULT_LOCALE`, none when it is unset, exit 78 when the tag is malformed) and #333 (a redaction fix). The orchestrator's own half
+(the tag per message, `docs/api/locale-v1.md`, ADR 0085) is `9febb689`, already merged here.
+
+- **The vendored files changed** (`git diff 7ac3281 7ea653f2 -- dev bin/adam-coder/agent`): `bin/adam-coder/agent/instructions.md`
+  drops `max_output_tokens` (the cap follows the model now, #314) and gains the two rules of ADR 0069 decision 3, and
+  `subagents/explorer.md` and `subagents/reviewer.md` drop their own `max_output_tokens`. Re-copied into `dev/coder/agent/`; no
+  mapping, seed or script changed. Nothing here sets `MODEL_MAX_OUTPUT_TOKENS`, so the deployment's model default is the cap.
+- **The chart and the dev stack.** `chat.defaultLocale` (default `en-GB`) renders `DEFAULT_LOCALE`, so the chat's card lists `locale/v1`
+  and a request may name a tag; `null` lists nothing. A chat image older than `7ea653f` ignores the variable.
+- **Nothing in the run store moved** (`git diff --stat 7ac3281 7ea653f2 -- crates/adam-store-postgres` is empty): no migration.
+- **The crates** name `7ea653f2` on every `rev` line, and the lockfile names one rev only.
+- **The vendored `adam-*` skills** move with the skills CLI (`skills@1.9.0 update -p -y`) from `94a25a5` to adam-rs's head,
+  `50bee181`, which is `7ea653f2` plus #336 (docs only: neutral locale examples in ADR 0069 and the runtime README). They teach
+  nothing this pin does not have.
+- *Verified 2026-11-23* (anonymous ghcr API, HTTP 200): `coder:sha-7ea653f` is one `linux/amd64` OCI image manifest (no index; 3.11 GB
+  of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, `/opt/obscura/bin` on its PATH, label
+  `org.opencontainers.image.revision` `7ea653f2e9d80eaca493916bcb160d6df314ef29`, digest `sha256:50339821...` (the registry's
+  `Docker-Content-Digest`). `dev/coder/check-vendored.sh` passes (`vendored files match vymalo/another-adam-rs@7ea653f`).
+- *Unverified where this was written*: the 3.11 GB image was not pulled locally; every scenario on it is the Coder E2E workflow's, in the
+  pull request that pins it. The hint reaches the model only once adam-rs renders `vymalo.locale` into a request, which no slice does today
+  (the run's context is read by tools, not by the prompt): the card, the rule and the tag are in place, the words are not yet.

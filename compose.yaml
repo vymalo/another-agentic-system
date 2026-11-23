@@ -109,11 +109,12 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-21 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-7ac3281` is one linux/amd64 OCI manifest (3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 7ac32810c0be5d1ab590c8f24d78eceb205865b0, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `8501494` plus adam-rs #254, #272 and #294 to #313 (ADR 0014's
-# status note "adam-rs 7ac3281" lists what this stack sees): the coder's commands run where the coder runs, with no devcontainer and no
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-23 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-7ea653f` is one linux/amd64 OCI manifest (3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 7ea653f2e9d80eaca493916bcb160d6df314ef29, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `7ac3281` plus adam-rs #321, #324, #327, #328, #329, #333 and
+# #335 (ADR 0014's status note "adam-rs 7ea653f2" lists what this stack sees, the `locale/v1` card among them). `7ac3281` is `8501494` plus
+# adam-rs #254, #272 and #294 to #313 (ADR 0014's status note "adam-rs 7ac3281" lists what this stack sees): the coder's commands run where the coder runs, with no devcontainer and no
 # `rebuild_environment` (#272, adam-rs ADR 0052; the vendored instructions.md changed with it), reasoning effort per agent and model profiles
 # (`MODEL_ALIASES_FILE`, unset here), `MODEL_AUTH=injector` (unset here) and a refusal that may park a run (#311 to #313, adam-rs ADR 0067), and a
 # cap on a model's response body (#297). The crates of `agent-local` (orchestrator/Cargo.toml) name the same commit. `8501494` was `7418467` plus
@@ -165,11 +166,16 @@ x-orchestrator-env: &orchestrator-env
 # optional extension `build/v1`), #96 (adam-rs ADR 0030: A2A push notifications, off unless `A2A_PUSH_ALLOWED_URLS` is set, which nothing here sets,
 # `ListTasks`, the extended card and card signatures, off unless a key is set; the run store's schema version 3, migrated at startup) and #97 (the operator's
 # CRD and docs), with adam-rs's own bump commits.
+# `7ea653f2` is `7ac3281` plus adam-rs #321 (a lean first request: tool groups and their loaders, and the compaction recap, adam-rs ADR 0066),
+# #327 (a typed reasoning level through the model's wire, adam-rs ADR 0063 decision 6), #329 and #335 (the interface language, adam-rs ADR 0069:
+# `locale/v1` on the card from `DEFAULT_LOCALE`, the run's context key `vymalo.locale`, and the coder's two prompt rules, the language one and
+# the trusted-string one), #324, #328 and #333 (the model's opaque members, bench fixes, a redaction fix), with adam-rs's own bump commits.
+# The vendored coder instructions now carry those two rules; no run store migration came with it.
 # The image sets NO `MCP_ALLOW_STDIO` (it also ships
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-7ac3281@sha256:5e5d70db308beb91c916a8af493a45abacf19299e7f83867887fd62d817cd4fd
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-7ea653f@sha256:50339821edf5d7dc27fe8311827c21a1639572009f2e08b23a9cc4f68cb81a23
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
