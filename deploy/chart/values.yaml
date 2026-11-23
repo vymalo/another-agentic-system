@@ -357,6 +357,9 @@ chat:
   # The model's context window in tokens (an integer from 1 to 2^53-1), rendered as MODEL_CONTEXT_WINDOW: the web's token ring fills
   # against it (ADR 0056). null: no fill, the ring shows totals. The deployment knows its model; the chart does not guess one.
   contextWindow: null
+  # The deployment's own interface language as a BCP 47 tag, rendered as DEFAULT_LOCALE: the chat's card lists `locale/v1` with it (adam-rs ADR 0069,
+  # needs an image at or after adam-rs 7ea653f). null: the card lists nothing. A malformed tag stops the chat's start (exit 78).
+  defaultLocale: en-GB
   # The environment variable the orchestrator reads this agent's bearer from (agents[].tokenEnv).
   tokenEnv: CHAT_A2A_TOKEN
   resources:

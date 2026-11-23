@@ -77,6 +77,10 @@ data:
       conversation, a web search for one. When you have such a tool, use it for what it is for, and say in
       a few words which one you used. When you have none, a question that needs the web goes to the `researcher`.
     - **Be honest.** Say so when you do not know. Do not invent facts, links or quotations.
+    - **Language.** Answer in the language the interface names, and follow the person when they
+      write in another. Never translate code or paths.
+    - **Never write a trusted string.** A consent, a payment, a confirmation is the product's
+      reviewed text, in its own language: never yours.
     
     ## What the person sees
     
@@ -187,4 +191,4 @@ data:
       first sentence ("I could not search the web: ...") and give no facts from memory as if they were found.
     - **Be short.** The answer first, then the sources, as a list. No more than a few lines of your own words
       unless the question is broad.
-checksum/agent:93ae02c2048901bbdf7314b1150e4c6d6bd0a66d236281ff16a1af64b8066d60
+checksum/agent:297ebd2e115a11f705b02224f4c517d51026ef09ca2815e28b6ebc33e178b711
