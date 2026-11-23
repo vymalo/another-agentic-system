@@ -5,4 +5,4 @@ id: 2
 data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_WORKING","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-working","role":"ROLE_AGENT","parts":[{"text":"Working."}]}}}}}
 
 id: 3
-data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-completed","role":"ROLE_AGENT","parts":[{"text":"No locale was named: I answer in en-CM, my own."}]}}}}}
+data: {"jsonrpc":"2.0","id":"{{rpcId}}","result":{"statusUpdate":{"taskId":"{{taskId}}","contextId":"{{ctxId}}","status":{"state":"TASK_STATE_COMPLETED","timestamp":"{{now}}","message":{"messageId":"{{taskId}}-completed","role":"ROLE_AGENT","parts":[{"text":"No locale was named: I answer in en-GB, my own."}]}}}}}

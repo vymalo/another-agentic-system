@@ -119,13 +119,13 @@ mod tests {
     fn the_offer_is_read_from_the_exact_uri_with_well_formed_params() {
         let card = card_with(vec![entry(
             LOCALE_EXTENSION,
-            Some(json!({"locale": "en-CM"})),
+            Some(json!({"locale": "en-GB"})),
         )]);
         let listing = locale_from_card(&card);
         let offer = listing.offer().unwrap();
         assert_eq!(
             offer.default_locale().map(LocaleHint::as_str),
-            Some("en-CM")
+            Some("en-GB")
         );
         // a card that lists it and says nothing of its own language still takes a hint
         let card = card_with(vec![entry(LOCALE_EXTENSION, Some(json!({})))]);
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn a_card_that_does_not_list_the_exact_uri_lists_nothing() {
-        let good = json!({"locale": "en-CM"});
+        let good = json!({"locale": "en-GB"});
         for card in [
             card_with(vec![]),
             // a near miss of the URI is another extension
@@ -186,15 +186,15 @@ mod tests {
     fn a_locale_goes_to_an_agent_that_lists_the_extension() {
         let listing = LocaleListing::Offered(LocaleOffer::from_params(&json!({})).unwrap());
         assert_eq!(
-            locale_metadata(&request(Some("fr-CM")), &listing),
-            Some(json!({"locale": "fr-CM"}))
+            locale_metadata(&request(Some("fr-FR")), &listing),
+            Some(json!({"locale": "fr-FR"}))
         );
     }
 
     #[test]
     fn a_card_without_the_extension_gets_the_plain_message() {
         for listing in [LocaleListing::Absent, LocaleListing::Malformed] {
-            assert_eq!(locale_metadata(&request(Some("fr-CM")), &listing), None);
+            assert_eq!(locale_metadata(&request(Some("fr-FR")), &listing), None);
         }
     }
 }

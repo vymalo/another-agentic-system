@@ -348,7 +348,7 @@ services:
       - ./dev/wiremock/usage/__files:/home/wiremock/__files:ro
 
   # An agent that answers in the language of the interface a message names (locale/v1, ADR 0085; dev/locale-e2e.sh) as a WireMock A2A agent:
-  # its card lists the extension with `en-CM` as its own language; a request that activates the extension and names a tag is answered with that
+  # its card lists the extension with `en-GB` as its own language; a request that activates the extension and names a tag is answered with that
   # tag in its words, and any other request in its own. `mock-locale` in dev/agents.yaml.
   mock-locale:
     <<: *wiremock
