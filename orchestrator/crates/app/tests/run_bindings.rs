@@ -8,6 +8,7 @@ mod support;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use jiff::SignedDuration;
 use orch_app::{Dispatcher, DispatcherConfig};
 use orch_core::{AgentId, ThreadId, ThreadState};
 use orch_ports::memory::MemoryRunLeases;
@@ -73,11 +74,12 @@ impl Broker {
 
 impl RunBindings for Broker {
     async fn bind(&self, binding: RunBinding) -> Result<(), RunBindingError> {
-        if let Some((store, thread)) = self
-            .watched
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        // The lock is not held across the await: the guard is cloned out and dropped first.
+        let watched = {
+            let guard = self.watched.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.clone()
+        };
+        if let Some((store, thread)) = watched
             && let Ok(Some(record)) = store.get_thread(None, thread).await
         {
             self.bind_seqs
@@ -115,10 +117,14 @@ impl RunBindings for Broker {
 }
 
 fn broker_deadline_is_a_day(binding: &RunBinding) {
-    let left = binding.expires_at - SystemClock.now();
+    let now = SystemClock.now();
+    // Within a day, and not much sooner: the broker's cap, less a minute of slack.
+    let cap = now + SignedDuration::from_secs(24 * 60 * 60);
+    let almost = now + SignedDuration::from_secs(24 * 60 * 60 - 60);
     assert!(
-        left.as_secs() > 23 * 60 * 60 && left.as_secs() <= 24 * 60 * 60,
-        "the binding ends at the broker's cap, not {left:?} from now"
+        binding.expires_at > almost && binding.expires_at <= cap,
+        "the binding ends at the broker's cap, not {:?}",
+        binding.expires_at
     );
 }
 
@@ -204,7 +210,7 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
         .await
         .expect("the run is bound after its first frame");
     assert_eq!(lease.token().expose(), "model-key");
-    assert!(!lease.is_expired_at(SystemClock.now()));
+    assert!(lease.expires_at() > SystemClock.now(), "the lease is spent");
     let binding = broker.leases.binding(&run_id).unwrap();
     assert_eq!(binding.agent, AgentId::new("coder"));
     assert_eq!(binding.person, alice());
@@ -249,7 +255,7 @@ async fn a_run_that_never_reached_the_agent_is_never_bound() {
     let run = spawn(&app, fast(), broker.clone());
     wait_state(&app, &alice(), t.id, ThreadState::Failed).await;
     // Nothing reached the agent, so no run was ever opened: nothing to unbind, and no error.
-    assert_eq!(broker.binds().len(), 0, "the send never reached an agent");
+    assert!(broker.binds().is_empty(), "the send never reached an agent");
     assert!(broker.unbinds().is_empty());
     run.abort();
 }
@@ -309,7 +315,7 @@ async fn an_unbind_is_idempotent() {
             agent: AgentId::new("coder"),
             person: alice(),
             model: None,
-            expires_at: SystemClock.now() + std::time::Duration::from_secs(60),
+            expires_at: SystemClock.now() + SignedDuration::from_secs(60),
         })
         .await
         .unwrap();
