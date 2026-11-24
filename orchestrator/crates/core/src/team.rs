@@ -571,13 +571,15 @@ impl TeamLedger {
     fn remove(&mut self, name: &MemberName) -> Option<TeamCommand> {
         self.members.retain(|m| &m.name != name);
         self.running.remove(name);
-        if let Some(Pending::Handoff { to, .. }) = &mut self.pending {
-            if to.iter().any(|n| n == name) {
-                // Its pending hand-off goes with it, and the floor is the person's.
-                self.pending = None;
-                self.state = TeamState::Idle;
-                return None;
-            }
+        // Its pending hand-off goes with it, and the floor is the person's.
+        let drops_pending = match &self.pending {
+            Some(Pending::Handoff { to, .. }) => to.iter().any(|n| n == name),
+            _ => false,
+        };
+        if drops_pending {
+            self.pending = None;
+            self.state = TeamState::Idle;
+            return None;
         }
         // A turn of it that was running counts as stopped, so a fan-in it was part of can
         // complete (ADR 0074 decision 14).
@@ -628,9 +630,8 @@ impl TeamLedger {
     }
 
     fn proposed(&mut self, from: &MemberName, to: Vec<MemberName>) -> Option<TeamCommand> {
-        if self.member(from).is_none() {
-            return None;
-        }
+        // A proposal by somebody who is not a member is not a hand-off.
+        self.member(from)?;
         // A name that is not a member, or the member itself, is no hand-off: the floor goes back
         // to the person (ADR 0074 decision 5).
         let valid = !to.is_empty()
