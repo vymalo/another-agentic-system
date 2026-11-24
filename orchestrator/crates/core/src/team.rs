@@ -951,7 +951,7 @@ mod tests {
                 prop_assert!(ledger.count() <= cap);
 
                 // A person's message starts the count again.
-                if people.iter().any(|p| *p == 0) {
+                if people.contains(&0) {
                     let floor = ledger.route_person_message(&[], cap);
                     prop_assert_eq!(floor, Floor::Member(name("lead")));
                     prop_assert_eq!(ledger.count(), 0);
