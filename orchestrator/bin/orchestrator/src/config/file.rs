@@ -1571,6 +1571,7 @@ fn project(
             .as_ref()
             .map(|cors| cors.allowed_origins.clone())
             .unwrap_or_default(),
+        min_client_version: c.server.min_client_version.clone(),
         // The run routes' own listener (ADR 0084 decision 5), only when the file has the section.
         internal: internal_settings(valid)?,
         #[cfg(feature = "surface-webhook")]

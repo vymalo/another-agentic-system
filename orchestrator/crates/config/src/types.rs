@@ -276,6 +276,14 @@ pub struct Server {
     /// call, which is what the web on the edge's own origin needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<ServerCors>,
+    /// The lowest application version this deployment serves: one to four dotted decimal numbers
+    /// (`1.4.0`). A client states its version in the request header `X-Client-Version`; a request
+    /// of the resource API from a lower version, or from a client that states none or an unreadable
+    /// one, is refused with the problem `client_update_required` (status 426), which the
+    /// application shows as "update the application" (`docs/api/client-version.md`). Absent: no
+    /// client is refused. A hard cutover raises it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_client_version: Option<String>,
     /// What one page of a thread's history may hold (ADR 0059, `docs/api/history.md`).
     #[serde(default)]
     pub history: ServerHistory,
@@ -344,7 +352,7 @@ impl Default for ServerHistory {
 
 /// The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer
 /// allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`,
-/// `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and
+/// `Accept`, `Last-Event-ID`, `X-Web-Revision` and `X-Client-Version`, exposes `WWW-Authenticate`, `Date` and
 /// `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token,
 /// never a cookie.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -394,6 +402,7 @@ impl Default for Server {
             shutdown_grace_secs: default_shutdown_grace_secs(),
             environment: Environment::default(),
             cors: None,
+            min_client_version: None,
             history: ServerHistory::default(),
             internal: None,
         }

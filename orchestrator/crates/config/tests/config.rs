@@ -3195,3 +3195,19 @@ fn a_production_cors_origin_is_https_or_an_apps_own_or_local() {
         format!("{MINIMAL}server:\n  cors:\n    allowedOrigins: ['http://chat.example.com']\n");
     assert!(load(&dev, &minimal_env()).is_ok());
 }
+
+#[test]
+fn min_client_version_is_off_by_default_and_reads_dotted_numbers() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert!(valid.config.server.min_client_version.is_none());
+    let text = format!("{MINIMAL}server:\n  minClientVersion: '2.1.0'\n");
+    let valid = load(&text, &minimal_env()).unwrap();
+    assert_eq!(
+        valid.config.server.min_client_version.as_deref(),
+        Some("2.1.0")
+    );
+    for bad in ["", "v2", "2.1-beta", "1.2.3.4.5", "2..1", "1234567890"] {
+        let text = format!("{MINIMAL}server:\n  minClientVersion: '{bad}'\n");
+        assert!(load(&text, &minimal_env()).is_err(), "{bad:?}");
+    }
+}

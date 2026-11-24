@@ -85,6 +85,11 @@ Potential risks:
 * [Risk 1]
 * [Risk 2]
 
+Does this cutover raise the minimum client version (`server.minClientVersion`, `docs/api/client-version.md`)?
+
+* [ ] No
+* [ ] Yes, and the release raises it in the same change
+
 Mitigation:
 
 * [Mitigation 1]

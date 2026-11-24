@@ -494,6 +494,7 @@ impl Checker<'_> {
         }
 
         self.cors(cfg);
+        self.min_client_version(cfg);
 
         // ui.history: the web may not ask for more turns than a page may hold
         for (key, turns) in [
@@ -1047,6 +1048,24 @@ impl Checker<'_> {
     fn price(&mut self, path: String, text: &str) {
         if let Err(e) = crate::price::parse_price(text) {
             self.invalid(path, e.to_string());
+        }
+    }
+
+    /// `server.minClientVersion`: one to four dotted decimal numbers of at most nine digits.
+    fn min_client_version(&mut self, cfg: &Config) {
+        let Some(version) = &cfg.server.min_client_version else {
+            return;
+        };
+        let parts: Vec<&str> = version.split('.').collect();
+        let ok = parts.len() <= 4
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.len() <= 9 && p.bytes().all(|b| b.is_ascii_digit()));
+        if !ok {
+            self.invalid(
+                "server.minClientVersion",
+                "one to four dotted decimal numbers of at most nine digits, such as `1.4.0`, or leave it out",
+            );
         }
     }
 

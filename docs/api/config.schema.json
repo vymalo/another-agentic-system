@@ -997,6 +997,10 @@
           "description": "The socket address to listen on (default `0.0.0.0:8080`). Replaces `LISTEN_ADDR`.",
           "type": "string"
         },
+        "minClientVersion": {
+          "description": "The lowest application version this deployment serves: one to four dotted decimal numbers (`1.4.0`). A client states its version in the request header `X-Client-Version`; a request of the resource API from a lower version, or from a client that states none or an unreadable one, is refused with the problem `client_update_required` (status 426), which the application shows as \"update the application\" (`docs/api/client-version.md`). Absent: no client is refused. A hard cutover raises it.",
+          "type": "string"
+        },
         "publicUrl": {
           "description": "The public origin of the chat, for example `https://chat.example.com`: the MCP surface gives `start_job` a `web_url` from it. Replaces `ORCH_PUBLIC_URL`.",
           "type": "string"
@@ -1026,7 +1030,7 @@
     },
     "ServerCors": {
       "additionalProperties": false,
-      "description": "The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token, never a cookie.",
+      "description": "The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision` and `X-Client-Version`, exposes `WWW-Authenticate`, `Date` and `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token, never a cookie.",
       "properties": {
         "allowedOrigins": {
           "description": "Each an origin compared exactly with the request's `Origin`: `scheme://host[:port]`, with no path, query, fragment, credentials or trailing slash, for example `tauri://localhost` or `http://tauri.localhost`. Never `*` or `null`. In production `http://` is refused, but for `localhost`, `127.0.0.1`, `[::1]` and a name under `.localhost` (Tauri's own on Windows and Android).",
