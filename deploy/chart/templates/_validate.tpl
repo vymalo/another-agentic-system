@@ -3,6 +3,55 @@ Value checks that must stop a render, not surface as a broken rollout or, worse,
 Included from orchestrator-configmap.yaml, which every render contains, so they always run.
 */}}
 {{- define "agentic.validate" -}}
+{{- /* The surfaces a deployment may turn off (card ANR-655). A value that removes a component removes what exists for it only,
+       and refuses the settings that would then point at nothing: the render is a deployment, not a half of one. */ -}}
+{{- if not (kindIs "bool" .Values.web.enabled) -}}
+{{- fail (printf "web.enabled must be true or false, got %v" .Values.web.enabled) -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.edge.enabled) -}}
+{{- fail (printf "edge.enabled must be true or false, got %v" .Values.edge.enabled) -}}
+{{- end -}}
+{{- if not .Values.edge.enabled -}}
+{{- if .Values.ingress.enabled -}}
+{{- fail "edge.enabled: false needs ingress.enabled: false: the Ingress sends the host to the edge, which is not rendered, so the host would answer nothing" -}}
+{{- end -}}
+{{- if .Values.auth.browser.enabled -}}
+{{- fail "edge.enabled: false needs auth.browser.enabled: false: the browser's tokens are obtained at the edge's routes (ADR 0054), which are not rendered without it" -}}
+{{- end -}}
+{{- if include "agentic.oauth2Redis" . -}}
+{{- fail "edge.enabled: false needs oauth2Proxy.sessionStore: cookie: the Redis holds oauth2-proxy's sessions, and oauth2-proxy is not rendered without the edge" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.edge.enabled (not .Values.web.enabled) -}}
+{{- fail "web.enabled: false needs edge.enabled: false: the edge's catch-all routes the browser to this chart's web Service, which is not rendered without it" -}}
+{{- end -}}
+{{- if and (not .Values.web.enabled) .Values.mobileAppLinks.enabled -}}
+{{- fail "web.enabled: false needs mobileAppLinks.enabled: false: the association documents are a ConfigMap of the web and are served by the edge, neither of which is rendered" -}}
+{{- end -}}
+{{- /* The BFF peer of the orchestrator's policy: a namespace and the labels of its pods, or nothing at all. A namespace without
+       labels (or labels without one) is refused: an empty selector admits every pod of the namespace. With the edge off and the
+       policies on it is required, because the BFF is then the only caller the deployment names. */ -}}
+{{- $bff := default dict .Values.networkPolicy.bff -}}
+{{- if not (kindIs "map" $bff) -}}
+{{- fail (printf "networkPolicy.bff must be a map with namespace and matchLabels, got %s" (kindOf $bff)) -}}
+{{- end -}}
+{{- $bffNS := toString (default "" $bff.namespace) -}}
+{{- $bffLabels := default dict $bff.matchLabels -}}
+{{- if not (kindIs "map" $bffLabels) -}}
+{{- fail (printf "networkPolicy.bff.matchLabels must be a map of labels selecting the BFF's pods, got %s" (kindOf $bffLabels)) -}}
+{{- end -}}
+{{- if and $bffNS (not $bffLabels) -}}
+{{- fail "networkPolicy.bff.namespace needs networkPolicy.bff.matchLabels: a peer with no pod selector admits every pod of the namespace" -}}
+{{- end -}}
+{{- if and $bffLabels (not $bffNS) -}}
+{{- fail "networkPolicy.bff.matchLabels needs networkPolicy.bff.namespace: name the namespace the BFF's pods run in" -}}
+{{- end -}}
+{{- if and $bffNS (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $bffNS)) -}}
+{{- fail (printf "networkPolicy.bff.namespace must be a Kubernetes namespace name (lower-case letters, digits and -, a letter or a digit at both ends), got %q" $bffNS) -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled (not .Values.edge.enabled) (not (include "agentic.bff" .)) -}}
+{{- fail "edge.enabled: false with networkPolicy.enabled needs networkPolicy.bff (its namespace and matchLabels): the orchestrator would then admit no caller at all, and the BFF is what calls it" -}}
+{{- end -}}
 {{- /* The model-credential injector (ADR 0084, S9): every value it needs, so a half-configured injector stops the
 render instead of producing a route that forwards the client's own Authorization. */ -}}
 {{- if not (kindIs "bool" .Values.injector.enabled) -}}

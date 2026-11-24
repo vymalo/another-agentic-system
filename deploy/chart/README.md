@@ -37,10 +37,10 @@ flowchart LR
 | `Deployment` orchestrator | one process, `server.role: all`; **one replica, `Recreate`** (the artifact store is a directory on a ReadWriteOnce volume, [ADR 0032](../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md)); uid 65532, read-only root; probes `/healthz`, `/readyz` (503 until the issuer's keys are fetched); restarts on a new ConfigMap |
 | `ConfigMap` orchestrator | `config.yaml` and `agents.yaml`; no secret in it, only `{ file }`/`{ env }` references; `server.environment: production`, `auth.mode: jwt`, `defaultRole: null` are not values |
 | `PersistentVolumeClaim` | `<fullname>-artifacts`, kept when the release goes (`helm.sh/resource-policy: keep`, Argo `Delete=false,Prune=false`); not rendered with [`orchestrator.artifacts.store: s3`](#artifacts-in-s3-and-rustfs) |
-| `Deployment` web | the web's static export served by Caddy ([`web/Caddyfile`](../../web/Caddyfile): the shells of `/threads/*` and `/s/*`, the headers and the content security policy's header half), built with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start` ([`web.yml`](../../.github/workflows/web.yml)) |
-| `Deployment` oauth2-proxy | `v7.15.5`, provider `keycloak-oidc`, auth_request mode, secrets from the environment |
-| `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities |
-| `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer` |
+| `Deployment` web | the web's static export served by Caddy ([`web/Caddyfile`](../../web/Caddyfile): the shells of `/threads/*` and `/s/*`, the headers and the content security policy's header half), built with `NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start` ([`web.yml`](../../.github/workflows/web.yml)); not rendered with `web.enabled: false` ([the BFF-only shape](#the-bff-only-shape-the-web-and-the-edge-off)) |
+| `Deployment` oauth2-proxy | `v7.15.5`, provider `keycloak-oidc`, auth_request mode, secrets from the environment; not rendered with `edge.enabled: false` |
+| `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities; not rendered with `edge.enabled: false` |
+| `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer`; not rendered with `edge.enabled: false` |
 | `Middleware` (Traefik) | **off by default** (`ingress.rateLimit.enabled`): [a limit per client address](#a-limit-per-client-at-the-edge) on that Ingress, a `RateLimit` the Ingress names in `traefik.ingress.kubernetes.io/router.middlewares` |
 | `Cluster` (CNPG) | **one**, `another-agentic-db`: the orchestrator's database (its connection string is the `uri` key of `another-agentic-db-app`) and, beside it, [a role and a database per agent](#one-database-cluster) |
 | `ObjectStore` + `ScheduledBackup` (CNPG), `ExternalSecret`, a plugin on the `Cluster` | **off by default** (`backup.enabled`): [continuous backups of that cluster to S3](#backups) by the barman-cloud plugin; a restore is a new cluster: [`examples/restore-cluster.yaml`](examples/restore-cluster.yaml) to try it, [`examples/restore-cutover.yaml`](examples/restore-cutover.yaml) to replace a lost one |
@@ -49,7 +49,7 @@ flowchart LR
 | `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/`](files/chat/) (`instructions.md` and the `subagents/`), copies of `dev/agents/chat/agent/` that CI keeps equal; see [the chat agent's helpers](#the-chat-agents-helpers) |
 | `Deployment` + `Service` + `ConfigMap` oauth2-redis, `ExternalSecret`, `NetworkPolicy` | **off by default** (`oauth2Proxy.sessionStore: redis`): [a small Redis for oauth2-proxy's sessions](#sessions-in-redis); uid 999, read-only root, no persistence unless asked; reached by oauth2-proxy only |
 | `Deployment` + `Service` websearch, `ExternalSecret`, `NetworkPolicy` | **off by default** (`webSearch.enabled`): [our search pod](#web-search-and-context7), `dev/searxng-mcp` on Brave; uid 1000, read-only root; probes `/healthz`; a fourth ExternalSecret and a sixth NetworkPolicy when on |
-| `NetworkPolicy` ×5 | ingress to each pod only from the pods that need it; egress open (the search pod's is closed: DNS and the public internet) |
+| `NetworkPolicy` ×5 | ingress to each pod only from the pods that need it; egress open (the search pod's is closed: DNS and the public internet). Four with `web.enabled: false` (the web's goes), three with `edge.enabled: false` (the edge's and oauth2-proxy's go), and the orchestrator's admits `networkPolicy.bff` ([the BFF-only shape](#the-bff-only-shape-the-web-and-the-edge-off)) |
 | `Ingress` + `Deployment` + `Service` + `ConfigMap` files, `NetworkPolicy` | **off by default** (`rustfs.ingress.enabled`, needs `rustfs.enabled`): [the public files host of RustFS](#the-files-host-adr-0058), a Traefik `Ingress` with TLS in front of a small Caddy proxy (the edge's image) in front of the RustFS Service; uid 65532, read-only root, TCP probes; the proxy routes the artifact keys of the bucket and nothing else; in from the ingress controller's namespace, out to DNS and RustFS |
 
 ```sh
@@ -113,8 +113,10 @@ commented; the ones that matter:
 | `host` | **required** | the public hostname, no scheme: the Ingress, the redirect URL, `server.publicUrl` |
 | `auth.issuer` | **required** | the OIDC issuer, https, no trailing slash |
 | `auth.clientId` | `another-agentic` | the Keycloak client: oauth2-proxy's `--client-id`, the default audience, `--allowed-role=<clientId>:<allowedRole>` |
-| `auth.audiences`, `userClaim`, `rolesClaim`, `allowedRole` | `[]` (= the client id), `email`, `agentic_roles`, `user` | `auth.jwt.*` of the orchestrator |
+| `auth.audiences`, `userClaim`, `rolesClaim`, `allowedRole` | `[]` (= the client id), `email`, `agentic_roles`, `user` | `auth.jwt.*` of the orchestrator. Behind the deployment's own BFF, with this chart's web and edge off, `userClaim: sub` and an `orchestrator` audience ([the BFF-only shape](#the-bff-only-shape-the-web-and-the-edge-off)) |
 | `auth.roles` | `user`, `admin`, both `scope: own` and both holding `thread.delete` | `auth.roles` of the orchestrator; a scope of `any` is refused. **A role you write yourself does not get `thread.delete` by itself** ([ADR 0043](../../docs/decisions/0043-deleting-a-thread-erases-it.md)): without it a person cannot delete a thread (403), which is how a legal hold is made, and the operator then erases them |
+| `web.enabled`, `edge.enabled` | `true`, `true` | the chart's two public surfaces. Both off: [the BFF-only shape](#the-bff-only-shape-the-web-and-the-edge-off), where the web's Deployment, Service and mobile-app-links ConfigMap, the edge's Deployment, ConfigMap and Service, oauth2-proxy, the Ingress and the web/oauth2-proxy NetworkPolicies render nothing. **Refused:** `edge.enabled: false` with `ingress.enabled` or `auth.browser.enabled` on, or with `oauth2Proxy.sessionStore: redis`; `web.enabled: false` with the edge on (the edge's catch-all is the web) or with `mobileAppLinks.enabled`; either as a string |
+| `networkPolicy.bff.namespace`, `.matchLabels` | `""`, `{}` | the BFF as a peer of the orchestrator's NetworkPolicy: a namespace and the labels of its pods, rendered as one `namespaceSelector` and one `podSelector`. **Required with `edge.enabled: false` and `networkPolicy.enabled: true`**, because the BFF is then the caller the deployment names. Refused: a namespace without labels or labels without one (an empty selector admits the whole namespace), and a namespace that is not a DNS label |
 | `model.baseUrl`, `model.timeoutSecs` | `""`, 20 | one OpenAI-compatible endpoint with `/v1`; empty (and `baseUrlFromSecret` off): no titles, no chat agent |
 | `model.baseUrlFromSecret`, `externalSecrets.properties.modelBaseUrl` | `false`, `model_base_url` | `true`: the address is the AWS property instead of a value ([below](#the-gateways-address-from-the-aws-secret)). **OFF by default; turn it on only once `orchestrator.image.tag` is at or after this feature's merge commit.** Refused: with `model.baseUrl` also set, with no property name, or as a string |
 | `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
@@ -873,6 +875,27 @@ run on Caddy 2.11.4 against stub backends (2026-10-07): a `DPoP ` request to `/a
 `X-Auth-Request-Email`; `Bearer` with no cookie is 401, with a cookie it is the proxy's token; `/api/public/auth` with a `Bearer` token arrives with no `Authorization`;
 the pages need no sign-in. *Unverified:* the whole against a real Keycloak 26.6.1, a real orchestrator and a real browser (the orchestrator's `auth.dpop` and the web's
 sign-in are built in parallel branches; `deploy.yml` reads the default render with the pinned orchestrator image and does not read this one).
+
+## The BFF-only shape (the web and the edge off)
+
+A deployment can put its own BFF (the API its pages call) in front of the orchestrator and turn this chart's two public surfaces
+off: `web.enabled: false` and `edge.enabled: false`. Then
+
+- the web's Deployment, Service and mobile-app-links ConfigMap, the edge's Deployment, ConfigMap and Service, oauth2-proxy and
+  its ExternalSecret, the edge's Ingress and the `web`/`oauth2-proxy` NetworkPolicies render nothing;
+- the orchestrator's NetworkPolicy admits `networkPolicy.bff` — a namespace and the labels of the BFF's pods — and the chat
+  agent and `networkPolicy.orchestratorFrom` only if their own values say so;
+- `auth` is the BFF's own token: `userClaim: sub`, `audiences: [orchestrator]` (the audience another-idp issues for this API),
+  and `rolesClaim` as before (`agentic_roles`). The person is the token's subject; the token rules are those of
+  [ADR 0033](../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md), amended 2026-11-24 for this case;
+- `ingress.enabled` and `auth.browser.enabled` must be off with the edge, `mobileAppLinks.enabled` with the web, and
+  `oauth2Proxy.sessionStore` must be `cookie`. Each is refused by name ([`templates/_validate.tpl`](templates/_validate.tpl)), and
+  so is `networkPolicy.enabled` with the edge off and no `networkPolicy.bff`: an orchestrator no pod may call is broken, not
+  quiet.
+
+[`tests/bff-only.values.yaml`](tests/bff-only.values.yaml) is the shape `render-check.sh` asserts (the absences, the single peer,
+the rendered `auth.jwt`) and that `deploy.yml` has the pinned orchestrator image read with `--print-config`. The `orchestrator`
+audience itself is another-idp's to issue (card F9); this chart only names the value.
 
 ## Web search and Context7
 

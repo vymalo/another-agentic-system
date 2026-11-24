@@ -2605,6 +2605,49 @@ check "injector: ExternalSecrets off needs no token property (the deployment cre
 render
 config_of config.yaml "$cfg"
 
+# ---- The BFF-only shape: the web and the edge off (card ANR-655, tests/bff-only.values.yaml) ------------------------------
+# A deployment whose own BFF is the only caller of the orchestrator: neither of this chart's public surfaces renders, the
+# orchestrator's policy admits the BFF and nothing else, and the auth configuration is the BFF's token (`sub`, the
+# `orchestrator` audience). Each absence and each refusal below was seen red once (the report of the card).
+bff_values="$chart/tests/bff-only.values.yaml"
+render -f "$bff_values"
+check "bff only: no web Deployment, Service or mobile-app-links ConfigMap renders" lacks 'another-agentic-web'
+check "bff only: no edge Deployment, ConfigMap or Service renders" lacks 'another-agentic-edge'
+check "bff only: no oauth2-proxy Deployment or Service renders" lacks 'another-agentic-oauth2-proxy'
+check "bff only: no Ingress renders" count '^kind: Ingress$' 0
+check "bff only: one NetworkPolicy (the orchestrator's)" count '^kind: NetworkPolicy$' 1
+check "bff only: one ExternalSecret, the orchestrator's (no oauth2-proxy, chat or redis one)" count '^kind: ExternalSecret$' 1
+bff_peers=$(doc NetworkPolicy another-agentic-orchestrator | awk '
+  /^  ingress:/ { i = 1 }
+  i && /^    - from:/ { f = 1; next }
+  f && /^      ports:/ { exit }
+  f && /^        - / { n++ }
+  END { print n + 0 }')
+check "bff only: the orchestrator's policy admits exactly one peer" test "$bff_peers" -eq 1
+check "bff only: the one peer is the BFF's namespace" dhas NetworkPolicy another-agentic-orchestrator 'kubernetes.io/metadata.name: "bff"'
+check "bff only: and the labels of its pods" dhas NetworkPolicy another-agentic-orchestrator 'app.kubernetes.io/name: bff'
+check "bff only: the edge is not a peer (its selector is nowhere in the policy)" dlacks NetworkPolicy another-agentic-orchestrator 'app.kubernetes.io/component: edge'
+check "bff only: the chat agent is not a peer" dlacks NetworkPolicy another-agentic-orchestrator 'app.kubernetes.io/component: chat'
+check "bff only: the coder is not a peer (orchestratorFrom is empty)" dlacks NetworkPolicy another-agentic-orchestrator 'app.kubernetes.io/name: coder'
+config_of config.yaml "$cfg"
+check "bff only: the user is the BFF token's sub claim" cfg_has '^    userClaim: "sub"$'
+check "bff only: the token's audience names the orchestrator" cfg_has '^      - orchestrator$'
+check "bff only: the roles come from agentic_roles" cfg_has '^    rolesClaim: "agentic_roles"$'
+check "bff only: values.yaml turns the web and the edge on by default" sh -c "
+  awk '/^web:/ { w = 1 } w && /^  enabled:/ { print; exit }' '$chart/values.yaml' | grep -qx '  enabled: true' &&
+  awk '/^edge:/ { e = 1 } e && /^  enabled:/ { print; exit }' '$chart/values.yaml' | grep -qx '  enabled: true'"
+# The settings that would point at a component the shape does not render are refused, naming the value.
+check "bff only: web.enabled as a string is refused" fails renders --set-string web.enabled=false
+check "bff only: edge.enabled as a string is refused" fails renders --set-string edge.enabled=false
+check "bff only: mobile app links with the web off are refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set web.enabled=false --set edge.enabled=false --set ingress.enabled=false --set mobileAppLinks.enabled=true --set networkPolicy.bff.namespace=bff --set-json 'networkPolicy.bff.matchLabels={"app.kubernetes.io/name":"bff"}'
+check "bff only: the Ingress with the edge off is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set edge.enabled=false --set networkPolicy.bff.namespace=bff --set-json 'networkPolicy.bff.matchLabels={"app.kubernetes.io/name":"bff"}'
+check "bff only: tokens in the browser with the edge off are refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set edge.enabled=false --set ingress.enabled=false --set auth.browser.enabled=true --set networkPolicy.bff.namespace=bff --set-json 'networkPolicy.bff.matchLabels={"app.kubernetes.io/name":"bff"}'
+check "bff only: the session Redis with the edge off is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set edge.enabled=false --set ingress.enabled=false --set oauth2Proxy.sessionStore=redis --set networkPolicy.bff.namespace=bff --set-json 'networkPolicy.bff.matchLabels={"app.kubernetes.io/name":"bff"}'
+check "bff only: the policies on, the edge off and no BFF are refused (nobody could call the orchestrator)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set edge.enabled=false --set ingress.enabled=false
+check "bff only: a BFF namespace without pod labels is refused (an empty selector admits the namespace)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set edge.enabled=false --set ingress.enabled=false --set networkPolicy.bff.namespace=bff
+check "bff only: BFF pod labels without a namespace are refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set edge.enabled=false --set ingress.enabled=false --set-json 'networkPolicy.bff.matchLabels={"app.kubernetes.io/name":"bff"}'
+check "bff only: with the policies off, no BFF is needed" renders --set edge.enabled=false --set ingress.enabled=false --set networkPolicy.enabled=false
+
 # ---- The shipped values.yaml --------------------------------------------------------------------------------------------
 check "values.yaml leaves the deployment's own values empty (host, issuer, model)" sh -c "
   grep -Eq '^host: \"\"$' '$chart/values.yaml' && grep -Eq '^  issuer: \"\"$' '$chart/values.yaml' && grep -Eq '^  baseUrl: \"\"$' '$chart/values.yaml'"
