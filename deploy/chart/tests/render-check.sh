@@ -2654,4 +2654,22 @@ check "values.yaml leaves the deployment's own values empty (host, issuer, model
 check "values.yaml has no value that looks like a secret" sh -c "! grep -Eq '(ghp_|github_pat_|sk-[A-Za-z0-9]{8}|-----BEGIN|AKIA[0-9A-Z]{16})' '$chart/values.yaml'"
 check "values.yaml has no latest tag" sh -c "! grep -Eq 'tag: \"?latest' '$chart/values.yaml'"
 
+# ---- The platform's agent registry (ANR-685) ----------------------------------------------------------------------------
+# The chart has never heard of it when no url is set: the configuration must have no `agents.registry` at all, or every
+# existing render moves. With it on, the static file stays and the registry is written beside it, with its token as a
+# reference — and each half alone, or a token that is a value, is refused by name.
+render
+config_of config.yaml "$cfg"
+check "agents registry off: the configuration has no agents.registry key" cfg_lacks '^  registry:'
+render --set agentsRegistry.url=https://registry.example.svc.cluster.local:8080 --set agentsRegistry.token.file=/run/secrets/orchestrator/registry-token
+config_of config.yaml "$cfg"
+check "agents registry on: agents.file stays and the registry is rendered beside it" cfg_all '^agents:$' '^  file: agents.yaml$' '^  registry:$' '^    url: "https://registry.example.svc.cluster.local:8080"$'
+check "agents registry on: the token is a file reference, never a value" line_after "$cfg" '^    token: *$' 1 'file: /run/secrets/orchestrator/registry-token'
+check "agents registry on: the token's path is not a ConfigMap value" sh -c "! grep -Eq '^    token: [^ ]' '$cfg'"
+check "agents registry: a url without a token is refused" fails renders --set agentsRegistry.url=https://registry.example.svc
+check "agents registry: a token without a url is refused" fails renders --set agentsRegistry.token.env=ORCH_REGISTRY_TOKEN
+check "agents registry: a token that is a plain string is refused" fails renders --set agentsRegistry.url=https://registry.example.svc --set agentsRegistry.token=plain-value
+check "agents registry: a url with credentials in it is refused" fails renders --set agentsRegistry.url=https://user:pw@registry.example.svc --set agentsRegistry.token.env=ORCH_REGISTRY_TOKEN
+check "agents registry: a plain-http url is allowed (in-cluster services have no certificate)" renders --set agentsRegistry.url=http://registry.another-orchestrator.svc:8080 --set agentsRegistry.token.env=ORCH_REGISTRY_TOKEN
+
 if [ "$fail" -eq 0 ]; then echo "render checks passed"; else echo "render checks FAILED"; exit 1; fi

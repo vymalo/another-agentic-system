@@ -288,8 +288,8 @@ Not proven here: other poolers (Pgpool-II, Supavisor), PgBouncer versions other 
 |---|---|---|---|
 | `agents.file` | path; required unless `agents.registry.url` is set | `AGENTS_FILE` | now. The file's format (`{id, name, aliases?, transport?, cardUrl?, tokenEnv?, agent?, gate?}`) gains `aliases`, a list of other names of the agent ([ADR 0049](../decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)); a file without it is read as before |
 | `agents.localConcurrency` | ≥ 1, `4`; a build without the feature `agent-local` refuses the key (78) | `AGENT_LOCAL_CONCURRENCY` | now |
-| `agents.registry.url` | `http(s)` URL without credentials; a build without `registry-platform` refuses it (78). **Who may use an agent it lists is the item's `audience`, not `agents.file` or a role's `agents` alone** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md), [who may use a platform agent](#who-may-use-a-platform-agent)): an item with none is for administrators only | `AGENT_REGISTRY_URL` | now |
-| `agents.registry.token` | **secret**, none | `AGENT_REGISTRY_TOKEN` | now |
+| `agents.registry.url` | `http(s)` URL without credentials; a build without `registry-platform` refuses it (78). The chart sets it from **`agentsRegistry.url`** (empty by default, and then the key is absent altogether) | **Who may use an agent it lists is the item's `audience`, not `agents.file` or a role's `agents` alone** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md), [who may use a platform agent](#who-may-use-a-platform-agent)): an item with none is for administrators only | `AGENT_REGISTRY_URL` | now |
+| `agents.registry.token` | **secret**, none; the chart sets it from **`agentsRegistry.token`**, a `{ file }`/`{ env }` reference (a plain string is refused) | `AGENT_REGISTRY_TOKEN` | now |
 | `agents.registry.agentToken` | **secret**, none | `AGENT_REGISTRY_AGENT_TOKEN` | now |
 | `agents.registry.timeoutSecs` | 1 to 60, `3` | `AGENT_REGISTRY_TIMEOUT_SECS` | now |
 | `agents.registry.maxAgeSecs` | 1 to 3600, `60` | `AGENT_REGISTRY_MAX_AGE_SECS` | now |

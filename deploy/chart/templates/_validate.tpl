@@ -944,6 +944,27 @@ missing identity must fail the render rather than silently serve a link another 
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /* The platform's agent registry (ANR-685). A url and a token go together, the url is http or https with no
+       credentials in it, and the token is a { file } or { env } reference — never a value, as every secret is. */ -}}
+{{- $registry := .Values.agentsRegistry | default dict -}}
+{{- $registryUrl := $registry.url | default "" -}}
+{{- $registryToken := $registry.token | default dict -}}
+{{- if ne $registryUrl "" -}}
+{{- if not (regexMatch "^https?://[^/@[:space:]]+$" $registryUrl) -}}
+{{- fail (printf "agentsRegistry.url must be an http or https URL without credentials, a path only if the service has one, got %q" $registryUrl) -}}
+{{- end -}}
+{{- if ne (len $registryToken) 1 -}}
+{{- fail "agentsRegistry.token must be exactly one { file } or { env } reference when agentsRegistry.url is set: a plain string is a value, and this chart takes no secret as a value" -}}
+{{- end -}}
+{{- if not (or (hasKey $registryToken "file") (hasKey $registryToken "env")) -}}
+{{- fail "agentsRegistry.token must be a { file } or { env } reference, never a value" -}}
+{{- end -}}
+{{- else -}}
+{{- if gt (len $registryToken) 0 -}}
+{{- fail "agentsRegistry.token is set without agentsRegistry.url: a registry token needs the registry it opens" -}}
+{{- end -}}
+{{- end -}}
+
 {{- end -}}
 
 {{/* A whole number in a range, or the render fails: call with (dict "name" "a.b" "value" $v "min" 1 "max" 10). A values file gives a float64, `--set` an int64. */}}

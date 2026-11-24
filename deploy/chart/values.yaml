@@ -359,6 +359,17 @@ orchestrator:
     limits:
       memory: 1Gi
 
+# The platform's agent registry (ANR-685): the orchestrator lists agents from a registry service as well as from
+# agents.yaml. Rendered as `agents.registry.{url,token}` beside `agents.file`, which the binary reads as its
+# CompositeRegistry: the file's agents first, then the registry's.
+#   url    http or https, with no credentials in it. Empty by default, and then the configuration has NO
+#          `agents.registry` key at all — the render is the one of a chart that has never heard of it.
+#   token  how the orchestrator reads the registry's bearer: a `{ file }` or `{ env }` reference, never a value,
+#          as every secret of this chart is. A plain string is refused, as is a token with no url (and the reverse).
+agentsRegistry:
+  url: ""
+  token: {}
+
 # The agents the orchestrator drives over A2A: agents.yaml (orchestrator/agents.example.yaml). The first is
 # the default. A list is replaced as a whole by an override, not merged. `cardUrl` is a template (`tpl`):
 # the coder is deployed by the adam-rs chart (release `coder`, namespace of this release) and is named here

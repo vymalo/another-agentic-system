@@ -66,6 +66,11 @@ data:
       {{- end }}
     agents:
       file: agents.yaml
+      {{- with .Values.agentsRegistry.url }}
+      registry:
+        url: {{ . | quote }}
+        token: {{ toYaml $.Values.agentsRegistry.token | nindent 10 }}
+      {{- end }}
     {{- if include "agentic.hasModel" . }}
     models:
       endpoints:
