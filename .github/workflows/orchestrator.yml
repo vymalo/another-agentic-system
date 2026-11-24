@@ -41,6 +41,7 @@ on:
       - "dev/mcp-tokens.yaml"
       - "tools/projection-digests-check.sh"
       - "tools/sqlx-out-check.sh"
+      - "tools/embedded-deps/check.sh"
       - ".github/workflows/orchestrator.yml"
   push:
     branches: [main]
@@ -60,6 +61,7 @@ on:
       - "dev/agents.live.yaml"
       - "dev/mcp-tokens.yaml"
       - "tools/sqlx-out-check.sh"
+      - "tools/embedded-deps/check.sh"
       - ".github/workflows/orchestrator.yml"
 
 permissions:
@@ -145,6 +147,12 @@ jobs:
         # the lockfile, a dev-dependency's included, brings it back.
         working-directory: .
         run: sh tools/sqlx-out-check.sh
+      - name: the embedded build stays a library, not a server
+        # ADR 0076, sys#382 E3: `orch-embed` composes the app and the SQLite store and speaks no protocol, so its
+        # normal edges hold no axum, sqlx, hyper or tokio-postgres, and exactly one libsqlite3-sys. Counts the set
+        # (E5 measures it from here).
+        working-directory: .
+        run: sh tools/embedded-deps/check.sh
       - name: Create the S3 test bucket on RustFS
         # SigV4 with curl's own signer, path style (`<endpoint>/<bucket>`); a bucket that exists answers 200 again.
         run: |
