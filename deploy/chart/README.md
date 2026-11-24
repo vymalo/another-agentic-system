@@ -1581,7 +1581,7 @@ key for it ([ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-
 |---|---|---|
 | `POST /internal/runs` | the orchestrator (its own token) | `204`; `409 run_already_bound` for a different binding of one run |
 | `DELETE /internal/runs/{run}` | the orchestrator (its own token) | `204`, idempotent |
-| `GET /internal/runs/{run}/lease` | the agent the run is bound to (its token) | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
 
 They are served on a **second port**, `orchestrator.internal.port`, that no Ingress and no edge route names, and that serves **the
 broker's router and nothing else**: no surface, no `/healthz`, no resource API. Refusals are the ruled slugs (`run_not_bound`,

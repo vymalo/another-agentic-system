@@ -35,13 +35,14 @@ as the vault for real deployments, the broker's sealed store for small and devel
    refused (`409`), because a run is bound once. `expiresAt` is the run's deadline, **capped by the broker** (24 h), and
    the binding is not a secret: it names people and agents, no value.
 
-2. **The lookup is Authorino's, and only the bound agent's.** `GET /internal/runs/{run}/lease` takes the caller's
-   identity — Authorino's own service account **and** the agent identity it authenticated (the agent pod's
-   service-account identity, or its client certificate). The broker answers only when all three hold: the caller is the
-   agent the run is bound to, the binding is live (not expired, not revoked), and the deployment has a credential for
-   the run's model. A refusal is one of the ruled slugs — `run_not_bound`, `lease_expired`, `unavailable` — and
-   `model_locked` is **not** this route's (the balance is checked per call by the injector's authorization, not per
-   lease).
+2. **The lookup answers the orchestrator and the injector — never an agent** (amended 2026-11-24; the original text
+   read "only the bound agent's"). `GET /internal/runs/{run}/lease` takes the caller's identity from `RunCallerAuth`
+   (decision 5). The broker answers only when all of these hold: the caller is `RunCaller::Orchestrator` or
+   `RunCaller::Injector`, the binding is live (not expired, not revoked), and the deployment has a credential for the
+   run's model. An agent is refused **its own run included**: the binding names the agent, it does not authorise it, so
+   a reachable agent holds no key. A refusal is one of the ruled slugs — `run_not_bound`, `lease_expired`,
+   `unavailable` — and `model_locked` is **not** this route's (the balance is checked per call by the injector's
+   authorization, not per lease).
 
 3. **The lease is short and cannot outlive the binding.** The answer is a bearer token for the model endpoint and its
    expiry: at most **30 s** and never past the binding's. The response is `no-store`, the value is never logged, and
@@ -97,8 +98,10 @@ as the vault for real deployments, the broker's sealed store for small and devel
    frontier plan reads as the former. The answer changes the store's shape, not the routes.
 2. **The lease TTL** — 30 s per lease, renewed by Authorino's cache (**recommended**, the epic's "at most 30 s"), or the
    run's whole life.
-3. **The lookup's caller identity** — Authorino's service account plus the agent identity it authenticated
-   (**recommended**), or mTLS from the injector.
+3. **The lookup's caller identity** — ~~Authorino's service account plus the agent identity it authenticated
+   (**recommended**), or mTLS from the injector.~~ **Answered 2026-11-24** (the owner, ANR-Q31): the orchestrator and
+   the injector's pods, and **agents never call it** — see decision 2 as amended. The transport (a token, a TokenReview
+   of a service-account token, or mTLS) stays decision 5's, and the identity that answers is `RunCaller::Injector`.
 4. **Does the binding name the model endpoint**, or does the lookup resolve it from the agent's AgentConfig?
    **Answered 2026-11-24** (the owner, ANR-Q53): the binding names it, and the agent's card lists, per choice, the
    endpoint label the alias maps to. See the status note of the same date below.

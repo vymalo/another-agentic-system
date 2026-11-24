@@ -300,18 +300,22 @@ is the port implementation (`RunLeases`, with its conformance cases in `orch-por
 |---|---|---|
 | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run (the same binding is idempotent), and the deadline is capped at 24 h |
 | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent, and a no-op for a run that was never bound |
-| `GET /internal/runs/{run}/lease` | the agent the run is bound to | `200 {"token", "expiresAt"}`, `Cache-Control: no-store`; at most 30 s and never past the binding's |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — **never an agent, its own run included** | `200 {"token", "expiresAt"}`, `Cache-Control: no-store`; at most 30 s and never past the binding's |
 
 Refusals are the ruled slugs with a `{"code"}` body: `run_not_bound` (`404`), `lease_expired`
 (`410`), `unavailable` (`503`); the door answers `401 unauthenticated` (`WWW-Authenticate: Bearer`)
 and `403 not_allowed` (an agent binding or unbinding). A `422 invalid_binding` covers a body that is
 not JSON, names an id over 256 characters, or carries a deadline that is not RFC 3339. **The run id
-alone is never enough**: the caller comes from `RunCallerAuth`, and a caller that is not the run's
-agent gets `run_not_bound`, so the answer never says whether a run exists. The lease value is
+alone is never enough**: the caller comes from `RunCallerAuth`, and a caller that is neither the
+orchestrator nor the injector gets `run_not_bound`, so the answer never says whether a run exists.
+An **agent is refused its own run's lease** too (ADR 0084 decision 2, amended 2026-11-24): the
+binding names the agent, it does not authorise it, so a reachable agent holds no key. The lease value is
 written to the response and to nothing else — no log line, no error, no `Debug` holds it.
 
-`SharedTokens` is today's `RunCallerAuth`: one bearer token for the orchestrator and one per agent,
-from the deployment's configuration, compared by SHA-256 digest. S9 replaces it with a TokenReview
+`SharedTokens` is today's `RunCallerAuth`: one bearer token for the orchestrator, one for the
+injector (`with_injector`) and one per agent, from the deployment's configuration, compared by
+SHA-256 digest. The injector's token reads a lease and does nothing else: binding or unbinding
+with it is `403 not_allowed`, as it is for an agent. S9 replaces it with a TokenReview
 of the service-account token, or mTLS (ADR 0084 decision 5); the routes do not change. There is **no
 entry in `docs/api/chat-api.yaml`**, and `tests/run_routes.rs` holds that, the README's table, the
 wrong-caller and cross-run refusals, the deleted and expired cases, the lease bound, the conflict and

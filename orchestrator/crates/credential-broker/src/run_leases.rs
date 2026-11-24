@@ -65,8 +65,11 @@ where
             return Err(RunLeaseError::Expired);
         }
         match caller {
-            RunCaller::Agent(agent) if agent == &binding.agent => {}
-            _ => return Err(RunLeaseError::NotBound),
+            // The orchestrator and the injector read the lease; an agent never does, its own run
+            // included (ADR 0084 decision 2, amended 2026-11-24): the binding names the agent, it
+            // does not authorise it.
+            RunCaller::Orchestrator | RunCaller::Injector => {}
+            RunCaller::Agent(_) => return Err(RunLeaseError::NotBound),
         }
         let model = binding
             .model

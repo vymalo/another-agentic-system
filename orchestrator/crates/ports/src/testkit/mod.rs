@@ -970,25 +970,25 @@ macro_rules! bearer_token_conformance {
 macro_rules! run_leases_conformance {
     ($make:path) => {
         #[tokio::test]
-        async fn binds_then_leases_to_the_bound_agent() {
+        async fn binds_then_leases_to_the_injector() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::binds_then_leases_to_the_injector(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_every_agent_its_own_run_included() {
             match $make().await {
                 Some(b) => {
-                    $crate::testkit::run_leases::binds_then_leases_to_the_bound_agent(&b).await
+                    $crate::testkit::run_leases::refuses_every_agent_its_own_run_included(&b).await
                 }
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
         #[tokio::test]
-        async fn refuses_another_agent() {
+        async fn leases_to_the_orchestrator_too() {
             match $make().await {
-                Some(b) => $crate::testkit::run_leases::refuses_another_agent(&b).await,
-                None => eprintln!("skipped: no run-lease broker available"),
-            }
-        }
-        #[tokio::test]
-        async fn refuses_the_orchestrator_lease() {
-            match $make().await {
-                Some(b) => $crate::testkit::run_leases::refuses_the_orchestrator_lease(&b).await,
+                Some(b) => $crate::testkit::run_leases::leases_to_the_orchestrator_too(&b).await,
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }

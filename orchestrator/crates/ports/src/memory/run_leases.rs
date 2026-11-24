@@ -87,8 +87,10 @@ impl RunLeases for MemoryRunLeases {
             return Err(RunLeaseError::Expired);
         }
         match caller {
-            RunCaller::Agent(agent) if agent == &binding.agent => {}
-            _ => return Err(RunLeaseError::NotBound),
+            // As the broker: the orchestrator and the injector lease, an agent never does, its own
+            // run included (ADR 0084 decision 2, amended 2026-11-24).
+            RunCaller::Orchestrator | RunCaller::Injector => {}
+            RunCaller::Agent(_) => return Err(RunLeaseError::NotBound),
         }
         let model = binding
             .model

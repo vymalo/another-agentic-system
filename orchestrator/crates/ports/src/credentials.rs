@@ -763,10 +763,16 @@ impl std::fmt::Display for RunId {
 /// bound to leases its credential. A lookup from any other identity is refused (ADR 0084).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunCaller {
-    /// The orchestrator itself (bind and unbind).
+    /// The orchestrator itself: it binds a run, unbinds it, and may read the run's lease.
     Orchestrator,
-    /// The agent the run is bound to (lease).
+    /// The agent the run is bound to. It is named **by** the binding and is **never** enough for a
+    /// lease: an agent is refused the lease of its own run, so a reachable agent holds no key
+    /// (ADR 0084 decision 2, amended 2026-11-24).
     Agent(AgentId),
+    /// The injector: the process that adds the run's model credential to a request. It reads the
+    /// lease and does nothing else — it binds nothing and unbinds nothing (ADR 0084 decision 2,
+    /// amended 2026-11-24).
+    Injector,
 }
 
 /// What the orchestrator binds at run creation: the run, the agent it belongs to, the person it
@@ -841,7 +847,8 @@ impl std::fmt::Display for RunLeaseError {
 impl std::error::Error for RunLeaseError {}
 
 /// The broker's first part (B1, ADR 0084): the binding the orchestrator makes at run creation, and
-/// the lease the injector asks for, answered only to the agent the run is bound to.
+/// the lease the injector asks for, answered to the orchestrator and the injector and never to an
+/// agent (ADR 0084 decision 2, amended 2026-11-24).
 pub trait RunLeases: Send + Sync + 'static {
     /// Binds `binding`. Idempotent for the same binding; [`RunLeaseError::Conflict`] for a different
     /// one on the same run.

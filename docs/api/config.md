@@ -236,7 +236,7 @@ server:
 |---|---|---|
 | `POST /internal/runs` | the orchestrator (its `token`) | `204`; `409 run_already_bound` for a different binding of a run |
 | `DELETE /internal/runs/{run}` | the orchestrator (its `token`) | `204`, idempotent |
-| `GET /internal/runs/{run}/lease` | the agent the run is bound to (its token in `agents`) | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
 
 A refusal is one of the ruled slugs: `run_not_bound` (`404`, also for a caller that is not the run's agent, so the answer never
 says whether a run exists), `lease_expired` (`410`), `unavailable` (`503`, among them a model the deployment has no key for: never
