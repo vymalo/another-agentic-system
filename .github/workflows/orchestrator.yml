@@ -207,7 +207,8 @@ jobs:
           fi
 
   signed-request-interop:
-    runs-on: ubuntu-latest    env:
+    runs-on: ubuntu-latest
+    env:
       CARGO_TERM_COLOR: always
     defaults:
       run:
