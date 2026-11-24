@@ -395,8 +395,8 @@ async fn the_table_holds_no_plaintext() {
     )
     .await;
     assert_eq!(
-        relations, 4,
-        "user_secrets, vault_secrets, their sequence and the history table"
+        relations, 5,
+        "user_secrets, vault_secrets, vault_names, their sequence and the history table"
     );
 }
 
@@ -548,6 +548,7 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
         [
             (1, "user secrets".to_owned(), true),
             (2, "vault secrets".to_owned(), true),
+            (3, "vault names".to_owned(), true),
         ]
     );
     // the orchestrator's history knows none of this crate's migrations, and this crate's none of its
