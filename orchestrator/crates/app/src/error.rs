@@ -485,6 +485,10 @@ mod tests {
                     PromptRefusal::Invalid(_) => ErrorClass::Invalid,
                     _ => ErrorClass::Rejected,
                 },
+                AppError::Attachment(refusal) => match refusal {
+                    AttachmentRefusal::NoStore => ErrorClass::Unsupported,
+                    _ => ErrorClass::Invalid,
+                },
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
                 AppError::Artifacts(inner) => inner.class(),
