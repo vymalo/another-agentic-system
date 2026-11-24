@@ -199,6 +199,9 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.cors.allowedOrigins` | list of at least one exact origin, `scheme://host[:port]` with no path, query, fragment, credentials or trailing slash, any scheme (`tauri://localhost`, `http://tauri.localhost`), an `http(s)` one as a browser sends it (lower case, no default port, the host in ASCII: `https://xn--bcher-kva.example`, not `https://bücher.example:443`), never `*` or `null`, each once; none (no CORS header at all) | — | now; [ADR 0047](../decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md). The pages of these origins may call every route (the desktop and mobile apps): a preflight is answered before identity (any origin's, but only a listed one gets `Access-Control-Allow-Origin`), the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID` and `X-Web-Revision` are allowed, `WWW-Authenticate`, `Date` and `Content-Disposition` are exposed, and **credentials never are** (no cookie crosses origins; the apps send DPoP-bound tokens). `production` refuses `http://` except for `localhost`, a loopback address and a name under `.localhost` |
 | `server.shutdownGraceSecs` | ≥ 1, `15` | `SHUTDOWN_GRACE_SECS` | now |
 | `server.history.maxTurns`, `.maxPageBytes` | `maxTurns` 1 to 1000, `100`: the largest `limit` of a page of a thread's history and the most a `since` read goes back; `maxPageBytes` 65 536 to 67 108 864, `4194304`: the frames of a page as JSON, the newest chain returned whole whatever its size | — | now; [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), [`history.md`](history.md) |
+| `server.internal.listen` | socket address, `0.0.0.0:8081`; never `server.listen` on a port that is not 0 (exit 78 naming the key) | — | now; [ADR 0084](../decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), card ANR-578. The **internal listener** of the credential broker's run routes, below. Absent: no second listener |
+| `server.internal.token` | **secret**, required, at least 32 bytes | — | now. The orchestrator's own bearer on the run routes: `POST /internal/runs` and `DELETE /internal/runs/{run}` |
+| `server.internal.agents` | map from an agent id (`a-z`, `0-9`, `-`, at most 63) to a **secret**, at least 32 bytes each; none | — | now. Each agent's bearer on `GET /internal/runs/{run}/lease`, and it leases only the runs bound to it. No two callers may share a token (exit 78 naming the second key) |
 | `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header`, and an `http://` `auth.jwt.issuer` or `jwksUrl` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
@@ -211,6 +214,41 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `inbox.pollSecs` | ≥ 1, `2` | `INBOX_POLL_SECS` | now |
 | `inbox.parkedTtlSecs` | ≥ 1, `86400` | `INBOX_PARKED_TTL_SECS` | now |
 | `inbox.maxAttempts` | ≥ 1, `10` | `INBOX_MAX_ATTEMPTS` | now |
+
+### The internal listener (the run routes)
+
+*Built 2026-11-24 (ADR 0084 decision 5, card ANR-578).* The credential broker's run routes are the orchestrator's binding of a run
+and the injector's lease of the deployment's model key for it. They are served on **their own port** and nothing else is: no
+surface, no `/healthz`, no resource API, and no Ingress or edge route names it. Only a process that serves routes (`all`,
+`control-plane`) binds it; a worker that shares the file reads and checks the section and opens nothing.
+
+```yaml
+server:
+  listen: 0.0.0.0:8080
+  internal:
+    listen: 0.0.0.0:8081
+    token: { file: /run/secrets/orchestrator/internal-token }
+    agents:
+      coder: { file: /run/secrets/orchestrator/internal-agent-coder-token }
+```
+
+| Route | Caller | Answer |
+|---|---|---|
+| `POST /internal/runs` | the orchestrator (its `token`) | `204`; `409 run_already_bound` for a different binding of a run |
+| `DELETE /internal/runs/{run}` | the orchestrator (its `token`) | `204`, idempotent |
+| `GET /internal/runs/{run}/lease` | the agent the run is bound to (its token in `agents`) | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
+
+A refusal is one of the ruled slugs: `run_not_bound` (`404`, also for a caller that is not the run's agent, so the answer never
+says whether a run exists), `lease_expired` (`410`), `unavailable` (`503`, among them a model the deployment has no key for: never
+an empty header), `unauthenticated` (`401`) and `not_allowed` (`403`, an agent binding or unbinding). A configuration that would not
+run is refused at startup, exit 78 naming the key: a `listen` that is not a socket address or that is `server.listen`, a token
+shorter than 32 bytes, a key of `agents` that is not an agent id, and two callers sharing one token (the door compares the
+orchestrator's first, so one caller would answer as another).
+
+**What is not here:** today's caller authentication is one static token per caller (`SharedTokens`), not a TokenReview of the
+service-account token or mTLS; the model keys are the deployment's configuration, not a vault; and the routes are absent from
+`docs/api/chat-api.yaml` on purpose. S9 brings the injector's own identity scheme, and the deployment of the vault. The chart's
+`orchestrator.internal` values are what turn the section on ([`deploy/chart/README.md`](../../deploy/chart/README.md#the-run-routes-adr-0084-cards-anr-378-and-anr-578)).
 
 ### Database behind a pooler
 
@@ -478,8 +516,9 @@ application, the API and the log hold only the part that is not secret. Replaces
 | `toolServers[].signing.ttlSecs` | 1 to 60, `30`. How long a signed request lives (`exp - iat`). The contract allows 60 seconds at most, and a tool server refuses an object that lives longer | — | now |
 
 A server's `signing.key` is a secret of the contract too, by the same rules (a reference, resolved at startup, printed by `--print-config` as the
-reference): **the seventeenth in the schema**, counting the ones that later changes added; the list the test
-`the_secrets_are_the_seventeen_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
+reference): **the nineteenth in the schema**, counting the ones that later changes added (the last two are the run routes'
+`server.internal.token` and `server.internal.agents`, ADR 0084); the list the test
+`the_secrets_are_the_nineteen_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
 two here and the two of `sharing`): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
 printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
 `agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the

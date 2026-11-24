@@ -40,6 +40,19 @@ data:
         {{- end }}
       {{- end }}
       {{- end }}
+      {{- /* The run routes (ADR 0084 decision 5): their own listener and their tokens, which are files of the Secret. Only when
+             the listener is on: the pinned image may not know `server.internal`, and the default render must not write it. */}}
+      {{- if .Values.orchestrator.internal.enabled }}
+      internal:
+        listen: {{ printf "0.0.0.0:%d" (int .Values.orchestrator.internal.port) | quote }}
+        token: { file: /run/secrets/orchestrator/internal-token }
+        {{- with .Values.orchestrator.internal.agents }}
+        agents:
+          {{- range $agent, $_ := . }}
+          {{ $agent }}: { file: {{ printf "/run/secrets/orchestrator/internal-agent-%s-token" (toString $agent) | quote }} }
+          {{- end }}
+        {{- end }}
+      {{- end }}
     log:
       format: json
     database:

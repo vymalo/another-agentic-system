@@ -172,6 +172,15 @@ spec:
               - key: sharing-secret
                 path: sharing-secret
               {{- end }}
+              {{- if .Values.orchestrator.internal.enabled }}
+              {{- /* The run routes' tokens (ADR 0084 decision 5): the orchestrator's own, and one per agent. */}}
+              - key: internal-token
+                path: internal-token
+              {{- range $agent, $_ := .Values.orchestrator.internal.agents }}
+              - key: {{ printf "internal-agent-%s-token" (toString $agent) }}
+                path: {{ printf "internal-agent-%s-token" (toString $agent) }}
+              {{- end }}
+              {{- end }}
               {{- if include "agentic.userSecrets" . }}
               {{- range .Values.orchestrator.userSecrets.keys }}
               - key: {{ include "agentic.userSecrets.file" (toString .id) }}

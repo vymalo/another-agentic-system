@@ -128,13 +128,19 @@ orchestrator:
   surfaces: [agui, thread-tools]
   # The internal listener the run routes are served on (ADR 0084 decision 5, card ANR-378): a second port that no edge
   # routes, for the credential broker's run routes (`POST /internal/runs`, `DELETE /internal/runs/{run}`,
-  # `GET /internal/runs/{run}/lease`, ANR-147a). OFF by default, and it stays off until the orchestrator mounts those
-  # routes and a bindings store: today this value only renders the port, the Service port and the policy, so a deployment
-  # can be prepared; with the routes unmounted the port answers nothing.
+  # `GET /internal/runs/{run}/lease`, ANR-147a). OFF by default, and the orchestrator serves nothing there until it is on:
+  # the broker's router and nothing else is mounted on that port, so no surface, no health and no edge route ever reaches it.
+  # Turning it on also needs the tokens below and an `orchestrator.image.tag` at or after the run routes' merge commit.
   internal:
     enabled: false
-    # The port the orchestrator would serve them on.
+    # The port the orchestrator serves them on.
     port: 8081
+    # The token the orchestrator itself presents to bind and unbind a run: the property of the AWS secret
+    # (`externalSecrets.key`) whose value it reads, never a value of this chart. At least 32 bytes.
+    tokenProperty: ""
+    # The token of each agent that may lease, by agent id: the agent's property in the same AWS secret. Each is at least 32
+    # bytes, and no two callers share one. Empty: nobody may lease, and every lookup is refused.
+    agents: {}
     # Who may reach the port: the orchestrator's own pods always (the bind call), and the injector's pods (the lookup)
     # behind their own switch. The injector (Authorino or Agent Router, S9) is not this chart's, so its namespace and
     # labels are values, and an empty selector is refused: a policy that admits every pod is worse than no policy.

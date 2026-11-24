@@ -15,6 +15,25 @@ policy that never admits the whole namespace by accident. */ -}}
 {{- if eq (int .Values.orchestrator.internal.port) 8080 -}}
 {{- fail "orchestrator.internal.port must differ from 8080, the public listener" -}}
 {{- end -}}
+{{- if not (and (kindIs "string" .Values.orchestrator.internal.tokenProperty) .Values.orchestrator.internal.tokenProperty) -}}
+{{- fail "orchestrator.internal.tokenProperty is required when the run routes are on: the AWS property of the orchestrator's own token" -}}
+{{- end -}}
+{{- if not (kindIs "map" .Values.orchestrator.internal.agents) -}}
+{{- fail "orchestrator.internal.agents must map an agent id to the AWS property of its token" -}}
+{{- end -}}
+{{- $seen := list (toString .Values.orchestrator.internal.tokenProperty) -}}
+{{- range $agent, $property := .Values.orchestrator.internal.agents -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,62}$" (toString $agent)) -}}
+{{- fail (printf "orchestrator.internal.agents has the key %q, which is not an agent id" (toString $agent)) -}}
+{{- end -}}
+{{- if not (and (kindIs "string" $property) $property) -}}
+{{- fail (printf "orchestrator.internal.agents.%s must be the AWS property of the agent's token" (toString $agent)) -}}
+{{- end -}}
+{{- if has (toString $property) $seen -}}
+{{- fail (printf "orchestrator.internal.agents.%s names a token another caller of the run routes already has: each caller has its own" (toString $agent)) -}}
+{{- end -}}
+{{- $seen = append $seen (toString $property) -}}
+{{- end -}}
 {{- if .Values.orchestrator.internal.injector.enabled -}}
 {{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" (toString .Values.orchestrator.internal.injector.namespace)) -}}
 {{- fail "orchestrator.internal.injector.namespace is required when the injector may reach the run routes, and is a namespace name" -}}

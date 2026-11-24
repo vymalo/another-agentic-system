@@ -119,7 +119,8 @@ commented; the ones that matter:
 | `model.baseUrlFromSecret`, `externalSecrets.properties.modelBaseUrl` | `false`, `model_base_url` | `true`: the address is the AWS property instead of a value ([below](#the-gateways-address-from-the-aws-secret)). **OFF by default; turn it on only once `orchestrator.image.tag` is at or after this feature's merge commit.** Refused: with `model.baseUrl` also set, with no property name, or as a string |
 | `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
-| `orchestrator.internal.enabled`, `.port` | `false`, `8081` | the credential broker's **run routes** (`POST /internal/runs`, `DELETE /internal/runs/{run}`, `GET /internal/runs/{run}/lease`, [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), card ANR-378) on a second port that **no Ingress and no edge route names**. **OFF by default, and it stays off until the orchestrator mounts those routes and a bindings store**: today it renders the container port and the Service port so a deployment can be prepared, and with the routes unmounted the port answers nothing. Refused: a port that is 8080 or outside 1025–65535, or a non-boolean `enabled` |
+| `orchestrator.internal.enabled`, `.port` | `false`, `8081` | the credential broker's **run routes** (`POST /internal/runs`, `DELETE /internal/runs/{run}`, `GET /internal/runs/{run}/lease`, [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), cards ANR-378 and ANR-578) on a second port that **no Ingress and no edge route names**. It writes `server.internal` into the orchestrator's configuration, so the broker's router and **only** it is served there (no surface, no health); **OFF by default**, and a deployment turns it on only with an `orchestrator.image.tag` at or after the run routes' merge commit and a model endpoint whose key every lease answers. Refused: a port that is 8080 or outside 1025–65535, a non-boolean `enabled`, or `enabled` without `tokenProperty` |
+| `orchestrator.internal.tokenProperty`, `.agents` | `""`, `{}` | the **tokens of the run routes**: the AWS property of the orchestrator's own token (the bind and the unbind), and, per agent id, the property of the token it leases with. Read as files of the orchestrator's Secret, never as values of this chart. Refused: an empty property, a key that is not an agent id, an empty or non-string value, or two callers naming one property (the door would answer an agent as the orchestrator) |
 | `orchestrator.internal.injector.enabled`, `.namespace`, `.matchLabels` | `false`, `""`, `{}` | whether the **injector's** pods (Authorino or Agent Router, S9) may reach that port to look a lease up. The orchestrator's own pods are always admitted (the bind). **Refused: `enabled` without a namespace or without labels** — a policy with an empty selector admits every pod of the namespace, which is worse than no policy. `enabled` also needs `orchestrator.internal.enabled` |
 | `orchestrator.logLevel` | `info` | rendered as `RUST_LOG`, which **replaces** the orchestrator's default filter. The orchestrator adds **`rmcp=off`** to whatever it is, unless the value names `rmcp` (`info,rmcp=warn`): `info` runs as `info,rmcp=off`. `rmcp` is the MCP library, and it logs the words of the server it talks to (at `info`, the `instructions` of its handshake, which a stranger's server can use to say a lent bearer back) and the URL of a failed request. **Do not name `rmcp` where people add MCP servers** ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 5a review; [`orch-log-filter`](../../orchestrator/crates/log-filter/README.md)) |
 | `orchestrator.tasks.title.model`, `description.model` | `""` | the model's name at `model.baseUrl`; empty: off |
@@ -1570,6 +1571,53 @@ not lost, only not yet counted). `detached` is how many rows of the ledger it ma
 Run it soon: the usage of a thread that is erased before it runs is not in the log any more and is not recovered. (No Job for it is rendered in this slice, and the chart changes
 nothing else for the ledger: the price table, the route and the retention are the next pull request.)
 *Unverified:* the command on netcup, and its duration on a database with many threads.
+
+## The run routes (ADR 0084, cards ANR-378 and ANR-578)
+
+The credential broker's **run routes** are the orchestrator's binding of a run and the injector's lease of the deployment's model
+key for it ([ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)):
+
+| Route | Caller | Answer |
+|---|---|---|
+| `POST /internal/runs` | the orchestrator (its own token) | `204`; `409 run_already_bound` for a different binding of one run |
+| `DELETE /internal/runs/{run}` | the orchestrator (its own token) | `204`, idempotent |
+| `GET /internal/runs/{run}/lease` | the agent the run is bound to (its token) | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
+
+They are served on a **second port**, `orchestrator.internal.port`, that no Ingress and no edge route names, and that serves **the
+broker's router and nothing else**: no surface, no `/healthz`, no resource API. Refusals are the ruled slugs (`run_not_bound`,
+`lease_expired`, `unavailable`, `unauthenticated`, `not_allowed`), and a model the deployment has **no key for** is `unavailable`,
+never an empty `Authorization` header.
+
+**Off by default.** Turning it on takes three values plus the injector's, and an `orchestrator.image.tag` at or after the run
+routes' merge commit (an older image refuses the unknown `server.internal` key at startup):
+
+```yaml
+orchestrator:
+  internal:
+    enabled: true
+    port: 8081
+    tokenProperty: internal_orchestrator_token   # AWS property of the orchestrator's own token
+    agents:
+      coder: internal_coder_token                # agent id -> AWS property of that agent's token
+    injector:
+      enabled: true
+      namespace: agent-router                    # the injector's namespace and labels: it may look a lease up
+      matchLabels:
+        app.kubernetes.io/name: agent-router
+```
+
+Each token is a property of the ExternalSecret's AWS secret (`externalSecrets.key`), at least 32 bytes, mounted as a file and read
+as `server.internal.token` and `server.internal.agents.<id>`. **No two callers may name one property**: the door compares the
+orchestrator's token first, so a shared one would answer an agent as the orchestrator — the chart refuses that render, and the
+orchestrator refuses that configuration at startup. The values also render the container port, the Service port and the
+NetworkPolicy rule (the orchestrator's own pods for the bind, the injector's for the lookup) that `tests/golden/internal-listener.yaml`
+holds byte for byte.
+
+What this does not cover is S9: today's caller authentication is one static token per caller (`SharedTokens`), not Authorino's
+TokenReview or mTLS; the model keys are the deployment's own configuration, not OpenBao; and the injector itself (Agent Router,
+Authorino) is another chart's. A deployment that turns the port on but lists no key for a run's model answers `unavailable` to the
+lease, and one that lists no agent token admits no lookup at all (`401 unauthenticated`). *Verified 2026-11-24:* on renders only
+(`sh deploy/chart/tests/render-check.sh`); *unverified* on a cluster.
 
 ## The browser agent (ADR 0057)
 

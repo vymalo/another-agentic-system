@@ -25,6 +25,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read as _};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -36,8 +37,8 @@ use secrecy::SecretString;
 use serde_json::{Map, Value};
 
 use super::{
-    Args, Config, ConfigError, EndpointSettings, LogFormat, ModelsSettings, Resolved, Surface,
-    flag, number, parse_surfaces,
+    Args, Config, ConfigError, EndpointSettings, InternalSettings, LogFormat, ModelsSettings,
+    Resolved, Surface, flag, number, parse_surfaces,
 };
 use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings, UploadLimits};
 use crate::user_tools::UserToolsSettings;
@@ -1570,6 +1571,8 @@ fn project(
             .as_ref()
             .map(|cors| cors.allowed_origins.clone())
             .unwrap_or_default(),
+        // The run routes' own listener (ADR 0084 decision 5), only when the file has the section.
+        internal: internal_settings(valid)?,
         #[cfg(feature = "surface-webhook")]
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
         #[cfg(feature = "surface-webhook")]
@@ -1642,6 +1645,47 @@ fn download_mode(s3: &orch_config::ArtifactsS3) -> Result<orch_app::DownloadMode
             ))
         }),
     }
+}
+
+/// The run routes' internal listener (ADR 0084 decision 5): the address, the orchestrator's own
+/// token and each agent's, as the secrets pass read them. `None` without the section. The address
+/// and the tokens were checked when the file was validated; a missing one here is a bug the
+/// document error names.
+///
+/// # Errors
+/// A configuration error (exit 78) naming the key, never a value.
+fn internal_settings(valid: &Validated) -> Result<Option<InternalSettings>, ConfigError> {
+    let Some(section) = &valid.config.server.internal else {
+        return Ok(None);
+    };
+    let listen = section.listen.parse::<SocketAddr>().map_err(|_| {
+        ConfigError::Document(vec![
+            "server.internal.listen: not a socket address like 0.0.0.0:8081".to_owned(),
+        ])
+    })?;
+    let missing = |key: String| ConfigError::Document(vec![format!("{key}: required")]);
+    let token = valid
+        .secrets
+        .internal_token
+        .as_ref()
+        .ok_or_else(|| missing("server.internal.token".to_owned()))?;
+    let mut agent_tokens = BTreeMap::new();
+    for agent in section.agents.keys() {
+        let secret = valid
+            .secrets
+            .internal_agent_tokens
+            .get(agent)
+            .ok_or_else(|| missing(format!("server.internal.agents.{agent}")))?;
+        agent_tokens.insert(
+            AgentId::new(agent.clone()),
+            SecretString::from(secret.expose().to_owned()),
+        );
+    }
+    Ok(Some(InternalSettings {
+        listen,
+        orchestrator_token: SecretString::from(token.expose().to_owned()),
+        agent_tokens,
+    }))
 }
 
 /// The models of a valid file: its endpoints with their keys read, and the tasks that are on, each

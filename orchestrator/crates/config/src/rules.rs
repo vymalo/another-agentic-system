@@ -84,6 +84,10 @@ pub struct Secrets {
     /// keeps it in a secret store does not want it printed: `Debug` shows the reference. An
     /// endpoint whose URL is written in the file has no entry; use [`Validated::model_base_url`].
     pub model_base_urls: BTreeMap<String, Secret>,
+    /// `server.internal.token`: the orchestrator's own bearer token on the run routes (ADR 0084).
+    pub internal_token: Option<Secret>,
+    /// `server.internal.agents`: each agent's bearer token on the run routes, by agent id.
+    pub internal_agent_tokens: BTreeMap<String, Secret>,
     /// `webhooks.generic.secrets`; empty when the section is absent or this process serves no
     /// routes (a worker is not asked for secrets it would never use).
     pub webhook_generic: Vec<Secret>,
@@ -468,6 +472,7 @@ impl Checker<'_> {
         if cfg.server.listen.parse::<SocketAddr>().is_err() {
             self.invalid("server.listen", "not a socket address like 0.0.0.0:8080");
         }
+        self.internal(cfg);
         if let Some(listed) = &cfg.server.surfaces {
             for (i, surface) in listed.iter().enumerate() {
                 if listed[..i].contains(surface) {
@@ -694,6 +699,41 @@ impl Checker<'_> {
 
         self.tool_servers(&cfg.tool_servers);
         self.auth(cfg);
+    }
+
+    /// `server.internal` (ADR 0084 decision 5): the run routes' own address, and the agent ids the
+    /// tokens are keyed by. The tokens themselves are resolved with the secrets.
+    fn internal(&mut self, cfg: &Config) {
+        let Some(internal) = &cfg.server.internal else {
+            return;
+        };
+        match internal.listen.parse::<SocketAddr>() {
+            Err(_) => self.invalid(
+                "server.internal.listen",
+                "not a socket address like 0.0.0.0:8081",
+            ),
+            Ok(addr) => {
+                // Port 0 asks the operating system for a port, and two such requests never collide.
+                if addr.port() != 0
+                    && let Ok(listen) = cfg.server.listen.parse::<SocketAddr>()
+                    && listen == addr
+                {
+                    self.invalid(
+                        "server.internal.listen",
+                        "is server.listen: one process cannot serve two listeners on one address",
+                    );
+                }
+            }
+        }
+        for agent in internal.agents.keys() {
+            if !is_agent_id(agent) {
+                self.invalid(
+                    format!("server.internal.agents.{}", crate::tree::display_key(agent)),
+                    "not an agent id: lower-case letters, digits and -, at most 63, starting with \
+                     a letter or a digit",
+                );
+            }
+        }
     }
 
     /// `toolServers[].signing` (ADR 0080): no bearer beside it, a header of its own that no `headers` entry takes, an audience
@@ -1403,6 +1443,43 @@ impl Checker<'_> {
         }
     }
 
+    /// The tokens of `server.internal` (ADR 0084 decision 5): the orchestrator's own and one per
+    /// agent, each at least as long as a key, and no two callers sharing one. The door compares
+    /// the orchestrator's token first, so a duplicate would silently make one caller another.
+    fn internal_tokens(&mut self, cfg: &Config) -> (Option<Secret>, BTreeMap<String, Secret>) {
+        let Some(section) = &cfg.server.internal else {
+            return (None, BTreeMap::new());
+        };
+        let token = self.resolve(&section.token, "server.internal.token", true);
+        if let Some(token) = &token {
+            self.at_least(token, "server.internal.token");
+        }
+        let mut agents = BTreeMap::new();
+        for (agent, reference) in &section.agents {
+            let at = format!("server.internal.agents.{}", crate::tree::display_key(agent));
+            if let Some(secret) = self.resolve(reference, &at, true) {
+                self.at_least(&secret, &at);
+                agents.insert(agent.clone(), secret);
+            }
+        }
+        let mut seen: Vec<(String, &str)> = Vec::new();
+        if let Some(token) = &token {
+            seen.push(("server.internal.token".to_owned(), token.expose()));
+        }
+        for (agent, secret) in &agents {
+            let at = format!("server.internal.agents.{}", crate::tree::display_key(agent));
+            if seen.iter().any(|(_, value)| *value == secret.expose()) {
+                self.invalid(
+                    &at,
+                    "is the same token as another caller of the run routes: each caller has its own",
+                );
+            } else {
+                seen.push((at, secret.expose()));
+            }
+        }
+        (token, agents)
+    }
+
     /// Resolves every secret the process uses. `None` when `database.url` cannot be.
     fn secrets(&mut self, cfg: &Config) -> Option<Secrets> {
         let surfaces = cfg.mounted_surfaces();
@@ -1515,6 +1592,7 @@ impl Checker<'_> {
                 }
             }
         }
+        let (internal_token, internal_agent_tokens) = self.internal_tokens(cfg);
         let webhook_generic = match &cfg.webhooks.generic {
             Some(section) if serves => self.list(
                 &section.secrets,
@@ -1591,6 +1669,8 @@ impl Checker<'_> {
             s3_secret_access_key,
             model_api_keys,
             model_base_urls,
+            internal_token,
+            internal_agent_tokens,
             webhook_generic,
             webhook_github,
             tool_servers,
@@ -2158,6 +2238,17 @@ fn is_slug(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// An agent id, the rule of `orch_core::is_valid_agent_id` (this crate depends on no core crate):
+/// lower-case letters, digits and `-`, at most 63 bytes, starting with a letter or a digit.
+fn is_agent_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && id.len() <= 63
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// An S3 bucket name as the services take it: 3 to 63 characters of `a-z`, `0-9`, `-` and `.`,

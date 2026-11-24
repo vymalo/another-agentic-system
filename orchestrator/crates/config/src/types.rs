@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 /// The default of `server.listen`.
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 
+/// The default of `server.internal.listen`: the port the chart publishes as `internal`, never
+/// named by an Ingress or an edge route.
+pub const DEFAULT_INTERNAL_LISTEN: &str = "0.0.0.0:8081";
+
 /// A reference to a secret: where its value is read from at startup, never the value.
 ///
 /// `{ env: NAME }` reads the environment variable `NAME` (it must be set and not empty);
@@ -275,6 +279,32 @@ pub struct Server {
     /// What one page of a thread's history may hold (ADR 0059, `docs/api/history.md`).
     #[serde(default)]
     pub history: ServerHistory,
+    /// The **internal listener** of the credential broker's run routes (ADR 0084 decision 5): a
+    /// second port, never through the edge, that serves `POST /internal/runs`,
+    /// `DELETE /internal/runs/{run}` and `GET /internal/runs/{run}/lease` and nothing else. Absent:
+    /// no second listener.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal: Option<ServerInternal>,
+}
+
+/// The internal listener the run routes are served on (ADR 0084 decision 5): its own address, the
+/// orchestrator's bearer token (the bind and the unbind) and one token per agent (the lease).
+/// Every token is a reference; a value is never in the file. Only a process that serves routes
+/// binds it, so a worker that shares the file reads and checks the section and opens nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServerInternal {
+    /// The socket address to listen on (default `0.0.0.0:8081`). It must differ from
+    /// `server.listen`: one process cannot bind two listeners on one address.
+    #[serde(default = "default_internal_listen")]
+    pub listen: String,
+    /// The orchestrator's own bearer token, the one `POST /internal/runs` and
+    /// `DELETE /internal/runs/{run}` present. At least 32 bytes.
+    pub token: SecretRef,
+    /// The token of each agent, by agent id: the one `GET /internal/runs/{run}/lease` presents, and
+    /// it may lease only the runs bound to it. At least 32 bytes each, and no two the same.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, SecretRef>,
 }
 
 /// The bounds of a page of a thread's history (`server.history`, ADR 0059): the route
@@ -345,6 +375,10 @@ fn default_listen() -> String {
     DEFAULT_LISTEN.to_owned()
 }
 
+fn default_internal_listen() -> String {
+    DEFAULT_INTERNAL_LISTEN.to_owned()
+}
+
 fn default_shutdown_grace_secs() -> u64 {
     15
 }
@@ -361,6 +395,7 @@ impl Default for Server {
             environment: Environment::default(),
             cors: None,
             history: ServerHistory::default(),
+            internal: None,
         }
     }
 }

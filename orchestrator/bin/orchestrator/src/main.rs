@@ -7,6 +7,7 @@ mod artifacts;
 mod auth;
 mod boot;
 mod config;
+mod credentials;
 mod local;
 mod logging;
 mod migrate;

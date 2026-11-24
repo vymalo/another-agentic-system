@@ -1,9 +1,12 @@
-# Layered over examples/netcup.values.yaml by the checks (render-check.sh): the run routes' internal listener and the
-# injector's pods admitted to it. Not a deployment's values: see README.md, "The run routes".
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh): the run routes' internal listener, its tokens'
+# AWS properties, and the injector's pods admitted to it. Not a deployment's values: see README.md, "The run routes".
 orchestrator:
   internal:
     enabled: true
     port: 8081
+    tokenProperty: internal_orchestrator_token
+    agents:
+      coder: internal_coder_token
     injector:
       enabled: true
       namespace: agent-router

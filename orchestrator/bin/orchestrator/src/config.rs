@@ -316,6 +316,30 @@ impl fmt::Debug for McpSettings {
     }
 }
 
+/// The internal listener of the credential broker's run routes (ADR 0084 decision 5): its own
+/// address, the orchestrator's own bearer token (the bind and the unbind) and one per agent (the
+/// lease). Its `Debug` shows the address and the agent ids, never a token.
+pub struct InternalSettings {
+    /// `server.internal.listen`, where the broker's run routes are served. Only a process that
+    /// serves routes binds it.
+    pub listen: SocketAddr,
+    /// `server.internal.token`: what `POST /internal/runs` and `DELETE /internal/runs/{run}`
+    /// present.
+    pub orchestrator_token: SecretString,
+    /// `server.internal.agents`: each agent's token, by agent id, for
+    /// `GET /internal/runs/{run}/lease`.
+    pub agent_tokens: BTreeMap<AgentId, SecretString>,
+}
+
+impl fmt::Debug for InternalSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InternalSettings")
+            .field("listen", &self.listen)
+            .field("agents", &self.agent_tokens.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 /// The thread-tools endpoint's configuration (`thread-tools/v1`), read when `THREAD_TOOLS_SECRET`
 /// and `THREAD_TOOLS_URL` are set: by every role, because the A2A adapter of a worker mints the
 /// grants the control plane's endpoint verifies.
@@ -1321,6 +1345,11 @@ pub struct Config {
     /// `server.history` (ADR 0059): what one page of a thread's history may hold. The defaults from
     /// the environment alone (the section has no variable).
     pub history: orch_app::HistorySettings,
+    /// `server.internal` (ADR 0084 decision 5): the internal listener of the broker's run routes,
+    /// with its tokens read. `None` without the section (and always from the environment alone:
+    /// the section has no variable), and then no second listener is bound. Its `Debug` never
+    /// shows a token.
+    pub internal: Option<InternalSettings>,
     /// `dispatcher.order` (ADR 0066): which due rows a claim takes first. `Fair` from the
     /// environment alone (the key has no variable).
     pub dispatcher_order: orch_ports::ClaimOrder,
@@ -1358,6 +1387,7 @@ impl fmt::Debug for Config {
             .field("public_limits", &self.public_limits)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("history", &self.history)
+            .field("internal", &self.internal)
             .field("dispatcher_order", &self.dispatcher_order)
             .field("tool_servers", &self.tool_servers)
             .field(
@@ -1784,6 +1814,7 @@ impl Config {
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
             history: resolved.history,
+            internal: resolved.internal,
             dispatcher_order: resolved.dispatcher_order,
         })
     }
@@ -2668,6 +2699,8 @@ struct Resolved {
     cors_allowed_origins: Vec<String>,
     /// `server.history`.
     history: orch_app::HistorySettings,
+    /// `server.internal` (ADR 0084 decision 5): the listener, its tokens and the agents' read.
+    internal: Option<InternalSettings>,
     /// `dispatcher.order` (ADR 0066).
     dispatcher_order: orch_ports::ClaimOrder,
     /// `toolServers`, the public part of each server.

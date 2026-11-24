@@ -988,6 +988,10 @@
           "minLength": 1,
           "type": "string"
         },
+        "internal": {
+          "$ref": "#/$defs/ServerInternal",
+          "description": "The **internal listener** of the credential broker's run routes (ADR 0084 decision 5): a second port, never through the edge, that serves `POST /internal/runs`, `DELETE /internal/runs/{run}` and `GET /internal/runs/{run}/lease` and nothing else. Absent: no second listener."
+        },
         "listen": {
           "default": "0.0.0.0:8080",
           "description": "The socket address to listen on (default `0.0.0.0:8080`). Replaces `LISTEN_ADDR`.",
@@ -1059,6 +1063,32 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "ServerInternal": {
+      "additionalProperties": false,
+      "description": "The internal listener the run routes are served on (ADR 0084 decision 5): its own address, the orchestrator's bearer token (the bind and the unbind) and one token per agent (the lease). Every token is a reference; a value is never in the file. Only a process that serves routes binds it, so a worker that shares the file reads and checks the section and opens nothing.",
+      "properties": {
+        "agents": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SecretRef"
+          },
+          "description": "The token of each agent, by agent id: the one `GET /internal/runs/{run}/lease` presents, and it may lease only the runs bound to it. At least 32 bytes each, and no two the same.",
+          "type": "object"
+        },
+        "listen": {
+          "default": "0.0.0.0:8081",
+          "description": "The socket address to listen on (default `0.0.0.0:8081`). It must differ from `server.listen`: one process cannot bind two listeners on one address.",
+          "type": "string"
+        },
+        "token": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The orchestrator's own bearer token, the one `POST /internal/runs` and `DELETE /internal/runs/{run}` present. At least 32 bytes."
+        }
+      },
+      "required": [
+        "token"
+      ],
       "type": "object"
     },
     "Sharing": {

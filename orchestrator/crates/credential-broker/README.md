@@ -310,6 +310,15 @@ entry in `docs/api/chat-api.yaml`**, and `tests/run_routes.rs` holds that, the R
 wrong-caller and cross-run refusals, the deleted and expired cases, the lease bound, the conflict and
 the door's refusals.
 
+**The binary serves them** (card ANR-578): when the configuration's `server.internal` is set and the
+process serves routes, `boot` binds that listener and mounts `orch_credential_broker::router` on it —
+`RunLeaseBroker::new(PgRunBindings, ConfiguredCredentials)` as the leases and `SharedTokens` as the
+door — the three routes and **nothing else**, no surface and no health, as a second control-plane
+component, so a SIGTERM drains it with the HTTP server. The bindings are `PgRunBindings` over the
+orchestrator's own pool; the credentials are the deployment's `models.endpoints.<name>.apiKey` as
+`ConfiguredCredentials`, which answers `Unavailable` for a model it has no key for and for a blank
+one, never an empty header. The binary's `tests/internal.rs` covers it over a real socket.
+
 ## Egress
 
 Nothing in this crate opens a connection except `http.rs`, and it does this for every request (resource metadata,
