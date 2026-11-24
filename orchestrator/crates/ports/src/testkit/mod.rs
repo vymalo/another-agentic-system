@@ -1,7 +1,8 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`UsageLedger`](crate::UsageLedger), [`ThreadSearch`](crate::ThreadSearch),
+//! [`SecretStore`](crate::SecretStore), [`VaultStore`](crate::VaultStore), [`UsageLedger`](crate::UsageLedger),
+//! [`ThreadSearch`](crate::ThreadSearch),
 //! [`UserToolServerStore`](crate::UserToolServerStore),
 //! [`PendingAuthorizations`](crate::PendingAuthorizations) and
 //! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
@@ -28,6 +29,7 @@ pub mod thread_store;
 pub mod tool_server;
 pub mod usage_ledger;
 pub mod user_tool_server_store;
+pub mod vault_store;
 pub mod wakeup;
 
 /// Generates one `#[tokio::test]` per `ThreadStore` conformance case. `$make` is an
@@ -1045,5 +1047,36 @@ macro_rules! run_leases_conformance {
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
+    };
+}
+
+/// Generates one `#[tokio::test]` per `VaultStore` conformance case (ADR 0083, amended 2026-11-21;
+/// decision row 114 of 2026-11-22). `$make` is an `async fn() -> Option<(S, FixedClock)>` returning
+/// a fresh store **and the clock its 24-hour grace runs on** (`None` skips the suite). The clock is
+/// the fixture's so a case proves the grace by moving it: no case sleeps. Each case uses owners and
+/// names of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! vault_store_conformance {
+    ($make:path) => {
+        $crate::vault_store_conformance!(@cases $make;
+            put_then_get_round_trips a_name_is_written_at_v1_and_the_next_write_at_v2
+            material_reads_back_byte_for_byte a_reference_the_store_does_not_hold_is_unknown
+            a_superseded_version_reads_for_the_grace_and_is_refused_after
+            the_current_version_never_expires purge_removes_only_the_versions_past_the_grace
+            concurrent_puts_take_two_versions_and_lose_nothing owners_never_see_each_others_vault
+            no_error_or_debug_text_shows_a_secret
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some((store, clock)) => $crate::testkit::vault_store::$case(store, clock).await,
+                    None => eprintln!("skipped: no vault store available"),
+                }
+            }
+        )*
     };
 }
