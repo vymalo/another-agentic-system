@@ -79,9 +79,11 @@ mod tests {
             g.subscribers.fetch_add(1, Ordering::Relaxed);
             SubscriberGuard(Arc::clone(g))
         };
-        let guards: Vec<_> = (0..3).map(|_| open(&gauges)).collect();
+        let mut guards: Vec<_> = (0..3).map(|_| open(&gauges)).collect();
         assert_eq!(gauges.subscribers.load(Ordering::Relaxed), 3);
-        drop(guards.into_iter().next());
+        drop(guards.pop());
         assert_eq!(gauges.subscribers.load(Ordering::Relaxed), 2);
+        drop(guards);
+        assert_eq!(gauges.subscribers.load(Ordering::Relaxed), 0);
     }
 }
