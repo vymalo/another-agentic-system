@@ -644,12 +644,15 @@ impl TeamLedger {
             return None;
         }
         let n = u32::try_from(to.len()).unwrap_or(u32::MAX);
-        self.count = self.count.saturating_add(n);
-        if self.count > self.cap {
+        let next = self.count.saturating_add(n);
+        if next > self.cap {
+            // The count is what was routed, so a refused hand-off does not move it (the property
+            // `never_more_than_max_handoffs_per_person_message` found this).
             self.pending = None;
             self.state = TeamState::Capped;
             return Some(TeamCommand::Capped { refused: to });
         }
+        self.count = next;
         self.pending = Some(Pending::Handoff {
             from: from.clone(),
             to,
