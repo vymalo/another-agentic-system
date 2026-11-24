@@ -100,7 +100,7 @@ use orch_ports::{
     CredentialBroker, CredentialError, EgressPolicy, EgressTarget, IdGen,
     MIN_SCRUBBABLE_SECRET_BYTES, Ports, ServerRevision, StoreError, StoredServer, ToolSecret,
     ToolServerStatus, UnavailableReason, UserAuth, UserToolPorts, UserToolServer, UserToolServerId,
-    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserToolsMode,
+    UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserToolsMode, last4_of,
 };
 
 use crate::{App, AppError, Permission, Requester, Resource};
@@ -391,6 +391,12 @@ impl OwnToolServer {
         self.server.credential().is_some()
     }
 
+    /// The last four characters of the key the person typed, kept at the save that had it in hand;
+    /// absent for a key shorter than twelve characters and for a server that holds no typed key.
+    pub fn last4(&self) -> Option<&str> {
+        self.server.last4()
+    }
+
     /// The revision, to send back with an edit. Opaque: compare for equality only.
     pub fn revision(&self) -> ServerRevision {
         self.revision
@@ -637,12 +643,14 @@ impl<P: Ports> App<P> {
                 StoredServer::new(server, revision),
             ));
         };
+        let last4 = last4_of(&secret);
         match ports.broker().store(owner, server.id(), &secret).await {
             Ok(credential) => {
                 let connected = server
                     .clone()
                     .with_state(UserToolServerState::Connected)
-                    .with_credential(credential);
+                    .with_credential(credential)
+                    .with_last4(last4);
                 match ports.servers().replace(owner, &connected, revision).await {
                     Ok(revision) => Ok(describe(
                         true,
@@ -915,9 +923,14 @@ impl<P: Ports> App<P> {
         } else {
             (old.state(), old.credential().cloned())
         };
+        // the end of the key is kept exactly while the credential is
+        let last4 = credential
+            .as_ref()
+            .and_then(|_| old.last4().map(str::to_owned));
         let candidate =
             UserToolServer::from_stored(plan.id.clone(), name, url, auth, state, credential)
-                .map_err(|e| AppError::Invalid(e.to_string()))?;
+                .map_err(|e| AppError::Invalid(e.to_string()))?
+                .with_last4(last4);
         if !keyed && candidate == *old {
             return Ok(Pass::Done(Box::new(describe(
                 true,
@@ -955,7 +968,8 @@ impl<P: Ports> App<P> {
                     .map_err(|e| credentials_failure("store", &e))?;
                 let connected = candidate
                     .with_state(UserToolServerState::Connected)
-                    .with_credential(credential);
+                    .with_credential(credential)
+                    .with_last4(last4_of(secret));
                 match ports
                     .servers()
                     .replace(owner, &connected, stored.revision())
@@ -1014,7 +1028,8 @@ impl<P: Ports> App<P> {
                     .map_err(|e| credentials_failure("store", &e))?;
                 let connected = candidate
                     .with_state(UserToolServerState::Connected)
-                    .with_credential(credential);
+                    .with_credential(credential)
+                    .with_last4(last4_of(secret));
                 match ports.servers().replace(owner, &connected, revision).await {
                     Ok(revision) => Ok(finish(connected, revision)),
                     // somebody wrote the definition since (the broker marked it, or another request):

@@ -333,6 +333,8 @@ pub(crate) struct UserToolServerView<'a> {
     auth: AuthView<'a>,
     state: &'static str,
     has_credential: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last4: Option<&'a str>,
     revision: String,
 }
 
@@ -348,6 +350,7 @@ impl<'a> UserToolServerView<'a> {
             auth: AuthView::of(server.auth()),
             state: server.state().as_str(),
             has_credential: server.has_credential(),
+            last4: server.last4(),
             revision: server.revision().get().to_string(),
         }
     }

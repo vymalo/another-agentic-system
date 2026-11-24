@@ -33,10 +33,19 @@ use crate::error::{store_err, unique_on};
 use crate::store::write;
 
 /// A row, in the order of [`COLUMNS`].
-type Row = (String, String, String, String, String, Option<String>, i64);
+type Row = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+);
 
 /// The columns of a row, in the order of [`Row`].
-const COLUMNS: &str = "id, name, url, auth, state, credential, revision";
+const COLUMNS: &str = "id, name, url, auth, state, credential, last4, revision";
 
 impl UserToolServerStore for SqliteStore {
     async fn insert(
@@ -77,9 +86,9 @@ impl UserToolServerStore for SqliteStore {
                     let revision = next_revision(tx)?;
                     let inserted = tx.execute(
                         "INSERT INTO user_tool_servers \
-                           (owner, id, name, url, auth, state, credential, revision, created_at, \
-                            updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                           (owner, id, name, url, auth, state, credential, last4, revision, \
+                            created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?10, ?8, ?9, ?9)",
                         params![
                             &owner,
                             &fields.id,
@@ -89,7 +98,8 @@ impl UserToolServerStore for SqliteStore {
                             fields.state,
                             fields.credential,
                             revision,
-                            written
+                            written,
+                            fields.last4
                         ],
                     );
                     match inserted {
@@ -179,7 +189,7 @@ impl UserToolServerStore for SqliteStore {
                     let updated = tx
                         .execute(
                             "UPDATE user_tool_servers SET name = ?3, url = ?4, auth = ?5, \
-                               state = ?6, credential = ?7, revision = ?8, updated_at = ?9 \
+                               state = ?6, credential = ?7, last4 = ?11, revision = ?8, updated_at = ?9 \
                              WHERE owner = ?1 AND id = ?2 AND revision = ?10",
                             params![
                                 owner,
@@ -191,7 +201,8 @@ impl UserToolServerStore for SqliteStore {
                                 fields.credential,
                                 revision,
                                 written,
-                                expected
+                                expected,
+                                fields.last4
                             ],
                         )
                         .map_err(store_err)?;
@@ -284,6 +295,7 @@ struct Fields {
     auth: String,
     state: &'static str,
     credential: Option<String>,
+    last4: Option<String>,
 }
 
 impl Fields {
@@ -297,6 +309,7 @@ impl Fields {
             })?,
             state: server.state().as_str(),
             credential: server.credential().map(|c| c.as_str().to_owned()),
+            last4: server.last4().map(str::to_owned),
         })
     }
 }
@@ -358,6 +371,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
         row.get(4)?,
         row.get(5)?,
         row.get(6)?,
+        row.get(7)?,
     ))
 }
 
@@ -389,7 +403,7 @@ fn warn_unreadable(id: &str, error: &UserToolServerStoreError) {
 }
 
 fn read_back(
-    (id, name, url, auth, state, credential, revision): Row,
+    (id, name, url, auth, state, credential, last4, revision): Row,
 ) -> Result<StoredServer, UserToolServerStoreError> {
     let corrupt = |what: &str| {
         UserToolServerStoreError::Corrupt(format!("a stored definition does not read back: {what}"))
@@ -408,8 +422,12 @@ fn read_back(
     let revision = u64::try_from(revision)
         .map(ServerRevision::new)
         .map_err(|_| corrupt("the revision is not a positive number"))?;
+    if last4.as_deref().is_some_and(|l| l.chars().count() != 4) {
+        return Err(corrupt("the last four characters are not four"));
+    }
     let server = UserToolServer::from_stored(id, &name, &url, auth, state, credential)
-        .map_err(|e| corrupt(&e.to_string()))?;
+        .map_err(|e| corrupt(&e.to_string()))?
+        .with_last4(last4);
     Ok(StoredServer::new(server, revision))
 }
 

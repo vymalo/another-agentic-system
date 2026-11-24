@@ -51,11 +51,12 @@ type Row = (
     serde_json::Value,
     String,
     Option<String>,
+    Option<String>,
     i64,
 );
 
 /// The columns of a row, in the order of [`Row`].
-const COLUMNS: &str = "id, name, url, auth, state, credential, revision";
+const COLUMNS: &str = "id, name, url, auth, state, credential, last4, revision";
 
 /// [`UserToolServerStore`] in the orchestrator's own Postgres: one row per `(owner, id)` in
 /// `user_tool_servers`, created by [`PgStore::migrate`](crate::PgStore::migrate) (migration `0021`,
@@ -197,8 +198,8 @@ impl UserToolServerStore for PgUserToolServers {
             });
         }
         let inserted: Result<i64, SqlError> = query_scalar(
-            "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, credential, revision) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, nextval('user_tool_server_revisions')) \
+            "INSERT INTO user_tool_servers (owner, id, name, url, auth, state, credential, last4, revision) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, nextval('user_tool_server_revisions')) \
              RETURNING revision",
         )
         .bind(owner.as_str())
@@ -208,6 +209,7 @@ impl UserToolServerStore for PgUserToolServers {
         .bind(auth)
         .bind(server.state().as_str())
         .bind(server.credential().map(CredentialRef::as_str))
+        .bind(server.last4())
         .fetch_one(&mut *tx)
         .await;
         let revision = match inserted {
@@ -272,7 +274,7 @@ impl UserToolServerStore for PgUserToolServers {
         let mut tx = self.begin().await?;
         let written: Option<i64> = query_scalar(
             "UPDATE user_tool_servers SET name = $3, url = $4, auth = $5, state = $6, \
-               credential = $7, revision = nextval('user_tool_server_revisions'), \
+               credential = $7, last4 = $9, revision = nextval('user_tool_server_revisions'), \
                updated_at = clock_timestamp() \
              WHERE owner = $1 AND id = $2 AND revision = $8 \
              RETURNING revision",
@@ -285,6 +287,7 @@ impl UserToolServerStore for PgUserToolServers {
         .bind(server.state().as_str())
         .bind(server.credential().map(CredentialRef::as_str))
         .bind(stored_revision(expected))
+        .bind(server.last4())
         .fetch_optional(&mut *tx)
         .await
         .map_err(db_err)?;
@@ -422,7 +425,7 @@ fn warn_unreadable(id: &str, error: &UserToolServerStoreError) {
 }
 
 fn read_back(
-    (id, name, url, auth, state, credential, revision): Row,
+    (id, name, url, auth, state, credential, last4, revision): Row,
 ) -> Result<StoredServer, UserToolServerStoreError> {
     let corrupt = |what: &str| {
         UserToolServerStoreError::Corrupt(format!("a stored definition does not read back: {what}"))
@@ -441,8 +444,12 @@ fn read_back(
     let revision = u64::try_from(revision)
         .map(ServerRevision::new)
         .map_err(|_| corrupt("the revision is not a positive number"))?;
+    if last4.as_deref().is_some_and(|l| l.chars().count() != 4) {
+        return Err(corrupt("the last four characters are not four"));
+    }
     let server = UserToolServer::from_stored(id, &name, &url, auth, state, credential)
-        .map_err(|e| corrupt(&e.to_string()))?;
+        .map_err(|e| corrupt(&e.to_string()))?
+        .with_last4(last4);
     Ok(StoredServer::new(server, revision))
 }
 
@@ -530,6 +537,7 @@ mod tests {
             url.to_owned(),
             serde_json::json!({"kind": "none"}),
             "added".to_owned(),
+            None,
             None,
             7,
         )

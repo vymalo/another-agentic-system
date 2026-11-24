@@ -33,7 +33,7 @@ The prompt library (`src/prompts.rs`, `migrations/0003_user_prompts.sql`) mirror
 [`store-postgres/src/prompts.rs`](../store-postgres/src/prompts.rs): one transaction per write in place
 of the owner's advisory lock, one counter for revisions, the audience as a JSON array matched with
 `json_each`. The definitions of people's own MCP servers (`src/user_tool_servers.rs`,
-`migrations/0005_user_tool_servers.sql`) mirror
+`migrations/0005_user_tool_servers.sql`, and `0007_user_tool_server_last4.sql` for the `last4` column) mirror
 [`store-postgres/src/user_tool_servers.rs`](../store-postgres/src/user_tool_servers.rs) the same way:
 `BEGIN IMMEDIATE` in place of the owner's advisory lock makes the limit of eight atomic, the id, the
 count and the insert with nobody between them, and the compare and swap of a revision is one

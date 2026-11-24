@@ -108,7 +108,7 @@ the sealed store holds today. This note fixes the form those two will use, not t
 - **Two rules are the client's to keep, and they are testable**: a trusted field never becomes a `$field` marker (`rewriteContext`) and never resolves
   (`resolveFields`); and the frame is drawn outside the component tree, so no surface can reproduce it.
 - **`last4` is new work everywhere.** No route returns a suffix or a fingerprint of a stored secret today (`user_tools.rs`, `orch-core`: no `last4`, no
-  `fingerprint`), so the receipt's `last4` arrives with the route that can answer it — and it is omitted until then.
+  `fingerprint`), so the receipt's `last4` arrives with the route that can answer it — and it is omitted until then. *Amended 2026-11-24:* `POST` and `PATCH /api/user-tool-servers` now return `last4`, recorded on the definition row by the save that had the typed key in hand (owner's decision on where, ANR-Q82), absent under 12 characters.
 - **A reference makes rotation invisible to the agent**, which is the point: the agent's configuration names a reference, the platform injects the value, and a new
   version changes nothing the agent wrote.
 - **Not decided here**: which store a *named* secret lives in (the sealed `SecretStore` is the obvious one, and it would grow from "one per server" to "one per

@@ -69,7 +69,7 @@ info:
     and every route is a 404 in a deployment that has the feature off (`userToolServers.enabled`).
     **A request body that carries a secret is write-only**: the `secret` of `createUserToolServer` and
     `updateUserToolServer` is the token or the key of a server, and is in no response, error, log line or event; a
-    response says only whether a credential is kept (`hasCredential`). These bodies are read without echoing a value, so
+    response says whether a credential is kept (`hasCredential`) and, for a typed key of 12 characters or more, its last four characters (`last4`). These bodies are read without echoing a value, so
     even a malformed one never quotes what it held. The URL of a server is the person's own and is shown back to them (so
     that they can edit it); it can hold a secret in its path, so these answers are never cached.
 
@@ -2817,6 +2817,7 @@ components:
         auth: { $ref: "#/components/schemas/UserToolAuth" }
         state: { type: string, enum: [added, connected, needs_reauth, revoked], description: "Where the server is in the lifecycle of its credential. `added`: saved, no credential yet. `connected`: offered. `needs_reauth`: the credential ended. `revoked`: disconnected. `unavailable` is never a state: it is the `status` while a cause lasts" }
         hasCredential: { type: boolean, description: "Whether a credential is kept for it (a key given, an authorization done). Not the credential" }
+        last4: { type: string, minLength: 4, maxLength: 4, description: "The last four characters of the key the person typed, recorded by the save that had the key in hand and never derived from a stored secret. Absent for a key of fewer than 12 characters, for an `oauth2` or `none` server and for a server saved before it existed. Not a secret: it is what the trusted-components receipt shows ([`trusted-components-v1.md`](trusted-components-v1.md))" }
         revision: { type: string, pattern: "^[0-9]+$", description: "Opaque: send it back as `revision` of `updateUserToolServer` and compare it for equality only. A new one for every write of the server" }
     UserToolServers:
       type: object

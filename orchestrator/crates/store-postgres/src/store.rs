@@ -68,6 +68,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0029_trusted_requests.sql",
         "0030_run_leases.sql",
         "0031_thread_pick.sql",
+        "0032_user_tool_server_last4.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
