@@ -1,6 +1,11 @@
 # ADR 0064 — The person reaches the agent as a signed assertion, links their GitHub account, and the coder checks their access before it touches a repository
 
-- **Status:** **proposed (2026-10-18).** The owner decided, 2026-10-18 (as the task brief recorded it): *people link their GitHub account, and we keep
+- **Status:** **accepted (2026-11-24).** The owner accepted all fifteen [decisions at the end](#decisions-for-the-owner-to-confirm)
+  as written on 2026-11-24, with one change: the extension is named **`identity/v1`**, not `person/v1`, so that it shares no word
+  with the `person` member of `thread-tools/v1`. Every name below is renamed to match. Open questions 85 to 89 stay open, by the
+  owner's choice. **Nothing is built yet**; the build tickets follow this record. Proposed on 2026-10-18; the text below kept
+  that date's wording, apart from the extension's name.
+- The owner decided, 2026-10-18 (as the task brief recorded it): *people link their GitHub account, and we keep
   the GitHub App*. The App does the work; the person's own GitHub identity proves they may. The plan behind it: the coder is offered to many
   people at once (*amended 2026-11-15: the market plan this sentence named is the operator's and left the open-source
   repositories*). **Proposed**, for the owner to confirm: every name, default, status code and shape below, and the
@@ -42,7 +47,7 @@ detected from the live card, never cached, fail closed, removable. **3, stateles
 
 ## Decision
 
-1. **An optional extension, `person/v1`.** URI `https://agents.vymalo.com/a2a/extensions/person/v1` (the prefix of every extension,
+1. **An optional extension, `identity/v1`.** URI `https://agents.vymalo.com/a2a/extensions/identity/v1` (the prefix of every extension,
    [`extensions.md`](../api/extensions.md)). Do not confuse it with the `person` member of `thread-tools/v1`, which is what the person said.
    An agent lists it in its card: `{"uri": …, "required": false, "params": {"claims": ["github"]}}`. `claims` is optional, a closed list
    (today only `github`): what the agent wants beyond the person's `sub`. The orchestrator reads the card on every send and uses the extension only
@@ -69,13 +74,13 @@ detected from the live card, never cached, fail closed, removable. **3, stateles
    | `iat`, `exp` | `exp` is `iat` plus `person.assertionTtlSecs`: **300** by default, 60 to 3,600. Read from 30 seconds before `iat` to 29 after `exp`, as the thread token. |
    | `links` | **only when the person linked an account, the agent's card asks for it (`claims`) and the deployment names the agent** (`person.agents.<id>.claims`): `{"github": {"state": "linked", "id": 583231, "login": "octocat"}}`, or `{"github": {"state": "needs_relink"}}`. Absent: never linked, or unlinked. |
 
-   **`sub`** is `base64url(HMAC-SHA-256(person.subjectKey, "person/v1" 0x00 agent-id 0x00 owner))`, 43 characters. *Why a pseudonym derived from the owner:*
+   **`sub`** is `base64url(HMAC-SHA-256(person.subjectKey, "identity/v1" 0x00 agent-id 0x00 owner))`, 43 characters. *Why a pseudonym derived from the owner:*
    the OIDC `sub` is not kept apart from the owner key and not at hand where a message is sent (the table above), the owner key is the e-mail by default and must not reach an agent, and a derived
    value needs no new table and works in every `auth.mode`. *Why per agent:* two agents cannot join their records of one person. *Cost:* the key is never rotated
    (a new key is a new person to every agent), and a person whose e-mail changes is a new person, as for their threads today (question 85).
 3. **Its keys are their own, asymmetric, and published.** The orchestrator signs with Ed25519 keys from its configuration (`person.signing`: a list of keys
    with ids and a current id; a previous key stays in the list until the longest assertion has expired). It serves their **public halves** as a JWKS,
-   `GET {iss}/person/v1/jwks.json`, on the internal thread-tools surface: unauthenticated, not routed by the edge, `Cache-Control` of minutes.
+   `GET {iss}/identity/v1/jwks.json`, on the internal thread-tools surface: unauthenticated, not routed by the edge, `Cache-Control` of minutes.
    **The thread token's keys are not reused**, and the code says why: the thread token is HS256, one shared secret
    (`thread-token/src/lib.rs:4,313,407`; `kid` is a hash of the secret, `lib.rs:32`). A JWKS cannot publish it, and an agent that held it could forge a
    thread token for any thread and an assertion for any person. *What is reused:* the place of the minting (the adapter, at send time, from a non-secret
@@ -166,7 +171,7 @@ detected from the live card, never cached, fail closed, removable. **3, stateles
 
    | Mode | A person who has not linked | A person who has |
    |---|---|---|
-   | **`required`** (the default once the card lists `person/v1`) | refused for every repository | read checked for a read, push checked for a push |
+   | **`required`** (the default once the card lists `identity/v1`) | refused for every repository | read checked for a read, push checked for a push |
    | **`public-reads`** | may read **public** repositories (the repository object says `private: false`); no push, no creation, no private repository | as `required` |
    | **`off`** | as today, not asked | not asked (the assertion is still verified, for what else needs the person) |
 
@@ -187,7 +192,7 @@ sequenceDiagram
   participant O as Orchestrator
   participant K as Secret store and link table
   participant H as GitHub
-  participant A as Agent (coder, lists person/v1)
+  participant A as Agent (coder, lists identity/v1)
 
   Note over P,H: 1. Linking, once
   P->>O: POST /api/me/links/github [account.link]
@@ -206,10 +211,10 @@ sequenceDiagram
 
   Note over P,A: 2. A message
   P->>O: a message in a thread
-  O->>A: read the card (live): person/v1 listed?
+  O->>A: read the card (live): identity/v1 listed?
   O->>O: sign the assertion (sub, aud, thread, job, links)
-  O->>A: message, A2A-Extensions person/v1, metadata assertion
-  A->>O: GET /person/v1/jwks.json (cached)
+  O->>A: message, A2A-Extensions identity/v1, metadata assertion
+  A->>O: GET /identity/v1/jwks.json (cached)
   A->>A: verify signature, typ, iss, aud, exp, jti
 
   Note over A,H: 3. Before it touches a repository
@@ -275,7 +280,7 @@ Every row fails closed. "The coder" is a coder in `required` mode; the other mod
 
 | Situation | The orchestrator | The coder |
 |---|---|---|
-| The card lists no `person/v1` | plain A2A, as today | nothing to do |
+| The card lists no `identity/v1` | plain A2A, as today | nothing to do |
 | It lists it, the orchestrator has no signing key, `required: false` | plain message, a warning | no person: refuses every repository |
 | The same, `required: true` | the job fails, nothing is sent | never receives it |
 | The assertion is bad or expired | | refuses the message before anything is written |
@@ -317,7 +322,7 @@ Every row fails closed. "The coder" is a coder in `required` mode; the other mod
 
 adam-rs designs and builds its side in its own ADR (B1c). The shape:
 
-- **Card and config.** The card lists `person/v1` with `claims: ["github"]` unless the mode is `off`; `required: true` when the deployment sets `PERSON_REQUIRED`.
+- **Card and config.** The card lists `identity/v1` with `claims: ["github"]` unless the mode is `off`; `required: true` when the deployment sets `PERSON_REQUIRED`.
   `PERSON_ISSUER`, `PERSON_AUDIENCE`, `PERSON_JWKS_URL`, `PERSON_GITHUB_CHECK`, `PERSON_CHECK_TTL_SECS` (default 300, at most 900). The chart has the values.
 - **Verify before anything is written.** A message that activated the extension and carries a bad assertion is refused as unauthenticated, as a bad tier is
   refused as invalid. The checks: signature with an EdDSA key of the JWKS, `typ`, `iss` and `aud` exact, `exp` and `iat` within 30 seconds, `jti` equal to the message
@@ -447,7 +452,7 @@ adam-rs designs and builds its side in its own ADR (B1c). The shape:
 
 ## Decisions for the owner to confirm
 
-1. **The extension's name**, `person/v1`, the URI above. It shares a word with the `person` member of `thread-tools/v1`; `identity/v1` avoids that.
+1. **The extension's name**, the URI above. Proposed as `person/v1`, which shares a word with the `person` member of `thread-tools/v1`; `identity/v1` avoids that. *Decided 2026-11-24: `identity/v1`.*
 2. **`sub` is a pseudonym** derived from the owner, the agent id and a deployment key, never the e-mail, and the key is never rotated. The alternative is the OIDC `sub`,
    which needs a stored column (question 85).
 3. **The assertion is signed with Ed25519 and published as a JWKS on the internal surface**; the thread token's HS256 key is not reused. Lifetime 300 seconds.
