@@ -70,7 +70,12 @@ pub(crate) async fn upload_attachment<P: Ports>(
         .await?;
     let url = format!("/api/threads/{thread}/artifacts/{}", kept.sha256);
     let location = HeaderValue::from_str(&url)
-        .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error").into())?;
+        .map_err(|_| {
+            ApiError::from(Problem::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ))
+        })?;
     let mut response = (
         StatusCode::CREATED,
         axum::Json(AttachmentAnswer {
