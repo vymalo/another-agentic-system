@@ -33,6 +33,7 @@ orch-model-openai = { path = "crates/model-openai" }
 orch-tools-mcp = { path = "crates/tools-mcp" }
 orch-credential-broker = { path = "crates/credential-broker" }
 orch-secrets-pg = { path = "crates/secrets-pg" }
+orch-secrets-openbao = { path = "crates/secrets-openbao" }
 orch-pg-migrate = { path = "crates/pg-migrate" }
 orch-pg-connect = { path = "crates/pg-connect" }
 orch-artifacts-fs = { path = "crates/artifacts-fs" }

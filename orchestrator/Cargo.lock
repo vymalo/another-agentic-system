@@ -2755,6 +2755,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-secrets-openbao"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "orch-secrets-pg"
 version = "0.1.0"
 dependencies = [

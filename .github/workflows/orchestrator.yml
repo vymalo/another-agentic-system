@@ -103,7 +103,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      # A dev-mode OpenBao (KV v2 at `secret/`, in memory, root token below) for orch-secrets-openbao's testkit; without
+      # ORCH_TEST_OPENBAO_URL those cases are skipped. Dummy token, CI only.
+      openbao:
+        image: openbao/openbao:2.4.1
+        env:
+          BAO_DEV_ROOT_TOKEN_ID: ci-dev-only-token
+          BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        ports: ["8200:8200"]
     env:
+      ORCH_TEST_OPENBAO_URL: http://127.0.0.1:8200
+      ORCH_TEST_OPENBAO_TOKEN: ci-dev-only-token
       ORCH_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/orch_test
       ORCH_TEST_S3_URL: http://127.0.0.1:9000
       ORCH_TEST_S3_BUCKET: orch-test
@@ -313,7 +323,7 @@ jobs:
       # agents): their Postgres suites, through the pooler. The other crates' suites need no pooler (they use the in-memory
       # ports or are covered by `check`), and the in-process agents' own suites share a journal by a schema, which a
       # pooler cannot carry (`orch-agent-adam`'s tests/direct.rs is the one that runs here).
-      - run: cargo test -p orch-store-postgres -p orch-secrets-pg --locked
+      - run: cargo test -p orch-store-postgres -p orch-secrets-pg -p orch-secrets-openbao --locked
       - run: cargo test -p orch-agent-adam --test direct --locked
       - run: cargo test -p orch-e2e --locked
       - run: cargo test -p orchestrator --features agent-local --locked
