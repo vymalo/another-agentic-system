@@ -1,6 +1,8 @@
-//! The dispatcher's side of ADR 0084: a run is bound when its stream first names the task id, and
+//! The dispatcher's side of ADR 0084: a run is bound when its stream first names the task id, with
+//! the endpoint the live card maps the person's pick to (the status note of 2026-11-24), and
 //! unbound at every end state of its thread (`done`, `failed`, `cancelled`), idempotently. A broker
-//! that cannot be reached is logged and the run goes on (S9 parks it).
+//! that cannot be reached is logged and the run goes on (S9 parks it); a later message that picks
+//! another alias is refused (`409`), never re-pointed.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 mod support;
@@ -9,13 +11,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use jiff::SignedDuration;
-use orch_app::{Dispatcher, DispatcherConfig};
-use orch_core::{AgentId, ThreadId, ThreadState};
+use orch_app::{Creation, Dispatcher, DispatcherConfig, Inbound, NewThread};
+use orch_core::{AgentId, ModelPick, ModelPickOffer, ThreadId, ThreadState};
 use orch_ports::memory::MemoryRunLeases;
 use orch_ports::{
     AgentError, Clock as _, RunBinding, RunBindingError, RunBindings, RunCaller, RunId,
     RunLeaseError, RunLeases, SystemClock, ThreadStore as _, ToolSecret,
 };
+use serde_json::json;
 use support::*;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +29,8 @@ use tokio_util::sync::CancellationToken;
 struct Broker {
     leases: Arc<MemoryRunLeases>,
     binds: Arc<Mutex<Vec<RunBinding>>>,
+    /// What the broker answered each bind, in order: `Err(Conflict)` is the `409`.
+    outcomes: Arc<Mutex<Vec<Result<(), RunBindingError>>>>,
     unbinds: Arc<Mutex<Vec<RunId>>>,
     /// The store's view of the thread at the moment of the bind: how far its log had come.
     bind_seqs: Arc<Mutex<Vec<i64>>>,
@@ -33,18 +38,22 @@ struct Broker {
     watched: Arc<Mutex<Option<(orch_ports::memory::MemoryStore, ThreadId)>>>,
     /// Every bind is refused as unreachable.
     unreachable: Arc<AtomicBool>,
-    /// The model endpoint the deployment names on the binding. Production names none yet (ADR
-    /// 0084, open question 4); a test that needs the lease to be lent stands for a deployment
-    /// whose composition root knows its endpoint.
-    model: Option<String>,
 }
 
 impl Broker {
+    /// A broker whose deployment holds a credential for the endpoint `frontier`.
     fn new() -> Self {
+        Broker::with_endpoints([("frontier", "key-frontier")])
+    }
+
+    /// A broker whose deployment holds a credential per model endpoint label.
+    fn with_endpoints<const N: usize>(tokens: [(&str, &str); N]) -> Self {
         Broker {
-            leases: Arc::new(MemoryRunLeases::with_token(
-                "default",
-                ToolSecret::new("model-key"),
+            leases: Arc::new(MemoryRunLeases::new(
+                tokens
+                    .into_iter()
+                    .map(|(model, token)| (model.to_owned(), ToolSecret::new(token)))
+                    .collect(),
             )),
             ..Broker::default()
         }
@@ -52,6 +61,13 @@ impl Broker {
 
     fn binds(&self) -> Vec<RunBinding> {
         self.binds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn outcomes(&self) -> Vec<Result<(), RunBindingError>> {
+        self.outcomes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -95,19 +111,22 @@ impl RunBindings for Broker {
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(record.last_seq);
         }
-        let binding = RunBinding {
-            model: self.model.clone().or(binding.model),
-            ..binding
+        let outcome = if self.unreachable.load(Ordering::SeqCst) {
+            Err(RunBindingError::Unreachable)
+        } else {
+            // Recorded once the broker has answered, so that a test which sees the call in `binds`
+            // also finds the binding where a lookup would: the two cannot disagree.
+            self.leases
+                .bind(binding.clone())
+                .await
+                .map_err(|_| RunBindingError::Conflict)
         };
-        if self.unreachable.load(Ordering::SeqCst) {
-            self.record(&binding);
-            return Err(RunBindingError::Unreachable);
-        }
-        // Recorded once the broker has answered, so that a test which sees the call in `binds`
-        // also finds the binding where a lookup would: the two cannot disagree.
-        let outcome = self.leases.bind(binding.clone()).await;
         self.record(&binding);
-        outcome.map_err(|_| RunBindingError::Conflict)
+        self.outcomes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(outcome);
+        outcome
     }
 
     async fn unbind(&self, run: &RunId) -> Result<(), RunBindingError> {
@@ -131,6 +150,60 @@ fn broker_deadline_is_a_day(binding: &RunBinding) {
         "the binding ends at the broker's cap, not {:?}",
         binding.expires_at
     );
+}
+
+/// The `model-pick/v1` of a mock card that maps each alias to a deployment endpoint label.
+fn offering() -> Option<ModelPickOffer> {
+    ModelPickOffer::from_params(&json!({
+        "choices": [
+            {"id": "fast", "label": "Fast", "endpoint": "frontier"},
+            {"id": "deep", "label": "Deep", "endpoint": "deep-endpoint"}
+        ],
+        "default": "fast"
+    }))
+}
+
+/// A thread of `coder` whose first message carries `pick` (a card is read to check it).
+async fn start_picked(w: &World, text: &str, pick: Option<ModelPick>) -> ThreadId {
+    let app = w.app();
+    let thread = ThreadId(uuid::Uuid::now_v7());
+    match app
+        .create_thread_as(
+            &alice(),
+            thread,
+            NewThread {
+                title: None,
+                target: target("coder"),
+                text: text.to_owned(),
+            },
+            Inbound {
+                pick,
+                ..Inbound::default()
+            },
+        )
+        .await
+        .unwrap()
+    {
+        Creation::Created { .. } => thread,
+        Creation::Exists => panic!("a fresh id"),
+    }
+}
+
+/// A message of `alice` that picks `pick`.
+fn message(text: &str, pick: Option<ModelPick>) -> orch_core::Input {
+    orch_core::Input::UserMessage {
+        user: alice(),
+        text: text.to_owned(),
+        message_id: None,
+        run_id: None,
+        origin: orch_core::Origin::Agui,
+        catalog: None,
+        mentions: Vec::new(),
+        tier: None,
+        tier_cap: None,
+        locale: None,
+        pick,
+    }
 }
 
 /// Spawns the dispatcher with `broker` (no shutdown token: a test stops it by dropping the handle).
@@ -162,7 +235,7 @@ async fn a_run_is_bound_when_its_task_id_is_first_seen_and_before_its_events() {
     assert_eq!(binding.person, alice());
     assert_eq!(
         binding.model, None,
-        "the orchestrator names no model endpoint of its own (ADR 0084, open question 4)"
+        "the scripted card lists no endpoint, so the binding names none (ADR 0084, fail closed)"
     );
     broker_deadline_is_a_day(binding);
 
@@ -186,13 +259,11 @@ async fn a_run_is_bound_when_its_task_id_is_first_seen_and_before_its_events() {
 #[tokio::test]
 async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
     let w = World::new();
+    // The card maps its aliases to the deployment's endpoints, so the binding names one and the
+    // lease can be lent (the status note of 2026-11-24).
+    w.agent.set_pick("coder", offering(), None);
     let app = w.app();
-    // Stands for a deployment that names its model endpoint in the binding (ADR 0084, open
-    // question 4): the dispatcher names none yet, so only this half lets the lease be lent.
-    let broker = Broker {
-        model: Some("default".to_owned()),
-        ..Broker::new()
-    };
+    let broker = Broker::new();
     // The `slow` turn stays open until its task is terminal, so the run is still bound when the
     // lookup below is made.
     let _thread = create(&app, &alice(), "coder", "slow job").await;
@@ -216,11 +287,186 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
         .lease(&run_id, &caller)
         .await
         .expect("the run is bound after its first frame");
-    assert_eq!(lease.token().expose(), "model-key");
+    assert_eq!(lease.token().expose(), "key-frontier");
     assert!(lease.expires_at() > SystemClock.now(), "the lease is spent");
     let binding = broker.leases.binding(&run_id).unwrap();
     assert_eq!(binding.agent, AgentId::new("coder"));
     assert_eq!(binding.person, alice());
+    assert_eq!(
+        binding.model.as_deref(),
+        Some("frontier"),
+        "no pick: the card's default choice names the endpoint"
+    );
+    run.abort();
+}
+
+#[tokio::test]
+async fn the_picked_alias_binds_the_endpoint_the_live_card_maps_it_to() {
+    let w = World::new();
+    w.agent.set_pick("coder", offering(), None);
+    let app = w.app();
+    let broker =
+        Broker::with_endpoints([("frontier", "key-frontier"), ("deep-endpoint", "key-deep")]);
+    // `slow` keeps the run bound for the lookup below.
+    let _thread = start_picked(&w, "slow job", Some(ModelPick::model("deep").unwrap())).await;
+    let run = spawn(&app, fast(), broker.clone());
+
+    let binding = eventually("the run is bound", || async {
+        broker.leases.binding(&RunId::new("task-1"))
+    })
+    .await;
+    assert_eq!(
+        binding.model.as_deref(),
+        Some("deep-endpoint"),
+        "the picked alias's endpoint, not the card's default one"
+    );
+    let lease = broker
+        .leases
+        .lease(
+            &RunId::new("task-1"),
+            &RunCaller::Agent(AgentId::new("coder")),
+        )
+        .await
+        .expect("the deployment holds a credential for that endpoint");
+    assert_eq!(lease.token().expose(), "key-deep");
+    assert_eq!(broker.binds()[0].model.as_deref(), Some("deep-endpoint"));
+    run.abort();
+}
+
+#[tokio::test]
+async fn a_message_that_picks_nothing_binds_the_cards_default_choice() {
+    let w = World::new();
+    w.agent.set_pick("coder", offering(), None);
+    let app = w.app();
+    let broker = Broker::new();
+    let _thread = create(&app, &alice(), "coder", "slow job").await;
+    let run = spawn(&app, fast(), broker.clone());
+
+    eventually("the run is bound", || async {
+        broker.leases.binding(&RunId::new("task-1"))
+    })
+    .await;
+    assert_eq!(
+        broker.binds()[0].model.as_deref(),
+        Some("frontier"),
+        "no pick anywhere: the card's own default choice"
+    );
+    run.abort();
+}
+
+#[tokio::test]
+async fn a_card_without_an_endpoint_binds_no_model_and_the_lookup_is_unavailable() {
+    let w = World::new();
+    // A choice, and no endpoint on it: the card of today.
+    w.agent.set_pick(
+        "coder",
+        ModelPickOffer::from_params(&json!({"choices": [{"id": "fast"}], "default": "fast"})),
+        None,
+    );
+    let app = w.app();
+    let broker = Broker::new();
+    let _thread = start_picked(&w, "slow job", Some(ModelPick::model("fast").unwrap())).await;
+    let run = spawn(&app, fast(), broker.clone());
+
+    let binding = eventually("the run is bound", || async {
+        broker.leases.binding(&RunId::new("task-1"))
+    })
+    .await;
+    assert_eq!(binding.model, None, "no endpoint is invented for the card");
+    assert!(
+        matches!(
+            broker
+                .leases
+                .lease(
+                    &RunId::new("task-1"),
+                    &RunCaller::Agent(AgentId::new("coder")),
+                )
+                .await,
+            Err(RunLeaseError::Unavailable(_))
+        ),
+        "a binding that names no endpoint lends nothing (fail closed)"
+    );
+    run.abort();
+}
+
+#[tokio::test]
+async fn a_later_message_that_picks_another_alias_is_refused_and_the_run_keeps_its_endpoint() {
+    let w = World::new();
+    w.agent.set_pick("coder", offering(), None);
+    let app = w.app();
+    let broker =
+        Broker::with_endpoints([("frontier", "key-frontier"), ("deep-endpoint", "key-deep")]);
+    // `ask` opens a task and waits for the person, so the follow-up continues the same run.
+    let thread = start_picked(
+        &w,
+        "ask which branch",
+        Some(ModelPick::model("fast").unwrap()),
+    )
+    .await;
+    let run = spawn(&app, fast(), broker.clone());
+    wait_state(&app, &alice(), thread, ThreadState::Blocked).await;
+    let bound = broker
+        .leases
+        .binding(&RunId::new("task-1"))
+        .expect("the first message bound the run");
+    assert_eq!(bound.model.as_deref(), Some("frontier"));
+
+    // The same run, another alias: the bind is refused (`409`), never re-pointed.
+    app.submit(
+        &alice(),
+        thread,
+        message("main", Some(ModelPick::model("deep").unwrap())),
+        None,
+    )
+    .await
+    .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    let binds = broker.binds();
+    assert_eq!(
+        binds.len(),
+        2,
+        "the follow-up asked to bind the same run again"
+    );
+    assert_eq!(binds[1].model.as_deref(), Some("deep-endpoint"));
+    assert_eq!(
+        broker.outcomes(),
+        [Ok(()), Err(RunBindingError::Conflict)],
+        "the broker refused to re-point the live run"
+    );
+    run.abort();
+}
+
+#[tokio::test]
+async fn the_same_pick_on_a_later_message_is_idempotent() {
+    let w = World::new();
+    w.agent.set_pick("coder", offering(), None);
+    let app = w.app();
+    let broker = Broker::new();
+    let thread = start_picked(
+        &w,
+        "ask which branch",
+        Some(ModelPick::model("fast").unwrap()),
+    )
+    .await;
+    let run = spawn(&app, fast(), broker.clone());
+    wait_state(&app, &alice(), thread, ThreadState::Blocked).await;
+
+    app.submit(
+        &alice(),
+        thread,
+        message("main", Some(ModelPick::model("fast").unwrap())),
+        None,
+    )
+    .await
+    .unwrap();
+    wait_state(&app, &alice(), thread, ThreadState::Done).await;
+    let binds = broker.binds();
+    assert_eq!(binds.len(), 2);
+    assert_eq!(
+        binds.iter().map(|b| b.model.as_deref()).collect::<Vec<_>>(),
+        [Some("frontier"), Some("frontier")]
+    );
+    assert_eq!(broker.outcomes(), [Ok(()), Ok(())]);
     run.abort();
 }
 

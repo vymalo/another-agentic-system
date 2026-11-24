@@ -21,8 +21,8 @@ use orch_core::{
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, ClaimOrder,
     Clock, IdemKey, Lease, NoRunBindings, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload,
-    Ports, RunBinding, RunBindings, RunId, SendContent, SendRequest, StoreError, TaskHandle,
-    TaskSnapshot, ThreadStore, Topic, Wakeup,
+    Ports, RunBinding, RunBindingError, RunBindings, RunId, SendContent, SendRequest, StoreError,
+    TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -217,6 +217,9 @@ struct Ctx {
     revision: Option<String>,
     /// What the delegation has kept of the agent's files so far (ADR 0032).
     files: files::Budget,
+    /// The model and reasoning effort the message picked (ADR 0086), read at the bind to resolve
+    /// the endpoint the live card maps it to (ADR 0084, the status note of 2026-11-24).
+    pick: Option<orch_core::ModelPick>,
     /// For the row that follows a child session's round: the context the child thread adopted.
     /// Nothing of another context may be applied to the child (fail closed against an agent that
     /// names the parent's task, or another conversation's, as a round).
@@ -608,24 +611,57 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// 2026-11-23: the bind is at the first sight of the id, before any of the delegation's events
     /// are applied). A broker that cannot be reached is logged and the run goes on; S9 parks it.
     ///
-    /// The binding names no model endpoint: the agent owns its model (ADR 0067 decision 1) and the
-    /// orchestrator has no name of its own to put there (ADR 0084, open question 4).
+    /// The binding names the endpoint the live card maps the run's pick to ([`Self::run_endpoint`]).
+    /// A later message of a run already bound that picks another alias asks for that choice's
+    /// endpoint and the broker refuses it (`409`, ADR 0084, the status note of 2026-11-24): the run
+    /// keeps the endpoint it was bound to, never re-pointed.
     async fn bind_run(&self, ctx: &Ctx, task: &str) {
         let binding = RunBinding {
             run: RunId::new(task),
             agent: ctx.agent.clone(),
             person: ctx.person.clone(),
-            model: None,
+            model: self.run_endpoint(ctx).await,
             expires_at: add(self.now(), RUN_BINDING_TTL),
         };
         match self.run_bindings.bind(binding).await {
             Ok(()) => tracing::debug!(run = %task, thread = %ctx.thread, "the run is bound"),
+            Err(RunBindingError::Conflict) => tracing::warn!(
+                run = %task,
+                thread = %ctx.thread,
+                "the run is already bound to another model endpoint; the pick is refused and the run keeps its own"
+            ),
             Err(e) => tracing::warn!(
                 run = %task,
                 thread = %ctx.thread,
                 error = %e,
                 "binding the run failed; the run goes on (S9 parks it instead)"
             ),
+        }
+    }
+
+    /// The endpoint label the run's binding names (ADR 0084, the status note of 2026-11-24): the
+    /// `endpoint` of the choice the run's picked alias maps to on the **live** card, or the card's
+    /// `default` choice when the message picked no model.
+    ///
+    /// `None` when the card names no endpoint for that choice, lists no `model-pick/v1` (or lists it
+    /// badly), or cannot be read: the binding then names no model, and the lookup answers
+    /// `unavailable` (fail closed).
+    async fn run_endpoint(&self, ctx: &Ctx) -> Option<String> {
+        let picked = ctx.pick.as_ref().and_then(|pick| pick.model.as_ref());
+        match self.app.card_pick_listings(&ctx.endpoint).await {
+            Ok(listings) => {
+                let endpoint = listings.model.offer()?.endpoint_for(picked)?;
+                Some(endpoint.to_owned())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    agent = %ctx.agent,
+                    thread = %ctx.thread,
+                    error = %report(&e),
+                    "the agent card could not be read to resolve the run's model endpoint; the binding names none"
+                );
+                None
+            }
         }
     }
 
@@ -752,6 +788,12 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             endpoint: entry.endpoint.clone(),
             revision: binding.revision.clone(),
             files: files::Budget::default(),
+            // the row is the message whose pick names the run's model alias, and only a delegation
+            // sends a task (a steer goes into one already bound)
+            pick: match &row.payload {
+                OutboxPayload::Delegate { pick, .. } => pick.clone(),
+                _ => None,
+            },
             // every row of a child thread, not only the follow of a round: nothing of another
             // context may be applied to a helper's thread (fail closed)
             expected_context: (thread.child_of.is_some()

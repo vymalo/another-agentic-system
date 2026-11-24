@@ -2,7 +2,7 @@
 //! `model-pick/v1`, [`docs/api/model-pick-v1.md`](../../../../docs/api/model-pick-v1.md)).
 //!
 //! Two A2A extensions, one per axis: the model is `model-pick/v1` (the card's
-//! `params {choices: [{id, label}], default?}`, a message's `metadata[URI] = {"model": id}`) and the
+//! `params {choices: [{id, label, endpoint?}], default?}`, a message's `metadata[URI] = {"model": id}`) and the
 //! effort is adam's own `reasoning/v1` (`params {efforts, default?}`, `metadata[URI] = {"effort": level}`).
 //! A pick is **never** a hint: a choice the live card does not list is refused before anything is
 //! written ([`PickListings::check`]), because a person who chose "deep" must not silently get the
@@ -185,13 +185,18 @@ impl ModelPick {
     }
 }
 
-/// One model an agent offers: its alias and the name a person reads.
+/// One model an agent offers: its alias, the name a person reads, and — when the card names one —
+/// the deployment's endpoint label the alias maps to (ADR 0084, the status note of 2026-11-24).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelChoice {
     /// The alias.
     pub id: ModelId,
     /// The label shown to a person; the alias when the card gave none.
     pub label: String,
+    /// The deployment's own label for the model endpoint this alias maps to: the key of
+    /// `models.endpoints.<name>`, never a provider, a host, a URL or a key. `None` when the card
+    /// names none, which binds no endpoint for a run (fail closed).
+    pub endpoint: Option<String>,
 }
 
 /// What `model-pick/v1` offers: the choices and, when the card says so, the agent's default.
@@ -205,8 +210,9 @@ pub struct ModelPickOffer {
 
 impl ModelPickOffer {
     /// Reads the card's `params`: `choices` is required, a list of objects with an `id` (a valid
-    /// alias) and optional `label`; `default`, when present, names a choice. `None` when it is
-    /// anything else, so a card that lists the extension badly offers nothing.
+    /// alias) and optional `label` and `endpoint`; `default`, when present, names a choice. `None`
+    /// when it is anything else, so a card that lists the extension badly offers nothing. An
+    /// `endpoint` that is not a non-empty string is read as none, and never spoils the card.
     pub fn from_params(params: &Value) -> Option<ModelPickOffer> {
         let mut choices: Vec<ModelChoice> = Vec::new();
         for item in params.get("choices")?.as_array()? {
@@ -218,7 +224,15 @@ impl ModelPickOffer {
             if choices.iter().any(|c| c.id == id) {
                 return None;
             }
-            choices.push(ModelChoice { id, label });
+            let endpoint = match item.get("endpoint") {
+                Some(Value::String(endpoint)) if !endpoint.is_empty() => Some(endpoint.clone()),
+                _ => None,
+            };
+            choices.push(ModelChoice {
+                id,
+                label,
+                endpoint,
+            });
         }
         let default = match params.get("default") {
             None | Some(Value::Null) => None,
@@ -233,6 +247,18 @@ impl ModelPickOffer {
     /// Whether the agent offers `id`.
     pub fn offers(&self, id: &ModelId) -> bool {
         self.choices.iter().any(|c| &c.id == id)
+    }
+
+    /// The endpoint label `picked` maps to (ADR 0084, the status note of 2026-11-24): the choice's
+    /// own `endpoint`, or the card's `default` choice when nothing was picked.
+    ///
+    /// `None` for an alias the card does not list, for a choice that names no endpoint, and for a
+    /// card with no default. **Another choice's endpoint is never substituted**: a run bound to an
+    /// endpoint it did not ask for would spend for a model the person never picked (fail closed).
+    pub fn endpoint_for(&self, picked: Option<&ModelId>) -> Option<&str> {
+        let id = picked.or(self.default.as_ref())?;
+        let choice = self.choices.iter().find(|choice| &choice.id == id)?;
+        choice.endpoint.as_deref()
     }
 
     /// The aliases, in order.
@@ -473,6 +499,66 @@ mod tests {
         ] {
             assert!(EffortOffer::from_params(&bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_choice_maps_its_alias_to_the_endpoint_the_card_names() {
+        let offer = ModelPickOffer::from_params(&json!({
+            "choices": [
+                {"id": "fast", "label": "Fast", "endpoint": "frontier"},
+                {"id": "deep", "label": "Deep", "endpoint": "deep-endpoint"}
+            ],
+            "default": "fast"
+        }))
+        .unwrap();
+        let fast = ModelId::parse("fast").unwrap();
+        let deep = ModelId::parse("deep").unwrap();
+        assert_eq!(offer.endpoint_for(Some(&fast)), Some("frontier"));
+        assert_eq!(offer.endpoint_for(Some(&deep)), Some("deep-endpoint"));
+        // nothing picked: the card's own default choice
+        assert_eq!(offer.endpoint_for(None), Some("frontier"));
+    }
+
+    #[test]
+    fn a_choice_without_an_endpoint_maps_to_none_and_never_to_another_choices() {
+        let offer = ModelPickOffer::from_params(&json!({
+            "choices": [{"id": "fast", "endpoint": "frontier"}, {"id": "deep"}],
+            "default": "fast"
+        }))
+        .unwrap();
+        let deep = ModelId::parse("deep").unwrap();
+        assert_eq!(offer.endpoint_for(Some(&deep)), None);
+        // an alias the card does not list names nothing either
+        let huge = ModelId::parse("huge").unwrap();
+        assert_eq!(offer.endpoint_for(Some(&huge)), None);
+    }
+
+    #[test]
+    fn a_card_that_names_no_endpoint_offers_none() {
+        let offer = ModelPickOffer::from_params(&json!({
+            "choices": [{"id": "fast"}],
+            "default": "fast"
+        }))
+        .unwrap();
+        assert_eq!(offer.endpoint_for(None), None);
+        assert_eq!(
+            offer.endpoint_for(Some(&ModelId::parse("fast").unwrap())),
+            None
+        );
+        // an endpoint that is not a label is no endpoint, and does not spoil the card
+        let offer = ModelPickOffer::from_params(&json!({
+            "choices": [{"id": "fast", "endpoint": ""}, {"id": "deep", "endpoint": 3}]
+        }))
+        .unwrap();
+        assert_eq!(
+            offer.endpoint_for(Some(&ModelId::parse("fast").unwrap())),
+            None
+        );
+        assert_eq!(
+            offer.endpoint_for(Some(&ModelId::parse("deep").unwrap())),
+            None
+        );
+        assert_eq!(offer.endpoint_for(None), None, "the card names no default");
     }
 
     #[test]

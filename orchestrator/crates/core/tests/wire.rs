@@ -1354,10 +1354,12 @@ fn agent_pick_lists_the_models_and_levels_the_card_offers() {
                 ModelChoice {
                     id: ModelId::parse("deep").expect("an alias"),
                     label: "Deep".into(),
+                    endpoint: Some("deep-endpoint".into()),
                 },
                 ModelChoice {
                     id: ModelId::parse("fast").expect("an alias"),
                     label: "Fast".into(),
+                    endpoint: None,
                 },
             ],
             default: Some(ModelId::parse("fast").expect("an alias")),
@@ -1389,6 +1391,8 @@ fn agent_pick_lists_the_models_and_levels_the_card_offers() {
     let wire = serde_json::to_value(&pick).expect("JSON");
     assert_eq!(wire["modelDefault"], "fast");
     assert_eq!(wire["efforts"], serde_json::json!(["low", "high"]));
+    // The card's endpoint labels are the deployment's, and are never shown to a screen.
+    assert!(wire["models"][0].get("endpoint").is_none(), "{wire}");
     let model_only = AgentPick::of(&PickListings {
         effort: Listing::Absent,
         ..listings

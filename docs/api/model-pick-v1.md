@@ -10,10 +10,12 @@
 ```json
 {"uri": "https://agents.vymalo.com/a2a/extensions/model-pick/v1",
  "required": false,
- "params": {"choices": [{"id": "fast", "label": "Fast"}, {"id": "deep", "label": "Deep"}], "default": "fast"}}
+ "params": {"choices": [{"id": "fast", "label": "Fast", "endpoint": "frontier"}, {"id": "deep", "label": "Deep", "endpoint": "deep-endpoint"}], "default": "fast"}}
 ```
 
 `id` is a neutral alias the agent defines (1 to 64 characters of `a-z0-9._-`). It is never a provider model id and carries no price.
+
+`endpoint` is **optional**, and each choice may name one: the deployment's own label for the model endpoint that alias maps to — the key of `models.endpoints.<name>` in the orchestrator's configuration, never a provider, a host, a URL or a key. When a run starts, the orchestrator resolves the person's pick (or the card's `default` when they picked nothing) against the **live** card and records that choice's `endpoint` on the run's binding ([ADR 0084](../decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), the status note of 2026-11-24). A card that names none is the card of today: the run's binding names no endpoint and the model credential lookup answers `unavailable` (fail closed). A later message of a run that is already bound to one endpoint and picks another alias is refused (`409`), never re-pointed.
 
 ## The message
 

@@ -779,7 +779,9 @@ pub struct RunBinding {
     pub agent: AgentId,
     /// The person the run spends for.
     pub person: UserId,
-    /// The model endpoint the lease is for, when the binding names one (ADR 0084 open question 4).
+    /// The model endpoint label the lease is for, when the binding names one: the `endpoint` of the
+    /// choice the live card maps the run's pick to (ADR 0084, the status note of 2026-11-24). `None`
+    /// when the card names none, and the lookup then answers `unavailable` (fail closed).
     pub model: Option<String>,
     /// When the binding ends; the broker caps it.
     pub expires_at: Timestamp,

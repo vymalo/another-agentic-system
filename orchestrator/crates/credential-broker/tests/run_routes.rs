@@ -93,14 +93,28 @@ fn request(method: &str, path: &str, token: Option<&str>, body: Option<String>) 
 }
 
 async fn bind(app: &Router, run: &str, agent: &str, expires_at: &str) -> StatusCode {
+    bind_model(app, run, agent, MODEL, expires_at).await
+}
+
+/// Binds `run` naming `model` as its endpoint, as a caller that already knows it does.
+async fn bind_model(
+    app: &Router,
+    run: &str,
+    agent: &str,
+    model: &str,
+    expires_at: &str,
+) -> StatusCode {
+    let body = json!({
+        "run": run,
+        "agent": agent,
+        "person": "person@example.com",
+        "model": model,
+        "expiresAt": expires_at,
+    })
+    .to_string();
     call(
         app,
-        request(
-            "POST",
-            "/internal/runs",
-            Some(ORCHESTRATOR),
-            Some(bind_body(run, agent, expires_at)),
-        ),
+        request("POST", "/internal/runs", Some(ORCHESTRATOR), Some(body)),
     )
     .await
     .0
@@ -283,6 +297,83 @@ async fn the_same_binding_is_idempotent_and_a_different_one_is_a_conflict() {
         serde_json::from_str::<Value>(&body).expect("JSON")["code"],
         "run_already_bound"
     );
+}
+
+#[tokio::test]
+async fn a_run_bound_to_one_endpoint_is_not_re_pointed_to_another() {
+    let (app, _) = app();
+    let expires_at = at(Duration::from_secs(60));
+    assert_eq!(
+        bind_model(&app, "run-12", "coder", "model-x", &expires_at).await,
+        StatusCode::NO_CONTENT
+    );
+    // The same run, agent, person and deadline; only the endpoint label differs (ADR 0084, the
+    // status note of 2026-11-24: one bind, one endpoint).
+    let (status, _, body) = call(
+        &app,
+        request(
+            "POST",
+            "/internal/runs",
+            Some(ORCHESTRATOR),
+            Some(
+                json!({
+                    "run": "run-12",
+                    "agent": "coder",
+                    "person": "person@example.com",
+                    "model": "model-y",
+                    "expiresAt": expires_at,
+                })
+                .to_string(),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).expect("JSON")["code"],
+        "run_already_bound"
+    );
+    // The binding is still the first endpoint's.
+    let (status, _, body) = lease(&app, "run-12", Some(CODER)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).expect("JSON")["token"],
+        "model-bearer"
+    );
+}
+
+#[tokio::test]
+async fn each_binding_leases_the_credential_of_the_endpoint_the_caller_named() {
+    // A deployment with a credential per endpoint, as `models.endpoints.<name>.apiKey` gives it.
+    let credentials = MemoryModelCredentials::new(BTreeMap::from([
+        ("model-x".to_owned(), ToolSecret::new("bearer-x")),
+        ("model-y".to_owned(), ToolSecret::new("bearer-y")),
+    ]));
+    let leases = Arc::new(RunLeaseBroker::new(
+        MemoryRunBindingStore::default(),
+        credentials,
+    ));
+    let app = router(leases, Arc::new(tokens()));
+    let expires_at = at(Duration::from_secs(60));
+    assert_eq!(
+        bind_model(&app, "run-13", "coder", "model-x", &expires_at).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        bind_model(&app, "run-14", "coder", "model-y", &expires_at).await,
+        StatusCode::NO_CONTENT
+    );
+    // The optional `model` of the route is the caller's choice and is kept as sent (ADR 0084
+    // decision 1): nothing here re-resolves it.
+    for (run, token) in [("run-13", "bearer-x"), ("run-14", "bearer-y")] {
+        let (status, _, body) = lease(&app, run, Some(CODER)).await;
+        assert_eq!(status, StatusCode::OK, "{run}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("JSON")["token"],
+            token,
+            "{run}"
+        );
+    }
 }
 
 #[tokio::test]

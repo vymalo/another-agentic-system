@@ -182,6 +182,27 @@ mod tests {
     }
 
     #[test]
+    fn a_choices_endpoint_is_read_from_the_live_card() {
+        // The mock card of an agent that names the deployment's endpoint per model choice (ADR
+        // 0084, the status note of 2026-11-24). adam's half that sends it is ANR-611.
+        let card = card_with(vec![entry(
+            MODEL_PICK_EXTENSION,
+            json!({
+                "choices": [
+                    {"id": "fast", "label": "Fast", "endpoint": "frontier"},
+                    {"id": "deep", "label": "Deep", "endpoint": "deep-endpoint"}
+                ],
+                "default": "fast"
+            }),
+        )]);
+        let listings = pick_from_card(&card);
+        let offer = listings.model.offer().expect("the card lists it");
+        let deep = orch_core::ModelId::parse("deep").unwrap();
+        assert_eq!(offer.endpoint_for(Some(&deep)), Some("deep-endpoint"));
+        assert_eq!(offer.endpoint_for(None), Some("frontier"));
+    }
+
+    #[test]
     fn a_card_that_lists_it_badly_is_told_apart_from_one_that_does_not() {
         let card = card_with(vec![
             entry(MODEL_PICK_EXTENSION, json!({"choices": "fast"})),
