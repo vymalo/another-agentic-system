@@ -8,6 +8,7 @@ use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 use crate::authz::Permission;
 use crate::prompts::PromptRefusal;
 use crate::sharing::SharingMode;
+use crate::teams::TeamPresetRefusal;
 use crate::user_tools::UserToolRefusal;
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
@@ -100,6 +101,11 @@ pub enum AppError {
     /// is too long. See [`PromptRefusal`].
     #[error(transparent)]
     Prompt(PromptRefusal),
+    /// A request about a person's team presets is refused (ADR 0074): a rule of the page, an agent
+    /// the person may not use, a name taken, the limit, a stale revision, no such preset. See
+    /// [`TeamPresetRefusal`].
+    #[error(transparent)]
+    TeamPreset(TeamPresetRefusal),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -290,6 +296,11 @@ impl Classify for AppError {
                 | PromptRefusal::InvalidAnswer(_)
                 | PromptRefusal::RenderedTooLong => ErrorClass::Rejected,
             },
+            AppError::TeamPreset(refusal) => match refusal {
+                TeamPresetRefusal::NotFound => ErrorClass::NotFound,
+                TeamPresetRefusal::Invalid(_) => ErrorClass::Invalid,
+                _ => ErrorClass::Rejected,
+            },
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -322,6 +333,7 @@ impl Classify for AppError {
             | AppError::Blocked { .. }
             | AppError::UserTool(_)
             | AppError::Prompt(_)
+            | AppError::TeamPreset(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
@@ -419,6 +431,9 @@ mod tests {
             AppError::Prompt(PromptRefusal::TooMany { limit: 100 }),
             AppError::Prompt(PromptRefusal::StaleRevision),
             AppError::Prompt(PromptRefusal::RenderedTooLong),
+            AppError::TeamPreset(TeamPresetRefusal::NotFound),
+            AppError::TeamPreset(TeamPresetRefusal::NameTaken),
+            AppError::TeamPreset(TeamPresetRefusal::StaleRevision),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
@@ -469,6 +484,11 @@ mod tests {
                 AppError::Prompt(refusal) => match refusal {
                     PromptRefusal::NotFound => ErrorClass::NotFound,
                     PromptRefusal::Invalid(_) => ErrorClass::Invalid,
+                    _ => ErrorClass::Rejected,
+                },
+                AppError::TeamPreset(refusal) => match refusal {
+                    TeamPresetRefusal::NotFound => ErrorClass::NotFound,
+                    TeamPresetRefusal::Invalid(_) => ErrorClass::Invalid,
                     _ => ErrorClass::Rejected,
                 },
                 AppError::Fork(inner) => inner.class(),
