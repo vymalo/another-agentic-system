@@ -1,0 +1,74 @@
+# The REAL external authorizer (sys#334 S9): Authorino over gRPC, where this directory's earlier version used an
+# HTTP stub. This is the chart's shape (deploy/chart, `injector`): authenticate the caller, ask the broker for the
+# run's lease, and add `Authorization` upstream only.
+#
+# Scope of this proof: authentication is `anonymous` on purpose. The card's question here is the transport plus the
+# lease lookup; the agent-pod identity (TokenReview) and the broker's caller rules belong to the chart, and adding a
+# real service-account token would test Kubernetes RBAC, not the header path. The broker still requires the
+# injector's own token, so the lookup is real.
+#
+# Plaintext gRPC (:50051) because Envoy Gateway v1.10's extAuth.grpc has no TLS field (verified 2026-11-24); the
+# chart says the same, and TLS on this hop is a later item.
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: default
+spec:
+  replicas: 1
+  listener:
+    tls:
+      enabled: false
+  oidcServer:
+    port: 8083
+    tls:
+      enabled: false
+---
+apiVersion: authorino.kuadrant.io/v1beta3
+kind: AuthConfig
+metadata:
+  name: spike
+  namespace: default
+spec:
+  hosts:
+    - "*"
+  authentication:
+    "agent":
+      anonymous: {}
+  metadata:
+    "lease":
+      # The run id is the capability, not a credential: it names the run whose lease to ask for. A request without
+      # it is denied below; do not call the broker with an empty run.
+      when:
+        - selector: request.headers.x-run-id
+          operator: neq
+          value: ""
+      http:
+        url: "http://spike-broker.default.svc.cluster.local/internal/runs/{request.headers.x-run-id}/lease"
+        method: GET
+        headers:
+          Accept:
+            value: application/json
+        # The injector's own token, presented as `Authorization: Bearer <token>` (the default credentials placeholder).
+        sharedSecretRef:
+          name: spike-injector-token
+          key: token
+      cache:
+        key:
+          selector: request.headers.x-run-id
+        ttl: 30
+  authorization:
+    "run-id":
+      patternMatching:
+        patterns:
+          - selector: request.headers.x-run-id
+            operator: neq
+            value: ""
+  response:
+    success:
+      headers:
+        # `plain.value` is emitted by Authorino v0.26.4 as Go's fmt of json.RawExtension (`{[34 66 ...] <nil>}`),
+        # so the scheme and the value come from a selector (verified 2026-11-24). The lease token is bare.
+        "Authorization":
+          plain:
+            selector: "Bearer {auth.metadata.lease.token}"

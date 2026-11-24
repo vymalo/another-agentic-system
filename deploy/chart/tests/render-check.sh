@@ -27,7 +27,8 @@ sec=$(mktemp)
 sec2=$(mktemp)
 fcf=$(mktemp)
 jcfg=$(mktemp)
-trap 'rm -f "$base" "$out" "$cfg" "$sec" "$sec2" "$fcf" "$jcfg"' EXIT
+inj=$(mktemp)
+trap 'rm -f "$base" "$out" "$cfg" "$sec" "$sec2" "$fcf" "$jcfg" "$inj"' EXIT
 fail=0
 
 check() { # check <description> <command...>
@@ -2562,6 +2563,45 @@ check "run routes: the port may not be 8080" fails helm template another-agentic
 check "run routes: enabled without the orchestrator's token is refused (the bind would answer nobody)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set orchestrator.internal.enabled=true
 check "run routes: an agent naming the orchestrator's own token is refused (the door would answer it as the orchestrator)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.coder=internal_orchestrator_token
 check "run routes: a key that is not an agent id is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.not_an_id=internal_coder_token
+# ---- The model-credential injector (ADR 0084, S9): off by default, on by values ------------------------------------------
+injector_values="$chart/tests/injector.values.yaml"
+render
+check "injector off by default: no injector object" lacks 'app\.kubernetes\.io/component: injector'
+check "injector off by default: no Authorino, Agent Router or ext-auth object" lacks '^kind: (AuthConfig|Authorino|AIGatewayRoute|AIServiceBackend|SecurityPolicy|EnvoyProxy|ClientTrafficPolicy|Gateway)$'
+check "values.yaml: injector.enabled is false by default" sh -c "awk '/^injector:/{i=1} i && /^  enabled:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx false"
+render -f "$injector_values"
+check "injector on: Envoy Gateway pins a ClusterIP Service the agents can name" out_all '^kind: EnvoyProxy$' '^        name: another-agentic-injector-envoy$' '^        type: ClusterIP$'
+check "injector on: the route selects the model by header and reaches the upstream Backend" out_all '^              name: x-ai-eg-model$' '^              value: "injector-model"$' '^        hostname: "model.example.invalid"$' '^        port: 8080$'
+check "injector on: the SecurityPolicy is gRPC and scoped to the generated HTTPRoute" out_all '^      kind: HTTPRoute$' '^      name: another-agentic-injector$' '^  extAuth:$' '^        - name: another-agentic-authorino-authorino-authorization$' '^          port: 50051$'
+check "injector on: Authorino authenticates the agent pod with a TokenReview" dhas AuthConfig another-agentic-injector 'kubernetesTokenReview'
+check "injector on: the lease lookup is the broker's run route, keyed by X-Run-Id" dhas AuthConfig another-agentic-injector 'url: "http://another-agentic-orchestrator.another-agentic-system.svc:8081/internal/runs/\{request.headers.x-run-id\}/lease"'
+check "injector on: the lookup presents the injector's own token from a Secret, never a value" dhas AuthConfig another-agentic-injector 'name: another-agentic-injector-broker'
+injector_lease_cached() {
+  doc AuthConfig another-agentic-injector > "$inj"
+  all_in "$inj" '^          selector: request.headers.x-run-id$' '^        ttl: 30$'
+}
+check "injector on: the lease is cached per run, no longer than the lease" injector_lease_cached
+injector_authz_selector() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^        "Authorization":$/ { seen = 1 }
+    /selector: "Bearer \{auth.metadata.lease.token\}"/ { ok = 1 }
+    seen && (/plain.value:/ || /^            value:/) { bad = 1 }
+    END { exit !(seen && ok && !bad) }'
+}
+check "injector on: Authorization is a selector from the lease, never plain.value or a literal" injector_authz_selector
+check "injector on: a request without a run id is denied before any model call" dhas AuthConfig another-agentic-injector 'operator: neq'
+check "injector on: the run routes admit Authorino's pods (its operator label)" out_all '^              authorino-resource: "another-agentic-authorino"$'
+check "injector on: the broker token is an ExternalSecret property, not a value" dhas ExternalSecret another-agentic-injector-broker 'property: injector_broker_token'
+check "injector on: no plain.value and no secret-looking value anywhere" lacks 'sk-[A-Za-z0-9]{8}|ghp_|github_pat_|-----BEGIN|AKIA[0-9A-Z]{16}'
+check "injector on: the objects are the golden's, byte for byte" sh -c "sh \"$chart/tests/golden/injector-objects.sh\" < \"$out\" | cmp -s - \"$chart/tests/golden/injector.yaml\""
+check "injector: no GatewayClass is required" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.gatewayClassName=
+check "injector: no upstream is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.upstream.url=
+check "injector: no model is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.model=
+check "injector: a cache longer than the 30 s lease is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.broker.cacheTtlSecs=60
+check "injector: a token property is required with ExternalSecrets" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.broker.tokenProperty=
+check "injector: a broker URL is required without the internal listener" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set orchestrator.internal.enabled=false
+check "injector: an explicit broker URL needs no internal listener" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty=injector_broker_token
+check "injector: ExternalSecrets off needs no token property (the deployment creates the Secret)" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty= --set externalSecrets.enabled=false
 render
 config_of config.yaml "$cfg"
 

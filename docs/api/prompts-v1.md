@@ -11,6 +11,7 @@
 - **What it covers:** the six routes [`listPrompts`](chat-api.yaml), `createPrompt`, `getPrompt`, `updatePrompt`, `deletePrompt` and `renderPrompt`
   (`/api/prompts`), and the rules a server follows so that **every server and every client agree on what a prompt is, which prompts a person sees, and the
   exact text a filled prompt becomes**: what a reference is, what a variable is, what an answer is, how the text is built, and in which order errors win.
+  The same library is served as **MCP prompts** by the orchestrator's MCP server (`prompts/list`, `prompts/get`, [below](#the-same-library-as-mcp-prompts)).
   `orch_core::prompt` (`orchestrator/crates/core/src/prompt.rs`, Rust) and `web/mock/prompts.ts` (TypeScript) are two
   implementations of this page, and a third reads it the same way.
 - **Conformance vectors:** [`examples/prompts/`](examples/prompts/): `references.json` (a body to its segments, or its error), `prompts.json` (a whole
@@ -310,6 +311,46 @@ fork and no export.
 A **`Prompt`** is `{id, name, title, description, body, variables, own, audience?, revision, updatedAt}`; `revision` is a string; `audience` is there
 only when `own`. **Every answer under `/api/prompts` carries `Cache-Control: no-store`**, the 401, the 403 `no_access`, a 404 or 405 for a path or a verb the routes do not
 have, the 415 and a timeout's 503 included.
+
+## The same library as MCP prompts
+
+The orchestrator's MCP server (`/mcp`, [ADR 0019](../decisions/0019-mcp-server-over-streamable-http.md),
+`orchestrator/crates/surface-mcp`) serves the caller's library as **MCP prompts**: an MCP client that knows the library
+needs no route of its own. The server enables `prompts` in its capabilities, and the library it lists is the caller's
+principal's, exactly what `listPrompts?scope=all` answers that person.
+
+| Method | Server call | Answers |
+|---|---|---|
+| `prompts/list` | `App::list_prompts(principal, all, …)` | every prompt the caller sees, in one page: `name`, `title`, `description`, and its variables as `arguments` |
+| `prompts/get` | `App::get_prompt` then `App::render_prompt` | one message, role `user`, its text the rendered prompt; **nothing is sent and nothing is written** |
+
+- **Name.** A prompt is listed under its own `name`. Two prompts the same person sees can hold one name (names are
+  unique per owner, and a shared prompt is someone else's), and MCP addresses a prompt by name: when a name is not
+  unique in the caller's list, **both** prompts are listed under their `id` (`p-…`) instead. A client does not try to
+  parse a name; it gets one from `prompts/list` and gives it back to `prompts/get`.
+- **Arguments.** Each variable is one argument: its `name` is the variable's `id` (the `{{reference}}` of the body), its
+  `description` is the `question`, and it is `required` unless the variable has `"required": false`. An argument is a
+  **string**, because that is what MCP carries: a `text` or `longText` variable takes it as the `text` of the answer; a
+  kind that takes several (`multiple`, `rank`, and a `select` with `"multiple": true`) reads it as a comma-separated
+  list, trimmed; every other kind takes one value — a choice by its `value` (not its label) and a `scale` or `number` as
+  its digits. The server then renders the prompt with [the answer rules of this page](#the-answer), so a choice is
+  rendered as its label, a text as sent, and so on.
+- **One page.** `prompts/list` answers every prompt the caller sees in a single page and sends no cursor (an MCP client
+  asks for no more); reading a prompt's variables costs one store read per prompt that has any.
+- **Errors**, as protocol errors (an MCP prompt call has no tool-level refusal): `unknown prompt "<name>"` for a name
+  the caller's library does not hold — another person's private prompt, one shared with roles the caller does not have,
+  and one that never existed are the same answer; `unknown argument "<name>"` for an argument that names no variable;
+  and, for an answer the rules refuse, the variable's id and the rule (`the answer for "focus" breaks the rule
+  "not_offered"`), never the value.
+- **What it does not do.** No stage of it creates, edits, deletes or shares a prompt, and no `prompts/get` starts a job:
+  the text goes to the client's message box and the person sends it, as on `/prompts`.
+
+A client is configured like any MCP server of the deployment: the streamable HTTP transport at `https://<host>/mcp`
+with `Authorization: Bearer <token>`, the token of an entry of `MCP_TOKENS_FILE` whose `user` is the person whose library
+is wanted. The tool and prompt set is the server's, so the same connection gives `start_job` and the library.
+*Unverified* (2026-11-24): each client's own configuration syntax — Claude Code's `claude mcp add --transport http …`
+and OpenCode's `"mcp": {"<name>": {"type": "remote", "url": …, "headers": {…}}}` — is from that client's documentation
+and was not run against this server.
 
 ## Limitations (what this is not)
 

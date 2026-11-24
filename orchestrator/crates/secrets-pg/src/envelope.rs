@@ -18,7 +18,7 @@
 use orch_ports::SecretMaterial;
 use zeroize::Zeroizing;
 
-use crate::keys::Keyring;
+use crate::keys::{Key, Keyring};
 
 /// The format of the envelope this build writes and reads.
 pub(crate) const FORMAT: i16 = 1;
@@ -87,6 +87,24 @@ pub(crate) fn aad(format: i16, owner: &str, server: &str, version: u64, kid: &st
     out
 }
 
+/// The domain of a seal of a person's vault, in front of the associated data of a named secret, so
+/// that a row moved between `vault_secrets` and `user_secrets` does not open.
+pub(crate) const VAULT_DOMAIN: &str = "vault";
+
+/// The associated data of a seal of a person's **vault**: the same encoding as [`aad`], with the
+/// domain in front of it and the secret's `name` where that one has the server.
+pub(crate) fn vault_aad(format: i16, owner: &str, name: &str, version: u64, kid: &str) -> Vec<u8> {
+    let mut out =
+        Vec::with_capacity(1 + 8 * 5 + VAULT_DOMAIN.len() + owner.len() + name.len() + kid.len());
+    out.push(u8::try_from(format).unwrap_or(u8::MAX));
+    push_text(&mut out, VAULT_DOMAIN);
+    push_text(&mut out, owner);
+    push_text(&mut out, name);
+    out.extend_from_slice(&version.to_be_bytes());
+    push_text(&mut out, kid);
+    out
+}
+
 impl Keyring {
     /// Seals `plaintext` for `(owner, server)` at `version`, under the current key, with a nonce
     /// of its own.
@@ -97,8 +115,7 @@ impl Keyring {
         version: u64,
         plaintext: &[u8],
     ) -> Result<Envelope, SealError> {
-        let mut nonce = [0u8; NONCE_LEN];
-        getrandom::fill(&mut nonce).map_err(|_| SealError::NoRandomness)?;
+        let nonce = self.nonce()?;
         self.seal_with_nonce(nonce, owner, server, version, plaintext)
     }
 
@@ -111,22 +128,31 @@ impl Keyring {
         version: u64,
         plaintext: &[u8],
     ) -> Result<Envelope, SealError> {
-        use aes_gcm::AeadInOut as _;
         let key = self.sealing_key();
         let aad = aad(FORMAT, owner, server, version, key.id.as_str());
-        // The room for the tag is made first, so that the buffer never moves and leaves a copy of
-        // the plaintext behind; it holds the plaintext until it is the ciphertext, so it is wiped.
-        let mut buffer = Zeroizing::new(Vec::with_capacity(plaintext.len() + TAG_LEN));
-        buffer.extend_from_slice(plaintext);
-        key.cipher
-            .encrypt_in_place(&nonce.into(), &aad, &mut *buffer)
-            .map_err(|_| SealError::Cipher)?;
-        Ok(Envelope {
-            v: FORMAT,
-            kid: key.id.as_str().to_owned(),
-            nonce,
-            ciphertext: std::mem::take(&mut *buffer),
-        })
+        encrypt(key, nonce, &aad, plaintext)
+    }
+
+    /// Seals `plaintext` as the secret of `name` in a person's **vault** at `version`, under the
+    /// current key, with a nonce of its own.
+    pub(crate) fn seal_in_vault(
+        &self,
+        owner: &str,
+        name: &str,
+        version: u64,
+        plaintext: &[u8],
+    ) -> Result<Envelope, SealError> {
+        let nonce = self.nonce()?;
+        let key = self.sealing_key();
+        let aad = vault_aad(FORMAT, owner, name, version, key.id.as_str());
+        encrypt(key, nonce, &aad, plaintext)
+    }
+
+    /// 96 random bits from the operating system, new for every seal.
+    fn nonce(&self) -> Result<[u8; NONCE_LEN], SealError> {
+        let mut nonce = [0u8; NONCE_LEN];
+        getrandom::fill(&mut nonce).map_err(|_| SealError::NoRandomness)?;
+        Ok(nonce)
     }
 
     /// Opens `envelope` as the secret of `(owner, server)` at `version`.
@@ -136,6 +162,29 @@ impl Keyring {
         server: &str,
         version: u64,
         envelope: &Envelope,
+    ) -> Result<SecretMaterial, OpenError> {
+        self.decrypt(envelope, |kid| aad(envelope.v, owner, server, version, kid))
+    }
+
+    /// Opens `envelope` as the secret of `name` in a person's **vault** at `version`.
+    pub(crate) fn open_in_vault(
+        &self,
+        owner: &str,
+        name: &str,
+        version: u64,
+        envelope: &Envelope,
+    ) -> Result<SecretMaterial, OpenError> {
+        self.decrypt(envelope, |kid| {
+            vault_aad(envelope.v, owner, name, version, kid)
+        })
+    }
+
+    /// Opens `envelope` with the key it names, whose associated data `aad_of` builds from the key
+    /// id (which is only known once the envelope has been read).
+    fn decrypt(
+        &self,
+        envelope: &Envelope,
+        aad_of: impl FnOnce(&str) -> Vec<u8>,
     ) -> Result<SecretMaterial, OpenError> {
         use aes_gcm::AeadInOut as _;
         if envelope.v != FORMAT {
@@ -151,7 +200,7 @@ impl Keyring {
                 "the sealed secret is shorter than its tag",
             ));
         }
-        let aad = aad(envelope.v, owner, server, version, &envelope.kid);
+        let aad = aad_of(&envelope.kid);
         // opened in place in a buffer that is wiped, however it ends
         let mut buffer = Zeroizing::new(envelope.ciphertext.clone());
         key.cipher
@@ -165,6 +214,29 @@ impl Keyring {
         SecretMaterial::new(std::mem::take(&mut *buffer))
             .map_err(|_| OpenError::Corrupt("the sealed secret is larger than a secret may be"))
     }
+}
+
+/// Seals `plaintext` under `key` with `nonce`, authenticated by `aad`.
+fn encrypt(
+    key: &Key,
+    nonce: [u8; NONCE_LEN],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Envelope, SealError> {
+    use aes_gcm::AeadInOut as _;
+    // The room for the tag is made first, so that the buffer never moves and leaves a copy of the
+    // plaintext behind; it holds the plaintext until it is the ciphertext, so it is wiped.
+    let mut buffer = Zeroizing::new(Vec::with_capacity(plaintext.len() + TAG_LEN));
+    buffer.extend_from_slice(plaintext);
+    key.cipher
+        .encrypt_in_place(&nonce.into(), aad, &mut *buffer)
+        .map_err(|_| SealError::Cipher)?;
+    Ok(Envelope {
+        v: FORMAT,
+        kid: key.id.as_str().to_owned(),
+        nonce,
+        ciphertext: std::mem::take(&mut *buffer),
+    })
 }
 
 #[cfg(test)]
@@ -238,6 +310,55 @@ mod tests {
             aad(1, "o", "s", 1, "l"),
         ] {
             assert_ne!(base, other);
+        }
+    }
+
+    #[test]
+    fn the_associated_data_of_a_vault_secret_is_pinned_byte_for_byte() {
+        // a `vault` domain in front of the owner, so a row moved between `vault_secrets` and
+        // `user_secrets` does not open: changing this encoding makes every stored named secret
+        // unreadable
+        let expected = "01\
+            00000000000000057661756c74\
+            0000000000000011616c696365406578616d706c652e636f6d\
+            00000000000000066d792d6b6579\
+            0000000000000007\
+            00000000000000026b31";
+        assert_eq!(hex(&vault_aad(FORMAT, OWNER, "my-key", 7, "k1")), expected);
+    }
+
+    #[test]
+    fn a_vault_seal_and_a_tool_servers_seal_never_open_as_each_other() {
+        let ring = one();
+        let named = ring.seal_in_vault(OWNER, SERVER, 7, b"named").unwrap();
+        let server = ring.seal(OWNER, SERVER, 7, b"server").unwrap();
+        assert!(matches!(
+            ring.open(OWNER, SERVER, 7, &named),
+            Err(OpenError::Corrupt(_))
+        ));
+        assert!(matches!(
+            ring.open_in_vault(OWNER, SERVER, 7, &server),
+            Err(OpenError::Corrupt(_))
+        ));
+        assert_eq!(
+            ring.open_in_vault(OWNER, SERVER, 7, &named)
+                .unwrap()
+                .expose(),
+            b"named"
+        );
+        assert_eq!(
+            ring.open(OWNER, SERVER, 7, &server).unwrap().expose(),
+            b"server"
+        );
+        // and a name moved to another name or another version does not open
+        for (name, version) in [(SERVER, 8), ("another-key", 7)] {
+            assert!(
+                matches!(
+                    ring.open_in_vault(OWNER, name, version, &named),
+                    Err(OpenError::Corrupt(_))
+                ),
+                "{name} {version}"
+            );
         }
     }
 

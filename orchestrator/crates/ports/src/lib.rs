@@ -27,6 +27,9 @@
 //!   `orch-credential-broker` implements it;
 //! - [`SecretStore`]: where the opaque, sealed material of a person's credentials is kept, by
 //!   `(owner, server)`, with a compare-and-swap `rotate` (ADR 0046); [`SecretMaterial`] never prints;
+//! - [`VaultStore`]: a person's **named** secrets, a new version for every write and the versions a
+//!   rotation superseded readable for [`SUPERSEDED_GRACE`] (24 hours), which a configuration names
+//!   as `vault:<name>#v<n>` ([`VaultRef`]) and never holds (ADR 0083, amended 2026-11-21);
 //! - [`UserToolServerStore`]: the definitions of a person's own MCP servers, by `(owner, id)`, at most
 //!   eight per person; a definition holds no secret and a URL the guard accepted, and every write of
 //!   an existing one is a compare and swap on a [`ServerRevision`] (ADR 0046);
@@ -68,6 +71,7 @@ mod store;
 mod tools;
 mod usage_ledger;
 mod user_tools;
+mod vault;
 mod wakeup;
 
 #[cfg(feature = "testkit")]
@@ -148,5 +152,9 @@ pub use user_tools::{
     MAX_SCOPES, MAX_USER_TOOL_SERVERS, NoUserToolServers, ServerRevision, StoredServer,
     ToolServerStatus, UnavailableReason, UserAuth, UserToolServer, UserToolServerId,
     UserToolServerState, UserToolServerStore, UserToolServerStoreError,
+};
+pub use vault::{
+    MAX_VAULT_NAME_CHARS, SUPERSEDED_GRACE, VAULT_PREFIX, VaultError, VaultName, VaultRef,
+    VaultRefError, VaultStore,
 };
 pub use wakeup::{Topic, Wakeup, WakeupCapabilities, WakeupError};

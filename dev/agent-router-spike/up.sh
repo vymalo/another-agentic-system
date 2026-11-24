@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # The S9 spike's cluster (sys#334 S9): Envoy Gateway v1.10.0 with Agent Router's values, Agent
-# Router v1.3.0, a mock model that echoes the headers it received, and a stub external authorizer.
-# Safe to run again: every step is an upgrade or an apply.
+# Router v1.3.0, a mock model that echoes the headers it received, a mock of the broker's run-lease
+# route, and the real Authorino over gRPC. Safe to run again: every step is an upgrade or an apply.
 #
 #   sh dev/agent-router-spike/up.sh     # about 5 minutes the first time (the images are ~1.5 GB)
 #   sh dev/agent-router-spike/spike.sh  # the proof
@@ -54,10 +54,19 @@ hc upgrade -i aieg "$AI_GATEWAY_CHART" --version "$AI_GATEWAY_VERSION" \
   --namespace envoy-ai-gateway-system
 kc wait -n envoy-ai-gateway-system deployment/ai-gateway-controller --for=condition=Available --timeout=5m
 
+# The real external authorizer: the Authorino operator (its CRDs and the operator), pinned by the tarball's SHA-256.
+# Its chart's RELATED_IMAGE_AUTHORINO is Authorino v0.26.4, the version this spike verified.
+curl -fsSL -o "$tmp/authorino-operator.tgz" "$AUTHORINO_OPERATOR_URL"
+printf '%s  %s\n' "$AUTHORINO_OPERATOR_SHA256" "$tmp/authorino-operator.tgz" | sha256sum -c -
+hc upgrade -i authorino-operator "$tmp/authorino-operator.tgz" \
+  --namespace authorino-operator --create-namespace
+kc wait -n authorino-operator deployment/authorino-operator --for=condition=Available --timeout=5m
+
 kc apply -f "$dir/manifests/"
 kc wait -n default pods -l app=spike-mock --for=condition=Ready --timeout=3m
-kc wait -n default pods -l app=spike-extauth --for=condition=Ready --timeout=3m
-kc wait -n envoy-gateway-system pods -l gateway.envoyproxy.io/owning-gateway-name=spike --for=condition=Ready --timeout=5m
+kc wait -n default pods -l app=spike-broker --for=condition=Ready --timeout=3m
+kc wait -n default deployment/authorino --for=condition=Available --timeout=5m
+kc wait -n envoy-gateway-system pods -l gateway.envoyproxy.io/owning-gateway-name=spike --for=condition=Ready --timeout=10m
 
 # What the controller made of the AIGatewayRoute: the spike's finding starts here.
 echo "up.sh: HTTPRoutes in the cluster:"

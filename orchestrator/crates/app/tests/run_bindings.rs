@@ -268,7 +268,7 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
     // lookup below is made.
     let _thread = create(&app, &alice(), "coder", "slow job").await;
     let run_id = RunId::new("task-1");
-    let caller = RunCaller::Agent(AgentId::new("coder"));
+    let caller = RunCaller::Injector;
     // The agent's first model call beats the orchestrator's first frame: the injector's lookup is
     // `run_not_bound`, and adam parks the run and retries (ADR 0067 decision 9).
     assert!(matches!(
@@ -322,10 +322,7 @@ async fn the_picked_alias_binds_the_endpoint_the_live_card_maps_it_to() {
     );
     let lease = broker
         .leases
-        .lease(
-            &RunId::new("task-1"),
-            &RunCaller::Agent(AgentId::new("coder")),
-        )
+        .lease(&RunId::new("task-1"), &RunCaller::Injector)
         .await
         .expect("the deployment holds a credential for that endpoint");
     assert_eq!(lease.token().expose(), "key-deep");
@@ -377,10 +374,7 @@ async fn a_card_without_an_endpoint_binds_no_model_and_the_lookup_is_unavailable
         matches!(
             broker
                 .leases
-                .lease(
-                    &RunId::new("task-1"),
-                    &RunCaller::Agent(AgentId::new("coder")),
-                )
+                .lease(&RunId::new("task-1"), &RunCaller::Injector,)
                 .await,
             Err(RunLeaseError::Unavailable(_))
         ),

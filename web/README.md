@@ -1341,14 +1341,14 @@ The page reads `getConfig.prompts` first (its presence is the capability; withou
 |---|---|
 | `hooks/use-prompt-library.ts` | the list, `get`, `create`, `update`, `remove`; rereads on focus, drops an overtaken read, rereads after a write whose outcome is not known; keeps nothing on the device |
 | `hooks/use-prompt-picker.ts` | the `/` menu's list (read when the box becomes one `/name`, and again after it stops being one and becomes one again), `getPrompt`, `renderPrompt`; nothing is read on a thread's mount |
-| `hooks/use-prompt-menu.ts` | the trigger, the keys of the listbox, the pick, the fill dialog's state and the text put in the box |
+| `hooks/use-prompts.ts` | the prompts' half of the one `/` menu (its list is read by `use-slash-menu`): the pick, the fill dialog's state and the text put in the box |
 | `lib/library.ts` | order, own against shared, the words of a card, the bodies of create and edit (only what changed, plus the `revision`; never an `audience`) |
 | `lib/share.ts` | the sharing control of a row, the roles field and back (`audienceOf`, `audienceField`), who can read it in words, and `updatePrompt`'s body for a share (`{revision, audience}`, and nothing else) |
 | `lib/editor.ts` | the form model of the questions, and back; lossless (below) |
 | `lib/failures.ts` | the words of every refusal from the problem's `code`, `at` and `offset`, and the field each is about |
 | `lib/fill.ts` | the `/` trigger, the order of the matches, the Choices form of a prompt's variables, and the words of a refused `renderPrompt` |
 | `lib/read.ts` | `listPrompts` page by page and `getPrompt`, shared by the page and the menu |
-| `components/` | `my-prompts-page`, `prompt-row`, `prompt-form`, `question-editor`, `kept-question`, `delete-prompt-dialog`, `share-prompt-dialog`, `shared-prompt-view`, `prompt-menu`, `prompt-fill-dialog` |
+| `components/` | `my-prompts-page`, `prompt-row`, `prompt-form`, `question-editor`, `kept-question`, `delete-prompt-dialog`, `share-prompt-dialog`, `shared-prompt-view`, `prompt-fill-dialog` |
 
 **Editing is lossless.** The editor draws seven kinds of question (short text, long text, one choice, several choices, yes or no, number, date). A question of another kind (a long list, a scale, a ranking, a kind a later catalog adds) is a read-only card, kept and sent back as the very object that was read. In a question of an editable kind, every member the card does not show (a choice's `default`, an option's `description` or `icon`, a member nobody here knows) stays, because a member is written only when its field differs from what was read. `variables` is sent only when the list differs from what was read. A test runs the 35 `ok` vectors of `prompts.json` through `toForm` then `fromForm` and expects each back byte for byte. A question with `multiple: true` and no `type` (the older spelling) is drawn as **Several choices** and, untouched, sent back as read; when the person picks another kind, `type` is written and `multiple` dropped. A sibling's edit never rewrites an option nobody touched. **Changing a question's kind** keeps the members both kinds show (`question`, `help`, `required`; `default` between short and long text; `options` and `allowOther` between one and several choices), drops the rest, and the card says so ("Changing the kind removes the settings this page does not show.") when it holds members the page does not show.
 
@@ -1483,11 +1483,11 @@ stateDiagram-v2
   `/cafe` finds `/café`; ties are by name and id. The list is read **when the box becomes one `/name`** (the menu's first open), and again after it stops being
   one and becomes one again; a query that changes while the list is open only narrows it, and a thread that never types `/` asks `/api/prompts` nothing.
 - **The list** is a row per prompt: `/name` in monospace, the title, and its description (else "Asks 2 questions"); a shared prompt carries a **Shared** badge and
-  names no author. The menu says which list it is: a quiet label **"Your prompts"** at its top, which is also the listbox's name (the agent's own commands open on
-  the same `/` and say "Agent commands", see "The agent's own commands" below). The focus never leaves the textarea: the listbox is the box's
-  (`aria-activedescendant`), **↓ ↑** move, **Enter** or **Tab** pick, **Escape**
-  closes the list until the query changes, and a click picks too. While the list is still being read, Enter does not send a half-typed command; once it is read
-  and nothing matches, Enter sends the message as usual.
+  names no author. The prompts are the second group of the **one** `/` menu (see "The agent's own commands" below, and "One `/` menu" for the merge): a quiet
+  label **"Your prompts"** at the top of the group is the group's name, and the listbox's own name is "Commands and prompts". The focus never leaves the textarea:
+  the listbox is the box's (`aria-activedescendant`), **↓ ↑** move through both groups, **Enter** or **Tab** pick, **Escape** closes the list until the query
+  changes, and a click picks too. While the list is still being read, Enter does not send a half-typed command; once it is read and nothing matches
+  anywhere, Enter sends the message as usual.
 - **The form** draws a prompt's variables as the catalog's `Choices` (all ten kinds; a prompt cannot use `images` or `show`), starting from the defaults the
   prompt gives. **Use prompt** is held until every required question is answered, with the count in words. A prompt whose kind this client cannot draw is not
   offered, and says so.
@@ -1496,8 +1496,9 @@ stateDiagram-v2
   `invalid_answer` names the question and its rule and moves the focus there; `rendered_too_long` gives the limit in KiB; a 503, a 401, a 403 and a 429 say
   their own words. A failed `getPrompt` puts the `/query` back in the box and opens the list again for it.
 - **Tests.** `lib/fill.test.ts` (the trigger, the order, the form, the words), `hooks/use-prompt-picker.dom.test.tsx` (lazy read, pages, re-reads, render),
-  `components/prompt-fill-dialog.dom.test.tsx` (the kinds, defaults, stale, refusals), `components/prompt-menu.dom.test.tsx` (the keys, the pick, the insertion,
-  no library) and `e2e/prompt-composer.spec.ts` against the mock (the menu, the form, a stale prompt, no library, axe in both schemes on desktop and phone).
+  `components/prompt-fill-dialog.dom.test.tsx` (the kinds, defaults, stale, refusals), `features/slash/components/slash-menu.dom.test.tsx` (the prompts' group:
+  its rows, the keys, the pick, the insertion, no library) and `e2e/prompt-composer.spec.ts` against the mock (the menu, the form, a stale prompt, no library, axe
+  in both schemes on desktop and phone).
 
 **Not proven:** against a real orchestrator, in Firefox or WebKit, and in the desktop app.
 
@@ -1518,10 +1519,10 @@ An integer member (`to`, `min`...) is any JSON number whose value is an integer 
 *Added 2026-11-19 (slice 11 of [ADR 0067](../docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), on
 [ADR 0079](../docs/decisions/0079-an-agents-own-commands-listed-from-its-card.md); the contract is
 [`docs/api/commands-v1.md`](../docs/api/commands-v1.md).)* An agent knows how it wants to be asked for some things — review a
-change, explain a file, run the tests — and lists those prompt templates on its card. A message that is one **`/word`** the
-agent serves opens **its commands** above the box; a pick writes `/name ` into the box and **nothing is sent**. The command
-is the message's text: the orchestrator logs and sends it as it stands, and the agent expands its own template where the
-message arrives.
+change, explain a file, run the tests — and lists those prompt templates on its card. A message that is one **`/word`**
+opens the one `/` menu above the box with **its commands as the first group**; a pick writes `/name ` into the box and
+**nothing is sent**. The command is the message's text: the orchestrator logs and sends it as it stands, and the agent expands
+its own template where the message arrives.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="e2e/__screens__/desktop-dark-commands-menu.png">
@@ -1537,12 +1538,16 @@ message arrives.
   with `/`, a `description` that is not blank, and an `argumentHint` that is a string when it is there; a name listed twice
   keeps its **first** entry, unknown members are ignored, and the list is sorted by name. **Anything malformed is no menu at
   all** — not a shorter one — and an agent that lists no command leaves the box exactly as it was.
-- **Which list opens.** A `/word` that **starts the name of one of the agent's commands** opens the commands (case does not
-  matter, and a bare `/` is every command); otherwise the person's prompt library opens exactly as before, so an agent that
-  serves no command changes nothing. The two lists never open together: a query the commands own is not handed to the prompts,
-  not even after **Escape** closed the commands, and the "@" list of agents stays out of the way too. Each menu **says which
-  one it is** — a quiet label "Agent commands" or "Your prompts" above its rows, which is also the listbox's accessible name —
-  so a switch between them never surprises. One `/` menu mixing the two is a later slice (P3 of ADR 0067).
+- **One menu, two groups** (slice P3 of ADR 0067). A `/word` opens **one** list holding both: the agent's commands as its
+  first group, the person's prompts as its second, in the order of the epic's table. The rows of each group are filtered by the
+  query as they always were (a command's name **starts** with it, case aside; a prompt's name, a word of it, then its title), so
+  a word both halves hold shows both rows, and a word neither holds leaves the menu with the prompts' line ("No prompt
+  matches …"). A group is drawn only when it has a row; the prompts' name and its line are drawn whenever the deployment offers
+  a library, so that it can say it is loading, empty or unreadable. With no row at all there is no listbox — an empty one is
+  invalid — and the box's `aria-controls` names the block that holds the line. An agent that serves no command shows the prompts alone, as
+  before. The "@" list of agents stays out of the way while the slash list is open or claims the word. Each group **says which
+  it is** — a quiet label "Agent commands" or "Your prompts" at the top of the group, and the group's accessible name — and the
+  listbox's own name is "Commands and prompts".
 - **The rows** are a row per command: `/name` (14 px, medium, monospace), its `argumentHint` beside it in the quiet type, and
   its description under it. A name, a hint and a description are the card's words: untrusted text, drawn as text.
 - **The keys** are the combobox's, with the focus staying in the textarea (`aria-activedescendant` names the row): **↓ ↑**
@@ -1556,11 +1561,11 @@ message arrives.
   not what the agent made of it. Nothing of the list is stored in a thread, and a redeployed agent shows its new commands on
   the next read of its capabilities.
 - **Tests.** `lib/commands.test.ts` (the malformed table, the sort, the repeated name, the prefix match), `hooks/use-commands.dom.test.tsx`
-  (offered, absent, malformed, another card between two renders), `components/command-menu.dom.test.tsx` (the rows, the active
-  row, Enter and Tab with and without a hint, Escape, nothing matching) and `components/composer-menus.dom.test.tsx` (the
-  arbitration with the prompt library) in the unit suite; `e2e/commands.spec.ts` against the mock (the menu, the insertion,
-  the message that arrives, an agent without commands, the prompts for a word that starts none, axe in both schemes on desktop
-  and phone). The mock answers the key from a session knob, `POST /__mock/commands` with `{agent, params}` (see `mock/commands.ts`,
+  (offered, absent, malformed, another card between two renders), `features/slash/components/slash-menu.dom.test.tsx` (the
+  commands' group: the rows, the active row, Enter and Tab with and without a hint, Escape, nothing matching) and
+  `components/composer-menus.dom.test.tsx` (the two groups in one list: their order, the box walking both, a pick from either)
+  in the unit suite; `e2e/slash-menu.spec.ts` against the mock (both groups, a pick of each, the message that arrives, an agent
+  without commands, a word neither half matches, axe in both schemes on desktop and phone, both from the mock's own routes). The mock answers the key from a session knob, `POST /__mock/commands` with `{agent, params}` (see `mock/commands.ts`,
   written from the contract and not from `src/features/commands`).
 
 **Not proven:** against a real orchestrator or a real adam agent, in Firefox or WebKit, and in the desktop app.

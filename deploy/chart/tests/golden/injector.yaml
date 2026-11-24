@@ -1,0 +1,277 @@
+---
+# Source: another-agentic-system/templates/injector.yaml
+# Agent Router generates an HTTPRoute named after this object; the SecurityPolicy below targets that generated route.
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: another-agentic-injector
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: another-agentic-injector
+  rules:
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: "injector-model"
+      backendRefs:
+        - name: another-agentic-injector-model
+---
+# Source: another-agentic-system/templates/injector.yaml
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: another-agentic-injector-model
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  schema:
+    name: OpenAI
+  backendRef:
+    name: another-agentic-injector-upstream
+    kind: Backend
+    group: gateway.envoyproxy.io
+---
+# Source: another-agentic-system/templates/injector.yaml
+# The injector's contract, and the only place the model credential is decided:
+#  1. authenticate the agent pod (a TokenReview of its service-account token);
+#  2. ask the broker's run-lease route for the run named by `X-Run-Id`, with the injector's own token;
+#  3. cache that answer per run for at most the lease;
+#  4. add `Authorization` upstream only. Envoy Gateway applies the ok_response headers and replaces a client-sent
+#     `Authorization` (verified 2026-11-24: exactly one header at the upstream).
+#
+# `plain.expression`/`selector`, never `plain.value`: Authorino v0.26.4 emits a static `plain.value` as a Go struct
+# dump rather than a string (verified 2026-11-24). The lease token is bare, so the scheme is prepended here.
+#
+# `hosts: ["*"]` because this Authorino instance is dedicated to this route and Envoy forwards the client's Host;
+# the route is ClusterIP and the SecurityPolicy is scoped to its generated HTTPRoute.
+apiVersion: authorino.kuadrant.io/v1beta3
+kind: AuthConfig
+metadata:
+  name: another-agentic-injector
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  hosts:
+    - "*"
+  authentication:
+    "agent":
+      kubernetesTokenReview:
+        audiences:
+          - another-agentic-injector
+  metadata:
+    "lease":
+      # A request without a run id is denied below; do not call the broker with an empty run.
+      when:
+        - selector: request.headers.x-run-id
+          operator: neq
+          value: ""
+      http:
+        url: "http://another-agentic-orchestrator.another-agentic-system.svc:8081/internal/runs/{request.headers.x-run-id}/lease"
+        method: GET
+        headers:
+          Accept:
+            value: application/json
+        # The injector's own token, presented as `Authorization: Bearer <token>` (the default credentials placeholder).
+        sharedSecretRef:
+          name: another-agentic-injector-broker
+          key: token
+      cache:
+        key:
+          selector: request.headers.x-run-id
+        ttl: 30
+  authorization:
+    "run-id":
+      patternMatching:
+        patterns:
+          - selector: request.headers.x-run-id
+            operator: neq
+            value: ""
+  response:
+    success:
+      headers:
+        "Authorization":
+          plain:
+            selector: "Bearer {auth.metadata.lease.token}"
+---
+# Source: another-agentic-system/templates/injector.yaml
+# The external authorizer. Plaintext gRPC on the internal hop: Envoy Gateway v1.10's `extAuth.grpc` has no TLS
+# field (verified 2026-11-24 on v1.10.0); TLS here is a later item of S9.
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: another-agentic-authorino
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  replicas: 1
+  listener:
+    tls:
+      enabled: false
+  oidcServer:
+    port: 8083
+    tls:
+      enabled: false
+---
+# Source: another-agentic-system/templates/injector.yaml
+# The upstream model endpoint. Its path is unused: the agent sends the OpenAI path, and only the host and port are
+# taken from `injector.upstream.url`.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: another-agentic-injector-upstream
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  endpoints:
+    - fqdn:
+        hostname: "model.example.invalid"
+        port: 8080
+---
+# Source: another-agentic-system/templates/injector.yaml
+# A model answer is larger than Envoy's default 32 KiB buffer.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: another-agentic-injector
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: another-agentic-injector
+  connection:
+    bufferLimit: 50Mi
+---
+# Source: another-agentic-system/templates/injector.yaml
+# The name of the Service Envoy Gateway creates is autogenerated unless it is pinned here, and an agent's
+# model.baseUrl must be able to name it. ClusterIP: the route is internal only.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: another-agentic-injector
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        name: another-agentic-injector-envoy
+        type: ClusterIP
+---
+# Source: another-agentic-system/templates/injector.yaml
+# The injector's token for the broker's run-lease route, from AWS like every secret of this chart: a property name,
+# never a value. With externalSecrets off, the deployment creates this Secret itself.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: another-agentic-injector-broker
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: ssegning-aws
+    kind: ClusterSecretStore
+  target:
+    name: another-agentic-injector-broker
+    creationPolicy: Owner
+  data:
+    - secretKey: token
+      remoteRef:
+        key: prod/another-agentic/env
+        property: injector_broker_token
+---
+# Source: another-agentic-system/templates/injector.yaml
+# The model-credential injector (ADR 0084, epic sys#334 slice S9), all of it optional and off by default: Agent
+# Router (Envoy AI Gateway) in front of the model endpoint, Envoy Gateway's gRPC external authorization, and
+# Authorino. The controllers (Envoy Gateway, Agent Router's CRDs and controller, the Authorino operator) are the
+# deployment's; these objects configure them.
+#
+# The Gateway is ClusterIP (EnvoyProxy's Service below), in Envoy Gateway's own namespace: it has no edge route and
+# no Ingress. Agents reach it at the Service this chart pins, `<envoyServiceName>.<Envoy Gateway namespace>.svc`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: another-agentic-injector
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: another-agentic-injector
+---
+# Source: another-agentic-system/templates/injector.yaml
+# The generated HTTPRoute of the AIGatewayRoute above has the same name. Scoping the policy to it (rather than the
+# whole Gateway) is what the spike verified: `targetRefs: kind=HTTPRoute name=<route>` reports Accepted.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: another-agentic-injector-extauth
+  labels:
+    app.kubernetes.io/name: another-agentic-system
+    app.kubernetes.io/instance: another-agentic-system
+    app.kubernetes.io/component: injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: another-agentic-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: another-agentic-injector
+  extAuth:
+    # gRPC forwards every request header to the authorizer and applies every ok_response header upstream; there is no
+    # headersToBackend list on this path.
+    grpc:
+      backendRefs:
+        - name: another-agentic-authorino-authorino-authorization
+          port: 50051

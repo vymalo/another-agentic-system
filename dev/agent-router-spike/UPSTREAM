@@ -19,3 +19,10 @@ AI_GATEWAY_DIGEST=sha256:a78d01521215b0a3fe9fe2ab3eaa35991e6b571fe00969765a0abce
 
 # The mock model and the external authorizer run the same pinned Python: their code is a ConfigMap.
 PYTHON_IMAGE=python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+
+# Authorino: the operator chart (CRDs and operator). Its appVersion's RELATED_IMAGE_AUTHORINO is
+# quay.io/kuadrant/authorino:v0.26.4 (the version this spike verified). The index's digest for 0.25.4 is the
+# tarball's SHA-256; the URL is the one kuadrant.io/helm-charts/index.yaml gives.
+AUTHORINO_OPERATOR_VERSION=0.25.4
+AUTHORINO_OPERATOR_URL=https://github.com/Kuadrant/helm-charts/raw/refs/heads/main/charts/authorino-operator-${AUTHORINO_OPERATOR_VERSION}.tgz
+AUTHORINO_OPERATOR_SHA256=8ea9a5ee8a29a880f500277c086c1268101094f65e40a19bfee237bf5cec0956

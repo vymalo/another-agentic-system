@@ -1,0 +1,111 @@
+# The broker's run-lease route, mocked (sys#334 S9). It stands where the orchestrator's internal listener
+# stands, so the proof covers Authorino's real lookup: the AuthConfig asks for
+# `/internal/runs/{X-Run-Id}/lease`, presents the injector's own token, and the answer's `token` becomes the
+# upstream `Authorization`. It refuses without the injector's token, like the broker's door.
+#
+# The token in the Secret below is a throwaway fixture, not a deployment pattern: a deployment reads it from
+# its secret store.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spike-injector-token
+  namespace: default
+type: Opaque
+stringData:
+  token: spike-injector-token-NOT-A-DEPLOYMENT
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spike-broker
+  namespace: default
+data:
+  broker.py: |
+    import json, threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    TOKEN = "Bearer spike-injector-token-NOT-A-DEPLOYMENT"
+    LAST = {}
+    LOCK = threading.Lock()
+
+    class Broker(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, body, headers=()):
+            data = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("content-type", "application/json")
+            for name, value in headers:
+                self.send_header(name, value)
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path == "/__last":
+                with LOCK:
+                    return self._send(200, LAST)
+            parts = self.path.strip("/").split("/")
+            # /internal/runs/<run>/lease
+            if len(parts) != 4 or parts[0] != "internal" or parts[1] != "runs" or parts[3] != "lease":
+                return self._send(404, {"code": "not_found", "path": self.path})
+            run = parts[2]
+            presented = self.headers.get("Authorization")
+            with LOCK:
+                LAST.clear()
+                LAST.update({"run": run, "injectorToken": presented == TOKEN})
+            if presented != TOKEN:
+                return self._send(401, {"code": "unauthenticated"})
+            return self._send(200,
+                {"token": "anr250-lease-marker-7f3c-" + run, "expiresAt": "2099-01-01T00:00:00Z"},
+                headers=[("cache-control", "no-store")])
+
+    ThreadingHTTPServer(("0.0.0.0", 8080), Broker).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spike-broker
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spike-broker
+  template:
+    metadata:
+      labels:
+        app: spike-broker
+    spec:
+      containers:
+        - name: broker
+          image: python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+          command: ["python", "/opt/broker/broker.py"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /__last
+              port: 8080
+            periodSeconds: 2
+          volumeMounts:
+            - name: code
+              mountPath: /opt/broker
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: spike-broker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spike-broker
+  namespace: default
+spec:
+  selector:
+    app: spike-broker
+  ports:
+    - port: 80
+      targetPort: 8080

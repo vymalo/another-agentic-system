@@ -64,6 +64,34 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- define "agentic.secret.oauth2redis" -}}{{- include "agentic.component" (dict "root" . "component" "oauth2-redis") -}}{{- end -}}
 {{- define "agentic.secret.browser" -}}{{- include "agentic.component" (dict "root" . "component" "browser") -}}{{- end -}}
 
+{{/* The model-credential injector's names (values.yaml, `injector`): the Gateway, the Service Envoy Gateway pins for
+it, and the Authorino instance and its gRPC authorization Service. */}}
+{{- define "agentic.injector.gatewayName" -}}
+{{- default (printf "%s-injector" (include "agentic.fullname" .)) .Values.injector.gatewayName -}}
+{{- end -}}
+{{- define "agentic.injector.envoyServiceName" -}}
+{{- default (printf "%s-envoy" (include "agentic.injector.gatewayName" .)) .Values.injector.envoyServiceName -}}
+{{- end -}}
+{{- define "agentic.injector.authorinoName" -}}
+{{- default (printf "%s-authorino" (include "agentic.fullname" .)) .Values.injector.authorino.name -}}
+{{- end -}}
+{{/* The Authorino operator names every instance's authorization Service <CR name>-authorino-authorization. */}}
+{{- define "agentic.injector.authorinoService" -}}
+{{- printf "%s-authorino-authorization" (include "agentic.injector.authorinoName" .) -}}
+{{- end -}}
+{{/* The Secret holding the injector's own broker token; its content comes from AWS, never from this chart. */}}
+{{- define "agentic.injector.secret" -}}
+{{- printf "%s-injector-broker" (include "agentic.fullname" .) -}}
+{{- end -}}
+{{/* The broker's run-lease base URL: a value, else the orchestrator's internal listener. */}}
+{{- define "agentic.injector.brokerUrl" -}}
+{{- if .Values.injector.broker.url -}}
+{{- .Values.injector.broker.url -}}
+{{- else -}}
+{{- printf "http://%s.%s.svc:%v" (include "agentic.component" (dict "root" . "component" "orchestrator")) .Release.Namespace (int .Values.orchestrator.internal.port) -}}
+{{- end -}}
+{{- end -}}
+
 {{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
 {{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}
 

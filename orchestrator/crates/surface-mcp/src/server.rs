@@ -1,20 +1,26 @@
-//! The MCP server: `initialize`, `tools/list` and `tools/call` over [`App`].
+//! The MCP server: `initialize`, `tools/list`, `tools/call`, `prompts/list` and `prompts/get` over
+//! [`App`].
 //!
 //! A tool call is one `App` call made as the token's principal (its user and role, ADR 0033), so it
 //! is scoped exactly as the resource API is: a job the caller may not read is "no such job", never
-//! "forbidden"; what their roles do not allow is refused as `not permitted`. No tool keeps state
-//! in the process; a fresh server is built for every request (stateless mode).
+//! "forbidden"; what their roles do not allow is refused as `not permitted`. The prompts are the
+//! caller's prompt library as the same principal sees it, rendered by the server ([ADR 0070]);
+//! nothing is sent and nothing is written. No call keeps state in the process; a fresh server is
+//! built for every request (stateless mode).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use orch_app::{App, AppError, Creation, Inbound, NewThread};
+use orch_app::{App, AppError, Creation, Inbound, NewThread, PromptRefusal, RenderPrompt};
+use orch_core::prompt::PromptId;
 use orch_core::{AgentId, AgentTarget, Classify, ErrorClass, Input, Origin, ThreadId, report};
-use orch_ports::{IdGen, Ports, Principal};
+use orch_ports::{IdGen, Ports, Principal, PromptScope, PromptSummary};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ServerCapabilities,
-    ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams,
+    GetPromptResponse, GetPromptResult, ListPromptsResult, ListToolsResult, PaginatedRequestParams,
+    ProgressNotificationParam, ProgressToken, Prompt, PromptArgument, PromptMessage, Role,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler};
@@ -36,7 +42,9 @@ const INSTRUCTIONS: &str = "Start a job with start_job and look at it with get_j
     with wait_for_job (call it again with after_seq set to its resume_after_seq to keep waiting). \
     A job in state blocked waits for an answer: send it with answer. A finished job is not the \
     end of the thread: answer starts its next job (same job_id, the job number says which). Jobs \
-    are the caller's own; a job_id that is not yours is reported as unknown.";
+    are the caller's own; a job_id that is not yours is reported as unknown. The person's prompt \
+    library is served as prompts: prompts/list, then prompts/get with its arguments for the text \
+    filled in (nothing is sent).";
 
 /// The server for one request.
 pub(crate) struct McpServer<P: Ports> {
@@ -177,6 +185,116 @@ fn failure(err: &AppError) -> Result<CallToolResult, ErrorData> {
             tracing::error!(error = %report(err), class = ?err.class(), "a tool call failed");
             Err(ErrorData::internal_error("internal error", None))
         }
+    }
+}
+
+/// What a prompt failure looks like to a client. `prompts/get` carries no tool-level refusal, so a
+/// prompt the caller may not see, or an answer the render rules refuse, is an invalid-parameter
+/// error; the causes of a failure the caller cannot act on are logged, never sent.
+fn prompt_failure(err: &AppError) -> ErrorData {
+    match err {
+        // Only the variable's id and the rule, never an answer.
+        AppError::Prompt(PromptRefusal::InvalidAnswer(refusal)) => ErrorData::invalid_params(
+            format!(
+                "the answer for {:?} breaks the rule {:?}",
+                refusal.question_text(),
+                refusal.rule
+            ),
+            None,
+        ),
+        _ => match err.class() {
+            ErrorClass::NotFound => unknown_prompt(""),
+            ErrorClass::Invalid => ErrorData::invalid_params(err.to_string(), None),
+            ErrorClass::Conflict | ErrorClass::Transient | ErrorClass::RateLimited => {
+                tracing::warn!(error = %report(err), "an MCP prompt call failed temporarily");
+                ErrorData::internal_error("temporarily unavailable; try again", None)
+            }
+            _ => {
+                tracing::error!(error = %report(err), class = ?err.class(), "an MCP prompt call failed");
+                ErrorData::internal_error("internal error", None)
+            }
+        },
+    }
+}
+
+/// The answer for a prompt the caller's library does not hold: the same for one that never existed,
+/// one that is another person's private one, and one shared with roles they do not have.
+fn unknown_prompt(name: &str) -> ErrorData {
+    let message = if name.is_empty() {
+        "unknown prompt".to_owned()
+    } else {
+        format!("unknown prompt {name:?}")
+    };
+    ErrorData::invalid_params(message, None)
+}
+
+/// The MCP name of each visible prompt, in the order the listing gave them: its own name, or its id
+/// when two visible prompts hold the same one. A library names a prompt only for its owner, so a
+/// shared prompt can collide with one's own; MCP addresses a prompt by name, which must therefore be
+/// unique in the list.
+fn mcp_names(items: &[PromptSummary]) -> Vec<String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for item in items {
+        *counts.entry(item.name.as_str()).or_default() += 1;
+    }
+    items
+        .iter()
+        .map(|item| match counts.get(item.name.as_str()) {
+            Some(1) => item.name.clone(),
+            _ => item.id.to_string(),
+        })
+        .collect()
+}
+
+/// The answers a `prompts/get` makes of its string arguments: one entry per variable, in order, as
+/// the render rules read them (`orch_core::prompt::validate_answers`).
+fn answers_of(variables: &[Value], arguments: &serde_json::Map<String, Value>) -> Value {
+    let entries: Vec<Value> = variables
+        .iter()
+        .map(|question| {
+            let id = question
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let given = arguments.get(id).and_then(Value::as_str);
+            let kind = question
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("single");
+            if kind == "text" || kind == "longText" {
+                let mut entry = json!({ "id": id, "values": [] });
+                if let Some(text) = given {
+                    entry["text"] = Value::String(text.to_owned());
+                }
+                entry
+            } else {
+                let empty = serde_json::Map::new();
+                let object = question.as_object().unwrap_or(&empty);
+                json!({ "id": id, "values": values_of(kind, object, given) })
+            }
+        })
+        .collect();
+    Value::Array(entries)
+}
+
+/// The values of one answer: a kind that takes several reads its argument as a comma-separated list.
+fn values_of(
+    kind: &str,
+    question: &serde_json::Map<String, Value>,
+    given: Option<&str>,
+) -> Vec<String> {
+    let several = kind == "multiple"
+        || kind == "rank"
+        || (kind == "select" && question.get("multiple") == Some(&Value::Bool(true)));
+    match given {
+        None | Some("") => Vec::new(),
+        Some(given) if several => given
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        Some(given) => vec![given.to_owned()],
     }
 }
 
@@ -489,12 +607,162 @@ impl<P: Ports> McpServer<P> {
             "finished": thread.state.is_terminal(),
         }))
     }
+
+    /// Every prompt the person sees: their own and the ones shared with their roles, across the
+    /// store's pages. The viewer is built from the principal by `App`, so nothing here decides who
+    /// sees what.
+    async fn visible_prompts(&self, who: &Principal) -> Result<Vec<PromptSummary>, ErrorData> {
+        let mut items = Vec::new();
+        let mut after: Option<PromptId> = None;
+        loop {
+            let page = match self
+                .app
+                .list_prompts(who, PromptScope::All, after.as_ref())
+                .await
+            {
+                Ok(page) => page,
+                Err(e) => return Err(prompt_failure(&e)),
+            };
+            let more = page.more;
+            let last = page.items.last().map(|item| item.id.clone());
+            items.extend(page.items);
+            // A page that says more follows has at least one row; an empty one ends the walk.
+            match (more, last) {
+                (true, Some(id)) => after = Some(id),
+                _ => break,
+            }
+        }
+        Ok(items)
+    }
+
+    /// A listing row as a client sees it: its title, its description, and its variables as the
+    /// arguments of the prompt. `None` for a prompt that was deleted between the listing and this
+    /// read, which is no prompt to offer.
+    async fn prompt_definition(
+        &self,
+        who: &Principal,
+        summary: &PromptSummary,
+        name: &str,
+    ) -> Result<Option<Prompt>, ErrorData> {
+        let variables = if summary.variable_count == 0 {
+            Vec::new()
+        } else {
+            match self.app.get_prompt(who, &summary.id).await {
+                Ok(stored) => stored.prompt().variables().as_slice().to_vec(),
+                Err(AppError::Prompt(PromptRefusal::NotFound)) => return Ok(None),
+                Err(e) => return Err(prompt_failure(&e)),
+            }
+        };
+        let arguments: Vec<PromptArgument> = variables
+            .iter()
+            .map(|question| {
+                let id = question
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let required = question.get("required") != Some(&Value::Bool(false));
+                let argument = PromptArgument::new(id).with_required(required);
+                match question.get("question").and_then(Value::as_str) {
+                    Some(question) => argument.with_description(question),
+                    None => argument,
+                }
+            })
+            .collect();
+        let description = if summary.description.is_empty() {
+            summary.title.clone()
+        } else {
+            summary.description.clone()
+        };
+        Ok(Some(
+            Prompt::new(name.to_owned(), Some(description), Some(arguments))
+                .with_title(summary.title.clone()),
+        ))
+    }
+
+    async fn list_prompts_as(&self, who: &Principal) -> Result<ListPromptsResult, ErrorData> {
+        let items = self.visible_prompts(who).await?;
+        let mut prompts = Vec::with_capacity(items.len());
+        for (summary, name) in items.iter().zip(mcp_names(&items)) {
+            if let Some(prompt) = self.prompt_definition(who, summary, &name).await? {
+                prompts.push(prompt);
+            }
+        }
+        Ok(ListPromptsResult::with_all_items(prompts))
+    }
+
+    /// One prompt, named as `prompts/list` named it, filled with the caller's arguments.
+    async fn get_prompt_as(
+        &self,
+        who: &Principal,
+        request: GetPromptRequestParams,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        let items = self.visible_prompts(who).await?;
+        let names = mcp_names(&items);
+        let Some((summary, _)) = items
+            .iter()
+            .zip(names)
+            .find(|(_, name)| *name == request.name)
+        else {
+            return Err(unknown_prompt(&request.name));
+        };
+        let stored = match self.app.get_prompt(who, &summary.id).await {
+            Ok(stored) => stored,
+            Err(e) => return Err(prompt_failure(&e)),
+        };
+        let variables = stored.prompt().variables().as_slice().to_vec();
+        let arguments = request.arguments.unwrap_or_default();
+        let known: BTreeSet<&str> = variables
+            .iter()
+            .filter_map(|question| question.get("id").and_then(Value::as_str))
+            .collect();
+        if let Some(unknown) = arguments.keys().find(|key| !known.contains(key.as_str())) {
+            return Err(ErrorData::invalid_params(
+                format!("unknown argument {unknown:?}"),
+                None,
+            ));
+        }
+        let render = RenderPrompt {
+            revision: None,
+            answers: Some(answers_of(&variables, &arguments)),
+            note: false,
+        };
+        let rendered = match self.app.render_prompt(who, &summary.id, render).await {
+            Ok(rendered) => rendered,
+            Err(e) => return Err(prompt_failure(&e)),
+        };
+        // Nothing was sent and nothing was written: the text goes to the client's message box.
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, rendered.text)]).into())
+    }
 }
 
 impl<P: Ports> ServerHandler for McpServer<P> {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(INSTRUCTIONS)
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_instructions(INSTRUCTIONS)
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        let who = caller(&context)?;
+        self.list_prompts_as(&who).await
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        let who = caller(&context)?;
+        self.get_prompt_as(&who, request).await
     }
 
     async fn list_tools(

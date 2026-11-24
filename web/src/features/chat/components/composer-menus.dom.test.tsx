@@ -6,14 +6,15 @@ import { LiveStream, sse } from "@/features/chat/lib/agui/testing";
 import { mountRuntime } from "@/features/chat/lib/agui/testing-runtime";
 import type { ThreadAgent } from "@/features/chat/lib/agui/thread-agent";
 import type { AgentCommand } from "@/features/commands/lib/commands";
-import type { ApiPromptSummary } from "@/lib/api/types";
+import type { ApiPrompt, ApiPromptSummary } from "@/lib/api/types";
 import { Composer } from "./composer";
 
 /*
- * Which `/` menu the message box opens (ADR 0079, docs/api/commands-v1.md section 6): the agent's
- * own commands when the typed query starts the name of one it serves, and the person's prompt
- * library exactly as before otherwise. The two lists never open together. The commands' own keys and
- * rows are `features/commands/components/command-menu.dom.test.tsx`.
+ * The one `/` menu of the message box (ADR 0067 slice P3): the agent's own commands (ADR 0079,
+ * docs/api/commands-v1.md section 6) and the person's prompt library (docs/api/prompts-v1.md) as two
+ * labelled groups of one list, commands first. Which rows each group draws, and the keys, are
+ * `features/slash/components/slash-menu.dom.test.tsx`; here it is the two halves together: the order,
+ * the box walking both, the pick from either, and the words neither claims.
  */
 const client = vi.hoisted(() => ({
   GET: vi.fn(),
@@ -35,20 +36,32 @@ const PROMPTS_CONFIG = {
   maxRenderedBytes: 32768,
 };
 
+/** The person's library holds a prompt called `review` too: the same word the agent serves. */
 const summary = (over: Partial<ApiPromptSummary> = {}): ApiPromptSummary => ({
   id: "p-aaaaaaaaaaaa",
   name: "review",
   title: "Review a change",
   description: "Reviews a change for one concern",
-  variableCount: 0,
+  variableCount: 1,
   own: true,
   revision: "2",
   updatedAt: "2026-11-15T10:00:00Z",
   ...over,
 });
 
-/** The person's library holds a prompt called `review` too: the same word the agent serves. */
 const prompts = [summary(), summary({ id: "p-bbbbbbbbbbbb", name: "notes", title: "Write notes" })];
+
+const review: ApiPrompt = {
+  id: "p-aaaaaaaaaaaa",
+  name: "review",
+  title: "Review a change",
+  description: "Reviews a change for one concern",
+  body: "Review for {{focus}}.",
+  variables: [{ id: "focus", question: "What focus?", type: "text" }],
+  own: true,
+  revision: "2",
+  updatedAt: "2026-11-15T10:00:00Z",
+};
 
 const COMMANDS: readonly AgentCommand[] = [
   { name: "review", description: "Reviews a change.", argumentHint: "<repo>" },
@@ -99,8 +112,9 @@ function Wired({ agent, ...rest }: Props & { agent: ThreadAgent }) {
 const box = () => screen.getByLabelText("Message") as HTMLTextAreaElement;
 const type = (text: string) => fireEvent.change(box(), { target: { value: text } });
 const key = (k: string) => fireEvent.keyDown(box(), { key: k });
-const commands = () => screen.queryByRole("listbox", { name: "Agent commands" });
-const promptsMenu = () => screen.queryByRole("listbox", { name: "Your prompts" });
+const list = () => screen.queryByRole("listbox", { name: "Commands and prompts" });
+const labels = () =>
+  screen.getAllByText(/^(Agent commands|Your prompts)$/).map((node) => node.textContent);
 
 beforeAll(async () => {
   configure({ asyncUtilTimeout: 10_000 });
@@ -120,74 +134,115 @@ beforeEach(() => {
   client.POST.mockReset();
   client.PATCH.mockReset();
   client.DELETE.mockReset();
-  client.GET.mockImplementation(async (path: string) => {
-    if (path === "/api/config") {
-      return { data: { ui: {}, prompts: PROMPTS_CONFIG }, response: { status: 200, ok: true } };
-    }
-    return {
-      data: { limit: 100, held: 1, items: prompts },
-      response: { status: 200, ok: true },
-    };
-  });
+  client.GET.mockImplementation(
+    async (path: string, init?: { params?: { path?: { promptId?: string } } }) => {
+      if (path === "/api/config") {
+        return { data: { ui: {}, prompts: PROMPTS_CONFIG }, response: { status: 200, ok: true } };
+      }
+      if (path === "/api/prompts") {
+        return {
+          data: { limit: 100, held: 1, items: prompts },
+          response: { status: 200, ok: true },
+        };
+      }
+      return init?.params?.path?.promptId === review.id
+        ? { data: review, response: { status: 200, ok: true } }
+        : { error: { title: "Not found", status: 404 }, response: { status: 404, ok: false } };
+    },
+  );
+  client.POST.mockImplementation(async () => ({
+    data: { text: "Review for Security.", revision: "2" },
+    response: { status: 200, ok: true },
+  }));
 });
 afterEach(cleanup);
 
-describe("the two / menus of the message box", () => {
-  it("opens the agent's commands for a query that starts one of their names, and not the prompts", async () => {
+describe("the one / menu of the message box", () => {
+  it("draws the agent's commands and the person's prompts as two labelled groups, commands first", async () => {
+    mount({ commands: COMMANDS });
+    type("/");
+    const menu = await screen.findByRole("listbox", { name: "Commands and prompts" });
+    await waitFor(() => expect(within(menu).getAllByRole("option")).toHaveLength(3));
+    // one list, two names, in the order the epic's table has them
+    expect(labels()).toEqual(["Agent commands", "Your prompts"]);
+    const [command, ...lines] = within(menu).getAllByRole("option");
+    expect(command?.textContent).toContain("/review");
+    expect(command?.textContent).toContain("<repo>");
+    expect(lines.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("/notes"),
+      expect.stringContaining("/review"),
+    ]);
+    // each group is a group of the one listbox, named by its own line
+    expect(within(menu).getByRole("group", { name: "Agent commands" })).toBeTruthy();
+    expect(within(menu).getByRole("group", { name: "Your prompts" })).toBeTruthy();
+  });
+
+  it("walks the two groups as one list, and a pick does what that row always did", async () => {
     mount({ commands: COMMANDS });
     type("/rev");
-    const menu = await screen.findByRole("listbox", { name: "Agent commands" });
-    expect(menu.textContent).toContain("/review");
-    // the menu says which one it is
-    expect(screen.getByText("Agent commands")).toBeTruthy();
-    expect(promptsMenu()).toBeNull();
-    // the person's library was not even read: the commands took the query before it did
-    expect(client.GET.mock.calls.some(([path]) => path === "/api/prompts")).toBe(false);
+    const menu = await screen.findByRole("listbox", { name: "Commands and prompts" });
+    await waitFor(() => expect(within(menu).getAllByRole("option")).toHaveLength(2));
+    const [command, prompt] = within(menu).getAllByRole("option");
+    // the box names the first row: the agent's command
+    expect(command?.getAttribute("aria-selected")).toBe("true");
+    expect(box().getAttribute("aria-activedescendant")).toBe(command?.id);
+    // one ArrowDown crosses the group's edge to the prompt
+    key("ArrowDown");
+    expect(command?.getAttribute("aria-selected")).toBe("false");
+    expect(prompt?.getAttribute("aria-selected")).toBe("true");
+    expect(box().getAttribute("aria-activedescendant")).toBe(prompt?.id);
+    key("ArrowUp");
+    expect(command?.getAttribute("aria-selected")).toBe("true");
+
+    // the command's pick inserts /name and a space, and sends nothing
+    key("Enter");
+    await waitFor(() => expect(box().value).toBe("/review "));
+    expect(list()).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // the prompt's pick opens its form, as before
+    type("/rev");
+    await screen.findByRole("listbox", { name: "Commands and prompts" });
+    key("ArrowDown");
+    key("Enter");
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Review a change" })).toBeTruthy();
   });
 
-  it("opens the agent's commands for a bare /, and the prompts only for an agent that serves none", async () => {
-    const first = mount({ commands: COMMANDS });
-    type("/");
-    const menu = await screen.findByRole("listbox", { name: "Agent commands" });
-    expect(within(menu).getAllByRole("option")).toHaveLength(1);
-    expect(promptsMenu()).toBeNull();
-    first.view.unmount();
-    cleanup();
-
-    // the same slash, for an agent whose card lists no command: the prompts, as before
-    mount();
-    type("/");
-    const list = await screen.findByRole("listbox", { name: "Your prompts" });
-    await waitFor(() => expect(list.textContent).toContain("/review"));
-    expect(screen.getByText("Your prompts")).toBeTruthy();
-    expect(commands()).toBeNull();
-  });
-
-  it("opens the prompts for a query that starts no command, as before", async () => {
-    mount({ commands: COMMANDS });
-    type("/note");
-    const menu = await screen.findByRole("listbox", { name: "Your prompts" });
-    await waitFor(() => expect(menu.textContent).toContain("/notes"));
-    expect(screen.getByText("Your prompts")).toBeTruthy();
-    expect(commands()).toBeNull();
-  });
-
-  it("keeps the query after Escape closed the commands, and does not hand it to the prompts", async () => {
+  it("reads the prompts for a word a command claims too, which is the merge", async () => {
     mount({ commands: COMMANDS });
     type("/rev");
-    await screen.findByRole("listbox", { name: "Agent commands" });
+    const menu = await screen.findByRole("listbox", { name: "Commands and prompts" });
+    await waitFor(() => expect(within(menu).getAllByRole("option")).toHaveLength(2));
+    // both halves were offered for the one word, and the library was read for it
+    expect(client.GET.mock.calls.some(([path]) => path === "/api/prompts")).toBe(true);
+  });
+
+  it("closes the one list on Escape, keeps the query, and hands it to nobody else", async () => {
+    mount({ commands: COMMANDS });
+    type("/rev");
+    await waitFor(() => expect(list()).not.toBeNull());
     key("Escape");
-    expect(commands()).toBeNull();
-    // the prompts list a `/review` prompt would offer never opens for the same word
-    await waitFor(() => expect(promptsMenu()).toBeNull());
+    expect(list()).toBeNull();
+    expect(screen.queryByRole("group", { name: "Your prompts" })).toBeNull();
     expect(box().value).toBe("/rev");
   });
 
-  it("behaves exactly as before for an agent that serves no command", async () => {
+  it("draws the prompts group alone for an agent that serves no command, as before", async () => {
     mount();
-    type("/rev");
-    const menu = await screen.findByRole("listbox", { name: "Your prompts" });
-    await waitFor(() => expect(menu.textContent).toContain("/review"));
-    expect(commands()).toBeNull();
+    type("/");
+    const menu = await screen.findByRole("listbox", { name: "Commands and prompts" });
+    await waitFor(() => expect(within(menu).getAllByRole("option")).toHaveLength(2));
+    expect(labels()).toEqual(["Your prompts"]);
+    expect(screen.queryByRole("group", { name: "Agent commands" })).toBeNull();
+  });
+
+  it("draws that group alone for a query no command starts", async () => {
+    mount({ commands: COMMANDS });
+    type("/note");
+    const menu = await screen.findByRole("listbox", { name: "Commands and prompts" });
+    await waitFor(() => expect(menu.textContent).toContain("/notes"));
+    expect(labels()).toEqual(["Your prompts"]);
+    expect(screen.queryByRole("group", { name: "Agent commands" })).toBeNull();
   });
 });

@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run |
 //! | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent |
-//! | `GET /internal/runs/{run}/lease` | the agent the run is bound to | `200 {token, expiresAt}`, `Cache-Control: no-store` |
+//! | `GET /internal/runs/{run}/lease` | the orchestrator or the injector, never an agent | `200 {token, expiresAt}`, `Cache-Control: no-store` |
 //!
 //! A refusal is one of the ruled slugs: `run_not_bound` (`404`), `lease_expired` (`410`) and
 //! `unavailable` (`503`), plus `unauthenticated` (`401`) and `not_allowed` (`403`) for the door.
@@ -45,12 +45,15 @@ pub trait RunCallerAuth: Send + Sync + 'static {
     fn caller(&self, headers: &HeaderMap) -> Option<RunCaller>;
 }
 
-/// Today's scheme: one bearer token for the orchestrator and one per agent, from the deployment's
-/// configuration. Tokens are compared by SHA-256 digest so a wrong one costs the same as a right
-/// one, and nothing here ever prints them.
+/// Today's scheme: one bearer token for the orchestrator, one for the injector and one per agent,
+/// from the deployment's configuration. Tokens are compared by SHA-256 digest so a wrong one costs
+/// the same as a right one, and nothing here ever prints them.
 #[derive(Debug)]
 pub struct SharedTokens {
     orchestrator: [u8; 32],
+    /// The injector's token, when the deployment runs one: the only caller besides the orchestrator
+    /// that may read a run's lease (ADR 0084 decision 2, amended 2026-11-24).
+    injector: Option<[u8; 32]>,
     agents: BTreeMap<[u8; 32], AgentId>,
 }
 
@@ -62,11 +65,22 @@ impl SharedTokens {
     {
         SharedTokens {
             orchestrator: digest(orchestrator),
+            injector: None,
             agents: agents
                 .into_iter()
                 .map(|(token, agent)| (digest(&token), agent))
                 .collect(),
         }
+    }
+}
+
+impl SharedTokens {
+    /// The same scheme with the injector's token: the caller that may read a run's lease and may do
+    /// nothing else.
+    #[must_use]
+    pub fn with_injector(mut self, injector: &str) -> Self {
+        self.injector = Some(digest(injector));
+        self
     }
 }
 
@@ -84,6 +98,9 @@ impl RunCallerAuth for SharedTokens {
         let presented = digest(presented);
         if presented == self.orchestrator {
             return Some(RunCaller::Orchestrator);
+        }
+        if self.injector == Some(presented) {
+            return Some(RunCaller::Injector);
         }
         self.agents.get(&presented).cloned().map(RunCaller::Agent)
     }
@@ -183,7 +200,9 @@ where
 {
     match state.auth.caller(&headers) {
         Some(RunCaller::Orchestrator) => {}
-        Some(RunCaller::Agent(_)) => return refuse(StatusCode::FORBIDDEN, "not_allowed"),
+        Some(RunCaller::Agent(_) | RunCaller::Injector) => {
+            return refuse(StatusCode::FORBIDDEN, "not_allowed");
+        }
         None => return unauthenticated(),
     }
     let Json(body) = match body {
@@ -220,7 +239,9 @@ where
 {
     match state.auth.caller(&headers) {
         Some(RunCaller::Orchestrator) => {}
-        Some(RunCaller::Agent(_)) => return refuse(StatusCode::FORBIDDEN, "not_allowed"),
+        Some(RunCaller::Agent(_) | RunCaller::Injector) => {
+            return refuse(StatusCode::FORBIDDEN, "not_allowed");
+        }
         None => return unauthenticated(),
     }
     if run.is_empty() || run.chars().count() > MAX_FIELD_CHARS {

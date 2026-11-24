@@ -1,0 +1,21 @@
+# The ext-auth policy, scoped to the HTTPRoute Agent Router GENERATES from the AIGatewayRoute (same name), not to
+# the Gateway (verified 2026-11-24: `targetRefs: kind=HTTPRoute name=spike` reports Accepted).
+#
+# gRPC forwards every request header to the authorizer and applies every header in the CheckResponse's
+# ok_response upstream; there is no `headersToBackend` on this path, and a client-sent `Authorization` is
+# replaced by the one Authorino returns.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: spike-extauth
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: spike
+  extAuth:
+    grpc:
+      backendRefs:
+        - name: authorino-authorino-authorization
+          port: 50051

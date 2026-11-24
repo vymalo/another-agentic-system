@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
       # `mobileAppLinks` is live by default and production intentionally refuses to render without the real Android
@@ -127,6 +127,13 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml \
             --set oauth2Proxy.redis.persistence.enabled=true > /dev/null
+      # The model-credential injector (deploy/chart/tests/injector.values.yaml, ADR 0084 S9): off by default.
+      # The controllers (Envoy Gateway, Agent Router, the Authorino operator) are the deployment's, not the chart's.
+      - name: helm lint and template with the model-credential injector on
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/injector.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/injector.values.yaml > /dev/null
       # The browser agent and its obscura sidecar (deploy/chart/tests/browser.values.yaml, ADR 0057): off by default, so this is the render a
       # deployment gets when it turns it on, after adding the AWS properties browser_a2a_token and obscura_mcp_token.
       - name: helm lint and template with the browser agent on
@@ -481,7 +488,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
       - name: The Caddyfiles validate, and the proxy does what the matrix says

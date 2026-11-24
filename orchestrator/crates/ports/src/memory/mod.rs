@@ -14,6 +14,7 @@ mod secrets;
 mod store;
 mod tools;
 mod user_tools;
+mod vault;
 mod wakeup;
 
 pub use agent::{
@@ -31,4 +32,5 @@ pub use secrets::MemorySecretStore;
 pub use store::MemoryStore;
 pub use tools::{MemoryToolServer, MemoryToolServers, ToolScript};
 pub use user_tools::MemoryUserToolServers;
+pub use vault::MemoryVault;
 pub use wakeup::MemoryWakeup;

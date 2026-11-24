@@ -94,6 +94,10 @@ flowchart LR
     app --> adapters
     disp --> adapters
   end
+  subgraph EMBED["The same core, embedded in an application (ADR 0076 decision 4)"]
+    embed["<b>orch-embed</b><br/>App + Dispatcher over orch-store-sqlite,<br/>the caller's agents and directory,<br/>no HTTP server"]
+    sqlite[("one SQLite file<br/>a thread's log, one process")]
+  end
   subgraph PG["Postgres: the only state"]
     tables[("threads · events (the chat)<br/>a2a_bindings · outbox")]
     notify(["LISTEN / NOTIFY<br/>orch_thread · orch_outbox<br/>hints, never data"])
@@ -110,6 +114,8 @@ flowchart LR
   desktop -- "/api/* and /agui/* with DPoP<br/>CORS: server.cors.allowedOrigins" --> edge
   edge -- "everything else" --> web
   edge -- "/api/*, /agui/*, /mcp (bearer, no identity), /healthz, /readyz" --> api
+  app -. "the same App and Dispatcher, wired twice" .-> embed
+  embed --> sqlite
   adapters -- "sqlx: one txn per commit" --> tables
   tables --> notify
   notify -. "wake every replica" .-> adapters
@@ -123,6 +129,13 @@ flowchart LR
   style surfaces stroke-dasharray: 5 5
 ```
 
+- **The same core runs embedded.** The orchestrator is also a library: `orch-embed`
+  (`orchestrator/crates/embed`) wires the same `orch-app` `App` and `Dispatcher` to one SQLite file and
+  the caller's own agents, with no HTTP server and no Postgres, so an application runs a thread in its
+  own process ([ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md), decision
+  4). The two compounds are roots, not layers: `bin/orchestrator` is the server's and does not depend on
+  the crate, and the crate reimplements nothing the application already owns. A thread has one home —
+  one process opens the file, and a second is refused by the store's lock.
 - **The web never talks to the orchestrator server to server.** It is a static export served by Caddy (ADR 0047), whose
   runtime settings are `/config.json`; the browser calls `/api/*` and `/agui/*` on its own origin, and the edge routes those paths
   to the orchestrator and everything else to the web. The desktop app is the same export in a Tauri window: it calls the API's
