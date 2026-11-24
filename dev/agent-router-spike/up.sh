@@ -66,7 +66,7 @@ kc apply -f "$dir/manifests/"
 kc wait -n default pods -l app=spike-mock --for=condition=Ready --timeout=3m
 kc wait -n default pods -l app=spike-broker --for=condition=Ready --timeout=3m
 kc wait -n default deployment/authorino --for=condition=Available --timeout=5m
-kc wait -n envoy-gateway-system pods -l gateway.envoyproxy.io/owning-gateway-name=spike --for=condition=Ready --timeout=5m
+kc wait -n envoy-gateway-system pods -l gateway.envoyproxy.io/owning-gateway-name=spike --for=condition=Ready --timeout=10m
 
 # What the controller made of the AIGatewayRoute: the spike's finding starts here.
 echo "up.sh: HTTPRoutes in the cluster:"

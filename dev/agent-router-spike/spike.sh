@@ -31,8 +31,8 @@ count() {
 }
 
 content() { jq -r '.choices[0].message.content' "$dir/.body"; }
-auth_values() { content | jq -r '[.received[] | select(.[0]|ascii_downcase=="authorization") | .[1]] | join(" | ")'; }
-auth_count() { content | jq '[.received[] | select(.[0]|ascii_downcase=="authorization")] | length'; }
+auth_values() { content | jq -r '.received.Authorization // [] | join(" | ")'; }
+auth_count() { content | jq -r '.received.Authorization // [] | length'; }
 
 # Wait for the port-forward: any answer but none at all means the tunnel is up.
 for _ in $(seq 1 30); do
