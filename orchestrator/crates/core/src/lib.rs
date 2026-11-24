@@ -34,6 +34,7 @@ pub mod search;
 mod share;
 mod step;
 mod task;
+mod team;
 mod thread;
 mod thread_tools;
 mod title;
@@ -142,6 +143,11 @@ pub use step::{
 pub use task::{
     DESCRIPTION_MESSAGES, LanguageRule, MAX_GUIDANCE_BYTES, TaskKind, TaskLanguageError,
     TaskPrompt, check_task_language, conversation_language, task_prompt,
+};
+pub use team::{
+    DEFAULT_MAX_HANDOFFS, FanIn, Floor, MAX_HANDOFFS_CEILING, MAX_MEMBERS, MAX_NAME_CHARS,
+    MAX_ROLE_CHARS, MIN_MAX_HANDOFFS, MIN_MEMBERS, Member, MemberName, Pending, TeamCommand,
+    TeamEvent, TeamLedger, TeamRefusal, TeamState, TurnOutcome,
 };
 pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{
