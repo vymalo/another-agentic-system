@@ -130,6 +130,12 @@ async fn prompts_list_is_the_callers_own_and_the_ones_shared_with_their_roles() 
 
     // Alice: her own prompt, and none of bob's, not even the one he shared with `chat`.
     let alice = h.client(ALICE_TOKEN).await;
+    // The server says it has prompts at `initialize`, or a client would not ask.
+    let info = alice.peer_info().expect("the handshake");
+    assert!(
+        info.capabilities.prompts.is_some(),
+        "prompts are not announced"
+    );
     let listed = alice.list_prompts(None).await.unwrap().prompts;
     assert_eq!(names(&listed), ["alices-notes"], "{listed:?}");
     let mine = prompt(&listed, "alices-notes");
