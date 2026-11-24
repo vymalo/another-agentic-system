@@ -213,7 +213,7 @@ spec:
       headers:
         "Authorization":
           plain:
-            selector: "Bearer {metadata.lease.token}"
+            selector: "Bearer {auth.metadata.lease.token}"
 ---
 # The generated HTTPRoute of the AIGatewayRoute above has the same name. Scoping the policy to it (rather than the
 # whole Gateway) is what the spike verified: `targetRefs: kind=HTTPRoute name=<route>` reports Accepted.

@@ -2584,7 +2584,7 @@ check "injector on: the lease is cached per run, no longer than the lease" injec
 injector_authz_selector() {
   doc AuthConfig another-agentic-injector | awk '
     /^        "Authorization":$/ { seen = 1 }
-    /selector: "Bearer \{metadata.lease.token\}"/ { ok = 1 }
+    /selector: "Bearer \{auth.metadata.lease.token\}"/ { ok = 1 }
     seen && (/plain.value:/ || /^            value:/) { bad = 1 }
     END { exit !(seen && ok && !bad) }'
 }

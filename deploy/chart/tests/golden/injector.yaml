@@ -108,7 +108,7 @@ spec:
       headers:
         "Authorization":
           plain:
-            selector: "Bearer {metadata.lease.token}"
+            selector: "Bearer {auth.metadata.lease.token}"
 ---
 # Source: another-agentic-system/templates/injector.yaml
 # The external authorizer. Plaintext gRPC on the internal hop: Envoy Gateway v1.10's `extAuth.grpc` has no TLS

@@ -71,4 +71,4 @@ spec:
         # so the scheme and the value come from a selector (verified 2026-11-24). The lease token is bare.
         "Authorization":
           plain:
-            selector: "Bearer {metadata.lease.token}"
+            selector: "Bearer {auth.metadata.lease.token}"
