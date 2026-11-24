@@ -145,9 +145,11 @@ pub use task::{
     TaskPrompt, check_task_language, conversation_language, task_prompt,
 };
 pub use team::{
-    DEFAULT_MAX_HANDOFFS, FanIn, Floor, MAX_HANDOFFS_CEILING, MAX_MEMBERS, MAX_NAME_CHARS,
-    MAX_ROLE_CHARS, MIN_MAX_HANDOFFS, MIN_MEMBERS, Member, MemberName, Pending, TeamCommand,
-    TeamEvent, TeamLedger, TeamRefusal, TeamState, TurnOutcome,
+    DEFAULT_MAX_HANDOFFS, FanIn, Floor, HandOff, HandOffRefusal, MAX_HANDOFFS_CEILING, MAX_MEMBERS,
+    MAX_NAME_CHARS, MAX_NOTE_BYTES, MAX_RESULT_BYTES, MAX_ROLE_CHARS, MIN_MAX_HANDOFFS,
+    MIN_MEMBERS, Member, MemberName, MemberResult, Pending, TeamCommand, TeamEvent, TeamLedger,
+    TeamRefusal, TeamState, TurnOutcome, fan_in_results, fan_out_branches, member_branch,
+    trailing_handoff, turn_handoff,
 };
 pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{
