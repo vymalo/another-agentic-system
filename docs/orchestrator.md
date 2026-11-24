@@ -69,7 +69,7 @@ event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has twenty-eight
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has thirty-two
 library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
@@ -119,8 +119,12 @@ flowchart TB
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
-  subgraph G_BIN["Binary: the composition root"]
+  subgraph G_BIN["Composition roots: one binary, one library"]
     bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-thread-tools, tool-relay, surface-webhook, registry-platform, artifacts-fs, artifacts-s3, secrets-pg, auth-header, auth-jwt (default), agent-local (off)"]
+    embed["<b>orch-embed</b><br/>Embedded: App + Dispatcher over orch-store-sqlite,<br/>the caller's AgentClient and static directory,<br/>no HTTP server (ADR 0076 decision 4)"]
+  end
+  subgraph G_EMBED["The embedded root's store: ADR 0076"]
+    storesql["<b>orch-store-sqlite</b><br/>one SQLite file, WAL, one connection,<br/>one process, no Postgres"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -140,6 +144,10 @@ flowchart TB
   secretspg --> ports
   artfs --> ports
   arts3 --> ports
+  embed --> app
+  embed --> storesql
+  embed --> proj
+  storesql --> ports
   authjwt --> ports
   authheader --> ports
   adam --> a2amap
@@ -196,8 +204,44 @@ flowchart TB
 How to read it: an arrow points from a crate to a crate it depends on; a dotted arrow is a
 dependency behind a Cargo feature, a dev-dependency (tests only), or a planned one. To keep it
 readable the graph omits the `orch-core` edge of every crate but `orch-agui-proto` (which has no
-`orch-*` dependency at all) and the `orch-ports` edge of the binary, the surface crate and the test
-crates.
+`orch-*` dependency at all) and the `orch-ports` edge of the binary, the library root, the surface
+crate and the test crates.
+
+## Two composition roots
+
+**Built.** The same core, ports, application and dispatcher are wired twice, and the two roots do not
+depend on each other ([ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md),
+decision 4).
+
+| Root | What it is | What it chooses |
+|---|---|---|
+| `orchestrator` (`orchestrator/bin/orchestrator`) | **the server**: flags, `ORCH_CONFIG_FILE` and the environment over it, `AGENTS_FILE`, the surfaces, `/healthz` and `/readyz`, shutdown | `PgStore` and `PgWakeup` on Postgres, `A2aAgentClient` (and, behind `agent-local`, `ByTransport`), `PlatformRegistry` when `AGENT_REGISTRY_URL` is set, the authenticator the configuration names, the artifact stores, the credential broker and the user tool servers |
+| `orch-embed` (`orchestrator/crates/embed`) | **the library**: `Embedded`, for an application that runs the orchestrator in its own process | `SqliteStore` and `SqliteWakeup` on one SQLite file, the caller's `AgentClient`, a static `AgentDirectory`, an authenticator that refuses (`RefuseAll`: the application states the person), no model, no artifact store, no user tool servers, and **no HTTP server** |
+
+An application embeds it by opening a file and asking for a thread:
+
+```rust
+use orch_core::{AgentId, UserId};
+use orch_embed::Embedded;
+
+let embed = Embedded::open("orch.sqlite", UserId::new("me@example.com"), directory, agents).await?;
+let thread = embed.create_thread(&AgentId::new("helper"), "hello").await?;
+for event in embed.collect_agui(thread.id).await? {
+    // the AG-UI 1.0 frames of the run, as `orch-agui-projection` folds them from the log
+}
+embed.shutdown().await;
+```
+
+`Embedded` offers `create_thread`, `post_message`, `read_thread`, `events`, `stream_agui`,
+`collect_agui`, `app` (for an operation the root does not wrap) and `shutdown`; dropping it cancels the
+dispatcher. A thread has one home: a second process that opens the same file is refused by the store's
+lock (ADR 0076 decision 6). The crate's [README](../orchestrator/crates/embed/README.md) has the full
+API and the port-by-port table, and `examples/run_thread.rs` runs one thread end to end on a scripted
+agent — CI's `embed` job runs it and fails when the crate's normal tree holds `axum`, `sqlx`,
+`tokio-postgres` or `hyper`, so "no HTTP server" is checked, not promised.
+
+What neither root does yet: the local agent adapter that runs `adam-engine` on adam's SQLite store (E4)
+and the compile check of the embedded set for iOS, Android, macOS and Linux (E5) are **not built**.
 
 Rules the graph enforces, each checkable in the manifests:
 
