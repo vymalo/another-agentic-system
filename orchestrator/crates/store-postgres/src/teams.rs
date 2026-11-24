@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use crate::codec::{to_db, ts};
 use crate::error::{DbFailure, SqlError, is_unique_violation};
-use crate::sql::{Tx, query, query_as, query_scalar};
+use crate::sql::{FromRow, Row as DbRow, Tx, query, query_as, query_scalar};
 use crate::store::PgStore;
 use orch_core::team::{
     CheckpointRules, HandoffApproval, TeamMemberInput, TeamPreset, TeamPresetId, TeamPresetInput,
@@ -48,23 +48,49 @@ pub const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 pub const TEAM_OWNER_LOCK_CLASS: i32 = 0x7470_7273;
 
 /// A row as a read returns it, in the order of [`COLUMNS`].
-type Row = (
-    String,
-    String,
-    String,
-    String,
-    serde_json::Value,
-    String,
-    i16,
-    String,
-    Option<i16>,
-    Vec<String>,
-    bool,
-    i32,
-    bool,
-    i64,
-    jiff::Timestamp,
-);
+///
+/// A named struct rather than a tuple: this crate's `FromRow` covers tuples of at most **ten**
+/// columns (`sql.rs`'s `tuple_from_row!`), and a preset is fifteen. The three lines are the ones the
+/// macro writes, with the columns named.
+struct PresetRow {
+    id: String,
+    name: String,
+    title: String,
+    lead: String,
+    members: serde_json::Value,
+    charter: String,
+    max_handoffs: i16,
+    handoff_approval: String,
+    handoff_after_seconds: Option<i16>,
+    checkpoint_after: Vec<String>,
+    checkpoint_before_pull_request: bool,
+    push_tokens: i32,
+    summary: bool,
+    revision: i64,
+    updated_at: jiff::Timestamp,
+}
+
+impl FromRow for PresetRow {
+    fn from_row(row: &DbRow) -> Result<Self, SqlError> {
+        Ok(PresetRow {
+            id: row.try_get(0)?,
+            name: row.try_get(1)?,
+            title: row.try_get(2)?,
+            lead: row.try_get(3)?,
+            members: row.try_get(4)?,
+            charter: row.try_get(5)?,
+            max_handoffs: row.try_get(6)?,
+            handoff_approval: row.try_get(7)?,
+            handoff_after_seconds: row.try_get(8)?,
+            checkpoint_after: row.try_get(9)?,
+            checkpoint_before_pull_request: row.try_get(10)?,
+            push_tokens: row.try_get(11)?,
+            summary: row.try_get(12)?,
+            revision: row.try_get(13)?,
+            updated_at: row.try_get(14)?,
+        })
+    }
+}
 
 /// A listing row: no members' roles, no charter.
 type SummaryRow = (String, String, String, String, i32, i64, jiff::Timestamp);
@@ -239,7 +265,7 @@ impl TeamPresetStore for PgStore {
         owner: &UserId,
         id: &TeamPresetId,
     ) -> Result<Option<StoredTeamPreset>, TeamPresetStoreError> {
-        let found: Option<Row> = query_as(format!(
+        let found: Option<PresetRow> = query_as(format!(
             "SELECT {COLUMNS} FROM user_team_presets WHERE id = $1 AND owner = $2"
         ))
         .bind(id.as_str())
@@ -472,8 +498,8 @@ fn revision_of(revision: i64) -> Result<TeamPresetRevision, TeamPresetStoreError
 
 /// A row, read back through the rules of `orch_core::team`: whatever is wrong is `Corrupt`, with a
 /// sentence that holds no owner and no word of the preset (its id is what an operator looks for).
-fn stored(row: Row) -> Result<StoredTeamPreset, TeamPresetStoreError> {
-    let (
+fn stored(row: PresetRow) -> Result<StoredTeamPreset, TeamPresetStoreError> {
+    let PresetRow {
         id,
         name,
         title,
@@ -481,15 +507,15 @@ fn stored(row: Row) -> Result<StoredTeamPreset, TeamPresetStoreError> {
         members,
         charter,
         max_handoffs,
-        mode,
-        after_seconds,
+        handoff_approval: mode,
+        handoff_after_seconds: after_seconds,
         checkpoint_after,
         checkpoint_before_pull_request,
         push_tokens,
         summary,
         revision,
         updated_at,
-    ) = row;
+    } = row;
     let corrupt = |what: &str| {
         TeamPresetStoreError::Corrupt(format!("a stored team preset does not read back: {what}"))
     };

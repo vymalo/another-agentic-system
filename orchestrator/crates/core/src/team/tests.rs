@@ -417,12 +417,13 @@ fn an_id_is_t_and_twelve_base36_characters() {
     for bad in [
         "t-",
         "t-01234567890",
-        "t-012345678901",
+        "t-0123456789012",
         "p-012345678901",
         "t-01234567890A",
     ] {
         assert!(TeamPresetId::parse(bad).is_err(), "{bad}");
     }
+    assert!(TeamPresetId::parse("t-012345678901").is_ok());
     assert_eq!(
         TeamPresetId::from_entropy([9; 16]),
         TeamPresetId::from_entropy([9; 16])

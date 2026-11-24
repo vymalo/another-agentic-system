@@ -25,7 +25,7 @@ root of ADR 0076 decision 4 will.
 | `UsageLedger` (ADR 0065) | **built** (milestone 2a, migration `0002`), green on `usage_ledger_conformance!` with its `forget` hook (no skip) |
 | `ThreadSearch` (ADR 0068) | **built** (milestone 2a, migration `0002`), green on `thread_search_conformance!` with its `forget` and `age` hooks (no skip) |
 | `PromptStore` (ADR 0070) | **built** (milestone 2b, migration `0003`), green on `prompt_store_conformance!` (no skip; the suite needs no hook) |
-| `TeamPresetStore` (ADR 0074) | **built** (migration `0007`), green on `team_preset_store_conformance!` (no skip; the suite needs no hook, and the one writing transaction keeps the limit of fifty) |
+| `TeamPresetStore` (ADR 0074) | **built** (migration `0007`), green on `team_preset_store_conformance!` in `tests/team_presets.rs` (no skip; the suite needs no hook, and the one writing transaction keeps the limit of fifty) |
 | `UserToolServerStore` (ADR 0046) | **built** (migration `0005`), green on `user_tool_server_store_conformance!` (no skip; the suite needs no hook, and the races are kept by the one writing transaction) |
 | `Wakeup` | **built** (`SqliteWakeup`, in-process broadcast channels: one file belongs to one process, so no `LISTEN`/`NOTIFY`), green on `wakeup_conformance!` (no skip) |
 | `PendingAuthorizations` (ADR 0046) | **built** (slice 4c, migration `0006`), green on `pending_authorizations_conformance!` with its `breaker` hook (no skip; the 32 takers of one state are serialised by the one connection) |

@@ -404,20 +404,22 @@ pub async fn a_page_is_positive_and_bounded<S: TeamPresetStore>(store: S) {
     within(async {
         let a = owner();
         let one = save(&store, &a, "one").await.preset().id().clone();
+        save(&store, &a, "two").await;
         let zero = store.list_team_presets(&a, None, 0).await.expect("list");
         assert_eq!(zero.items.len(), 1, "a limit of zero is one");
         assert_eq!(zero.items[0].id, one);
-        assert!(zero.more);
+        assert!(zero.more, "the second preset follows the first");
         let huge = store
             .list_team_presets(&a, None, u32::MAX)
             .await
             .expect("list");
-        assert_eq!(huge.items.len(), 1);
+        assert_eq!(huge.items.len(), 2);
         let bounded = store
             .list_team_presets(&a, None, u32::try_from(TEAM_PRESET_PAGE).unwrap() + 50)
             .await
             .expect("list");
         assert!(bounded.items.len() <= TEAM_PRESET_PAGE);
+        assert_eq!(bounded.items.len(), 2);
     })
     .await;
 }

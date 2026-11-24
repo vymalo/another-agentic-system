@@ -10,6 +10,8 @@
 //! The table's CHECKs refuse what the rules would never write, the owner's advisory lock is held by a
 //! transaction of the test and an insert is seen to wait, and a listing uses the `(owner, id)` index.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+
 mod support;
 
 use std::time::Duration;
@@ -20,7 +22,7 @@ use orch_core::team::{
 };
 use orch_core::{AgentId, AgentTarget, Timestamp, UserId};
 use orch_ports::{TEAM_PRESET_PAGE, TeamPresetStore, TeamPresetStoreError};
-use orch_store_postgres::sql::{SqlError, query, query_as, query_scalar};
+use orch_store_postgres::sql::{query, query_as, query_scalar};
 use orch_store_postgres::{PgStore, TEAM_OWNER_LOCK_CLASS};
 use support::TestDb;
 use uuid::Uuid;
@@ -172,7 +174,7 @@ async fn the_tables_checks_refuse_what_the_rules_refuse() {
     let members = serde_json::to_string(&vec![member("only")]).expect("json");
     let rows: Vec<(&str, String, Option<&'static str>)> = vec![
         (
-            "UPDATE user_team_presets SET members = $2::jsonb WHERE id = $1",
+            "UPDATE user_team_presets SET members = $2::text::jsonb WHERE id = $1",
             members,
             Some("user_team_presets_members_check"),
         ),
@@ -193,7 +195,7 @@ async fn the_tables_checks_refuse_what_the_rules_refuse() {
         ),
     ];
     for (sql, argument, constraint) in rows {
-        let result: Result<u64, SqlError> = if argument.is_empty() {
+        let result = if argument.is_empty() {
             query(sql).bind(&held).execute(store.pool()).await
         } else {
             query(sql)
