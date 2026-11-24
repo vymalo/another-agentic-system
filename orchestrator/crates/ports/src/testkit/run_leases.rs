@@ -68,6 +68,16 @@ pub async fn binds_then_leases_to_the_injector(broker: &impl RunLeases) {
         .await
         .expect("lease");
     assert_eq!(lease.token(), &token(), "the deployment's key is leased");
+    assert_eq!(
+        lease.account(),
+        &person(),
+        "the lease names the person's account"
+    );
+    let shown = format!("{lease:?}");
+    assert!(
+        !shown.contains(person().as_str()) && !shown.contains("provider-key-for-tests"),
+        "Debug shows neither the account nor the key"
+    );
     assert!(
         lease.expires_at() <= Timestamp::now() + Duration::from_secs(30),
         "a lease lives at most 30 s"

@@ -131,3 +131,11 @@ alias maps to; the orchestrator records it when the run starts."*
    (decision 4): a deployment that lists no endpoint lends nothing.
 5. **The route keeps its override.** `POST /internal/runs`'s optional `model` stays, and wins over the card's
    resolution, for a caller that already knows the endpoint (decision 1's "if given").
+
+### Status note, 2026-11-24: the lease names the account (ANR-659)
+
+The lease answer is `{token, accountId, expiresAt}`. `accountId` is the binding's person: a `UserId`, the owner the usage
+ledger charges (ADR 0065), named by the claim the deployment maps a principal from (`email` or `sub`). The injector gets it
+beside the key so it can say whose call it is. It answers only behind decision 2's caller check, and like the token it is
+never logged, never in a refusal or an error, and never in a message to an agent; `RunLease`'s `Debug` redacts both.
+*Unverified:* the injector that reads it (B2) and the gateway that trusts it (B3) are not built.
