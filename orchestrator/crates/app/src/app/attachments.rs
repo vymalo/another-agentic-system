@@ -75,7 +75,16 @@ pub struct StoredAttachment {
     pub filename: Option<String>,
 }
 
+/// The most a browser may send in one file (ADR 0067, question 9): a ceiling the deployment's
+/// `artifacts.maxFileBytes` may lower and never raise.
+pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+
 impl<P: Ports> App<P> {
+    /// The most bytes one attachment may have in this deployment.
+    pub fn attachment_limit(&self) -> u64 {
+        self.file_limits().max_file_bytes.min(MAX_ATTACHMENT_BYTES)
+    }
+
     /// Keeps a person's file in `thread` and answers its reference (`POST
     /// /api/threads/{threadId}/attachments`, ADR 0067 slice 12).
     ///
@@ -100,7 +109,7 @@ impl<P: Ports> App<P> {
     ) -> Result<StoredAttachment, AppError> {
         let access = self.access(who);
         self.writable_thread(&access, thread).await?;
-        let max = self.file_limits().max_file_bytes;
+        let max = self.attachment_limit();
         if bytes.is_empty() {
             return Err(AttachmentRefusal::Empty.into());
         }

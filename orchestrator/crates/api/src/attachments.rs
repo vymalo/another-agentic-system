@@ -47,7 +47,7 @@ pub(crate) async fn upload_attachment<P: Ports>(
     request: Request,
 ) -> Result<Response, ApiError> {
     let thread = parse_thread_id(&thread)?;
-    let max = state.app.file_limits().max_file_bytes;
+    let max = state.app.attachment_limit();
     let media_type = content_type(&headers)?;
     let filename = file_name(&headers)?;
     // The cheap half of the size rule: a body that says it is over the cap is refused before it is

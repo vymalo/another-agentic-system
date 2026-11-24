@@ -58,7 +58,7 @@ Content-Disposition: attachment; filename="<the file name>"  (optional)
 | Part | Rule |
 |---|---|
 | `{threadId}` | A thread of the caller's. Another person's thread and an id that does not parse are both `404` (ADR 0039: a foreign thread does not exist). |
-| body | The bytes, exactly as the file is. **At most the deployment's `artifacts.maxFileBytes`**, 10 MiB by default (`10 485 760` bytes). A deployment may set it higher or lower; this route never reads a body over it. |
+| body | The bytes, exactly as the file is. **At most 10 MiB (`10 485 760` bytes), a hard ceiling.** A deployment may lower it with `artifacts.maxFileBytes` and never raise it; this route never reads a body over it. |
 | `Content-Type` | Optional. When it is there it must be one media type, `type/subtype`, parameters such as `; charset=utf-8` dropped and the name lower-cased; anything else is `400 bad_media_type`. The type the file is **kept and served as** is read from the bytes first: a declared image must agree with its magic bytes, else the file is kept as `application/octet-stream`; a generic declared type (`application/octet-stream`) gives way to the bytes' type and then to the name's extension. |
 | `Content-Disposition` | Optional. Its `filename` member, quoted or a token, is the name the file is served with; it is cleaned as every file name is (the last path segment, no control or direction characters, trimmed, at most 255 bytes). A header whose quoted name never closes, or whose name cleans to nothing, is `400 bad_filename`. Without the header the file is served as `artifact-<8 hex digits>`. |
 | authentication | The caller's identity, like every route of the API. Without one: `401`. |
@@ -100,7 +100,7 @@ Every refusal is an RFC 9457 problem (`application/problem+json`); a client acts
 | `400` | `bad_request` | A query that is not one. |
 | `403` | `forbidden` | The caller's roles do not hold `thread.write` (ADR 0033). |
 | `404` | — | No such thread, or not the caller's (ADR 0039). |
-| `413` | `too_large` | The body is over the deployment's `artifacts.maxFileBytes`. **The store was not asked to keep anything.** |
+| `413` | `too_large` | The body is over 10 MiB or the deployment's lower `artifacts.maxFileBytes`. **The store was not asked to keep anything.** |
 | `503` | `attachments_unavailable` | This deployment has no artifact store (`artifacts.store` unset). |
 | `503` | — | The store failed (`storage is unavailable`, with `Retry-After`): send the bytes again. |
 

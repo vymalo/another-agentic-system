@@ -344,14 +344,14 @@ async fn a_body_over_the_limit_is_refused_before_anything_is_stored() {
     assert_eq!(h.bucket.objects(), 0, "an object was stored");
 }
 
-/// The same bytes, the same deployment, one byte more of allowance: kept. Without this, the case
-/// above would pass for a route that refuses everything.
+/// The ceiling is the contract's, not the deployment's: a deployment that allows more still
+/// refuses an 11 MiB body, and a body of exactly 10 MiB is kept.
 #[tokio::test]
-async fn the_same_body_is_kept_when_the_deployment_allows_it() {
-    let h = Harness::start(11 * MIB).await;
+async fn a_deployment_may_lower_the_ceiling_and_never_raise_it() {
+    let h = Harness::start(64 * MIB).await;
     let thread = h.thread(ALICE).await;
 
-    let resp = h
+    let over = h
         .upload(
             thread,
             Some("alice"),
@@ -360,9 +360,20 @@ async fn the_same_body_is_kept_when_the_deployment_allows_it() {
             eleven_mib(),
         )
         .await;
+    assert_eq!(over.status, 413, "{}", String::from_utf8_lossy(&over.body));
+    assert_eq!(h.bucket.objects(), 0);
 
-    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
-    assert_eq!(resp.json()["size"], 11 * MIB);
+    let exact = h
+        .upload(
+            thread,
+            Some("alice"),
+            Some("application/octet-stream"),
+            Some("attachment; filename=\"ten.bin\""),
+            eleven_mib()[..(10 * MIB as usize)].to_vec(),
+        )
+        .await;
+    assert_eq!(exact.status, 201, "{}", String::from_utf8_lossy(&exact.body));
+    assert_eq!(exact.json()["size"], 10 * MIB);
     assert_eq!(h.bucket.objects(), 1);
 }
 
