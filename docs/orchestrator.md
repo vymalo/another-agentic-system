@@ -2477,6 +2477,9 @@ queue, whatever it runs itself.
 | `orch_outbox_rows{state="waiting"}` | `pending` in retry backoff |
 | `orch_outbox_rows{state="leased"}` | `inflight` under a live lease: a worker is on it |
 | `orch_outbox_oldest_due_age_seconds` | whole seconds since the oldest due row became due, `0` when none |
+| `dispatcher_slots_in_use` | gauge, **this process only** (aggregate with `sum`; the outbox gauges above are global, aggregate those with `max`): dispatcher slots busy with an outbox row, `0` where no dispatcher runs |
+| `dispatcher_slots_configured` | gauge, this process only (`sum`): the dispatcher's concurrency (default 32), `0` where no dispatcher runs |
+| `sse_subscribers_open` | gauge, this process only (`sum`): server-sent-event streams open now (connect, run and shared-thread streams). No label: none names a person, a thread, a token or a secret |
 
 The queue that matters for scaling is `due + leased`: rows waiting for a worker plus rows workers
 are busy with. Because the values are global, an aggregation across the replicas that report them

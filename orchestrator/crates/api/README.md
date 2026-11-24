@@ -246,6 +246,9 @@ any process can answer.
 | `orch_outbox_rows{state="waiting"}` | rows `pending` in retry backoff |
 | `orch_outbox_rows{state="leased"}` | rows `inflight` under a live lease: a worker is on them |
 | `orch_outbox_oldest_due_age_seconds` | whole seconds since the oldest due row became due, `0` when none |
+| `dispatcher_slots_in_use` | gauge, **this process only** (aggregate with `sum`; the outbox gauges above are global, aggregate those with `max`): dispatcher slots busy with an outbox row, `0` where no dispatcher runs |
+| `dispatcher_slots_configured` | gauge, this process only (`sum`): the dispatcher's concurrency (default 32), `0` where no dispatcher runs |
+| `sse_subscribers_open` | gauge, this process only (`sum`): server-sent-event streams open now (connect, run and shared-thread streams). No label: none names a person, a thread, a token or a secret |
 | `threads_deleted_total` | counter: threads deleted by this process, the edits of a deleted thread included ([ADR 0043](../../../docs/decisions/0043-deleting-a-thread-erases-it.md)) |
 | `late_input_dropped_total{source="dispatcher"\|"inbox"}` | counter: results and rows a worker held for a thread that was deleted meanwhile, dropped and never retried |
 | `usage_reports_dropped_total{reason="invalid"\|"job_limit"\|"sandbox_invalid"}` | counter: token usage reports this process did not log ([ADR 0056](../../../docs/decisions/0056-token-usage-per-model-call.md)): `invalid`, they broke the `usage/v1` contract; `job_limit`, a valid call report past the job's 10 000; `sandbox_invalid`, the `sandbox` member of a task's totals broke the contract and was left out of the totals that were logged (amendment of 2026-10-27). Names no thread and no agent |
