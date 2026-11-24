@@ -129,7 +129,9 @@ where
             }
             assert!(
                 Instant::now() < deadline,
-                "the binary did not say {what} within {BIND_WITHIN:?}; log:\n{}",
+                "the binary did not say {what} within {BIND_WITHIN:?}; {} bytes logged, exited={:?}, log:\n{}",
+                run.log().len(),
+                run.exited(),
                 run.log()
             );
         }
