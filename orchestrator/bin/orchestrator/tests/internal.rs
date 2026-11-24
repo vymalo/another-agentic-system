@@ -19,7 +19,7 @@ mod pgdb;
 
 /// The addresses the binary binds, read from its log (see the module).
 mod support;
-use support::bound;
+use support::{bound, run_routes_bound};
 
 const BIN: &str = env!("CARGO_BIN_EXE_orchestrator");
 /// The orchestrator's own token: the bind and the unbind.
@@ -146,7 +146,6 @@ agents: {{ file: {} }}
 models:
   endpoints:
     default: {{ baseUrl: 'https://model.example.com/v1', apiKey: {{ env: MODEL_KEY }} }}
-log: {{ format: text }}
 ",
             agents.display()
         ),
@@ -168,42 +167,6 @@ fn spawn(scratch: &Scratch, config: &Path, env: &[(&str, &str)]) -> Running {
         .spawn()
         .unwrap();
     Running { child, log }
-}
-
-/// The address `the run routes listen` names in the log, in the text format
-/// (`the run routes listen addr=127.0.0.1:41207 agents=2`).
-fn run_routes_addr(line: &str) -> Option<String> {
-    if !line.contains("the run routes listen") {
-        return None;
-    }
-    line.split_whitespace()
-        .find_map(|word| word.strip_prefix("addr="))
-        .map(str::to_owned)
-}
-
-/// The internal address, once the binary has logged it.
-async fn internal_addr(run: &RefCell<Running>) -> String {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        {
-            let mut run = run.borrow_mut();
-            if let Some(addr) = run.log().lines().find_map(run_routes_addr) {
-                return addr;
-            }
-            if let Some(status) = run.exited() {
-                panic!(
-                    "the binary exited ({status:?}) before the run routes listened; log:\n{}",
-                    run.log()
-                );
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the run routes did not listen within the deadline; log:\n{}",
-                run.log()
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 }
 
 /// A started binary: its main address (where `/healthz` answers once the database is migrated),
@@ -238,7 +201,7 @@ async fn start(db: &pgdb::TestDb, scratch: Scratch) -> Started {
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let addr = bound(&run).await;
     let main = format!("http://{addr}");
-    let internal = internal_addr(&run).await;
+    let internal = run_routes_bound(&run).await;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if let Ok(response) = client.get(format!("{main}/healthz")).send().await
@@ -574,13 +537,22 @@ async fn a_graceful_shutdown_drains_the_listener() {
 }
 
 #[test]
-fn the_internal_address_is_read_from_the_log_line() {
+fn each_listener_is_read_from_its_own_log_line() {
+    // The line the binary writes for the run routes, in the JSON format the test runs it with
+    // (the default: the text format is colorized unless `NO_COLOR` is set, so a text line of a
+    // real process cannot be read by a `word.strip_prefix("addr=")` — this test asks for JSON and
+    // reads `fields.addr`, as every other process test does).
+    let run_routes = r#"{"role":"all","instance":"i-1","level":"INFO","fields":{"message":"the run routes listen","addr":"127.0.0.1:39437","agents":2},"target":"orchestrator::boot"}"#;
+    let main = r#"{"role":"all","instance":"i-1","level":"INFO","fields":{"message":"orchestrator listening","addr":"127.0.0.1:38455","agents":1,"surfaces":"agui"},"target":"orchestrator::boot"}"#;
     assert_eq!(
-        run_routes_addr("the run routes listen addr=127.0.0.1:41207 agents=2").as_deref(),
-        Some("127.0.0.1:41207")
+        support::run_routes_listening_addr(run_routes).as_deref(),
+        Some("127.0.0.1:39437")
     );
+    // and neither helper answers for the other's line
+    assert_eq!(support::run_routes_listening_addr(main), None);
+    assert_eq!(support::listening_addr(run_routes), None);
     assert_eq!(
-        run_routes_addr("orchestrator listening addr=127.0.0.1:8080"),
-        None
+        support::listening_addr(main).as_deref(),
+        Some("127.0.0.1:38455")
     );
 }
