@@ -23,6 +23,7 @@ mod ids;
 mod language;
 mod live;
 mod locale;
+mod memory;
 mod mention;
 mod pick;
 mod pricing;
@@ -114,6 +115,11 @@ pub use language::{
 pub use live::{LiveChunk, LiveEnd, LiveKind, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use locale::{
     LOCALE_EXTENSION, LocaleError, LocaleHint, LocaleListing, LocaleOffer, MAX_LOCALE_LEN,
+};
+pub use memory::{
+    ForgetInput, Grant, InvalidSettings, MAX_NOTE_BYTES, MAX_NOTES, MAX_QUERY_BYTES,
+    MAX_READ_NOTES, Memory, MemoryError, MemorySettings, MemoryTool, Note, ReadInput, ReadResult,
+    Refusal, SaveInput, ThreadSwitch, check_call, listed,
 };
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
 pub use pick::{
