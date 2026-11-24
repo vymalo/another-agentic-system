@@ -39,9 +39,14 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
 1. **Who must sign: the token's client, not the request.** ADR 0047 gives each platform its own public OAuth client.
    The orchestrator's configuration lists the **signing clients**, `auth.signingClients` (proposed), for example the
    desktop, iOS and Android clients. A request whose token was issued to a listed client (its `azp`, or `client_id`
-   when there is no `azp`) **must** carry a valid prompt signature. A request from any other client (the web's) is not
-   asked for one, and none is checked. A relay or a thief can't take the web's path by dropping a header, because the
-   token still names the app it was issued to.
+   when there is no `azp`) **must** carry a valid prompt signature. A relay or a thief can't take the web's path by
+   dropping a header, because the token still names the app it was issued to.
+   - **It fails closed.** A token from the apps' issuer that carries neither `azp` nor `client_id` is treated as a
+     signing client's. The orchestrator logs the list at startup, and in a `production` profile it refuses to start
+     when the list is empty or names the web's client.
+   - **A signature is checked whenever one is present**, from any client. A signed prompt from a client that isn't
+     listed is accepted and logged as a warning, which shows a misconfigured list instead of hiding it.
+   - The web's client is not asked for a signature.
 
 2. **What is signed.** The client signs each user message with a JWS in compact form with a **detached payload**
    (RFC 7515, appendix F), the construction adam-rs ADR 0068 uses for its turns.
@@ -52,51 +57,65 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
      `{typ, aud, thread, agent, msg, content_sha256, props_sha256, nonce, iat}`. The verifier rebuilds it from the
      request and the header:
      - `typ` is `"prompt/v1"`, and must equal the header's `typ`;
-     - `aud` is the deployment's API origin, as `GET /api/config` serves it, so a signature can't be replayed on
-       another deployment;
+     - `aud` is the deployment's canonical API origin, so a signature can't be replayed on another deployment. The
+       server takes it from its configuration (`server.publicOrigin`, proposed), **never** from `Host` or
+       `X-Forwarded-*`. The client takes it from its own runtime `config.json` (ADR 0047), not from the server's
+       answer. Its normal form is lower-case scheme and host, no default port, and no trailing slash;
      - `thread` is the thread id; `agent` is the `agentId` path segment **as sent**, not the agent an alias resolves to
        ([ADR 0049](0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md));
      - `msg` is the AG-UI message id;
+     - `agent` is compared after percent-decoding the path segment, once;
      - `content_sha256` is `base64url(SHA-256(JCS(content)))`, where `content` is the message's `content` member
        exactly as received, a string or an array, every part included (an image too, though the orchestrator may skip
-       it). There is no Unicode normalisation; a string RFC 8785 refuses (a lone surrogate) is `malformed`;
+       it), hashed as a generic JSON value before any typed parsing. There is no Unicode normalisation; a string RFC
+       8785 refuses (a lone surrogate) is `malformed`;
      - `props_sha256` is `base64url(SHA-256(JCS(forwardedProps)))`, or of `{}` when the run has none. It binds every
        option the person chose with the message: the access tier, the model and reasoning pick, the attached tools, the
        mentions, `vymalo.send`, the fork and gate options, the locale, and any future member.
    - The client sends the compact JWS as the message's metadata member `vymalo.promptSignature`.
-   - The orchestrator also checks that the device the `kid` names belongs to the authenticated person.
+   - The orchestrator also checks that the device the `kid` names belongs to the authenticated person, and that the
+     payload's `nonce` and `iat` equal the header's.
 
 3. **What else is a prompt.** Anything the run route turns into the person's words is signed the same way:
    - a `resume` entry whose payload becomes a user message (`status: "resolved"` with text) carries
-     `vymalo.promptSignature` in its metadata, with `msg` replaced by the `interruptId` and `content` by the payload;
-   - the other routes that write a `user_message` (an MCP `start_job`, a person starting a helper session, any steer
-     path) are listed in P1's contract, each marked signed or not signed, with the reason.
+     `vymalo.promptSignature` in its metadata, with `msg` replaced by the `interruptId` and `content` by the whole
+     payload object;
+   - every other route that writes a person's `user_message` (starting a helper session, any steer path) is listed in
+     P1's contract. **From a signing client, each one is signed or refused.** An exception goes to the owner as an
+     open question, not into the table. An MCP static token names no signing client, so it isn't one.
 
    Whether an answer to a form or a confirm (`a2uiAction`) is a prompt is **open question 3**. Until the owner
    answers, a signing client's `a2uiAction` is accepted unsigned, and P1 says so.
 
 4. **Replay.** The orchestrator refuses a header whose `iat` is more than **300 seconds** in the past or **60 seconds**
    in the future of its clock. It records `(kid, nonce)` **in the same transaction** as the `user_message`, under a
-   unique constraint in the shared store, so every replica sees it. A second request with the same nonce **and** the
-   same `thread`, `msg` and `content_sha256` is the honest retry AG-UI already allows, and attaches to the first. Any
-   other reuse of a nonce is refused. Records older than 10 minutes are dropped.
+   unique constraint in the shared store, so every replica sees it. The signature, `props_sha256` included, is
+   verified **before** a request is judged a retry. A second request with the same nonce **and** the same `thread`,
+   `msg` and `content_sha256` is then the honest retry AG-UI already allows: it attaches to the first, applies no
+   option and writes nothing. Any other reuse of a nonce is refused. The nonce records aren't erased with a thread
+   (ADR 0043); they live until they are 10 minutes old, so deleting and re-creating a thread doesn't reopen a replay.
 
 5. **The device's key: registration, rotation and revocation.** A **prompt key** is an Ed25519 public key (a JWK) kept
    beside a device. A device may exist **without** a push channel: ADR 0077's device gains a `promptKey`, and a device
    needs a push address, a prompt key, or both. When a push provider answers `404` or `410`, the orchestrator drops only
    the push address and keeps the prompt key.
    - The `kid` is `<device id>#v<n>`. `POST` and `PATCH` return it.
-   - **The first key** a person registers needs a recent sign-in, a token whose `auth_time` is at most 10 minutes old,
-     and **proof of possession**: the request carries a signature by the new private key over
-     `{typ:"prompt-key/v1", aud, device, jwk_thumbprint, nonce, iat}`.
-   - **Every later key** (a new device, or a rotation) also needs a signature by a **current** prompt key of the same
-     person over the same object. So a stolen token alone can't add or swap a key once the person has one.
-   - **Recovery,** when every key is lost, is a recent sign-in, and removing the lost devices first.
-   - **Rotation:** the new version is current at once, and the previous one verifies for 10 more minutes, unless the
-     rotation says `compromised: true`, in which case it stops at once.
-   - **Revocation:** `DELETE /api/me/devices/{id}`, which needs only the token, so that revoking stays easy, removes the
-     device's keys at once.
-   - A person has at most the 10 devices ADR 0077 allows. Adding one needs the step-up above, so a thief can't fill them.
+   - **Every new key**, the first or not, a new device or a rotation, needs two things:
+     - **a fresh sign-in:** a token whose `auth_time` is at most 10 minutes old. A token without `auth_time` is refused.
+       The app asks the issuer with `max_age=600` for this step, so a live single sign-on session can't hand it an old
+       `auth_time`, and the refusal says "sign in again";
+     - **proof of possession:** a signature by the new private key over
+       `{typ:"prompt-key/v1", aud, device, jwk_thumbprint, compromised, nonce, iat}`.
+   - **The fresh sign-in is the real bar.** A thief who has only a token can't add, swap or rotate a key. A thief with a
+     fresh sign-in can, as the person can; that is the same trust as signing in. A token thief can still delete the
+     person's devices, since revoking needs only the token (below): that denial of service is accepted.
+   - **Recovery,** when every key is lost, is the same: a fresh sign-in and a new key.
+   - **Rotation:** the new version is current at once, and the previous one verifies for 10 more minutes, unless
+     `compromised` is `true` in the signed object, in which case it stops at once.
+   - **Revocation:** `DELETE /api/me/devices/{id}`, which needs only the token so that revoking stays easy, removes the
+     device and its keys at once. `PATCH` can remove the push address alone, so withdrawing push consent doesn't cost
+     the person their key.
+   - A person has at most the 10 devices ADR 0077 allows. Each needs a fresh sign-in, so a token thief can't fill them.
 
 6. **Which key verifies.** The `kid` in the header names the key. A request from a signing client may also send the
    device id as `X-Vymalo-Device`, the name ADR 0077 already uses, to help the client and the logs. It never decides
@@ -115,8 +134,8 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
 
 8. **A person may require signatures everywhere.** `requireSignedPrompts`, a setting of the person's (proposed), **off
    by default**, refuses their unsigned prompts from any client, the web included. So the web can no longer send for
-   them. Turning it **off** needs a signature by a current prompt key, as in decision 5, so a stolen token can't turn
-   it off.
+   them. Turning it **on** needs a current prompt key, and turning it **off** needs a signature by one, so a stolen
+   token can neither turn it off nor use it to lock the person out of the web.
 
 ## What it protects, and what it does not
 
@@ -124,7 +143,7 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
 |---|---|
 | A relay changes a prompt, or its options, sent by a signing app | **yes**: the content and the options are bound, and the token's client still requires a signature |
 | A signed prompt is replayed, or moved to another thread, agent or deployment | **yes**: the nonce, the time, `thread`, `agent` and `aud` |
-| A token stolen from a signing app is used from elsewhere | **yes** for prompts sent with that token (its client must sign); the thief can't register a key (decision 5) |
+| A token stolen from a signing app is used from elsewhere | **yes** for prompts sent with that token (its client must sign); without a fresh sign-in the thief can't register a key (decision 5), but can delete the person's devices |
 | Someone with the person's sign-in uses the web app | **only with `requireSignedPrompts` on**; the web doesn't sign, by the owner's decision |
 | A compromised device with its key | **no**: the device's key signs whatever it is given |
 | A form or confirm answer from a signing app | **not yet**: open question 3 |
@@ -133,9 +152,9 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
 
 | # | What | Decisive test |
 |---|---|---|
-| P1 | The contract page `docs/api/prompt-signature-v1.md`: the header, the payload's rebuild, the routes that write a `user_message` and which are signed, test vectors made by an independent implementation (a string, a multi-part array, a non-ASCII string, an image part, a `forwardedProps` object) | the vectors verify; one changed byte of the content or of an option fails them |
-| P2 | `auth.signingClients`; `promptKey` on the device routes, a device without a push channel, the step-up and proof of possession, rotation and revocation (an append-only migration) | a second key with only a token is refused; a rotated key verifies for 10 minutes, a compromised one never; a push `410` keeps the key |
-| P3 | The check on the run route and on a signed resume: the window, the nonce under its unique constraint in the message's transaction, the honest retry, the `403` | each reason has a test; a signing client's request with no signature is refused and nothing is written; a web client's is not checked; two concurrent retries attach |
+| P1 | The contract page `docs/api/prompt-signature-v1.md`: the header, the payload's rebuild, the routes that write a `user_message` and which are signed, test vectors made by an independent implementation (a string, a multi-part array, a non-ASCII string, an image part, a `forwardedProps` object with numbers in it, a resume payload) | the vectors verify; one changed byte of the content or of an option fails them |
+| P2 | `auth.signingClients` and its fail-closed rules; `server.publicOrigin`; `promptKey` on the device routes, a device without a push channel, the fresh sign-in and proof of possession, rotation and revocation (an append-only migration); dated notes on ADR 0077 (key-only devices, the dispatcher skips them) and ADR 0047 (CORS allows `X-Vymalo-Device`) | a key with an old `auth_time` or none is refused; a rotated key verifies for 10 minutes, a compromised one never; a push `410` keeps the key; an empty list refuses to start in `production` |
+| P3 | The check on the run route and on a signed resume: the window, the nonce under its unique constraint in the message's transaction, the signature before the retry rule, the `403` added to `runAgent` in `chat-api.yaml` | each reason has a test; a signing client's request with no signature is refused and nothing is written; a web client's is not checked; two concurrent retries attach; a deleted and re-created thread doesn't accept a replay |
 | P4 | `requireSignedPrompts`, and turning it off with a signature | with it on, a web request is refused; turning it off with only a token is refused |
 | P5 | A scenario on mocks in `dev/` | a signed message is accepted; a tampered text, a tampered option and a replay are refused |
 
@@ -149,6 +168,9 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
    gate. The owner decides.
 4. Whether a thread that has received a signed message should refuse unsigned ones afterwards, even from the web. A
    product choice for the owner.
+5. *Unverified:* that the deployment's identity provider puts `auth_time` in the access tokens it issues, and honours
+   `max_age`. P2 checks it first. If it doesn't, the fresh-sign-in bar needs another source, for example an ID token
+   the app sends with the key's registration.
 
 ## Consequences
 
