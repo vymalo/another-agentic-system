@@ -64,12 +64,12 @@ where
         if binding.expires_at <= now {
             return Err(RunLeaseError::Expired);
         }
+        // MUTATION, NOT FOR MERGING: the rule before the amendment, so the cases that pin the
+        // amendment go red. Reverted in the next commit.
         match caller {
-            // The orchestrator and the injector read the lease; an agent never does, its own run
-            // included (ADR 0084 decision 2, amended 2026-11-24): the binding names the agent, it
-            // does not authorise it.
-            RunCaller::Orchestrator | RunCaller::Injector => {}
-            RunCaller::Agent(_) => return Err(RunLeaseError::NotBound),
+            RunCaller::Agent(agent) if agent == &binding.agent => {}
+            RunCaller::Orchestrator => {}
+            _ => return Err(RunLeaseError::NotBound),
         }
         let model = binding
             .model
