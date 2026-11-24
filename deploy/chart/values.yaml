@@ -115,9 +115,10 @@ model:
 
 # The model-credential injector (ADR 0084, epic sys#334 slice S9): Agent Router (Envoy AI Gateway) in front of the
 # model endpoint, Envoy Gateway's gRPC external authorization, and Authorino. Authorino authenticates the agent pod,
-# asks the broker's run-lease route for the run's model key, and adds it to the upstream request only, replacing any
-# client-sent `Authorization`. OFF by default: nothing of this section is rendered and a deployment that does not set
-# it renders exactly as before.
+# asks the broker's run-lease route for the run's model key and account, and adds them to the upstream request only
+# (`Authorization` and `x-account-id`), replacing any client-sent `Authorization` and never taking the account from the
+# client. OFF by default: nothing of this section is rendered and a deployment that does not set it renders exactly as
+# before.
 # The controllers are the deployment's, not this chart's: Envoy Gateway, Agent Router's CRDs and controller, and the
 # Authorino operator. The agents' `model.baseUrl` points at the injector's Gateway Service, never at the model.
 injector:

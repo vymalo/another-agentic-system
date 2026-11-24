@@ -1,7 +1,9 @@
 # The broker's run-lease route, mocked (sys#334 S9). It stands where the orchestrator's internal listener
 # stands, so the proof covers Authorino's real lookup: the AuthConfig asks for
-# `/internal/runs/{X-Run-Id}/lease`, presents the injector's own token, and the answer's `token` becomes the
-# upstream `Authorization`. It refuses without the injector's token, like the broker's door.
+# `/internal/runs/{X-Run-Id}/lease`, presents the injector's own token, and the answer's `token` and
+# `accountId` become the upstream `Authorization` and `x-account-id` (ANR-659). It refuses without the
+# injector's token, like the broker's door, and it answers the two refusal slugs the card names:
+# `lease_expired` (410) and `run_not_bound` (404).
 #
 # The token in the Secret below is a throwaway fixture, not a deployment pattern: a deployment reads it from
 # its secret store.
@@ -57,8 +59,18 @@ data:
                 LAST.update({"run": run, "injectorToken": presented == TOKEN})
             if presented != TOKEN:
                 return self._send(401, {"code": "unauthenticated"})
+            # The two refusals the spike's negative control exercises (ANR-659's answered slugs).
+            if run == "expired-run":
+                return self._send(410, {"code": "lease_expired"})
+            if run == "absent-run":
+                return self._send(404, {"code": "run_not_bound"})
+            account = "acct-" + run
+            with LOCK:
+                LAST["accountId"] = account
             return self._send(200,
-                {"token": "anr250-lease-marker-7f3c-" + run, "expiresAt": "2099-01-01T00:00:00Z"},
+                {"token": "anr250-lease-marker-7f3c-" + run,
+                 "accountId": account,
+                 "expiresAt": "2099-01-01T00:00:00Z"},
                 headers=[("cache-control", "no-store")])
 
     ThreadingHTTPServer(("0.0.0.0", 8080), Broker).serve_forever()

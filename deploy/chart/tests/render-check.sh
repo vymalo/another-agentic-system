@@ -2581,14 +2581,24 @@ injector_lease_cached() {
   all_in "$inj" '^          selector: request.headers.x-run-id$' '^        ttl: 30$'
 }
 check "injector on: the lease is cached per run, no longer than the lease" injector_lease_cached
-injector_authz_selector() {
+injector_response_headers() {
   doc AuthConfig another-agentic-injector | awk '
-    /^        "Authorization":$/ { seen = 1 }
-    /selector: "Bearer \{auth.metadata.lease.token\}"/ { ok = 1 }
-    seen && (/plain.value:/ || /^            value:/) { bad = 1 }
-    END { exit !(seen && ok && !bad) }'
+    /^  response:$/ { res = 1 }
+    res && /selector: "Bearer \{auth.metadata.lease.token\}"/ { token = 1 }
+    res && /selector: "\{auth.metadata.lease.accountId\}"/ { account = 1 }
+    res && (/plain.value:/ || /^            value:/) { bad = 1 }
+    END { exit !(token && account && !bad) }'
 }
-check "injector on: Authorization is a selector from the lease, never plain.value or a literal" injector_authz_selector
+check "injector on: Authorization and x-account-id are selectors from the lease, never plain.value or a literal" injector_response_headers
+injector_lease_required() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^  authorization:$/ { a = 1 }
+    /^  response:$/ { a = 0 }
+    a && index($0, "selector: auth.metadata.lease.token") { lease = 1 }
+    a && lease && /operator: neq/ { ok = 1; lease = 0 }
+    END { exit !ok }'
+}
+check "injector on: a lease without a token is denied, so the gateway never sees an empty Bearer" injector_lease_required
 check "injector on: a request without a run id is denied before any model call" dhas AuthConfig another-agentic-injector 'operator: neq'
 check "injector on: the run routes admit Authorino's pods (its operator label)" out_all '^              authorino-resource: "another-agentic-authorino"$'
 check "injector on: the broker token is an ExternalSecret property, not a value" dhas ExternalSecret another-agentic-injector-broker 'property: injector_broker_token'

@@ -1,0 +1,87 @@
+# The model gateway of the spike: WireMock, the same stand-in the rest of the repo uses for a model (compose.yaml,
+# `dev/wiremock/model`), pinned by tag and digest in UPSTREAM. It answers an OpenAI-compatible POST and keeps WireMock's
+# request journal, so `__admin/requests` is the observable: every request that reached the gateway with the headers it
+# arrived with. GET /__admin/health is the readiness probe; /__admin/requests is what spike.sh asserts on.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spike-gateway
+  namespace: default
+data:
+  gateway.json: |
+    {
+      "mappings": [
+        {
+          "name": "spike: any chat completion, the answer is not what is under test",
+          "priority": 1,
+          "request": {
+            "method": "POST",
+            "urlPathPattern": "(/v1)?/chat/completions"
+          },
+          "response": {
+            "status": 200,
+            "headers": { "Content-Type": "application/json" },
+            "jsonBody": {
+              "id": "spike",
+              "object": "chat.completion",
+              "choices": [
+                {
+                  "index": 0,
+                  "message": { "role": "assistant", "content": "spike" },
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+            }
+          }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spike-gateway
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spike-gateway
+  template:
+    metadata:
+      labels:
+        app: spike-gateway
+    spec:
+      containers:
+        - name: gateway
+          # Pinned in UPSTREAM; the same image compose.yaml uses for its model stand-in.
+          image: wiremock/wiremock@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3
+          args: ["--global-response-templating", "--disable-banner"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /__admin/health
+              port: 8080
+            periodSeconds: 2
+          volumeMounts:
+            - name: mappings
+              mountPath: /home/wiremock/mappings
+              readOnly: true
+      volumes:
+        - name: mappings
+          configMap:
+            name: spike-gateway
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spike-gateway
+  namespace: default
+spec:
+  selector:
+    app: spike-gateway
+  ports:
+    - port: 80
+      targetPort: 8080
