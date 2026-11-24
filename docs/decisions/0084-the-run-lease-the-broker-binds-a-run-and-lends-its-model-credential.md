@@ -100,9 +100,31 @@ as the vault for real deployments, the broker's sealed store for small and devel
 3. **The lookup's caller identity** — Authorino's service account plus the agent identity it authenticated
    (**recommended**), or mTLS from the injector.
 4. **Does the binding name the model endpoint**, or does the lookup resolve it from the agent's AgentConfig?
-   (**Recommended:** the binding names it, so a change of the agent's model does not change a live run.)
+   **Answered 2026-11-24** (the owner, ANR-Q53): the binding names it, and the agent's card lists, per choice, the
+   endpoint label the alias maps to. See the status note of the same date below.
 
 ## What this ADR does not fix
 
 The vault's own deployment and unsealing, the balance check and `model_locked`, the egress proxy's interception for
 people's own hosts, and the operator's parity slice — each is its own slice of the epic.
+
+### Status note, 2026-11-24: question 4 answered — the binding names the endpoint, the card lists the choices' endpoints
+
+**The owner, ANR-Q53, 2026-11-24 06:32Z:** *"(a) adam's agent card lists, for each model choice, the endpoint label its
+alias maps to; the orchestrator records it when the run starts."*
+
+1. **The card's field.** On `model-pick/v1` each choice gains `endpoint`:
+   `params {choices: [{id, label, endpoint}], default?}`. `endpoint` is a **label** — the deployment's own name for a
+   model endpoint, the key of `models.endpoints.<name>` in the orchestrator's configuration — and never a provider, a
+   host, a URL or a key. It is optional: a card that lists none is the card of today, and nothing about it changes.
+2. **At bind time, once per run.** When the dispatcher first sees the run's task id (`app/src/dispatcher.rs`,
+   `bind_run`), it resolves the person's picked alias against the **live** card and writes that choice's `endpoint`
+   into `RunBinding.model` (`ports/src/credentials.rs`, the field this question introduced). With no pick, the card's
+   `default` choice is resolved the same way; with a card that lists no `endpoint`, `model` stays `None`.
+3. **One bind, one endpoint.** A later message of the same run that picks a different alias is a **`409 Conflict`**,
+   refused rather than re-pointed: the lease is for one endpoint, and re-pointing a live run would spend a person's
+   balance against a model the binding never named. This is decision 1's "a run is bound once" applied to the pick.
+4. **Fail closed.** A binding whose `model` is unset makes the lookup answer `unavailable`, never an empty credential
+   (decision 4): a deployment that lists no endpoint lends nothing.
+5. **The route keeps its override.** `POST /internal/runs`'s optional `model` stays, and wins over the card's
+   resolution, for a caller that already knows the endpoint (decision 1's "if given").
