@@ -17,16 +17,14 @@ import { Button } from "@/components/ui/button";
 import { SendError } from "@/features/chat/lib/agui/thread-agent";
 import type { JobView, SendMode } from "@/features/chat/lib/agui/vymalo";
 import { modeOfKey, stopRoundHint } from "@/features/chat/lib/send";
-import { CommandMenu } from "@/features/commands/components/command-menu";
-import { useCommandMenu } from "@/features/commands/hooks/use-command-menu";
 import type { AgentCommand } from "@/features/commands/lib/commands";
 import { MentionChips } from "@/features/mentions/components/mention-chips";
 import { MentionListbox } from "@/features/mentions/components/mention-listbox";
 import { useMentions } from "@/features/mentions/hooks/use-mentions";
 import { MentionsStore } from "@/features/mentions/lib/store";
 import { PromptFillDialog } from "@/features/prompts/components/prompt-fill-dialog";
-import { PromptMenu } from "@/features/prompts/components/prompt-menu";
-import { usePromptMenu } from "@/features/prompts/hooks/use-prompt-menu";
+import { SlashMenu } from "@/features/slash/components/slash-menu";
+import { useSlashMenu } from "@/features/slash/hooks/use-slash-menu";
 import type { ApiAgent, ThreadState } from "@/lib/api/types";
 import { isActive, isTerminal } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
@@ -72,8 +70,8 @@ type Props = {
   };
   /**
    * The commands the agent in this thread serves (ADR 0079, `docs/api/commands-v1.md` section 6),
-   * from its live card (`useCommands`). Empty or absent: the box has no commands menu, and "/" opens
-   * the person's prompts exactly as it did.
+   * from its live card (`useCommands`). Empty or absent: the one `/` menu holds the person's prompts
+   * alone, and says nothing about commands.
    */
   commands?: readonly AgentCommand[];
   /**
@@ -176,28 +174,20 @@ export function Composer({
   // While the agent works (and does not wait for an answer) a message goes out with how it is
   // delivered; the runtime's own send would be a 409 on an open run.
   const whileWorking = running && interrupts.length === 0 && sending !== undefined;
-  // A message that is one "/name" the agent itself serves opens the agent's own commands (ADR 0079):
-  // that list is the card's, already read, and a pick only writes text. It takes the query before the
-  // person's prompt library does: the two lists never open together, and a query the commands own is
-  // not offered to the prompts — not even after Escape closed the commands.
-  const commandMenu = useCommandMenu({
+  // One "/" menu over the agent's own commands (ADR 0079: the card's, already read, and a pick only
+  // writes text) and the person's prompts (docs/api/prompts-v1.md: a pick fills one into the box),
+  // as two labelled groups of one list (ADR 0067 slice P3). A pick never sends anything.
+  const slashMenu = useSlashMenu({
     commands: commands ?? NO_COMMANDS,
     enabled: interrupts.length === 0,
-    inputRef: boxRef,
-  });
-  // "/" opens the person's prompts, and a pick fills one into the box (docs/api/prompts-v1.md): the
-  // list is read when the menu opens, and nothing is sent
-  const promptMenu = usePromptMenu({
-    enabled: interrupts.length === 0 && !commandMenu.claims,
     inputRef: boxRef,
   });
   const mention = useMentions({
     agents: mentions?.agents ?? [],
     store,
     inputRef: boxRef,
-    // a message that is one "/name" is a command: the two lists never open together
-    enabled:
-      mentions !== undefined && interrupts.length === 0 && !promptMenu.open && !commandMenu.claims,
+    // a message that is one "/name" is the slash menu's: the two lists never open together
+    enabled: mentions !== undefined && interrupts.length === 0 && !slashMenu.open,
   });
   const sendWhileWorking = (mode: SendMode) => {
     if (!sending?.ready) return;
@@ -222,11 +212,9 @@ export function Composer({
     requestAnimationFrame(() => boxRef.current?.focus());
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // the list of commands has the arrows, Enter, Tab and Escape while it is open, and so do the
-    // lists of prompts and of agents; at most one of them is open
-    commandMenu.onKeyDown(e);
-    if (e.defaultPrevented) return;
-    promptMenu.onKeyDown(e);
+    // the one "/" menu has the arrows, Enter, Tab and Escape while it is open, and so does the list
+    // of agents; at most one of them is open
+    slashMenu.onKeyDown(e);
     if (e.defaultPrevented) return;
     mention.onKeyDown(e);
     if (e.defaultPrevented) return;
@@ -282,8 +270,8 @@ export function Composer({
           ? "Waiting for your answer."
           : held
             ? "Your message goes out as soon as the conversation is shown."
-            : promptMenu.notice?.tone === "muted"
-              ? promptMenu.notice.text
+            : slashMenu.prompts.notice?.tone === "muted"
+              ? slashMenu.prompts.notice.text
               : ""}
       </p>
       {finished && state === "failed" && failure?.code === CHECKS_FAILED ? (
@@ -303,12 +291,12 @@ export function Composer({
           {sendError}
         </InlineStatus>
       ) : null}
-      {promptMenu.notice ? (
+      {slashMenu.prompts.notice ? (
         <InlineStatus
-          tone={promptMenu.notice.tone}
-          role={promptMenu.notice.tone === "error" ? "alert" : undefined}
+          tone={slashMenu.prompts.notice.tone}
+          role={slashMenu.prompts.notice.tone === "error" ? "alert" : undefined}
         >
-          {promptMenu.notice.text}
+          {slashMenu.prompts.notice.text}
         </InlineStatus>
       ) : null}
       <ComposerPrimitive.Root
@@ -316,26 +304,17 @@ export function Composer({
         data-slot="composer"
         className="relative flex flex-col gap-1 rounded-3xl border border-input bg-card p-2 shadow-composer transition-[border-color,box-shadow] focus-within:border-ring/60 focus-within:ring-4 focus-within:ring-ring/15"
       >
-        {commandMenu.open ? (
-          <CommandMenu
-            id={commandMenu.listboxId}
-            optionId={commandMenu.optionId}
-            options={commandMenu.options}
-            active={commandMenu.active}
-            onPick={commandMenu.pick}
-            onHover={commandMenu.hover}
-          />
-        ) : null}
-        {promptMenu.open ? (
-          <PromptMenu
-            id={promptMenu.listboxId}
-            optionId={promptMenu.optionId}
-            state={promptMenu.state}
-            query={promptMenu.query}
-            options={promptMenu.options}
-            active={promptMenu.active}
-            onPick={promptMenu.pick}
-            onHover={promptMenu.hover}
+        {slashMenu.open ? (
+          <SlashMenu
+            id={slashMenu.listboxId}
+            commandOptions={slashMenu.commandOptions}
+            promptOptions={slashMenu.promptOptions}
+            showPrompts={slashMenu.showPrompts}
+            state={slashMenu.prompts.state}
+            query={slashMenu.query}
+            active={slashMenu.active}
+            onPick={slashMenu.pick}
+            onHover={slashMenu.hover}
           />
         ) : null}
         {mention.open ? (
@@ -351,8 +330,7 @@ export function Composer({
         <ComposerPrimitive.Input
           ref={boxRef}
           {...mention.comboboxProps}
-          {...promptMenu.comboboxProps}
-          {...commandMenu.comboboxProps}
+          {...slashMenu.comboboxProps}
           className="max-h-60 min-h-11 w-full min-w-0 resize-none bg-transparent px-3 pt-2 pb-1 text-base leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           aria-label="Message"
           placeholder={placeholder}
@@ -430,13 +408,13 @@ export function Composer({
           )}
         </div>
       </ComposerPrimitive.Root>
-      {promptMenu.filling ? (
+      {slashMenu.prompts.filling ? (
         <PromptFillDialog
-          prompt={promptMenu.filling}
-          fill={promptMenu.fill}
-          loadCurrent={promptMenu.loadCurrent}
-          onFilled={promptMenu.filled}
-          onClose={promptMenu.close}
+          prompt={slashMenu.prompts.filling}
+          fill={slashMenu.prompts.fill}
+          loadCurrent={slashMenu.prompts.loadCurrent}
+          onFilled={slashMenu.prompts.filled}
+          onClose={slashMenu.prompts.close}
         />
       ) : null}
       {isNew ? null : (
