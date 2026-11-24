@@ -358,7 +358,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.issuer` | `http(s)` URL without credentials, query or fragment; required with a mode that reads tokens. `iss` must equal it exactly, as **one text** (a list that holds it is refused). Over plain `http` (development only; `production` refuses it) the process logs one warning at startup: the keys then travel in the clear | — | now; the warning and the one-text `iss` 2026-10-16 |
 | `auth.jwt.audiences` | list of at least one non-empty text; required with `issuer` | — | now |
 | `auth.jwt.jwksUrl` | `http(s)` URL without credentials, none (the keys are found from `<issuer>/.well-known/openid-configuration`) | — | now |
-| `auth.jwt.userClaim` | the claim whose value is the user, `email`. Its value must be text that is not blank and has no control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), or the token is refused | — | now; the control character 2026-10-16 |
+| `auth.jwt.userClaim` | the claim whose value is the user, `email`. A deployment behind its own BFF, which presents the BFF's token, sets `sub`: the person is then the token's subject (and the token's `aud` names the orchestrator, `auth.jwt.audiences: [orchestrator]`). Its value must be text that is not blank and has no control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), or the token is refused | — | now; the control character 2026-10-16 |
 | `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
 | `auth.dpop.publicOrigins` | list of at least one `http(s)` origin (`https://chat.example.com`: no path, query, fragment or credentials, no trailing slash); required with `auth.dpop`, which is only for a mode that reads tokens. **A proof's `htu` must be one of them followed by the request's path** (the process sits behind a proxy and cannot rebuild the public URL). `production` refuses `http://` except for `localhost`, `127.0.0.1` and `[::1]` | — | now; [ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md) |
 | `auth.dpop.maxAgeSeconds` | 1 to 600, 60: how old a proof's `iat` may be; a proof's `jti` is remembered this long and `futureSkewSeconds` more | — | now; ADR 0054 |
@@ -538,6 +538,11 @@ auth:
     userClaim: email                    # the default: keeps the threads that exist
     rolesClaim: realm_access.roles      # optional
 ```
+
+A deployment whose own BFF authenticates to the orchestrator presents the BFF's token rather than oauth2-proxy's ID token: it
+sets `userClaim: sub` — the person is the token's subject — and an audience that names this API, for example
+`audiences: [orchestrator]`. The claim is read exactly as above: `sub` must be text that is not blank and has no control
+character. The chart's `tests/bff-only.values.yaml` is such a deployment ([`deploy/chart/README.md`](../../deploy/chart/README.md#the-bff-only-shape-the-web-and-the-edge-off)).
 
 - **`proxy_header`** (the default) trusts `X-Auth-Request-Email` and `auth.devUser`: safe only behind a proxy that strips
   client-supplied copies. **`jwt`** validates the `Authorization: Bearer` token oauth2-proxy forwards (the ID token by

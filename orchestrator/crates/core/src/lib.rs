@@ -34,7 +34,7 @@ pub mod search;
 mod share;
 mod step;
 mod task;
-pub mod team;
+mod team;
 mod thread;
 mod thread_tools;
 mod title;
@@ -143,6 +143,15 @@ pub use step::{
 pub use task::{
     DESCRIPTION_MESSAGES, LanguageRule, MAX_GUIDANCE_BYTES, TaskKind, TaskLanguageError,
     TaskPrompt, check_task_language, conversation_language, task_prompt,
+};
+pub use team::{
+    BadTeamPresetId, CheckpointRules, DEFAULT_MAX_HANDOFFS, DEFAULT_PUSH_TOKENS, FanIn, Floor,
+    HandoffApproval, MAX_APPROVAL_SECONDS, MAX_CHARTER_BYTES, MAX_HANDOFFS_CEILING, MAX_MEMBERS,
+    MAX_NAME_CHARS, MAX_PUSH_TOKENS, MAX_ROLE_CHARS, MAX_TEAM_PRESETS, MAX_TEAM_TITLE_CHARS,
+    MIN_APPROVAL_SECONDS, MIN_MAX_HANDOFFS, MIN_MEMBERS, MIN_PUSH_TOKENS, Member, MemberHistory,
+    MemberName, PAGE as TEAM_PRESET_PAGE, Pending, TeamCommand, TeamEvent, TeamLedger, TeamMember,
+    TeamMemberInput, TeamPreset, TeamPresetError, TeamPresetId, TeamPresetInput, TeamRefusal,
+    TeamState, TurnOutcome, validate as validate_team_preset,
 };
 pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{

@@ -1,7 +1,9 @@
-//! The rules of a team preset: which saves are refused and where, and that a save the rules accept
-//! reads back whole.
+//! The rules of a team preset: which saves are refused and where, that a save the rules accept reads
+//! back whole, and that the refusals the team ledger owns are **its** refusals.
 
 use super::*;
+// the ledger's, reused by the preset and reached here through its parent module
+use super::super::{DEFAULT_MAX_HANDOFFS, MAX_HANDOFFS_CEILING, MIN_MAX_HANDOFFS};
 
 fn member(name: &str) -> TeamMemberInput {
     TeamMemberInput {
@@ -22,7 +24,7 @@ fn save() -> TeamPresetInput {
         lead: "lead".to_owned(),
         members: vec![member("lead"), member("helper")],
         charter: "One change, then a review.".to_owned(),
-        max_handoffs: DEFAULT_HANDOFFS,
+        max_handoffs: DEFAULT_MAX_HANDOFFS,
         handoff_approval: HandoffApproval::Ask,
         checkpoints: CheckpointRules::default(),
         push_tokens: DEFAULT_PUSH_TOKENS,
@@ -60,11 +62,36 @@ fn a_valid_save_reads_back_whole() {
     assert!(preset.member("nobody").is_none());
     assert_eq!(preset.charter(), "One change, then a review.");
     assert_eq!(preset.max_handoffs(), 12);
+    assert_eq!(preset.cap(), 12);
     assert_eq!(preset.handoff_approval().seconds(), Some(45));
     assert!(preset.checkpoints().before_pull_request);
     assert_eq!(preset.push_tokens(), 80_000);
     assert!(preset.summary());
     assert_eq!(preset.to_input(), input);
+}
+
+/// A preset is formed as a team: the ledger takes its members and its cap without a second set of
+/// rules.
+#[test]
+fn a_preset_forms_a_team() {
+    let preset = TeamPreset::new(
+        id(),
+        TeamPresetInput {
+            max_handoffs: MAX_HANDOFFS_CEILING,
+            ..save()
+        },
+    )
+    .expect("valid");
+    let ledger = TeamLedger::formed(
+        preset.lead().clone(),
+        preset.ledger_members(),
+        Some(preset.max_handoffs()),
+    )
+    .expect("the ledger forms it");
+    assert_eq!(ledger.members().len(), 2);
+    assert_eq!(ledger.cap(), MAX_HANDOFFS_CEILING);
+    assert_eq!(ledger.lead(), preset.lead());
+    assert_eq!(ledger.members()[0].agent.as_str(), "coder");
 }
 
 #[test]
@@ -73,7 +100,9 @@ fn the_defaults_are_the_adrs() {
     assert_eq!(MemberHistory::default(), MemberHistory::AgentKeeps);
     assert_eq!(CheckpointRules::default().after.len(), 0);
     assert!(!CheckpointRules::default().before_pull_request);
-    assert_eq!(DEFAULT_HANDOFFS, 6);
+    assert_eq!(DEFAULT_MAX_HANDOFFS, 6);
+    assert_eq!(MIN_MAX_HANDOFFS, 6);
+    assert_eq!(MAX_HANDOFFS_CEILING, 20);
     assert_eq!(DEFAULT_PUSH_TOKENS, 24_000);
     assert_eq!(HandoffApproval::Auto.seconds(), None);
     assert_eq!(HandoffApproval::Ask.seconds(), None);
@@ -95,12 +124,13 @@ fn a_name_that_is_not_a_slug_is_refused() {
             ("bad_name", "name"),
             "{bad}"
         );
+        assert_eq!(error.refusal, None);
     }
     assert!(
         TeamPreset::new(
             id(),
             TeamPresetInput {
-                name: "a".repeat(32),
+                name: "a".repeat(MAX_NAME_CHARS),
                 ..save()
             }
         )
@@ -138,10 +168,20 @@ fn the_title_and_the_charter_are_bounded() {
         )
         .is_ok()
     );
+    assert!(
+        TeamPreset::new(
+            id(),
+            TeamPresetInput {
+                title: "x".repeat(MAX_TEAM_TITLE_CHARS),
+                ..save()
+            }
+        )
+        .is_ok()
+    );
 }
 
 #[test]
-fn nine_members_are_refused_with_the_bound() {
+fn nine_members_are_refused_by_the_ledgers_own_refusal() {
     let nine = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
     let error = TeamPreset::new(
         id(),
@@ -153,8 +193,9 @@ fn nine_members_are_refused_with_the_bound() {
     )
     .expect_err("refused");
     assert_eq!((error.code, error.at.as_str()), ("bad_members", "members"));
-    assert!(error.to_string().contains("2 to 8"), "{error}");
-    // one member is no team either
+    assert_eq!(error.refusal, Some(TeamRefusal::TooManyMembers));
+    assert!(error.to_string().contains("8"), "{error}");
+    // one member is no team either: a thread of one agent keeps no team state
     let error = TeamPreset::new(
         id(),
         TeamPresetInput {
@@ -165,6 +206,7 @@ fn nine_members_are_refused_with_the_bound() {
     )
     .expect_err("refused");
     assert_eq!(error.code, "bad_members");
+    assert_eq!(error.refusal, Some(TeamRefusal::TooFewMembers));
     assert!(
         TeamPreset::new(
             id(),
@@ -195,6 +237,7 @@ fn a_member_that_repeats_a_name_is_refused() {
         (error.code, error.at.as_str()),
         ("bad_member_name", "members.1.name")
     );
+    assert_eq!(error.refusal, Some(TeamRefusal::DuplicateName));
     // two members may be the same agent (two coders): that is the whole point of a member's name
     let same_agent = TeamPreset::new(
         id(),
@@ -212,6 +255,56 @@ fn a_member_that_repeats_a_name_is_refused() {
 }
 
 #[test]
+fn a_member_name_is_the_ledgers() {
+    // the ledger's rule, not a second one: `@` is optional, `_` and capitals are names
+    let preset = TeamPreset::new(
+        id(),
+        TeamPresetInput {
+            members: vec![member("@Lead"), member("Coder_B")],
+            lead: "Lead".to_owned(),
+            ..save()
+        },
+    )
+    .expect("the ledger's names");
+    assert_eq!(preset.members()[0].name().as_str(), "Lead");
+    assert_eq!(preset.members()[1].name().as_str(), "Coder_B");
+
+    let error = TeamPreset::new(
+        id(),
+        TeamPresetInput {
+            members: vec![member("lead"), member("with space")],
+            ..save()
+        },
+    )
+    .expect_err("refused");
+    assert_eq!(
+        (error.code, error.at.as_str()),
+        ("bad_member_name", "members.1.name")
+    );
+    assert_eq!(error.refusal, Some(TeamRefusal::NameNotPlain));
+
+    let error = TeamPreset::new(
+        id(),
+        TeamPresetInput {
+            members: vec![member("lead"), member("")],
+            ..save()
+        },
+    )
+    .expect_err("refused");
+    assert_eq!(error.refusal, Some(TeamRefusal::EmptyName));
+
+    let error = TeamPreset::new(
+        id(),
+        TeamPresetInput {
+            members: vec![member("lead"), member(&"x".repeat(MAX_NAME_CHARS + 1))],
+            ..save()
+        },
+    )
+    .expect_err("refused");
+    assert_eq!(error.refusal, Some(TeamRefusal::NameTooLong));
+}
+
+#[test]
 fn a_member_with_a_bad_agent_a_role_too_long_or_a_release_that_is_not_one() {
     let mut broken = save();
     broken.members[1].target.agent_id = crate::ids::AgentId::new("Coder!");
@@ -220,6 +313,7 @@ fn a_member_with_a_bad_agent_a_role_too_long_or_a_release_that_is_not_one() {
         (error.code, error.at.as_str()),
         ("bad_member_agent", "members.1.agentId")
     );
+    assert_eq!(error.refusal, None);
 
     let mut broken = save();
     broken.members[1].role = "x".repeat(MAX_ROLE_CHARS + 1);
@@ -228,6 +322,7 @@ fn a_member_with_a_bad_agent_a_role_too_long_or_a_release_that_is_not_one() {
         (error.code, error.at.as_str()),
         ("bad_member_role", "members.1.role")
     );
+    assert_eq!(error.refusal, Some(TeamRefusal::RoleTooLong));
     assert!(
         TeamPreset::new(
             id(),
@@ -286,11 +381,23 @@ fn the_lead_is_a_members_name() {
     )
     .expect_err("refused");
     assert_eq!((error.code, error.at.as_str()), ("bad_lead", "lead"));
-    assert!(error.to_string().contains("name of a member"), "{error}");
+    assert_eq!(error.refusal, Some(TeamRefusal::LeadNotMember));
+    assert!(error.to_string().contains("not a member"), "{error}");
+
+    // a lead that is no name at all is the ledger's own name refusal
+    let error = TeamPreset::new(
+        id(),
+        TeamPresetInput {
+            lead: "with space".to_owned(),
+            ..save()
+        },
+    )
+    .expect_err("refused");
+    assert_eq!(error.refusal, Some(TeamRefusal::NameNotPlain));
 }
 
 #[test]
-fn the_cap_of_handoffs_is_six_to_twenty() {
+fn the_cap_of_handoffs_is_the_ledgers() {
     for bad in [0, 1, 5, 21, 100] {
         let error = TeamPreset::new(
             id(),
@@ -305,9 +412,10 @@ fn the_cap_of_handoffs_is_six_to_twenty() {
             ("bad_max_handoffs", "maxHandoffs"),
             "{bad}"
         );
+        assert_eq!(error.refusal, Some(TeamRefusal::HandoffCapOutOfRange(bad)));
         assert!(error.to_string().contains("6 to 20"), "{error}");
     }
-    for good in [MIN_HANDOFFS, 13, MAX_HANDOFFS] {
+    for good in [MIN_MAX_HANDOFFS, 13, MAX_HANDOFFS_CEILING] {
         assert!(
             TeamPreset::new(
                 id(),
@@ -338,6 +446,7 @@ fn the_wait_of_an_approval_is_five_to_six_hundred_seconds() {
             ("bad_handoff_approval", "handoffApproval"),
             "{bad}"
         );
+        assert_eq!(error.refusal, None, "the ledger does not own the wait");
         assert!(error.to_string().contains("5 to 600"), "{error}");
     }
     for good in [MIN_APPROVAL_SECONDS, 300, MAX_APPROVAL_SECONDS] {
@@ -431,12 +540,13 @@ fn an_id_is_t_and_twelve_base36_characters() {
 }
 
 #[test]
-fn a_member_name_displays_with_its_at_sign() {
-    let name = MemberName::parse("coder-a").expect("a name");
+fn a_member_name_is_displayed_as_the_ledger_displays_it() {
+    let name = MemberName::new("coder-a").expect("a name");
     assert_eq!(name.as_str(), "coder-a");
-    assert_eq!(name.to_string(), "@coder-a");
-    assert!(MemberName::parse("coder a").is_err());
-    assert!(MemberName::parse("").is_err());
+    assert_eq!(name.to_string(), "coder-a");
+    assert_eq!(MemberName::new("@coder-a").expect("with its @"), name);
+    assert!(MemberName::new("coder a").is_err());
+    assert!(MemberName::new("").is_err());
 }
 
 #[test]

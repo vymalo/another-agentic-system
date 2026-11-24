@@ -15,11 +15,11 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use orch_core::team::{
-    CheckpointRules, DEFAULT_HANDOFFS, DEFAULT_PUSH_TOKENS, HandoffApproval, MemberHistory,
+use orch_core::{AgentId, AgentTarget, Timestamp, UserId};
+use orch_core::{
+    CheckpointRules, DEFAULT_MAX_HANDOFFS, DEFAULT_PUSH_TOKENS, HandoffApproval, MemberHistory,
     TeamMemberInput, TeamPreset, TeamPresetId, TeamPresetInput,
 };
-use orch_core::{AgentId, AgentTarget, Timestamp, UserId};
 use uuid::Uuid;
 
 use crate::{
@@ -77,7 +77,7 @@ fn input(name: &str, members: &[&str]) -> TeamPresetInput {
         lead,
         members,
         charter: "Deliver together, and say what you did.".to_owned(),
-        max_handoffs: DEFAULT_HANDOFFS,
+        max_handoffs: DEFAULT_MAX_HANDOFFS,
         handoff_approval: HandoffApproval::Ask,
         checkpoints: CheckpointRules::default(),
         push_tokens: DEFAULT_PUSH_TOKENS,
@@ -156,7 +156,7 @@ pub async fn every_field_round_trips<S: TeamPresetStore>(store: S) {
                     HandoffApproval::Ask,
                     HandoffApproval::After { seconds: 30 },
                     HandoffApproval::After {
-                        seconds: orch_core::team::MAX_APPROVAL_SECONDS,
+                        seconds: orch_core::MAX_APPROVAL_SECONDS,
                     },
                     HandoffApproval::Auto,
                 ] {
@@ -189,13 +189,13 @@ pub async fn every_field_round_trips<S: TeamPresetStore>(store: S) {
                             },
                         ],
                         charter: "One change, then a review.\n\tNo exceptions.".to_owned(),
-                        max_handoffs: orch_core::team::MAX_HANDOFFS,
+                        max_handoffs: orch_core::MAX_HANDOFFS_CEILING,
                         handoff_approval: approval,
                         checkpoints: CheckpointRules {
                             after: std::iter::once("author".to_owned()).collect(),
                             before_pull_request: true,
                         },
-                        push_tokens: orch_core::team::MAX_PUSH_TOKENS,
+                        push_tokens: orch_core::MAX_PUSH_TOKENS,
                         summary,
                     };
                     let definition = TeamPreset::new(id.clone(), fields).expect("valid");
@@ -234,7 +234,8 @@ pub async fn bounds_are_refused_with_words<S: TeamPresetStore>(_store: S) {
         let nine = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
         let (code, words, at) = refused(input("too-many", &nine));
         assert_eq!((code, at.as_str()), ("bad_members", "members"));
-        assert!(words.contains("2 to 8"), "{words}");
+        // the team ledger's own words: it is the ledger's rule
+        assert!(words.contains("at most 8 members"), "{words}");
 
         let (code, words, at) = refused(TeamPresetInput {
             max_handoffs: 21,
@@ -263,7 +264,7 @@ pub async fn bounds_are_refused_with_words<S: TeamPresetStore>(_store: S) {
             ..input("no-lead", &["lead", "helper"])
         });
         assert_eq!(code, "bad_lead");
-        assert!(words.contains("name of a member"), "{words}");
+        assert!(words.contains("not a member"), "{words}");
 
         let (code, _, _) = refused(TeamPresetInput {
             handoff_approval: HandoffApproval::After { seconds: 4 },
@@ -351,8 +352,7 @@ pub async fn a_listing_is_the_owners_ordered_by_id<S: TeamPresetStore>(store: S)
         }
         save(&store, &b, "theirs").await;
         saved.sort();
-        let mine: Vec<orch_core::team::TeamPresetId> =
-            saved.iter().map(|(id, _)| id.clone()).collect();
+        let mine: Vec<orch_core::TeamPresetId> = saved.iter().map(|(id, _)| id.clone()).collect();
         let page = store.list_team_presets(&a, None, 50).await.expect("list");
         assert_eq!(
             page.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),

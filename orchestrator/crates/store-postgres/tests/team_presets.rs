@@ -16,11 +16,11 @@ mod support;
 
 use std::time::Duration;
 
-use orch_core::team::{
-    DEFAULT_HANDOFFS, DEFAULT_PUSH_TOKENS, HandoffApproval, MemberHistory, TeamMemberInput,
+use orch_core::{AgentId, AgentTarget, Timestamp, UserId};
+use orch_core::{
+    DEFAULT_MAX_HANDOFFS, DEFAULT_PUSH_TOKENS, HandoffApproval, MemberHistory, TeamMemberInput,
     TeamPreset, TeamPresetId, TeamPresetInput,
 };
-use orch_core::{AgentId, AgentTarget, Timestamp, UserId};
 use orch_ports::{TEAM_PRESET_PAGE, TeamPresetStore, TeamPresetStoreError};
 use orch_store_postgres::sql::{query, query_as, query_scalar};
 use orch_store_postgres::{PgStore, TEAM_OWNER_LOCK_CLASS};
@@ -73,7 +73,7 @@ fn preset(name: &str) -> TeamPreset {
             lead: "lead".to_owned(),
             members: vec![member("lead"), member("helper")],
             charter: "Ship it together.".to_owned(),
-            max_handoffs: DEFAULT_HANDOFFS,
+            max_handoffs: DEFAULT_MAX_HANDOFFS,
             handoff_approval: HandoffApproval::Ask,
             checkpoints: Default::default(),
             push_tokens: DEFAULT_PUSH_TOKENS,

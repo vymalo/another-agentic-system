@@ -62,7 +62,7 @@ CREATE TABLE user_team_presets (
                                      jsonb_typeof(members) = 'array'
                                      AND jsonb_array_length(members) BETWEEN 2 AND 8),
     charter                      text NOT NULL DEFAULT '' CHECK (octet_length(charter) <= 4096),
-    max_handoffs                 smallint NOT NULL CHECK (max_handoffs BETWEEN 6 AND 20),
+    max_handoffs                 integer NOT NULL CHECK (max_handoffs BETWEEN 6 AND 20),
     handoff_approval             text NOT NULL CHECK (handoff_approval IN ('ask', 'after', 'auto')),
     handoff_after_seconds        smallint CHECK (handoff_after_seconds BETWEEN 5 AND 600),
     checkpoint_after             text[] NOT NULL DEFAULT '{}' CHECK (

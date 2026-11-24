@@ -1,3 +1,4 @@
+{{- if .Values.edge.enabled }}
 {{- $root := dict "root" . "component" "oauth2-proxy" -}}
 {{- $name := include "agentic.component" $root -}}
 {{- $secret := include "agentic.secret.oauth2" . -}}
@@ -141,3 +142,4 @@ spec:
       port: 4180
       targetPort: http
       protocol: TCP
+{{- end }}

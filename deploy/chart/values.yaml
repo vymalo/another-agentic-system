@@ -436,11 +436,14 @@ chat:
       memory: 1Gi
 
 web:
+  # The chat surface of this chart. On, and the edge routes the browser to it; off, its Deployment, its Service and its
+  # mobile-app-links ConfigMap are not rendered (a deployment whose BFF serves the pages itself: templates/_validate.tpl).
+  enabled: true
   image:
     repository: ghcr.io/vymalo/another-agentic-system/web
     # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
     # which Next inlines at build time: images before the one of this chart's first release have none.
-    tag: sha-729dbdb
+    tag: sha-76f1e87
     pullPolicy: IfNotPresent
   replicas: 1
   resources:
@@ -705,6 +708,10 @@ oauth2Proxy:
 # The edge: Caddy 2 in front of oauth2-proxy, the orchestrator and the web, on one origin (files/Caddyfile).
 # Traefik only terminates TLS and passes everything here.
 edge:
+  # The Caddy edge in front of oauth2-proxy, the orchestrator and the web, and the Ingress that sends the host to it. On by
+  # default. Off, the edge, oauth2-proxy and the Ingress are not rendered, and `ingress.enabled` and `auth.browser.enabled`
+  # cannot be on (templates/_validate.tpl): a deployment whose own BFF is the only caller of the orchestrator.
+  enabled: true
   # 2.11.4 (verified 2026-10-03, Docker Hub and mirror.gcr.io: the digest is the image index of the -alpine tag).
   image:
     repository: caddy
@@ -953,6 +960,14 @@ networkPolicy:
   orchestratorFrom:
     - matchLabels:
         app.kubernetes.io/name: coder
+  # The BFF in front of the orchestrator: the namespace of its pods and the labels that select them. Both are required together —
+  # a namespace without labels, or labels without a namespace, is refused, because a peer with an empty selector admits every pod
+  # of the namespace and one with no namespace admits nothing. Rendered as one more peer of the orchestrator's policy, so a
+  # deployment whose BFF is another chart's can let it in. **Required with `edge.enabled: false`**: with the edge gone the BFF is what calls the orchestrator, and a
+  # policy that admits no pod at all is a broken deployment, not a quiet one (templates/_validate.tpl).
+  bff:
+    namespace: ""
+    matchLabels: {}
 
 # uid/gid are those of each image: the orchestrator is distroless `nonroot`, the web is `node`, oauth2-proxy
 # and Caddy run as 65532, the adam image as 10001.

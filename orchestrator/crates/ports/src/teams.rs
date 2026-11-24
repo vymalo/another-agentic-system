@@ -46,10 +46,10 @@
 use std::fmt;
 use std::future::Future;
 
-use orch_core::team::{MemberName, TeamPreset, TeamPresetId};
 use orch_core::{BoxError, Classify, ErrorClass, Timestamp, UserId};
+use orch_core::{MemberName, TeamPreset, TeamPresetId};
 
-pub use orch_core::team::{MAX_TEAM_PRESETS, PAGE as TEAM_PRESET_PAGE};
+pub use orch_core::{MAX_TEAM_PRESETS, TEAM_PRESET_PAGE};
 
 /// The revision of a team preset: a number of one sequence the store keeps, new with every write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

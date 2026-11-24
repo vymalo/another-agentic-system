@@ -17,7 +17,7 @@
 //!   everybody's list.
 //! - **Nothing of a preset is logged** and no error holds a word of one.
 
-use orch_core::team::{
+use orch_core::{
     CheckpointRules, HandoffApproval, MemberName, TeamMemberInput, TeamPreset, TeamPresetId,
     TeamPresetInput,
 };
@@ -477,7 +477,7 @@ fn stored(row: Row) -> Result<StoredTeamPreset, TeamPresetStoreError> {
         lead,
         members,
         charter,
-        max_handoffs: u16::try_from(max_handoffs).map_err(|_| corrupt("the cap of hand-offs"))?,
+        max_handoffs: u32::try_from(max_handoffs).map_err(|_| corrupt("the cap of hand-offs"))?,
         handoff_approval,
         checkpoints: CheckpointRules {
             after: after.into_iter().collect(),
@@ -500,7 +500,7 @@ fn stored(row: Row) -> Result<StoredTeamPreset, TeamPresetStoreError> {
 fn summary(row: SummaryRow) -> Result<TeamPresetSummary, TeamPresetStoreError> {
     let (id, name, title, lead, members, revision, updated_at) = row;
     let id = TeamPresetId::parse(&id).map_err(|e| corrupt(&e.to_string()))?;
-    let lead = MemberName::parse(&lead).map_err(|e| corrupt(e.code))?;
+    let lead = MemberName::new(&lead).map_err(|e| corrupt(&e.to_string()))?;
     Ok(TeamPresetSummary {
         id,
         name,

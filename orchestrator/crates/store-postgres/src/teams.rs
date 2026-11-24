@@ -29,7 +29,7 @@ use crate::codec::{to_db, ts};
 use crate::error::{DbFailure, SqlError, is_unique_violation};
 use crate::sql::{FromRow, Row as DbRow, Tx, query, query_as, query_scalar};
 use crate::store::PgStore;
-use orch_core::team::{
+use orch_core::{
     CheckpointRules, HandoffApproval, TeamMemberInput, TeamPreset, TeamPresetId, TeamPresetInput,
 };
 use orch_core::{ErrorClass, Timestamp, UserId};
@@ -59,7 +59,7 @@ struct PresetRow {
     lead: String,
     members: serde_json::Value,
     charter: String,
-    max_handoffs: i16,
+    max_handoffs: i32,
     handoff_approval: String,
     handoff_after_seconds: Option<i16>,
     checkpoint_after: Vec<String>,
@@ -429,7 +429,7 @@ struct Columns {
     lead: String,
     members: serde_json::Value,
     charter: String,
-    max_handoffs: i16,
+    max_handoffs: i32,
     mode: &'static str,
     after_seconds: Option<i16>,
     checkpoint_after: Vec<String>,
@@ -444,7 +444,7 @@ fn columns(preset: &TeamPreset) -> Result<Columns, TeamPresetStoreError> {
         TeamPresetStoreError::internal("a member of the preset is not one the store can write")
             .with_source(e)
     })?;
-    let max_handoffs = i16::try_from(preset.max_handoffs()).map_err(|_| {
+    let max_handoffs = i32::try_from(preset.max_handoffs()).map_err(|_| {
         TeamPresetStoreError::internal("the cap of hand-offs is not one the store can write")
     })?;
     let push_tokens = i32::try_from(preset.push_tokens()).map_err(|_| {
@@ -537,7 +537,7 @@ fn stored(row: PresetRow) -> Result<StoredTeamPreset, TeamPresetStoreError> {
         lead,
         members,
         charter,
-        max_handoffs: u16::try_from(max_handoffs).map_err(|_| corrupt("the cap of hand-offs"))?,
+        max_handoffs: u32::try_from(max_handoffs).map_err(|_| corrupt("the cap of hand-offs"))?,
         handoff_approval,
         checkpoints: CheckpointRules {
             after: checkpoint_after.into_iter().collect(),
@@ -562,7 +562,7 @@ fn summary(row: SummaryRow) -> Result<TeamPresetSummary, TeamPresetStoreError> {
         TeamPresetStoreError::Corrupt(format!("a stored team preset does not read back: {what}"))
     };
     let id = TeamPresetId::parse(&id).map_err(|e| corrupt(&e.to_string()))?;
-    let lead = orch_core::team::MemberName::parse(&lead).map_err(|e| corrupt(e.code))?;
+    let lead = orch_core::MemberName::new(&lead).map_err(|e| corrupt(&e.to_string()))?;
     Ok(TeamPresetSummary {
         id,
         name,

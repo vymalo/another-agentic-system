@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use orch_core::team::{TeamPreset, TeamPresetId};
+use orch_core::{TeamPreset, TeamPresetId};
 use orch_core::{Timestamp, UserId};
 
 use super::MemoryStore;

@@ -95,6 +95,12 @@ it, and the Authorino instance and its gRPC authorization Service. */}}
 {{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
 {{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}
 
+{{/* "true" or nothing: whether the BFF peer is set (`networkPolicy.bff`: a namespace and the labels of its pods). */}}
+{{- define "agentic.bff" -}}
+{{- $b := .Values.networkPolicy.bff -}}
+{{- if and $b $b.namespace $b.matchLabels -}}true{{- end -}}
+{{- end -}}
+
 {{/* CNPG Clusters; CNPG makes the Secret <cluster>-app, whose key `uri` is the connection string. */}}
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
 
