@@ -70,6 +70,14 @@ impl Broker {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    /// Records a bind the dispatcher asked for.
+    fn record(&self, binding: &RunBinding) {
+        self.binds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(binding.clone());
+    }
 }
 
 impl RunBindings for Broker {
@@ -91,28 +99,25 @@ impl RunBindings for Broker {
             model: self.model.clone().or(binding.model),
             ..binding
         };
-        self.binds
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(binding.clone());
         if self.unreachable.load(Ordering::SeqCst) {
+            self.record(&binding);
             return Err(RunBindingError::Unreachable);
         }
-        self.leases
-            .bind(binding)
-            .await
-            .map_err(|_| RunBindingError::Conflict)
+        // Recorded once the broker has answered, so that a test which sees the call in `binds`
+        // also finds the binding where a lookup would: the two cannot disagree.
+        let outcome = self.leases.bind(binding.clone()).await;
+        self.record(&binding);
+        outcome.map_err(|_| RunBindingError::Conflict)
     }
 
     async fn unbind(&self, run: &RunId) -> Result<(), RunBindingError> {
+        // The broker first, the record second: a test that sees the call also sees it gone.
+        let outcome = self.leases.unbind(run).await;
         self.unbinds
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(run.clone());
-        self.leases
-            .unbind(run)
-            .await
-            .map_err(|_| RunBindingError::Unreachable)
+        outcome.map_err(|_| RunBindingError::Unreachable)
     }
 }
 
@@ -188,7 +193,9 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
         model: Some("default".to_owned()),
         ..Broker::new()
     };
-    let t = create(&app, &alice(), "coder", "the call beats the bind").await;
+    // The `slow` turn stays open until its task is terminal, so the run is still bound when the
+    // lookup below is made.
+    let _thread = create(&app, &alice(), "coder", "slow job").await;
     let run_id = RunId::new("task-1");
     let caller = RunCaller::Agent(AgentId::new("coder"));
     // The agent's first model call beats the orchestrator's first frame: the injector's lookup is
@@ -201,7 +208,7 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
     // The first frame has come: the run is bound, and the retry of the call that beat it is
     // answered — the broker knows whose run it is and lends a token for at most one lease.
     eventually("the run is bound", || async {
-        (!broker.binds().is_empty()).then_some(())
+        broker.leases.binding(&run_id).is_some().then_some(())
     })
     .await;
     let lease = broker
@@ -214,8 +221,6 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
     let binding = broker.leases.binding(&run_id).unwrap();
     assert_eq!(binding.agent, AgentId::new("coder"));
     assert_eq!(binding.person, alice());
-    w.agent.release_gate();
-    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
     run.abort();
 }
 
@@ -285,10 +290,16 @@ async fn a_run_is_unbound_when_the_thread_is_cancelled() {
     let w = World::new();
     let app = w.app();
     let broker = Broker::new();
-    let t = create(&app, &alice(), "coder", "stop it").await;
+    let run_id = RunId::new("task-1");
+    // The `slow` script keeps the turn open until the task is terminal, so the person's stop
+    // reaches a running task (as `cancel_a_running_task_reaches_the_agent` does).
+    let t = create(&app, &alice(), "coder", "slow job").await;
     let run = spawn(&app, fast(), broker.clone());
+    // A stop reaches a *running* task, as in `cancel_a_running_task_reaches_the_agent`: wait for
+    // the turn to be working (the bind has happened by then, on the first frame) before stopping.
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
     eventually("the run is bound", || async {
-        (!broker.binds().is_empty()).then_some(())
+        broker.leases.binding(&run_id).is_some().then_some(())
     })
     .await;
     app.cancel(&alice(), t.id).await.unwrap();
