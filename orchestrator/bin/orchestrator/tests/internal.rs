@@ -193,6 +193,9 @@ async fn start(db: &pgdb::TestDb, scratch: Scratch) -> Started {
         ("MODEL_KEY", MODEL_KEY),
         ("SMOKE_AGENT_TOKEN", OTHER_TOKEN),
         ("NO_PROXY", "127.0.0.1,localhost"),
+        // Every level, so the log the tests grep is the whole log: a value that only a `debug` line
+        // would carry is still caught (the default filter is `info`).
+        ("RUST_LOG", "debug"),
     ];
     if let Some(direct) = &direct {
         env.push(("DATABASE_DIRECT_URL", direct.as_str()));

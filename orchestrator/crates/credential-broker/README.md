@@ -309,8 +309,8 @@ not JSON, names an id over 256 characters, or carries a deadline that is not RFC
 alone is never enough**: the caller comes from `RunCallerAuth`, and a caller that is neither the
 orchestrator nor the injector gets `run_not_bound`, so the answer never says whether a run exists.
 An **agent is refused its own run's lease** too (ADR 0084 decision 2, amended 2026-11-24): the
-binding names the agent, it does not authorise it, so a reachable agent holds no key. The lease value is
-written to the response and to nothing else — no log line, no error, no `Debug` holds it.
+binding names the agent, it does not authorise it, so a reachable agent holds no key. The lease value and the `accountId` beside it are
+written to the response and to nothing else — no log line, no error, no `Debug` holds either.
 
 `SharedTokens` is today's `RunCallerAuth`: one bearer token for the orchestrator, one for the
 injector (`with_injector`) and one per agent, from the deployment's configuration, compared by
