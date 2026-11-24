@@ -128,6 +128,7 @@ pub struct BindBody {
 #[serde(rename_all = "camelCase")]
 struct LeaseBody {
     token: String,
+    account_id: String,
     expires_at: Timestamp,
 }
 
@@ -270,6 +271,7 @@ where
         Ok(lease) => {
             let body = LeaseBody {
                 token: lease.token().expose().to_owned(),
+                account_id: lease.account().to_string(),
                 expires_at: lease.expires_at(),
             };
             let mut response = (StatusCode::OK, Json(body)).into_response();

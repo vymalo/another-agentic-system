@@ -300,7 +300,7 @@ is the port implementation (`RunLeases`, with its conformance cases in `orch-por
 |---|---|---|
 | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run (the same binding is idempotent), and the deadline is capped at 24 h |
 | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent, and a no-op for a run that was never bound |
-| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — **never an agent, its own run included** | `200 {"token", "expiresAt"}`, `Cache-Control: no-store`; at most 30 s and never past the binding's |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — **never an agent, its own run included** | `200 {"token", "accountId", "expiresAt"}` (`accountId` is the run's person, the `sub` the gateway stamps as `x-account-id`; never logged, never in a refusal), `Cache-Control: no-store`; at most 30 s and never past the binding's |
 
 Refusals are the ruled slugs with a `{"code"}` body: `run_not_bound` (`404`), `lease_expired`
 (`410`), `unavailable` (`503`); the door answers `401 unauthenticated` (`WWW-Authenticate: Bearer`)
