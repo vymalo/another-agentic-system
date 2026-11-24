@@ -960,10 +960,10 @@ networkPolicy:
   orchestratorFrom:
     - matchLabels:
         app.kubernetes.io/name: coder
-  # The BFF in front of the orchestrator: the namespace of its pods and the labels that select them (`namespace` empty: this
-  # release's namespace). Rendered as one more peer of the orchestrator's policy, so a deployment whose BFF is another chart's
-  # can let it in. A namespace without labels, or labels without a namespace, is refused: an empty selector admits every pod of
-  # the namespace. **Required with `edge.enabled: false`**: with the edge gone the BFF is what calls the orchestrator, and a
+  # The BFF in front of the orchestrator: the namespace of its pods and the labels that select them. Both are required together —
+  # a namespace without labels, or labels without a namespace, is refused, because a peer with an empty selector admits every pod
+  # of the namespace and one with no namespace admits nothing. Rendered as one more peer of the orchestrator's policy, so a
+  # deployment whose BFF is another chart's can let it in. **Required with `edge.enabled: false`**: with the edge gone the BFF is what calls the orchestrator, and a
   # policy that admits no pod at all is a broken deployment, not a quiet one (templates/_validate.tpl).
   bff:
     namespace: ""
