@@ -27,7 +27,7 @@ root of ADR 0076 decision 4 will.
 | `PromptStore` (ADR 0070) | **built** (milestone 2b, migration `0003`), green on `prompt_store_conformance!` (no skip; the suite needs no hook) |
 | `UserToolServerStore` (ADR 0046) | **built** (migration `0005`), green on `user_tool_server_store_conformance!` (no skip; the suite needs no hook, and the races are kept by the one writing transaction) |
 | `Wakeup` | **built** (`SqliteWakeup`, in-process broadcast channels: one file belongs to one process, so no `LISTEN`/`NOTIFY`), green on `wakeup_conformance!` (no skip) |
-| `PendingAuthorizations` | not in this crate yet |
+| `PendingAuthorizations` (ADR 0046) | **built** (slice 4c, migration `0006`), green on `pending_authorizations_conformance!` with its `breaker` hook (no skip; the 32 takers of one state are serialised by the one connection) |
 
 The prompt library (`src/prompts.rs`, `migrations/0003_user_prompts.sql`) mirrors
 [`store-postgres/src/prompts.rs`](../store-postgres/src/prompts.rs): one transaction per write in place
@@ -37,7 +37,12 @@ of the owner's advisory lock, one counter for revisions, the audience as a JSON 
 [`store-postgres/src/user_tool_servers.rs`](../store-postgres/src/user_tool_servers.rs) the same way:
 `BEGIN IMMEDIATE` in place of the owner's advisory lock makes the limit of eight atomic, the id, the
 count and the insert with nobody between them, and the compare and swap of a revision is one
-transaction. `SqliteWakeup` is in-process broadcast channels (`src/wakeup.rs`).
+transaction. The pending authorizations (`src/pending_authorizations.rs`,
+`migrations/0006_user_tool_oauth_pending.sql`) mirror
+[`store-postgres/src/pending_authorizations.rs`](../store-postgres/src/pending_authorizations.rs):
+`take` is one `DELETE … RETURNING` in a `BEGIN IMMEDIATE` transaction (a state is taken once under
+any race), `put` replaces the server's row and sweeps what has ended in another, and both keep the
+state's SHA-256, never its text. `SqliteWakeup` is in-process broadcast channels (`src/wakeup.rs`).
 
 ## The ledger and the index
 
@@ -132,6 +137,7 @@ power loss may lose the last transactions).
 | `impl ThreadSearch for SqliteStore` | `search_threads`, `backfill_search`, `search_backlog` (ADR 0068) |
 | `impl PromptStore for SqliteStore` | `insert_prompt`, `get_prompt`, `list_prompts`, `replace_prompt`, `delete_prompt` (ADR 0070) |
 | `impl UserToolServerStore for SqliteStore` | `insert`, `get`, `list`, `replace`, `set_state`, `delete` (ADR 0046): the limit of eight and the compare and swap of a revision, each kept by one `BEGIN IMMEDIATE` transaction |
+| `impl PendingAuthorizations for SqliteStore` | `put`, `take` (ADR 0046, slice 4c): the state as its SHA-256, taken once by one `DELETE … RETURNING`, the server's earlier state replaced by one `INSERT … ON CONFLICT` |
 | `schema::MIGRATIONS_TABLE` | `schema_migrations`. Not `sqlx`'s `_sqlx_migrations`: a SQLite file of this store has no history to continue, and naming the table after `sqlx` would claim one |
 
 ## The schema is not the Postgres one
@@ -192,9 +198,9 @@ statement that can hit one, because what it means depends on the index.
 `rusqlite` is pinned to **0.41.1** with `bundled`, which is the minor adam-rs's `adam-store-sqlite`
 takes at our pin `7ac3281` (`libsqlite3-sys` 0.39.1, adam ADR 0053 decision 2), so an application
 that links both has **one `sqlite3` and one version of it**. That build bundles **SQLite 3.54.1**,
-which is at or after 3.35, the version `DELETE … RETURNING` needs (`PendingAuthorizations::take`,
-a later milestone of this crate) and that this store's `UPDATE … RETURNING` and `AS MATERIALIZED`
-already run on. `the_bundled_sqlite_is_at_least_three_thirty_five` in `src/schema.rs` is the proof,
+which is at or after 3.35, the version `DELETE … RETURNING` needs (`PendingAuthorizations::take`)
+and that this store's `UPDATE … RETURNING` and `AS MATERIALIZED` already run on.
+`the_bundled_sqlite_is_at_least_three_thirty_five` in `src/schema.rs` is the proof,
 and a bump of `rusqlite` that lowered it fails that test rather than a statement in production.
 
 ## Tests
@@ -203,11 +209,14 @@ and a bump of `rusqlite` that lowered it fails that test rather than a statement
 cargo nextest run -p orch-store-sqlite
 ```
 
-`tests/conformance.rs` wires **every** suite (`thread_store`, `usage_ledger`, `thread_search`, `prompt_store`, `wakeup`, `user_tool_server_store`) with a `make` that returns `Some`:
-`thread_store_conformance!`, `usage_ledger_conformance!` with its `forget` hook,
-`thread_search_conformance!` with its `forget` and `age` hooks, `prompt_store_conformance!` and
-`user_tool_server_store_conformance!`, neither of which needs a hook. Every case runs, none is
-skipped. Each case gets a store of its own on a file of its own in the
+`tests/conformance.rs` wires **every** suite whose store the same `make` gives — `thread_store_conformance!`,
+`usage_ledger_conformance!` with its `forget` hook, `thread_search_conformance!` with its `forget`
+and `age` hooks, `prompt_store_conformance!` and `wakeup_conformance!` — and
+`tests/user_tool_servers.rs` and `tests/pending_authorizations.rs` wire their store's suite on a
+target of its own, because two store macros in one binary define the same case names:
+`user_tool_server_store_conformance!`, and `pending_authorizations_conformance!` with its `breaker`
+hook (the store refuses its writes, as a read-only file does). Every case runs, none is skipped.
+Each case gets a store of its own on a file of its own in the
 process's temporary directory, so the suite needs **no docker, no Postgres and no
 `ORCH_TEST_DATABASE_URL`**. The crate's own tests cover what the testkit cannot: a second process
 refused (including through a symlink, and the lock released when the store is dropped), WAL on,

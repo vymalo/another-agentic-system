@@ -30,16 +30,20 @@
 //!
 //! **`UserToolServerStore`** (ADR 0046, migration `0005`): the definitions of people's own MCP
 //! servers, one table beside the log, one counter for revisions, the limit of eight and every
-//! compare-and-swap kept by the one writing transaction. `PendingAuthorizations` is not part of
-//! this crate yet.
+//! compare-and-swap kept by the one writing transaction.
+//!
+//! **`PendingAuthorizations`** (ADR 0046, slice 4c, migration `0006`): the OAuth authorizations
+//! that have begun, `state → (owner, server, until)` kept as the state's SHA-256 and taken once by
+//! one `DELETE … RETURNING`, in a table beside the log.
 //!
 //! # Conformance hooks
 //!
-//! [`SqliteStore::forget_usage_ledger`], [`SqliteStore::forget_search_index`] and
-//! [`SqliteStore::age_search_index`] make the store behave as if the log predated the ledger or the
-//! index, or as if every thread had been indexed under an older fold version. They are **test
-//! hooks, not production paths**: the conformance testkit's `forget` and `age` arguments are the
-//! only callers, and without them the cases that play an older log are skipped, which is not green.
+//! [`SqliteStore::forget_usage_ledger`], [`SqliteStore::forget_search_index`],
+//! [`SqliteStore::age_search_index`] and [`SqliteStore::refuse_writes`] make the store behave as if
+//! the log predated the ledger or the index, as if every thread had been indexed under an older fold
+//! version, or as a file that became read-only does. They are **test hooks, not production paths**:
+//! the conformance testkit's `forget`, `age` and `breaker` arguments are the only callers, and
+//! without them the cases that need one are skipped, which is not green.
 //!
 //! # Concurrency
 //!
@@ -60,6 +64,7 @@
 
 mod codec;
 mod error;
+mod pending_authorizations;
 mod prompts;
 mod schema;
 mod search;
@@ -222,6 +227,26 @@ impl SqliteStore {
                 store::exec(tx, "UPDATE threads SET search_fold = ?1", &[&stale])?;
                 Ok(())
             })
+        })
+        .await
+    }
+
+    /// Makes every write of the store fail from now on, as a file that became read-only does:
+    /// `PRAGMA query_only` is on, so `CREATE`, `DELETE`, `DROP`, `INSERT` and `UPDATE` are refused
+    /// (`SQLITE_READONLY`) and nothing is lost. What the conformance case that looks into the text of
+    /// a `PendingAuthorizations` error needs, as the Postgres adapter's closed pool is.
+    ///
+    /// **A conformance hook, not a production path**, like
+    /// [`forget_usage_ledger`](Self::forget_usage_ledger): the `breaker` argument of
+    /// `orch_ports::pending_authorizations_conformance!` is its only caller.
+    ///
+    /// # Errors
+    /// [`StoreError::Unavailable`] when the file stays locked past the busy timeout;
+    /// [`StoreError::Internal`] when SQLite rejects the pragma.
+    pub async fn refuse_writes(&self) -> Result<(), StoreError> {
+        self.call(|conn| {
+            conn.pragma_update(None, "query_only", true)
+                .map_err(error::store_err)
         })
         .await
     }
