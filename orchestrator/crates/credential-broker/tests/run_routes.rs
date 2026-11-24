@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const ORCHESTRATOR: &str = "orchestrator-token";
+const INJECTOR: &str = "injector-token";
 const CODER: &str = "coder-token";
 const CHAT: &str = "chat-token";
 const MODEL: &str = "model-x";
@@ -32,6 +33,7 @@ fn tokens() -> SharedTokens {
             (CHAT.to_owned(), AgentId("chat".to_owned())),
         ],
     )
+    .with_injector(INJECTOR)
 }
 
 fn broker() -> Arc<RunLeaseBroker<MemoryRunBindingStore, MemoryModelCredentials>> {
@@ -129,13 +131,13 @@ async fn lease(app: &Router, run: &str, token: Option<&str>) -> (StatusCode, Hea
 }
 
 #[tokio::test]
-async fn the_bound_agent_gets_the_lease_and_no_store() {
+async fn the_injector_gets_the_lease_and_no_store() {
     let (app, _) = app();
     assert_eq!(
         bind(&app, "run-1", "coder", &at(Duration::from_secs(60))).await,
         StatusCode::NO_CONTENT
     );
-    let (status, headers, body) = lease(&app, "run-1", Some(CODER)).await;
+    let (status, headers, body) = lease(&app, "run-1", Some(INJECTOR)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         headers
@@ -155,7 +157,7 @@ async fn a_wrong_caller_with_the_right_run_id_is_run_not_bound() {
         bind(&app, "run-2", "coder", &at(Duration::from_secs(60))).await,
         StatusCode::NO_CONTENT
     );
-    // The chat agent holds a real token, and the id, and it is still refused: the run id is not a
+    // An agent holds a real token, and the id, and it is still refused: the run id is not a
     // credential.
     let (status, _, body) = lease(&app, "run-2", Some(CHAT)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -163,9 +165,9 @@ async fn a_wrong_caller_with_the_right_run_id_is_run_not_bound() {
         serde_json::from_str::<Value>(&body).expect("JSON")["code"],
         "run_not_bound"
     );
-    // The orchestrator does not lease either.
+    // The orchestrator leases: with the injector it is one of the two callers the lookup answers.
     let (status, _, _) = lease(&app, "run-2", Some(ORCHESTRATOR)).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::OK);
     // No credential at all is the door's refusal, not the run's.
     let (status, headers, _) = lease(&app, "run-2", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -178,7 +180,7 @@ async fn a_wrong_caller_with_the_right_run_id_is_run_not_bound() {
 }
 
 #[tokio::test]
-async fn an_agent_bound_to_one_run_is_refused_another_runs_lease() {
+async fn an_agent_is_refused_its_own_runs_lease_and_anothers() {
     let (app, _) = app();
     assert_eq!(
         bind(&app, "run-3a", "coder", &at(Duration::from_secs(60))).await,
@@ -188,12 +190,28 @@ async fn an_agent_bound_to_one_run_is_refused_another_runs_lease() {
         bind(&app, "run-3b", "chat", &at(Duration::from_secs(60))).await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(lease(&app, "run-3a", Some(CODER)).await.0, StatusCode::OK);
+    // Its own run included: the binding names the agent, it does not authorise it.
+    assert_eq!(
+        lease(&app, "run-3a", Some(CODER)).await.0,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         lease(&app, "run-3b", Some(CODER)).await.0,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(lease(&app, "run-3b", Some(CHAT)).await.0, StatusCode::OK);
+    assert_eq!(
+        lease(&app, "run-3b", Some(CHAT)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // The two callers the lookup answers do.
+    assert_eq!(
+        lease(&app, "run-3a", Some(INJECTOR)).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        lease(&app, "run-3b", Some(ORCHESTRATOR)).await.0,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -209,7 +227,7 @@ async fn a_deleted_binding_is_run_not_bound_and_an_expired_one_is_lease_expired(
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _, body) = lease(&app, "run-4", Some(CODER)).await;
+    let (status, _, body) = lease(&app, "run-4", Some(INJECTOR)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
         serde_json::from_str::<Value>(&body).expect("JSON")["code"],
@@ -239,7 +257,7 @@ async fn a_deleted_binding_is_run_not_bound_and_an_expired_one_is_lease_expired(
         })
         .await
         .expect("bind a past deadline");
-    let (status, _, body) = lease(&app, "run-6", Some(CODER)).await;
+    let (status, _, body) = lease(&app, "run-6", Some(INJECTOR)).await;
     assert_eq!(status, StatusCode::GONE);
     assert_eq!(
         serde_json::from_str::<Value>(&body).expect("JSON")["code"],
@@ -255,7 +273,7 @@ async fn a_lease_never_passes_the_bindings_deadline() {
         bind(&app, "run-7", "coder", &deadline).await,
         StatusCode::NO_CONTENT
     );
-    let (status, _, body) = lease(&app, "run-7", Some(CODER)).await;
+    let (status, _, body) = lease(&app, "run-7", Some(INJECTOR)).await;
     assert_eq!(status, StatusCode::OK);
     let body: Value = serde_json::from_str(&body).expect("JSON");
     let expiry: Timestamp = body["expiresAt"]
@@ -334,7 +352,7 @@ async fn a_run_bound_to_one_endpoint_is_not_re_pointed_to_another() {
         "run_already_bound"
     );
     // The binding is still the first endpoint's.
-    let (status, _, body) = lease(&app, "run-12", Some(CODER)).await;
+    let (status, _, body) = lease(&app, "run-12", Some(INJECTOR)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         serde_json::from_str::<Value>(&body).expect("JSON")["token"],
@@ -366,7 +384,7 @@ async fn each_binding_leases_the_credential_of_the_endpoint_the_caller_named() {
     // The optional `model` of the route is the caller's choice and is kept as sent (ADR 0084
     // decision 1): nothing here re-resolves it.
     for (run, token) in [("run-13", "bearer-x"), ("run-14", "bearer-y")] {
-        let (status, _, body) = lease(&app, run, Some(CODER)).await;
+        let (status, _, body) = lease(&app, run, Some(INJECTOR)).await;
         assert_eq!(status, StatusCode::OK, "{run}");
         assert_eq!(
             serde_json::from_str::<Value>(&body).expect("JSON")["token"],
@@ -406,7 +424,7 @@ async fn an_agent_may_not_bind_or_unbind_and_a_bad_body_is_refused() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // The binding is still there: an agent's refusal changed nothing.
-    assert_eq!(lease(&app, "run-9", Some(CODER)).await.0, StatusCode::OK);
+    assert_eq!(lease(&app, "run-9", Some(INJECTOR)).await.0, StatusCode::OK);
 
     for bad in [
         json!({"run": "run-10"}).to_string(),
