@@ -27,11 +27,25 @@
 //!
 //! with every `len` and the `version` eight bytes, big-endian.
 //!
+//! # The vault
+//!
+//! [`PgVault`] is the [`VaultStore`](orch_ports::VaultStore) of the same database: a person's
+//! **named** secrets, a new version for every write, which a configuration names as
+//! `vault:<name>#v<n>` and never holds (ADR 0083, amended 2026-11-21). Its rows are in
+//! `vault_secrets`, sealed under the same keyring and bound to `(owner, name, version)` with a
+//! `vault` domain in front of the associated data, so a row moved to another owner, name or
+//! version — or into `user_secrets` — does not open. A write marks the version that was current
+//! as superseded and adds the next one in one transaction under the name's own advisory lock; a
+//! superseded version reads for [`SUPERSEDED_GRACE`](orch_ports::SUPERSEDED_GRACE) (24 hours) and
+//! is refused after that, on the store's [`Clock`](orch_ports::Clock). [`PgVault::purge`] is the
+//! housekeeping that removes what is past it.
+//!
 //! # Migrations
 //!
 //! [`PgSecretStore::migrate`] applies this crate's own migrations (`migrations/`), recorded in
 //! their own history table [`MIGRATIONS_TABLE`], so the crate does not depend on
-//! `orch-store-postgres` and the two histories never see each other's versions.
+//! `orch-store-postgres` and the two histories never see each other's versions. The vault's table
+//! is one of them, so a deployment that migrates the secret store has the vault too.
 //!
 //! ```no_run
 //! # async fn demo(url: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +62,9 @@ mod envelope;
 mod keys;
 mod rewrap;
 mod store;
+mod vault;
 
 pub use keys::{KEY_LEN, KeyBytes, KeyError, KeyId, Keyring, MAX_KEY_ID_LEN};
 pub use rewrap::{MAX_LISTED_FAILURES, RewrapFailure, RewrapFailureKind, RewrapReport};
 pub use store::{LOCK_TIMEOUT, MIGRATIONS_TABLE, PgSecretStore, advisory_lock_key, is_outage};
+pub use vault::{PgVault, vault_advisory_lock_key};

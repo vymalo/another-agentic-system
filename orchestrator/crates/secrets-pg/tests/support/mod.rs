@@ -476,6 +476,8 @@ tuple_from_row!(A 0, B 1, C 2, D 3);
 tuple_from_row!(A 0, B 1, C 2, D 3, E 4);
 tuple_from_row!(A 0, B 1, C 2, D 3, E 4, F 5);
 tuple_from_row!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+tuple_from_row!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+tuple_from_row!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
 
 /// Every row of `sql`.
 pub async fn fetch_all<T: FromRow>(db: &impl Db, sql: &str, params: &[Param<'_>]) -> Vec<T> {

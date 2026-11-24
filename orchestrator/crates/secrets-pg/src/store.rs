@@ -194,6 +194,19 @@ impl PgSecretStore {
         owner: &str,
         server: &str,
     ) -> Result<Transaction<'a>, SecretError> {
+        self.locked_in(conn, LOCK_DOMAIN, owner, server).await
+    }
+
+    /// [`locked`](Self::locked) with the domain of the lock given: a vault's writers take a lock of
+    /// their own, so a tool server's secret and a named secret that share a text never wait for
+    /// each other.
+    pub(crate) async fn locked_in<'a>(
+        &self,
+        conn: &'a mut Object,
+        domain: &str,
+        owner: &str,
+        slot: &str,
+    ) -> Result<Transaction<'a>, SecretError> {
         let tx = conn
             .build_transaction()
             .isolation_level(IsolationLevel::ReadCommitted)
@@ -209,7 +222,8 @@ impl PgSecretStore {
             let lock = tx
                 .prepare_cached("SELECT pg_advisory_xact_lock($1)")
                 .await?;
-            tx.execute(&lock, &[&lock_key(owner, server)]).await
+            tx.execute(&lock, &[&lock_key_in(domain, owner, slot)])
+                .await
         }
         .await;
         if let Err(err) = taken {
@@ -469,14 +483,32 @@ pub fn advisory_lock_key(owner: &UserId, server: &SecretServer) -> i64 {
     lock_key(owner.as_str(), &server.to_string())
 }
 
+/// The domain of the lock that serializes the writers of one tool server's secret.
+const LOCK_DOMAIN: &str = "orch-secrets-pg/lock/v1";
+
+/// The domain of the lock that serializes the writers of one secret of a person's vault.
+pub(crate) const VAULT_LOCK_DOMAIN: &str = "orch-secrets-pg/vault-lock/v1";
+
 /// The advisory lock of a key: 64 bits of the SHA-256 of a domain, the owner and the server, each
 /// text with its length in front. Two keys that share a lock only wait for each other; the lock's
 /// job is to serialize the writers of one key, and no other user of advisory locks in the database
 /// is likely to hit one of 2^64.
 pub(crate) fn lock_key(owner: &str, server: &str) -> i64 {
+    lock_key_in(LOCK_DOMAIN, owner, server)
+}
+
+/// The advisory lock of one secret of a person's vault ([`VaultName`](orch_ports::VaultName)),
+/// taken by every write of it. A different domain from [`lock_key`]: the two never collide.
+pub(crate) fn vault_lock_key(owner: &str, name: &str) -> i64 {
+    lock_key_in(VAULT_LOCK_DOMAIN, owner, name)
+}
+
+/// [`lock_key`] and [`vault_lock_key`]: 64 bits of the SHA-256 of the domain, the owner and the
+/// slot, each text with its length in front.
+fn lock_key_in(domain: &str, owner: &str, slot: &str) -> i64 {
     let mut hash = Sha256::new();
-    hash.update(b"orch-secrets-pg/lock/v1");
-    for text in [owner, server] {
+    hash.update(domain.as_bytes());
+    for text in [owner, slot] {
         hash.update(u64::try_from(text.len()).unwrap_or(u64::MAX).to_be_bytes());
         hash.update(text.as_bytes());
     }
@@ -486,8 +518,10 @@ pub(crate) fn lock_key(owner: &str, server: &str) -> i64 {
 
 /// This crate's migrations, in their own history table.
 fn migrator() -> Result<Migrator, SecretError> {
-    let migrations =
-        orch_pg_migrate::migrations!("migrations": "0001_user_secrets.sql").map_err(migrate_err)?;
+    let migrations = orch_pg_migrate::migrations!(
+        "migrations": "0001_user_secrets.sql", "0002_vault_secrets.sql"
+    )
+    .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
 }
 
