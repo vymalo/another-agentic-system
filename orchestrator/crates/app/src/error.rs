@@ -8,6 +8,7 @@ use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 use crate::authz::Permission;
 use crate::prompts::PromptRefusal;
 use crate::sharing::SharingMode;
+use crate::teams::TeamRefusal;
 use crate::user_tools::UserToolRefusal;
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
@@ -100,6 +101,11 @@ pub enum AppError {
     /// is too long. See [`PromptRefusal`].
     #[error(transparent)]
     Prompt(PromptRefusal),
+    /// A request about a person's team presets is refused (ADR 0074): a rule of the page, a member's
+    /// agent the person may not use, a name taken, the limit, a stale revision, no such preset. See
+    /// [`TeamRefusal`].
+    #[error(transparent)]
+    Team(TeamRefusal),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -290,6 +296,14 @@ impl Classify for AppError {
                 | PromptRefusal::InvalidAnswer(_)
                 | PromptRefusal::RenderedTooLong => ErrorClass::Rejected,
             },
+            AppError::Team(refusal) => match refusal {
+                TeamRefusal::NotFound => ErrorClass::NotFound,
+                TeamRefusal::Invalid(_) => ErrorClass::Invalid,
+                TeamRefusal::UnknownAgent { .. }
+                | TeamRefusal::NameTaken
+                | TeamRefusal::TooMany { .. }
+                | TeamRefusal::StaleRevision => ErrorClass::Rejected,
+            },
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -322,6 +336,7 @@ impl Classify for AppError {
             | AppError::Blocked { .. }
             | AppError::UserTool(_)
             | AppError::Prompt(_)
+            | AppError::Team(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
@@ -414,6 +429,12 @@ mod tests {
             }),
             AppError::UserTool(UserToolRefusal::AuthorizationUnavailable),
             AppError::UserTool(UserToolRefusal::Busy),
+            AppError::Team(TeamRefusal::NotFound),
+            AppError::Team(TeamRefusal::NameTaken),
+            AppError::Team(TeamRefusal::StaleRevision),
+            AppError::Team(TeamRefusal::UnknownAgent {
+                at: "members.0.agent".into(),
+            }),
             AppError::Prompt(PromptRefusal::NotFound),
             AppError::Prompt(PromptRefusal::NameTaken),
             AppError::Prompt(PromptRefusal::TooMany { limit: 100 }),
@@ -469,6 +490,11 @@ mod tests {
                 AppError::Prompt(refusal) => match refusal {
                     PromptRefusal::NotFound => ErrorClass::NotFound,
                     PromptRefusal::Invalid(_) => ErrorClass::Invalid,
+                    _ => ErrorClass::Rejected,
+                },
+                AppError::Team(refusal) => match refusal {
+                    TeamRefusal::NotFound => ErrorClass::NotFound,
+                    TeamRefusal::Invalid(_) => ErrorClass::Invalid,
                     _ => ErrorClass::Rejected,
                 },
                 AppError::Fork(inner) => inner.class(),

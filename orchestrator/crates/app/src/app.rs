@@ -499,7 +499,7 @@ pub enum ApplyOutcome {
 /// The thread service: validation, the transition + commit loop, and live event streams.
 pub struct App<P: Ports> {
     ports: P,
-    agents: AgentDirectory,
+    pub(crate) agents: AgentDirectory,
     cfg: AppConfig,
     ready: AtomicBool,
     shutting_down: AtomicBool,
@@ -529,7 +529,7 @@ fn validate_text(text: &str) -> Result<(), AppError> {
 /// for an agent the person already has in a thread of their own: it is their thread's, so the
 /// refusal tells them nothing. A caller that asks for an agent **by name** answers an audience
 /// differently, as it answers an agent that is not listed: see [`App::visible_agent`].
-fn denied_agent(denied: Denied, agent: &AgentId) -> AppError {
+pub(crate) fn denied_agent(denied: Denied, agent: &AgentId) -> AppError {
     match denied {
         Denied::Permission(permission) => AppError::missing_permission(permission),
         Denied::OutOfScope(permission) | Denied::Audience(permission) => {

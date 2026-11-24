@@ -651,7 +651,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 35] = [
+    let auth_ops: [(&str, reqwest::Method, String); 40] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("getMyUsage", reqwest::Method::GET, "/api/me/usage".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
@@ -708,6 +708,23 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "renderPrompt",
             reqwest::Method::POST,
             "/api/prompts/p-abcdefghijkl/render".into(),
+        ),
+        ("listTeams", reqwest::Method::GET, "/api/teams".into()),
+        ("createTeam", reqwest::Method::POST, "/api/teams".into()),
+        (
+            "getTeam",
+            reqwest::Method::GET,
+            "/api/teams/t-abcdefghijkl".into(),
+        ),
+        (
+            "replaceTeam",
+            reqwest::Method::PUT,
+            "/api/teams/t-abcdefghijkl".into(),
+        ),
+        (
+            "deleteTeam",
+            reqwest::Method::DELETE,
+            "/api/teams/t-abcdefghijkl".into(),
         ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
@@ -905,6 +922,12 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         json!({
             "search": {"maxQueryLength": 200, "maxTerms": 8},
             "prompts": {"limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768},
+            "teams": {
+                "limit": 50, "minMembers": 2, "maxMembers": 8, "maxRoleChars": 280,
+                "maxCharterBytes": 4096, "defaultMaxHandoffs": 6, "minMaxHandoffs": 6,
+                "maxMaxHandoffs": 20, "defaultPushTokens": 24000, "minPushTokens": 4000,
+                "maxPushTokens": 100000, "minApprovalSeconds": 5, "maxApprovalSeconds": 600
+            },
             "ui": {
                 "showDescriptions": true,
                 "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}

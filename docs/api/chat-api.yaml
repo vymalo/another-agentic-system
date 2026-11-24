@@ -80,6 +80,11 @@ info:
     of, are a **404**, the answer for an id that never existed; an audience member reads and renders a shared prompt and
     never learns its author. A prompt is in no thread, fork or export.
 
+    A person's team presets ([ADR 0074](../decisions/0074-agent-team.md), [`teams-v1.md`](teams-v1.md)): `listTeams`,
+    `createTeam`, `getTeam`, `replaceTeam` and `deleteTeam`. A preset is its owner's and nobody else's (a 404, the answer
+    for an id that never existed, for every other person, an administrator included); every member is an agent the caller
+    may use; a change is conditional on the revision (`If-Match`).
+
     Interaction (start a thread, send a message, answer a question, follow a
     thread live) is AG-UI ([ADR 0012](../decisions/0012-ag-ui-user-facing-protocol.md)):
     the `/agui/*` operations below, with the mapping, the connect binding and
@@ -935,6 +940,147 @@ paths:
         "409": { description: "`code: stale_revision`", $ref: "#/components/responses/Problem" }
         "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
         "422": { description: "`code: invalid_answer` (with `question` and `rule`) or `rendered_too_long`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+  /api/teams:
+    get:
+      operationId: listTeams
+      summary: The caller's own team presets, as summaries
+      description: |
+        A person's saved teams ([ADR 0074](../decisions/0074-agent-team.md), [`teams-v1.md`](teams-v1.md)): the presets the
+        caller owns, nobody else's. Each is a summary (no charter, no roles); `getTeam` has the whole. Ordered by `id`,
+        bytewise, **not by name**: a client sorts for display. `held` is how many presets the caller owns. A page holds at most
+        `limit` (50); `nextCursor` is the `cursor` of the next page. Never cached.
+
+        **Client recipe: starting a team.** (1) If `getConfig` has no `teams`, offer no presets. (2) List, and page with
+        `nextCursor` until it is absent. (3) The person picks one; start the thread with `forwardedProps["vymalo.team"] =
+        {presetId}` (a later slice of the contract).
+      parameters:
+        - name: cursor
+          in: query
+          description: "The `nextCursor` of the last page. Anything that is not a team id is 400 `bad_cursor`"
+          schema: { type: string, pattern: "^t-[a-z0-9]{12}$" }
+      responses:
+        "200":
+          description: A page of the caller's presets
+          headers:
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamList" }
+        "400": { description: "`code: bad_cursor`", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createTeam
+      summary: Save a team preset
+      description: |
+        Saves a preset ([`teams-v1.md`](teams-v1.md)). The checks run in one order: 401, 403 `no_access`, 415, 400
+        `bad_request` (a body that is not the object of this route), the rules of the page (400 with a `code` and `at`), then
+        **every member's agent**: 403 `forbidden` when the caller's roles do not name it, 422 `unknown_agent` (with `at`
+        `members.<i>.agent`) when no agent has that id **or its audience leaves the caller out** (the same answer: an agent a
+        person may not use is not there, [ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), and last the store (409
+        `name_taken`, then `too_many_teams`). The answer carries the `ETag` of the revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TeamInput" }
+      responses:
+        "201":
+          description: Saved
+          headers:
+            ETag: { description: "The revision, quoted", schema: { type: string } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Team" }
+        "400": { description: "`code: bad_request`, or a rule of the page (`bad_name`, `bad_title`, `bad_charter`, `bad_members`, `bad_member_name`, `bad_member_role`, `bad_member_agent`, `bad_member_release`, `bad_lead`, `bad_max_handoffs`, `bad_handoff_approval`, `bad_checkpoint`, `bad_push_tokens`) with `at`", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "`code: forbidden` (a member's agent is not one of the roles') or `no_access`", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: name_taken` (the caller already has that name) or `too_many_teams` (the caller holds 50)", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: unknown_agent`, with `at`: the member's agent is not listed or its audience leaves the caller out", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store or the registry cannot answer", $ref: "#/components/responses/Problem" }
+  /api/teams/{teamId}:
+    parameters: [ { $ref: "#/components/parameters/TeamId" } ]
+    get:
+      operationId: getTeam
+      summary: One team preset, whole
+      description: |
+        The caller's own preset. **Anything else is 404, the same answer as for an id that never existed**: another
+        person's preset (an administrator's included) and a deleted one. An id that is not `t-` and 12 characters of
+        `[a-z0-9]` is 400 `bad_request`. The `ETag` is the revision. Never cached.
+      responses:
+        "200":
+          description: The preset
+          headers:
+            ETag: { description: "The revision, quoted", schema: { type: string } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Team" }
+        "400": { description: "`code: bad_request`: the id is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such preset for the caller", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
+    put:
+      operationId: replaceTeam
+      summary: Replace a team preset of one's own
+      description: |
+        Replaces the whole preset (a member left out is gone) if it is still at the revision of `If-Match` (**required**: 400
+        `bad_request` without it, and for a value that is not the digits of a revision, quoted or not). Order: the id, `If-Match`,
+        415, the body, then the preset (404: not the caller's, whatever the body says), the rules of `createTeam`, the
+        members' agents, and last the store (409 `stale_revision`, then 409 `name_taken` for a rename onto another of the
+        caller's). A thread that a preset started keeps its own copy: changing a preset changes no conversation.
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: "The revision the caller last read (the `ETag`), `^\"?[1-9][0-9]{0,18}\"?$`"
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TeamInput" }
+      responses:
+        "200":
+          description: Replaced
+          headers:
+            ETag: { description: "The new revision, quoted", schema: { type: string } }
+            Cache-Control: { description: "`no-store`", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Team" }
+        "400": { description: "As `createTeam`, and no `If-Match` or one that is not a revision", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "`code: forbidden` or `no_access`", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such preset for the caller", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision` or `name_taken`", $ref: "#/components/responses/Problem" }
+        "415": { description: "The media type is not `application/json`", $ref: "#/components/responses/Problem" }
+        "422": { description: "`code: unknown_agent`", $ref: "#/components/responses/Problem" }
+        "503": { description: "The store or the registry cannot answer", $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteTeam
+      summary: Delete a team preset of one's own
+      description: |
+        Deletes the caller's own preset. With `If-Match` (optional) it is 409 `stale_revision` when the preset changed since.
+        Another person's preset and an absent one (the second delete included) are 404. No thread is touched: a thread keeps
+        the copy of the team it was formed with.
+      parameters:
+        - name: If-Match
+          in: header
+          description: "The revision the caller last read; when it is there and the preset has another, 409 `stale_revision`"
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "400": { description: "`code: bad_request`: the id or `If-Match` is not one", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "No such preset of the caller's", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: stale_revision`", $ref: "#/components/responses/Problem" }
         "503": { description: "The store cannot answer", $ref: "#/components/responses/Problem" }
   /api/threads:
     get:
@@ -2071,6 +2217,12 @@ components:
       required: true
       description: "The id of a prompt of the caller's or shared with them, `p-` and 12 lowercase letters or digits (`Prompt.id`). Any other string is 400 `bad_request`"
       schema: { type: string, pattern: "^p-[a-z0-9]{12}$" }
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      description: "The id of one of the caller's team presets, `t-` and 12 lowercase letters or digits (`Team.id`). Any other string is 400 `bad_request`"
+      schema: { type: string, pattern: "^t-[a-z0-9]{12}$" }
     Sha256:
       name: sha256
       in: path
@@ -2398,7 +2550,7 @@ components:
     PublicConfig:
       type: object
       required: [ui]
-      description: "`{ui, search, prompts}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`, `prompts`)."
+      description: "`{ui, search, prompts, teams}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`, `prompts`, `teams`)."
       properties:
         search:
           type: object
@@ -2416,6 +2568,24 @@ components:
             maxVariables: { type: integer, minimum: 1, description: "The most variables of a prompt (8)" }
             maxBodyBytes: { type: integer, minimum: 1, description: "The longest body in UTF-8 bytes (16384)" }
             maxRenderedBytes: { type: integer, minimum: 1, description: "The longest rendered text in UTF-8 bytes (32768)" }
+        teams:
+          type: object
+          description: "**Its presence is the capability**: this orchestrator serves team presets ([ADR 0074](../decisions/0074-agent-team.md), [`teams-v1.md`](teams-v1.md)). An older one leaves it out, and a client then offers no presets. The numbers are the defaults and bounds the server enforces, for a client that draws a form."
+          required: [limit, minMembers, maxMembers, maxRoleChars, maxCharterBytes, defaultMaxHandoffs, minMaxHandoffs, maxMaxHandoffs, defaultPushTokens, minPushTokens, maxPushTokens, minApprovalSeconds, maxApprovalSeconds]
+          properties:
+            limit: { type: integer, minimum: 1, description: "The most presets a person holds (50)" }
+            minMembers: { type: integer, description: "2" }
+            maxMembers: { type: integer, description: "8" }
+            maxRoleChars: { type: integer, description: "The longest member role, in characters (280)" }
+            maxCharterBytes: { type: integer, description: "The longest charter in UTF-8 bytes (4096)" }
+            defaultMaxHandoffs: { type: integer, description: "What a form pre-fills for `maxHandoffs` (6). A request that omits it is 400: the server fills nothing in" }
+            minMaxHandoffs: { type: integer, description: "6" }
+            maxMaxHandoffs: { type: integer, description: "20" }
+            defaultPushTokens: { type: integer, description: "What a form pre-fills for `pushTokens` (24000)" }
+            minPushTokens: { type: integer, description: "4000" }
+            maxPushTokens: { type: integer, description: "100000" }
+            minApprovalSeconds: { type: integer, description: "The shortest wait of `handoffApproval: {after: {seconds}}` (5)" }
+            maxApprovalSeconds: { type: integer, description: "The longest (600)" }
         ui:
           type: object
           description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know."
@@ -2585,6 +2755,84 @@ components:
         limit: { type: integer, minimum: 1, description: "The page size: the most prompts one answer of `listPrompts` holds (100). It is not the cap on what a person owns, which is `prompts.limit` of `getConfig`: two numbers that are equal today and are not promised to stay so" }
         held: { type: integer, minimum: 0, description: "How many prompts the caller owns, whatever the scope" }
         items: { type: array, items: { $ref: "#/components/schemas/PromptSummary" } }
+        nextCursor: { type: string, description: "Send it back as `cursor` for the next page; absent on the last" }
+    TeamPresetId:
+      type: string
+      pattern: "^t-[a-z0-9]{12}$"
+      description: "`t-` and 12 lowercase letters or digits. Global: the id alone names a preset, and only its owner can read it"
+    TeamMember:
+      type: object
+      required: [name, target, role]
+      description: "A member of a team preset: a name (the ledger's, `@name` in a message), the agent it is, what it is for, and how its history reaches it."
+      properties:
+        name: { type: string, description: "`^[a-z0-9][a-z0-9-]{0,31}$`, unique in the team" }
+        target: { $ref: "#/components/schemas/AgentTarget" }
+        role: { type: string, maxLength: 280, description: "What the member is for, a line the brief gives it" }
+        history:
+          type: string
+          enum: [agent-keeps, orchestrator-sends]
+          default: agent-keeps
+          description: "`agent-keeps`: the agent keeps the conversation. `orchestrator-sends`: the orchestrator sends the thread's history on every turn"
+    TeamCheckpoints:
+      type: object
+      properties:
+        after: { type: array, uniqueItems: true, items: { type: string }, description: "Names of members whose turn pauses the team when it ends" }
+        beforePullRequest: { type: boolean, default: false }
+    HandoffApproval:
+      description: "When a hand-off runs: `\"ask\"` (every hand-off waits for the person, the default), `\"auto\"`, or `{after: {seconds}}` (5 to 600) which goes unless the person acted"
+      oneOf:
+        - type: string
+          enum: [ask, auto]
+        - type: object
+          required: [after]
+          properties:
+            after:
+              type: object
+              required: [seconds]
+              properties:
+                seconds: { type: integer, minimum: 5, maximum: 600 }
+    TeamInput:
+      type: object
+      required: [name, title, lead, members, charter, maxHandoffs, pushTokens]
+      description: "What `createTeam` and `replaceTeam` read: the whole preset without its id, revision and time. The bounds are `teams` of `getConfig`."
+      properties:
+        name: { type: string, description: "`^[a-z0-9][a-z0-9-]{0,31}$`, unique among the caller's presets" }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        lead: { type: string, description: "The name of the member an unaddressed message goes to" }
+        members: { type: array, minItems: 2, maxItems: 8, items: { $ref: "#/components/schemas/TeamMember" } }
+        charter: { type: string, description: "At most 4096 UTF-8 bytes: the brief every member is given" }
+        maxHandoffs: { type: integer, minimum: 6, maximum: 20 }
+        handoffApproval: { $ref: "#/components/schemas/HandoffApproval" }
+        checkpoints: { $ref: "#/components/schemas/TeamCheckpoints" }
+        pushTokens: { type: integer, minimum: 4000, maximum: 100000 }
+        summary: { type: boolean, default: false }
+    Team:
+      allOf:
+        - $ref: "#/components/schemas/TeamInput"
+        - type: object
+          required: [id, revision, updatedAt]
+          properties:
+            id: { $ref: "#/components/schemas/TeamPresetId" }
+            revision: { $ref: "#/components/schemas/PromptRevision" }
+            updatedAt: { type: string, format: date-time }
+    TeamSummary:
+      type: object
+      required: [id, name, title, lead, memberCount, revision, updatedAt]
+      properties:
+        id: { $ref: "#/components/schemas/TeamPresetId" }
+        name: { type: string }
+        title: { type: string }
+        lead: { type: string }
+        memberCount: { type: integer, minimum: 2, maximum: 8 }
+        revision: { $ref: "#/components/schemas/PromptRevision" }
+        updatedAt: { type: string, format: date-time }
+    TeamList:
+      type: object
+      required: [limit, held, items]
+      properties:
+        limit: { type: integer, minimum: 1, description: "The page size (50). It is not the cap on what a person owns, which is `teams.limit` of `getConfig`" }
+        held: { type: integer, minimum: 0, description: "How many presets the caller owns" }
+        items: { type: array, items: { $ref: "#/components/schemas/TeamSummary" } }
         nextCursor: { type: string, description: "Send it back as `cursor` for the next page; absent on the last" }
     CreatePromptRequest:
       type: object

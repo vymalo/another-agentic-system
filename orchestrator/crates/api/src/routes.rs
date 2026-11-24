@@ -700,13 +700,14 @@ pub(crate) async fn put_thread_tools<P: Ports>(
 /// `GET /api/config`: the `ui` section of the configuration, and `search`, the capability of this
 /// build (ADR 0068, ADR 0067 rule 3): the member is there because this process serves `searchThreads`.
 /// `prompts` is the same for the prompt library (ADR 0070): the routes are always on, and the numbers are
-/// what they enforce.
+/// what they enforce. `teams` is the same for the team presets (ADR 0074).
 #[derive(Serialize)]
 pub(crate) struct PublicConfigView<'a> {
     #[serde(flatten)]
     config: &'a orch_app::PublicConfig,
     search: crate::search::SearchCapability,
     prompts: crate::prompts::PromptsCapability,
+    teams: crate::teams::TeamsCapability,
 }
 
 pub(crate) async fn public_config<P: Ports>(
@@ -716,6 +717,7 @@ pub(crate) async fn public_config<P: Ports>(
         config: state.app.public_config(),
         search: crate::search::SearchCapability::default(),
         prompts: crate::prompts::PromptsCapability::default(),
+        teams: crate::teams::TeamsCapability::default(),
     };
     Json(serde_json::to_value(view).unwrap_or(serde_json::Value::Null))
 }
