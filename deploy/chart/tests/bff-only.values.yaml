@@ -5,6 +5,10 @@
 # the deployment's own, and none of them is real here.
 host: agentic.example.org
 
+# The association documents are served from this chart's web host, which this shape does not render: the shape turns them off
+# rather than leaving a ConfigMap nothing serves (templates/_validate.tpl refuses the pair).
+mobileAppLinks:
+  enabled: false
 ingress:
   enabled: false
 edge:
