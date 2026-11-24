@@ -372,7 +372,12 @@ async fn a_deployment_may_lower_the_ceiling_and_never_raise_it() {
             eleven_mib()[..(10 * MIB as usize)].to_vec(),
         )
         .await;
-    assert_eq!(exact.status, 201, "{}", String::from_utf8_lossy(&exact.body));
+    assert_eq!(
+        exact.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&exact.body)
+    );
     assert_eq!(exact.json()["size"], 10 * MIB);
     assert_eq!(h.bucket.objects(), 1);
 }
