@@ -39,7 +39,11 @@
 #
 # compose.live.yaml (an override, `-f compose.yaml -f compose.live.yaml`) points the coder at a real model
 # and a real GitHub, reading .env (copy .env.example): dev/README.md, "Going live".
-name: another-agentic-system
+#
+# **No `name:` on purpose.** Compose derives the project from the directory the file is in, so every git
+# worktree gets its own project: a `docker compose up` in one worktree can no longer recreate another's
+# containers with its own settings (sys#393). The main checkout keeps the name `another-agentic-system`
+# because that is its directory; a `COMPOSE_PROJECT_NAME` in the environment still overrides either.
 
 x-wiremock: &wiremock
   image: wiremock/wiremock:3.13.2 # verified 2026-09-29 (Docker Hub registry API); newest 3.x stable

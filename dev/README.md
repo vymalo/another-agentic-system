@@ -21,6 +21,12 @@ bound to `127.0.0.1`.
 
 ### Start it
 
+**One stack per worktree, without doing anything.** `compose.yaml` names no compose project, so Docker
+Compose derives it from the directory the file is in: the main checkout's stack is
+`another-agentic-system`, and a worktree at `../wt-fix` gets `wt-fix`. A `docker compose up` in one
+worktree therefore cannot recreate another's containers with its own settings (sys#393), and the
+`COMPOSE_PROJECT_NAME` variable still overrides both when you want a name of your own.
+
 ```sh
 docker compose --profile app up --build
 ```
