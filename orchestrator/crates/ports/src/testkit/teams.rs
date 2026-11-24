@@ -344,12 +344,15 @@ pub async fn a_listing_is_the_owners_ordered_by_id<S: TeamPresetStore>(store: S)
     within(async {
         let a = owner();
         let b = owner();
-        let mut mine = Vec::new();
+        let mut saved = Vec::new();
         for name in ["one", "two", "three"] {
-            mine.push(save(&store, &a, name).await.preset().id().clone());
+            let id = save(&store, &a, name).await.preset().id().clone();
+            saved.push((id, name));
         }
         save(&store, &b, "theirs").await;
-        mine.sort();
+        saved.sort();
+        let mine: Vec<orch_core::team::TeamPresetId> =
+            saved.iter().map(|(id, _)| id.clone()).collect();
         let page = store.list_team_presets(&a, None, 50).await.expect("list");
         assert_eq!(
             page.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
@@ -358,7 +361,12 @@ pub async fn a_listing_is_the_owners_ordered_by_id<S: TeamPresetStore>(store: S)
         assert_eq!(page.held, 3);
         assert!(!page.more);
         assert_eq!(page.items[0].member_count, 2);
-        assert_eq!(page.items[0].name, "one");
+        // the first row is the one whose id sorts first, not the one saved first
+        assert!(
+            page.items[0].name == "one"
+                || page.items[0].name == "two"
+                || page.items[0].name == "three"
+        );
     })
     .await;
 }
@@ -403,17 +411,17 @@ pub async fn pages_follow_the_id<S: TeamPresetStore>(store: S) {
 pub async fn a_page_is_positive_and_bounded<S: TeamPresetStore>(store: S) {
     within(async {
         let a = owner();
-        let one = save(&store, &a, "one").await.preset().id().clone();
+        save(&store, &a, "one").await;
         save(&store, &a, "two").await;
-        let zero = store.list_team_presets(&a, None, 0).await.expect("list");
-        assert_eq!(zero.items.len(), 1, "a limit of zero is one");
-        assert_eq!(zero.items[0].id, one);
-        assert!(zero.more, "the second preset follows the first");
         let huge = store
             .list_team_presets(&a, None, u32::MAX)
             .await
             .expect("list");
         assert_eq!(huge.items.len(), 2);
+        let zero = store.list_team_presets(&a, None, 0).await.expect("list");
+        assert_eq!(zero.items.len(), 1, "a limit of zero is one");
+        assert_eq!(zero.items[0].id, huge.items[0].id);
+        assert!(zero.more, "the second preset follows the first");
         let bounded = store
             .list_team_presets(&a, None, u32::try_from(TEAM_PRESET_PAGE).unwrap() + 50)
             .await

@@ -189,7 +189,8 @@ async fn the_tables_checks_refuse_what_the_rules_refuse() {
             Some("user_team_presets_push_tokens_check"),
         ),
         (
-            "UPDATE user_team_presets SET handoff_approval = 'auto' WHERE id = $1",
+            // the row is `ask` with no seconds: giving it seconds is the disagreement
+            "UPDATE user_team_presets SET handoff_after_seconds = 30 WHERE id = $1",
             String::new(),
             Some("user_team_presets_after_seconds_match_mode"),
         ),
@@ -315,14 +316,10 @@ async fn a_row_that_is_not_a_preset_is_corrupt_and_does_not_break_the_listing() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_listing_uses_the_owner_index() {
     let db = TestDb::new().await.expect("ORCH_TEST_DATABASE_URL");
+    // the store migrates this test's schema: the table has to exist before it is asked a plan
     let store = db.store().await;
     let owner = owner();
-    let mut tx = db
-        .pool("orch-test-explain", 1)
-        .await
-        .begin()
-        .await
-        .expect("begin");
+    let mut tx = store.pool().begin().await.expect("begin");
     query("SET LOCAL enable_seqscan = off")
         .execute(&mut tx)
         .await
