@@ -32,11 +32,14 @@ fn env() -> Fake {
         )
 }
 
-const SECTION: &str = "\
-    token: { env: ORCH_RUN_TOKEN }
-    agents:
-      model-a: { env: AGENT_RUN_TOKEN }
-";
+/// The section's keys, indented as `server.internal` holds them. Built with `concat!` and not
+/// with a `"\`-continued literal: a backslash before a newline strips the next line's leading
+/// white space, and the first line would then sit at column 1, under `internal:`.
+const SECTION: &str = concat!(
+    "    token: { env: ORCH_RUN_TOKEN }\n",
+    "    agents:\n",
+    "      model-a: { env: AGENT_RUN_TOKEN }\n",
+);
 
 #[test]
 fn the_listener_is_its_own_address_and_its_tokens_are_resolved() {
