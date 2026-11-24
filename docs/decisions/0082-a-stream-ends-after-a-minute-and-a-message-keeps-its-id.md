@@ -2,7 +2,7 @@
 
 - **Status:** **proposed (2026-11-21)**. **Both halves are built in this change** (branch `stream-hardening`, off `d9258d2c`): the
   orchestrator's lifetime and attach, and the web's dead-stream detection, jitter and draft-owned message id. The owner decided on 2026-11-21 to
-  *"propose the generic stream changes in the open source, in neutral wording"* (another-context, the persona answers, decision 52):
+  *"propose the generic stream changes in the open source, in neutral wording"* (the owner's private decision log, the persona answers, decision 52):
   a heartbeat every 15 s, streams that end and reopen, and a client-made message id — **with no market in the text**. The
   constraints it answers are two requirements of a private persona analysis.
   Amends [ADR 0012](0012-ag-ui-user-facing-protocol.md) (the connect stream) and [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md)
@@ -124,3 +124,5 @@ already an input of `translate`. **1, protocols only** — SSE and the AG-UI con
 - **A run id on the `user_message` that the client can read back** (a new field, or an endpoint that answers "which run did this
   message open"). The log already says it in `user_message.run_id`, and the AG-UI projection already folds every event of the
   thread to answer the request, so a field would be a second source of the same fact.
+
+Edited 2026-11-24: a private repository's name, paths and issue numbers were removed from the sources above (privacy); no decision changed.

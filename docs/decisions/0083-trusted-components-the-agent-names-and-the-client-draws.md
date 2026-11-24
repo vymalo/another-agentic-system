@@ -5,7 +5,7 @@
   creation widget, 'Here, I can't see what you're doing, but just use this component to create the api-key and voilà!' The info never goes to the server.
   We can use this for everything sensible"*, and then *"It can even generate a secret and save into the vault directly right? The UI can show a first form for the
   generation, then later the form for collecting"*. The four rules below are the ones he accepted; the two extra components come from the second sentence.
-  Private context: the `trusted` page of the simpler-UI build (another-context#71, `a626f294`; 21 boards) and the decision rows 106–108 (another-context#70).
+  Private context: the `trusted` page of the simpler-UI build (the owner's private design record; 21 boards) and the decision rows 106–108.
   **Nothing of it is copied here** — the public page names no payment, checkout, pack, price or market, and the `credits` boards stay private.
 
 ## Context
@@ -79,7 +79,7 @@ store, and this ADR does not pretend otherwise.
 
 ### Amended 2026-11-21 (the vault boards): the reference form, and rotation
 
-The owner's vault boards landed after this ADR merged (`T8 · The vault`, another-context#72 `e902e828`; decision row 114, not yet confirmed in
+The owner's vault boards landed after this ADR merged (`T8 · The vault`, the owner's private design record; decision row 114, not yet confirmed in
 detail), and they fix four things the ADR had left open. Nothing above changes; this is what the boards add.
 
 1. **The reference form.** The boards show `vault://<org>/<project>/<name>#v<n>` as a placeholder. This deployment has no project concept and one
@@ -130,3 +130,5 @@ the sealed store holds today. This note fixes the form those two will use, not t
 `@` property, a top-level `anyOf`/`oneOf` or `allowedParents`/`allowedChildren` is refused; `orch-core` refuses none of those (`orchestrator/crates/core/src/ui_catalog.rs:63`,
 `:480-516`, `:526-543`; `orchestrator/crates/app/src/catalog.rs:63-85`). It is unrelated to trusted components — and it is exactly the kind of place where a rule
 "the contract says so" would later be trusted without being enforced. It gets its own issue rather than a silent fix here.
+
+Edited 2026-11-24: a private repository's name, paths and issue numbers were removed from the sources above (privacy); no decision changed.
