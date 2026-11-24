@@ -3,7 +3,8 @@
 The MCP server surface. An MCP client (Claude Code, opencode, any client that speaks
 [streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)) gives the
 orchestrator a job and follows it with six tools at `/mcp`: `list_agents`, `start_job`, `get_job`, `wait_for_job`,
-`answer` and `cancel_job`. The decision, with its diagrams, is
+`answer` and `cancel_job`, and serves the caller's prompt library as MCP prompts (`prompts/list`, `prompts/get`). The
+decision, with its diagrams, is
 [ADR 0019](../../../docs/decisions/0019-mcp-server-over-streamable-http.md).
 
 ## Where it sits
@@ -69,6 +70,29 @@ a malformed call (unknown tool, arguments that do not fit, a `gate` of the wrong
 protocol errors. Every tool but `wait_for_job` is cut off after 30 s (a tool error). Text that came from an agent or the
 log (titles, pull request fields, findings) is cut to a size in the results, and only an `https` pull request URL is
 reported.
+
+### The prompts
+
+The caller's prompt library ([ADR 0070](../../../docs/decisions/0070-a-persons-prompt-library.md),
+[`docs/api/prompts-v1.md`](../../../docs/api/prompts-v1.md)) is served as MCP prompts: the same principal as the tools,
+so the same list `/api/prompts?scope=all` gives them. `prompts` is enabled in the server's capabilities.
+
+| Method | Arguments | Result |
+|---|---|---|
+| `prompts/list` | none | every prompt the caller sees (their own and the ones shared with their roles), in one page: `name`, `title`, `description`, and its variables as `arguments` (the variable's `id`, its `question`, and `required`) |
+| `prompts/get` | `name`, `arguments?` | one message, role `user`, its text the prompt rendered by `App::render_prompt`; nothing is sent and nothing is written |
+
+* **Name.** A prompt is listed under its own name; two prompts the caller sees can hold one name (names are unique per
+  owner), and then **both** are listed under their `id` (`p-…`). A client echoes a name it was given; it does not parse
+  one.
+* **Arguments** are strings, one per variable: a `text`/`longText` takes the text; a kind that takes several
+  (`multiple`, `rank`, a `select` with `multiple: true`) a comma-separated list; everything else one value (a choice by
+  its `value`, a `scale` or `number` as its digits).
+* **Errors** are protocol errors: `unknown prompt "<name>"` for one the caller's library does not hold (another
+  person's private one, one shared with roles they do not have, and one that never existed alike),
+  `unknown argument "<name>"`, and for an answer the rules refuse, the variable's id and the rule — never the value.
+* **One page.** `prompts/list` answers every prompt the caller sees in a single page and sends no cursor; reading the
+  variables costs one store read per prompt that has any.
 
 ### `wait_for_job`
 
