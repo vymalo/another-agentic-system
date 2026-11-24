@@ -66,6 +66,11 @@ data:
       {{- end }}
     agents:
       file: agents.yaml
+      {{- with .Values.orchestrator.agents.registry.url }}
+      registry:
+        url: {{ . | quote }}
+        token: { file: /run/secrets/orchestrator/agent-registry-token }
+      {{- end }}
     {{- if include "agentic.hasModel" . }}
     models:
       endpoints:

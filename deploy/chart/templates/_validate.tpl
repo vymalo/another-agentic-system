@@ -107,6 +107,22 @@ render instead of producing a route that forwards the client's own Authorization
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /* The platform's agent registry (ANR-685): a URL the binary accepts and a token that is a reference, the two together. */ -}}
+{{- $reg := .Values.orchestrator.agents.registry -}}
+{{- if not (and (kindIs "string" $reg.url) (kindIs "string" $reg.tokenProperty)) -}}
+{{- fail "orchestrator.agents.registry.url and orchestrator.agents.registry.tokenProperty must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if and $reg.url (not $reg.tokenProperty) -}}
+{{- fail "orchestrator.agents.registry.url needs orchestrator.agents.registry.tokenProperty: the AWS property of the registry's bearer" -}}
+{{- end -}}
+{{- if and $reg.tokenProperty (not $reg.url) -}}
+{{- fail "orchestrator.agents.registry.tokenProperty needs orchestrator.agents.registry.url: a token for a registry nobody reads" -}}
+{{- end -}}
+{{- if $reg.url -}}
+{{- if not (regexMatch "^https?://[^/@?#\\s]+(/[^?#\\s]*)?$" $reg.url) -}}
+{{- fail (printf "orchestrator.agents.registry.url must be an http or https URL with a host, no credential, query or fragment, got %q" $reg.url) -}}
+{{- end -}}
+{{- end -}}
 {{- /* The internal listener of the run routes (ADR 0084 decision 5, card ANR-378): a port a deployment can prepare, and a
 policy that never admits the whole namespace by accident. */ -}}
 {{- if not (kindIs "bool" .Values.orchestrator.internal.enabled) -}}

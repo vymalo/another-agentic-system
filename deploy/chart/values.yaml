@@ -170,6 +170,15 @@ orchestrator:
   # to the web; thread-tools is reached by the agents inside the cluster, never through the edge.
   # Others (mcp, webhook-*) need keys and edge routes this chart does not have yet: refused.
   surfaces: [agui, thread-tools]
+  # The platform's agent registry (`agents.registry`, docs/api/config.md; the binary's CompositeRegistry: the agents file's agents first,
+  # then the registry's). OFF with an empty `url`: nothing of it is rendered and the configuration has no `registry` key. `url` is the
+  # registry service, http or https, with no credential in it; `tokenProperty` is the property of the AWS secret (`externalSecrets.key`)
+  # that holds its bearer, mounted as a file and read as `{ file }`, never a value of this chart. The two go together: one without the
+  # other is refused. Needs an `orchestrator.image.tag` whose build has the feature `registry-platform` (a build without it exits 78).
+  agents:
+    registry:
+      url: ""
+      tokenProperty: ""
   # The internal listener the run routes are served on (ADR 0084 decision 5, card ANR-378): a second port that no edge
   # routes, for the credential broker's run routes (`POST /internal/runs`, `DELETE /internal/runs/{run}`,
   # `GET /internal/runs/{run}/lease`, ANR-147a). OFF by default, and the orchestrator serves nothing there until it is on:

@@ -172,6 +172,10 @@ spec:
               - key: sharing-secret
                 path: sharing-secret
               {{- end }}
+              {{- if .Values.orchestrator.agents.registry.url }}
+              - key: agent-registry-token
+                path: agent-registry-token
+              {{- end }}
               {{- if .Values.orchestrator.internal.enabled }}
               {{- /* The run routes' tokens (ADR 0084 decision 5): the orchestrator's own, and one per agent. */}}
               - key: internal-token

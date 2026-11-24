@@ -2563,6 +2563,25 @@ check "run routes: the port may not be 8080" fails helm template another-agentic
 check "run routes: enabled without the orchestrator's token is refused (the bind would answer nobody)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set orchestrator.internal.enabled=true
 check "run routes: an agent naming the orchestrator's own token is refused (the door would answer it as the orchestrator)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.coder=internal_orchestrator_token
 check "run routes: a key that is not an agent id is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.not_an_id=internal_coder_token
+# ---- The platform's agent registry (ANR-685): off by default, on by values ---------------------------------------------------
+registry_values="$chart/tests/registry.values.yaml"
+render
+config_of config.yaml "$cfg"
+check "agent registry off by default: the config has no registry key at all" cfg_lacks 'registry'
+check "agent registry off by default: no registry token is asked of the AWS secret or mounted" lacks 'agent-registry-token|agent_registry_token'
+check "values.yaml: orchestrator.agents.registry.url is empty by default" sh -c "awk '/^  agents:/{a=1} a && /^      url:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx '\"\"'"
+render -f "$registry_values"
+config_of config.yaml "$cfg"
+check "agent registry on: agents.registry has the url and the token as a { file } reference, beside agents.file" cfg_all '^  file: agents.yaml$' '^  registry:$' '^    url: "http://another-agentic-registry.another-agentic-platform.svc:8080/registry"$' '^    token: \{ file: /run/secrets/orchestrator/agent-registry-token \}$'
+check "agent registry on: the token is the AWS property named in the values, mounted where the config reads it" out_all '^    - secretKey: agent-registry-token$' '^        property: agent_registry_token$' '^              - key: agent-registry-token$' '^                path: agent-registry-token$'
+check "agent registry on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+check "agent registry on: the token is no inline value in the config" cfg_lacks 'registry.*token: [^{ ]'
+refused "an agent registry url with no token property" --set orchestrator.agents.registry.url=http://reg.example.svc:8080
+refused "an agent registry token property with no url" --set orchestrator.agents.registry.tokenProperty=agent_registry_token
+refused "an agent registry url with a credential" -f "$registry_values" --set orchestrator.agents.registry.url=http://user:pw@reg.example.svc:8080
+refused "an agent registry url that is not http or https" -f "$registry_values" --set orchestrator.agents.registry.url=ftp://reg.example.svc
+refused "an agent registry url with a query" -f "$registry_values" --set 'orchestrator.agents.registry.url=http://reg.example.svc/x?token=y'
+refused "an agent registry token given as a number (a value is never a reference)" -f "$registry_values" --set orchestrator.agents.registry.tokenProperty=12
 # ---- The model-credential injector (ADR 0084, S9): off by default, on by values ------------------------------------------
 injector_values="$chart/tests/injector.values.yaml"
 render
