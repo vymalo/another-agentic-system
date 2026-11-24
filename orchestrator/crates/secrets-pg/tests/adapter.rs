@@ -579,7 +579,7 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
         &[],
     )
     .await;
-    assert_eq!(count, 2, "the two migrations of this crate, once each");
+    assert_eq!(count, 3, "the three migrations of this crate, once each");
     // and the store works
     let server = credential("0123456789");
     secrets.put(&alice, &server, &material("x")).await.unwrap();
