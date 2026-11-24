@@ -3,6 +3,61 @@ Value checks that must stop a render, not surface as a broken rollout or, worse,
 Included from orchestrator-configmap.yaml, which every render contains, so they always run.
 */}}
 {{- define "agentic.validate" -}}
+{{- /* The model-credential injector (ADR 0084, S9): every value it needs, so a half-configured injector stops the
+render instead of producing a route that forwards the client's own Authorization. */ -}}
+{{- if not (kindIs "bool" .Values.injector.enabled) -}}
+{{- fail (printf "injector.enabled must be true or false, got %v" .Values.injector.enabled) -}}
+{{- end -}}
+{{- if .Values.injector.enabled -}}
+{{- if not (and (kindIs "string" .Values.injector.gatewayClassName) .Values.injector.gatewayClassName) -}}
+{{- fail "injector.gatewayClassName is required when the injector is on: the GatewayClass of the Envoy Gateway installation" -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.injector.upstream.url) .Values.injector.upstream.url) -}}
+{{- fail "injector.upstream.url is required when the injector is on: the OpenAI-compatible endpoint it fronts" -}}
+{{- end -}}
+{{- $upstream := urlParse .Values.injector.upstream.url -}}
+{{- if not (and (has $upstream.scheme (list "http" "https")) $upstream.hostname) -}}
+{{- fail (printf "injector.upstream.url must be an http or https URL with a host, got %q" .Values.injector.upstream.url) -}}
+{{- end -}}
+{{- $port := regexFind ":[0-9]+$" $upstream.host | trimPrefix ":" -}}
+{{- if and $port (or (lt (int $port) 1) (gt (int $port) 65535)) -}}
+{{- fail (printf "injector.upstream.url has a port outside 1-65535: %q" $port) -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.injector.model) .Values.injector.model) -}}
+{{- fail "injector.model is required when the injector is on: the model name the route selects" -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.injector.modelHeader) .Values.injector.modelHeader) -}}
+{{- fail "injector.modelHeader is required when the injector is on" -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9!#$%&'*+.^_`|~-]+$" .Values.injector.modelHeader) -}}
+{{- fail (printf "injector.modelHeader is not an HTTP header name: %q" .Values.injector.modelHeader) -}}
+{{- end -}}
+{{- if and (not .Values.injector.broker.url) (not .Values.orchestrator.internal.enabled) -}}
+{{- fail "injector needs the broker's run-lease route: set injector.broker.url, or turn on orchestrator.internal (the default address is its listener)" -}}
+{{- end -}}
+{{- $broker := include "agentic.injector.brokerUrl" . -}}
+{{- $brokerURL := urlParse $broker -}}
+{{- if not (and (has $brokerURL.scheme (list "http" "https")) $brokerURL.host) -}}
+{{- fail (printf "the injector's broker URL must be an http or https URL with a host, got %q" $broker) -}}
+{{- end -}}
+{{- if and .Values.externalSecrets.enabled (not (and (kindIs "string" .Values.injector.broker.tokenProperty) .Values.injector.broker.tokenProperty)) -}}
+{{- fail "injector.broker.tokenProperty is required with externalSecrets.enabled: the AWS property of the injector's own token" -}}
+{{- end -}}
+{{- if not (and (kindIs "float64" .Values.injector.broker.cacheTtlSecs) (ge (int .Values.injector.broker.cacheTtlSecs) 1) (le (int .Values.injector.broker.cacheTtlSecs) 30)) -}}
+{{- fail (printf "injector.broker.cacheTtlSecs must be a number between 1 and 30 (the lease is at most 30 s), got %v" .Values.injector.broker.cacheTtlSecs) -}}
+{{- end -}}
+{{- if not (and (kindIs "float64" .Values.injector.authorino.replicas) (ge (int .Values.injector.authorino.replicas) 1)) -}}
+{{- fail (printf "injector.authorino.replicas must be a positive number, got %v" .Values.injector.authorino.replicas) -}}
+{{- end -}}
+{{- if not (kindIs "slice" .Values.injector.authorino.audiences) -}}
+{{- fail "injector.authorino.audiences must be a list of audiences for the agent's service-account token" -}}
+{{- end -}}
+{{- range .Values.injector.authorino.audiences -}}
+{{- if not (kindIs "string" .) -}}
+{{- fail (printf "injector.authorino.audiences must be strings, got %v" .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- /* The internal listener of the run routes (ADR 0084 decision 5, card ANR-378): a port a deployment can prepare, and a
 policy that never admits the whole namespace by accident. */ -}}
 {{- if not (kindIs "bool" .Values.orchestrator.internal.enabled) -}}

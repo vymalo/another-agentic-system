@@ -1,0 +1,17 @@
+# Layered over examples/netcup.values.yaml by render-check.sh: the model-credential injector (S9) on, with its own
+# broker token as an AWS property and the run-lease listener it queries. Not a deployment's values: see README.md,
+# "The model-credential injector".
+injector:
+  enabled: true
+  gatewayClassName: eg
+  upstream:
+    url: http://model.example.invalid:8080
+  model: injector-model
+  broker:
+    tokenProperty: injector_broker_token
+  authorino:
+    audiences: [another-agentic-injector]
+orchestrator:
+  internal:
+    enabled: true
+    tokenProperty: internal_orchestrator_token

@@ -122,6 +122,7 @@ commented; the ones that matter:
 | `orchestrator.internal.enabled`, `.port` | `false`, `8081` | the credential broker's **run routes** (`POST /internal/runs`, `DELETE /internal/runs/{run}`, `GET /internal/runs/{run}/lease`, [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), cards ANR-378 and ANR-578) on a second port that **no Ingress and no edge route names**. It writes `server.internal` into the orchestrator's configuration, so the broker's router and **only** it is served there (no surface, no health); **OFF by default**, and a deployment turns it on only with an `orchestrator.image.tag` at or after the run routes' merge commit and a model endpoint whose key every lease answers. Refused: a port that is 8080 or outside 1025–65535, a non-boolean `enabled`, or `enabled` without `tokenProperty` |
 | `orchestrator.internal.tokenProperty`, `.agents` | `""`, `{}` | the **tokens of the run routes**: the AWS property of the orchestrator's own token (the bind and the unbind), and, per agent id, the property of the token it leases with. Read as files of the orchestrator's Secret, never as values of this chart. Refused: an empty property, a key that is not an agent id, an empty or non-string value, or two callers naming one property (the door would answer an agent as the orchestrator) |
 | `orchestrator.internal.injector.enabled`, `.namespace`, `.matchLabels` | `false`, `""`, `{}` | whether the **injector's** pods (Authorino or Agent Router, S9) may reach that port to look a lease up. The orchestrator's own pods are always admitted (the bind). **Refused: `enabled` without a namespace or without labels** — a policy with an empty selector admits every pod of the namespace, which is worse than no policy. `enabled` also needs `orchestrator.internal.enabled` |
+| `injector.enabled`, `.gatewayClassName`, `.upstream.url`, `.model`, `.broker.*`, `.authorino.*` | `false`, `""`, `""`, `""`, `""`/`""`/`30`, `""`/`1`/`[]` | [the model-credential injector](#the-model-credential-injector-s9): Agent Router in front of the model endpoint, Envoy Gateway's gRPC external authorization and Authorino, off by default. The model key never reaches an agent: Authorino answers the run's lease from the broker and adds it upstream only. Every value is refused when missing; `injector.broker.tokenProperty` is an AWS property, never a value |
 | `orchestrator.logLevel` | `info` | rendered as `RUST_LOG`, which **replaces** the orchestrator's default filter. The orchestrator adds **`rmcp=off`** to whatever it is, unless the value names `rmcp` (`info,rmcp=warn`): `info` runs as `info,rmcp=off`. `rmcp` is the MCP library, and it logs the words of the server it talks to (at `info`, the `instructions` of its handshake, which a stranger's server can use to say a lent bearer back) and the URL of a failed request. **Do not name `rmcp` where people add MCP servers** ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 5a review; [`orch-log-filter`](../../orchestrator/crates/log-filter/README.md)) |
 | `orchestrator.tasks.title.model`, `description.model` | `""` | the model's name at `model.baseUrl`; empty: off |
 | `orchestrator.history.windowed` | `true` | the kill switch of [opening a thread from its history](../../docs/api/history.md) ([ADR 0059](../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)): `false` writes `ui.history.windowed: false` and the web replays the whole log to open a thread, as it did before. On is the orchestrator's own default and is **not written**. Refused: a string or a number |
@@ -1618,6 +1619,81 @@ TokenReview or mTLS; the model keys are the deployment's own configuration, not 
 Authorino) is another chart's. A deployment that turns the port on but lists no key for a run's model answers `unavailable` to the
 lease, and one that lists no agent token admits no lookup at all (`401 unauthenticated`). *Verified 2026-11-24:* on renders only
 (`sh deploy/chart/tests/render-check.sh`); *unverified* on a cluster.
+
+## The model-credential injector (S9)
+
+The injector is the half of [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
+that keeps the deployment's model key out of every agent. It is a second, **internal** path to the model, rendered by this
+chart and **off by default**:
+
+```
+agent ──Authorization: its own (or none)──▶ Gateway (Agent Router, ClusterIP)
+                                              │  ext-authz gRPC
+                                              ▼
+                                          Authorino ── TokenReview ──▶ the agent's identity
+                                              │  GET /internal/runs/{X-Run-Id}/lease
+                                              ▼
+                                          the broker's internal listener
+                                              │  {token, expiresAt}
+                                              ▼
+                                          ok_response: Authorization = Bearer <token>
+                                              │
+                                              ▼
+                                          the model endpoint
+```
+
+What the chart renders when `injector.enabled` is true (values.yaml, `injector`):
+
+| Object | What it is |
+|---|---|
+| `Gateway` + `EnvoyProxy` | Agent Router's Gateway, and the EnvoyProxy that pins its Service name and makes it `ClusterIP`. The Service lives in Envoy Gateway's namespace; **the Gateway has no Ingress and no edge route.** |
+| `ClientTrafficPolicy` | `bufferLimit` (`50Mi`): a model answer is larger than Envoy's default 32 KiB. |
+| `Backend`, `BackendTLSPolicy`, `AIServiceBackend`, `AIGatewayRoute` | the upstream from `injector.upstream.url`, and the route that selects it by `injector.modelHeader: injector.model`. With an `https` upstream the policy validates it against the system CA. |
+| `Authorino`, `AuthConfig` | the authorizer: a `kubernetesTokenReview` of the agent's service-account token, the broker lookup keyed by `X-Run-Id` and cached per run for at most `broker.cacheTtlSecs` (≤ 30 s, the lease), and `Authorization: Bearer {metadata.lease.token}` in `response.success.headers`. |
+| `SecurityPolicy` | `extAuth.grpc` to Authorino's Service, scoped to the **`HTTPRoute` Agent Router generates** from the `AIGatewayRoute` (same name), not to the whole Gateway. |
+| `ExternalSecret` | the injector's own broker token, from `injector.broker.tokenProperty` of the AWS secret. A property name, never a value. |
+
+`Authorization` is a `plain.selector`, never a `plain.value`: Authorino v0.26.4 emits a static `plain.value` as a Go struct
+dump, not a string (*verified 2026-11-24* on v0.26.4), and the real case needs the lease's value anyway. Envoy Gateway
+applies the ok_response headers to the upstream request and **replaces** a client-sent `Authorization`: exactly one header
+arrives at the model (*verified 2026-11-24*, Envoy Gateway v1.10.0 with Agent Router v1.3.0; `dev/agent-router-spike/`).
+
+Turning it on takes the controllers (Envoy Gateway, Agent Router's CRDs and controller, the Authorino operator — none is
+this chart's) and these values:
+
+```yaml
+injector:
+  enabled: true
+  gatewayClassName: eg                        # the GatewayClass of the Envoy Gateway installation
+  upstream:
+    url: http://model-gateway.ai.svc:8080     # the real endpoint, with the OpenAI path's /v1 base
+  model: deploy-model                         # the name the agents send in x-ai-eg-model
+  broker:
+    tokenProperty: injector_broker_token      # AWS property of the injector's own token
+orchestrator:
+  internal:
+    enabled: true                             # the run-lease listener the AuthConfig queries
+    tokenProperty: internal_orchestrator_token
+```
+
+The agents then point at the injector, not at the model: `model.baseUrl` (and each agent's `MODEL_BASE_URL`) is
+`http://<fullname>-injector-envoy.<Envoy Gateway namespace>.svc/v1`. The Service name is pinned by `injector.envoyServiceName`
+(empty: `<gatewayName>-envoy`), because Envoy Gateway otherwise autogenerates it. The run-lease NetworkPolicy admits
+Authorino's pods automatically (`authorino-resource: <authorino name>`, the label its operator sets); **Authorino's own
+ingress** from Envoy Gateway's namespace is not rendered, so a cluster with a default-deny policy needs one rule there.
+
+**Fail closed.** With `injector.enabled` false nothing of this section is rendered and the render is byte-identical to
+before (`tests/render-check.sh`). With it true, the render is refused when `gatewayClassName`, `upstream.url`, `model`,
+the broker URL (or `orchestrator.internal.enabled`), the token property (with `externalSecrets.enabled`), a
+`cacheTtlSecs` above 30, or a non-positive replica count is missing; an upstream that is not an `http`/`https` URL is
+refused too.
+
+**What this does not cover yet, stated plainly.** None of it is run on a cluster by this chart's tests — only rendered
+(`tests/golden/injector.yaml`) and proven for the transport by `dev/agent-router-spike/`. TLS on the ext-auth hop is not
+rendered (Envoy Gateway v1.10's `extAuth.grpc` has no TLS field, *verified 2026-11-24*); TLS on the agent-to-Gateway hop
+is not rendered either. And the broker's injector token is the seam `SharedTokens::with_injector` (*in the broker crate*),
+which the orchestrator binary does not yet pass and `orchestrator.internal` does not yet name: until that wiring lands,
+the AuthConfig's lookup answers `401 unauthenticated`, and every model call through the injector fails closed.
 
 ## The browser agent (ADR 0057)
 

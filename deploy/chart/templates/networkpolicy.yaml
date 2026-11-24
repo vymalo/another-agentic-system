@@ -106,6 +106,16 @@ spec:
             matchLabels:
               {{- toYaml .Values.orchestrator.internal.injector.matchLabels | nindent 14 }}
         {{- end }}
+        {{- if .Values.injector.enabled }}
+        # This chart's own injector (values.yaml, `injector`): Authorino's pods query the lease. The label is the one
+        # the Authorino operator puts on the instance's pods (`authorino-resource: <CR name>`).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+          podSelector:
+            matchLabels:
+              authorino-resource: {{ include "agentic.injector.authorinoName" . | quote }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.orchestrator.internal.port }}
