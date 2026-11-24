@@ -1,7 +1,7 @@
 # A2A extension: model pick (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/model-pick/v1`
-- **Status:** **proposed 2026-11-23; the orchestrator's side is built** (slice 2 of ANR-14: the card read, the activation, the checks and the typed `422`s, the log, the thread default and its `PATCH`); **no agent lists it yet** (adam's half is ANR-139) and the web has no control yet. Decided in [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md).
+- **Status:** **proposed 2026-11-23; the orchestrator's side is built** (slice 2 of ANR-14: the card read, the activation, the checks and the typed `422`s, the log, the thread default and its `PATCH`), **the web's chips are built** (slice 3b, 2026-11-24: `web/src/features/pick`, drawn from `AgentInfo.pick` while the live card lists each axis) and **a `dev/` mock lists both** (`dev/wiremock/pick`, `dev/pick-e2e.sh`); **no real agent lists it yet** (adam's half is ANR-139). Decided in [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md).
 - **Served by:** an agent whose card lists it (adam-rs does not yet). **Used by:** the orchestrator and the web.
 - **Effort** is not this extension: it is adam's `reasoning/v1` (`https://agents.vymalo.com/a2a/extensions/reasoning/v1`, `params {efforts, default?}`, `metadata[URI] = {"effort": "<level>"}`), used as it stands.
 
@@ -34,7 +34,7 @@ The URI is activated in `A2A-Extensions` and `message.extensions`; `message.meta
 
 ## Stored
 
-The `user_message` holds the resolved pick as `pick: {model?, reasoningEffort?}` (omitted when none, an axis omitted when not named); the thread row holds its default (`threads.pick`, one column in each store, no event). Redelivery, a fork's first message (`model`, `reasoningEffort` on the fork body) and an edit that names none carry it; the projection shows nothing of it yet (the chip is the web's, slice 3). A thread's default is **not** copied into a fork or an export.
+The `user_message` holds the resolved pick as `pick: {model?, reasoningEffort?}` (omitted when none, an axis omitted when not named); the thread row holds its default (`threads.pick`, one column in each store, no event). Redelivery, a fork's first message (`model`, `reasoningEffort` on the fork body) and an edit that names none carry it; the projection shows nothing of it (the chips are the composer's, `web/src/features/pick`). A thread's default is **not** copied into a fork or an export.
 
 `PATCH /api/threads/{id}` with `model` and/or `reasoningEffort` answers the thread with those two members set to the default as it is now; `null` clears an axis, an absent member leaves it.
 

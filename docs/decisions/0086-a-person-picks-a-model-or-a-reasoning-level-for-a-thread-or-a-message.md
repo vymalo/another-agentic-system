@@ -2,7 +2,7 @@
 
 - **Status:** **proposed 2026-11-23** (task ANR-14, issue #415, parity gap 15). **The orchestrator's side is built (slice 2,
   2026-11-23)**: the card read, the activation, the checks and the typed `422`s, the log, the thread default and its `PATCH`;
-  the web's chips are slice 3 and the adam half is ANR-139. This record fixes the names and the rules the build follows. **Contract:** [`docs/api/model-pick-v1.md`](../api/model-pick-v1.md).
+  **the web's chips are built (slice 3b, 2026-11-24)** and a `dev/` mock lists both extensions; the adam half is ANR-139. This record fixes the names and the rules the build follows. **Contract:** [`docs/api/model-pick-v1.md`](../api/model-pick-v1.md).
   **Pattern:** [ADR 0008](0008-platform-integration-via-a2a-extension.md); the closest working examples are the access tier
   ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)) and the locale hint
   ([ADR 0085](0085-the-interface-language-travels-with-the-message-as-a-hint.md)).
