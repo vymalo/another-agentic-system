@@ -175,7 +175,7 @@ spec:
     - "*"
   authentication:
     "agent":
-      kubernetesTokenReview:
+      kubernetesTokenReview:{{ if not .Values.injector.authorino.audiences }} {}{{ end }}
         {{- with .Values.injector.authorino.audiences }}
         audiences:
           {{- toYaml . | nindent 10 }}
