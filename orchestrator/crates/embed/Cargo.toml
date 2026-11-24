@@ -1,0 +1,29 @@
+[package]
+name = "orch-embed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Library composition root: the orchestrator embedded in an application, with its thread log in SQLite and no HTTP server."
+readme = "README.md"
+
+[dependencies]
+orch-agui-projection.workspace = true
+orch-agui-proto.workspace = true
+orch-app.workspace = true
+orch-core.workspace = true
+orch-ports.workspace = true
+orch-store-sqlite.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+# The example runs a thread on the in-process scripted agent; the crate itself names no adapter
+# beyond the SQLite store (ADR 0076 decision 4).
+orch-ports = { workspace = true, features = ["testkit"] }
+
+[lints]
+workspace = true

@@ -2644,6 +2644,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-embed"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "orch-agui-projection",
+ "orch-agui-proto",
+ "orch-app",
+ "orch-core",
+ "orch-ports",
+ "orch-store-sqlite",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "orch-log-filter"
 version = "0.1.0"
 dependencies = [

@@ -16,6 +16,9 @@ name: Orchestrator
 #        main: build and push to ghcr.io) and, before anything is pushed, runs it against a
 #        Postgres service: non-root, /healthz and /readyz answer, SIGTERM exits cleanly.
 # bump:  on main, after the image is pushed, sets `orchestrator.image.tag` in deploy/chart/values.yaml (ADR 0041).
+# embed: the library composition root (ADR 0076 E3): its example runs a thread on the in-process scripted agent and
+#        asserts the AG-UI events, with no HTTP server; the job also fails when the embedded build's normal dependency
+#        tree holds axum, sqlx or tokio-postgres.
 #
 # Path filters mean this check must not be made "required" for unrelated PRs.
 
@@ -172,9 +175,39 @@ jobs:
       - run: cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings
       - run: cargo test -p orchestrator --features agent-local --locked
 
-  signed-request-interop:
+  # The library composition root (ADR 0076 decision 4, slice E3). No service: SQLite is a file.
+  embed:
     runs-on: ubuntu-latest
     env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator -> target"
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p orch-embed --all-targets --locked -- -D warnings
+      - run: cargo test -p orch-embed --locked
+      - run: cargo run -p orch-embed --example run_thread --locked
+      - name: The embedded build carries no HTTP server, Postgres driver or sqlx
+        # ADR 0076 decision 4: the normal tree, dev-dependencies excluded (the example's scripted
+        # agent is one). A crate that brings any of these back fails here.
+        run: |
+          tree=$(cargo tree -p orch-embed -e normal --locked --prefix none)
+          found=$(printf '%s\n' "$tree" | grep -E '^(axum|sqlx(-[a-z0-9-]+)?|tokio-postgres) v' || true)
+          if [ -n "$found" ]; then
+            echo "::error::the embedded build must not depend on an HTTP server, a Postgres driver or sqlx"
+            printf '%s\n' "$found"
+            exit 1
+          fi
+
+  signed-request-interop:
+    runs-on: ubuntu-latest    env:
       CARGO_TERM_COLOR: always
     defaults:
       run:
