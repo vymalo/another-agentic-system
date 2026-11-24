@@ -15,13 +15,14 @@ use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     AccessTier, AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, Mention,
-    SessionNews, ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history,
-    report,
+    SessionNews, ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, UserId,
+    fork_history, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, ClaimOrder,
-    Clock, IdemKey, Lease, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendContent,
-    SendRequest, StoreError, TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
+    Clock, IdemKey, Lease, NoRunBindings, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload,
+    Ports, RunBinding, RunBindings, RunId, SendContent, SendRequest, StoreError, TaskHandle,
+    TaskSnapshot, ThreadStore, Topic, Wakeup,
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -210,6 +211,8 @@ struct Ctx {
     /// The thread's job the delegation belongs to (an upload id names the job it was issued in).
     job: u32,
     agent: AgentId,
+    /// The person the thread belongs to: the run this delegation opens spends for them (ADR 0084).
+    person: UserId,
     endpoint: AgentEndpoint,
     revision: Option<String>,
     /// What the delegation has kept of the agent's files so far (ADR 0032).
@@ -289,11 +292,19 @@ fn add(ts: Timestamp, d: Duration) -> Timestamp {
         .unwrap_or(ts)
 }
 
+/// The longest a run's binding lives, from the moment its task id is first seen (ADR 0084
+/// decision 1): the broker's own cap, because the orchestrator has no per-run deadline. A run
+/// that outlives it loses its lease, and S9 parks it.
+pub const RUN_BINDING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// The durable dispatcher. See the module documentation.
-pub struct Dispatcher<P: Ports> {
+pub struct Dispatcher<P: Ports, B: RunBindings = NoRunBindings> {
     app: Arc<App<P>>,
     cfg: DispatcherConfig,
     owner: String,
+    /// The broker that binds a run and unbinds it (ADR 0084): [`NoRunBindings`] in a deployment
+    /// with none.
+    run_bindings: B,
     /// The rounds of each parent's child sessions this process follows now (see
     /// [`MAX_OBSERVED_PER_PARENT`]).
     observing: std::sync::Mutex<std::collections::HashMap<ThreadId, usize>>,
@@ -328,12 +339,27 @@ impl Drop for ObservingSlot<'_> {
 }
 
 impl<P: Ports> Dispatcher<P> {
-    /// `owner` identifies this process in leases (unique per replica).
+    /// `owner` identifies this process in leases (unique per replica). No run is bound: the
+    /// deployment has no broker ([`NoRunBindings`]).
     pub fn new(app: Arc<App<P>>, cfg: DispatcherConfig, owner: impl Into<String>) -> Arc<Self> {
+        Dispatcher::with_run_bindings(app, cfg, owner, NoRunBindings)
+    }
+}
+
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
+    /// [`Dispatcher::new`] with the broker that binds each run and unbinds it when it ends (ADR
+    /// 0084).
+    pub fn with_run_bindings(
+        app: Arc<App<P>>,
+        cfg: DispatcherConfig,
+        owner: impl Into<String>,
+        run_bindings: B,
+    ) -> Arc<Self> {
         Arc::new(Dispatcher {
             app,
             cfg,
             owner: owner.into(),
+            run_bindings,
             observing: std::sync::Mutex::default(),
         })
     }
@@ -457,6 +483,9 @@ impl<P: Ports> Dispatcher<P> {
         if let Err(e) = self.app.ports().wakeup().notify(Topic::Outbox).await {
             tracing::debug!(error = %report(&e), "wakeup notify failed");
         }
+        // The thread may have reached an end state under this row (ADR 0084): its run's binding
+        // goes with it, whichever path ended the job.
+        self.end_run(thread).await;
     }
 
     /// Whether the store has no such thread any more (deleted, ADR 0043). A store that cannot
@@ -573,6 +602,64 @@ impl<P: Ports> Dispatcher<P> {
         Ok(())
     }
 
+    // --------------------------------------------------------- the run's binding
+
+    /// Binds the run whose task id the delegation's stream has just named (ADR 0084, the ruling of
+    /// 2026-11-23: the bind is at the first sight of the id, before any of the delegation's events
+    /// are applied). A broker that cannot be reached is logged and the run goes on; S9 parks it.
+    ///
+    /// The binding names no model endpoint: the agent owns its model (ADR 0067 decision 1) and the
+    /// orchestrator has no name of its own to put there (ADR 0084, open question 4).
+    async fn bind_run(&self, ctx: &Ctx, task: &str) {
+        let binding = RunBinding {
+            run: RunId::new(task),
+            agent: ctx.agent.clone(),
+            person: ctx.person.clone(),
+            model: None,
+            expires_at: add(self.now(), RUN_BINDING_TTL),
+        };
+        match self.run_bindings.bind(binding).await {
+            Ok(()) => tracing::debug!(run = %task, thread = %ctx.thread, "the run is bound"),
+            Err(e) => tracing::warn!(
+                run = %task,
+                thread = %ctx.thread,
+                error = %e,
+                "binding the run failed; the run goes on (S9 parks it instead)"
+            ),
+        }
+    }
+
+    /// Unbinds the run of `thread` once its job is over: `done`, `failed` or `cancelled` (ADR 0084
+    /// decision 6). Called after every row, so that every end state follows, whichever path reached
+    /// it; a run that was never bound, or one unbound already, is no error. A broker that cannot be
+    /// reached is logged and the binding stays until it expires; S9 parks the run instead. A
+    /// message that arrives between the end and this read moves the thread on and leaves a binding
+    /// behind until it expires, which spends nothing: a run that ended makes no call.
+    async fn end_run(&self, thread: ThreadId) {
+        let Ok(Some(record)) = self.store().get_thread(None, thread).await else {
+            return;
+        };
+        if !record.state.is_terminal() {
+            return;
+        }
+        let Ok(Some(binding)) = self.store().get_binding(thread).await else {
+            return;
+        };
+        let Some(task) = binding.task_id.filter(|task| !task.is_empty()) else {
+            return;
+        };
+        let run = RunId::new(task.as_str());
+        match self.run_bindings.unbind(&run).await {
+            Ok(()) => tracing::debug!(run = %task, thread = %thread, "the run is unbound"),
+            Err(e) => tracing::warn!(
+                run = %task,
+                thread = %thread,
+                error = %e,
+                "unbinding the run failed; it stays bound until it expires"
+            ),
+        }
+    }
+
     /// Applies an input under the row's lease, treating a late/replayed update for a finished
     /// thread as a no-op. A lost lease is [`DispatchError::Fenced`].
     async fn apply_quiet(&self, row: &OutboxItem, input: Input, key: String) -> Done {
@@ -661,6 +748,7 @@ impl<P: Ports> Dispatcher<P> {
             thread: row.thread_id,
             job: thread.job.number,
             agent: binding.agent_id.clone(),
+            person: thread.owner.clone(),
             endpoint: entry.endpoint.clone(),
             revision: binding.revision.clone(),
             files: files::Budget::default(),
@@ -1583,6 +1671,11 @@ impl<P: Ports> Dispatcher<P> {
                             env_state(&env),
                             env.revision.clone(),
                         );
+                        // The run is bound here, before the message is recorded as sent and before
+                        // any of its events is applied (ADR 0084, the ruling of 2026-11-23).
+                        if !env.task_id.is_empty() {
+                            self.bind_run(ctx, &env.task_id).await;
+                        }
                         if !self
                             .store()
                             .mark_sent(&ctx.lease, update, self.now())

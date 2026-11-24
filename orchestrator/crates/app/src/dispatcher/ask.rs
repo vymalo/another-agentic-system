@@ -103,7 +103,8 @@ use orch_core::{
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, OutboxFinal,
-    OutboxItem, OutboxPayload, Ports, SendContent, SendRequest, TaskHandle, ThreadStore,
+    OutboxItem, OutboxPayload, Ports, RunBindings, SendContent, SendRequest, TaskHandle,
+    ThreadStore,
 };
 use tokio::time::MissedTickBehavior;
 
@@ -435,7 +436,7 @@ fn send_attempts(row: &OutboxItem) -> u32 {
     }
 }
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Processes one `ask` row. See the module documentation.
     pub(super) async fn ask(&self, row: OutboxItem) -> Done {
         let OutboxPayload::Ask {
