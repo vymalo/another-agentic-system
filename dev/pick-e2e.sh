@@ -145,7 +145,7 @@ echo "== the agent list carries what the live card offers"
 api GET /api/agents >"$tmp/agents.json" 2>/dev/null || echo '[]' >"$tmp/agents.json"
 expect "mock-pick: pick is the two neutral aliases and the two levels, with the agent's own defaults" \
   "$(jq -cS '[.[] | select(.id == "mock-pick") | .pick][0]' "$tmp/agents.json")" \
-  '{"efforts":["low","high"],"effortDefault":"low","modelDefault":"alias-a","models":[{"id":"alias-a","label":"Alias A"},{"id":"alias-b","label":"Alias B"}]}'
+  '{"effortDefault":"low","efforts":["low","high"],"modelDefault":"alias-a","models":[{"id":"alias-a","label":"Alias A"},{"id":"alias-b","label":"Alias B"}]}'
 expect "mock-coder: its card lists neither extension, so there is no pick member and the web draws no chip" \
   "$(jq -r '[.[] | select(.id == "mock-coder")][0] | has("pick")' "$tmp/agents.json")" "false"
 
