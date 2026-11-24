@@ -32,7 +32,7 @@ use tokio::time::Instant;
 mod child_sessions;
 pub use child_sessions::{ChildSessionDrop, ChildSessionStats};
 mod attachments;
-pub use attachments::{AttachmentRefusal, MAX_ATTACHMENT_BYTES, StoredAttachment};
+pub use attachments::{AttachmentRefusal, StoredAttachment};
 mod delete;
 pub use delete::{DeleteStats, LateSource};
 mod downloads;
