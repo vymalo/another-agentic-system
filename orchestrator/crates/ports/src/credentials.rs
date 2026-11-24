@@ -814,8 +814,11 @@ impl std::fmt::Debug for RunLease {
 }
 
 impl RunLease {
-    /// A lease of `token` until `expires_at`, for the ledger account `account` (the run's person: a
-    /// `UserId`, the owner the usage ledger charges, ADR 0065). The account is returned to the
+    /// A lease of `token` until `expires_at`, for the account `account`: the run's person, a
+    /// `UserId`, which is the key the usage ledger is kept by (`orch_core::UsageRow.owner`,
+    /// `crates/core/src/usage_record.rs`; the column `usage_tasks.owner` of migration `0023`; ADR
+    /// 0065). That person id and not a provider account or an account number of the ledger service:
+    /// the orchestrator holds no other identity for the person. The account is returned to the
     /// injector beside the key and goes in no log line, no error and no message to an agent.
     pub fn bearer(token: ToolSecret, account: UserId, expires_at: Timestamp) -> Self {
         RunLease {
@@ -825,7 +828,8 @@ impl RunLease {
         }
     }
 
-    /// The ledger account the run spends for.
+    /// The ledger account the run spends for: the run's person (`UserId`), the key the ledger keeps
+    /// the rows by.
     pub fn account(&self) -> &UserId {
         &self.account
     }

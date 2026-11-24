@@ -134,8 +134,9 @@ alias maps to; the orchestrator records it when the run starts."*
 
 ### Status note, 2026-11-24: the lease names the account (ANR-659)
 
-The lease answer is `{token, accountId, expiresAt}`. `accountId` is the binding's person: a `UserId`, the owner the usage
-ledger charges (ADR 0065), named by the claim the deployment maps a principal from (`email` or `sub`). The injector gets it
-beside the key so it can say whose call it is. It answers only behind decision 2's caller check, and like the token it is
-never logged, never in a refusal or an error, and never in a message to an agent; `RunLease`'s `Debug` redacts both.
-*Unverified:* the injector that reads it (B2) and the gateway that trusts it (B3) are not built.
+The lease answer is `{token, accountId, expiresAt}`. `accountId` is the run's person: a `UserId`, the key the usage ledger is kept by
+(`orch_core::UsageRow.owner`, the column `usage_tasks.owner` of migration `0023`, ADR 0065), which is the person id the injector reports as
+`x-account-id` — **not** a provider account and not an account number of a ledger service, since the orchestrator holds no other identity for the
+person. The injector gets it beside the key so it can say whose call it is. It answers only behind decision 2's caller check, and like the token
+it is never logged, never in a refusal or an error, and never in a message to an agent; `RunLease`'s `Debug` redacts both. *Unverified:* the
+injector that reads it (B2) and the gateway that trusts it (B3) are not built.

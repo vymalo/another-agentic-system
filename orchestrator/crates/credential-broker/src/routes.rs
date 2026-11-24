@@ -128,7 +128,7 @@ pub struct BindBody {
 #[serde(rename_all = "camelCase")]
 struct LeaseBody {
     token: String,
-    /// The run's person, the account the usage ledger charges (ADR 0065). Never logged.
+    /// The run's person (`UserId`), the key the usage ledger is kept by (ADR 0065). Never logged.
     account_id: String,
     expires_at: Timestamp,
 }
