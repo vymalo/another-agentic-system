@@ -377,6 +377,18 @@ services:
       - ./dev/wiremock/tiered/mappings:/home/wiremock/mappings:ro
       - ./dev/wiremock/tiered/__files:/home/wiremock/__files:ro
 
+  # An agent that answers with the model alias and the reasoning level a message names (model-pick/v1 and reasoning/v1, ADR 0086;
+  # dev/pick-e2e.sh) as a WireMock A2A agent: its card lists both extensions, two neutral aliases and two levels, with `alias-a` and
+  # `low` as its defaults; a request that activates both and names a pick is answered with both echoed on the task and on its
+  # `working` update, and in its last words; any other request is answered under its defaults. `mock-pick` in dev/agents.yaml.
+  mock-pick:
+    <<: *wiremock
+    ports:
+      - "127.0.0.1:${MOCK_PICK_PORT:-8103}:8080"
+    volumes:
+      - ./dev/wiremock/pick/mappings:/home/wiremock/mappings:ro
+      - ./dev/wiremock/pick/__files:/home/wiremock/__files:ro
+
   # An agent that runs a helper as a session (child-sessions/v1, ADR 0072; dev/child-sessions-e2e.sh) as a WireMock A2A agent: its card lists
   # the extension (with `planner` as its one helper), steps/v1 and usage/v1; its parent task, as adam serves it, says its sessions on its first
   # Task, opens one by an event and ends while the helper still works (the totals hold the helper's tokens); `GetTask` of the parent, activated, lists it

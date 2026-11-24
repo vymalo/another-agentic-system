@@ -79,6 +79,11 @@
 #                     names none activates nothing; a word that is not a tier is 400 and
 #                     a tier for mock-coder, whose card does not list it, is 422, with no
 #                     thread written
+#   pick              the model and the reasoning effort of a message (ADR 0086): mock-pick (a WireMock agent that lists model-pick/v1 and
+#                     reasoning/v1) is read from GET /api/agents; a message that names an alias and a level is logged with it and sent with
+#                     both extensions activated and each member in its metadata; each message names its own and one that names none carries
+#                     no member; an alias or level the card does not offer, and a model for mock-coder, are typed 422s carrying `offered`
+#                     before anything is written
 #   locale-real       the interface language on a REAL adam agent (ADR 0069): the chat's   locale-real-e2e.sh
 #                     card lists locale/v1 with the deployment's tag (DEFAULT_LOCALE of
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
@@ -256,7 +261,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier pick locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -369,6 +374,13 @@ for s in "$@"; do
           *) echo "scenario tier needs the agents mock-tiered and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    pick)
+      for a in mock-pick mock-coder; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario pick needs the agents mock-pick and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     locale-real)
       for a in chat researcher; do
         case " $agents " in
@@ -467,6 +479,7 @@ for s in "$@"; do
     usage) run usage sh "$here/usage-e2e.sh" ;;
     usage-ledger) run usage-ledger sh "$here/usage-ledger-e2e.sh" ;;
     tier) run tier sh "$here/tier-e2e.sh" ;;
+    pick) run pick sh "$here/pick-e2e.sh" ;;
     locale) run locale sh "$here/locale-e2e.sh" ;;
     locale-real) run locale-real sh "$here/locale-real-e2e.sh" ;;
     child-sessions) run child-sessions sh "$here/child-sessions-e2e.sh" ;;

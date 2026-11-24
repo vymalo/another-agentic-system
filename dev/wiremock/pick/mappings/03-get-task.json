@@ -1,0 +1,28 @@
+{
+  "name": "GetTask: any task is completed (the mock keeps no state)",
+  "priority": 10,
+  "request": {
+    "method": "POST",
+    "urlPath": "/a2a",
+    "headers": {
+      "Authorization": {
+        "matches": "Bearer .+"
+      }
+    },
+    "bodyPatterns": [
+      {
+        "matchesJsonPath": {
+          "expression": "$.method",
+          "equalTo": "GetTask"
+        }
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "get-task.json"
+  }
+}

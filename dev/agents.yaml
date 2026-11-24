@@ -137,6 +137,13 @@
   # A WireMock agent that answers in the language of the interface a message names (locale/v1, ADR 0085, dev/locale-e2e.sh): its card
   # lists the extension and says its own language is en-GB; it says in its answer which tag it was told, and answers in its own when a
   # message names none. Nothing of the tag is logged: the answer is the only trace of it.
+- id: mock-pick
+  name: Mock pick
+  cardUrl: http://mock-pick:8080/.well-known/agent-card.json
+  tokenEnv: MOCK_AGENT_TOKEN
+  # A WireMock agent that answers with the model alias and the reasoning level a message names (model-pick/v1 and reasoning/v1,
+  # ADR 0086, dev/pick-e2e.sh): its card lists both extensions, so the composer draws its two chips, and it says in its answer
+  # which alias and level it was told.
 - id: mock-tiered
   name: Mock tiered
   cardUrl: http://mock-tiered:8080/.well-known/agent-card.json

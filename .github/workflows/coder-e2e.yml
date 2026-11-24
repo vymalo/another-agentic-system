@@ -41,6 +41,9 @@ name: Coder E2E
 #              dev/orchestrator.yaml, an unpriced model named, the same answer after one thread is deleted, another user's month empty),
 #              the access tier (dev/tier-e2e.sh: `mock-tiered`, a WireMock agent that lists access-tier/v1; a message that names a tier is logged with it and sent
 #              under the extension's URI, the tier the agent echoes is logged, a tier the plain agent does not list is refused before anything is written),
+#              the model and the reasoning effort of a message (dev/pick-e2e.sh: `mock-pick`, a WireMock agent that lists model-pick/v1 and reasoning/v1;
+#              a message that names an alias and a level is logged with it and sent with both extensions activated, a pick the card does not offer is a
+#              typed 422 carrying `offered` and writes nothing),
 #              the interface locale (dev/locale-e2e.sh: `mock-locale`, a WireMock agent that lists locale/v1; a message that names a tag is sent
 #              under the extension's URI with the tag in its metadata and the agent answers in it, a message that names none activates nothing and
 #              carries no member, a string that is not a tag is refused before anything is written, the plain agent gets the plain message, and
@@ -224,6 +227,11 @@ jobs:
         # The access tier (dev/tier-e2e.sh, ADR 0061): `mock-tiered` lists access-tier/v1 and echoes the tier it is told; a message that names one is logged
         # with it and sent under the extension's URI (the header and `message.extensions`), each message names its own, one that names none activates nothing,
         # a word that is not a tier is 400 and a tier for `mock-coder`, whose card does not list it, is 422 with no thread written.
+        # The model and the reasoning effort of a message (dev/pick-e2e.sh, ADR 0086): `mock-pick` lists model-pick/v1 and reasoning/v1 and echoes the alias
+        # and level it is told; GET /api/agents carries the listing for it and none for `mock-coder`; a message that names `alias-b` and `high` is logged with
+        # the pick and sent with both extensions activated and each member in its metadata, a message that names only a model activates only that URI, and one
+        # that names none carries no member; an alias or level the card does not offer, and a model for `mock-coder`, are 422 `model_not_offered` /
+        # `reasoning_not_offered` carrying `offered`, 400 for an alias outside the alphabet, with no thread written.
         # The interface locale (dev/locale-e2e.sh, ADR 0085): `mock-locale` lists locale/v1 and answers with the tag it is told; a message that names
         # one is sent under the extension's URI (the header and `message.extensions`) with the tag in its metadata, one that names none activates nothing and
         # carries no member, a string that is not a BCP 47 tag is 400 with no thread written, and `mock-coder`, whose card does not list it, gets the plain
