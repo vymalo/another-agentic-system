@@ -5,6 +5,7 @@ use orch_core::{
 };
 use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
+use crate::app::AttachmentRefusal;
 use crate::authz::Permission;
 use crate::prompts::PromptRefusal;
 use crate::sharing::SharingMode;
@@ -100,6 +101,11 @@ pub enum AppError {
     /// is too long. See [`PromptRefusal`].
     #[error(transparent)]
     Prompt(PromptRefusal),
+    /// A person's own file is refused (ADR 0067, slice 12): a size, an empty body, a type that is
+    /// not one media type, a name that is not usable, or a deployment that keeps no files. See
+    /// [`AttachmentRefusal`].
+    #[error(transparent)]
+    Attachment(AttachmentRefusal),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -290,6 +296,13 @@ impl Classify for AppError {
                 | PromptRefusal::InvalidAnswer(_)
                 | PromptRefusal::RenderedTooLong => ErrorClass::Rejected,
             },
+            AppError::Attachment(refusal) => match refusal {
+                AttachmentRefusal::NoStore => ErrorClass::Unsupported,
+                AttachmentRefusal::TooLarge { .. }
+                | AttachmentRefusal::Empty
+                | AttachmentRefusal::BadMediaType
+                | AttachmentRefusal::BadFilename => ErrorClass::Invalid,
+            },
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -322,6 +335,7 @@ impl Classify for AppError {
             | AppError::Blocked { .. }
             | AppError::UserTool(_)
             | AppError::Prompt(_)
+            | AppError::Attachment(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
