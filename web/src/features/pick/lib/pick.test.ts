@@ -111,13 +111,26 @@ describe("the pick of a message (ADR 0086, model-pick/v1 and reasoning/v1)", () 
     });
   });
 
-  it("draws no chip on an axis the card does not list", () => {
+  it("draws the agent-default entry for a listed axis the card names no default for", () => {
+    // a card that lists choices and no default still has a chip (ADR 0086: the listing gates it);
+    // the entry says "Agent default" and sends nothing, which is what no pick means
     const modelsOnly = must(parseListing({ models: [{ id: "deep", label: "Deep" }] }));
-    expect(shownPick(modelsOnly, {})).toEqual({});
+    expect(shownPick(modelsOnly, {})).toEqual({ model: { picked: false } });
+    expect(shownPick(modelsOnly, { model: "deep" })).toEqual({
+      model: { id: "deep", label: "Deep", picked: true },
+    });
+    const effortsOnly = must(parseListing({ efforts: ["medium"] }));
+    expect(shownPick(effortsOnly, {})).toEqual({ effort: { picked: false } });
+  });
+
+  it("draws no chip on an axis the card does not list", () => {
     const effortsOnly = must(parseListing({ efforts: ["medium"] }));
     expect(shownPick(effortsOnly, { effort: "medium" })).toEqual({
       effort: { level: "medium", picked: true },
     });
+    // no model axis at all: no chip to draw there
+    expect(shownPick(effortsOnly, {})).toEqual({ effort: { picked: false } });
+    expect(shownPick(must(parseListing({})), {})).toEqual({});
   });
 
   it("sends nothing the person did not pick", () => {

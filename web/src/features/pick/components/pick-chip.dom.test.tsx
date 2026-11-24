@@ -89,14 +89,17 @@ describe("PickChips", () => {
     render(<PickChips view={v} agentName="Adam" />);
     const menu = await open(modelChip() as HTMLElement);
     const items = within(menu).getAllByRole("menuitemradio");
-    expect(items.map((item) => item.getAttribute("data-model"))).toEqual(["alias-a", "alias-b"]);
-    expect(within(menu).getByRole("menuitemradio", { name: /Alias A/ }).textContent).toContain(
+    expect(items.map((item) => item.getAttribute("data-model")).filter(Boolean)).toEqual([
+      "alias-a",
+      "alias-b",
+    ]);
+    expect(within(menu).getByRole("menuitemradio", { name: /^Alias A/ }).textContent).toContain(
       "default",
     );
-    expect(within(menu).getByRole("menuitemradio", { name: /Alias B/ }).textContent).not.toContain(
+    expect(within(menu).getByRole("menuitemradio", { name: /^Alias B/ }).textContent).not.toContain(
       "default",
     );
-    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /Alias B/ }));
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /^Alias B/ }));
     expect(v.picked).toHaveBeenCalledWith({ model: "alias-b" });
   });
 
@@ -105,12 +108,44 @@ describe("PickChips", () => {
     render(<PickChips view={v} agentName="Adam" />);
     const menu = await open(effortChip() as HTMLElement);
     const items = within(menu).getAllByRole("menuitemradio");
-    expect(items.map((item) => item.getAttribute("data-effort"))).toEqual(["low", "high"]);
-    expect(within(menu).getByRole("menuitemradio", { name: /Low/ }).textContent).toContain(
+    expect(items.map((item) => item.getAttribute("data-effort")).filter(Boolean)).toEqual([
+      "low",
+      "high",
+    ]);
+    expect(within(menu).getByRole("menuitemradio", { name: /^Low/ }).textContent).toContain(
       "default",
     );
-    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /High/ }));
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /^High/ }));
     expect(v.picked).toHaveBeenCalledWith({ effort: "high" });
+  });
+
+  it("draws the chip for an axis with choices and no default, at Agent default", async () => {
+    const v = view({ listing: { models: listing.models, efforts: listing.efforts } });
+    render(<PickChips view={v} agentName="Adam" />);
+    expect(modelChip()?.getAttribute("aria-label")).toBe("Model: Agent default");
+    expect(modelChip()?.getAttribute("data-picked")).toBe("false");
+    expect(modelChip()?.textContent).toContain("Agent default");
+    expect(effortChip()?.getAttribute("aria-label")).toBe("Reasoning effort: Agent default");
+    expect(effortChip()?.textContent).toContain("Agent default");
+    const menu = await open(modelChip() as HTMLElement);
+    const entry = within(menu).getByRole("menuitemradio", { name: /Agent default/ });
+    // the first entry is selected while the person has picked nothing, and says who chooses
+    expect(entry.getAttribute("data-agent-default")).toBe("true");
+    expect(entry.getAttribute("aria-checked")).toBe("true");
+    expect(entry.textContent).toContain("the agent chooses");
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /^Alias B/ }));
+    expect(v.picked).toHaveBeenCalledWith({ model: "alias-b" });
+  });
+
+  it("choosing Agent default hands the view an empty pick for that axis", async () => {
+    const v = view({ choice: { model: "alias-b", effort: "high" } });
+    render(<PickChips view={v} agentName="Adam" />);
+    const menu = await open(modelChip() as HTMLElement);
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: /Agent default/ }));
+    expect(v.picked).toHaveBeenLastCalledWith({ model: undefined });
+    const efforts = await open(effortChip() as HTMLElement);
+    fireEvent.click(within(efforts).getByRole("menuitemradio", { name: /Agent default/ }));
+    expect(v.picked).toHaveBeenLastCalledWith({ effort: undefined });
   });
 
   it("shows the person's pick, without the word default, once there is one", () => {

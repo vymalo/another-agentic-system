@@ -62,13 +62,25 @@ describe("usePick: a chip exists per axis the live card lists", () => {
     expect(result.current.send).toEqual({});
   });
 
-  it("draws no chip for a card that names choices but no default: there is no value to show", () => {
+  it("draws the chip for a card that names choices but no default, at its agent-default entry", () => {
     const { result } = mount({
       listing: { models: listing.models },
     });
     expect(result.current.listing?.models).toHaveLength(2);
-    expect(result.current.shown).toEqual({});
+    expect(result.current.shown).toEqual({ model: { picked: false } });
     expect(result.current.send).toEqual({});
+  });
+
+  it("picking the agent default clears the choice: the next message sends nothing on that axis", () => {
+    const { result } = mount({ listing: { models: listing.models } });
+    act(() => result.current.pick({ model: "alias-b" }));
+    expect(result.current.send).toEqual({ model: "alias-b" });
+    expect(result.current.shown).toEqual({
+      model: { id: "alias-b", label: "Alias B", picked: true },
+    });
+    act(() => result.current.pick({ model: undefined }));
+    expect(result.current.send).toEqual({});
+    expect(result.current.shown).toEqual({ model: { picked: false } });
   });
 });
 

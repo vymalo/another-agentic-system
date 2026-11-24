@@ -108,12 +108,16 @@ export const offersEfforts = (listing: PickListing): boolean => listing.efforts.
 
 /**
  * What the pick axes show. The person's own choice when they made one and the card still lists it;
- * otherwise the agent's default, marked as not picked (nothing is sent: the agent's own default
- * applies). `undefined` on an axis means the card lists nothing there, so nothing is drawn for it.
+ * otherwise the agent's own default when the card names one, marked as not picked (nothing is sent:
+ * the agent's own default applies); otherwise an unnamed agent-default entry (`id`/`label` and
+ * `level` absent), also marked as not picked, so a listed axis always has a chip. `undefined` on an
+ * axis means the card lists nothing there, so nothing is drawn for it.
  */
 export type ShownPick = {
-  model?: { id: string; label: string; picked: boolean };
-  effort?: { level: Effort; picked: boolean };
+  /** `id`/`label` are absent for a card that lists choices but names no default. */
+  model?: { id?: string; label?: string; picked: boolean };
+  /** `level` is absent for a card that lists levels but names no default. */
+  effort?: { level?: Effort; picked: boolean };
 };
 
 /** What the chips show for `choice`, against what the card lists now. */
@@ -130,7 +134,10 @@ export function shownPick(
       shown.model = { id: pickedModel.id, label: pickedModel.label, picked: true };
     } else if (listing.modelDefault !== undefined) {
       const rest = listing.models.find((m) => m.id === listing.modelDefault);
-      if (rest !== undefined) shown.model = { id: rest.id, label: rest.label, picked: false };
+      shown.model = rest ? { id: rest.id, label: rest.label, picked: false } : { picked: false };
+    } else {
+      // the card lists choices and names no default: the chip says "Agent default" and sends nothing
+      shown.model = { picked: false };
     }
   }
 
@@ -139,6 +146,8 @@ export function shownPick(
       shown.effort = { level: choice.effort, picked: true };
     } else if (listing.effortDefault !== undefined) {
       shown.effort = { level: listing.effortDefault, picked: false };
+    } else {
+      shown.effort = { picked: false };
     }
   }
 

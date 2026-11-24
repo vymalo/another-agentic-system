@@ -45,10 +45,9 @@ export type PickView = {
  * document is not where the chips come from: it lists the orchestrator's own known extensions and
  * carries no `model-pick/v1` or `reasoning/v1` key.
  *
- * A card that lists choices but names no default shows no chip on that axis until the person picks
- * one (`shownPick` needs a value to show, and the agent's default is the agent's to name): adam's
- * `model-pick/v1` card lists only `choices` today (ANR-139), so a deployment that wants the model
- * chip names its default in the card.
+ * A card that lists choices but names no default still draws its chip: it shows the explicit "Agent
+ * default" entry, the menu's first entry, and nothing is sent until the person picks (adam's
+ * `model-pick/v1` card lists only `choices` today, ANR-139).
  */
 export function usePick({ listing }: { listing: unknown }): PickView {
   const [choice, setChoice] = useState<PickChoice>({});
