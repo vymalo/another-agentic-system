@@ -173,7 +173,9 @@ fn spawn(scratch: &Scratch, config: &Path, env: &[(&str, &str)]) -> Running {
 /// The address `the run routes listen` names in the log, in the text format
 /// (`the run routes listen addr=127.0.0.1:41207 agents=2`).
 fn run_routes_addr(line: &str) -> Option<String> {
-    line.contains("the run routes listen")?;
+    if !line.contains("the run routes listen") {
+        return None;
+    }
     line.split_whitespace()
         .find_map(|word| word.strip_prefix("addr="))
         .map(str::to_owned)
@@ -234,7 +236,8 @@ async fn start(db: &pgdb::TestDb, scratch: Scratch) -> Started {
     }
     let run = RefCell::new(spawn(&scratch, &config, &env));
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    let main = format!("http://{}", bound(&run).await);
+    let addr = bound(&run).await;
+    let main = format!("http://{addr}");
     let internal = internal_addr(&run).await;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -551,9 +554,13 @@ async fn a_graceful_shutdown_drains_the_listener() {
 
     let status = started.run.borrow_mut().terminate(Duration::from_secs(30));
     assert!(status.success(), "a drained process exits 0: {status:?}");
-    // The listener is gone: the port refuses connections, and the connection it held is closed.
+    // The listener is gone: the port refuses connections, and the connection it held is closed
+    // rather than left dangling.
     let mut buf = [0u8; 1];
-    let _ = idle.read(&mut buf);
+    match idle.read(&mut buf) {
+        Ok(0) | Err(_) => {}
+        Ok(read) => panic!("the draining listener sent {read} byte(s) to an idle connection"),
+    }
     assert!(
         TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_err(),
         "the port is closed after the drain"

@@ -217,8 +217,7 @@ fn a_token_is_keyed_by_an_agent_id() {
 fn a_worker_reads_and_checks_the_section_it_never_opens() {
     let fake = env();
     let file = format!(
-        "version: 1\nserver:\n  role: worker\n  internal:\n{}database: {{ url: {{ env: DATABASE_URL }} }}\nagents: {{ file: agents.yaml }}\n",
-        SECTION
+        "version: 1\nserver:\n  role: worker\n  internal:\n{SECTION}database: {{ url: {{ env: DATABASE_URL }} }}\nagents: {{ file: agents.yaml }}\n"
     );
     let valid = load(&file, &fake).unwrap();
     assert_eq!(valid.config.server.role, Role::Worker);
