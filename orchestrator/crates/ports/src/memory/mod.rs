@@ -12,6 +12,7 @@ mod registry;
 mod run_leases;
 mod secrets;
 mod store;
+mod teams;
 mod tools;
 mod user_tools;
 mod vault;

@@ -34,6 +34,7 @@ pub mod search;
 mod share;
 mod step;
 mod task;
+pub mod team;
 mod thread;
 mod thread_tools;
 mod title;

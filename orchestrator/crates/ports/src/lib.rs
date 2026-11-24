@@ -41,6 +41,9 @@
 //! - [`PendingAuthorizations`]: the OAuth authorizations that have begun and whose callback has not
 //!   come, `state → (owner, server, until)`, used at most once, kept by the state's digest (ADR 0046,
 //!   slice 4c); [`NoPendingAuthorizations`] refuses every call;
+//! - [`TeamPresetStore`]: a person's saved teams (a lead, up to eight members, a charter, the cap of
+//!   hand-offs, the approval mode, the checkpoint rules), kept beside the log with a revision per
+//!   write (ADR 0074); a supertrait of [`ThreadStore`], as the prompt library is;
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
 //!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
 //!   relay apply one function;
@@ -68,6 +71,7 @@ mod route;
 mod search;
 mod secrets;
 mod store;
+mod teams;
 mod tools;
 mod usage_ledger;
 mod user_tools;
@@ -139,6 +143,10 @@ pub use store::{
     CommitOutcome, ForkOrigin, Lease, ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewOutbox,
     NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
     OutboxStatus, Place, SharingChange, StoreError, ThreadListing, ThreadStore,
+};
+pub use teams::{
+    MAX_TEAM_PRESETS, StoredTeamPreset, TEAM_PRESET_PAGE, TeamPresetPage, TeamPresetRevision,
+    TeamPresetStore, TeamPresetStoreError, TeamPresetSummary,
 };
 pub use tools::{
     ActingFor, MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, MAX_USER_SERVER_TOOLS,

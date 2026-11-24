@@ -28,6 +28,10 @@
 //! **`PromptStore`** (ADR 0070, migration `0003`): a person's saved prompts and the roles they
 //! share each with, in a table beside the log. [`SqliteWakeup`] is the in-process `Wakeup`.
 //!
+//! **`TeamPresetStore`** (ADR 0074, migration `0007`): a person's saved teams (a lead, two to eight
+//! members, a charter, the cap of hand-offs, the approval mode, the checkpoint rules), in a table
+//! beside the log with a revision per write and the limit of fifty per person.
+//!
 //! **`UserToolServerStore`** (ADR 0046, migration `0005`): the definitions of people's own MCP
 //! servers, one table beside the log, one counter for revisions, the limit of eight and every
 //! compare-and-swap kept by the one writing transaction.
@@ -69,6 +73,7 @@ mod prompts;
 mod schema;
 mod search;
 mod store;
+mod teams;
 mod usage;
 mod user_tool_servers;
 mod wakeup;
