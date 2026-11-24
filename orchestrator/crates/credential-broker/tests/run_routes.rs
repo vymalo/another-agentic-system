@@ -21,6 +21,7 @@ use tower::ServiceExt;
 
 const ORCHESTRATOR: &str = "orchestrator-token";
 const INJECTOR: &str = "injector-token";
+const METER: &str = "meter-token";
 const CODER: &str = "coder-token";
 const CHAT: &str = "chat-token";
 const MODEL: &str = "model-x";
@@ -34,6 +35,7 @@ fn tokens() -> SharedTokens {
         ],
     )
     .with_injector(INJECTOR)
+    .with_meter(METER)
 }
 
 fn broker() -> Arc<RunLeaseBroker<MemoryRunBindingStore, MemoryModelCredentials>> {
@@ -128,6 +130,128 @@ async fn lease(app: &Router, run: &str, token: Option<&str>) -> (StatusCode, Hea
         request("GET", &format!("/internal/runs/{run}/lease"), token, None),
     )
     .await
+}
+
+async fn account(app: &Router, run: &str, token: Option<&str>) -> (StatusCode, HeaderMap, String) {
+    call(
+        app,
+        request("GET", &format!("/internal/runs/{run}/account"), token, None),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_meter_gets_the_account_of_a_bound_run_and_no_store() {
+    let (app, _) = app();
+    bind(&app, "run-m1", "coder", &at(Duration::from_secs(60))).await;
+    let (status, headers, body) = account(&app, "run-m1", Some(METER)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        headers
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    let body: Value = serde_json::from_str(&body).expect("JSON");
+    assert_eq!(body, json!({"accountId": "person@example.com"}));
+}
+
+#[tokio::test]
+async fn the_meter_is_run_not_bound_for_an_unknown_run() {
+    let (app, _) = app();
+    let (status, _, body) = account(&app, "run-never", Some(METER)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).expect("JSON"),
+        json!({"code": "run_not_bound"})
+    );
+}
+
+#[tokio::test]
+async fn the_orchestrator_the_injector_and_every_agent_are_refused_the_account() {
+    let (app, _) = app();
+    bind(&app, "run-m2", "coder", &at(Duration::from_secs(60))).await;
+    for (who, token) in [
+        ("the orchestrator", ORCHESTRATOR),
+        ("the injector", INJECTOR),
+        ("the run's own agent", CODER),
+        ("another agent", CHAT),
+    ] {
+        let (status, _, body) = account(&app, "run-m2", Some(token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{who}");
+        assert!(!body.contains("person@example.com"), "{who}: {body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("JSON"),
+            json!({"code": "run_not_bound"}),
+            "{who}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn no_identity_and_a_wrong_token_are_unauthenticated_for_the_account() {
+    let (app, _) = app();
+    bind(&app, "run-m3", "coder", &at(Duration::from_secs(60))).await;
+    for token in [None, Some("not-a-token")] {
+        let (status, _, body) = account(&app, "run-m3", token).await;
+        // A wrong token is no caller at all, as for the lease route.
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!body.contains("person@example.com"), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn the_meter_reads_the_account_and_nothing_else() {
+    let (app, _) = app();
+    bind(&app, "run-m4", "coder", &at(Duration::from_secs(60))).await;
+    // No lease, no bind, no unbind: the meter has one route.
+    assert_eq!(
+        lease(&app, "run-m4", Some(METER)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        bind(&app, "run-m5", "coder", &at(Duration::from_secs(60))).await,
+        StatusCode::NO_CONTENT
+    );
+    let body = bind_body("run-m6", "coder", &at(Duration::from_secs(60)));
+    let (status, _, _) = call(
+        &app,
+        request("POST", "/internal/runs", Some(METER), Some(body)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = call(
+        &app,
+        request("DELETE", "/internal/runs/run-m4", Some(METER), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // The binding is intact after the refused unbind.
+    assert_eq!(account(&app, "run-m4", Some(METER)).await.0, StatusCode::OK);
+}
+
+#[test]
+fn the_route_code_never_logs() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes.rs"),
+    )
+    .expect("the routes' source");
+    for mac in [
+        "tracing::",
+        "info!",
+        "warn!",
+        "debug!",
+        "error!",
+        "println!",
+        "eprintln!",
+    ] {
+        assert!(
+            !source
+                .lines()
+                .any(|l| !l.trim_start().starts_with("//") && l.contains(mac)),
+            "routes.rs logs with {mac}: the account id must reach nothing but the response"
+        );
+    }
 }
 
 #[tokio::test]
@@ -506,7 +630,7 @@ async fn the_routes_are_not_in_the_public_api_document() {
 }
 
 #[test]
-fn the_readme_lists_the_three_routes() {
+fn the_readme_lists_the_four_routes() {
     let readme =
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
             .expect("the crate README");
@@ -514,6 +638,7 @@ fn the_readme_lists_the_three_routes() {
         "POST /internal/runs",
         "DELETE /internal/runs/{run}",
         "GET /internal/runs/{run}/lease",
+        "GET /internal/runs/{run}/account",
     ] {
         assert!(readme.contains(route), "the README does not list {route}");
     }

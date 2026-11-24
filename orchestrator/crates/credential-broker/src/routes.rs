@@ -1,6 +1,6 @@
 //! The broker's internal run routes (ADR 0084 decisions 1, 2, 5 and 6).
 //!
-//! Three routes, served on the broker's **internal listener only** (the chart and the NetworkPolicy
+//! Four routes, served on the broker's **internal listener only** (the chart and the NetworkPolicy
 //! are ANR-147b; they are not in `docs/api/chat-api.yaml`, and a test here holds that):
 //!
 //! | Route | Caller | Answer |
@@ -8,6 +8,7 @@
 //! | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run |
 //! | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent |
 //! | `GET /internal/runs/{run}/lease` | the orchestrator or the injector, never an agent | `200 {token, accountId, expiresAt}`, `Cache-Control: no-store` |
+//! | `GET /internal/runs/{run}/account` | the operator's meter identity alone | `200 {accountId}`, `Cache-Control: no-store`; `run_not_bound` for an unknown run and for every other caller |
 //!
 //! A refusal is one of the ruled slugs: `run_not_bound` (`404`), `lease_expired` (`410`) and
 //! `unavailable` (`503`), plus `unauthenticated` (`401`) and `not_allowed` (`403`) for the door.
@@ -54,6 +55,9 @@ pub struct SharedTokens {
     /// The injector's token, when the deployment runs one: the only caller besides the orchestrator
     /// that may read a run's lease (ADR 0084 decision 2, amended 2026-11-24).
     injector: Option<[u8; 32]>,
+    /// The operator's pod-minute meter token, when the deployment runs one: the only caller of the
+    /// account route, and refused everything else.
+    meter: Option<[u8; 32]>,
     agents: BTreeMap<[u8; 32], AgentId>,
 }
 
@@ -66,6 +70,7 @@ impl SharedTokens {
         SharedTokens {
             orchestrator: digest(orchestrator),
             injector: None,
+            meter: None,
             agents: agents
                 .into_iter()
                 .map(|(token, agent)| (digest(&token), agent))
@@ -80,6 +85,16 @@ impl SharedTokens {
     #[must_use]
     pub fn with_injector(mut self, injector: &str) -> Self {
         self.injector = Some(digest(injector));
+        self
+    }
+}
+
+impl SharedTokens {
+    /// The same scheme with the meter's token: the caller that may ask which account a run is
+    /// charged to and may do nothing else.
+    #[must_use]
+    pub fn with_meter(mut self, meter: &str) -> Self {
+        self.meter = Some(digest(meter));
         self
     }
 }
@@ -101,6 +116,9 @@ impl RunCallerAuth for SharedTokens {
         }
         if self.injector == Some(presented) {
             return Some(RunCaller::Injector);
+        }
+        if self.meter == Some(presented) {
+            return Some(RunCaller::Meter);
         }
         self.agents.get(&presented).cloned().map(RunCaller::Agent)
     }
@@ -131,6 +149,14 @@ struct LeaseBody {
     /// The run's person (`UserId`), the key the usage ledger is kept by (ADR 0065). Never logged.
     account_id: String,
     expires_at: Timestamp,
+}
+
+/// The account body: the run's person and nothing else.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountBody {
+    /// The run's person (`UserId`). Never logged.
+    account_id: String,
 }
 
 /// The refusal body: the ruled slug and nothing else.
@@ -166,6 +192,7 @@ where
         .route("/internal/runs", post(bind::<L, A>))
         .route("/internal/runs/{run}", delete(unbind::<L, A>))
         .route("/internal/runs/{run}/lease", get(lease::<L, A>))
+        .route("/internal/runs/{run}/account", get(account::<L, A>))
         .with_state(state)
 }
 
@@ -202,7 +229,7 @@ where
 {
     match state.auth.caller(&headers) {
         Some(RunCaller::Orchestrator) => {}
-        Some(RunCaller::Agent(_) | RunCaller::Injector) => {
+        Some(RunCaller::Agent(_) | RunCaller::Injector | RunCaller::Meter) => {
             return refuse(StatusCode::FORBIDDEN, "not_allowed");
         }
         None => return unauthenticated(),
@@ -241,7 +268,7 @@ where
 {
     match state.auth.caller(&headers) {
         Some(RunCaller::Orchestrator) => {}
-        Some(RunCaller::Agent(_) | RunCaller::Injector) => {
+        Some(RunCaller::Agent(_) | RunCaller::Injector | RunCaller::Meter) => {
             return refuse(StatusCode::FORBIDDEN, "not_allowed");
         }
         None => return unauthenticated(),
@@ -274,6 +301,35 @@ where
                 token: lease.token().expose().to_owned(),
                 account_id: lease.account().to_string(),
                 expires_at: lease.expires_at(),
+            };
+            let mut response = (StatusCode::OK, Json(body)).into_response();
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            );
+            response
+        }
+        Err(error) => refusal(error),
+    }
+}
+
+async fn account<L, A>(
+    State(state): State<RouteState<L, A>>,
+    headers: HeaderMap,
+    Path(run): Path<String>,
+) -> Response
+where
+    L: RunLeases,
+    A: RunCallerAuth,
+{
+    let caller = match state.auth.caller(&headers) {
+        Some(caller) => caller,
+        None => return unauthenticated(),
+    };
+    match state.leases.account(&RunId::new(&run), &caller).await {
+        Ok(person) => {
+            let body = AccountBody {
+                account_id: person.to_string(),
             };
             let mut response = (StatusCode::OK, Json(body)).into_response();
             response.headers_mut().insert(

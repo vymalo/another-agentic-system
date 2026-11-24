@@ -237,6 +237,7 @@ server:
 | `POST /internal/runs` | the orchestrator (its `token`) | `204`; `409 run_already_bound` for a different binding of a run |
 | `DELETE /internal/runs/{run}` | the orchestrator (its `token`) | `204`, idempotent |
 | `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","accountId","expiresAt"}`, `Cache-Control: no-store` |
+| `GET /internal/runs/{run}/account` | the operator's meter identity alone | `200 {"accountId"}`, `Cache-Control: no-store`; `404 run_not_bound` for an unknown run and for any other caller |
 
 `accountId` is the run's person, the identity the usage ledger is keyed by (ADR 0065): a `UserId`, the claim the deployment maps a principal
 from (`email` or `sub`) — never a provider account or an account number of a ledger service. The injector gets it beside the key so it can say

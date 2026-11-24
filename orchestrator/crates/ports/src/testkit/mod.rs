@@ -1047,6 +1047,15 @@ macro_rules! run_leases_conformance {
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
+        #[tokio::test]
+        async fn answers_the_account_to_the_meter_alone() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::answers_the_account_to_the_meter_alone(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
     };
 }
 

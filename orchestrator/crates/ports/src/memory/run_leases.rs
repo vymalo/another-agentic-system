@@ -6,6 +6,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use jiff::Timestamp;
+use orch_core::UserId;
 
 use crate::{RunBinding, RunCaller, RunId, RunLease, RunLeaseError, RunLeases, ToolSecret};
 
@@ -90,7 +91,7 @@ impl RunLeases for MemoryRunLeases {
             // As the broker: the orchestrator and the injector lease, an agent never does, its own
             // run included (ADR 0084 decision 2, amended 2026-11-24).
             RunCaller::Orchestrator | RunCaller::Injector => {}
-            RunCaller::Agent(_) => return Err(RunLeaseError::NotBound),
+            RunCaller::Agent(_) | RunCaller::Meter => return Err(RunLeaseError::NotBound),
         }
         let model = binding
             .model
@@ -104,6 +105,18 @@ impl RunLeases for MemoryRunLeases {
             .unwrap_or(binding.expires_at)
             .min(binding.expires_at);
         Ok(RunLease::bearer(token, binding.person.clone(), expires_at))
+    }
+
+    async fn account(&self, run: &RunId, caller: &RunCaller) -> Result<UserId, RunLeaseError> {
+        if *caller != RunCaller::Meter {
+            return Err(RunLeaseError::NotBound);
+        }
+        self.bindings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(run)
+            .map(|binding| binding.person.clone())
+            .ok_or(RunLeaseError::NotBound)
     }
 }
 
