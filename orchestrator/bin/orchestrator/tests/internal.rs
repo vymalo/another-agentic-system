@@ -312,14 +312,15 @@ async fn a_bind_then_a_lease_over_a_real_socket() {
     assert_eq!(status, 409, "{body}");
     assert_eq!(code(&body), "run_already_bound");
 
-    // The bound agent leases the deployment's key, and the answer is `no-store`.
+    // The orchestrator leases the deployment's key, and the answer is `no-store`. (The injector is
+    // the other caller the lookup answers; the binary wires its token when a deployment has one.)
     let response = started
         .client
         .get(format!(
             "http://{}/internal/runs/run-a/lease",
             started.internal
         ))
-        .bearer_auth(AGENT_TOKEN)
+        .bearer_auth(ORCH_TOKEN)
         .send()
         .await
         .unwrap();
@@ -334,6 +335,19 @@ async fn a_bind_then_a_lease_over_a_real_socket() {
     let lease: serde_json::Value = response.json().await.unwrap();
     assert_eq!(lease["token"], MODEL_KEY);
     assert!(lease["expiresAt"].as_str().is_some(), "{lease}");
+
+    // The bound agent is refused its own run's lease (ADR 0084 decision 2, amended 2026-11-24):
+    // the binding names the agent, it does not authorise it.
+    let (status, body) = call(
+        &started,
+        reqwest::Method::GET,
+        "/internal/runs/run-a/lease",
+        Some(AGENT_TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(code(&body), "run_not_bound");
     // The key is in the answer and nowhere else.
     assert!(!started.run.borrow().log().contains(MODEL_KEY));
 
@@ -351,7 +365,7 @@ async fn a_bind_then_a_lease_over_a_real_socket() {
         &started,
         reqwest::Method::GET,
         "/internal/runs/run-a/lease",
-        Some(AGENT_TOKEN),
+        Some(ORCH_TOKEN),
         None,
     )
     .await;
@@ -479,7 +493,7 @@ async fn a_model_with_no_credential_is_unavailable() {
             &started,
             reqwest::Method::GET,
             &format!("/internal/runs/{run}/lease"),
-            Some(AGENT_TOKEN),
+            Some(ORCH_TOKEN),
             None,
         )
         .await;
