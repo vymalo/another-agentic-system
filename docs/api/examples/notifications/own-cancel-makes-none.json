@@ -1,0 +1,60 @@
+{
+  "name": "own-cancel-makes-none",
+  "role": "top",
+  "after": 0,
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "alice@example.com"
+      },
+      "data": {
+        "text": "go"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "plain"
+      },
+      "data": {
+        "status": "working"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "plain"
+      },
+      "data": {
+        "status": "canceled"
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "cancelled"
+      }
+    }
+  ],
+  "expect": []
+}
