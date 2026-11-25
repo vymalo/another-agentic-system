@@ -951,10 +951,10 @@ pub async fn messages_since_counts_the_owners_in_the_window<S: ThreadStore>(stor
             .unwrap(),
     );
 
-    // Two messages at the start and one inside the first minute, oldest first; nothing of Bob's.
+    // Two messages at the start and two inside the first minute, oldest first; nothing of Bob's.
     assert_eq!(
         store.messages_since(&alice(), t0()).await.unwrap(),
-        [t0(), t0(), at(30)]
+        [t0(), t0(), at(30), at(50)]
     );
     // The window is what `since` says: the last two only.
     assert_eq!(
