@@ -1,3 +1,4 @@
+import { noteUpdateRequired, withClientVersion } from "@/lib/api/client-version";
 import { apiOrigin, atApi, isApiPath } from "@/lib/runtime-config";
 import { observeDate } from "./clock";
 import { authReady } from "./config";
@@ -95,9 +96,25 @@ export async function authenticatedFetch(
   base: Send = plain,
   options: AuthOptions = {},
 ): Promise<Response> {
+  const res = await signedFetch(given, base, options);
+  await noteUpdateRequired(res);
+  return res;
+}
+
+/** The request as the API's own routes get it: this build's version in `X-Client-Version`. */
+function stamped(request: Request): Request {
+  try {
+    const { pathname } = new URL(request.url);
+    return isApiPath(pathname) && !isPublicRoute(pathname) ? withClientVersion(request) : request;
+  } catch {
+    return request;
+  }
+}
+
+async function signedFetch(given: Request, base: Send, options: AuthOptions): Promise<Response> {
   const cfg = await authReady();
   // a path of this page goes to the API's origin when the runtime configuration names another (ADR 0047)
-  const request = await atApi(given);
+  const request = stamped(await atApi(given));
   if (!cfg || !targetsApi(request)) return base(request);
   if (isSigningOut()) return never();
   const spare = request.body ? request.clone() : null;
@@ -144,8 +161,14 @@ export async function authenticatedFetch(
  * without a word to anybody when none is, so that a reader who never signed in opens nothing.
  */
 export async function readerFetch(given: Request, base: Send = plain): Promise<Response> {
+  const res = await readFetch(given, base);
+  await noteUpdateRequired(res);
+  return res;
+}
+
+async function readFetch(given: Request, base: Send): Promise<Response> {
   const cfg = await authReady();
-  const request = await atApi(given);
+  const request = stamped(await atApi(given));
   if (!cfg || !targetsApi(request)) return base(request);
   if (!(await hasUsableSession())) return unauthorized();
   return authenticatedFetch(request, base, { redirect: false });

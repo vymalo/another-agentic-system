@@ -473,6 +473,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     sharing: Sharing;
     /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
     signedIn: boolean;
+    /** `server.minClientVersion` (docs/api/client-version.md): set, a request of the resource API that states a lower version, or none, is the 426 problem. */
+    minClientVersion: string | null;
     /**
      * The session's token has run out and can be refreshed: every route but the public ones is a 401, as the edge's
      * `forward_auth` answers, until the browser itself asks `GET /oauth2/userinfo`, which refreshes it (oauth2-proxy does, and
@@ -507,6 +509,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         prompts: newShelf(),
         sharing: "internal",
         signedIn: true,
+        minClientVersion: null,
         stale: false,
         edge: { refreshes: 0, signIns: 0, signOuts: 0 },
       };
@@ -612,6 +615,16 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   ) => {
     res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store" });
     res.end(JSON.stringify(body));
+  };
+  /** One to four dotted numbers of at most nine digits (docs/api/client-version.md); anything else is not a version. */
+  const parseVersion = (text: string): number[] | null =>
+    /^\d{1,9}(\.\d{1,9}){0,3}$/.test(text) ? text.split(".").map(Number) : null;
+  const compareVersions = (a: number[], b: number[]): number => {
+    for (let i = 0; i < 4; i++) {
+      const d = (a[i] ?? 0) - (b[i] ?? 0);
+      if (d !== 0) return d;
+    }
+    return 0;
   };
   const problem = (
     res: http.ServerResponse,
@@ -1412,7 +1425,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE");
         res.setHeader(
           "Access-Control-Allow-Headers",
-          "authorization, content-type, accept, dpop, last-event-id, x-web-revision",
+          "authorization, content-type, accept, dpop, last-event-id, x-web-revision, x-client-version",
         );
         res.setHeader("Access-Control-Max-Age", "600");
         return void res.writeHead(204).end();
@@ -1511,6 +1524,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const cap = url.searchParams.get("sharing");
       const signedIn = url.searchParams.get("signedIn");
       const stale = url.searchParams.get("stale");
+      const minVersion = url.searchParams.get("minClientVersion");
       const maxTier = url.searchParams.get("maxTier");
       // the subagents (ADR 0072, mock/sessions.ts): `sessions=off` takes the offer off the card, `sessions=unreadable` makes the card unreadable (a 503),
       // `sessions=on` puts the default back; `sessionStarts=open|refuse|hold` is how a person's starts end; `sessionsNoted=<n>` the most a thread notes
@@ -1553,6 +1567,12 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (maxTier !== null) state.maxTier = TIERS.find((t) => t === maxTier) ?? null;
       if (signedIn !== null) state.signedIn = signedIn !== "false";
       if (stale !== null) state.stale = stale === "true";
+      if (minVersion !== null) {
+        if (minVersion !== "" && !parseVersion(minVersion)) {
+          return problem(res, 400, "Bad Request", "minClientVersion is a dotted version, or empty");
+        }
+        state.minClientVersion = minVersion === "" ? null : minVersion;
+      }
       if (shown !== null) state.showDescriptions = shown !== "false";
       if (history !== null) {
         if (!["off", "on", "windowed"].includes(history)) {
@@ -1840,6 +1860,27 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     if (issuer && publicRoute) issuer.notePublic(req);
     if ((path.startsWith("/api/") || path.startsWith("/agui/")) && !publicRoute) {
+      // the minimum application version comes before identity (docs/api/client-version.md)
+      const minimum = registryOf(sessionOf(req)).minClientVersion;
+      if (minimum !== null && method !== "OPTIONS") {
+        const stated = parseVersion(String(req.headers["x-client-version"] ?? ""));
+        const need = parseVersion(minimum);
+        if (!stated || !need || compareVersions(stated, need) < 0) {
+          return sendJson(
+            res,
+            426,
+            {
+              type: "urn:vymalo:problem:client-update-required",
+              title: "Upgrade Required",
+              status: 426,
+              detail: `update the application: this deployment needs version ${minimum} or later`,
+              code: "client_update_required",
+              minClientVersion: minimum,
+            },
+            "application/problem+json",
+          );
+        }
+      }
       if (issuer) {
         // browser mode: a DPoP-bound token and a proof of the right request, as the orchestrator checks them
         const verified = issuer.verifyApi(req, url);
