@@ -1,0 +1,40 @@
+# The 402 a spent balance earns (ANR-669), and why it is not in the AuthConfig: Authorino v0.26.4's denial status is
+# one code for the whole authorization phase (`response.unauthorized.code`, 300-599), so denying a zero balance there
+# would answer 402 for a run with no lease or no account id too. Authorino therefore lets the request through with the
+# balance it read on `x-budget-remaining`, and this Envoy Lua filter judges it — after ext-auth in the filter chain
+# (Envoy Gateway v1.10 orders ext_authz 6, lua 13, `internal/xds/translator/httpfilters.go`) — so the router never
+# calls the gateway for a person at zero. It also removes the header: the person's balance is the injector's business,
+# not the model endpoint's, and a client-sent copy is replaced by Authorino and then removed here either way.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: spike-balance
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: spike
+  lua:
+    - type: Inline
+      inline: |
+        function envoy_on_request(handle)
+          local headers = handle:headers()
+          local remaining = headers:get("x-budget-remaining")
+          local micros = nil
+          if remaining ~= nil then
+            micros = tonumber(remaining)
+          end
+          if micros == nil then
+            handle:respond({ [":status"] = "503", ["content-type"] = "application/json" },
+              '{"error":"budget_unavailable"}')
+            return
+          end
+          -- Signed and unclamped: negative is an overshoot, and it is spent like zero.
+          if micros <= 0 then
+            handle:respond({ [":status"] = "402", ["content-type"] = "application/json" },
+              '{"error":"model_locked"}')
+            return
+          end
+          headers:remove("x-budget-remaining")
+        end

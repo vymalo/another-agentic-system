@@ -45,7 +45,7 @@ hc() { helm --kube-context "$ctx" "$@"; }
 
 hc upgrade -i eg "$ENVOY_GATEWAY_CHART" --version "$ENVOY_GATEWAY_VERSION" \
   --namespace envoy-gateway-system --create-namespace \
-  -f "$dir/envoy-gateway-values.yaml"
+  -f "$dir/envoy-gateway-values.yaml" -f "$dir/envoy-gateway-lua.yaml"
 kc wait -n envoy-gateway-system deployment/envoy-gateway --for=condition=Available --timeout=5m
 
 hc upgrade -i aieg-crd "$AI_GATEWAY_CRDS_CHART" --version "$AI_GATEWAY_VERSION" \
@@ -65,6 +65,7 @@ kc wait -n authorino-operator deployment/authorino-operator --for=condition=Avai
 kc apply -f "$dir/manifests/"
 kc wait -n default pods -l app=spike-gateway --for=condition=Ready --timeout=3m
 kc wait -n default pods -l app=spike-broker --for=condition=Ready --timeout=3m
+kc wait -n default pods -l app=spike-ledger --for=condition=Ready --timeout=3m
 kc wait -n default deployment/authorino --for=condition=Available --timeout=5m
 # The Gateway's Deployment, not its pods: a rolling update leaves the old pod Terminating for a while, and waiting on
 # pods with this label times out on it (the spike hit exactly that on 2026-11-24).

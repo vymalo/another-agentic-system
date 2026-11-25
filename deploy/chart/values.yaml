@@ -150,6 +150,20 @@ injector:
     # How long Authorino may cache one run's lease, keyed by run id. The lease itself is at most 30 s; a larger TTL
     # is refused.
     cacheTtlSecs: 30
+  # The person's balance, read at every model call from the usage ledger (ADR 0084 decision 7; the ledger is
+  # another-backend's): `GET <url>/budget/v1/remaining?account_id=<the lease's accountId>`, a READ that never debits.
+  # Required when the injector is on: a model call whose balance nobody read is a model call nobody pays for.
+  budget:
+    # The ledger's budget listener, http or https, with a host and no credential, query or fragment. Empty: refused.
+    # An account the ledger has never seen answers 200 with a zero balance, which is the zero this chart refuses.
+    url: ""
+    # The AWS property of the shared secret that listener requires, read into a Secret and presented by Authorino as
+    # `Authorization: Bearer` (its `sharedSecretRef` has no other place). Never a value.
+    tokenProperty: ""
+    # How long Authorino may cache one account's balance. A balance moves slower than a lease, but a stale one lets a
+    # person overspend by whatever they spend inside the TTL: 10 s bounds that to a few model calls and still cuts the
+    # ledger's reads by an order of magnitude. 1 to 30 (a larger TTL is refused).
+    cacheTtlSecs: 10
   # Authorino: this chart renders the `Authorino` instance and its `AuthConfig`; the operator is the deployment's.
   # `audiences` are the audiences the agent's projected service-account token must carry (empty: Authorino expects
   # the protected service's host name, its own default).

@@ -2630,6 +2630,7 @@ refused "openbao values set while the store is postgres (they would be ignored)"
 injector_values="$chart/tests/injector.values.yaml"
 render
 check "injector off by default: no injector object" lacks 'app\.kubernetes\.io/component: injector'
+check "injector off by default: no budget read, no ledger route and no x-budget-remaining anywhere" lacks 'x-budget-remaining|budget/v1/remaining|injector-budget|EnvoyExtensionPolicy'
 check "injector off by default: no Authorino, Agent Router or ext-auth object" lacks '^kind: (AuthConfig|Authorino|AIGatewayRoute|AIServiceBackend|SecurityPolicy|EnvoyProxy|ClientTrafficPolicy|Gateway)$'
 check "values.yaml: injector.enabled is false by default" sh -c "awk '/^injector:/{i=1} i && /^  enabled:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx false"
 render -f "$injector_values"
@@ -2675,15 +2676,78 @@ check "injector on: a request without a run id is denied before any model call" 
 check "injector on: the run routes admit Authorino's pods (its operator label)" out_all '^              authorino-resource: "another-agentic-authorino"$'
 check "injector on: the broker token is an ExternalSecret property, not a value" dhas ExternalSecret another-agentic-injector-broker 'property: injector_broker_token'
 check "injector on: no plain.value and no secret-looking value anywhere" lacks 'sk-[A-Za-z0-9]{8}|ghp_|github_pat_|-----BEGIN|AKIA[0-9A-Z]{16}'
+# The person's balance, read from the ledger at every model call (ANR-669): a read, cached briefly per account, after the
+# lease (it is keyed by the lease's accountId), and a 402 for a spent one, which Authorino cannot produce per rule.
+injector_budget_read() {
+  doc AuthConfig another-agentic-injector > "$inj" &&
+    all_in "$inj" \
+      '^    "budget":$' \
+      '^      priority: 1$' \
+      '^        url: "http://ledger.example.invalid:8201/budget/v1/remaining\?account_id=\{auth.metadata.lease.accountId\}"$' \
+      '^          selector: auth.metadata.lease.accountId$' \
+      '^        ttl: 10$' &&
+    awk '
+      /^    "budget":$/ { b = 1 }
+      b && /^          name: another-agentic-injector-budget$/ { n = 1 }
+      b && /^          key: token$/ { k = 1 }
+      END { exit !(n && k) }' "$inj"
+}
+check "injector on: the budget read is the ledger's route, keyed by the lease's account, its own secret, cached 10 s" injector_budget_read
+injector_budget_after_lease() {
+  doc AuthConfig another-agentic-injector > "$inj" &&
+    awk '
+      /^        ttl: 30$/ { lease = NR }
+      /^      priority: 1$/ { budget = NR }
+      END { exit !(lease && budget && lease < budget) }' "$inj"
+}
+check "injector on: the budget read runs after the lease (its priority group follows the lease's default one)" injector_budget_after_lease
+injector_budget_required() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^  authorization:$/ { a = 1 }
+    /^  response:$/ { a = 0 }
+    a && index($0, "selector: auth.metadata.budget.remaining_micros") { seen = 1 }
+    a && seen && /operator: neq/ { ok = 1; seen = 0 }
+    END { exit !ok }'
+}
+check "injector on: a balance the ledger could not answer is denied, so no call spends an unread balance" injector_budget_required
+injector_budget_header() {
+  doc AuthConfig another-agentic-injector > "$inj" &&
+    awk '
+      /^  response:$/ { r = 1 }
+      r && /^        "x-budget-remaining":$/ { h = 1 }
+      h && /selector: "\{auth.metadata.budget.remaining_micros\}"$/ { s = 1 }
+      END { exit !(h && s) }' "$inj"
+}
+check "injector on: the balance reaches the gateway's filter as a selector, never a literal" injector_budget_header
+injector_402_filter() {
+  doc EnvoyExtensionPolicy another-agentic-injector-balance > "$inj" &&
+    all_in "$inj" \
+      '^      name: another-agentic-injector$' \
+      '^kind: EnvoyExtensionPolicy$' \
+      '^    - type: Inline$' \
+      '\[":status"\] = "402"' \
+      '"error":"model_locked"' \
+      'headers:remove\("x-budget-remaining"\)'
+}
+check "injector on: a spent balance is refused with 402 by the Envoy filter on the generated route, and the header removed" injector_402_filter
+check "injector on: the budget's shared secret is an ExternalSecret property, not a value" dhas ExternalSecret another-agentic-injector-budget 'property: injector_budget_token'
+check "injector on: the balance check adds no second upstream and no directResponse route" count '^kind: HTTPRoute$' 0
 check "injector on: the objects are the golden's, byte for byte" sh -c "sh \"$chart/tests/golden/injector-objects.sh\" < \"$out\" | cmp -s - \"$chart/tests/golden/injector.yaml\""
 check "injector: no GatewayClass is required" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.gatewayClassName=
 check "injector: no upstream is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.upstream.url=
 check "injector: no model is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.model=
 check "injector: a cache longer than the 30 s lease is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.broker.cacheTtlSecs=60
 check "injector: a token property is required with ExternalSecrets" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.broker.tokenProperty=
+check "injector: no ledger URL is refused (a model call nobody checked is a call nobody pays for)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.url=
+check "injector: a ledger URL with a path, query or credential is refused (the route is appended)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.url=https://ledger.example.invalid:8201/other
+check "injector: a ledger URL that is not http or https is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.url=ledger.example.invalid:8201
+check "injector: a budget token property is required with ExternalSecrets" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.tokenProperty=
+check "injector: a balance cache of 0 or above 30 s is refused (a stale one lets a person overspend)" sh -c "
+  ! helm template another-agentic-system '$chart' --namespace another-agentic-system -f '$base' -f '$injector_values' --set injector.budget.cacheTtlSecs=0 >/dev/null 2>&1 &&
+  ! helm template another-agentic-system '$chart' --namespace another-agentic-system -f '$base' -f '$injector_values' --set injector.budget.cacheTtlSecs=31 >/dev/null 2>&1"
 check "injector: a broker URL is required without the internal listener" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set orchestrator.internal.enabled=false
-check "injector: an explicit broker URL needs no internal listener" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty=injector_broker_token
-check "injector: ExternalSecrets off needs no token property (the deployment creates the Secret)" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty= --set externalSecrets.enabled=false
+check "injector: an explicit broker URL needs no internal listener" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty=injector_broker_token --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty=injector_budget_token
+check "injector: ExternalSecrets off needs no token property (the deployment creates the Secret)" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty= --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty= --set externalSecrets.enabled=false
 render
 config_of config.yaml "$cfg"
 

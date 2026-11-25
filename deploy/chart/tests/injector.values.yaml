@@ -9,6 +9,9 @@ injector:
   model: injector-model
   broker:
     tokenProperty: injector_broker_token
+  budget:
+    url: http://ledger.example.invalid:8201
+    tokenProperty: injector_budget_token
   authorino:
     audiences: [another-agentic-injector]
 orchestrator:

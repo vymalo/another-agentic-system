@@ -95,6 +95,24 @@ render instead of producing a route that forwards the client's own Authorization
 {{- if not (and (kindIs "float64" .Values.injector.broker.cacheTtlSecs) (ge (int .Values.injector.broker.cacheTtlSecs) 1) (le (int .Values.injector.broker.cacheTtlSecs) 30)) -}}
 {{- fail (printf "injector.broker.cacheTtlSecs must be a number between 1 and 30 (the lease is at most 30 s), got %v" .Values.injector.broker.cacheTtlSecs) -}}
 {{- end -}}
+{{- /* The person's balance, read from the ledger at every model call: without the listener's URL nothing would check it,
+and the model call would spend a balance nobody read (ADR 0084 decision 7). */ -}}
+{{- $budget := .Values.injector.budget -}}
+{{- if not (kindIs "string" $budget.url) -}}
+{{- fail (printf "injector.budget.url must be a string, got %v" $budget.url) -}}
+{{- end -}}
+{{- if not $budget.url -}}
+{{- fail "injector.budget.url is required when the injector is on: the ledger's budget listener, whose read answers whether the person may spend" -}}
+{{- end -}}
+{{- if not (regexMatch "^https?://[^/@?#\\s]+/?$" $budget.url) -}}
+{{- fail (printf "injector.budget.url must be an http or https URL with a host, no credential, path, query or fragment (the route is appended), got %q" $budget.url) -}}
+{{- end -}}
+{{- if and .Values.externalSecrets.enabled (not (and (kindIs "string" $budget.tokenProperty) $budget.tokenProperty)) -}}
+{{- fail "injector.budget.tokenProperty is required with externalSecrets.enabled: the AWS property of the ledger's shared secret" -}}
+{{- end -}}
+{{- if not (and (kindIs "float64" $budget.cacheTtlSecs) (ge (int $budget.cacheTtlSecs) 1) (le (int $budget.cacheTtlSecs) 30)) -}}
+{{- fail (printf "injector.budget.cacheTtlSecs must be a number between 1 and 30 (a stale balance lets a person overspend), got %v" $budget.cacheTtlSecs) -}}
+{{- end -}}
 {{- if not (and (kindIs "float64" .Values.injector.authorino.replicas) (ge (int .Values.injector.authorino.replicas) 1)) -}}
 {{- fail (printf "injector.authorino.replicas must be a positive number, got %v" .Values.injector.authorino.replicas) -}}
 {{- end -}}

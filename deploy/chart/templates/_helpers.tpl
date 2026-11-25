@@ -91,6 +91,14 @@ it, and the Authorino instance and its gRPC authorization Service. */}}
 {{- printf "http://%s.%s.svc:%v" (include "agentic.component" (dict "root" . "component" "orchestrator")) .Release.Namespace (int .Values.orchestrator.internal.port) -}}
 {{- end -}}
 {{- end -}}
+{{/* The Secret holding the shared secret of the ledger's budget read; its content comes from AWS, never from this chart. */}}
+{{- define "agentic.injector.budgetSecret" -}}
+{{- printf "%s-injector-budget" (include "agentic.fullname" .) -}}
+{{- end -}}
+{{/* The ledger's budget read: the deployment's listener, then its one route and the account it is asked about. */}}
+{{- define "agentic.injector.budgetUrl" -}}
+{{- printf "%s/budget/v1/remaining?account_id={auth.metadata.lease.accountId}" (trimSuffix "/" (toString .Values.injector.budget.url)) -}}
+{{- end -}}
 
 {{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
 {{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}

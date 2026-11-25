@@ -4,6 +4,7 @@
 {{- $authorino := include "agentic.injector.authorinoName" . -}}
 {{- $authorinoSvc := include "agentic.injector.authorinoService" . -}}
 {{- $secret := include "agentic.injector.secret" . -}}
+{{- $budgetSecret := include "agentic.injector.budgetSecret" . -}}
 {{- $upstream := urlParse .Values.injector.upstream.url -}}
 {{- $port := regexFind ":[0-9]+$" $upstream.host | trimPrefix ":" -}}
 {{- if not $port -}}
@@ -156,12 +157,19 @@ spec:
 #  1. authenticate the agent pod (a TokenReview of its service-account token);
 #  2. ask the broker's run-lease route for the run named by `X-Run-Id`, with the injector's own token;
 #  3. cache that answer per run for at most the lease;
-#  4. add `Authorization` and `x-account-id` upstream only. Envoy Gateway applies the ok_response headers and replaces
-#     a client-sent `Authorization` (verified 2026-11-24: exactly one header at the upstream).
-#  5. deny when the lease carries no token or no account id. A refused lookup (the broker's 410/404) leaves the metadata
-#     unset and Authorino still applies the ok_response headers, so without these rules the gateway receives
-#     `Authorization: Bearer` (an empty token) — unusable, but still a header — or an empty `x-account-id`. Denied, a run
-#     with no usable lease reaches no gateway at all (ANR-662, ANR-667; verified 2026-11-24/25 in dev/agent-router-spike/).
+#  4. read the person's balance from the ledger's budget read, with the lease's account id and the injector's own
+#     secret — a READ, never a debit (ADR 0084 decision 7);
+#  5. add `Authorization`, `x-account-id` and `x-budget-remaining` upstream only. Envoy Gateway applies the
+#     ok_response headers and replaces a client-sent header of the same name (verified 2026-11-24: exactly one header
+#     at the upstream), so a client cannot choose its own balance either;
+#  6. deny when the lease carries no token or no account id, or when the balance could not be read. A refused lookup
+#     (the broker's 410/404) leaves the metadata unset and Authorino still applies the ok_response headers, so without
+#     these rules the gateway receives `Authorization: Bearer` (an empty token) — unusable, but still a header — or an
+#     empty `x-account-id`. Denied, a run with no usable lease reaches no gateway at all (ANR-662, ANR-667; verified
+#     2026-11-24/25 in dev/agent-router-spike/).
+#  7. a balance that is spent (zero or negative) is refused with 402 by the EnvoyExtensionPolicy below, not here:
+#     Authorino v0.26.4's denial status is one code per phase (`response.unauthorized.code`), so a 402 here would make
+#     every refused lease a 402 as well (ANR-669; verified 2026-11-25 in dev/agent-router-spike/).
 #
 # Spike result (ANR-662, 2026-11-24): it works. An ok_response header from Authorino reaches the WireMock gateway
 # through Agent Router, so the injector stays these objects and needs no service of our own behind the port.
@@ -212,6 +220,33 @@ spec:
         key:
           selector: request.headers.x-run-id
         ttl: {{ int .Values.injector.broker.cacheTtlSecs }}
+    "budget":
+      # The person's balance, read at every model call (ADR 0084 decision 7): a READ of the ledger's budget, never a
+      # debit. It needs the lease's account id, so it runs in the priority group after the lease (Authorino evaluates
+      # one priority group at a time, the lower number first; v0.26.4 made `second` read `first`'s answer the same
+      # way). Cached per account for `injector.budget.cacheTtlSecs`: a balance moves slower than a lease, but a stale
+      # one lets a person overspend by what they spend inside the TTL, so the TTL is short (10 s by default).
+      priority: 1
+      when:
+        - selector: auth.metadata.lease.accountId
+          operator: neq
+          value: ""
+      http:
+        url: {{ include "agentic.injector.budgetUrl" . | quote }}
+        method: GET
+        headers:
+          Accept:
+            value: application/json
+        # The ledger's listener requires the injector's own shared secret, presented as `Authorization: Bearer
+        # <secret>` (Authorino's `sharedSecretRef` has no other carrier). An account the ledger has never seen answers
+        # 200 with a zero balance; a ledger that cannot answer is a refusal upstream, never a zero here.
+        sharedSecretRef:
+          name: {{ $budgetSecret }}
+          key: token
+      cache:
+        key:
+          selector: auth.metadata.lease.accountId
+        ttl: {{ int .Values.injector.budget.cacheTtlSecs }}
   authorization:
     "run-id":
       patternMatching:
@@ -234,6 +269,16 @@ spec:
           - selector: auth.metadata.lease.accountId
             operator: neq
             value: ""
+    # The balance the ledger could not answer (its 401/503, or a timeout) leaves the metadata unset: refuse here, so a
+    # call whose balance nobody read reaches no model. A balance the ledger DID answer — including zero, and including
+    # an account it has never seen (200, zero) — passes here and is judged by the EnvoyExtensionPolicy below, which is
+    # where the 402 is produced.
+    "budget-readable":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.budget.remaining_micros
+            operator: neq
+            value: ""
   response:
     success:
       headers:
@@ -243,6 +288,12 @@ spec:
         "x-account-id":
           plain:
             selector: "{auth.metadata.lease.accountId}"
+        # The balance the request was judged by, in micro-USD, for the EnvoyExtensionPolicy that answers 402. The
+        # client's own copy of this header is replaced, and the filter removes it before the model endpoint, so the
+        # person's balance never leaves the injector.
+        "x-budget-remaining":
+          plain:
+            selector: "{auth.metadata.budget.remaining_micros}"
 ---
 # The generated HTTPRoute of the AIGatewayRoute above has the same name. Scoping the policy to it (rather than the
 # whole Gateway) is what the spike verified: `targetRefs: kind=HTTPRoute name=<route>` reports Accepted.
@@ -264,6 +315,48 @@ spec:
       backendRefs:
         - name: {{ $authorinoSvc }}
           port: 50051
+---
+# The 402 a spent balance earns, which Authorino cannot produce per rule: its denial status is one code for the whole
+# authorization phase (v0.26.4 `response.unauthorized.code`, 300-599). A zero balance denied there would make a refused
+# lease a 402 too. Authorino therefore lets the request through carrying the balance it read on `x-budget-remaining`,
+# and this Envoy Lua filter — later in the chain than ext-auth (Envoy Gateway v1.10 orders ext_authz 6 and lua 13,
+# verified in its `internal/xds/translator/httpfilters.go`) — refuses a spent balance with 402 before the router calls
+# the model. It also removes the header, so the person's balance never reaches the model endpoint. An absent or
+# non-numeric header is refused too (503): the filter fails closed even if it runs without the authorizer's rule.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: {{ $gw }}-balance
+  labels:
+    {{- include "agentic.labels" $labels | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ $gw }}
+  lua:
+    - type: Inline
+      inline: |
+        function envoy_on_request(handle)
+          local headers = handle:headers()
+          local remaining = headers:get("x-budget-remaining")
+          local micros = nil
+          if remaining ~= nil then
+            micros = tonumber(remaining)
+          end
+          if micros == nil then
+            handle:respond({ [":status"] = "503", ["content-type"] = "application/json" },
+              '{"error":"budget_unavailable"}')
+            return
+          end
+          -- Signed and unclamped: a negative balance is an overshoot, and it is spent like zero.
+          if micros <= 0 then
+            handle:respond({ [":status"] = "402", ["content-type"] = "application/json" },
+              '{"error":"model_locked"}')
+            return
+          end
+          headers:remove("x-budget-remaining")
+        end
 {{- if .Values.externalSecrets.enabled }}
 ---
 # The injector's token for the broker's run-lease route, from AWS like every secret of this chart: a property name,
@@ -287,5 +380,27 @@ spec:
       remoteRef:
         key: {{ required "externalSecrets.key is required" $es.key }}
         property: {{ required "injector.broker.tokenProperty is required with externalSecrets.enabled" .Values.injector.broker.tokenProperty }}
+---
+# The shared secret of the ledger's budget read, the same way: a property of the AWS secret, never a value. With
+# externalSecrets off, the deployment creates this Secret itself.
+apiVersion: {{ $es.apiVersion }}
+kind: ExternalSecret
+metadata:
+  name: {{ $budgetSecret }}
+  labels:
+    {{- include "agentic.labels" $labels | nindent 4 }}
+spec:
+  refreshInterval: {{ $es.refreshInterval }}
+  secretStoreRef:
+    name: {{ $es.secretStoreRef.name }}
+    kind: {{ $es.secretStoreRef.kind }}
+  target:
+    name: {{ $budgetSecret }}
+    creationPolicy: Owner
+  data:
+    - secretKey: token
+      remoteRef:
+        key: {{ required "externalSecrets.key is required" $es.key }}
+        property: {{ required "injector.budget.tokenProperty is required with externalSecrets.enabled" .Values.injector.budget.tokenProperty }}
 {{- end }}
 {{- end }}

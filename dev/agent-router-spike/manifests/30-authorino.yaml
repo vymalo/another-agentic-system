@@ -83,6 +83,31 @@ spec:
         key:
           selector: request.headers.x-run-id
         ttl: 30
+    "budget":
+      # The person's balance, read from the ledger at every model call (ANR-669): a READ, never a debit, keyed by the
+      # account id in the lease Authorino just fetched — hence the second priority group (v0.26.4: lower number runs
+      # first; a config in priority 1 reads a config's answer from priority 0). Cached per account for 10 s, the
+      # chart's default: a stale balance lets a person overspend by what they spend inside the TTL.
+      priority: 1
+      when:
+        - selector: auth.metadata.lease.accountId
+          operator: neq
+          value: ""
+      http:
+        url: "http://spike-ledger.default.svc.cluster.local/budget/v1/remaining?account_id={auth.metadata.lease.accountId}"
+        method: GET
+        headers:
+          Accept:
+            value: application/json
+        # The ledger's shared secret, presented as `Authorization: Bearer <secret>` (Authorino's sharedSecretRef has no
+        # other carrier).
+        sharedSecretRef:
+          name: spike-budget-token
+          key: token
+      cache:
+        key:
+          selector: auth.metadata.lease.accountId
+        ttl: 10
   authorization:
     "run-id":
       patternMatching:
@@ -106,6 +131,14 @@ spec:
           - selector: auth.metadata.lease.accountId
             operator: neq
             value: ""
+    # `503 budget_unavailable` (or a timeout) leaves the metadata unset: refuse here, so an unread balance is never
+    # spent as if it were credit — and never misreported to the person as a spent one (that is the 402 below).
+    "budget-readable":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.budget.remaining_micros
+            operator: neq
+            value: ""
   response:
     success:
       headers:
@@ -119,3 +152,8 @@ spec:
         "x-account-id":
           plain:
             selector: "{auth.metadata.lease.accountId}"
+        # The balance the request was judged by, for the Envoy Lua filter that answers 402 (Authorino cannot set a
+        # denial code per rule). A client-sent copy is replaced, and the filter removes it before the gateway.
+        "x-budget-remaining":
+          plain:
+            selector: "{auth.metadata.budget.remaining_micros}"
