@@ -706,6 +706,20 @@ pub enum CommitOutcome {
     Fenced,
 }
 
+/// The answer of [`ThreadStore::admit_commit`] (ADR 0081, decisions 1 to 4).
+// Same size trade-off as `CommitOutcome`.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    /// The person had room: the commit was made, with this outcome.
+    Admitted(CommitOutcome),
+    /// The person already has `running` unfinished jobs, the limit or more: nothing was written.
+    NoRoom {
+        /// The person's unfinished jobs when the answer was given.
+        running: u32,
+    },
+}
+
 /// The A2A side of a thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentBinding {
@@ -1205,6 +1219,31 @@ pub trait ThreadStore:
         expected_version: i64,
         commit: Commit,
     ) -> impl Future<Output = Result<CommitOutcome, StoreError>> + Send;
+
+    /// [`commit`](Self::commit), made only while `owner` has fewer than `limit` unfinished jobs
+    /// (ADR 0081): a job is unfinished while an outbox row of kind [`OutboxKind::Delegate`] of
+    /// the person is `pending` or `inflight`. The count and the commit are one step per person:
+    /// two calls at once for a person with one place left admit one and refuse the other
+    /// ([`Admission::NoRoom`], nothing written). Postgres takes a transaction-scoped advisory lock
+    /// on the person, SQLite counts inside its single writer's transaction, memory under a lock.
+    ///
+    /// **Provided**: the default commits with no limit, so an implementer that has not written the
+    /// guard keeps compiling and enforces nothing. Every store of this repository overrides it.
+    fn admit_commit(
+        &self,
+        owner: &UserId,
+        limit: u32,
+        thread: ThreadId,
+        expected_version: i64,
+        commit: Commit,
+    ) -> impl Future<Output = Result<Admission, StoreError>> + Send {
+        let _ = (owner, limit);
+        async move {
+            self.commit(thread, expected_version, commit)
+                .await
+                .map(Admission::Admitted)
+        }
+    }
 
     /// Events with `seq > after`, oldest first.
     fn list_events(
