@@ -2397,6 +2397,11 @@ impl<P: Ports> App<P> {
             Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
         ) {
             self.may_invoke(&access, &thread).await?;
+            // The role's token allowance (ADR 0081): refused here, before anything is written or
+            // sent to an agent. Not asked of an action on a card, which spends nothing of its own.
+            if !matches!(input, Input::UiAction { .. }) {
+                self.check_allowance(&access, who.user()).await?;
+            }
         }
         // A message to a helper session's thread (ADR 0072, S3) is refused by the core before
         // anything is written when the session cannot take it: closed, a mention, or a Stop & send

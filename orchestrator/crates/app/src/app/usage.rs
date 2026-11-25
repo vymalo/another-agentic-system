@@ -131,6 +131,33 @@ impl<P: Ports> App<P> {
         Ok(price_month(self.cfg.usage.prices.as_ref(), &totals))
     }
 
+    /// Refuses with [`AppError::AllowanceSpent`] when the person's roles set a token allowance
+    /// (`tokensPerPeriod`, ADR 0081) and the ledger says they have used it up this UTC month. With
+    /// no allowance set, which is the default, it reads nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::AllowanceSpent`], or [`AppError::Store`] when the ledger cannot be read.
+    pub(crate) async fn check_allowance(
+        &self,
+        access: &crate::Access<'_>,
+        user: &UserId,
+    ) -> Result<(), AppError> {
+        let Some(limit) = access.tokens_allowance() else {
+            return Ok(());
+        };
+        let month = UsageMonth::of(self.ports.clock().now());
+        let totals = self.ports.store().month(user, month).await?;
+        let used = totals
+            .models
+            .iter()
+            .fold(0u64, |sum, m| sum.saturating_add(m.tokens.total_tokens));
+        if used >= limit {
+            return Err(AppError::AllowanceSpent { limit });
+        }
+        Ok(())
+    }
+
     /// The retention sweep removed `tasks` tasks.
     pub(crate) fn usage_swept(&self, tasks: u64) {
         self.usage_counters

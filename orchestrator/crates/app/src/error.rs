@@ -43,6 +43,13 @@ pub enum AppError {
     /// or an agent its job asked is still running. Stop it, wait for it to end, then delete it.
     #[error("{0}; stop it and delete it when it has ended")]
     ThreadActive(NotDeletable),
+    /// The person's token allowance for the UTC month is spent (ADR 0081, `tokensPerPeriod`): the
+    /// message is refused before any agent is called.
+    #[error("your allowance of {limit} tokens for this month is spent")]
+    AllowanceSpent {
+        /// The role's limit, in tokens.
+        limit: u64,
+    },
     /// A new link for a thread that is not shared (ADR 0040).
     #[error("the thread is not shared")]
     NotShared,
@@ -257,7 +264,9 @@ impl Classify for AppError {
     fn class(&self) -> ErrorClass {
         match self {
             AppError::NotFound => ErrorClass::NotFound,
-            AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+            AppError::Forbidden { .. }
+            | AppError::SharingDisabled
+            | AppError::AllowanceSpent { .. } => ErrorClass::Forbidden,
             AppError::Invalid(_) => ErrorClass::Invalid,
             AppError::Finished
             | AppError::Refused(_)
@@ -310,6 +319,7 @@ impl Classify for AppError {
             AppError::NotFound
             | AppError::Forbidden { .. }
             | AppError::SharingDisabled
+            | AppError::AllowanceSpent { .. }
             | AppError::OverCap { .. }
             | AppError::NotShared
             | AppError::ThreadActive(_)
@@ -379,6 +389,7 @@ mod tests {
             AppError::missing_permission(Permission::ThreadWrite),
             AppError::agent_not_allowed(Permission::AgentInvoke, &AgentId::new("coder")),
             AppError::SharingDisabled,
+            AppError::AllowanceSpent { limit: 10 },
             AppError::OverCap {
                 cap: SharingMode::Internal,
             },
@@ -442,7 +453,9 @@ mod tests {
             // Exhaustive: a new variant forces a class decision.
             let expected = match &e {
                 AppError::NotFound => ErrorClass::NotFound,
-                AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+                AppError::Forbidden { .. }
+                | AppError::SharingDisabled
+                | AppError::AllowanceSpent { .. } => ErrorClass::Forbidden,
                 AppError::Invalid(_) => ErrorClass::Invalid,
                 AppError::Finished
                 | AppError::Refused(_)

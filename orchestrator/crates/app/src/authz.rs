@@ -305,6 +305,9 @@ pub enum PolicyError {
 pub struct Policy {
     roles: BTreeMap<Role, RoleGrant>,
     default_role: Option<Role>,
+    /// `auth.roles.<role>.limits.tokensPerPeriod` (ADR 0081): the tokens of a UTC month a role
+    /// allows. A role with no entry has no allowance.
+    allowances: BTreeMap<Role, u64>,
 }
 
 /// The roles of a deployment that defines none (`auth.roles` absent): `user` and `admin`, as ADR
@@ -324,6 +327,7 @@ impl Default for Policy {
         Policy {
             roles: built_in_roles(),
             default_role: Some(Role::new("user")),
+            allowances: BTreeMap::new(),
         }
     }
 }
@@ -345,6 +349,7 @@ impl Policy {
         Ok(Policy {
             roles,
             default_role,
+            allowances: BTreeMap::new(),
         })
     }
 
@@ -360,11 +365,20 @@ impl Policy {
         self
     }
 
+    /// The policy with the token allowances of the roles (`tokensPerPeriod`, ADR 0081). A role
+    /// that is not in `allowances` has none.
+    #[must_use]
+    pub fn with_allowances(mut self, allowances: BTreeMap<Role, u64>) -> Policy {
+        self.allowances = allowances;
+        self
+    }
+
     /// A policy that grants nothing to anybody.
     pub fn deny_all() -> Policy {
         Policy {
             roles: BTreeMap::new(),
             default_role: None,
+            allowances: BTreeMap::new(),
         }
     }
 
@@ -420,6 +434,7 @@ impl Policy {
         roles.sort_by(|a, b| a.0.cmp(b.0));
         roles.dedup_by(|a, b| a.0 == b.0);
         Access {
+            allowances: &self.allowances,
             user: who.user().clone(),
             claims: who.roles().into_iter().cloned().collect(),
             roles,
@@ -531,6 +546,7 @@ pub enum Denied {
 /// What one person may do: the grants of their known roles. Built by [`Policy::access`].
 #[derive(Debug, Clone)]
 pub struct Access<'p> {
+    allowances: &'p BTreeMap<Role, u64>,
     user: UserId,
     /// Every role the credential carried, known to the policy or not, as the identity provider
     /// spelled them: what an agent's audience is read against (ADR 0045). Unlike `roles`, which
@@ -554,6 +570,18 @@ impl<'p> Access<'p> {
     /// Whether any role holds `permission`, over anything.
     pub fn has(&self, permission: Permission) -> bool {
         self.roles.iter().any(|(_, g)| g.holds(permission))
+    }
+
+    /// The tokens the person may use in a UTC month (ADR 0081, `tokensPerPeriod`): over their
+    /// roles, the highest allowance, and none (no limit) when any of them has none, or when they
+    /// have no role that counts.
+    pub fn tokens_allowance(&self) -> Option<u64> {
+        let mut highest = None;
+        for (role, _) in &self.roles {
+            let allowance = *self.allowances.get(*role)?;
+            highest = Some(highest.map_or(allowance, |h: u64| h.max(allowance)));
+        }
+        highest
     }
 
     /// The highest access tier the person may pick for a message to **any** agent (ADR 0061): over

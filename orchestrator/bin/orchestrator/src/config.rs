@@ -1211,6 +1211,15 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         orch_config::AuthTier::Auto => orch_core::AccessTier::Auto,
         orch_config::AuthTier::Bypass => orch_core::AccessTier::Bypass,
     };
+    let allowances: std::collections::BTreeMap<orch_ports::Role, u64> = auth
+        .roles
+        .iter()
+        .flatten()
+        .filter_map(|(name, role)| {
+            let tokens = role.limits.as_ref()?.tokens_per_period?;
+            Some((orch_ports::Role::new(name.as_str()), tokens))
+        })
+        .collect();
     let (roles, built_in_default) = match &auth.roles {
         None => (built_in_roles(), Some("user")),
         Some(roles) => (
@@ -1236,10 +1245,12 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         Some(None) => None,
         Some(Some(name)) => Some(name.trim().to_owned()),
     };
-    Policy::new(roles, default_role.map(orch_ports::Role::new)).unwrap_or_else(|e| {
-        tracing::error!(error = %e, "auth.defaultRole is not one of auth.roles; no role grants anything");
-        Policy::deny_all()
-    })
+    Policy::new(roles, default_role.map(orch_ports::Role::new))
+        .map(|policy| policy.with_allowances(allowances))
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "auth.defaultRole is not one of auth.roles; no role grants anything");
+            Policy::deny_all()
+        })
 }
 
 /// The complete, validated configuration.
