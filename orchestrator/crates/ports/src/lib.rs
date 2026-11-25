@@ -17,6 +17,8 @@
 //! - [`AgentRegistry`]: which agents exist right now, read live and failing closed (ADR 0022), with
 //!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one); each
 //!   entry says whom it is for ([`AgentAudience`], ADR 0045);
+//! - [`EntitlementSource`]: whether a person's plan covers them right now, read on a sweep and
+//!   failing closed, so a lapse suspends their own agents;
 //! - [`ArtifactStore`]: where the files agents hand over are kept, by the hash of their content;
 //!   the log keeps only the reference (ADR 0032); [`NoArtifacts`] is a deployment without one;
 //! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
@@ -64,6 +66,7 @@ mod bundle;
 mod clock;
 mod credentials;
 mod egress;
+mod entitlement;
 mod inbox;
 mod lookup;
 mod model;
@@ -115,6 +118,7 @@ pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
     HostPatternError, MAX_URL_BYTES, classify_address, is_public_address,
 };
+pub use entitlement::{Entitlement, EntitlementError, EntitlementSource};
 pub use inbox::{
     InboxFinal, InboxId, InboxItem, InboxLease, InboxPayload, InboxStatus, NewInbox, NewTimer,
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
