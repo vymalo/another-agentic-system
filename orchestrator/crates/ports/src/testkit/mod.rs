@@ -1,12 +1,13 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`VaultStore`](crate::VaultStore), [`AccountErase`](crate::AccountErase), [`UsageLedger`](crate::UsageLedger),
+//! [`SecretStore`](crate::SecretStore), [`VaultStore`](crate::VaultStore), [`UsageLedger`](crate::UsageLedger),
 //! [`ThreadSearch`](crate::ThreadSearch),
 //! [`UserToolServerStore`](crate::UserToolServerStore),
 //! [`PendingAuthorizations`](crate::PendingAuthorizations),
-//! [`TeamPresetStore`](crate::TeamPresetStore), [`PromptSigner`](crate::PromptSigner) and
-//! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
+//! [`TeamPresetStore`](crate::TeamPresetStore), [`PromptSigner`](crate::PromptSigner),
+//! [`CredentialBroker`](crate::CredentialBroker), [`AgentProvisioner`](crate::AgentProvisioner) and
+//! [`EntitlementSource`](crate::EntitlementSource) implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -21,6 +22,7 @@ pub mod authenticator;
 pub mod bearer;
 pub mod chat_model;
 pub mod credential_broker;
+pub mod entitlement;
 pub mod pending_authorizations;
 pub mod prompt_signer;
 pub mod prompt_store;
@@ -1241,6 +1243,44 @@ macro_rules! account_erase_conformance {
                 match $make().await {
                     Some(world) => $crate::testkit::account_erase::$case(world).await,
                     None => eprintln!("skipped: no account-erase adapter available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `EntitlementSource` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated
+/// [`EntitlementFixture`](entitlement::EntitlementFixture) (`None` skips the suite). Each case gives
+/// up after 10 s. The calling crate needs `tokio` (with `macros`, `rt` and `time`) as a
+/// dev-dependency.
+#[macro_export]
+macro_rules! entitlement_conformance {
+    ($make:path) => {
+        $crate::entitlement_conformance!(@cases $make;
+            an_active_person_is_active
+            a_lapsed_person_is_lapsed_since_the_moment
+            a_person_the_source_never_heard_of_is_unknown
+            a_forgotten_person_is_unknown_again
+            a_lapse_and_a_renewal_show_on_the_next_read
+            a_read_asks_about_that_person_and_no_other
+            an_unavailable_source_is_transient_and_names_nobody
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => {
+                        tokio::time::timeout(
+                            ::std::time::Duration::from_secs(10),
+                            $crate::testkit::entitlement::$case(fixture),
+                        )
+                        .await
+                        .expect("conformance case timed out");
+                    }
+                    None => eprintln!("skipped: no entitlement source available"),
                 }
             }
         )*

@@ -2184,6 +2184,72 @@ pub struct AuthRole {
     /// with a role that holds `agent.invoke`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tier: Option<AuthTier>,
+    /// The limits of a person with this role, checked before a run starts (ADR 0081). Absent: the
+    /// defaults of [`AuthLimits`]. Nothing reads them yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<AuthLimits>,
+}
+
+impl AuthRole {
+    /// The limits of this role: what it says, with the defaults of [`AuthLimits`] for what it
+    /// leaves out.
+    #[must_use]
+    pub fn effective_limits(&self) -> AuthLimits {
+        self.limits.clone().unwrap_or_default()
+    }
+}
+
+/// The default of [`AuthLimits::runs_at_once`] and [`AuthLimits::model_calls_in_flight`].
+pub const DEFAULT_RUNS_AT_ONCE: u32 = 4;
+
+fn default_runs_at_once() -> u32 {
+    DEFAULT_RUNS_AT_ONCE
+}
+
+/// What one person may use at a time, by role (ADR 0081 decision 2). A key left out is the
+/// default, and a key with no default is no limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthLimits {
+    /// The person's jobs that have not finished (queued, working or waiting for an ask). Default 4.
+    #[serde(default = "default_runs_at_once")]
+    #[schemars(range(min = 1), default = "default_runs_at_once")]
+    pub runs_at_once: u32,
+    /// The person's messages in the last minute. Absent (the default): no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub messages_per_minute: Option<u32>,
+    /// The jobs a webhook source starts in the last minute. Absent (the default): no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub webhook_jobs_per_minute: Option<u32>,
+    /// The person's tokens in the period, from the usage ledger (ADR 0065). Absent (the default):
+    /// no limit; a deployment that wants one sets it here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub tokens_per_period: Option<u64>,
+    /// The orchestrator's own model calls in flight for the person (titles, descriptions).
+    /// Default 4.
+    #[serde(default = "default_runs_at_once")]
+    #[schemars(range(min = 1), default = "default_runs_at_once")]
+    pub model_calls_in_flight: u32,
+    /// Seconds a run waits for a slot before it parks. Absent: the dispatcher's own short wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub admission_wait_secs: Option<u64>,
+}
+
+impl Default for AuthLimits {
+    fn default() -> Self {
+        Self {
+            runs_at_once: DEFAULT_RUNS_AT_ONCE,
+            messages_per_minute: None,
+            webhook_jobs_per_minute: None,
+            tokens_per_period: None,
+            model_calls_in_flight: DEFAULT_RUNS_AT_ONCE,
+            admission_wait_secs: None,
+        }
+    }
 }
 
 /// An access tier, as `auth.roles.<role>.maxTier` writes it (ADR 0061). The names are the

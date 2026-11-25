@@ -50,8 +50,8 @@ pub use shape::{check, schema, schema_text};
 pub use tree::parse_yaml;
 pub use types::{
     Agents, ArtifactDownloads, ArtifactStoreKind, Artifacts, ArtifactsFs, ArtifactsS3,
-    ArtifactsUpload, Asks, Auth, AuthBrowser, AuthDpop, AuthMode, AuthPermission, AuthRole,
-    AuthScope, AuthScopes, AuthTier, Config, DEFAULT_BROWSER_SCOPE,
+    ArtifactsUpload, Asks, Auth, AuthBrowser, AuthDpop, AuthLimits, AuthMode, AuthPermission,
+    AuthRole, AuthScope, AuthScopes, AuthTier, Config, DEFAULT_BROWSER_SCOPE,
     DEFAULT_DPOP_FUTURE_SKEW_SECONDS, DEFAULT_DPOP_MAX_AGE_SECONDS, DEFAULT_INTERNAL_LISTEN,
     DEFAULT_LISTEN, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PER_JOB_BYTES, DEFAULT_OAUTH_CLIENT_NAME,
     DEFAULT_PRESIGN_TTL_SECS, DEFAULT_S3_REGION, DEFAULT_TOOL_SERVER_TIMEOUT_SECS,

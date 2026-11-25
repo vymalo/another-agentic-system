@@ -159,6 +159,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-assembly"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-a2a",
+ "adam-a2a-runtime",
+ "adam-agent-fs",
+ "adam-core",
+ "adam-error",
+ "adam-llm-agent",
+ "adam-model",
+ "adam-runtime",
+ "async-trait",
+ "jiff",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "adam-core"
 version = "0.1.0"
 source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
@@ -171,6 +194,32 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "adam-engine"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "a2a-lf",
+ "adam-a2a",
+ "adam-a2a-runtime",
+ "adam-agent-fs",
+ "adam-assembly",
+ "adam-core",
+ "adam-error",
+ "adam-llm-agent",
+ "adam-model",
+ "adam-runtime",
+ "adam-schedule",
+ "adam-ui",
+ "async-trait",
+ "futures",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -189,6 +238,28 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "adam-llm-agent"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-core",
+ "adam-error",
+ "adam-model",
+ "adam-runtime",
+ "async-trait",
+ "base64 0.22.1",
+ "futures",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -267,6 +338,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-schedule"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-agent-fs",
+ "adam-core",
+ "adam-runtime",
+ "async-trait",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "adam-store-postgres"
 version = "0.1.0"
 source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
@@ -280,6 +371,45 @@ dependencies = [
  "serde_json",
  "tokio-postgres",
  "uuid",
+]
+
+[[package]]
+name = "adam-store-sqlite"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-core",
+ "adam-error",
+ "async-trait",
+ "jiff",
+ "rusqlite",
+ "rustix",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "adam-ui"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "a2a-lf",
+ "adam-a2a",
+ "adam-a2a-runtime",
+ "adam-core",
+ "adam-llm-agent",
+ "adam-model",
+ "adam-runtime",
+ "async-trait",
+ "jiff",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2362,10 +2492,12 @@ dependencies = [
  "adam-a2a",
  "adam-a2a-runtime",
  "adam-core",
+ "adam-engine",
  "adam-notify-postgres",
  "adam-postgres",
  "adam-runtime",
  "adam-store-postgres",
+ "adam-store-sqlite",
  "async-trait",
  "deadpool-postgres",
  "futures",
@@ -4476,7 +4608,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

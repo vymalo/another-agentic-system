@@ -340,6 +340,51 @@
       ],
       "type": "object"
     },
+    "AuthLimits": {
+      "additionalProperties": false,
+      "description": "What one person may use at a time, by role (ADR 0081 decision 2). A key left out is the default, and a key with no default is no limit.",
+      "properties": {
+        "admissionWaitSecs": {
+          "description": "Seconds a run waits for a slot before it parks. Absent: the dispatcher's own short wait.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "messagesPerMinute": {
+          "description": "The person's messages in the last minute. Absent (the default): no limit.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "modelCallsInFlight": {
+          "default": 4,
+          "description": "The orchestrator's own model calls in flight for the person (titles, descriptions). Default 4.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "runsAtOnce": {
+          "default": 4,
+          "description": "The person's jobs that have not finished (queued, working or waiting for an ask). Default 4.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tokensPerPeriod": {
+          "description": "The person's tokens in the period, from the usage ledger (ADR 0065). Absent (the default): no limit; a deployment that wants one sets it here.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "webhookJobsPerMinute": {
+          "description": "The jobs a webhook source starts in the last minute. Absent (the default): no limit.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "AuthMode": {
       "description": "How a request says who it is from.",
       "enum": [
@@ -375,6 +420,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "limits": {
+          "$ref": "#/$defs/AuthLimits",
+          "description": "The limits of a person with this role, checked before a run starts (ADR 0081). Absent: the defaults of [`AuthLimits`]. Nothing reads them yet."
         },
         "maxTier": {
           "$ref": "#/$defs/AuthTier",
