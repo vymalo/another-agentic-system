@@ -3072,6 +3072,7 @@ dependencies = [
  "orch-pg-connect",
  "orch-ports",
  "orch-registry-platform",
+ "orch-secrets-openbao",
  "orch-secrets-pg",
  "orch-signed-request",
  "orch-store-postgres",

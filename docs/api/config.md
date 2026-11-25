@@ -118,8 +118,8 @@ ui:
 artifacts:
   store: fs
   fs: { root: /var/lib/orchestrator/artifacts }
-secrets:                      # where a person's own credentials are kept, sealed (see "secrets"); absent: none are kept
-  store: pg
+secrets:                      # where a person's own credentials are kept (see "secrets"); absent: none are kept
+  store: pg                   # or openbao, with `openbao: { address, mount, token, caFile }` instead of `pg`
   pg:
     keys: [{ id: k1, key: { file: /run/secrets/user-secrets-key } }]
     current: k1
@@ -397,16 +397,22 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 
 ### `secrets`
 
-Where the credentials of the MCP servers **people add themselves** are kept ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md): a token, a key, the pending state of an authorization): sealed with AES-256-GCM in a table of the orchestrator's own Postgres (the crate [`orch-secrets-pg`](../../orchestrator/crates/secrets-pg/README.md)), under a key that lives here, **by reference**. **Absent: no store.** The running service reads and checks the section (every role does) and **uses it only when [`userToolServers.enabled`](#usertoolservers) is true** (the credential broker and the sealed store are then built at startup, by the roles that serve routes, `all` and `control-plane`; with it off, or in a `worker`, nothing is opened or migrated, the section is only checked). The routes of slice 4b reach the store only through the credential broker (a token or a key a person types goes to the broker, which seals it here; nothing else reads the store). `orchestrator secrets rewrap` uses it too.
+Where the credentials of the MCP servers **people add themselves** are kept ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md): a token, a key, the pending state of an authorization): by default (`store: pg`) sealed with AES-256-GCM in a table of the orchestrator's own Postgres (the crate [`orch-secrets-pg`](../../orchestrator/crates/secrets-pg/README.md)), under a key that lives here, **by reference**; or (`store: openbao`) in a KV v2 mount of OpenBao, which seals them (below the table). **Absent: no store.** The running service reads and checks the section (every role does) and **uses it only when [`userToolServers.enabled`](#usertoolservers) is true** (the credential broker and the sealed store are then built at startup, by the roles that serve routes, `all` and `control-plane`; with it off, or in a `worker`, nothing is opened or migrated, the section is only checked). The routes of slice 4b reach the store only through the credential broker (a token or a key a person types goes to the broker, which seals it here; nothing else reads the store). `orchestrator secrets rewrap` uses it too.
 
 A key is 64 hexadecimal characters (32 random bytes: `openssl rand -hex 32`; 64 zeros is refused), in a secret file or a variable. **Losing every key loses every stored credential** (people authorize again), and a backup of the database does not restore them without the key. To rotate: add a key, make it `current`, restart every replica and wait until none runs the old configuration, run `orchestrator secrets rewrap` (it opens every secret, the ones under the current key too), and when it reports nothing failed or changed and a second run finds everything current, remove the old key from `keys`. **Never change the bytes behind an id** (overwrite the file or variable a key is read from, or remove a key and add a different one under its name): add a new id, because a row says only which id sealed it, and every row under the old bytes stops opening. A secret sealed under a key that is not listed cannot be read, and only that server is unavailable.
 
 | Key | Type, default | Replaces | When |
 |---|---|---|---|
 | `secrets` | the store of a person's own credentials. Absent: none. Present: `store` is required | — | now (ADR 0046, slice 3) |
-| `secrets.store` | `pg`; required with the section. Names only what this build compiled in: `pg` needs the Cargo feature `secrets-pg`, else exit 78 naming it. The section of the store chosen is required | — | now |
+| `secrets.store` | `pg` \| `openbao`; required with the section. Any other name is refused at load (exit 78) naming the key. Names only what this build compiled in: `pg` needs the Cargo feature `secrets-pg`, `openbao` needs `secrets-openbao` (both on by default), else exit 78 naming it. The section of the store chosen is required, and the other store's section is refused | — | now |
 | `secrets.pg.keys` | 1 to 16 keys, each `{ id, key }`. **`key` is a secret**: 64 hexadecimal characters, in either case, white space around them cut. `id` is 1 to 64 characters of `A-Z a-z 0-9 . _ -`, unique in the list; it is written beside every secret the key seals and is part of what the seal authenticates | — | now |
 | `secrets.pg.current` | the `id` of one of `keys`; required. Seals every new secret and every secret `rewrap` re-seals | — | now |
+| `secrets.openbao.address` | required with `store: openbao`. An `https` URL with a host and no credential, query or fragment (`https://bao.internal:8200`): the token is sent with every call and never in the clear | — | now |
+| `secrets.openbao.mount` | the KV v2 mount, `secret`. 1 to 128 characters of `A-Z a-z 0-9 . _ -` with `/` between names (no leading or trailing `/`, no `.` or `..` name) | — | now |
+| `secrets.openbao.token` | **secret**, required with `store: openbao`: the token the orchestrator reads and writes with, by reference. The adapter calls `data` (read, write), `metadata` (read) and `destroy` (update) under `<mount>/…/orchestrator/`, so a policy on those three paths and no other is enough | — | now |
+| `secrets.openbao.caFile` | none. A file of PEM certificates the server's certificate is also checked against, besides the system's roots (a private authority); read at startup, relative to the file's directory. A file that is unreadable or holds no certificate is refused naming the key | — | now |
+
+`store: openbao` keeps the credentials in a KV v2 mount of a self-hosted OpenBao (or Vault), one path per person and server under `<mount>/orchestrator/`, named by a hash: the crate [`orch-secrets-openbao`](../../orchestrator/crates/secrets-openbao/README.md). **OpenBao seals what it keeps, so there are no keys of ours: `orchestrator secrets rewrap` has nothing to do and exits 78 for this store.** It is used under the same conditions as the sealed store (`userToolServers.enabled`, and a role that serves routes), and the pending authorizations of an OAuth flow stay in the orchestrator's own Postgres in both. The server is not contacted at startup: a server that does not answer is an unavailable credential for the person whose server needs it, not a process that will not start. No message, log line or error holds the token, a path of OpenBao or a body it answered with. **Status: unverified against a live OpenBao** (the adapter's conformance suite needs one, [its README](../../orchestrator/crates/secrets-openbao/README.md)).
 
 ### `userToolServers`
 
@@ -521,9 +527,9 @@ application, the API and the log hold only the part that is not secret. Replaces
 | `toolServers[].signing.ttlSecs` | 1 to 60, `30`. How long a signed request lives (`exp - iat`). The contract allows 60 seconds at most, and a tool server refuses an object that lives longer | — | now |
 
 A server's `signing.key` is a secret of the contract too, by the same rules (a reference, resolved at startup, printed by `--print-config` as the
-reference): **the nineteenth in the schema**, counting the ones that later changes added (the last two are the run routes'
-`server.internal.token` and `server.internal.agents`, ADR 0084); the list the test
-`the_secrets_are_the_nineteen_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
+reference): **the nineteenth in the schema**, counting the ones that later changes added (the run routes'
+`server.internal.token` and `server.internal.agents`, ADR 0084; `secrets.openbao.token` is the twentieth); the list the test
+`the_secrets_are_the_twenty_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
 two here and the two of `sharing`): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
 printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
 `agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the

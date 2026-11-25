@@ -14,12 +14,17 @@ Versions are KV's own and are never reset (the adapter never deletes a path's me
 across a `delete`. A path is named by `sha256(owner, server)`; the same hash is stored in the secret and checked on read.
 Errors hold a status code at most: no URL, path, token, owner or material.
 
+`OpenBaoConfig` has `address`, `mount`, `prefix`, `token`, `timeout` and `ca_pem` (PEM certificates added to the system's roots; a
+bundle that is not PEM is `Unavailable` with no text of it). The binary builds it from `secrets.store: openbao`
+([`docs/api/config.md`](../../../docs/api/config.md#secrets)): the prefix is fixed to `orchestrator` and the timeout to 10 s.
+
 ## Tests
 
+`tests/client.rs` needs no server: a CA bundle is accepted or refused, and no error or `Debug` holds the token.
 `tests/conformance.rs` runs `secret_store_conformance!`. Skipped unless `ORCH_TEST_OPENBAO_URL` is set
 (`ORCH_TEST_OPENBAO_TOKEN`, default `dev-only-token`). Start a dev server with
 `docker compose --profile openbao up -d --wait openbao`. CI starts one as a service of the `orchestrator.yml` Postgres job.
 
 **Status: unverified.** The crate compiles; the testkit has not been run against a live OpenBao (no container daemon
-where it was written). Not yet built: the `secrets.store: openbao` configuration, its composition in the binary, the
-chart value, and the `VaultStore` port (named secrets) on OpenBao.
+where it was written). The configuration (`secrets.store: openbao`) and its composition in the binary are built; not yet built:
+the `VaultStore` port (named secrets) on OpenBao.

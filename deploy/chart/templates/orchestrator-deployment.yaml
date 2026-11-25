@@ -134,6 +134,11 @@ spec:
               mountPath: /run/secrets/db
               readOnly: true
             {{- end }}
+            {{- if and (include "agentic.secrets.openbao" .) .Values.orchestrator.secrets.openbao.caSecret }}
+            - name: openbao-ca
+              mountPath: /run/secrets/openbao-ca
+              readOnly: true
+            {{- end }}
             {{- if not (include "agentic.artifactsS3" .) }}
             - name: artifacts
               mountPath: /var/lib/orchestrator/artifacts
@@ -191,12 +196,25 @@ spec:
                 path: {{ include "agentic.userSecrets.file" (toString .id) }}
               {{- end }}
               {{- end }}
+              {{- if include "agentic.secrets.openbao" . }}
+              - key: openbao-token
+                path: openbao-token
+              {{- end }}
               {{- if include "agentic.artifactsS3" . }}
               - key: artifacts-s3-access-key-id
                 path: artifacts-s3-access-key-id
               - key: artifacts-s3-secret-access-key
                 path: artifacts-s3-secret-access-key
               {{- end }}
+        {{- if and (include "agentic.secrets.openbao" .) .Values.orchestrator.secrets.openbao.caSecret }}
+        - name: openbao-ca
+          secret:
+            secretName: {{ .Values.orchestrator.secrets.openbao.caSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         {{- if not (include "agentic.db.pooler" .) }}
         - name: db
           secret:

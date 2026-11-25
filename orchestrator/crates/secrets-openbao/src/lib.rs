@@ -40,6 +40,9 @@ pub struct OpenBaoConfig {
     pub token: SecretString,
     /// The per-request timeout.
     pub timeout: Duration,
+    /// PEM certificates the server's certificate is also checked against, besides the system's
+    /// roots (a private authority). `None`: the system's roots alone.
+    pub ca_pem: Option<String>,
 }
 
 /// The adapter.
@@ -99,9 +102,17 @@ impl OpenBaoSecretStore {
     /// [`SecretError::Unavailable`] when the HTTP client cannot be built.
     pub fn new(config: OpenBaoConfig) -> Result<Self, SecretError> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(config.timeout)
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(pem) = &config.ca_pem {
+            let certificates = reqwest::Certificate::from_pem_bundle(pem.as_bytes())
+                .map_err(|_| SecretError::unavailable("the OpenBao CA bundle is not PEM"))?;
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+        }
+        let http = builder
             .build()
             .map_err(|_| SecretError::unavailable("the OpenBao client could not be built"))?;
         let trim = |s: &str| s.trim_matches('/').to_owned();

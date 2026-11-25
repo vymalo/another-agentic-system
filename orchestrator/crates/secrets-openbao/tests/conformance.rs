@@ -18,6 +18,7 @@ async fn make_store() -> Option<OpenBaoSecretStore> {
         prefix: format!("test/{}", uuid::Uuid::now_v7()),
         token: SecretString::from(token),
         timeout: Duration::from_secs(10),
+        ca_pem: None,
     })
     .ok()
 }

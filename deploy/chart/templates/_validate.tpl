@@ -123,6 +123,39 @@ render instead of producing a route that forwards the client's own Authorization
 {{- fail (printf "orchestrator.agents.registry.url must be an http or https URL with a host, no credential, query or fragment, got %q" $reg.url) -}}
 {{- end -}}
 {{- end -}}
+{{- /* Where a person's own credentials are kept (ADR 0046): `postgres` (what `userSecrets` turns on) or `openbao`. With `openbao` the address is https (the token
+       is sent with every call), the token is an AWS property and not a value, the mount is a path the orchestrator accepts, and `userSecrets` is off (two
+       stores for one question). Values for OpenBao beside `postgres` would be ignored silently, so they are refused. */ -}}
+{{- $st := .Values.orchestrator.secrets -}}
+{{- if not (has (toString $st.store) (list "postgres" "openbao")) -}}
+{{- fail (printf "orchestrator.secrets.store must be postgres or openbao, got %q" (toString $st.store)) -}}
+{{- end -}}
+{{- $bao := $st.openbao -}}
+{{- if not (and (kindIs "string" $bao.address) (kindIs "string" $bao.mount) (kindIs "string" $bao.tokenProperty) (kindIs "string" $bao.caSecret)) -}}
+{{- fail "orchestrator.secrets.openbao.address, .mount, .tokenProperty and .caSecret must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if eq (toString $st.store) "openbao" -}}
+{{- if not $bao.address -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.address: the https address of the OpenBao server" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/@?#\\s]+(/[^?#\\s]*)?$" $bao.address) -}}
+{{- fail (printf "orchestrator.secrets.openbao.address must be an https URL with a host, no credential, query or fragment (the token is sent with every call), got %q" $bao.address) -}}
+{{- end -}}
+{{- if not $bao.tokenProperty -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.tokenProperty: the AWS property of the OpenBao token" -}}
+{{- end -}}
+{{- if or (gt (len $bao.mount) 128) (not (regexMatch "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" $bao.mount)) (has "." (splitList "/" $bao.mount)) (has ".." (splitList "/" $bao.mount)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.mount must be 1 to 128 characters of A-Z a-z 0-9 . _ - and / between names (no leading or trailing slash, no . or .. name), got %q" $bao.mount) -}}
+{{- end -}}
+{{- if and $bao.caSecret (not (regexMatch "^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$" $bao.caSecret)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.caSecret must be the name of a Secret of this namespace (lower case letters, digits, - and .), got %q" $bao.caSecret) -}}
+{{- end -}}
+{{- if .Values.orchestrator.userSecrets.enabled -}}
+{{- fail "orchestrator.secrets.store openbao and orchestrator.userSecrets.enabled are two stores for one question: turn userSecrets off (the keys seal the Postgres store, which OpenBao replaces)" -}}
+{{- end -}}
+{{- else if or $bao.address $bao.tokenProperty $bao.caSecret -}}
+{{- fail "orchestrator.secrets.openbao.* is set and orchestrator.secrets.store is postgres: set the store to openbao, or clear them (they would be ignored)" -}}
+{{- end -}}
 {{- /* The internal listener of the run routes (ADR 0084 decision 5, card ANR-378): a port a deployment can prepare, and a
 policy that never admits the whole namespace by accident. */ -}}
 {{- if not (kindIs "bool" .Values.orchestrator.internal.enabled) -}}

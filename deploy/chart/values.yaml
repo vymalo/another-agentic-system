@@ -325,6 +325,20 @@ orchestrator:
     # The id of the key that seals every new secret and every secret that `orchestrator secrets rewrap` re-seals. One of the `keys`.
     # To rotate: add a key (its own property), make it current, sync, run rewrap, then remove the old key (README.md).
     current: k1
+  # Where a person's own credentials are kept (ADR 0046, `secrets.store` of the orchestrator's configuration). `postgres` (the default) is the
+  # sealed table in the orchestrator's own database, and what `userSecrets` above turns on: nothing here is rendered for it. `openbao` keeps them in
+  # a KV v2 mount of a self-hosted OpenBao, which seals them; the configuration then has `secrets.store: openbao` and `secrets.openbao`, and
+  # `userSecrets` must stay off (the two are two answers to one question). Needs an `orchestrator.image.tag` whose build has the feature
+  # `secrets-openbao` (an older image refuses the section, exit 78). The token is the AWS property `tokenProperty`, mounted as a file and read
+  # as `{ file }`, never a value of this chart. `address` is https. `caSecret` names a Secret of this namespace with a `ca.crt` key (a private
+  # authority), mounted as a file; empty: the image's own roots.
+  secrets:
+    store: postgres
+    openbao:
+      address: ""
+      mount: secret
+      tokenProperty: ""
+      caSecret: ""
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # Calls from a page of another origin (`server.cors`, ADR 0047): the desktop app (`tauri://localhost` on macOS and Linux,

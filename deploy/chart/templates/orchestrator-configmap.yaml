@@ -152,6 +152,19 @@ data:
             key: { file: {{ printf "/run/secrets/orchestrator/%s" (include "agentic.userSecrets.file" (toString .id)) }} }
           {{- end }}
         current: {{ .Values.orchestrator.userSecrets.current | toString | quote }}
+    {{- else if include "agentic.secrets.openbao" . }}
+    {{- /* `orchestrator.secrets.store: openbao`: the token is a file reference (an AWS property, mounted), the CA a file of a named Secret. */}}
+    {{- with .Values.orchestrator.secrets.openbao }}
+    secrets:
+      store: openbao
+      openbao:
+        address: {{ .address | quote }}
+        mount: {{ .mount | quote }}
+        token: { file: /run/secrets/orchestrator/openbao-token }
+        {{- if .caSecret }}
+        caFile: /run/secrets/openbao-ca/ca.crt
+        {{- end }}
+    {{- end }}
     {{- end }}
     threadTools:
       url: {{ printf "http://%s:8080" $self | quote }}

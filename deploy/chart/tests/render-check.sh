@@ -2582,6 +2582,43 @@ refused "an agent registry url with a credential" -f "$registry_values" --set or
 refused "an agent registry url that is not http or https" -f "$registry_values" --set orchestrator.agents.registry.url=ftp://reg.example.svc
 refused "an agent registry url with a query" -f "$registry_values" --set 'orchestrator.agents.registry.url=http://reg.example.svc/x?token=y'
 refused "an agent registry token given as a number (a value is never a reference)" -f "$registry_values" --set orchestrator.agents.registry.tokenProperty=12
+# ---- The OpenBao secret store (ANR-709, ADR 0046): `orchestrator.secrets.store`, postgres by default -----------------------------
+openbao_values="$chart/tests/openbao.values.yaml"
+render
+config_of config.yaml "$cfg"
+check "values.yaml: orchestrator.secrets.store is postgres by default" sh -c "awk '/^  secrets:/{m=1} m && /^    store:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx postgres"
+check "openbao off (default): the config has no openbao key at all, and no secrets section" sh -c "! grep -Eqi 'openbao' '$cfg' && ! grep -Eq '^secrets:' '$cfg'"
+check "openbao off (default): no token property, key, CA volume or mount anywhere in the render" lacks 'openbao|bao_token'
+render -f "$openbao_values"
+config_of config.yaml "$cfg"
+check "openbao on: the configuration names the store, the address, the mount, the token as a { file } reference and the CA file" cfg_all '^secrets:$' '^  store: openbao$' '^  openbao:$' '^    address: "https://bao.example.svc:8200"$' '^    mount: "secret"$' '^    token: \{ file: /run/secrets/orchestrator/openbao-token \}$' '^    caFile: /run/secrets/openbao-ca/ca.crt$'
+check "openbao on: the token is no inline value in the config, and every secret key of it is still a reference" sh -c "! grep -Eq '^ +token: [^{ ]' '$cfg' && [ -z \"\$(grep -E '^ *(secret|apiKey|bearer|token|password|accessKeyId|secretAccessKey|previousSecret): ' '$cfg' | grep -Ev '\{ (file|env): ' || true)\" ]"
+check "openbao on: the configuration has no sealed Postgres store beside it" cfg_lacks '^  pg:|store: pg'
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "openbao on: the orchestrator's ExternalSecret reads the token from the property named in the values, as openbao-token" sec_all '^    - secretKey: openbao-token$' '^        property: openbao_token$'
+doc Deployment another-agentic-orchestrator > "$sec"
+check "openbao on: the orchestrator mounts the token as a file (path openbao-token)" sec_all '^              - key: openbao-token$' '^                path: openbao-token$'
+check "openbao on: the CA is the ca.crt of the Secret named in the values, mounted read-only where the config reads it" sec_all '^        - name: openbao-ca$' '^            secretName: "openbao-ca"$' '^              - key: ca.crt$' '^                path: ca.crt$' '^              mountPath: /run/secrets/openbao-ca$'
+check "openbao on: no Secret object and no secret-named literal in the render" sh -c "! grep -Eq '^kind: Secret\$' '$out' && ! grep -Eq 'hvs\.' '$out'"
+render -f "$openbao_values" --set orchestrator.secrets.openbao.caSecret= --set orchestrator.secrets.openbao.mount=kv/orch
+config_of config.yaml "$cfg"
+check "openbao on without a CA: no caFile, no CA volume or mount; the mount is the one in the values" sh -c "! grep -Eq 'caFile' '$cfg' && ! grep -Eq 'openbao-ca' '$out' && grep -Eq '^    mount: \"kv/orch\"\$' '$cfg'"
+render -f "$openbao_values" --set orchestrator.secrets.store=postgres --set orchestrator.secrets.openbao.address= --set orchestrator.secrets.openbao.tokenProperty= --set orchestrator.secrets.openbao.caSecret=
+config_of config.yaml "$cfg"
+check "openbao values cleared with the store postgres: the render is the default's" cfg_lacks 'openbao'
+refused "an unknown secret store" --set orchestrator.secrets.store=consul
+refused "an unknown secret store, a boolean" --set orchestrator.secrets.store=true
+refused "openbao without an address" -f "$openbao_values" --set orchestrator.secrets.openbao.address=
+refused "openbao without a token property" -f "$openbao_values" --set orchestrator.secrets.openbao.tokenProperty=
+refused "an openbao address that is not https" -f "$openbao_values" --set orchestrator.secrets.openbao.address=http://bao.example.svc:8200
+refused "an openbao address with a credential" -f "$openbao_values" --set orchestrator.secrets.openbao.address=https://user:pw@bao.example.svc
+refused "an openbao address with a query" -f "$openbao_values" --set 'orchestrator.secrets.openbao.address=https://bao.example.svc/?x=y'
+refused "an openbao token property given as a number (a value is never a reference)" -f "$openbao_values" --set orchestrator.secrets.openbao.tokenProperty=12
+refused "an openbao mount with a leading slash" -f "$openbao_values" --set orchestrator.secrets.openbao.mount=/secret
+refused "an openbao mount with a dot name" -f "$openbao_values" --set orchestrator.secrets.openbao.mount=a/../b
+refused "an openbao CA secret that is not a name" -f "$openbao_values" --set 'orchestrator.secrets.openbao.caSecret=My CA'
+refused "openbao together with userSecrets (two stores for one question)" -f "$openbao_values" -f "$chart/tests/user-secrets.values.yaml"
+refused "openbao values set while the store is postgres (they would be ignored)" --set orchestrator.secrets.openbao.address=https://bao.example.svc:8200
 # ---- The model-credential injector (ADR 0084, S9): off by default, on by values ------------------------------------------
 injector_values="$chart/tests/injector.values.yaml"
 render
