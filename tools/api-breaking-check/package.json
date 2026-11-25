@@ -1,0 +1,12 @@
+{
+  "name": "api-breaking-check",
+  "private": true,
+  "description": "Fails when a change to docs/api/chat-api.yaml breaks a client of the published contract.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "yaml": "2.8.1"
+  }
+}
