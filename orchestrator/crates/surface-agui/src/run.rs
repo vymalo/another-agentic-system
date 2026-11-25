@@ -12,7 +12,7 @@ use orch_agui_projection::{
     thread_id_of, translate_with_warnings,
 };
 use orch_agui_proto::RunAgentInput;
-use orch_api::sse::{bounded, keep_alive, stream_budget, stream_headers};
+use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
@@ -107,7 +107,7 @@ pub(crate) async fn run<P: Ports>(
             // and the deployment's lifetime (ADR 0082): the client reopens and attaches with the
             // same `runId`.
             let budget = stream_budget(&principal, state.app.ports().clock().now(), state.lifetime);
-            let stream = bounded(frames(feed), budget);
+            let stream = hold(bounded(frames(feed), budget), state.app.open_subscriber());
             let sse = Sse::new(stream).keep_alive(keep_alive(state.keepalive));
             return Ok((stream_headers(), sse).into_response());
         }

@@ -65,8 +65,8 @@ pub use types::{
     SecretStoreKind, Server, ServerInternal, Sharing, SharingMode, SharingPublic, SharingRateLimit,
     SplitScope, Steps, Surface, Tasks, ThreadTools, TitleTask, ToolServer, ToolServerProtocol,
     ToolServerSigning, Ui, UrlRef, Usage, UsageModelPrice, UsagePrices, UsageSandboxPrice,
-    UserSecretKey, UserSecrets, UserSecretsPg, UserToolServers, UserToolServersEgress,
-    UserToolServersOauth, WebhookGeneric, WebhookGithub, Webhooks,
+    UserSecretKey, UserSecrets, UserSecretsOpenbao, UserSecretsPg, UserToolServers,
+    UserToolServersEgress, UserToolServersOauth, WebhookGeneric, WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

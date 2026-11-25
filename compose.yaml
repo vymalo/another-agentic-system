@@ -236,6 +236,20 @@ services:
       timeout: 3s
       retries: 12
 
+  # OpenBao in dev mode (in memory, KV v2 at `secret/`), for orch-secrets-openbao's tests only, in its own profile `openbao`:
+  # `docker compose --profile openbao up -d --wait openbao`, then
+  # `ORCH_TEST_OPENBAO_URL=http://127.0.0.1:8200 ORCH_TEST_OPENBAO_TOKEN=dev-only-token cargo test -p orch-secrets-openbao`.
+  # The root token is a dummy for local development. Unpinned by digest: *unverified*, pin it when the profile is first run.
+  openbao:
+    image: openbao/openbao:2.4.1
+    profiles: ["openbao"]
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: dev-only-token
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "127.0.0.1:${OPENBAO_PORT:-8200}:8200"
+    cap_add: [IPC_LOCK]
+
   # RustFS (Apache-2.0, an S3-compatible object store written in Rust), for the S3 artifact store's tests (orchestrator/crates/artifacts-s3:
   # `docker compose --profile s3 run --rm rustfs-bucket`, then `ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3`, ADR 0032)
   # and for anyone who wants to try `artifacts.store: s3`. Its own profile, `s3`: nothing else of the stack uses it.

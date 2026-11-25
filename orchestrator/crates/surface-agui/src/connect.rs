@@ -102,8 +102,11 @@ pub(crate) async fn connect<P: Ports>(
     // and the deployment's lifetime (ADR 0082): the client reconnects with `Last-Event-ID` and a
     // fresh token, and is shown what it missed.
     let budget = stream_budget(&principal, state.app.ports().clock().now(), state.lifetime);
-    let sse =
-        Sse::new(bounded(frames(connect, live), budget)).keep_alive(keep_alive(state.keepalive));
+    let frames = hold(
+        bounded(frames(connect, live), budget),
+        state.app.open_subscriber(),
+    );
+    let sse = Sse::new(frames).keep_alive(keep_alive(state.keepalive));
     Ok((stream_headers(), sse).into_response())
 }
 
@@ -185,7 +188,10 @@ fn shared_response<P: Ports>(
         head = record.last_seq,
         "a reader of a shared thread connected"
     );
-    let frames = hold(bounded(frames(connect, live), budget), permit);
+    let frames = hold(
+        bounded(frames(connect, live), budget),
+        (permit, state.app.open_subscriber()),
+    );
     let sse = Sse::new(frames).keep_alive(keep_alive(state.keepalive));
     Ok((shared_stream_headers(), sse).into_response())
 }

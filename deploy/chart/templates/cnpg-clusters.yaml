@@ -37,6 +37,18 @@ spec:
   storage:
     size: {{ .Values.database.storage.size | quote }}
     storageClass: {{ .Values.database.storage.storageClass | quote }}
+  {{- /* The chart's own `nodeSelector` and `tolerations`, as for every other pod: only when set, so the default render has no `affinity` key. */}}
+  {{- if or .Values.nodeSelector .Values.tolerations }}
+  affinity:
+    {{- with .Values.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
   bootstrap:
     initdb:
       database: {{ .Values.database.name }}

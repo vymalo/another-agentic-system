@@ -1,0 +1,667 @@
+{
+  "name": "What a request must look like",
+  "about": "Raw requests with the status and `code` they are answered with, by every server of this contract. Before the cases, a reader makes the `seed` projects for the person `owner` (the email `owner@example.com`, in the workspace `ws-1`, which `owner` and `member` belong to and `stranger` does not, and where the agent `coder` exists) with createProject, in order; seed 3 has the tier ceiling `edits`. `$idN` and `$revN` in a path or a body are the id of seed N and its revision as the server holds it when the case runs. `as` is `owner` (the default), `member` (`member@example.com`, a member of seed 1 only) or `stranger` (in no project). `$raw` is a body sent as these exact characters. A body written as {\"$repeat\": text, \"times\": n} in a member is the text repeated. A request with no `headers` member is sent with `content-type: application/json` when it has a body. `expect.items` is the number of items of a 200 list. `at` is checked on a 422. A reader runs the cases in order, from a fresh seed. See docs/api/projects-v1.md, Errors, and which wins. The cases that name `/agui/agents/{agentId}` need the orchestrator's run route and are skipped by a reader that serves projects only.",
+  "seed": [
+    {
+      "name": "Alpha",
+      "workspaceId": "ws-1",
+      "home": "cloud",
+      "repositories": [
+        {
+          "name": "api",
+          "url": "https://git.example.com/org/x.git",
+          "defaultBranch": "main",
+          "worktrees": true
+        }
+      ],
+      "members": [
+        {
+          "email": "member@example.com",
+          "role": "member"
+        }
+      ]
+    },
+    {
+      "name": "Beta",
+      "workspaceId": "ws-1",
+      "home": "cloud",
+      "repositories": [
+        {
+          "name": "api",
+          "url": "https://git.example.com/org/y.git",
+          "defaultBranch": "main",
+          "worktrees": false
+        }
+      ]
+    },
+    {
+      "name": "Delta",
+      "workspaceId": "ws-1",
+      "home": "cloud",
+      "repositories": [
+        {
+          "name": "api",
+          "url": "https://git.example.com/org/w.git",
+          "defaultBranch": "main",
+          "worktrees": true
+        }
+      ],
+      "tier": {
+        "ceiling": "edits"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "create",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "create twice with one name in one workspace",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Alpha",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 409,
+        "code": "name_taken"
+      }
+    },
+    {
+      "name": "the same name in another workspace is another project",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Alpha",
+        "workspaceId": "ws-2",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 201
+      }
+    },
+    {
+      "name": "the media type is exactly application/json",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "headers": {
+        "content-type": "text/plain"
+      },
+      "expect": {
+        "status": 415
+      }
+    },
+    {
+      "name": "an unknown member",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "colour": "red"
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "null for a member",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "description": null
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a member twice in the raw body",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "$raw": "{\"name\":\"G\",\"name\":\"H\",\"workspaceId\":\"ws-1\",\"home\":\"cloud\",\"repositories\":[]}"
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a body over the limit",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "description": {
+          "$repeat": "d",
+          "times": 70000
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a workspace the person is not in is a 404",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-other",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "an agent the person may not invoke",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "defaultAgent": "nobody"
+      },
+      "expect": {
+        "status": 422,
+        "code": "unknown_agent"
+      }
+    },
+    {
+      "name": "a model server the person does not hold",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects",
+      "body": {
+        "name": "Gamma",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/z.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "modelServers": [
+          "ms-other"
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "code": "unknown_model_server"
+      }
+    },
+    {
+      "name": "the owner reads",
+      "as": "owner",
+      "method": "GET",
+      "path": "/api/projects/$id1",
+      "expect": {
+        "status": 200,
+        "own": true
+      }
+    },
+    {
+      "name": "a member reads, with own false",
+      "as": "member",
+      "method": "GET",
+      "path": "/api/projects/$id1",
+      "expect": {
+        "status": 200,
+        "own": false
+      }
+    },
+    {
+      "name": "a person outside the project: 404, as for an id that never existed",
+      "as": "stranger",
+      "method": "GET",
+      "path": "/api/projects/$id1",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a path id of the wrong form",
+      "as": "owner",
+      "method": "GET",
+      "path": "/api/projects/nope",
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "an id that never existed",
+      "as": "owner",
+      "method": "GET",
+      "path": "/api/projects/pr-aaaaaaaaaaaa",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "list: the owner sees what they own and are a member of",
+      "as": "owner",
+      "method": "GET",
+      "path": "/api/projects",
+      "expect": {
+        "status": 200,
+        "items": 2
+      }
+    },
+    {
+      "name": "list: a member sees the projects they are in",
+      "as": "member",
+      "method": "GET",
+      "path": "/api/projects",
+      "expect": {
+        "status": 200,
+        "items": 1
+      }
+    },
+    {
+      "name": "list: a stranger sees none",
+      "as": "stranger",
+      "method": "GET",
+      "path": "/api/projects",
+      "expect": {
+        "status": 200,
+        "items": 0
+      }
+    },
+    {
+      "name": "list: a scope that is not one",
+      "as": "owner",
+      "method": "GET",
+      "path": "/api/projects?scope=all-of-them",
+      "expect": {
+        "status": 400,
+        "code": "bad_scope"
+      }
+    },
+    {
+      "name": "list: a cursor that is not a project id",
+      "as": "owner",
+      "method": "GET",
+      "path": "/api/projects?cursor=x",
+      "expect": {
+        "status": 400,
+        "code": "bad_cursor"
+      }
+    },
+    {
+      "name": "a member may not change the project",
+      "as": "member",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "$rev1",
+        "name": "New"
+      },
+      "expect": {
+        "status": 403,
+        "code": "forbidden"
+      }
+    },
+    {
+      "name": "the owner renames",
+      "as": "owner",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "$rev1",
+        "name": "Renamed"
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "a stale revision",
+      "as": "owner",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "999999999999",
+        "name": "Again"
+      },
+      "expect": {
+        "status": 409,
+        "code": "stale_revision"
+      }
+    },
+    {
+      "name": "a stranger's write is a 404",
+      "as": "stranger",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "$rev1",
+        "name": "X"
+      },
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "the home is fixed",
+      "as": "owner",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "$rev1",
+        "home": "local"
+      },
+      "expect": {
+        "status": 422,
+        "code": "fixed_member"
+      },
+      "at": "home"
+    },
+    {
+      "name": "the workspace is fixed",
+      "as": "owner",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "$rev1",
+        "workspaceId": "ws-2"
+      },
+      "expect": {
+        "status": 422,
+        "code": "fixed_member"
+      },
+      "at": "workspaceId"
+    },
+    {
+      "name": "nothing to change",
+      "as": "owner",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "$rev1"
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "the first rule that fails: the permission before the stale revision",
+      "as": "member",
+      "method": "PATCH",
+      "path": "/api/projects/$id1",
+      "body": {
+        "revision": "999999999999",
+        "name": "New"
+      },
+      "expect": {
+        "status": 403,
+        "code": "forbidden"
+      }
+    },
+    {
+      "name": "archive",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects/$id2/archive",
+      "body": {
+        "revision": "$rev2"
+      },
+      "expect": {
+        "status": 200,
+        "state": "archived"
+      }
+    },
+    {
+      "name": "archive twice is the same state",
+      "as": "owner",
+      "method": "POST",
+      "path": "/api/projects/$id2/archive",
+      "body": {
+        "revision": "$rev2"
+      },
+      "expect": {
+        "status": 200,
+        "state": "archived"
+      }
+    },
+    {
+      "name": "an archived project takes no change",
+      "as": "owner",
+      "method": "PATCH",
+      "path": "/api/projects/$id2",
+      "body": {
+        "revision": "$rev2",
+        "name": "Back"
+      },
+      "expect": {
+        "status": 409,
+        "code": "project_archived"
+      }
+    },
+    {
+      "name": "a member may not archive",
+      "as": "member",
+      "method": "POST",
+      "path": "/api/projects/$id1/archive",
+      "body": {
+        "revision": "$rev1"
+      },
+      "expect": {
+        "status": 403,
+        "code": "forbidden"
+      }
+    },
+    {
+      "name": "a chat in an archived project",
+      "as": "owner",
+      "method": "POST",
+      "path": "/agui/agents/coder",
+      "body": {
+        "threadId": "$thread",
+        "forwardedProps": {
+          "vymalo.project": "$id2"
+        }
+      },
+      "expect": {
+        "status": 409,
+        "code": "project_archived"
+      },
+      "about": "the run that would create the thread"
+    },
+    {
+      "name": "a chat in a project the person is not in",
+      "as": "stranger",
+      "method": "POST",
+      "path": "/agui/agents/coder",
+      "body": {
+        "threadId": "$thread",
+        "forwardedProps": {
+          "vymalo.project": "$id1"
+        }
+      },
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "name": "a chat names a project that is not an id",
+      "as": "owner",
+      "method": "POST",
+      "path": "/agui/agents/coder",
+      "body": {
+        "threadId": "$thread",
+        "forwardedProps": {
+          "vymalo.project": 7
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "a chat whose project is fixed, the same project again",
+      "as": "owner",
+      "method": "POST",
+      "path": "/agui/agents/coder",
+      "body": {
+        "threadId": "$thread1",
+        "forwardedProps": {
+          "vymalo.project": "$id1"
+        }
+      },
+      "expect": {
+        "status": 200
+      },
+      "about": "a second message of the thread that the first run created in project 1"
+    },
+    {
+      "name": "a chat whose project is fixed, another project",
+      "as": "owner",
+      "method": "POST",
+      "path": "/agui/agents/coder",
+      "body": {
+        "threadId": "$thread1",
+        "forwardedProps": {
+          "vymalo.project": "$id2"
+        }
+      },
+      "expect": {
+        "status": 409,
+        "code": "project_fixed"
+      }
+    },
+    {
+      "name": "a message above the project's ceiling",
+      "as": "owner",
+      "method": "POST",
+      "path": "/agui/agents/coder",
+      "body": {
+        "threadId": "$thread",
+        "forwardedProps": {
+          "vymalo.project": "$id3",
+          "vymalo.tier": "bypass"
+        }
+      },
+      "expect": {
+        "status": 422,
+        "code": "tier_above_project"
+      }
+    }
+  ]
+}

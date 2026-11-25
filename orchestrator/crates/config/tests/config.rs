@@ -3195,3 +3195,54 @@ fn a_production_cors_origin_is_https_or_an_apps_own_or_local() {
         format!("{MINIMAL}server:\n  cors:\n    allowedOrigins: ['http://chat.example.com']\n");
     assert!(load(&dev, &minimal_env()).is_ok());
 }
+
+#[test]
+fn min_client_version_is_off_by_default_and_reads_dotted_numbers() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert!(valid.config.server.min_client_version.is_none());
+    let text = format!("{MINIMAL}server:\n  minClientVersion: '2.1.0'\n");
+    let valid = load(&text, &minimal_env()).unwrap();
+    assert_eq!(
+        valid.config.server.min_client_version.as_deref(),
+        Some("2.1.0")
+    );
+    for bad in ["", "v2", "2.1-beta", "1.2.3.4.5", "2..1", "1234567890"] {
+        let text = format!("{MINIMAL}server:\n  minClientVersion: '{bad}'\n");
+        assert!(load(&text, &minimal_env()).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn signing_clients_are_read_and_default_to_none() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert!(valid.config.auth.signing_clients.is_empty());
+    let text = format!("{MINIMAL}{JWT}  signingClients: [desktop, ios, android]\n");
+    let valid = load(&text, &minimal_env()).unwrap();
+    assert_eq!(
+        valid.config.auth.signing_clients,
+        ["desktop", "ios", "android"]
+    );
+}
+
+#[test]
+fn signing_client_rules_name_their_key_and_quote_nothing() {
+    let text = format!(
+        "{MINIMAL}{JWT}  dpop: {{ publicOrigins: ['https://chat.example.com'] }}\n  \
+         browser: {{ clientId: web-client }}\n  \
+         signingClients: [desktop, desktop, 'has space', '', web-client]\n"
+    );
+    let errors = lines(load(&text, &minimal_env()));
+    let want = [
+        "auth.signingClients[1]: a client is listed more than once",
+        "auth.signingClients[2]: expected a client id: 1 to 256 printable characters, no space",
+        "auth.signingClients[3]: expected a client id: 1 to 256 printable characters, no space",
+        "auth.signingClients[4]: the web's client (auth.browser.clientId) is not a signing client",
+    ];
+    for line in want {
+        assert!(errors.iter().any(|l| l == line), "{line}\n{errors:?}");
+    }
+    assert!(
+        errors.iter().all(|l| !l.contains("has space")),
+        "{errors:?}"
+    );
+}

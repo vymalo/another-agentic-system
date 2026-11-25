@@ -1,0 +1,30 @@
+[package]
+name = "orch-secrets-openbao"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "SecretStore in a self-hosted OpenBao (or Vault) KV v2 mount (ADR 0046, ADR 0009): the vault of the cloud orchestrator. Versions are KV's own, rotate is a check-and-set write."
+readme = "README.md"
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+base64.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+orch-ports = { workspace = true, features = ["testkit"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

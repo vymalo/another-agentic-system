@@ -301,6 +301,7 @@ is the port implementation (`RunLeases`, with its conformance cases in `orch-por
 | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run (the same binding is idempotent), and the deadline is capped at 24 h |
 | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent, and a no-op for a run that was never bound |
 | `GET /internal/runs/{run}/lease` | the orchestrator or the injector — **never an agent, its own run included** | `200 {"token", "accountId", "expiresAt"}` (`accountId` is the run's person — a `UserId`, the key the usage ledger is kept by (`usage_tasks.owner` of migration `0023`, ADR 0065), never a provider account or a ledger-service account number — beside the key, so the injector knows whose call it is; never logged, never in a refusal or an error, never in a message to an agent), `Cache-Control: no-store`; at most 30 s and never past the binding's |
+| `GET /internal/runs/{run}/account` | **the operator's meter identity alone** (`SharedTokens::with_meter`) | `200 {"accountId"}` (the run's person, as in the lease; never logged), `Cache-Control: no-store`; `404 run_not_bound` for an unknown run and for every other caller (the orchestrator, the injector, any agent), so the answer never says whether a run exists. It holds no credential, so a binding past its deadline still answers (a pod may outlive the lease). The meter is refused the lease, binding and unbinding |
 
 Refusals are the ruled slugs with a `{"code"}` body: `run_not_bound` (`404`), `lease_expired`
 (`410`), `unavailable` (`503`); the door answers `401 unauthenticated` (`WWW-Authenticate: Bearer`)
@@ -313,8 +314,8 @@ binding names the agent, it does not authorise it, so a reachable agent holds no
 written to the response and to nothing else — no log line, no error, no `Debug` holds either.
 
 `SharedTokens` is today's `RunCallerAuth`: one bearer token for the orchestrator, one for the
-injector (`with_injector`) and one per agent, from the deployment's configuration, compared by
-SHA-256 digest. The injector's token reads a lease and does nothing else: binding or unbinding
+injector (`with_injector`), one for the operator's meter (`with_meter`) and one per agent, from the deployment's configuration, compared by
+SHA-256 digest. The meter's token reads an account and nothing else; the injector's token reads a lease and does nothing else: binding or unbinding
 with it is `403 not_allowed`, as it is for an agent. S9 replaces it with a TokenReview
 of the service-account token, or mTLS (ADR 0084 decision 5); the routes do not change. There is **no
 entry in `docs/api/chat-api.yaml`**, and `tests/run_routes.rs` holds that, the README's table, the
