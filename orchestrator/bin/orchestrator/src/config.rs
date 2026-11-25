@@ -1367,6 +1367,9 @@ pub struct Config {
     /// `server.cors.allowedOrigins` (ADR 0047): the origins whose pages may call this API. Empty:
     /// no CORS header at all.
     pub cors_allowed_origins: Vec<String>,
+    /// `server.minClientVersion`: the lowest application version served. `None`: no client is
+    /// refused.
+    pub min_client_version: Option<String>,
     /// `server.history` (ADR 0059): what one page of a thread's history may hold. The defaults from
     /// the environment alone (the section has no variable).
     pub history: orch_app::HistorySettings,
@@ -1415,6 +1418,7 @@ impl fmt::Debug for Config {
             .field("sharing", &self.sharing)
             .field("public_limits", &self.public_limits)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("min_client_version", &self.min_client_version)
             .field("history", &self.history)
             .field("internal", &self.internal)
             .field("dispatcher_order", &self.dispatcher_order)
@@ -1850,6 +1854,7 @@ impl Config {
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
+            min_client_version: resolved.min_client_version,
             history: resolved.history,
             internal: resolved.internal,
             dispatcher_order: resolved.dispatcher_order,
@@ -2010,6 +2015,10 @@ pub struct EndpointSettings {
     pub base_url_ref: Option<orch_config::SecretRef>,
     /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
+    /// The file the bearer is read from at each call, when the reference was a `{ file }` with an
+    /// absolute path (a projected service-account token a deployment rotates). The endpoint's key
+    /// is still read once at startup: this only refreshes it.
+    pub api_key_file: Option<std::path::PathBuf>,
     /// How long one question may take.
     pub timeout: Duration,
 }
@@ -2030,6 +2039,10 @@ impl fmt::Debug for EndpointSettings {
         f.debug_struct("EndpointSettings")
             .field("base_url", &self.shown_url())
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "api_key_file",
+                &self.api_key_file.as_ref().map(|_| "<file>"),
+            )
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -2074,6 +2087,7 @@ fn model_settings(
                 base_url,
                 base_url_ref: None,
                 api_key: api_key.map(SecretString::from),
+                api_key_file: None,
                 timeout,
             },
         )]),
@@ -2810,6 +2824,8 @@ struct Resolved {
     public_limits: orch_api::PublicLimits,
     /// `server.cors.allowedOrigins`.
     cors_allowed_origins: Vec<String>,
+    /// `server.minClientVersion`.
+    min_client_version: Option<String>,
     /// `server.history`.
     history: orch_app::HistorySettings,
     /// `server.internal` (ADR 0084 decision 5): the listener, its tokens and the agents' read.

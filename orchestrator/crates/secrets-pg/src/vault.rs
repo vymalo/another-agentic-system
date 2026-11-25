@@ -193,7 +193,11 @@ impl VaultStore for PgVault {
             .await?;
         let greatest = tx
             .prepare_cached(
-                "SELECT coalesce(max(version), 0) FROM vault_secrets WHERE owner = $1 AND name = $2",
+                "SELECT greatest( \
+                   coalesce((SELECT high_water_version FROM vault_names \
+                             WHERE owner = $1 AND name = $2), 0), \
+                   coalesce((SELECT max(version) FROM vault_secrets \
+                             WHERE owner = $1 AND name = $2), 0))",
             )
             .await
             .map_err(db_err)?;
@@ -240,6 +244,16 @@ impl VaultStore for PgVault {
         )
         .await
         .map_err(db_err)?;
+        let mark = tx
+            .prepare_cached(
+                "INSERT INTO vault_names (owner, name, high_water_version) VALUES ($1, $2, $3) \
+                 ON CONFLICT (owner, name) DO UPDATE SET high_water_version = EXCLUDED.high_water_version",
+            )
+            .await
+            .map_err(db_err)?;
+        tx.execute(&mark, &[&owner, &name_text, &to_i64(version)?])
+            .await
+            .map_err(db_err)?;
         tx.commit().await.map_err(db_err)?;
         Ok(VaultRef::new(name.clone(), SecretVersion::new(version)))
     }

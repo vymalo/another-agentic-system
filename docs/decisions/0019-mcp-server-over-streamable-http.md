@@ -422,3 +422,48 @@ one thread, which the A2A adapter mints when it sends a message and hands to the
 [`api/thread-tools-v1.md`](../api/thread-tools-v1.md) (accepted and built, 2026-10-01, in `orch-thread-token`, `orch-surface-thread-tools`
 and the A2A adapter's grant; the tools of later slices are not). The decisions of this ADR stand: `/mcp` is unchanged, and `start_job` is not what an agent uses to ask another agent (`ask_agent` on the thread tools
 is).
+
+## Amended (2026-11-25): search and read through `/mcp`
+
+Gap 2 of ANR-10 ([#404](https://github.com/vymalo/another-agentic-system/issues/404), ROADMAP M8): *an MCP server to
+search and act on the system — search is HTTP only today*. **Verified at `main` before writing this:**
+
+- **This ADR's tools** are `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer` and `cancel_job`
+  (`docs/decisions/0019-mcp-server-over-streamable-http.md:59-63`), served by `orch-surface-mcp` (`:260`).
+  **None of them searches or reads a thread's words.**
+- **[ADR 0068](0068-a-person-searches-their-own-threads.md)** puts search on `POST /api/search/threads`, *"not a `GET`,
+  because the query must not be in a URL or an access log"* (`:29-30`), because *"the request log writes the query string
+  as it is (except the OAuth callback)"* (`:22`); its capability is `GET /api/config`'s `search: {maxQueryLength,
+  maxTerms}` (`:34`).
+
+So the premise holds: `/mcp` cannot search, and a client that wants to look for a thread must speak HTTP as a person's
+browser does.
+
+### Decision
+
+1. **Three tools join the same server, under the same bearer:** `search_threads`, `list_threads` and `get_thread`. No new
+   route, no second endpoint, no change to `start_job` or `answer`.
+2. **Identity is the caller's, and only the caller's** ([ADR 0039](0039-nobody-reads-another-persons-thread.md)): the
+   MCP bearer already names the person, and a thread that is not theirs answers **"not found"**, never "forbidden" —
+   the rule this ADR already sets for a tool call on a thread the caller does not own (`:63-64`).
+3. **`search_threads` follows ADR 0068 exactly** — the same whole-word rules, terms and snippet of
+   [`docs/api/thread-search-v1.md`](../api/thread-search-v1.md) — with the query in the **arguments of a POST-style call**,
+   which is the reason ADR 0068 kept search off a `GET`. **No word of a query is ever logged, on either surface**: the MCP
+   step records the tool's name and its outcome, never the query's text, and the same holds for a snippet.
+4. **`get_thread` reads a thread's events from its end**, paging as [ADR 0059](0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)
+   does for a client, and redacted as the HTTP read is. Its answer is a page plus the cursor the client passes back —
+   never the whole thread.
+5. **`list_threads` is the same page the HTTP route answers** for the same `archived`/`branches` filters and cursor, so a
+   client moving between the two surfaces sees the same threads in the same order (ADR 0068 `:75`).
+6. **Discovery is each surface's own:** `tools/list` on `/mcp`, and `GET /api/config`'s `search` for the HTTP one. Neither
+   claims the other.
+
+### Slices
+
+One pull request per row, one decisive test each.
+
+| Slice | What it adds | Decisive test |
+|---|---|---|
+| S1 | `search_threads` | **another person's thread is never found**, and **no word of a query appears in any log line** |
+| S2 | `get_thread` | a thread that is not the caller's answers **exactly** as one that does not exist |
+| S3 | `list_threads` | the page equals the person's HTTP `listThreads` for the same cursor, and no other person's thread appears |

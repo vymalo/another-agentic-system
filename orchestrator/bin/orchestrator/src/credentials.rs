@@ -77,6 +77,7 @@ mod tests {
                             base_url: "http://127.0.0.1:1/v1".to_owned(),
                             base_url_ref: None,
                             api_key: key.map(|key| SecretString::from(key.to_owned())),
+                            api_key_file: None,
                             timeout: Duration::from_secs(1),
                         },
                     )

@@ -276,6 +276,14 @@ pub struct Server {
     /// call, which is what the web on the edge's own origin needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<ServerCors>,
+    /// The lowest application version this deployment serves: one to four dotted decimal numbers
+    /// (`1.4.0`). A client states its version in the request header `X-Client-Version`; a request
+    /// of the resource API from a lower version, or from a client that states none or an unreadable
+    /// one, is refused with the problem `client_update_required` (status 426), which the
+    /// application shows as "update the application" (`docs/api/client-version.md`). Absent: no
+    /// client is refused. A hard cutover raises it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_client_version: Option<String>,
     /// What one page of a thread's history may hold (ADR 0059, `docs/api/history.md`).
     #[serde(default)]
     pub history: ServerHistory,
@@ -344,7 +352,7 @@ impl Default for ServerHistory {
 
 /// The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer
 /// allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`,
-/// `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and
+/// `Accept`, `Last-Event-ID`, `X-Web-Revision` and `X-Client-Version`, exposes `WWW-Authenticate`, `Date` and
 /// `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token,
 /// never a cookie.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -394,6 +402,7 @@ impl Default for Server {
             shutdown_grace_secs: default_shutdown_grace_secs(),
             environment: Environment::default(),
             cors: None,
+            min_client_version: None,
             history: ServerHistory::default(),
             internal: None,
         }
@@ -1453,6 +1462,9 @@ pub enum SecretStoreKind {
     /// A table of the orchestrator's own Postgres (`secrets.pg`), each secret sealed with
     /// AES-256-GCM under a key of this file. Needs the Cargo feature `secrets-pg`.
     Pg,
+    /// A KV v2 mount of a self-hosted OpenBao or Vault (`secrets.openbao`), which seals what it
+    /// keeps. Needs the Cargo feature `secrets-openbao`.
+    Openbao,
 }
 
 impl SecretStoreKind {
@@ -1460,6 +1472,7 @@ impl SecretStoreKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             SecretStoreKind::Pg => "pg",
+            SecretStoreKind::Openbao => "openbao",
         }
     }
 
@@ -1467,6 +1480,7 @@ impl SecretStoreKind {
     pub const fn feature(self) -> &'static str {
         match self {
             SecretStoreKind::Pg => "secrets-pg",
+            SecretStoreKind::Openbao => "secrets-openbao",
         }
     }
 }
@@ -1476,12 +1490,43 @@ impl SecretStoreKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserSecrets {
-    /// Which store: `pg` (a sealed table in the orchestrator's own database). The section of the
-    /// store chosen is required.
+    /// Which store: `pg` (a sealed table in the orchestrator's own database) or `openbao` (a KV v2
+    /// mount of a self-hosted OpenBao). The section of the store chosen is required.
     pub store: SecretStoreKind,
     /// The sealed Postgres store. Required with `store: pg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pg: Option<UserSecretsPg>,
+    /// The OpenBao store. Required with `store: openbao`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openbao: Option<UserSecretsOpenbao>,
+}
+
+/// The OpenBao (or Vault) KV v2 store: where it is, which mount, and the token it is let in with.
+/// OpenBao seals what it keeps, so there is no key here. The token is a reference, never a value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserSecretsOpenbao {
+    /// The server's address: an `https` URL with a host and no credential, query or fragment
+    /// (`https://bao.internal:8200`). A token never travels in the clear.
+    #[schemars(length(min = 1, max = 2048))]
+    pub address: String,
+    /// The KV v2 mount (`secret` by default): 1 to 128 characters of `A-Z a-z 0-9 . _ -` and `/`,
+    /// not starting or ending with `/`.
+    #[serde(default = "default_openbao_mount")]
+    #[schemars(length(min = 1, max = 128))]
+    pub mount: String,
+    /// The token the orchestrator reads and writes with, a secret.
+    pub token: SecretRef,
+    /// A file of PEM certificates the server's certificate is checked against, besides the system's
+    /// own roots (a private authority). Absent: the system's roots alone. Relative to the
+    /// configuration file's directory, read at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 1024))]
+    pub ca_file: Option<String>,
+}
+
+fn default_openbao_mount() -> String {
+    "secret".to_owned()
 }
 
 /// The sealed Postgres store: the keys that seal, and the one that does now.
@@ -1978,6 +2023,14 @@ pub struct Auth {
     )]
     #[schemars(schema_with = "default_role_schema")]
     pub default_role: Option<Option<String>>,
+    /// The signing clients (ADR 0087, decision 1): the clients of the issuer (the token's `azp`, or
+    /// `client_id`) whose prompts must carry `vymalo.promptSignature`, for example the desktop, iOS and
+    /// Android clients. Each is a client id with no space, at most 64 are listed, none twice, and none is
+    /// `auth.browser.clientId` (the web is not asked for a signature). Absent or empty (the default), no
+    /// client is a signing client and nothing changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64))]
+    pub signing_clients: Vec<String>,
     /// What each role grants, by the name the identity provider gives the role (a group, a realm
     /// role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants
     /// nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also

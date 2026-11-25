@@ -471,6 +471,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     prompts: Shelf;
     /** The deployment's cap on sharing (`sharing.mode`, ADR 0040); what `/api/me` says is the cap for a role that may share. */
     sharing: Sharing;
+    /** The lowest client version this deployment serves (`server.minClientVersion`); `null`: none, and the header is never read. */
+    minClient: string | null;
     /** The session has an identity: false, every route but the public ones is a 401, as for a person who is not signed in. */
     signedIn: boolean;
     /**
@@ -506,6 +508,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         userTools: newUserTools(),
         prompts: newShelf(),
         sharing: "internal",
+        minClient: null,
         signedIn: true,
         stale: false,
         edge: { refreshes: 0, signIns: 0, signOuts: 0 },
@@ -1392,6 +1395,19 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     });
   });
 
+  /** Whether a client's stated version (`X-Client-Version`) is at least `min`: dotted numbers, `1.4` equals `1.4.0`. */
+  function clientIsCurrent(stated: string | string[] | undefined, min: string): boolean {
+    const dotted = /^\d{1,9}(\.\d{1,9}){0,3}$/;
+    if (typeof stated !== "string" || !dotted.test(stated)) return false;
+    const a = stated.split(".").map(Number);
+    const b = min.split(".").map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const [x, y] = [a[i] ?? 0, b[i] ?? 0];
+      if (x !== y) return x > y;
+    }
+    return true;
+  }
+
   async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     const url = new URL(req.url ?? "/", "http://mock");
     const method = req.method ?? "GET";
@@ -1412,7 +1428,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE");
         res.setHeader(
           "Access-Control-Allow-Headers",
-          "authorization, content-type, accept, dpop, last-event-id, x-web-revision",
+          "authorization, content-type, accept, dpop, last-event-id, x-web-revision, x-client-version",
         );
         res.setHeader("Access-Control-Max-Age", "600");
         return void res.writeHead(204).end();
@@ -1500,7 +1516,9 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     // sharing, ADR 0040: `disabled`, `internal` (the default), `public`; `GET /api/me` says it as
     // `sharing` for a role that holds `thread.share`), `?signedIn=false` (no identity: every route
     // but the public ones is a 401) and `?stale=true` (a token that has run out: a 401 on every route
-    // but the public ones until `GET /oauth2/userinfo` refreshes it), `?maxTier=plan|edits|auto|bypass|none` (the
+    // but the public ones until `GET /oauth2/userinfo` refreshes it), `?minClient=2.0.0` (the lowest application version the
+    // deployment serves, `server.minClientVersion`: a client that states less in `X-Client-Version`, or nothing, is a 426
+    // `client_update_required` on every route but the public ones; `none` takes it off), `?maxTier=plan|edits|auto|bypass|none` (the
     // cap of the session's roles on the access tier, over the profile's, ADR 0061), and `?user=<e-mail>` (the
     // session is a person of its own with the profile's roles: a list that no other test writes to).
     if (path === "/__mock/config" && method === "POST") {
@@ -1511,6 +1529,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const cap = url.searchParams.get("sharing");
       const signedIn = url.searchParams.get("signedIn");
       const stale = url.searchParams.get("stale");
+      const minClient = url.searchParams.get("minClient");
       const maxTier = url.searchParams.get("maxTier");
       // the subagents (ADR 0072, mock/sessions.ts): `sessions=off` takes the offer off the card, `sessions=unreadable` makes the card unreadable (a 503),
       // `sessions=on` puts the default back; `sessionStarts=open|refuse|hold` is how a person's starts end; `sessionsNoted=<n>` the most a thread notes
@@ -1539,6 +1558,19 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (cap !== null && !["disabled", "internal", "public"].includes(cap)) {
         return problem(res, 400, "Bad Request", "sharing is one of disabled, internal, public");
       }
+      if (
+        minClient !== null &&
+        minClient !== "none" &&
+        !/^\d{1,9}(\.\d{1,9}){0,3}$/.test(minClient)
+      ) {
+        return problem(
+          res,
+          400,
+          "Bad Request",
+          "minClient is a dotted version such as 2.0.0, or none",
+        );
+      }
+      if (minClient !== null) state.minClient = minClient === "none" ? null : minClient;
       if (cap !== null) state.sharing = cap as Sharing;
       if (offer !== null) {
         state.sessions.offer =
@@ -1840,6 +1872,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     if (issuer && publicRoute) issuer.notePublic(req);
     if ((path.startsWith("/api/") || path.startsWith("/agui/")) && !publicRoute) {
+      // the minimum application version (`server.minClientVersion`): a client below it, unreadable or silent is a 426
+      const minClient = registryOf(sessionOf(req)).minClient;
+      if (minClient !== null && !clientIsCurrent(req.headers["x-client-version"], minClient)) {
+        return problem(
+          res,
+          426,
+          "Update required",
+          `this deployment serves application version ${minClient} or later`,
+          "client_update_required",
+        );
+      }
       if (issuer) {
         // browser mode: a DPoP-bound token and a proof of the right request, as the orchestrator checks them
         const verified = issuer.verifyApi(req, url);

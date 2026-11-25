@@ -41,6 +41,7 @@ struct Stub {
     mode: Mutex<Mode>,
     body: Mutex<Option<Value>>,
     authorization: Mutex<Option<String>>,
+    run_id: Mutex<Option<String>>,
     paths: Mutex<Vec<String>>,
     hits: AtomicUsize,
     /// What the stub accepts as the credential; `None` accepts any (or none).
@@ -58,6 +59,10 @@ async fn chat(State(stub): State<Arc<Stub>>, headers: HeaderMap, body: String) -
     stub.hits.fetch_add(1, Ordering::SeqCst);
     *stub.authorization.lock().unwrap() = headers
         .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    *stub.run_id.lock().unwrap() = headers
+        .get("x-run-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
     *stub.body.lock().unwrap() = serde_json::from_str(&body).ok();
@@ -112,6 +117,7 @@ async fn serve(prefix: &str, key: Option<&'static str>) -> (Arc<Stub>, String) {
         mode: Mutex::new(Mode::Answer("A title".to_owned())),
         body: Mutex::new(None),
         authorization: Mutex::new(None),
+        run_id: Mutex::new(None),
         paths: Mutex::new(Vec::new()),
         hits: AtomicUsize::new(0),
         key,
@@ -147,7 +153,45 @@ fn question() -> ChatRequest {
         system: "Reply with a short title.".into(),
         user: "Title this: how do I fix the build?".into(),
         max_tokens: 24,
+        run: None,
     }
+}
+
+#[tokio::test]
+async fn a_lease_is_sent_as_x_run_id_and_a_key_file_is_read_again_at_each_call() {
+    let (stub, base) = serve("/v1", None).await;
+    let dir = std::env::temp_dir().join(format!("orch-model-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let key = dir.join("token");
+    std::fs::write(&key, "first-token\n").unwrap();
+    let chat = OpenAiChat::new([(
+        ENDPOINT.to_owned(),
+        OpenAiConfig::new(&base).with_api_key_file(&key),
+    )])
+    .unwrap();
+    let mut ask = question();
+    ask.run = Some(orch_ports::RunId::new("thread:t-1:title"));
+
+    chat.complete(&ask).await.unwrap();
+    assert_eq!(
+        stub.run_id.lock().unwrap().clone().as_deref(),
+        Some("thread:t-1:title"),
+        "the lease selector travels as X-Run-Id"
+    );
+    assert_eq!(
+        stub.authorization.lock().unwrap().clone().as_deref(),
+        Some("Bearer first-token"),
+        "the key file is the credential"
+    );
+
+    // A rotated token: the next call presents the file's new text, not the startup copy.
+    std::fs::write(&key, "second-token").unwrap();
+    chat.complete(&ask).await.unwrap();
+    assert_eq!(
+        stub.authorization.lock().unwrap().clone().as_deref(),
+        Some("Bearer second-token")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- the conformance suite -----------------------------------------------------------------
@@ -218,6 +262,7 @@ impl ModelFixture for Fixture {
             system: content("system")?,
             user: content("user")?,
             max_tokens: u32::try_from(body["max_tokens"].as_u64()?).ok()?,
+            run: None,
         })
     }
 }

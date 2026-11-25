@@ -47,6 +47,7 @@ pub fn layer(origins: &[String]) -> Option<CorsLayer> {
                 HeaderName::from_static("dpop"),
                 HeaderName::from_static("last-event-id"),
                 HeaderName::from_static("x-web-revision"),
+                HeaderName::from_static(crate::client_version::HEADER),
             ])
             .expose_headers([WWW_AUTHENTICATE, DATE, CONTENT_DISPOSITION])
             .max_age(PREFLIGHT_MAX_AGE),

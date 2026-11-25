@@ -29,6 +29,15 @@ pub struct ChatRequest {
     pub user: String,
     /// Most tokens of answer.
     pub max_tokens: u32,
+    /// The lease the deployment's model injector resolves for this call (ADR 0084), or `None`
+    /// when it asks the endpoint directly.
+    ///
+    /// It is a **selector, not proof**: the caller (this process) asserts it, and the injector
+    /// answers the run's lease by it. A compromised dispatcher can name another person's run —
+    /// exactly the exposure `X-Run-Id` already has. The boundary is "a trusted service asserts a
+    /// selection", never "the selector is the caller's identity". The person and the account come
+    /// from the binding a trusted writer made, never from the request.
+    pub run: Option<crate::RunId>,
 }
 
 /// The model's answer, as text.
@@ -205,6 +214,7 @@ mod tests {
             system: "s".into(),
             user: "u".into(),
             max_tokens: 10,
+            run: None,
         };
         let answer = NoModel.complete(&request).await;
         assert!(

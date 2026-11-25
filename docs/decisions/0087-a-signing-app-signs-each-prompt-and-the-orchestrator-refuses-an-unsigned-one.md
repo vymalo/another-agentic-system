@@ -13,6 +13,32 @@
   token's client, not a header the client chooses; key changes are signed by an existing key; the payload carries
   everything the verifier needs and binds the deployment and the run's options; a refusal is a `403`; resumes are
   signed too. The first draft is in this file's history.*
+  **Amended 2026-11-25 (the cloud path), on the owner's decisions of that day:** on the cloud path the orchestrator
+  **no longer verifies the person's signature**. It checks **presence** at intake, attests, and the verifier behind the
+  model gateway's authorizer verifies:
+  - **Presence at intake.** A prompt from a signing client (decision 1) that carries no `vymalo.promptSignature`, or
+    one that is not a three-part compact JWS, is refused with decision 7's `403` before anything is written or any model
+    call is made. No cryptography is done there.
+  - **The orchestrator attests.** It passes the person's envelope on byte for byte and signs a **prompt statement** of
+    its own: a compact JWS with an attached RFC 8785 payload of `typ`, `aud` (the model gateway's origin), `iat`, `exp`
+    (at most a day after `iat`, never after its certificate ends), `jti`, `src` (`chat`, `resume`, `schedule`, `webhook`
+    or `mcp`), `sub`, `azp`, `thread`, `agent` (as resolved), `a2a`, `content_sha256` (of the A2A parts as sent) and
+    `user`. `user` is `null` with no envelope, or holds `env_sha256` (the SHA-256 of the envelope's exact bytes) and the
+    members of decision 2's payload that only the chat request holds: `aud`, `thread`, `agent` (as sent), `msg`,
+    `content_sha256`, `props_sha256`. Its key is certified by the deployment's PKI (Ed25519, 72 hours, renewed at 48;
+    `x5c` in the header).
+  - **The integrity rule.** Before it signs, it recomputes `content_sha256` and `props_sha256` from the request it
+    received and compares them, with `thread`, `agent` and `msg`, against `user`. A difference is decision 7's
+    `403 prompt_signature_invalid`, reason `invalid`, and nothing is signed. It never verifies the envelope's signature.
+  - **The verifier verifies**, in one place for every signature: the statement's chain, the person's envelope against
+    `user`, the person's key and its owner, and replay. So on this path the checks of decisions 4 to 6 that need the
+    person's key or the nonce are the verifier's, not the orchestrator's. A person's key may be Ed25519 or ES256.
+  - Decisions 1, 2, 3 and 7 stand. The device path, where an app's own orchestrator holds the key, is unchanged. The
+    statement's `typ` (`prompt-statement/v1`) and the header names are proposals until the shared signature contract
+    fixes them.
+  - **Built:** `orch-prompt-statement` (the payload, RFC 8785 and the integrity rule; pure), the `PromptSigner` port in
+    `orch-ports` with `prompt_signer_conformance!`, and `orch-prompt-signer-static` (a test signer from files), held to
+    the shared test vectors. **Not built:** the PKI signer, the intake check, the statement on the agent's messages.
 
 ## Context
 

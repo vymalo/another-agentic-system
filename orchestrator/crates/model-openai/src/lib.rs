@@ -23,6 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +40,12 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Most characters of an endpoint's own error message that are kept.
 const MAX_ERROR_CHARS: usize = 300;
+/// The lease selector the deployment's injector resolves (ADR 0084). A utility call of the
+/// orchestrator's own sends `thread:<thread id>:<title|description>`; an agent's run sends its run
+/// id. **A selector the caller asserts, not proof of identity**: a caller that can reach the
+/// injector can name another lease. The person and the account come from the binding a trusted
+/// writer made, never from this header.
+const X_RUN_ID: &str = "x-run-id";
 
 /// How to reach the endpoint.
 #[derive(Clone)]
@@ -48,6 +55,11 @@ pub struct OpenAiConfig {
     pub base_url: String,
     /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
+    /// A file the bearer is read from **at each call**, when the deployment hands the process a
+    /// credential it rotates (a projected service-account token): the injector authenticates the
+    /// caller by it. It wins over [`api_key`](Self::api_key). The configuration still reads it once
+    /// at startup, so a missing file is an exit 78 and not a surprise at the first title.
+    pub api_key_file: Option<PathBuf>,
     /// How long one question may take, connecting and answering together.
     pub timeout: Duration,
     /// Whether to honour `HTTP(S)_PROXY` from the environment (off by default: the endpoint is
@@ -61,6 +73,7 @@ impl OpenAiConfig {
         OpenAiConfig {
             base_url: base_url.into(),
             api_key: None,
+            api_key_file: None,
             timeout: Duration::from_secs(20),
             use_system_proxy: false,
         }
@@ -70,6 +83,13 @@ impl OpenAiConfig {
     #[must_use]
     pub fn with_api_key(mut self, key: SecretString) -> Self {
         self.api_key = Some(key);
+        self
+    }
+
+    /// Sets the file the bearer is read from at each call (a rotating projected token).
+    #[must_use]
+    pub fn with_api_key_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.api_key_file = Some(path.into());
         self
     }
 
@@ -86,7 +106,14 @@ impl fmt::Debug for OpenAiConfig {
         f.debug_struct("OpenAiConfig")
             // the address may be one a deployment keeps in a secret store (`baseUrl: { file }`)
             .field("base_url", &"<redacted>")
-            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "api_key",
+                &(self.api_key.is_some() || self.api_key_file.is_some()).then_some("<redacted>"),
+            )
+            .field(
+                "api_key_file",
+                &self.api_key_file.as_ref().map(|_| "<file>"),
+            )
             .field("timeout", &self.timeout)
             .field("use_system_proxy", &self.use_system_proxy)
             .finish()
@@ -131,6 +158,8 @@ struct Endpoint {
     http: reqwest::Client,
     url: String,
     authorization: Option<HeaderValue>,
+    /// Read again at each call, so a rotated token is the one presented.
+    key_file: Option<PathBuf>,
 }
 
 impl fmt::Debug for OpenAiChat {
@@ -188,7 +217,9 @@ impl Endpoint {
                 endpoint: name.to_owned(),
             });
         }
+        let key_file = cfg.api_key_file.clone();
         let authorization = match &cfg.api_key {
+            _ if key_file.is_some() => None,
             Some(key) if !key.expose_secret().is_empty() => {
                 let mut value = HeaderValue::from_str(&format!("Bearer {}", key.expose_secret()))
                     .map_err(|_| BuildError::BadApiKey {
@@ -217,6 +248,7 @@ impl Endpoint {
             http,
             url: format!("{base}/chat/completions"),
             authorization,
+            key_file,
         })
     }
 }
@@ -286,6 +318,21 @@ fn transport(err: reqwest::Error) -> ModelError {
     ModelError::unreachable(detail).with_source(err.without_url())
 }
 
+/// `Bearer <token>` from the file at `path`, marked sensitive. A file that cannot be read, or is
+/// empty, is [`ModelError::Unauthenticated`]: the call is not made without a credential, and
+/// neither the path nor the text is in the error.
+fn read_bearer(path: &Path) -> Result<HeaderValue, ModelError> {
+    let text = std::fs::read_to_string(path).map_err(|_| ModelError::Unauthenticated)?;
+    let token = text.trim();
+    if token.is_empty() {
+        return Err(ModelError::Unauthenticated);
+    }
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| ModelError::Unauthenticated)?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 /// The endpoint's own message for a refusal, cut, or the status when it gave none.
 fn refusal(status: StatusCode, body: &[u8]) -> String {
     let said = serde_json::from_slice::<WireErrorBody>(body)
@@ -342,8 +389,16 @@ impl Endpoint {
             stream: false,
         };
         let mut call = self.http.post(&self.url).json(&body);
-        if let Some(authorization) = &self.authorization {
-            call = call.header(AUTHORIZATION, authorization.clone());
+        // A key file is read per call: a projected service-account token is rotated under it.
+        let authorization = match &self.key_file {
+            Some(path) => Some(read_bearer(path)?),
+            None => self.authorization.clone(),
+        };
+        if let Some(authorization) = authorization {
+            call = call.header(AUTHORIZATION, authorization);
+        }
+        if let Some(run) = &request.run {
+            call = call.header(X_RUN_ID, run.as_str());
         }
         let response = call.send().await.map_err(transport)?;
         let status = response.status();

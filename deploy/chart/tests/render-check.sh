@@ -1811,6 +1811,13 @@ render -f "$mb_values" --set-json 'affinity={"nodeAffinity":{"requiredDuringSche
 mig_job
 check "migrate before the switch: the release's own affinity, node selector and tolerations are kept, and the pod affinity is added to them" sh -c "
   grep -Eq '^ +nodeAffinity:\$' '$sec2' && grep -Eq '^ +podAffinity:\$' '$sec2' && grep -Eq '^      nodeSelector:\$' '$sec2' && grep -Eq '^ +pool: agents\$' '$sec2' && grep -Eq '^      tolerations:\$' '$sec2'"
+# The database cluster is placed like the other pods when the release has a node selector and tolerations, and carries no `affinity` otherwise.
+render
+check "database cluster: no affinity key in the default render" lacks '^  affinity:$'
+render --set nodeSelector.workload=another --set-json 'tolerations=[{"key":"workload","operator":"Equal","value":"another","effect":"NoSchedule"}]'
+doc Cluster another-agentic-db > "$sec"
+check "database cluster: the release's node selector and tolerations are in spec.affinity" sh -c "
+  grep -Eq '^  affinity:\$' '$sec' && grep -Eq '^      workload: another\$' '$sec' && grep -Eq '^        key: workload\$' '$sec'"
 # The orchestrator is not touched by turning the Job on when the S3 target is not RustFS: its Deployment, ConfigMap and ExternalSecret are byte for byte the same.
 render --set orchestrator.artifacts.s3.bucket=agentic-files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
 cp "$out" "$out.mx-off"
@@ -2563,10 +2570,67 @@ check "run routes: the port may not be 8080" fails helm template another-agentic
 check "run routes: enabled without the orchestrator's token is refused (the bind would answer nobody)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set orchestrator.internal.enabled=true
 check "run routes: an agent naming the orchestrator's own token is refused (the door would answer it as the orchestrator)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.coder=internal_orchestrator_token
 check "run routes: a key that is not an agent id is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.not_an_id=internal_coder_token
+# ---- The platform's agent registry (ANR-685): off by default, on by values ---------------------------------------------------
+registry_values="$chart/tests/registry.values.yaml"
+render
+config_of config.yaml "$cfg"
+check "agent registry off by default: the config has no registry key at all" cfg_lacks 'registry'
+check "agent registry off by default: no registry token is asked of the AWS secret or mounted" lacks 'agent-registry-token|agent_registry_token'
+check "values.yaml: orchestrator.agents.registry.url is empty by default" sh -c "awk '/^  agents:/{a=1} a && /^      url:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx '\"\"'"
+render -f "$registry_values"
+config_of config.yaml "$cfg"
+check "agent registry on: agents.registry has the url and the token as a { file } reference, beside agents.file" cfg_all '^  file: agents.yaml$' '^  registry:$' '^    url: "http://another-agentic-registry.another-agentic-platform.svc:8080/registry"$' '^    token: \{ file: /run/secrets/orchestrator/agent-registry-token \}$'
+check "agent registry on: the token is the AWS property named in the values, mounted where the config reads it" out_all '^    - secretKey: agent-registry-token$' '^        property: agent_registry_token$' '^              - key: agent-registry-token$' '^                path: agent-registry-token$'
+check "agent registry on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+check "agent registry on: the token is no inline value in the config" cfg_lacks 'registry.*token: [^{ ]'
+refused "an agent registry url with no token property" --set orchestrator.agents.registry.url=http://reg.example.svc:8080
+refused "an agent registry token property with no url" --set orchestrator.agents.registry.tokenProperty=agent_registry_token
+refused "an agent registry url with a credential" -f "$registry_values" --set orchestrator.agents.registry.url=http://user:pw@reg.example.svc:8080
+refused "an agent registry url that is not http or https" -f "$registry_values" --set orchestrator.agents.registry.url=ftp://reg.example.svc
+refused "an agent registry url with a query" -f "$registry_values" --set 'orchestrator.agents.registry.url=http://reg.example.svc/x?token=y'
+refused "an agent registry token given as a number (a value is never a reference)" -f "$registry_values" --set orchestrator.agents.registry.tokenProperty=12
+# ---- The OpenBao secret store (ANR-709, ADR 0046): `orchestrator.secrets.store`, postgres by default -----------------------------
+openbao_values="$chart/tests/openbao.values.yaml"
+render
+config_of config.yaml "$cfg"
+check "values.yaml: orchestrator.secrets.store is postgres by default" sh -c "awk '/^  secrets:/{m=1} m && /^    store:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx postgres"
+check "openbao off (default): the config has no openbao key at all, and no secrets section" sh -c "! grep -Eqi 'openbao' '$cfg' && ! grep -Eq '^secrets:' '$cfg'"
+check "openbao off (default): no token property, key, CA volume or mount anywhere in the render" lacks 'openbao|bao_token'
+render -f "$openbao_values"
+config_of config.yaml "$cfg"
+check "openbao on: the configuration names the store, the address, the mount, the token as a { file } reference and the CA file" cfg_all '^secrets:$' '^  store: openbao$' '^  openbao:$' '^    address: "https://bao.example.svc:8200"$' '^    mount: "secret"$' '^    token: \{ file: /run/secrets/orchestrator/openbao-token \}$' '^    caFile: /run/secrets/openbao-ca/ca.crt$'
+check "openbao on: the token is no inline value in the config, and every secret key of it is still a reference" sh -c "! grep -Eq '^ +token: [^{ ]' '$cfg' && [ -z \"\$(grep -E '^ *(secret|apiKey|bearer|token|password|accessKeyId|secretAccessKey|previousSecret): ' '$cfg' | grep -Ev '\{ (file|env): ' || true)\" ]"
+check "openbao on: the configuration has no sealed Postgres store beside it" cfg_lacks '^  pg:|store: pg'
+doc ExternalSecret another-agentic-orchestrator > "$sec"
+check "openbao on: the orchestrator's ExternalSecret reads the token from the property named in the values, as openbao-token" sec_all '^    - secretKey: openbao-token$' '^        property: openbao_token$'
+doc Deployment another-agentic-orchestrator > "$sec"
+check "openbao on: the orchestrator mounts the token as a file (path openbao-token)" sec_all '^              - key: openbao-token$' '^                path: openbao-token$'
+check "openbao on: the CA is the ca.crt of the Secret named in the values, mounted read-only where the config reads it" sec_all '^        - name: openbao-ca$' '^            secretName: "openbao-ca"$' '^              - key: ca.crt$' '^                path: ca.crt$' '^              mountPath: /run/secrets/openbao-ca$'
+check "openbao on: no Secret object and no secret-named literal in the render" sh -c "! grep -Eq '^kind: Secret\$' '$out' && ! grep -Eq 'hvs\.' '$out'"
+render -f "$openbao_values" --set orchestrator.secrets.openbao.caSecret= --set orchestrator.secrets.openbao.mount=kv/orch
+config_of config.yaml "$cfg"
+check "openbao on without a CA: no caFile, no CA volume or mount; the mount is the one in the values" sh -c "! grep -Eq 'caFile' '$cfg' && ! grep -Eq 'openbao-ca' '$out' && grep -Eq '^    mount: \"kv/orch\"\$' '$cfg'"
+render -f "$openbao_values" --set orchestrator.secrets.store=postgres --set orchestrator.secrets.openbao.address= --set orchestrator.secrets.openbao.tokenProperty= --set orchestrator.secrets.openbao.caSecret=
+config_of config.yaml "$cfg"
+check "openbao values cleared with the store postgres: the render is the default's" cfg_lacks 'openbao'
+refused "an unknown secret store" --set orchestrator.secrets.store=consul
+refused "an unknown secret store, a boolean" --set orchestrator.secrets.store=true
+refused "openbao without an address" -f "$openbao_values" --set orchestrator.secrets.openbao.address=
+refused "openbao without a token property" -f "$openbao_values" --set orchestrator.secrets.openbao.tokenProperty=
+refused "an openbao address that is not https" -f "$openbao_values" --set orchestrator.secrets.openbao.address=http://bao.example.svc:8200
+refused "an openbao address with a credential" -f "$openbao_values" --set orchestrator.secrets.openbao.address=https://user:pw@bao.example.svc
+refused "an openbao address with a query" -f "$openbao_values" --set 'orchestrator.secrets.openbao.address=https://bao.example.svc/?x=y'
+refused "an openbao token property given as a number (a value is never a reference)" -f "$openbao_values" --set orchestrator.secrets.openbao.tokenProperty=12
+refused "an openbao mount with a leading slash" -f "$openbao_values" --set orchestrator.secrets.openbao.mount=/secret
+refused "an openbao mount with a dot name" -f "$openbao_values" --set orchestrator.secrets.openbao.mount=a/../b
+refused "an openbao CA secret that is not a name" -f "$openbao_values" --set 'orchestrator.secrets.openbao.caSecret=My CA'
+refused "openbao together with userSecrets (two stores for one question)" -f "$openbao_values" -f "$chart/tests/user-secrets.values.yaml"
+refused "openbao values set while the store is postgres (they would be ignored)" --set orchestrator.secrets.openbao.address=https://bao.example.svc:8200
 # ---- The model-credential injector (ADR 0084, S9): off by default, on by values ------------------------------------------
 injector_values="$chart/tests/injector.values.yaml"
 render
 check "injector off by default: no injector object" lacks 'app\.kubernetes\.io/component: injector'
+check "injector off by default: no budget read, no ledger route and no x-budget-remaining anywhere" lacks 'x-budget-remaining|budget/v1/remaining|injector-budget|EnvoyExtensionPolicy'
 check "injector off by default: no Authorino, Agent Router or ext-auth object" lacks '^kind: (AuthConfig|Authorino|AIGatewayRoute|AIServiceBackend|SecurityPolicy|EnvoyProxy|ClientTrafficPolicy|Gateway)$'
 check "values.yaml: injector.enabled is false by default" sh -c "awk '/^injector:/{i=1} i && /^  enabled:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx false"
 render -f "$injector_values"
@@ -2574,6 +2638,17 @@ check "injector on: Envoy Gateway pins a ClusterIP Service the agents can name" 
 check "injector on: the route selects the model by header and reaches the upstream Backend" out_all '^              name: x-ai-eg-model$' '^              value: "injector-model"$' '^        hostname: "model.example.invalid"$' '^        port: 8080$'
 check "injector on: the SecurityPolicy is gRPC and scoped to the generated HTTPRoute" out_all '^      kind: HTTPRoute$' '^      name: another-agentic-injector$' '^  extAuth:$' '^        - name: another-agentic-authorino-authorino-authorization$' '^          port: 50051$'
 check "injector on: Authorino authenticates the agent pod with a TokenReview" dhas AuthConfig another-agentic-injector 'kubernetesTokenReview'
+injector_audiences() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^      kubernetesTokenReview:$/ { k = 1 }
+    k && /^        audiences:$/ { a = 1 }
+    a && /^          - another-agentic-injector$/ { agents = 1 }
+    a && /^          - another-agentic-orchestrator$/ { orchestrator = 1 }
+    END { exit !(a && agents && orchestrator) }'
+}
+check "injector on: the TokenReview audiences admit the agents and the orchestrator's own calls" injector_audiences
+check "injector on: the orchestrator mounts a projected token for its own model calls" out_all '^        - name: model-token$' '^                  audience: "another-agentic-orchestrator"$' '^                  expirationSeconds: 3600$'
+check "injector on: the orchestrator's model key is that projected token, read from its file" dhas ConfigMap another-agentic-orchestrator 'apiKey: \{ file: /var/run/secrets/model-injector/token \}'
 check "injector on: the lease lookup is the broker's run route, keyed by X-Run-Id" dhas AuthConfig another-agentic-injector 'url: "http://another-agentic-orchestrator.another-agentic-system.svc:8081/internal/runs/\{request.headers.x-run-id\}/lease"'
 check "injector on: the lookup presents the injector's own token from a Secret, never a value" dhas AuthConfig another-agentic-injector 'name: another-agentic-injector-broker'
 injector_lease_cached() {
@@ -2581,27 +2656,109 @@ injector_lease_cached() {
   all_in "$inj" '^          selector: request.headers.x-run-id$' '^        ttl: 30$'
 }
 check "injector on: the lease is cached per run, no longer than the lease" injector_lease_cached
-injector_authz_selector() {
+injector_response_headers() {
   doc AuthConfig another-agentic-injector | awk '
-    /^        "Authorization":$/ { seen = 1 }
-    /selector: "Bearer \{auth.metadata.lease.token\}"/ { ok = 1 }
-    seen && (/plain.value:/ || /^            value:/) { bad = 1 }
-    END { exit !(seen && ok && !bad) }'
+    /^  response:$/ { res = 1 }
+    res && /selector: "Bearer \{auth.metadata.lease.token\}"/ { token = 1 }
+    res && /selector: "\{auth.metadata.lease.accountId\}"/ { account = 1 }
+    res && (/plain.value:/ || /^            value:/) { bad = 1 }
+    END { exit !(token && account && !bad) }'
 }
-check "injector on: Authorization is a selector from the lease, never plain.value or a literal" injector_authz_selector
+check "injector on: Authorization and x-account-id are selectors from the lease, never plain.value or a literal" injector_response_headers
+injector_lease_required() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^  authorization:$/ { a = 1 }
+    /^  response:$/ { a = 0 }
+    a && index($0, "selector: auth.metadata.lease.token") { lease = 1 }
+    a && lease && /operator: neq/ { ok = 1; lease = 0 }
+    END { exit !ok }'
+}
+check "injector on: a lease without a token is denied, so the gateway never sees an empty Bearer" injector_lease_required
+injector_account_required() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^  authorization:$/ { a = 1 }
+    /^  response:$/ { a = 0 }
+    a && index($0, "selector: auth.metadata.lease.accountId") { seen = 1 }
+    a && seen && /operator: neq/ { ok = 1; seen = 0 }
+    END { exit !ok }'
+}
+check "injector on: a lease without an account id is denied, so the gateway never sees an empty x-account-id" injector_account_required
 check "injector on: a request without a run id is denied before any model call" dhas AuthConfig another-agentic-injector 'operator: neq'
 check "injector on: the run routes admit Authorino's pods (its operator label)" out_all '^              authorino-resource: "another-agentic-authorino"$'
 check "injector on: the broker token is an ExternalSecret property, not a value" dhas ExternalSecret another-agentic-injector-broker 'property: injector_broker_token'
 check "injector on: no plain.value and no secret-looking value anywhere" lacks 'sk-[A-Za-z0-9]{8}|ghp_|github_pat_|-----BEGIN|AKIA[0-9A-Z]{16}'
+# The person's balance, read from the ledger at every model call (ANR-669): a read, cached briefly per account, after the
+# lease (it is keyed by the lease's accountId), and a 402 for a spent one, which Authorino cannot produce per rule.
+injector_budget_read() {
+  doc AuthConfig another-agentic-injector > "$inj" &&
+    all_in "$inj" \
+      '^    "budget":$' \
+      '^      priority: 1$' \
+      '^        url: "http://ledger.example.invalid:8201/budget/v1/remaining\?account_id=\{auth.metadata.lease.accountId\}"$' \
+      '^          selector: auth.metadata.lease.accountId$' \
+      '^        ttl: 10$' &&
+    awk '
+      /^    "budget":$/ { b = 1 }
+      b && /^          name: another-agentic-injector-budget$/ { n = 1 }
+      b && /^          key: token$/ { k = 1 }
+      END { exit !(n && k) }' "$inj"
+}
+check "injector on: the budget read is the ledger's route, keyed by the lease's account, its own secret, cached 10 s" injector_budget_read
+injector_budget_after_lease() {
+  doc AuthConfig another-agentic-injector > "$inj" &&
+    awk '
+      /^        ttl: 30$/ { lease = NR }
+      /^      priority: 1$/ { budget = NR }
+      END { exit !(lease && budget && lease < budget) }' "$inj"
+}
+check "injector on: the budget read runs after the lease (its priority group follows the lease's default one)" injector_budget_after_lease
+injector_budget_required() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^  authorization:$/ { a = 1 }
+    /^  response:$/ { a = 0 }
+    a && index($0, "selector: auth.metadata.budget.remaining_micros") { seen = 1 }
+    a && seen && /operator: neq/ { ok = 1; seen = 0 }
+    END { exit !ok }'
+}
+check "injector on: a balance the ledger could not answer is denied, so no call spends an unread balance" injector_budget_required
+injector_budget_header() {
+  doc AuthConfig another-agentic-injector > "$inj" &&
+    awk '
+      /^  response:$/ { r = 1 }
+      r && /^        "x-budget-remaining":$/ { h = 1 }
+      h && /selector: "\{auth.metadata.budget.remaining_micros\}"$/ { s = 1 }
+      END { exit !(h && s) }' "$inj"
+}
+check "injector on: the balance reaches the gateway's filter as a selector, never a literal" injector_budget_header
+injector_402_filter() {
+  doc EnvoyExtensionPolicy another-agentic-injector-balance > "$inj" &&
+    all_in "$inj" \
+      '^      name: another-agentic-injector$' \
+      '^kind: EnvoyExtensionPolicy$' \
+      '^    - type: Inline$' \
+      '\[":status"\] = "402"' \
+      '"error":"model_locked"' \
+      'headers:remove\("x-budget-remaining"\)'
+}
+check "injector on: a spent balance is refused with 402 by the Envoy filter on the generated route, and the header removed" injector_402_filter
+check "injector on: the budget's shared secret is an ExternalSecret property, not a value" dhas ExternalSecret another-agentic-injector-budget 'property: injector_budget_token'
+check "injector on: the balance check adds no second upstream and no directResponse route" count '^kind: HTTPRoute$' 0
 check "injector on: the objects are the golden's, byte for byte" sh -c "sh \"$chart/tests/golden/injector-objects.sh\" < \"$out\" | cmp -s - \"$chart/tests/golden/injector.yaml\""
 check "injector: no GatewayClass is required" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.gatewayClassName=
 check "injector: no upstream is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.upstream.url=
 check "injector: no model is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.model=
 check "injector: a cache longer than the 30 s lease is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.broker.cacheTtlSecs=60
 check "injector: a token property is required with ExternalSecrets" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.broker.tokenProperty=
+check "injector: no ledger URL is refused (a model call nobody checked is a call nobody pays for)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.url=
+check "injector: a ledger URL with a path, query or credential is refused (the route is appended)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.url=https://ledger.example.invalid:8201/other
+check "injector: a ledger URL that is not http or https is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.url=ledger.example.invalid:8201
+check "injector: a budget token property is required with ExternalSecrets" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set injector.budget.tokenProperty=
+check "injector: a balance cache of 0 or above 30 s is refused (a stale one lets a person overspend)" sh -c "
+  ! helm template another-agentic-system '$chart' --namespace another-agentic-system -f '$base' -f '$injector_values' --set injector.budget.cacheTtlSecs=0 >/dev/null 2>&1 &&
+  ! helm template another-agentic-system '$chart' --namespace another-agentic-system -f '$base' -f '$injector_values' --set injector.budget.cacheTtlSecs=31 >/dev/null 2>&1"
 check "injector: a broker URL is required without the internal listener" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set orchestrator.internal.enabled=false
-check "injector: an explicit broker URL needs no internal listener" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty=injector_broker_token
-check "injector: ExternalSecrets off needs no token property (the deployment creates the Secret)" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty= --set externalSecrets.enabled=false
+check "injector: an explicit broker URL needs no internal listener" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty=injector_broker_token --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty=injector_budget_token
+check "injector: ExternalSecrets off needs no token property (the deployment creates the Secret)" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty= --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty= --set externalSecrets.enabled=false
 render
 config_of config.yaml "$cfg"
 

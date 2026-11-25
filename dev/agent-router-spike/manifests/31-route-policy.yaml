@@ -3,7 +3,7 @@
 #
 # gRPC forwards every request header to the authorizer and applies every header in the CheckResponse's
 # ok_response upstream; there is no `headersToBackend` on this path, and a client-sent `Authorization` is
-# replaced by the one Authorino returns.
+# replaced by the one Authorino returns. `x-account-id` comes from the lease and cannot be chosen by the client.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:

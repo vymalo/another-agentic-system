@@ -50,6 +50,9 @@ pub struct ProblemExt {
     /// live card offers, empty when it lists none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offered: Option<Vec<String>>,
+    /// `client_update_required`: the lowest application version this deployment serves.
+    #[serde(rename = "minClientVersion", skip_serializing_if = "Option::is_none")]
+    pub min_client_version: Option<String>,
 }
 
 impl Problem {
@@ -69,6 +72,23 @@ impl Problem {
     #[must_use]
     pub fn with_code(mut self, code: &str) -> Self {
         self.code = Some(code.to_owned());
+        self
+    }
+
+    /// The same problem with a stable `type` (RFC 9457), where a client matches on it.
+    #[must_use]
+    pub fn with_type(mut self, uri: &str) -> Self {
+        self.r#type = uri.to_owned();
+        self
+    }
+
+    /// The same problem saying the lowest application version this deployment serves.
+    #[must_use]
+    pub fn with_min_client_version(mut self, version: &str) -> Self {
+        self.ext = Some(Box::new(ProblemExt {
+            min_client_version: Some(version.to_owned()),
+            ..ProblemExt::default()
+        }));
         self
     }
 

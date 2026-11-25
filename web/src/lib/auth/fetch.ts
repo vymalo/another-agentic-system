@@ -1,3 +1,4 @@
+import { noteUpdateRequired, withClientVersion } from "@/lib/api/client-version";
 import { apiOrigin, atApi, isApiPath } from "@/lib/runtime-config";
 import { observeDate } from "./clock";
 import { authReady } from "./config";
@@ -90,11 +91,7 @@ export type AuthOptions = {
   redirect?: boolean;
 };
 
-export async function authenticatedFetch(
-  given: Request,
-  base: Send = plain,
-  options: AuthOptions = {},
-): Promise<Response> {
+async function signedFetch(given: Request, base: Send, options: AuthOptions): Promise<Response> {
   const cfg = await authReady();
   // a path of this page goes to the API's origin when the runtime configuration names another (ADR 0047)
   const request = await atApi(given);
@@ -143,10 +140,39 @@ export async function authenticatedFetch(
  * request to a signed-in route is sent with a token only when one is stored, and answers 401
  * without a word to anybody when none is, so that a reader who never signed in opens nothing.
  */
-export async function readerFetch(given: Request, base: Send = plain): Promise<Response> {
+async function readFetch(given: Request, base: Send): Promise<Response> {
   const cfg = await authReady();
   const request = await atApi(given);
   if (!cfg || !targetsApi(request)) return base(request);
   if (!(await hasUsableSession())) return unauthorized();
   return authenticatedFetch(request, base, { redirect: false });
 }
+
+/**
+ * `base` as the API's calls are sent: with the application's version stated (`X-Client-Version`), and an answer that
+ * says the version is too old shows the update screen (`lib/api/client-version.ts`). Only the API's own routes: a
+ * request to anything else is sent as it is.
+ */
+function stating(base: Send): Send {
+  return async (request) => {
+    let url: URL;
+    try {
+      url = new URL(request.url);
+    } catch {
+      return base(request);
+    }
+    if (!isApiPath(url.pathname)) return base(request);
+    const res = await base(withClientVersion(request));
+    await noteUpdateRequired(res);
+    return res;
+  };
+}
+
+export const authenticatedFetch = (
+  given: Request,
+  base: Send = plain,
+  options: AuthOptions = {},
+): Promise<Response> => signedFetch(given, stating(base), options);
+
+export const readerFetch = (given: Request, base: Send = plain): Promise<Response> =>
+  readFetch(given, stating(base));

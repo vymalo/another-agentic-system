@@ -38,7 +38,9 @@ pub use downloads::{DownloadMode, DownloadModeError, ReadableFile};
 mod echo;
 pub use echo::TierStats;
 mod history;
+mod load;
 pub use history::{HistorySettings, HistoryStats};
+pub use load::{LoadStats, SubscriberGuard};
 mod sessions;
 pub use sessions::{ChildCloseState, StartChildSession};
 mod share;
@@ -509,6 +511,7 @@ pub struct App<P: Ports> {
     echo_counters: EchoCounters,
     child_session_counters: ChildSessionCounters,
     history_counters: HistoryCounters,
+    load_gauges: Arc<load::LoadGauges>,
     pub(crate) authorize_locks: AuthorizeLocks,
 }
 
@@ -627,6 +630,7 @@ impl<P: Ports> App<P> {
             echo_counters: EchoCounters::default(),
             child_session_counters: ChildSessionCounters::default(),
             history_counters: HistoryCounters::default(),
+            load_gauges: Arc::default(),
             authorize_locks: AuthorizeLocks::default(),
         })
     }

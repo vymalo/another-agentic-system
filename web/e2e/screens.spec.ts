@@ -1295,5 +1295,20 @@ for (const scheme of ["light", "dark"] as const) {
       await conversation(page).getByRole("button", { name: "Read aloud" }).hover();
       await shot(page, "read-aloud", { hovering: true });
     });
+
+    // last too: a session of its own, whose deployment serves only a newer application (ADR 0076)
+    test("update required: the screen that takes the page", async ({ page, context }) => {
+      const session = `screens-update-${uuidv7()}`;
+      await fetch(`${MOCK_URL}/__mock/config?minClient=999.0.0&session=${session}`, {
+        method: "POST",
+      });
+      await context.clearCookies({ name: "mock-registry" });
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      await page.goto("/");
+      await expect(page.locator('[data-slot="update-required"]')).toBeVisible();
+      await shot(page, "update-required");
+    });
   });
 }

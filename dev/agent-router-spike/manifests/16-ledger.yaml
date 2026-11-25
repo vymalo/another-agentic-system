@@ -1,0 +1,130 @@
+# The ledger's budget read, mocked (ANR-669). It stands where another-backend's ledger stands, so the proof covers
+# Authorino's real second lookup: `GET /budget/v1/remaining?account_id=<the lease's accountId>`, behind the injector's
+# own token, answering the person's remaining credit in micro-USD (the wire shape of
+# `crates/another-service/src/budget_remaining.rs` in another-backend). A read, never a debit: this mock has no route
+# that writes.
+#
+# Three answers the scenario needs:
+#   - `acct-run-1`, the funded person, has credit (`42` micro-USD — a fixture, not a price);
+#   - anything else is a zero balance with `200`, exactly what the real ledger answers for an account it has never
+#     seen (its ADR-0021), which is the fail-closed choice: no credit, never a made-up 404 or a pass;
+#   - `acct-unreadable-run` answers `503 budget_unavailable`, the real listener's answer when the balance cannot be
+#     computed, so the proof can show the injector refusing rather than treating an outage as zero.
+#
+# The token in the Secret below is a throwaway fixture, not a deployment pattern: a deployment reads it from its
+# secret store.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spike-budget-token
+  namespace: default
+type: Opaque
+stringData:
+  token: spike-budget-token-NOT-A-DEPLOYMENT
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spike-ledger
+  namespace: default
+data:
+  ledger.py: |
+    import json, threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import urlparse, parse_qs
+
+    TOKEN = "Bearer spike-budget-token-NOT-A-DEPLOYMENT"
+    # The one funded person of the scenario; every other account is unknown to this ledger, which answers zero.
+    FUNDED = {"acct-run-1": 42}
+    UNREADABLE = {"acct-unreadable-run"}
+    LAST = {}
+    LOCK = threading.Lock()
+
+    class Ledger(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, body, headers=()):
+            data = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("content-type", "application/json")
+            for name, value in headers:
+                self.send_header(name, value)
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path == "/__last":
+                with LOCK:
+                    return self._send(200, LAST)
+            url = urlparse(self.path)
+            if url.path != "/budget/v1/remaining":
+                return self._send(404, {"error": "not_found", "path": self.path})
+            presented = self.headers.get("Authorization")
+            account = (parse_qs(url.query).get("account_id") or [""])[0].strip()
+            with LOCK:
+                LAST.clear()
+                LAST.update({"path": url.path, "account": account, "injectorToken": presented == TOKEN})
+            if presented != TOKEN:
+                return self._send(401, {"error": "unauthorized", "message": "missing or wrong shared secret"})
+            if not account:
+                return self._send(400, {"error": "invalid_request", "message": "account_id is required"})
+            if account in UNREADABLE:
+                return self._send(503, {"error": "budget_unavailable",
+                                        "message": "the balance cannot be read right now"})
+            # An account this ledger has never seen reads as zero, never a 404 (ADR-0021).
+            return self._send(200,
+                {"budget_account_id": account,
+                 "period": "2026-11",
+                 "remaining_micros": FUNDED.get(account, 0)},
+                headers=[("cache-control", "no-store")])
+
+    ThreadingHTTPServer(("0.0.0.0", 8080), Ledger).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spike-ledger
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spike-ledger
+  template:
+    metadata:
+      labels:
+        app: spike-ledger
+    spec:
+      containers:
+        - name: ledger
+          image: python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+          command: ["python", "/opt/ledger/ledger.py"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /__last
+              port: 8080
+            periodSeconds: 2
+          volumeMounts:
+            - name: code
+              mountPath: /opt/ledger
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: spike-ledger
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spike-ledger
+  namespace: default
+spec:
+  selector:
+    app: spike-ledger
+  ports:
+    - port: 80
+      targetPort: 8080

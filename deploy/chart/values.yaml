@@ -115,9 +115,10 @@ model:
 
 # The model-credential injector (ADR 0084, epic sys#334 slice S9): Agent Router (Envoy AI Gateway) in front of the
 # model endpoint, Envoy Gateway's gRPC external authorization, and Authorino. Authorino authenticates the agent pod,
-# asks the broker's run-lease route for the run's model key, and adds it to the upstream request only, replacing any
-# client-sent `Authorization`. OFF by default: nothing of this section is rendered and a deployment that does not set
-# it renders exactly as before.
+# asks the broker's run-lease route for the run's model key and account, and adds them to the upstream request only
+# (`Authorization` and `x-account-id`), replacing any client-sent `Authorization` and never taking the account from the
+# client. OFF by default: nothing of this section is rendered and a deployment that does not set it renders exactly as
+# before.
 # The controllers are the deployment's, not this chart's: Envoy Gateway, Agent Router's CRDs and controller, and the
 # Authorino operator. The agents' `model.baseUrl` points at the injector's Gateway Service, never at the model.
 injector:
@@ -149,20 +150,41 @@ injector:
     # How long Authorino may cache one run's lease, keyed by run id. The lease itself is at most 30 s; a larger TTL
     # is refused.
     cacheTtlSecs: 30
+  # The person's balance, read at every model call from the usage ledger (ADR 0084 decision 7; the ledger is
+  # another-backend's): `GET <url>/budget/v1/remaining?account_id=<the lease's accountId>`, a READ that never debits.
+  # Required when the injector is on: a model call whose balance nobody read is a model call nobody pays for.
+  budget:
+    # The ledger's budget listener, http or https, with a host and no credential, query or fragment. Empty: refused.
+    # An account the ledger has never seen answers 200 with a zero balance, which is the zero this chart refuses.
+    url: ""
+    # The AWS property of the shared secret that listener requires, read into a Secret and presented by Authorino as
+    # `Authorization: Bearer` (its `sharedSecretRef` has no other place). Never a value.
+    tokenProperty: ""
+    # How long Authorino may cache one account's balance. A balance moves slower than a lease, but a stale one lets a
+    # person overspend by whatever they spend inside the TTL: 10 s bounds that to a few model calls and still cuts the
+    # ledger's reads by an order of magnitude. 1 to 30 (a larger TTL is refused).
+    cacheTtlSecs: 10
   # Authorino: this chart renders the `Authorino` instance and its `AuthConfig`; the operator is the deployment's.
   # `audiences` are the audiences the agent's projected service-account token must carry (empty: Authorino expects
   # the protected service's host name, its own default).
   authorino:
     name: ""
     replicas: 1
+    # The audiences the agents' projected service-account token must carry. Empty renders only the orchestrator's
+    # audience below, which no agent's token carries: set the agents' audience here when the injector is on.
     audiences: []
+    # The audience of the projected token this chart mounts for the **orchestrator's own model calls** (thread titles and
+    # descriptions): the injector's TokenReview admits it beside the agents'. Empty: `<fullname>-orchestrator`. The token
+    # is the key the orchestrator's model endpoint presents, so a deployment that turns the injector on must point
+    # `model.baseUrl` at the injector's Service.
+    orchestratorAudience: ""
 
 orchestrator:
   image:
     repository: ghcr.io/vymalo/another-agentic-system/orchestrator
     # Bumped on every green build of main by .github/workflows/orchestrator.yml (`sha-<7 hex>`).
     # A plain key, so deploy/chart/bump-tag.sh can edit it.
-    tag: sha-7a509cb
+    tag: sha-47bda3a
     pullPolicy: IfNotPresent
   # RUST_LOG.
   logLevel: info
@@ -170,6 +192,15 @@ orchestrator:
   # to the web; thread-tools is reached by the agents inside the cluster, never through the edge.
   # Others (mcp, webhook-*) need keys and edge routes this chart does not have yet: refused.
   surfaces: [agui, thread-tools]
+  # The platform's agent registry (`agents.registry`, docs/api/config.md; the binary's CompositeRegistry: the agents file's agents first,
+  # then the registry's). OFF with an empty `url`: nothing of it is rendered and the configuration has no `registry` key. `url` is the
+  # registry service, http or https, with no credential in it; `tokenProperty` is the property of the AWS secret (`externalSecrets.key`)
+  # that holds its bearer, mounted as a file and read as `{ file }`, never a value of this chart. The two go together: one without the
+  # other is refused. Needs an `orchestrator.image.tag` whose build has the feature `registry-platform` (a build without it exits 78).
+  agents:
+    registry:
+      url: ""
+      tokenProperty: ""
   # The internal listener the run routes are served on (ADR 0084 decision 5, card ANR-378): a second port that no edge
   # routes, for the credential broker's run routes (`POST /internal/runs`, `DELETE /internal/runs/{run}`,
   # `GET /internal/runs/{run}/lease`, ANR-147a). OFF by default, and the orchestrator serves nothing there until it is on:
@@ -315,6 +346,20 @@ orchestrator:
     # The id of the key that seals every new secret and every secret that `orchestrator secrets rewrap` re-seals. One of the `keys`.
     # To rotate: add a key (its own property), make it current, sync, run rewrap, then remove the old key (README.md).
     current: k1
+  # Where a person's own credentials are kept (ADR 0046, `secrets.store` of the orchestrator's configuration). `postgres` (the default) is the
+  # sealed table in the orchestrator's own database, and what `userSecrets` above turns on: nothing here is rendered for it. `openbao` keeps them in
+  # a KV v2 mount of a self-hosted OpenBao, which seals them; the configuration then has `secrets.store: openbao` and `secrets.openbao`, and
+  # `userSecrets` must stay off (the two are two answers to one question). Needs an `orchestrator.image.tag` whose build has the feature
+  # `secrets-openbao` (an older image refuses the section, exit 78). The token is the AWS property `tokenProperty`, mounted as a file and read
+  # as `{ file }`, never a value of this chart. `address` is https. `caSecret` names a Secret of this namespace with a `ca.crt` key (a private
+  # authority), mounted as a file; empty: the image's own roots.
+  secrets:
+    store: postgres
+    openbao:
+      address: ""
+      mount: secret
+      tokenProperty: ""
+      caSecret: ""
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # Calls from a page of another origin (`server.cors`, ADR 0047): the desktop app (`tauri://localhost` on macOS and Linux,
@@ -443,7 +488,7 @@ web:
     repository: ghcr.io/vymalo/another-agentic-system/web
     # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
     # which Next inlines at build time: images before the one of this chart's first release have none.
-    tag: sha-76f1e87
+    tag: sha-49eef15
     pullPolicy: IfNotPresent
   replicas: 1
   resources:
