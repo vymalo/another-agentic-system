@@ -1,7 +1,6 @@
 # ADR 0098 — A terminal client and a headless server are clients of the one chat API
 
-- **Status:** **Proposed (2026-11-25).** The owner's direction of 2026-11-25
-  ([another-context `decisions-2026-11-25.md`](https://github.com/skyengpro/another-context/blob/main/decisions-2026-11-25.md) row 41, a private repository):
+- **Status:** **Proposed (2026-11-25).** The owner's direction of 2026-11-25:
   a terminal client and a server version, as OpenCode has, so custom agents run on a person's own computer and still use a
   deployment's models. Nothing is built. Every part marked **(proposed)** is a choice that follows from the direction and
   that the owner or the lead may change by a dated note. It builds on [ADR 0076](0076-the-orchestrator-as-a-library-in-an-application.md)
