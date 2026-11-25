@@ -6,7 +6,9 @@
 //! crates is a dependency (ADR 0007): the adapter speaks HTTP and JSON.
 //!
 //! * A **create** is `PUT` with `If-None-Match: *`: of two first messages at once the platform
-//!   makes one agent and answers the other `409`, which means "it exists".
+//!   makes one agent and answers the other `409` `already-exists`. The other `409`s
+//!   (`managed-by-gitops`, `deleting`, `conflict`) are told apart by the problem's `type` and are
+//!   not "made".
 //! * A **resume** is `PUT` with `If-Match` and `suspend: false`; a `412` re-reads and decides again.
 //! * **Ready** is the agent's `state`, polled until [`PlatformConfig::ready_timeout`].
 //! * The form of each kind is the deployment's ([`PlatformConfig::with_form`]): the adapter adds
@@ -298,8 +300,19 @@ impl PlatformProvisioner {
             )
             .await?;
         match response.status() {
-            // 409: somebody made it first, which is what we wanted.
-            StatusCode::CREATED | StatusCode::OK | StatusCode::CONFLICT => Ok(()),
+            StatusCode::CREATED | StatusCode::OK => Ok(()),
+            // Only `already-exists` means somebody made it first, which is what we wanted. The
+            // platform's other 409s are different facts and must not read as "made".
+            StatusCode::CONFLICT => match problem_slug(response).await.as_deref() {
+                Some("already-exists") => Ok(()),
+                // An agent managed by GitOps is not ours to write: retrying cannot help.
+                Some("managed-by-gitops") => Err(ProvisionError::Invalid),
+                Some("deleting") => Err(ProvisionError::Deleting),
+                // `conflict`, a slug this build does not know, or no readable problem.
+                _ => Err(ProvisionError::unavailable(
+                    "the platform answered 409 for a reason this build cannot treat as made",
+                )),
+            },
             other => Err(Self::unexpected(other)),
         }
     }
@@ -331,6 +344,14 @@ impl PlatformProvisioner {
             other => Err(Self::unexpected(other)),
         }
     }
+}
+
+/// The slug of a problem answer (`urn:vymalo:agents:problem:<slug>`), if the body is one.
+async fn problem_slug(response: reqwest::Response) -> Option<String> {
+    let body: Value = response.json().await.ok()?;
+    let kind = body.get("type")?.as_str()?;
+    kind.strip_prefix("urn:vymalo:agents:problem:")
+        .map(str::to_owned)
 }
 
 fn parse_state(text: Option<&str>) -> Result<AgentState, ProvisionError> {
