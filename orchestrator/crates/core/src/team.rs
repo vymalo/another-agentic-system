@@ -50,6 +50,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::gate::Timer;
 use crate::ids::AgentId;
 
 mod presets;
@@ -63,6 +64,10 @@ pub use presets::{
 
 /// The hand-offs one person's message allows when a preset says nothing (ADR 0074 decision 8).
 pub const DEFAULT_MAX_HANDOFFS: u32 = 6;
+
+/// How long a hand-off waits for the person before it expires: `teams.approvalExpiry`, 30 minutes
+/// by default (ADR 0074 decision 10).
+pub const DEFAULT_APPROVAL_EXPIRY_SECONDS: u32 = 30 * 60;
 
 /// The lowest `maxHandoffs` a team may set, the default (ADR 0074 decision 8).
 pub const MIN_MAX_HANDOFFS: u32 = DEFAULT_MAX_HANDOFFS;
@@ -279,10 +284,11 @@ pub enum TeamEvent {
         /// The members it named, in the order it named them.
         to: Vec<MemberName>,
     },
-    /// The person answered a pending hand-off.
+    /// A pending hand-off was decided: by the person, by its preset's `auto` or `after` timer, or
+    /// by its expiry.
     HandoffDecided {
-        /// Whether it goes; a hand-off that does not go returns the floor to the person.
-        approved: bool,
+        /// How it was decided.
+        decision: HandoffDecision,
     },
     /// The member that fanned out got its turn with the results.
     FanIn {
@@ -301,9 +307,70 @@ pub enum TeamEvent {
     },
 }
 
+/// How a pending hand-off was decided (ADR 0074 decision 10).
+///
+/// A hand-off never changes the access tier: no decision names one, and the route a decision
+/// produces carries none, so the member that receives it runs at the tier the thread already has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HandoffDecision {
+    /// The person approved it as proposed.
+    Approve,
+    /// The person approved it with another note.
+    Edit {
+        /// The note the member receives.
+        note: String,
+    },
+    /// The person approved it to other members.
+    Redirect {
+        /// The members that receive it, in order.
+        to: Vec<MemberName>,
+    },
+    /// The person refused it: the floor is theirs.
+    Stop,
+    /// It went on its own: the preset says `auto`, or `after` N seconds passed.
+    Auto,
+    /// Nobody answered within the expiry: the floor is the person's.
+    Expired,
+}
+
+impl HandoffDecision {
+    /// An approval with the person's own note.
+    ///
+    /// # Errors
+    /// [`HandOffRefusal::NoteTooLong`] over [`MAX_NOTE_BYTES`].
+    pub fn edit(note: impl Into<String>) -> Result<Self, HandOffRefusal> {
+        let note = note.into();
+        if note.len() > MAX_NOTE_BYTES {
+            return Err(HandOffRefusal::NoteTooLong(note.len()));
+        }
+        Ok(HandoffDecision::Edit { note })
+    }
+}
+
 /// What the fold asks the caller to do, when an event changes the routing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TeamCommand {
+    /// A hand-off goes: give these members the floor. `note` is the person's edit, when they made
+    /// one; otherwise the member's own note stands.
+    Route {
+        /// The member that proposed it.
+        from: MemberName,
+        /// The members that receive it, in order.
+        to: Vec<MemberName>,
+        /// The person's replacement note, when they edited it.
+        note: Option<String>,
+    },
+    /// A hand-off waits for the person: arm its timers, each fed back as
+    /// [`Input::TimerFired`](crate::Input::TimerFired) (see [`TeamLedger::due`]).
+    ArmHandoff {
+        /// The proposal the timers belong to; a timer of another one is stale.
+        proposal: u32,
+        /// Seconds until [`Timer::HandoffAuto`], when the preset says `after`.
+        auto_after: Option<u32>,
+        /// Seconds until [`Timer::HandoffExpiry`].
+        expires_after: u32,
+    },
     /// Every fanned-out turn has ended: give the member that fanned out a turn with the results,
     /// each labelled by member (ADR 0074 decision 6).
     FanIn {
@@ -551,6 +618,9 @@ pub struct TeamLedger {
     /// The members the person fanned out to whose turns have not ended (a member's own fan-out is
     /// [`FanIn::waiting`]).
     person_fan_out: BTreeSet<MemberName>,
+    approval: HandoffApproval,
+    expiry_seconds: u32,
+    proposal: u32,
 }
 
 impl TeamLedger {
@@ -589,7 +659,48 @@ impl TeamLedger {
             state: TeamState::Idle,
             pending: None,
             person_fan_out: BTreeSet::new(),
+            approval: HandoffApproval::Ask,
+            expiry_seconds: DEFAULT_APPROVAL_EXPIRY_SECONDS,
+            proposal: 0,
         })
+    }
+
+    /// The same team with its preset's approval and the deployment's `teams.approvalExpiry`
+    /// (seconds; at least 1).
+    #[must_use]
+    pub fn with_approval(mut self, approval: HandoffApproval, expiry_seconds: u32) -> Self {
+        self.approval = approval;
+        self.expiry_seconds = expiry_seconds.max(1);
+        self
+    }
+
+    /// The hand-off proposals so far; the timers of a proposal name its number.
+    pub fn proposal(&self) -> u32 {
+        self.proposal
+    }
+
+    /// The event a fired `timer` asks to be written, when it is still current: the hand-off it was
+    /// armed for still waits. A timer of an answered, expired or older proposal is stale (`None`).
+    pub fn due(&self, timer: Timer) -> Option<TeamEvent> {
+        if !matches!(self.pending, Some(Pending::Handoff { .. })) {
+            return None;
+        }
+        match timer {
+            Timer::HandoffAuto { proposal }
+                if proposal == self.proposal
+                    && matches!(self.approval, HandoffApproval::After { .. }) =>
+            {
+                Some(TeamEvent::HandoffDecided {
+                    decision: HandoffDecision::Auto,
+                })
+            }
+            Timer::HandoffExpiry { proposal } if proposal == self.proposal => {
+                Some(TeamEvent::HandoffDecided {
+                    decision: HandoffDecision::Expired,
+                })
+            }
+            _ => None,
+        }
     }
 
     /// The cap a preset's `maxHandoffs` means, or the default when it says nothing.
@@ -772,7 +883,7 @@ impl TeamLedger {
 
             TeamEvent::HandoffProposed { from, to } => self.proposed(&from, to),
 
-            TeamEvent::HandoffDecided { approved } => self.decided(approved),
+            TeamEvent::HandoffDecided { decision } => self.decided(decision),
 
             TeamEvent::FanIn { member } => {
                 if self.member(&member).is_some() {
@@ -888,25 +999,63 @@ impl TeamLedger {
             return Some(TeamCommand::Capped { refused: to });
         }
         self.count = next;
+        self.proposal = self.proposal.saturating_add(1);
         self.pending = Some(Pending::Handoff {
             from: from.clone(),
             to,
         });
         self.state = TeamState::AwaitingApproval;
-        None
+        match self.approval {
+            HandoffApproval::Auto => self.decided(HandoffDecision::Auto),
+            HandoffApproval::After { seconds } => Some(TeamCommand::ArmHandoff {
+                proposal: self.proposal,
+                auto_after: Some(u32::from(seconds)),
+                expires_after: self.expiry_seconds,
+            }),
+            HandoffApproval::Ask => Some(TeamCommand::ArmHandoff {
+                proposal: self.proposal,
+                auto_after: None,
+                expires_after: self.expiry_seconds,
+            }),
+        }
     }
 
-    fn decided(&mut self, approved: bool) -> Option<TeamCommand> {
+    fn decided(&mut self, decision: HandoffDecision) -> Option<TeamCommand> {
         let Some(Pending::Handoff { from, to }) = self.pending.take() else {
             return None;
         };
-        if !approved {
-            self.state = TeamState::Idle;
-            return None;
-        }
+        let (to, note) = match decision {
+            HandoffDecision::Stop | HandoffDecision::Expired => {
+                self.state = TeamState::Idle;
+                return None;
+            }
+            HandoffDecision::Approve | HandoffDecision::Auto => (to, None),
+            HandoffDecision::Edit { note } => (to, (note.len() <= MAX_NOTE_BYTES).then_some(note)),
+            HandoffDecision::Redirect { to: other } => {
+                let valid = !other.is_empty()
+                    && other
+                        .iter()
+                        .all(|name| name != &from && self.member(name).is_some());
+                if !valid {
+                    self.state = TeamState::Idle;
+                    return None;
+                }
+                // The count was what the proposal named; the redirect replaces it.
+                let before = u32::try_from(to.len()).unwrap_or(u32::MAX);
+                let after = u32::try_from(other.len()).unwrap_or(u32::MAX);
+                let next = self.count.saturating_sub(before).saturating_add(after);
+                if next > self.cap {
+                    self.count = self.count.saturating_sub(before);
+                    self.state = TeamState::Capped;
+                    return Some(TeamCommand::Capped { refused: other });
+                }
+                self.count = next;
+                (other, None)
+            }
+        };
         if to.len() > 1 {
             self.fan_in = Some(FanIn {
-                from,
+                from: from.clone(),
                 waiting: to.iter().cloned().collect(),
                 ended: BTreeMap::new(),
             });
@@ -915,7 +1064,7 @@ impl TeamLedger {
             // A hand-off to one member passes the floor; nothing comes back.
             self.state = TeamState::Working;
         }
-        None
+        Some(TeamCommand::Route { from, to, note })
     }
 }
 
@@ -1035,7 +1184,9 @@ mod tests {
             from: name("lead"),
             to: vec![name("a")],
         });
-        ledger.apply(TeamEvent::HandoffDecided { approved: true });
+        ledger.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Approve,
+        });
         assert_eq!(ledger.state(), TeamState::Working);
         assert!(ledger.fan_in().is_none());
 
@@ -1045,7 +1196,9 @@ mod tests {
             from: name("lead"),
             to: vec![name("a"), name("b")],
         });
-        ledger.apply(TeamEvent::HandoffDecided { approved: true });
+        ledger.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Approve,
+        });
         assert_eq!(ledger.state(), TeamState::FanningIn);
         assert_eq!(ledger.fan_in().unwrap().waiting.len(), 2);
     }
@@ -1088,7 +1241,9 @@ mod tests {
             from: name("lead"),
             to: vec![name("a"), name("b")],
         });
-        ledger.apply(TeamEvent::HandoffDecided { approved: true });
+        ledger.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Approve,
+        });
         ledger.apply(TeamEvent::TurnFinished {
             member: name("a"),
             outcome: TurnOutcome::Completed,
@@ -1183,7 +1338,9 @@ mod tests {
             from: name("lead"),
             to: vec![name("a"), name("b")],
         });
-        ledger.apply(TeamEvent::HandoffDecided { approved: true });
+        ledger.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Approve,
+        });
         for member in ["a", "b"] {
             ledger.apply(TeamEvent::TurnStarted {
                 member: name(member),
@@ -1301,7 +1458,9 @@ mod tests {
             from: name("lead"),
             to: vec![name("a")],
         });
-        live.apply(TeamEvent::HandoffDecided { approved: true });
+        live.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Approve,
+        });
         live.apply(TeamEvent::TurnStarted { member: name("a") });
 
         let log = vec![
@@ -1313,7 +1472,9 @@ mod tests {
                 from: name("lead"),
                 to: vec![name("a")],
             },
-            TeamEvent::HandoffDecided { approved: true },
+            TeamEvent::HandoffDecided {
+                decision: HandoffDecision::Approve,
+            },
             TeamEvent::TurnStarted { member: name("a") },
         ];
         let replayed = TeamLedger::replay(&log).unwrap();
@@ -1325,6 +1486,147 @@ mod tests {
             TeamLedger::replay(&log[1..]).unwrap_err(),
             TeamRefusal::NotFormed
         );
+    }
+
+    fn proposal(ledger: &mut TeamLedger) -> Option<TeamCommand> {
+        ledger.apply(TeamEvent::HandoffProposed {
+            from: name("lead"),
+            to: vec![name("a")],
+        })
+    }
+
+    #[test]
+    fn waiting_handoff_expires_and_floor_returns_to_person() {
+        let mut ledger = team(&["lead", "a", "b"], None);
+        let command = proposal(&mut ledger);
+        assert_eq!(ledger.state(), TeamState::AwaitingApproval);
+        assert_eq!(
+            command,
+            Some(TeamCommand::ArmHandoff {
+                proposal: 1,
+                auto_after: None,
+                expires_after: DEFAULT_APPROVAL_EXPIRY_SECONDS,
+            })
+        );
+        // `ask` arms no `after` timer, so one that fires is stale.
+        assert_eq!(ledger.due(Timer::HandoffAuto { proposal: 1 }), None);
+        let expired = ledger.due(Timer::HandoffExpiry { proposal: 1 }).unwrap();
+        assert_eq!(
+            expired,
+            TeamEvent::HandoffDecided {
+                decision: HandoffDecision::Expired
+            }
+        );
+        assert_eq!(ledger.apply(expired), None);
+        assert_eq!(ledger.state(), TeamState::Idle);
+        assert!(ledger.pending().is_none());
+        assert!(ledger.running().is_empty());
+        // The same timer fired again, and one of another proposal, are stale.
+        assert_eq!(ledger.due(Timer::HandoffExpiry { proposal: 1 }), None);
+    }
+
+    #[test]
+    fn a_timer_of_an_older_proposal_is_stale() {
+        let mut ledger = team(&["lead", "a", "b"], None);
+        proposal(&mut ledger);
+        ledger.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Stop,
+        });
+        proposal(&mut ledger);
+        assert_eq!(ledger.proposal(), 2);
+        assert_eq!(ledger.due(Timer::HandoffExpiry { proposal: 1 }), None);
+        assert!(ledger.due(Timer::HandoffExpiry { proposal: 2 }).is_some());
+    }
+
+    #[test]
+    fn auto_mode_routes_without_waiting() {
+        let mut ledger = team(&["lead", "a", "b"], None).with_approval(HandoffApproval::Auto, 60);
+        let command = proposal(&mut ledger);
+        assert_eq!(
+            command,
+            Some(TeamCommand::Route {
+                from: name("lead"),
+                to: vec![name("a")],
+                note: None,
+            })
+        );
+        assert_eq!(ledger.state(), TeamState::Working);
+        assert!(ledger.pending().is_none());
+    }
+
+    #[test]
+    fn after_n_seconds_arms_both_timers_and_the_auto_timer_routes() {
+        let mut ledger = team(&["lead", "a", "b"], None)
+            .with_approval(HandoffApproval::After { seconds: 20 }, 90);
+        assert_eq!(
+            proposal(&mut ledger),
+            Some(TeamCommand::ArmHandoff {
+                proposal: 1,
+                auto_after: Some(20),
+                expires_after: 90,
+            })
+        );
+        let event = ledger.due(Timer::HandoffAuto { proposal: 1 }).unwrap();
+        assert!(matches!(
+            ledger.apply(event),
+            Some(TeamCommand::Route { .. })
+        ));
+        assert_eq!(ledger.state(), TeamState::Working);
+    }
+
+    #[test]
+    fn the_person_may_edit_redirect_or_stop() {
+        let mut edit = team(&["lead", "a", "b"], None);
+        proposal(&mut edit);
+        let decision = HandoffDecision::edit("take the tests first").unwrap();
+        assert_eq!(
+            edit.apply(TeamEvent::HandoffDecided { decision }),
+            Some(TeamCommand::Route {
+                from: name("lead"),
+                to: vec![name("a")],
+                note: Some("take the tests first".to_owned()),
+            })
+        );
+        assert!(HandoffDecision::edit("x".repeat(MAX_NOTE_BYTES + 1)).is_err());
+
+        let mut redirect = team(&["lead", "a", "b"], None);
+        proposal(&mut redirect);
+        let command = redirect.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Redirect {
+                to: vec![name("b")],
+            },
+        });
+        assert_eq!(
+            command,
+            Some(TeamCommand::Route {
+                from: name("lead"),
+                to: vec![name("b")],
+                note: None,
+            })
+        );
+        assert_eq!(redirect.count(), 1);
+
+        let mut bad = team(&["lead", "a", "b"], None);
+        proposal(&mut bad);
+        assert_eq!(
+            bad.apply(TeamEvent::HandoffDecided {
+                decision: HandoffDecision::Redirect {
+                    to: vec![name("lead")]
+                },
+            }),
+            None
+        );
+        assert_eq!(bad.state(), TeamState::Idle);
+
+        let mut stop = team(&["lead", "a", "b"], None);
+        proposal(&mut stop);
+        assert_eq!(
+            stop.apply(TeamEvent::HandoffDecided {
+                decision: HandoffDecision::Stop
+            }),
+            None
+        );
+        assert_eq!(stop.state(), TeamState::Idle);
     }
 
     proptest! {
@@ -1361,14 +1663,16 @@ mod tests {
                 let n32 = u32::try_from(to.len()).unwrap_or(u32::MAX);
                 if routed + n32 > cap {
                     // Over the cap: nothing routed, and the ledger says so.
-                    prop_assert!(command.is_some());
+                    let capped = matches!(command, Some(TeamCommand::Capped { .. }));
+                    prop_assert!(capped);
                     prop_assert_eq!(ledger.state(), TeamState::Capped);
                     prop_assert!(ledger.pending().is_none());
                     prop_assert_eq!(ledger.running().len(), started_before);
                 } else {
                     routed += n32;
                     prop_assert_eq!(ledger.count(), routed);
-                    prop_assert!(command.is_none());
+                    let armed = matches!(command, Some(TeamCommand::ArmHandoff { .. }));
+                    prop_assert!(armed);
                 }
                 prop_assert!(ledger.count() <= cap);
 
@@ -1400,7 +1704,9 @@ mod tests {
                 from: name("lead"),
                 to: to.clone(),
             });
-            ledger.apply(TeamEvent::HandoffDecided { approved: true });
+            ledger.apply(TeamEvent::HandoffDecided {
+            decision: HandoffDecision::Approve,
+        });
 
             let mut ended: BTreeSet<usize> = BTreeSet::new();
             let mut emitted = 0;
@@ -1421,7 +1727,7 @@ mod tests {
                         prop_assert_eq!(results.len(), fan_out);
                         emitted += 1;
                     }
-                    Some(TeamCommand::Capped { .. }) => prop_assert!(false, "no cap here"),
+                    Some(other) => prop_assert!(false, "unexpected {other:?}"),
                     None => prop_assert!(!all_ended || emitted > 0),
                 }
                 // However many finishes arrive, the fan-in is issued at most once.
