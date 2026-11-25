@@ -1710,11 +1710,24 @@ injector:
   model: deploy-model                         # the name the agents send in x-ai-eg-model
   broker:
     tokenProperty: injector_broker_token      # AWS property of the injector's own token
+  budget:
+    url: http://another-ledger.ledger.svc:8201  # the usage ledger's budget listener (a READ, never a debit)
+    tokenProperty: injector_budget_token      # AWS property of the ledger's shared secret
 orchestrator:
   internal:
     enabled: true                             # the run-lease listener the AuthConfig queries
     tokenProperty: internal_orchestrator_token
 ```
+
+**The balance (ANR-669).** Every model call reads the person's balance from the ledger's budget read for the lease's
+account (`GET <budget.url>/budget/v1/remaining?account_id=…`), cached per account for `budget.cacheTtlSecs` (10 s; 1 to
+30, a longer one refused because a stale balance lets a person overspend). A balance the ledger could not answer is a
+`403`; zero, negative or an account the ledger does not know is a `402` with `{"error":"model_locked"}`. The `402` is an
+`EnvoyExtensionPolicy` Lua filter on the generated route, not an Authorino rule, because Authorino v0.26.4's denial
+status is one code for the whole authorization phase; [`docs/api/model-injector.md`](../../docs/api/model-injector.md)
+says which and why, and `dev/agent-router-spike/` proves it. **The deployment's EnvoyGateway resource must set
+`extensionApis.enableLua: true`**: v1.10 ships Lua policies disabled and reports the policy as `Invalid` otherwise. The
+injector adds no debit route and moves no money — the ledger settles what was spent, and the injector can only refuse.
 
 The agents then point at the injector, not at the model: `model.baseUrl` (and each agent's `MODEL_BASE_URL`) is
 `http://<fullname>-injector-envoy.<Envoy Gateway namespace>.svc/v1`. The Service name is pinned by `injector.envoyServiceName`
@@ -1724,17 +1737,23 @@ ingress** from Envoy Gateway's namespace is not rendered, so a cluster with a de
 
 **Fail closed.** With `injector.enabled` false nothing of this section is rendered and the render is byte-identical to
 before (`tests/render-check.sh`). With it true, the render is refused when `gatewayClassName`, `upstream.url`, `model`,
-the broker URL (or `orchestrator.internal.enabled`), the token property (with `externalSecrets.enabled`), a
-`cacheTtlSecs` above 30, or a non-positive replica count is missing; an upstream that is not an `http`/`https` URL is
+the broker URL (or `orchestrator.internal.enabled`), `budget.url`, the token properties (with
+`externalSecrets.enabled`), a `cacheTtlSecs` above 30 (broker or budget) or a non-positive replica count is missing; an
+upstream or ledger URL that is not an `http`/`https` URL, or a ledger URL that carries a path, query or credential, is
 refused too.
 
 **What this does not cover yet, stated plainly.** None of it is run on a cluster by this chart's tests — only rendered
 (`tests/golden/injector.yaml`); the transport is proven separately by `dev/agent-router-spike/`, and its spike result above
-recorded header pass-through for the key and the account id, and the refusal with no lease. TLS on the ext-auth hop is not
+recorded header pass-through for the key and the account id, and the refusal with no lease; ANR-669 added the balance
+read and its `402` there. TLS on the ext-auth hop is not
 rendered (Envoy Gateway v1.10's `extAuth.grpc` has no TLS field, *verified 2026-11-24*); TLS on the agent-to-Gateway hop
 is not rendered either. And the broker's injector token is the seam `SharedTokens::with_injector` (*in the broker crate*),
 which the orchestrator binary does not yet pass and `orchestrator.internal` does not yet name: until that wiring lands,
-the AuthConfig's lookup answers `401 unauthenticated`, and every model call through the injector fails closed.
+the AuthConfig's lookup answers `401 unauthenticated`, and every model call through the injector fails closed. The
+ledger side has a gap of its own: another-backend's budget listener reads its secret from `x-lightbridge-budget-token`,
+while Authorino's `sharedSecretRef` can only send `Authorization: Bearer`, so the listener must accept the bearer (or a
+rewriter must stand between them) before the read works in production (*verified 2026-11-25* in another-backend's
+`crates/another-service/src/budget_remaining.rs`).
 
 ## The browser agent (ADR 0057)
 

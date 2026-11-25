@@ -1,15 +1,21 @@
 #!/usr/bin/env sh
-# The proof (sys#334 S9, ANR-662 and ANR-667), with the real Authorino over gRPC and WireMock as the model gateway:
-# the agent presents the service-account token of its pod (TokenReview, audience `spike`) and a run id; Authorino asks
-# the broker's run-lease route for the run's key and account with the injector's own token, and adds `Authorization`
-# and `x-account-id` upstream. Three things are checked:
+# The proof (sys#334 S9, ANR-662, ANR-667 and ANR-669), with the real Authorino over gRPC and WireMock as the model
+# gateway: the agent presents the service-account token of its pod (TokenReview, audience `spike`) and a run id;
+# Authorino asks the broker's run-lease route for the run's key and account with the injector's own token, reads the
+# person's balance from the ledger's budget read, and adds `Authorization`, `x-account-id` and `x-budget-remaining`
+# upstream. Four things are checked:
 #   1. the gateway's journal holds exactly one `Authorization` and exactly one `x-account-id`, the LEASED values: a
 #      client that sends its own copies of both does not get them through (replaced, never merged);
 #   2. a caller whose bearer is not a service-account token Authorino accepts (none at all, or a token for another
 #      audience) is refused before the gateway sees the request (journal count unchanged);
 #   3. a run with no usable lease reaches no gateway: no run id, a refused lease (410/404), or a lease with no token
-#      or no account id.
-# Negative controls make the checks able to fail: without the SecurityPolicy the client's own header arrives.
+#      or no account id;
+#   4. the balance: a funded person's call passes, a person at zero and an account the ledger does not know are
+#      refused with 402 (`model_locked`), a balance the ledger could not answer is refused with 403 — and none of
+#      them reaches the gateway, whose journal does not move.
+# Negative controls make the checks able to fail: without the balance filter a zero-balance run reaches the gateway,
+# without the authorizer the balance filter answers 503 rather than let a request through, and without both the
+# client's own header arrives.
 set -eu
 
 dir=$(cd "$(dirname "$0")" && pwd)
@@ -122,8 +128,61 @@ printf '%s' "$last" | jq -e '.run == "run-1" and .injectorToken == true and .acc
   || fail "the broker was not asked for run-1 with the injector's token"
 echo "PASS: Authorino asked the broker for the run's lease with its own token, and the lease named $account"
 
-echo "--- negative control 1: with the SecurityPolicy removed, the client's own header arrives"
+echo "--- the balance: the ledger was read for that lease's account, with the injector's own token, and never a debit"
+ledger_last() {
+  kc exec deploy/spike-ledger -- python -c \
+    'import urllib.request;print(urllib.request.urlopen("http://127.0.0.1:8080/__last").read().decode())'
+}
+llast=$(ledger_last)
+echo "ledger: $llast"
+printf '%s' "$llast" | jq -e '.account == "'"$account"'" and .injectorToken == true and .path == "/budget/v1/remaining"' >/dev/null \
+  || fail "the ledger was not read for $account with the injector's token"
+echo "PASS: the injector read the ledger's budget for the lease's account, with its own secret"
+
+echo "--- the balance stays in the injector: the model gateway never sees x-budget-remaining"
+nb=$(hcount run-1 x-budget-remaining)
+echo "gateway saw: x-budget-remaining occurrences=$nb"
+[ "$nb" -eq 0 ] || fail "the person's balance reached the model gateway"
+echo "PASS: the balance header was removed before the model gateway"
+
+echo "--- negative control 1a: without the balance filter, a zero balance reaches the gateway (the 402 can fail)"
+kc delete envoyextensionpolicy spike-balance --ignore-not-found >/dev/null
+for _ in $(seq 1 15); do
+  code=$(request -H 'X-Run-Id: zero-run' -H "$authn" -d '{"model":"spike-model","messages":[]}')
+  [ "$code" = 200 ] && break
+  sleep 2
+done
+echo "zero-run without the balance filter: HTTP $code, gateway requests for zero-run $(count_for zero-run)"
+[ "$code" = 200 ] || fail "removing the balance filter did not let a zero-balance run through (the check cannot fail)"
+[ "$(count_for zero-run)" -ge 1 ] || fail "the zero-balance run was allowed but the gateway journaled nothing"
+echo "PASS: the balance filter is what refuses a spent balance; nothing else does"
+echo "--- restoring the balance filter"
+kc apply -f "$dir/manifests/32-budget-policy.yaml" >/dev/null
+for _ in $(seq 1 30); do
+  code=$(request -H 'X-Run-Id: zero-run' -H "$authn" -d '{"model":"spike-model","messages":[]}')
+  [ "$code" = 402 ] && break
+  sleep 2
+done
+[ "$code" = 402 ] || fail "the balance filter did not come back (got $code)"
+echo "PASS: the 402 is back"
+
+echo "--- negative control 1b: without the authorizer, the balance filter fails closed, never open"
 kc delete securitypolicy spike-extauth --ignore-not-found >/dev/null
+for _ in $(seq 1 15); do
+  before=$(count_for run-noauth)
+  code=$(request -H 'X-Run-Id: run-noauth' \
+    -d '{"model":"spike-model","messages":[]}')
+  after=$(count_for run-noauth)
+  [ "$code" = 503 ] && break
+  sleep 2
+done
+echo "spike: with no authorizer and no balance -> HTTP $code, gateway requests for run-noauth before=$before after=$after"
+[ "$code" = 503 ] || fail "the balance filter let a request without a balance through (got $code)"
+[ "$after" -eq "$before" ] || fail "a request without a balance reached the gateway"
+echo "PASS: a missing balance is 503 budget_unavailable, never a pass"
+
+echo "--- negative control 1: with both policies removed, the client's own header arrives"
+kc delete envoyextensionpolicy spike-balance --ignore-not-found >/dev/null
 # The policy is gone once a request that carries the client's marker reaches the gateway with it.
 for _ in $(seq 1 15); do
   code=$(request -H 'X-Run-Id: run-nopolicy' -H 'Authorization: Bearer client-sent-NO-EXTAUTH' \
@@ -137,7 +196,8 @@ echo "Authorization at the gateway without the policy: [$v]"
   || fail "the negative control did not reach the gateway (the check cannot fail)"
 echo "PASS: the check can fail — the client's header is what arrives without the injector"
 
-echo "--- restoring the policy"
+echo "--- restoring the policies"
+kc apply -f "$dir/manifests/32-budget-policy.yaml" >/dev/null
 kc apply -f "$dir/manifests/31-route-policy.yaml" >/dev/null
 for _ in $(seq 1 30); do
   code=$(request -H 'X-Run-Id: run-1' -H "$authn" -H "x-account-id: $client_account" \
@@ -146,7 +206,7 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 [ "$(hval run-1 authorization)" = "Bearer $marker" ] || fail "the policy did not come back"
-echo "PASS: the policy is back and the leased headers replace the client's again"
+echo "PASS: the policies are back and the leased headers replace the client's again"
 
 echo "--- negative control 2: without a run id, nothing reaches the gateway"
 before=$(count_without_run)
@@ -226,5 +286,46 @@ case "$code" in
 esac
 [ "$after" -eq "$before" ] || fail "a lease with no account id reached the gateway"
 echo "PASS: a lease that names no account was refused at the authorizer ($code) and the gateway saw no request"
+
+# The person's balance (ANR-669): zero and an account the ledger does not know are refused with 402 before any model
+# call; a balance the ledger could not read is refused too (403 — an outage is not a person's spending, so it is not
+# misreported as 402), and the gateway's journal does not move in any of them.
+budget_refused() { # budget_refused RUN LABEL EXPECTED_CODE
+  run=$1
+  label=$2
+  want=$3
+  before=$(count_for "$run")
+  code=$(request -H "X-Run-Id: $run" -H "$authn" -d '{"model":"spike-model","messages":[]}')
+  after=$(count_for "$run")
+  echo "spike: $label -> HTTP $code, body $(cat "$body"), gateway requests for $run before=$before after=$after"
+  [ "$code" = "$want" ] || fail "$label: expected $want, got $code"
+  [ "$after" -eq "$before" ] || fail "$label was refused but still reached the gateway"
+  echo "PASS: $label was refused with $code and the gateway saw no request"
+}
+
+echo "--- the balance: a person at zero is refused with 402, before the model"
+budget_refused zero-run "a person whose balance is zero" 402
+printf '%s' "$(cat "$body")" | jq -e '.error == "model_locked"' >/dev/null \
+  || fail "a zero balance did not answer model_locked"
+echo "PASS: the 402 names model_locked, the refusal the run parks on"
+
+echo "--- the balance: an account the ledger has never seen fails closed the same way (it answers 200 with zero)"
+budget_refused unknown-run "an account the ledger does not know" 402
+printf '%s' "$(cat "$body")" | jq -e '.error == "model_locked"' >/dev/null \
+  || fail "an unknown account did not answer the same 402/model_locked as zero"
+echo "PASS: unknown and zero are one refusal shape — no credit, never a made-up pass or a 404"
+
+echo "--- the balance: a ledger that cannot answer is a refusal, not a zero (403 budget_unavailable)"
+budget_refused unreadable-run "a ledger answering 503 budget_unavailable" 403
+
+echo "--- the balance: a client cannot claim its own, any more than its own Authorization"
+before=$(count_for zero-run)
+code=$(request -H 'X-Run-Id: zero-run' -H "$authn" -H 'x-budget-remaining: 42' \
+  -d '{"model":"spike-model","messages":[]}')
+after=$(count_for zero-run)
+echo "spike: a zero balance with a client-sent x-budget-remaining: 42 -> HTTP $code, gateway requests before=$before after=$after"
+[ "$code" = 402 ] || fail "a client-sent balance survived the injector (got $code)"
+[ "$after" -eq "$before" ] || fail "a client-sent balance let a zero-balance run reach the gateway"
+echo "PASS: the balance is the ledger's, replaced like the credential and never the client's"
 
 echo "spike: all checks passed"

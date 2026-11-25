@@ -1,16 +1,19 @@
-# The S9 scenario: does an external authorization's header reach the model?
+# The S9 scenario: does an external authorization's header reach the model, and is the balance checked?
 
 sys#334 S9 puts **Agent Router** (the former Envoy AI Gateway) in front of the model endpoint, and
 **Authorino**, through Envoy Gateway's external authorization, adds the run's `Authorization` and
-`x-account-id` to the upstream request. The chart's injector (`deploy/chart`, values.yaml `injector`) is that
-deployment. This directory is the scenario that proves the two halves the card asks for, with the **real
-Authorino** over gRPC and a **WireMock gateway**:
+`x-account-id` to the upstream request and refuses a run whose person has nothing left to spend. The chart's
+injector (`deploy/chart`, values.yaml `injector`) is that deployment. This directory is the scenario that proves the
+halves the cards ask for, with the **real Authorino** over gRPC and a **WireMock gateway**:
 
 - **the gateway saw the credential and the account** — WireMock's request journal shows exactly one
   `Authorization`, the one the broker's lease handed out, and `x-account-id` naming the account that lease
   carried;
 - **the agent never did** — the agent sends its own `Authorization`, and the gateway sees exactly one
-  header, the leased one: the client's is replaced, not appended.
+  header, the leased one: the client's is replaced, not appended;
+- **the balance is the ledger's** (ANR-669) — the injector reads it for the lease's account at every call; a person
+  with credit reaches the gateway, a person at zero and an account the ledger does not know get **`402`** and the
+  gateway journal does not move.
 
 ## Result (ANR-662, 2026-11-24): it works; the injector stays Agent Router + Authorino
 
@@ -33,6 +36,18 @@ The scenario also found one fail-open, now closed in the chart: when the broker 
 `auth.metadata.lease.token`, `neq ""`), and the request is refused at the authorizer. A run with no lease
 reaches no gateway at all.
 
+**ANR-669 (2026-11-25): the balance, and the 402.** Authorino reads the ledger's budget
+(`GET /budget/v1/remaining?account_id=<lease accountId>`, `manifests/16-ledger.yaml`) in a priority group after the
+lease, caches it per account for 10 s, and denies a balance it could not read. A balance that *is* read is judged by
+`manifests/32-budget-policy.yaml`, an `EnvoyExtensionPolicy` Lua filter on the generated route: zero or negative is
+`402 {"error":"model_locked"}`, and the balance header is removed so it never reaches the model. It is not an Authorino
+rule because Authorino v0.26.4's denial status is **one code per phase** — the card's "can 402 be produced?" question,
+answered here: **by Envoy, yes; by Authorino alone, only for every authorization denial at once**. Setting
+`response.unauthorized.code: 402` on the live `AuthConfig` made a request with no `X-Run-Id` and a `410` lease both
+return `402` (observed 2026-11-25), which is why the balance's refusal lives in the filter. Envoy Gateway v1.10 ships
+Lua policies disabled, so `envoy-gateway-lua.yaml` sets `extensionApis.enableLua: true` (a deployment's own
+`EnvoyGateway` needs the same; `deploy/chart/README.md` says so).
+
 The scenario runs on a kind cluster, and nothing else:
 
 1. **Envoy Gateway v1.10.0** with Agent Router's own values file (vendored here), then **Agent Router
@@ -50,18 +65,32 @@ The scenario runs on a kind cluster, and nothing else:
    token, and records the run and whether that token was presented. `expired-run` answers `410
    lease_expired`, `absent-run` answers `404 run_not_bound`. It stands where the orchestrator's internal
    listener stands; the chart points the same `AuthConfig` at the real one.
-5. An **`AIServiceBackend` + `Backend` + `AIGatewayRoute`** (`manifests/20-aigateway.yaml`): a model
+5. A **mock of the ledger's budget read** (`manifests/16-ledger.yaml`): `GET /budget/v1/remaining?account_id=<account>`
+   answers `{"budget_account_id","period","remaining_micros"}` only with the injector's own secret, and records the
+   account and whether that secret was presented. `acct-run-1` has credit (`42` micro-USD, a fixture); every other
+   account is unknown and answers `200` with `0` — the real ledger's rule for an account it has never seen;
+   `acct-unreadable-run` answers `503 budget_unavailable`. It is a read-only mock with no route that writes, because
+   the read is never a debit. It stands where another-backend's ledger stands.
+6. An **`AIServiceBackend` + `Backend` + `AIGatewayRoute`** (`manifests/20-aigateway.yaml`): a model
    named by `x-ai-eg-model: spike-model`, routed to the gateway. This is the route under test.
-6. **Authorino + `AuthConfig`** (`manifests/30-authorino.yaml`): authenticate with a real
+7. **Authorino + `AuthConfig`** (`manifests/30-authorino.yaml`): authenticate with a real
    `kubernetesTokenReview` of the caller's service-account token against the audience `spike` (a ServiceAccount
    `spike-agent` and, below it, the `system:auth-delegator` binding Authorino needs to ask the API server), ask the
-   broker for `X-Run-Id`'s lease with the injector's token, cache it per run for 30 s, and add `Authorization` and
-   `x-account-id` upstream only, as `plain.selector`s — **never** `plain.value`, which Authorino v0.26.4 emits as a
-   Go struct dump (`{[34 66 …] <nil>}`), not a string (*verified 2026-11-24*, and the chart's comment says so). A
-   lease with no token or no account id is denied (`authorization.lease`, `authorization.account-id`).
-7. A **`SecurityPolicy`** (`manifests/31-route-policy.yaml`) with `extAuth.grpc`, scoped to the
+   broker for `X-Run-Id`'s lease with the injector's token, cache it per run for 30 s, read the ledger's budget for
+   that lease's account (a second priority group, cached per account for 10 s), and add `Authorization`,
+   `x-account-id` and `x-budget-remaining` upstream only, as `plain.selector`s — **never** `plain.value`, which
+   Authorino v0.26.4 emits as a Go struct dump (`{[34 66 …] <nil>}`), not a string (*verified 2026-11-24*, and the
+   chart's comment says so). A lease with no token or no account id, and a balance that could not be read, are denied
+   (`authorization.lease`, `authorization.account-id`, `authorization.budget-readable`).
+8. A **`SecurityPolicy`** (`manifests/31-route-policy.yaml`) with `extAuth.grpc`, scoped to the
    **`HTTPRoute` Agent Router generates** from the `AIGatewayRoute` (same name) rather than the whole
    Gateway — also *verified 2026-11-24*: `targetRefs: kind=HTTPRoute name=spike` reports `Accepted`.
+9. An **`EnvoyExtensionPolicy`** with an inline Lua filter (`manifests/32-budget-policy.yaml`), on the same generated
+   route: it answers `402 {"error":"model_locked"}` for a zero or negative `x-budget-remaining`, `503
+   {"error":"budget_unavailable"}` if the header is missing or not a number, and removes the header otherwise. Envoy
+   Gateway runs it after ext-auth (order 13 against 6, `internal/xds/translator/httpfilters.go` in v1.10.0), so it judges
+   what Authorino just read. Lua policies are **disabled by default** in v1.10: `envoy-gateway-lua.yaml` turns them on
+   (`extensionApis.enableLua`).
 
 ## Run it
 
@@ -111,17 +140,44 @@ the limit is raised.
 - **negative control 3b**: `X-Run-Id: absent-run`, which the broker answers `404 run_not_bound` — same refusal and the
   same unmoved journal;
 - **negative control 3c**: `X-Run-Id: noaccount-run`, which the broker answers with a token but **no** `accountId` —
-  refused (`403`), so an empty `x-account-id` never reaches the gateway.
+  refused (`403`), so an empty `x-account-id` never reaches the gateway;
+- **the balance, funded** — `run-1`'s lease names `acct-run-1`, the ledger answers credit, the call is `200`, and the
+  ledger records that it was asked for that account with the injector's own secret; the gateway journal holds **no**
+  `x-budget-remaining` (the filter removed it), so the person's balance never leaves the injector;
+- **the balance, zero** — `zero-run` (account `acct-zero-run`, unknown to the ledger, which answers `200` with `0`) is
+  **`402`** with `{"error":"model_locked"}` and the gateway journal does not move;
+- **the balance, unknown account** — `unknown-run` is the same `402 {"error":"model_locked"}`: unknown and zero are one
+  refusal, because a zero the ledger can vouch for is the fail-closed answer and a 404 would be a second, weaker shape;
+- **the balance, unreadable** — `unreadable-run` (the ledger answers `503 budget_unavailable`) is `403` with no gateway
+  request: an outage is not a person's spending, and is never counted as a zero;
+- **the balance, a client's own** — `zero-run` with a client-sent `x-budget-remaining: 42` is still `402`: the header is
+  the ledger's, replaced like `Authorization`;
+- **negative control 1a**: with the `EnvoyExtensionPolicy` deleted, `zero-run` is `200` and the gateway journals it —
+  the 402 can fail;
+- **negative control 1b**: with the `SecurityPolicy` deleted (so nothing stamps a balance), the Lua filter answers `503
+  budget_unavailable` and the gateway journal does not move — it fails closed without the authorizer;
+- **negative control 1**: with both policies deleted, the same request arrives with the **client's** `Authorization`.
 
 Proofs that these are not vacuous, run on 2026-11-25: removing the `x-account-id` ok_response header from the live
 `AuthConfig` makes the first case fail with `got [acct-client-DO-NOT-PASS]` (the client's header arrived), and
 switching authentication back to `anonymous` makes the identity control fail with `HTTP 200` and a new journal entry.
 Both were restored from the manifests, and the full run passes again.
 
+The balance's own two proofs, run on 2026-11-25: **with the `EnvoyExtensionPolicy` deleted** (the live object, then
+restored) a zero-balance run is `200` and the journal gains an entry — the check is what refuses it, not something
+else; and **with `acct-run-1` set to `0` in the ledger's ConfigMap** (then restored from the manifest), the funded
+first case fails with `HTTP 402 {"error":"model_locked"}` and an unmoved journal. The full run passes again after both
+were restored. The Authorino-only `402` experiment above is the third: `response.unauthorized.code: 402` on the live
+`AuthConfig` (removed afterwards) turned a missing run id and an expired lease into `402` as well.
+
 ## What this scenario does not prove
 
 The broker's caller rules are the chart's and the orchestrator's, and the NetworkPolicy that keeps the route off the
-edge, the balance's `model_locked` and the ledger are not here. TLS on the ext-auth hop and TLS on the agent-to-Gateway
+edge is not here. The ledger is a **stand-in**: it answers the wire shape of another-backend's budget read, but not its
+secret header — the real listener wants `x-lightbridge-budget-token` while Authorino can only present the secret as
+`Authorization: Bearer` (`docs/api/model-injector.md` says so), so the two need agreeing before production. What the
+balance proves is that the injector reads, caches and refuses; it does not prove that a settlement in the ledger charged
+the same account, and no debit happens anywhere here. TLS on the ext-auth hop and TLS on the agent-to-Gateway
 hop are not here either (Envoy Gateway v1.10's `extAuth.grpc` has no TLS field, *verified 2026-11-24*). The
 `system:auth-delegator` binding is what a deployment's operator grants, written here so the TokenReview is real. What
 the identity check proves is that the caller is **an** agent pod of the accepted audience, not that it is **the** pod
