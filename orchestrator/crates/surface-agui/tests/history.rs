@@ -453,13 +453,14 @@ async fn config_says_the_route_exists_only_when_the_application_is_told_to() {
     let h = Harness::start().await;
     let r = h.get("/api/config", Some(ALICE)).await;
     assert_eq!(r.status, 200);
-    // this harness builds the application without the binary's settings: no `ui.history`; `search` is
+    // this harness builds the application without the binary's settings: no `ui.history`; `search` and `teams` are
     // not a setting, it says the build serves the route
     assert_eq!(
         r.json(),
         json!({
             "search": {"maxQueryLength": 200, "maxTerms": 8},
             "prompts": {"limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768},
+            "teams": {"limit": 50, "minMembers": 2, "maxMembers": 8, "maxCharterBytes": 4096, "minMaxHandoffs": 6, "maxMaxHandoffs": 20, "defaultMaxHandoffs": 6, "minPushTokens": 4000, "maxPushTokens": 100000, "defaultPushTokens": 24000},
             "ui": {"showDescriptions": true}
         })
     );
