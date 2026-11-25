@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { NextConfig } from "next";
 import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
@@ -14,7 +15,13 @@ const mockEdge = !process.env.API_ORIGIN && !!process.env.MOCK_API_ORIGIN;
 // `pnpm build:session` and `pnpm build:browser` export beside the build the other specs use.
 const distDir = process.env.NEXT_DIST_DIR;
 
+// The version this build states in `X-Client-Version` on every call to the API (`src/lib/api/client-version.ts`).
+const clientVersion: string = (
+  JSON.parse(readFileSync(path.resolve("package.json"), "utf8")) as { version: string }
+).version;
+
 const shared: NextConfig = {
+  env: { NEXT_PUBLIC_CLIENT_VERSION: clientVersion },
   turbopack: { root: path.resolve(".") },
   poweredByHeader: false,
   reactStrictMode: true,
