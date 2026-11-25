@@ -1608,6 +1608,20 @@ carries inline is the one the run carried, and a run that carries a v1 document 
 answers the refetch with an error to read, as a thread with no catalog does, because a v1.0 reader refuses a v1
 document. Its next run from a v2 screen records version 9, which becomes current by the ledger's rule.
 
+## Chat contract of an application client
+
+What an application that embeds the orchestrator (`orch-embed`) or reaches it through a cloud
+adapter relies on, the same on both. The HTTP binding already has each piece: replay is
+`Last-Event-ID` ([Connect binding](#connect-binding)), the client message id is the AG-UI `messageId`
+of a user message, and the version gate is [client-version.md](client-version.md).
+
+| Piece | Contract |
+|---|---|
+| **Replay from a seq** | A client that holds frames up to the last `id:` it saw asks for the rest. Everything the log says up to that `seq` is folded and not said; the stream then starts with the opening frames of the run that is open (`RUN_STARTED`, the open `SUBAGENT_STARTED`, a `STATE_SNAPSHOT`) and goes on with the frames after it. Only a frame with a resume id is a point to resume from. Embedded: `Embedded::stream_agui_from(thread, after)`. |
+| **Client message id** | The application names a message it sends (`messageId`). Sending it again under the same id is the same message: the thread holds it once and the answer is the logged message. Embedded: `Embedded::post_message_with_id`. A retry is not new work and is not counted against a limit. |
+| **Limit reached (402)** | Before new work starts the application may refuse it because the person has used what they may use. It is one `CUSTOM` event named `vymalo.limit_reached`, value `{status: 402, code, message}`: `code` is stable and machine-readable, `message` is what the person is told. It is not part of the message sequence; a client that does not know it loses nothing else. Embedded: `EmbedError::LimitReached(Limit)`, `Limit::event()`; the application's rule is an `Admission` it supplies, and with none nothing is refused. |
+| **Update required (426)** | With a minimum set (`EmbedPorts::min_client_version`), an operation by a client that states a lower version, an unreadable one or none is refused with the problem of [client-version.md](client-version.md) (`code: client_update_required`, `minClientVersion`). Embedded: `EmbedError::ClientUpdateRequired { min }`, `Embedded::with_client_version`. No minimum: no client is refused. |
+
 ## Run binding
 
 `POST /agui/agents/{agentId}` with `Content-Type: application/json`, `Accept: text/event-stream`

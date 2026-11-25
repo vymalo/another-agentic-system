@@ -78,6 +78,15 @@ CI runs it in the `embed` job of `.github/workflows/orchestrator.yml`, together 
 holds `axum`, `sqlx`, `tokio-postgres` or `hyper`: a request from ADR 0076 decision 4, checked on
 the tree rather than on a planted crate.
 
+## The chat contract
+
+`stream_agui_from` (replay after a seq), `post_message_with_id` (a client message id: a retry is one
+message), `EmbedPorts::admission` (an `Admission` that answers `Limit`, the 402, one `CUSTOM` event
+`vymalo.limit_reached`) and `EmbedPorts::min_client_version` with `with_client_version` (the 426
+gate). The contract is in [`docs/api/agui.md`](../../../docs/api/agui.md) "Chat contract of an
+application client"; `tests/chat_contract.rs` proves each piece. `ClientVersion` lives in `orch-core`
+and `orch-api` re-exports it.
+
 ## What it does not build yet
 
 ADR 0076's later slices are not this crate's:

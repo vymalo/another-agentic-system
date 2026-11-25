@@ -29,6 +29,7 @@ mod mission;
 mod notify;
 mod pick;
 mod pricing;
+pub mod client_version;
 pub mod prompt;
 mod rank;
 mod reasoning;
