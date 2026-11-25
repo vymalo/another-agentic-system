@@ -1,0 +1,7 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh) and by print-config.sh: the platform's agent registry beside
+# the agents file. Not a deployment's values.
+orchestrator:
+  agents:
+    registry:
+      url: http://another-agentic-registry.another-agentic-platform.svc:8080/registry
+      tokenProperty: agent_registry_token

@@ -95,6 +95,12 @@ it, and the Authorino instance and its gRPC authorization Service. */}}
 {{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
 {{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}
 
+{{/* "true" or nothing: whether the BFF peer is set (`networkPolicy.bff`: a namespace and the labels of its pods). */}}
+{{- define "agentic.bff" -}}
+{{- $b := .Values.networkPolicy.bff -}}
+{{- if and $b $b.namespace $b.matchLabels -}}true{{- end -}}
+{{- end -}}
+
 {{/* CNPG Clusters; CNPG makes the Secret <cluster>-app, whose key `uri` is the connection string. */}}
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
 
@@ -405,6 +411,11 @@ appendonly no
      the Secret key and the file one of them is: `user-secrets-key-<id>`. */}}
 {{- define "agentic.userSecrets" -}}{{- if .Values.orchestrator.userSecrets.enabled -}}true{{- end -}}{{- end -}}
 {{- define "agentic.userSecrets.file" -}}{{- printf "user-secrets-key-%s" . -}}{{- end -}}
+
+{{/* "true" or nothing: whether a person's own credentials are kept in OpenBao (`orchestrator.secrets.store: openbao`, ADR 0046) and not in
+     Postgres. The token is the Secret key `openbao-token` (an AWS property, mounted as a file); the CA, when there is one, is the key `ca.crt`
+     of the Secret `orchestrator.secrets.openbao.caSecret`, mounted at `/run/secrets/openbao-ca`. */}}
+{{- define "agentic.secrets.openbao" -}}{{- if eq (toString .Values.orchestrator.secrets.store) "openbao" -}}true{{- end -}}{{- end -}}
 
 {{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
      this release with `rustfs.enabled` and no endpoint of its own). */}}

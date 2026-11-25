@@ -1,0 +1,35 @@
+# The BFF-only shape (card ANR-655): the orchestrator whose only caller is a BFF of the deployment's, with this chart's web and
+# edge turned off. render-check.sh asserts what is not rendered, which peer the orchestrator's policy admits, and the auth
+# configuration; deploy.yml has the pinned orchestrator image read the configuration with `--print-config`.
+# Layered over examples/netcup.values.yaml. Not a deployment's values: the host, the issuer, the BFF's namespace and labels are
+# the deployment's own, and none of them is real here.
+host: agentic.example.org
+
+# The association documents are served from this chart's web host, which this shape does not render: the shape turns them off
+# rather than leaving a ConfigMap nothing serves (templates/_validate.tpl refuses the pair).
+mobileAppLinks:
+  enabled: false
+ingress:
+  enabled: false
+edge:
+  enabled: false
+web:
+  enabled: false
+# The chat agent is not part of this shape: the BFF and the agents of other charts are, and the orchestrator's policy must then
+# admit the BFF and nothing else.
+chat:
+  enabled: false
+
+auth:
+  issuer: https://auth.example.org/realms/example
+  # The BFF presents its own token to the orchestrator: the person is its `sub`, and its audience names the orchestrator.
+  userClaim: sub
+  audiences: [orchestrator]
+
+networkPolicy:
+  # No coder in this shape: the BFF is the only peer named.
+  orchestratorFrom: []
+  bff:
+    namespace: bff
+    matchLabels:
+      app.kubernetes.io/name: bff

@@ -1,0 +1,98 @@
+{
+  "name": "The switch and the grants",
+  "about": "Cases for docs/api/memory-v1.md, 'The tools' and 'Errors, and which wins'. Each case names the thread's switch, the agent's grants and the call, and expects either a result shape or the error code the contract lists first. A reader runs them against a person whose memory is empty. The replacement for the approval case ADR 0091 removed: 'memory on -> the save is stored at once; memory off -> the save is refused'.",
+  "cases": [
+    {
+      "name": "memory on, the write grant: the save is stored at once",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "call": { "tool": "memory_save", "caller": "main", "agent": "coder", "input": { "text": "I deploy with Helm" } },
+      "expect": { "result": { "id": "m-…", "savedAt": "…" }, "storedImmediately": true, "pendingState": "none" }
+    },
+    {
+      "name": "memory off: the save is refused, and nothing is stored",
+      "switch": "off",
+      "grants": { "coder": { "read": true, "write": true } },
+      "call": { "tool": "memory_save", "caller": "main", "agent": "coder", "input": { "text": "I deploy with Helm" } },
+      "expect": { "error": "memory_off", "notesAfter": 0 }
+    },
+    {
+      "name": "memory on, no write grant",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": false } },
+      "call": { "tool": "memory_save", "caller": "main", "agent": "coder", "input": { "text": "a note" } },
+      "expect": { "error": "no_grant" }
+    },
+    {
+      "name": "memory on, no read grant",
+      "switch": "on",
+      "grants": { "coder": { "read": false, "write": true } },
+      "call": { "tool": "memory_read", "caller": "main", "agent": "coder", "input": {} },
+      "expect": { "error": "no_grant" }
+    },
+    {
+      "name": "a child session gets no memory tool",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "call": { "tool": "memory_save", "caller": "ask:1", "agent": "coder", "input": { "text": "a note" } },
+      "expect": { "error": "not_main_caller", "listed": false }
+    },
+    {
+      "name": "an agent with no grants at all is not listed the tools",
+      "switch": "on",
+      "grants": {},
+      "call": { "tool": "memory_read", "caller": "main", "agent": "coder", "input": {} },
+      "expect": { "error": "unknown tool", "listed": false }
+    },
+    {
+      "name": "an empty note is not a note",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "call": { "tool": "memory_save", "caller": "main", "agent": "coder", "input": { "text": "   " } },
+      "expect": { "error": "invalid" }
+    },
+    {
+      "name": "a note over 1 KiB is refused, and the error never echoes the text",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "call": {
+        "tool": "memory_save",
+        "caller": "main",
+        "agent": "coder",
+        "input": { "text": { "$repeat": "x", "times": 1025 } }
+      },
+      "expect": { "error": "too_long", "namesBound": 1024, "echoesText": false }
+    },
+    {
+      "name": "the 201st note is refused, never evicted silently",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "holdNotes": 200,
+      "call": { "tool": "memory_save", "caller": "main", "agent": "coder", "input": { "text": "one too many" } },
+      "expect": { "error": "too_many", "notesAfter": 200 }
+    },
+    {
+      "name": "a read answers newest first, with the total and the truncation flag",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "holdNotes": 60,
+      "call": { "tool": "memory_read", "caller": "main", "agent": "coder", "input": {} },
+      "expect": { "resultNotes": 50, "total": 60, "truncated": true, "order": "newest first" }
+    },
+    {
+      "name": "a query filters on the text, case-insensitively",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "holdNotes": 3,
+      "call": { "tool": "memory_read", "caller": "main", "agent": "coder", "input": { "query": "HELM" } },
+      "expect": { "resultNotes": 1, "truncated": false }
+    },
+    {
+      "name": "forgetting is idempotent",
+      "switch": "on",
+      "grants": { "coder": { "read": true, "write": true } },
+      "call": { "tool": "memory_forget", "caller": "main", "agent": "coder", "input": { "id": "m-never-existed" } },
+      "expect": { "result": { "forgotten": false } }
+    }
+  ]
+}

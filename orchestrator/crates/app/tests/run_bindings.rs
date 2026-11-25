@@ -289,6 +289,11 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
         .expect("the run is bound after its first frame");
     assert_eq!(lease.token().expose(), "key-frontier");
     assert!(lease.expires_at() > SystemClock.now(), "the lease is spent");
+    assert_eq!(
+        lease.account(),
+        &alice(),
+        "the lease names the run's person, the ledger's account"
+    );
     let binding = broker.leases.binding(&run_id).unwrap();
     assert_eq!(binding.agent, AgentId::new("coder"));
     assert_eq!(binding.person, alice());
@@ -297,6 +302,24 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
         Some("frontier"),
         "no pick: the card's default choice names the endpoint"
     );
+    // The account reaches the broker's lease and not the agent: every A2A message the run sent
+    // holds no account id (ADR 0084, amended 2026-11-24).
+    let messages: Vec<String> = w
+        .agent
+        .sends()
+        .into_iter()
+        .map(|call| format!("{call:?}"))
+        .collect();
+    assert!(
+        !messages.is_empty(),
+        "the run sent the agent nothing: there is no message to grep"
+    );
+    for message in &messages {
+        assert!(
+            !message.contains(alice().as_str()),
+            "the account id is in the A2A message: {message}"
+        );
+    }
     run.abort();
 }
 

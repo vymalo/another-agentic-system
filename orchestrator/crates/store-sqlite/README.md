@@ -25,6 +25,7 @@ root of ADR 0076 decision 4 will.
 | `UsageLedger` (ADR 0065) | **built** (milestone 2a, migration `0002`), green on `usage_ledger_conformance!` with its `forget` hook (no skip) |
 | `ThreadSearch` (ADR 0068) | **built** (milestone 2a, migration `0002`), green on `thread_search_conformance!` with its `forget` and `age` hooks (no skip) |
 | `PromptStore` (ADR 0070) | **built** (milestone 2b, migration `0003`), green on `prompt_store_conformance!` (no skip; the suite needs no hook) |
+| `TeamPresetStore` (ADR 0074) | **built** (migration `0007`), green on `team_preset_store_conformance!` in `tests/team_presets.rs` (no skip; the suite needs no hook, and the one writing transaction keeps the limit of fifty) |
 | `UserToolServerStore` (ADR 0046) | **built** (migration `0005`), green on `user_tool_server_store_conformance!` (no skip; the suite needs no hook, and the races are kept by the one writing transaction) |
 | `Wakeup` | **built** (`SqliteWakeup`, in-process broadcast channels: one file belongs to one process, so no `LISTEN`/`NOTIFY`), green on `wakeup_conformance!` (no skip) |
 | `PendingAuthorizations` (ADR 0046) | **built** (slice 4c, migration `0006`), green on `pending_authorizations_conformance!` with its `breaker` hook (no skip; the 32 takers of one state are serialised by the one connection) |
@@ -32,7 +33,10 @@ root of ADR 0076 decision 4 will.
 The prompt library (`src/prompts.rs`, `migrations/0003_user_prompts.sql`) mirrors
 [`store-postgres/src/prompts.rs`](../store-postgres/src/prompts.rs): one transaction per write in place
 of the owner's advisory lock, one counter for revisions, the audience as a JSON array matched with
-`json_each`. The definitions of people's own MCP servers (`src/user_tool_servers.rs`,
+`json_each`. The team presets (`src/teams.rs`, `migrations/0007_user_team_presets.sql`) mirror
+[`store-postgres/src/teams.rs`](../store-postgres/src/teams.rs) the same way: one `BEGIN IMMEDIATE`
+transaction in place of the owner's advisory lock, one counter for revisions, the owner predicate in
+every statement, and the limit of fifty kept by the one writer. The definitions of people's own MCP servers (`src/user_tool_servers.rs`,
 `migrations/0005_user_tool_servers.sql`) mirror
 [`store-postgres/src/user_tool_servers.rs`](../store-postgres/src/user_tool_servers.rs) the same way:
 `BEGIN IMMEDIATE` in place of the owner's advisory lock makes the limit of eight atomic, the id, the
@@ -136,6 +140,7 @@ power loss may lose the last transactions).
 | `impl UsageLedger for SqliteStore` | `month`, `thread_rows`, `backfill`, `sweep` (ADR 0065) |
 | `impl ThreadSearch for SqliteStore` | `search_threads`, `backfill_search`, `search_backlog` (ADR 0068) |
 | `impl PromptStore for SqliteStore` | `insert_prompt`, `get_prompt`, `list_prompts`, `replace_prompt`, `delete_prompt` (ADR 0070) |
+| `impl TeamPresetStore for SqliteStore` | `insert_team_preset`, `get_team_preset`, `list_team_presets`, `replace_team_preset`, `delete_team_preset` (ADR 0074), migration `0007` |
 | `impl UserToolServerStore for SqliteStore` | `insert`, `get`, `list`, `replace`, `set_state`, `delete` (ADR 0046): the limit of eight and the compare and swap of a revision, each kept by one `BEGIN IMMEDIATE` transaction |
 | `impl PendingAuthorizations for SqliteStore` | `put`, `take` (ADR 0046, slice 4c): the state as its SHA-256, taken once by one `DELETE … RETURNING`, the server's earlier state replaced by one `INSERT … ON CONFLICT` |
 | `schema::MIGRATIONS_TABLE` | `schema_migrations`. Not `sqlx`'s `_sqlx_migrations`: a SQLite file of this store has no history to continue, and naming the table after `sqlx` would claim one |

@@ -960,9 +960,16 @@ impl Classify for StoreError {
 ///
 /// **It is also the store of a person's prompt library** ([`PromptStore`](crate::PromptStore), ADR 0070), as it is
 /// of their usage ledger and their search index: every `ThreadStore` is one, and an adapter for another database
-/// implements it beside its threads.
+/// implements it beside its threads. It is likewise the store of a person's **team presets**
+/// ([`TeamPresetStore`](crate::TeamPresetStore), ADR 0074).
 pub trait ThreadStore:
-    crate::UsageLedger + crate::ThreadSearch + crate::PromptStore + Send + Sync + 'static
+    crate::UsageLedger
+    + crate::ThreadSearch
+    + crate::PromptStore
+    + crate::TeamPresetStore
+    + Send
+    + Sync
+    + 'static
 {
     /// Cheap reachability check (readiness).
     fn ping(&self) -> impl Future<Output = Result<(), StoreError>> + Send;

@@ -6,6 +6,7 @@
 # and the agents' own needs), except the search pod's. The databases are not restricted either: CloudNativePG's operator and the instances talk to
 # each other (deploy/chart/README.md, "Not in v0").
 # The edge: Traefik is the only caller that matters, but its namespace is the cluster's to say.
+{{- if .Values.edge.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -29,8 +30,14 @@ spec:
               kubernetes.io/metadata.name: {{ . }}
       {{- end }}
 ---
+{{- end }}
+{{- /* The web, and oauth2-proxy: the edge only. With the web off its policy is not rendered; with the edge off, oauth2-proxy's is
+       not either, and the web's (if it is on) admits no pod rather than any. */ -}}
 # The web, and oauth2-proxy: the edge only.
-{{- range $c := list "web" "oauth2-proxy" }}
+{{- $callers := list }}
+{{- if .Values.web.enabled }}{{ $callers = append $callers "web" }}{{ end }}
+{{- if .Values.edge.enabled }}{{ $callers = append $callers "oauth2-proxy" }}{{ end }}
+{{- range $c := $callers }}
 {{- $port := ternary 3000 4180 (eq $c "web") }}
 {{- $sel := dict "root" $ "component" $c }}
 apiVersion: networking.k8s.io/v1
@@ -47,9 +54,13 @@ spec:
     - Ingress
   ingress:
     - from:
+        {{- if $.Values.edge.enabled }}
         - podSelector:
             matchLabels:
               {{- include "agentic.selectorLabels" $edge | nindent 14 }}
+        {{- else }}
+        []
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ $port }}
@@ -70,9 +81,11 @@ spec:
     - Ingress
   ingress:
     - from:
+        {{- if .Values.edge.enabled }}
         - podSelector:
             matchLabels:
               {{- include "agentic.selectorLabels" $edge | nindent 14 }}
+        {{- end }}
         {{- if .Values.chat.enabled }}
         - podSelector:
             matchLabels:
@@ -87,6 +100,15 @@ spec:
         {{- range .Values.networkPolicy.orchestratorFrom }}
         - podSelector:
             {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- if include "agentic.bff" . }}
+        # The BFF (`networkPolicy.bff`): with the edge off, the only caller of the API.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.bff.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.bff.matchLabels | nindent 14 }}
         {{- end }}
       ports:
         - protocol: TCP

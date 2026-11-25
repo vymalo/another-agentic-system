@@ -23,7 +23,9 @@ mod ids;
 mod language;
 mod live;
 mod locale;
+mod memory;
 mod mention;
+mod notify;
 mod pick;
 mod pricing;
 pub mod prompt;
@@ -115,7 +117,16 @@ pub use live::{LiveChunk, LiveEnd, LiveKind, LiveText, MAX_LIVE_PIECE_BYTES};
 pub use locale::{
     LOCALE_EXTENSION, LocaleError, LocaleHint, LocaleListing, LocaleOffer, MAX_LOCALE_LEN,
 };
+pub use memory::{
+    ForgetInput, Grant, InvalidSettings, MAX_NOTE_BYTES, MAX_NOTES, MAX_QUERY_BYTES,
+    MAX_READ_NOTES, Memory, MemoryError, MemorySettings, MemoryTool, Note, ReadInput, ReadResult,
+    Refusal, SaveInput, ThreadSwitch, check_call, listed,
+};
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
+pub use notify::{
+    Notify, NotifyClass, NotifyIntent, NotifyKind, NotifyTtl, ThreadRole,
+    collapse as collapse_notifications, fold as fold_notifications,
+};
 pub use pick::{
     AgentModelChoice, AgentPick, EffortOffer, Listing, MAX_MODEL_ID_LEN, MODEL_PICK_EXTENSION,
     ModelChoice, ModelId, ModelPick, ModelPickOffer, PickError, PickListings, PickRefusal,
@@ -145,11 +156,54 @@ pub use task::{
     TaskPrompt, check_task_language, conversation_language, task_prompt,
 };
 pub use team::{
-    DEFAULT_MAX_HANDOFFS, FanIn, Floor, HandOff, HandOffRefusal, MAX_HANDOFFS_CEILING, MAX_MEMBERS,
-    MAX_NAME_CHARS, MAX_NOTE_BYTES, MAX_RESULT_BYTES, MAX_ROLE_CHARS, MIN_MAX_HANDOFFS,
-    MIN_MEMBERS, Member, MemberName, MemberResult, Pending, TeamCommand, TeamEvent, TeamLedger,
-    TeamRefusal, TeamState, TurnOutcome, fan_in_results, fan_out_branches, member_branch,
-    trailing_handoff, turn_handoff,
+    BadTeamPresetId,
+    CheckpointRules,
+    DEFAULT_MAX_HANDOFFS,
+    DEFAULT_PUSH_TOKENS,
+    FanIn,
+    Floor,
+    HandOff,
+    HandOffRefusal,
+    HandoffApproval,
+    MAX_APPROVAL_SECONDS,
+    MAX_CHARTER_BYTES,
+    MAX_HANDOFFS_CEILING,
+    MAX_MEMBERS,
+    MAX_NAME_CHARS,
+    MAX_NOTE_BYTES,
+    MAX_PUSH_TOKENS,
+    MAX_RESULT_BYTES,
+    MAX_ROLE_CHARS,
+    MAX_TEAM_PRESETS,
+    MAX_TEAM_TITLE_CHARS,
+    MIN_APPROVAL_SECONDS,
+    MIN_MAX_HANDOFFS,
+    MIN_MEMBERS,
+    MIN_PUSH_TOKENS,
+    Member,
+    MemberHistory,
+    MemberName,
+    MemberResult,
+    PAGE as TEAM_PRESET_PAGE,
+    Pending,
+    TeamCommand,
+    TeamEvent,
+    TeamLedger,
+    TeamMember,
+    TeamMemberInput,
+    TeamPreset,
+    TeamPresetError,
+    TeamPresetId,
+    TeamPresetInput,
+    TeamRefusal,
+    TeamState,
+    TurnOutcome,
+    fan_in_results,
+    fan_out_branches,
+    member_branch,
+    trailing_handoff,
+    turn_handoff,
+    validate as validate_team_preset,
 };
 pub use thread::{AgentInfo, AgentSource, AgentTarget, Releases, ThreadRecord, ThreadState};
 pub use thread_tools::{

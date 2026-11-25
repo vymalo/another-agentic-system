@@ -300,7 +300,7 @@ is the port implementation (`RunLeases`, with its conformance cases in `orch-por
 |---|---|---|
 | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run (the same binding is idempotent), and the deadline is capped at 24 h |
 | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent, and a no-op for a run that was never bound |
-| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — **never an agent, its own run included** | `200 {"token", "expiresAt"}`, `Cache-Control: no-store`; at most 30 s and never past the binding's |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — **never an agent, its own run included** | `200 {"token", "accountId", "expiresAt"}` (`accountId` is the run's person — a `UserId`, the key the usage ledger is kept by (`usage_tasks.owner` of migration `0023`, ADR 0065), never a provider account or a ledger-service account number — beside the key, so the injector knows whose call it is; never logged, never in a refusal or an error, never in a message to an agent), `Cache-Control: no-store`; at most 30 s and never past the binding's |
 
 Refusals are the ruled slugs with a `{"code"}` body: `run_not_bound` (`404`), `lease_expired`
 (`410`), `unavailable` (`503`); the door answers `401 unauthenticated` (`WWW-Authenticate: Bearer`)
@@ -309,8 +309,8 @@ not JSON, names an id over 256 characters, or carries a deadline that is not RFC
 alone is never enough**: the caller comes from `RunCallerAuth`, and a caller that is neither the
 orchestrator nor the injector gets `run_not_bound`, so the answer never says whether a run exists.
 An **agent is refused its own run's lease** too (ADR 0084 decision 2, amended 2026-11-24): the
-binding names the agent, it does not authorise it, so a reachable agent holds no key. The lease value is
-written to the response and to nothing else — no log line, no error, no `Debug` holds it.
+binding names the agent, it does not authorise it, so a reachable agent holds no key. The lease value and the `accountId` beside it are
+written to the response and to nothing else — no log line, no error, no `Debug` holds either.
 
 `SharedTokens` is today's `RunCallerAuth`: one bearer token for the orchestrator, one for the
 injector (`with_injector`) and one per agent, from the deployment's configuration, compared by

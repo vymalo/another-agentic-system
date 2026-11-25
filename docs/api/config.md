@@ -118,8 +118,8 @@ ui:
 artifacts:
   store: fs
   fs: { root: /var/lib/orchestrator/artifacts }
-secrets:                      # where a person's own credentials are kept, sealed (see "secrets"); absent: none are kept
-  store: pg
+secrets:                      # where a person's own credentials are kept (see "secrets"); absent: none are kept
+  store: pg                   # or openbao, with `openbao: { address, mount, token, caFile }` instead of `pg`
   pg:
     keys: [{ id: k1, key: { file: /run/secrets/user-secrets-key } }]
     current: k1
@@ -201,7 +201,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.history.maxTurns`, `.maxPageBytes` | `maxTurns` 1 to 1000, `100`: the largest `limit` of a page of a thread's history and the most a `since` read goes back; `maxPageBytes` 65 536 to 67 108 864, `4194304`: the frames of a page as JSON, the newest chain returned whole whatever its size | — | now; [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), [`history.md`](history.md) |
 | `server.internal.listen` | socket address, `0.0.0.0:8081`; never `server.listen` on a port that is not 0 (exit 78 naming the key) | — | now; [ADR 0084](../decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), card ANR-578. The **internal listener** of the credential broker's run routes, below. Absent: no second listener |
 | `server.internal.token` | **secret**, required, at least 32 bytes | — | now. The orchestrator's own bearer on the run routes: `POST /internal/runs` and `DELETE /internal/runs/{run}` |
-| `server.internal.agents` | map from an agent id (`a-z`, `0-9`, `-`, at most 63) to a **secret**, at least 32 bytes each; none | — | now. Each agent's bearer on `GET /internal/runs/{run}/lease`, and it leases only the runs bound to it. No two callers may share a token (exit 78 naming the second key) |
+| `server.internal.agents` | map from an agent id (`a-z`, `0-9`, `-`, at most 63) to a **secret**, at least 32 bytes each; none | — | now. Each agent's bearer on the internal listener, so an agent is told apart and refused: binding or unbinding is `403`, and it may not read a run's lease, its own run included (ADR 0084 decision 2, amended 2026-11-24). No two callers may share a token (exit 78 naming the second key) |
 | `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header`, and an `http://` `auth.jwt.issuer` or `jwksUrl` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
@@ -236,7 +236,11 @@ server:
 |---|---|---|
 | `POST /internal/runs` | the orchestrator (its `token`) | `204`; `409 run_already_bound` for a different binding of a run |
 | `DELETE /internal/runs/{run}` | the orchestrator (its `token`) | `204`, idempotent |
-| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","accountId","expiresAt"}`, `Cache-Control: no-store` |
+
+`accountId` is the run's person, the identity the usage ledger is keyed by (ADR 0065): a `UserId`, the claim the deployment maps a principal
+from (`email` or `sub`) — never a provider account or an account number of a ledger service. The injector gets it beside the key so it can say
+whose call it is (ADR 0084, amended 2026-11-24). It is in no log line, no refusal, no error and no message to an agent.
 
 A refusal is one of the ruled slugs: `run_not_bound` (`404`, also for a caller that is not the run's agent, so the answer never
 says whether a run exists), `lease_expired` (`410`), `unavailable` (`503`, among them a model the deployment has no key for: never
@@ -288,11 +292,12 @@ Not proven here: other poolers (Pgpool-II, Supavisor), PgBouncer versions other 
 |---|---|---|---|
 | `agents.file` | path; required unless `agents.registry.url` is set | `AGENTS_FILE` | now. The file's format (`{id, name, aliases?, transport?, cardUrl?, tokenEnv?, agent?, gate?}`) gains `aliases`, a list of other names of the agent ([ADR 0049](../decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)); a file without it is read as before |
 | `agents.localConcurrency` | ≥ 1, `4`; a build without the feature `agent-local` refuses the key (78) | `AGENT_LOCAL_CONCURRENCY` | now |
-| `agents.registry.url` | `http(s)` URL without credentials; a build without `registry-platform` refuses it (78). **Who may use an agent it lists is the item's `audience`, not `agents.file` or a role's `agents` alone** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md), [who may use a platform agent](#who-may-use-a-platform-agent)): an item with none is for administrators only | `AGENT_REGISTRY_URL` | now |
-| `agents.registry.token` | **secret**, none | `AGENT_REGISTRY_TOKEN` | now |
+| `agents.registry.url` | `http(s)` URL without credentials; a build without `registry-platform` refuses it (78). **Who may use an agent it lists is the item's `audience`, not `agents.file` or a role's `agents` alone** ([ADR 0045](../decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md), [who may use a platform agent](#who-may-use-a-platform-agent)): an item with none is for administrators only | `AGENT_REGISTRY_URL` | now. Chart: `orchestrator.agents.registry.url` |
+| `agents.registry.token` | **secret**, none | `AGENT_REGISTRY_TOKEN` | now. Chart: `orchestrator.agents.registry.tokenProperty`, the AWS property mounted as a `{ file }` |
 | `agents.registry.agentToken` | **secret**, none | `AGENT_REGISTRY_AGENT_TOKEN` | now |
 | `agents.registry.timeoutSecs` | 1 to 60, `3` | `AGENT_REGISTRY_TIMEOUT_SECS` | now |
 | `agents.registry.maxAgeSecs` | 1 to 3600, `60` | `AGENT_REGISTRY_MAX_AGE_SECS` | now |
+| `agents.sleep.wakeTimeoutSecs` | 1 to 300, absent by default and then the deployment never wakes an agent; how long a dispatch waits for a sleeping agent before the thread fails with a readable message ([ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md)) | — | proposed |
 
 ### `gate`
 
@@ -358,7 +363,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.jwt.issuer` | `http(s)` URL without credentials, query or fragment; required with a mode that reads tokens. `iss` must equal it exactly, as **one text** (a list that holds it is refused). Over plain `http` (development only; `production` refuses it) the process logs one warning at startup: the keys then travel in the clear | — | now; the warning and the one-text `iss` 2026-10-16 |
 | `auth.jwt.audiences` | list of at least one non-empty text; required with `issuer` | — | now |
 | `auth.jwt.jwksUrl` | `http(s)` URL without credentials, none (the keys are found from `<issuer>/.well-known/openid-configuration`) | — | now |
-| `auth.jwt.userClaim` | the claim whose value is the user, `email`. Its value must be text that is not blank and has no control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), or the token is refused | — | now; the control character 2026-10-16 |
+| `auth.jwt.userClaim` | the claim whose value is the user, `email`. A deployment behind its own BFF, which presents the BFF's token, sets `sub`: the person is then the token's subject (and the token's `aud` names the orchestrator, `auth.jwt.audiences: [orchestrator]`). Its value must be text that is not blank and has no control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F), or the token is refused | — | now; the control character 2026-10-16 |
 | `auth.jwt.rolesClaim` | a dotted path (`realm_access.roles`, `groups`), none (no roles) | — | now; read into `Principal.roles`, which `auth.roles` maps to permissions (S15) |
 | `auth.dpop.publicOrigins` | list of at least one `http(s)` origin (`https://chat.example.com`: no path, query, fragment or credentials, no trailing slash); required with `auth.dpop`, which is only for a mode that reads tokens. **A proof's `htu` must be one of them followed by the request's path** (the process sits behind a proxy and cannot rebuild the public URL). `production` refuses `http://` except for `localhost`, `127.0.0.1` and `[::1]` | — | now; [ADR 0054](../decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md) |
 | `auth.dpop.maxAgeSeconds` | 1 to 600, 60: how old a proof's `iat` may be; a proof's `jti` is remembered this long and `futureSkewSeconds` more | — | now; ADR 0054 |
@@ -392,16 +397,22 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 
 ### `secrets`
 
-Where the credentials of the MCP servers **people add themselves** are kept ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md): a token, a key, the pending state of an authorization): sealed with AES-256-GCM in a table of the orchestrator's own Postgres (the crate [`orch-secrets-pg`](../../orchestrator/crates/secrets-pg/README.md)), under a key that lives here, **by reference**. **Absent: no store.** The running service reads and checks the section (every role does) and **uses it only when [`userToolServers.enabled`](#usertoolservers) is true** (the credential broker and the sealed store are then built at startup, by the roles that serve routes, `all` and `control-plane`; with it off, or in a `worker`, nothing is opened or migrated, the section is only checked). The routes of slice 4b reach the store only through the credential broker (a token or a key a person types goes to the broker, which seals it here; nothing else reads the store). `orchestrator secrets rewrap` uses it too.
+Where the credentials of the MCP servers **people add themselves** are kept ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md): a token, a key, the pending state of an authorization): by default (`store: pg`) sealed with AES-256-GCM in a table of the orchestrator's own Postgres (the crate [`orch-secrets-pg`](../../orchestrator/crates/secrets-pg/README.md)), under a key that lives here, **by reference**; or (`store: openbao`) in a KV v2 mount of OpenBao, which seals them (below the table). **Absent: no store.** The running service reads and checks the section (every role does) and **uses it only when [`userToolServers.enabled`](#usertoolservers) is true** (the credential broker and the sealed store are then built at startup, by the roles that serve routes, `all` and `control-plane`; with it off, or in a `worker`, nothing is opened or migrated, the section is only checked). The routes of slice 4b reach the store only through the credential broker (a token or a key a person types goes to the broker, which seals it here; nothing else reads the store). `orchestrator secrets rewrap` uses it too.
 
 A key is 64 hexadecimal characters (32 random bytes: `openssl rand -hex 32`; 64 zeros is refused), in a secret file or a variable. **Losing every key loses every stored credential** (people authorize again), and a backup of the database does not restore them without the key. To rotate: add a key, make it `current`, restart every replica and wait until none runs the old configuration, run `orchestrator secrets rewrap` (it opens every secret, the ones under the current key too), and when it reports nothing failed or changed and a second run finds everything current, remove the old key from `keys`. **Never change the bytes behind an id** (overwrite the file or variable a key is read from, or remove a key and add a different one under its name): add a new id, because a row says only which id sealed it, and every row under the old bytes stops opening. A secret sealed under a key that is not listed cannot be read, and only that server is unavailable.
 
 | Key | Type, default | Replaces | When |
 |---|---|---|---|
 | `secrets` | the store of a person's own credentials. Absent: none. Present: `store` is required | — | now (ADR 0046, slice 3) |
-| `secrets.store` | `pg`; required with the section. Names only what this build compiled in: `pg` needs the Cargo feature `secrets-pg`, else exit 78 naming it. The section of the store chosen is required | — | now |
+| `secrets.store` | `pg` \| `openbao`; required with the section. Any other name is refused at load (exit 78) naming the key. Names only what this build compiled in: `pg` needs the Cargo feature `secrets-pg`, `openbao` needs `secrets-openbao` (both on by default), else exit 78 naming it. The section of the store chosen is required, and the other store's section is refused | — | now |
 | `secrets.pg.keys` | 1 to 16 keys, each `{ id, key }`. **`key` is a secret**: 64 hexadecimal characters, in either case, white space around them cut. `id` is 1 to 64 characters of `A-Z a-z 0-9 . _ -`, unique in the list; it is written beside every secret the key seals and is part of what the seal authenticates | — | now |
 | `secrets.pg.current` | the `id` of one of `keys`; required. Seals every new secret and every secret `rewrap` re-seals | — | now |
+| `secrets.openbao.address` | required with `store: openbao`. An `https` URL with a host and no credential, query or fragment (`https://bao.internal:8200`): the token is sent with every call and never in the clear | — | now |
+| `secrets.openbao.mount` | the KV v2 mount, `secret`. 1 to 128 characters of `A-Z a-z 0-9 . _ -` with `/` between names (no leading or trailing `/`, no `.` or `..` name) | — | now |
+| `secrets.openbao.token` | **secret**, required with `store: openbao`: the token the orchestrator reads and writes with, by reference. The adapter calls `data` (read, write), `metadata` (read) and `destroy` (update) under `<mount>/…/orchestrator/`, so a policy on those three paths and no other is enough | — | now |
+| `secrets.openbao.caFile` | none. A file of PEM certificates the server's certificate is also checked against, besides the system's roots (a private authority); read at startup, relative to the file's directory. A file that is unreadable or holds no certificate is refused naming the key | — | now |
+
+`store: openbao` keeps the credentials in a KV v2 mount of a self-hosted OpenBao (or Vault), one path per person and server under `<mount>/orchestrator/`, named by a hash: the crate [`orch-secrets-openbao`](../../orchestrator/crates/secrets-openbao/README.md). **OpenBao seals what it keeps, so there are no keys of ours: `orchestrator secrets rewrap` has nothing to do and exits 78 for this store.** It is used under the same conditions as the sealed store (`userToolServers.enabled`, and a role that serves routes), and the pending authorizations of an OAuth flow stay in the orchestrator's own Postgres in both. The server is not contacted at startup: a server that does not answer is an unavailable credential for the person whose server needs it, not a process that will not start. No message, log line or error holds the token, a path of OpenBao or a body it answered with. **Status: unverified against a live OpenBao** (the adapter's conformance suite needs one, [its README](../../orchestrator/crates/secrets-openbao/README.md)).
 
 ### `userToolServers`
 
@@ -516,9 +527,9 @@ application, the API and the log hold only the part that is not secret. Replaces
 | `toolServers[].signing.ttlSecs` | 1 to 60, `30`. How long a signed request lives (`exp - iat`). The contract allows 60 seconds at most, and a tool server refuses an object that lives longer | — | now |
 
 A server's `signing.key` is a secret of the contract too, by the same rules (a reference, resolved at startup, printed by `--print-config` as the
-reference): **the nineteenth in the schema**, counting the ones that later changes added (the last two are the run routes'
-`server.internal.token` and `server.internal.agents`, ADR 0084); the list the test
-`the_secrets_are_the_nineteen_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
+reference): **the nineteenth in the schema**, counting the ones that later changes added (the run routes'
+`server.internal.token` and `server.internal.agents`, ADR 0084; `secrets.openbao.token` is the twentieth); the list the test
+`the_secrets_are_the_twenty_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
 two here and the two of `sharing`): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
 printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
 `agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the
@@ -538,6 +549,11 @@ auth:
     userClaim: email                    # the default: keeps the threads that exist
     rolesClaim: realm_access.roles      # optional
 ```
+
+A deployment whose own BFF authenticates to the orchestrator presents the BFF's token rather than oauth2-proxy's ID token: it
+sets `userClaim: sub` — the person is the token's subject — and an audience that names this API, for example
+`audiences: [orchestrator]`. The claim is read exactly as above: `sub` must be text that is not blank and has no control
+character. The chart's `tests/bff-only.values.yaml` is such a deployment ([`deploy/chart/README.md`](../../deploy/chart/README.md#the-bff-only-shape-the-web-and-the-edge-off)).
 
 - **`proxy_header`** (the default) trusts `X-Auth-Request-Email` and `auth.devUser`: safe only behind a proxy that strips
   client-supplied copies. **`jwt`** validates the `Authorization: Bearer` token oauth2-proxy forwards (the ID token by

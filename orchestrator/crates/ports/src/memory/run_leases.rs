@@ -103,7 +103,7 @@ impl RunLeases for MemoryRunLeases {
             .checked_add(LEASE_TTL)
             .unwrap_or(binding.expires_at)
             .min(binding.expires_at);
-        Ok(RunLease::bearer(token, expires_at))
+        Ok(RunLease::bearer(token, binding.person.clone(), expires_at))
     }
 }
 

@@ -1453,6 +1453,9 @@ pub enum SecretStoreKind {
     /// A table of the orchestrator's own Postgres (`secrets.pg`), each secret sealed with
     /// AES-256-GCM under a key of this file. Needs the Cargo feature `secrets-pg`.
     Pg,
+    /// A KV v2 mount of a self-hosted OpenBao or Vault (`secrets.openbao`), which seals what it
+    /// keeps. Needs the Cargo feature `secrets-openbao`.
+    Openbao,
 }
 
 impl SecretStoreKind {
@@ -1460,6 +1463,7 @@ impl SecretStoreKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             SecretStoreKind::Pg => "pg",
+            SecretStoreKind::Openbao => "openbao",
         }
     }
 
@@ -1467,6 +1471,7 @@ impl SecretStoreKind {
     pub const fn feature(self) -> &'static str {
         match self {
             SecretStoreKind::Pg => "secrets-pg",
+            SecretStoreKind::Openbao => "secrets-openbao",
         }
     }
 }
@@ -1476,12 +1481,43 @@ impl SecretStoreKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserSecrets {
-    /// Which store: `pg` (a sealed table in the orchestrator's own database). The section of the
-    /// store chosen is required.
+    /// Which store: `pg` (a sealed table in the orchestrator's own database) or `openbao` (a KV v2
+    /// mount of a self-hosted OpenBao). The section of the store chosen is required.
     pub store: SecretStoreKind,
     /// The sealed Postgres store. Required with `store: pg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pg: Option<UserSecretsPg>,
+    /// The OpenBao store. Required with `store: openbao`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openbao: Option<UserSecretsOpenbao>,
+}
+
+/// The OpenBao (or Vault) KV v2 store: where it is, which mount, and the token it is let in with.
+/// OpenBao seals what it keeps, so there is no key here. The token is a reference, never a value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserSecretsOpenbao {
+    /// The server's address: an `https` URL with a host and no credential, query or fragment
+    /// (`https://bao.internal:8200`). A token never travels in the clear.
+    #[schemars(length(min = 1, max = 2048))]
+    pub address: String,
+    /// The KV v2 mount (`secret` by default): 1 to 128 characters of `A-Z a-z 0-9 . _ -` and `/`,
+    /// not starting or ending with `/`.
+    #[serde(default = "default_openbao_mount")]
+    #[schemars(length(min = 1, max = 128))]
+    pub mount: String,
+    /// The token the orchestrator reads and writes with, a secret.
+    pub token: SecretRef,
+    /// A file of PEM certificates the server's certificate is checked against, besides the system's
+    /// own roots (a private authority). Absent: the system's roots alone. Relative to the
+    /// configuration file's directory, read at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 1024))]
+    pub ca_file: Option<String>,
+}
+
+fn default_openbao_mount() -> String {
+    "secret".to_owned()
 }
 
 /// The sealed Postgres store: the keys that seal, and the one that does now.

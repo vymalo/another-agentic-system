@@ -69,8 +69,8 @@ event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has thirty-two
-library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has thirty-seven
+library crates (two of them test-only, and one a signer for tests) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
 
@@ -93,12 +93,14 @@ flowchart TB
     artfs["<b>orch-artifacts-fs</b><br/>ArtifactStore over a directory<br/>atomic rename, mode 0600 (feature artifacts-fs)"]
     arts3["<b>orch-artifacts-s3</b><br/>ArtifactStore over an S3 bucket<br/>object_store, aws only (feature artifacts-s3)"]
     authjwt["<b>orch-auth-jwt</b><br/>Authenticator over bearer tokens (JWT) and the issuer's JWKS<br/>fails closed (feature auth-jwt)"]
+    signerstatic["<b>orch-prompt-signer-static</b><br/>PromptSigner for tests: a key and a chain from files,<br/>never renewed"]
     authheader["<b>orch-auth-header</b><br/>Authenticator over X-Auth-Request-Email<br/>(feature auth-header)"]
     registry["<b>orch-registry-platform</b><br/>AgentRegistry over the platform's agent-registry/v1<br/>read live, cache headers, fails closed (feature registry-platform)"]
   end
   subgraph G_MAP["Pure helpers of the adapters and a surface: no async, no I/O"]
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
     token["<b>orch-thread-token</b><br/>the thread-tools token: HS256 JWS,<br/>claims, keys, issuer, vectors"]
+    statement["<b>orch-prompt-statement</b><br/>the prompt statement of the cloud path: RFC 8785 payload,<br/>integrity rule against the request, JWS with x5c (ADR 0087)"]
     signed["<b>orch-signed-request</b><br/>the signed requests to a tool server: a COSE_Sign1 claim object,<br/>Ed25519, bound to the request, its thread and its owner (ADR 0080)"]
     config["<b>orch-config</b><br/>the configuration file: types, JSON Schema,<br/>three-pass validation, secrets by reference"]
     svgclean["<b>orch-svg-clean</b><br/>allow-list sanitizer for SVG<br/>quick-xml, served inline"]
@@ -142,6 +144,9 @@ flowchart TB
   toolsmcp --> signed
   broker --> ports
   secretspg --> ports
+  ports --> statement
+  signerstatic --> ports
+  signerstatic --> statement
   artfs --> ports
   arts3 --> ports
   embed --> app
@@ -301,6 +306,8 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
 | `orch-signed-request` (`crates/signed-request`) | The signed requests to a tool server ([`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md), [ADR 0080](decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)): `Signer` writes the header `Tool-Request-Claims` for one HTTP request, a tagged `COSE_Sign1` (Ed25519) in the claim-object profile of `cratestack-cose` 0.17.2 whose payload binds the method, the path, the SHA-256 of the exact body bytes, the thread and its owner; `SigningKey` reads a PKCS#8 PEM and derives the `kid`; with the feature `verify`, the reference of the receiving side (checks 1 to 5). Pure, no clock, a known-answer vector made by the real `sign_claims`; `interop/` runs the real `open_claims` on its bytes | **Built** (proven on mocks; no tool server verifies it yet) |
+| `orch-prompt-statement` (`crates/prompt-statement`) | **ADR 0087, the note of 2026-11-25:** pure. The prompt statement the orchestrator signs on the cloud path (`Statement`, `UserClaims`), RFC 8785, the integrity rule (`attest`: `user` against the AG-UI request, else `403 prompt_signature_invalid` and no `AttestedPayload`) and the JWS with `x5c`; never verifies a signature. The PKI signer, the intake check and the carriage to the agent are not built | **Built** |
+| `orch-prompt-signer-static` (`crates/prompt-signer-static`) | **ADR 0087, the note of 2026-11-25:** a `PromptSigner` for tests: an Ed25519 key and its leaf's chain from PEM files, never renewed, `set_unavailable` as the stand-in of an expired certificate; held to `prompt_signer_conformance!` and to the shared vector V2. Not for a deployment | **Built** (test-only) |
 | `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; the id of an upload slot (`mint_upload_id`, `verify_upload_id`: a MAC over the thread, job, hash, size, type and expiry, with its own domain line); pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
 | `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit. **ADR 0046, slice 4a:** the `userToolServers` section (`enabled`, `egress.allow`, `egress.deny`, `egress.allowHttp`, `oauth.clientName`, `oauth.clientMetadataUrl`; absent is off, `allowHttp` is refused in production, and with the feature on a `toolServers[].id` may not start with `u-`) and the permission `tools.user.add`; **slice 4c:** `oauth.callbackUrl` (an `https` address, or `http` on a loopback IP literal outside production; by default `server.publicUrl` and the callback's path; required when the sealed store is kept), and the rule that `clientMetadataUrl` is on the callback's origin and under none of the reserved paths | **Built** (S9) |
 | `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools); **ADR 0046, slice 5a (built 2026-10-15):** also the thread owner's own `u-` servers, `RelayTools::with_user_servers`, a fresh `CredentialBroker::lease` for every list and every call, through the guarded client, a server whose credential cannot be had left out and failing a call as a step, a 401 or 403 marking the definition `needs_reauth`); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |

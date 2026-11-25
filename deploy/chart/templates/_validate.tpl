@@ -3,6 +3,55 @@ Value checks that must stop a render, not surface as a broken rollout or, worse,
 Included from orchestrator-configmap.yaml, which every render contains, so they always run.
 */}}
 {{- define "agentic.validate" -}}
+{{- /* The surfaces a deployment may turn off (card ANR-655). A value that removes a component removes what exists for it only,
+       and refuses the settings that would then point at nothing: the render is a deployment, not a half of one. */ -}}
+{{- if not (kindIs "bool" .Values.web.enabled) -}}
+{{- fail (printf "web.enabled must be true or false, got %v" .Values.web.enabled) -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.edge.enabled) -}}
+{{- fail (printf "edge.enabled must be true or false, got %v" .Values.edge.enabled) -}}
+{{- end -}}
+{{- if not .Values.edge.enabled -}}
+{{- if .Values.ingress.enabled -}}
+{{- fail "edge.enabled: false needs ingress.enabled: false: the Ingress sends the host to the edge, which is not rendered, so the host would answer nothing" -}}
+{{- end -}}
+{{- if .Values.auth.browser.enabled -}}
+{{- fail "edge.enabled: false needs auth.browser.enabled: false: the browser's tokens are obtained at the edge's routes (ADR 0054), which are not rendered without it" -}}
+{{- end -}}
+{{- if include "agentic.oauth2Redis" . -}}
+{{- fail "edge.enabled: false needs oauth2Proxy.sessionStore: cookie: the Redis holds oauth2-proxy's sessions, and oauth2-proxy is not rendered without the edge" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.edge.enabled (not .Values.web.enabled) -}}
+{{- fail "web.enabled: false needs edge.enabled: false: the edge's catch-all routes the browser to this chart's web Service, which is not rendered without it" -}}
+{{- end -}}
+{{- if and (not .Values.web.enabled) .Values.mobileAppLinks.enabled -}}
+{{- fail "web.enabled: false needs mobileAppLinks.enabled: false: the association documents are a ConfigMap of the web and are served by the edge, neither of which is rendered" -}}
+{{- end -}}
+{{- /* The BFF peer of the orchestrator's policy: a namespace and the labels of its pods, or nothing at all. A namespace without
+       labels (or labels without one) is refused: an empty selector admits every pod of the namespace. With the edge off and the
+       policies on it is required, because the BFF is then the only caller the deployment names. */ -}}
+{{- $bff := default dict .Values.networkPolicy.bff -}}
+{{- if not (kindIs "map" $bff) -}}
+{{- fail (printf "networkPolicy.bff must be a map with namespace and matchLabels, got %s" (kindOf $bff)) -}}
+{{- end -}}
+{{- $bffNS := toString (default "" $bff.namespace) -}}
+{{- $bffLabels := default dict $bff.matchLabels -}}
+{{- if not (kindIs "map" $bffLabels) -}}
+{{- fail (printf "networkPolicy.bff.matchLabels must be a map of labels selecting the BFF's pods, got %s" (kindOf $bffLabels)) -}}
+{{- end -}}
+{{- if and $bffNS (not $bffLabels) -}}
+{{- fail "networkPolicy.bff.namespace needs networkPolicy.bff.matchLabels: a peer with no pod selector admits every pod of the namespace" -}}
+{{- end -}}
+{{- if and $bffLabels (not $bffNS) -}}
+{{- fail "networkPolicy.bff.matchLabels needs networkPolicy.bff.namespace: name the namespace the BFF's pods run in" -}}
+{{- end -}}
+{{- if and $bffNS (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $bffNS)) -}}
+{{- fail (printf "networkPolicy.bff.namespace must be a Kubernetes namespace name (lower-case letters, digits and -, a letter or a digit at both ends), got %q" $bffNS) -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled (not .Values.edge.enabled) (not (include "agentic.bff" .)) -}}
+{{- fail "edge.enabled: false with networkPolicy.enabled needs networkPolicy.bff (its namespace and matchLabels): the orchestrator would then admit no caller at all, and the BFF is what calls it" -}}
+{{- end -}}
 {{- /* The model-credential injector (ADR 0084, S9): every value it needs, so a half-configured injector stops the
 render instead of producing a route that forwards the client's own Authorization. */ -}}
 {{- if not (kindIs "bool" .Values.injector.enabled) -}}
@@ -57,6 +106,55 @@ render instead of producing a route that forwards the client's own Authorization
 {{- fail (printf "injector.authorino.audiences must be strings, got %v" .) -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- /* The platform's agent registry (ANR-685): a URL the binary accepts and a token that is a reference, the two together. */ -}}
+{{- $reg := .Values.orchestrator.agents.registry -}}
+{{- if not (and (kindIs "string" $reg.url) (kindIs "string" $reg.tokenProperty)) -}}
+{{- fail "orchestrator.agents.registry.url and orchestrator.agents.registry.tokenProperty must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if and $reg.url (not $reg.tokenProperty) -}}
+{{- fail "orchestrator.agents.registry.url needs orchestrator.agents.registry.tokenProperty: the AWS property of the registry's bearer" -}}
+{{- end -}}
+{{- if and $reg.tokenProperty (not $reg.url) -}}
+{{- fail "orchestrator.agents.registry.tokenProperty needs orchestrator.agents.registry.url: a token for a registry nobody reads" -}}
+{{- end -}}
+{{- if $reg.url -}}
+{{- if not (regexMatch "^https?://[^/@?#\\s]+(/[^?#\\s]*)?$" $reg.url) -}}
+{{- fail (printf "orchestrator.agents.registry.url must be an http or https URL with a host, no credential, query or fragment, got %q" $reg.url) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Where a person's own credentials are kept (ADR 0046): `postgres` (what `userSecrets` turns on) or `openbao`. With `openbao` the address is https (the token
+       is sent with every call), the token is an AWS property and not a value, the mount is a path the orchestrator accepts, and `userSecrets` is off (two
+       stores for one question). Values for OpenBao beside `postgres` would be ignored silently, so they are refused. */ -}}
+{{- $st := .Values.orchestrator.secrets -}}
+{{- if not (has (toString $st.store) (list "postgres" "openbao")) -}}
+{{- fail (printf "orchestrator.secrets.store must be postgres or openbao, got %q" (toString $st.store)) -}}
+{{- end -}}
+{{- $bao := $st.openbao -}}
+{{- if not (and (kindIs "string" $bao.address) (kindIs "string" $bao.mount) (kindIs "string" $bao.tokenProperty) (kindIs "string" $bao.caSecret)) -}}
+{{- fail "orchestrator.secrets.openbao.address, .mount, .tokenProperty and .caSecret must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if eq (toString $st.store) "openbao" -}}
+{{- if not $bao.address -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.address: the https address of the OpenBao server" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/@?#\\s]+(/[^?#\\s]*)?$" $bao.address) -}}
+{{- fail (printf "orchestrator.secrets.openbao.address must be an https URL with a host, no credential, query or fragment (the token is sent with every call), got %q" $bao.address) -}}
+{{- end -}}
+{{- if not $bao.tokenProperty -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.tokenProperty: the AWS property of the OpenBao token" -}}
+{{- end -}}
+{{- if or (gt (len $bao.mount) 128) (not (regexMatch "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" $bao.mount)) (has "." (splitList "/" $bao.mount)) (has ".." (splitList "/" $bao.mount)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.mount must be 1 to 128 characters of A-Z a-z 0-9 . _ - and / between names (no leading or trailing slash, no . or .. name), got %q" $bao.mount) -}}
+{{- end -}}
+{{- if and $bao.caSecret (not (regexMatch "^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$" $bao.caSecret)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.caSecret must be the name of a Secret of this namespace (lower case letters, digits, - and .), got %q" $bao.caSecret) -}}
+{{- end -}}
+{{- if .Values.orchestrator.userSecrets.enabled -}}
+{{- fail "orchestrator.secrets.store openbao and orchestrator.userSecrets.enabled are two stores for one question: turn userSecrets off (the keys seal the Postgres store, which OpenBao replaces)" -}}
+{{- end -}}
+{{- else if or $bao.address $bao.tokenProperty $bao.caSecret -}}
+{{- fail "orchestrator.secrets.openbao.* is set and orchestrator.secrets.store is postgres: set the store to openbao, or clear them (they would be ignored)" -}}
 {{- end -}}
 {{- /* The internal listener of the run routes (ADR 0084 decision 5, card ANR-378): a port a deployment can prepare, and a
 policy that never admits the whole namespace by accident. */ -}}

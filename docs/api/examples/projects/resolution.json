@@ -1,0 +1,247 @@
+{
+  "name": "What a chat starts from",
+  "about": "Four small functions of docs/api/projects-v1.md, What a chat is run with. `models`: the layer that gives the model server (ids only; `project` is the project's `modelServers` in order, or null for a chat with no project; an empty string is none). `tiers`: the access tier the message is sent under, from the role's cap (`roleCap`), the project's `tier.ceiling` and `tier.default` and the tier the message names (null is absent); every case assumes the agent's live card honours all four tiers. `instructions`: the texts the agent reads, in order, from the project's `instructions` and the repositories' own files (`own`, empty when the repository has none). `agents`: which agent a chat runs.",
+  "models": [
+    {
+      "name": "the chat's server wins",
+      "chat": "ms-chat",
+      "project": [
+        "ms-p1",
+        "ms-p2"
+      ],
+      "agent": "ms-agent",
+      "expect": {
+        "source": "chat",
+        "id": "ms-chat"
+      }
+    },
+    {
+      "name": "then the project's, the first of its list",
+      "chat": "",
+      "project": [
+        "ms-p1",
+        "ms-p2"
+      ],
+      "agent": "ms-agent",
+      "expect": {
+        "source": "project",
+        "id": "ms-p1"
+      }
+    },
+    {
+      "name": "then the agent's",
+      "chat": "",
+      "project": [],
+      "agent": "ms-agent",
+      "expect": {
+        "source": "agent",
+        "id": "ms-agent"
+      }
+    },
+    {
+      "name": "a chat with no project has no project layer",
+      "chat": "ms-chat",
+      "project": null,
+      "agent": "ms-agent",
+      "expect": {
+        "source": "chat",
+        "id": "ms-chat"
+      }
+    },
+    {
+      "name": "a chat with no project falls to the agent",
+      "chat": "",
+      "project": null,
+      "agent": "ms-agent",
+      "expect": {
+        "source": "agent",
+        "id": "ms-agent"
+      }
+    },
+    {
+      "name": "none anywhere: the agent keeps its own",
+      "chat": "",
+      "project": [],
+      "agent": "",
+      "expect": {
+        "source": "none"
+      }
+    }
+  ],
+  "tiers": [
+    {
+      "name": "nothing set: nothing is named",
+      "roleCap": null,
+      "projectCeiling": null,
+      "projectDefault": null,
+      "named": null,
+      "expect": {
+        "tier": "none"
+      }
+    },
+    {
+      "name": "a named tier within every cap",
+      "roleCap": "bypass",
+      "projectCeiling": "auto",
+      "projectDefault": null,
+      "named": "edits",
+      "expect": {
+        "tier": "edits"
+      }
+    },
+    {
+      "name": "a named tier above the project's ceiling",
+      "roleCap": null,
+      "projectCeiling": "edits",
+      "projectDefault": null,
+      "named": "auto",
+      "expect": {
+        "error": "tier_above_project"
+      }
+    },
+    {
+      "name": "a named tier above the role's cap is the role's error first",
+      "roleCap": "edits",
+      "projectCeiling": "plan",
+      "projectDefault": null,
+      "named": "auto",
+      "expect": {
+        "error": "tier_above_role"
+      }
+    },
+    {
+      "name": "a named tier above the project's ceiling, the role's cap is higher",
+      "roleCap": "auto",
+      "projectCeiling": "edits",
+      "projectDefault": null,
+      "named": "auto",
+      "expect": {
+        "error": "tier_above_project"
+      }
+    },
+    {
+      "name": "none named: the project's default",
+      "roleCap": "bypass",
+      "projectCeiling": "auto",
+      "projectDefault": "edits",
+      "named": null,
+      "expect": {
+        "tier": "edits"
+      }
+    },
+    {
+      "name": "none named: the default is lowered to the lowest cap",
+      "roleCap": "plan",
+      "projectCeiling": "auto",
+      "projectDefault": "edits",
+      "named": null,
+      "expect": {
+        "tier": "plan"
+      }
+    },
+    {
+      "name": "none named, no default, a project ceiling: the ceiling",
+      "roleCap": null,
+      "projectCeiling": "edits",
+      "projectDefault": null,
+      "named": null,
+      "expect": {
+        "tier": "edits"
+      }
+    },
+    {
+      "name": "none named, no default, a role cap and a project ceiling: the lower",
+      "roleCap": "auto",
+      "projectCeiling": "edits",
+      "projectDefault": null,
+      "named": null,
+      "expect": {
+        "tier": "edits"
+      }
+    },
+    {
+      "name": "none named, only a default and no cap",
+      "roleCap": null,
+      "projectCeiling": null,
+      "projectDefault": "auto",
+      "named": null,
+      "expect": {
+        "tier": "auto"
+      }
+    }
+  ],
+  "instructions": [
+    {
+      "name": "the project's text is first, then each repository's own, in the project's order",
+      "project": "P",
+      "repositories": [
+        {
+          "name": "api",
+          "own": "A"
+        },
+        {
+          "name": "web",
+          "own": ""
+        },
+        {
+          "name": "docs",
+          "own": "D"
+        }
+      ],
+      "expect": [
+        "P",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "name": "no project text",
+      "project": "",
+      "repositories": [
+        {
+          "name": "api",
+          "own": "A"
+        }
+      ],
+      "expect": [
+        "A"
+      ]
+    },
+    {
+      "name": "nothing",
+      "project": "",
+      "repositories": [],
+      "expect": []
+    }
+  ],
+  "agents": [
+    {
+      "name": "a mention or a choice wins",
+      "named": "reviewer",
+      "projectDefault": "coder",
+      "deploymentDefault": "plain",
+      "expect": "reviewer"
+    },
+    {
+      "name": "then the project's default agent",
+      "named": "",
+      "projectDefault": "coder",
+      "deploymentDefault": "plain",
+      "expect": "coder"
+    },
+    {
+      "name": "then the deployment's",
+      "named": "",
+      "projectDefault": "",
+      "deploymentDefault": "plain",
+      "expect": "plain"
+    },
+    {
+      "name": "a chat with no project: the deployment's",
+      "named": "",
+      "projectDefault": null,
+      "deploymentDefault": "plain",
+      "expect": "plain"
+    }
+  ]
+}
