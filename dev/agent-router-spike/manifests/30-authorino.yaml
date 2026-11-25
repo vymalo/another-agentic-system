@@ -2,10 +2,13 @@
 # HTTP stub. This is the chart's shape (deploy/chart, `injector`): authenticate the caller, ask the broker for the
 # run's lease, and add `Authorization` and `x-account-id` upstream only.
 #
-# Scope of this proof: authentication is `anonymous` on purpose. The card's question here is the transport plus the
-# lease lookup; the agent-pod identity (TokenReview) and the broker's caller rules belong to the chart, and adding a
-# real service-account token would test Kubernetes RBAC, not the header path. The broker still requires the
-# injector's own token, so the lookup is real.
+# Scope of this proof: authentication is a real `kubernetesTokenReview`, as the chart's AuthConfig has it. A caller must
+# present the projected token of a ServiceAccount the cluster issued for the audience `spike`; nothing else is
+# accepted. (ANR-662 ran this half anonymously on purpose; ANR-667 turns it on so that the identity half is provable
+# rather than asserted.) The broker still requires the injector's own token, so the lookup stays real.
+#
+# The ClusterRoleBinding below is what a deployment's operator grants: Authorino asks the API server for the
+# TokenReview, and `system:auth-delegator` is the role that allows it.
 #
 # Plaintext gRPC (:50051) because Envoy Gateway v1.10's extAuth.grpc has no TLS field (verified 2026-11-24); the
 # chart says the same, and TLS on this hop is a later item.
@@ -24,6 +27,27 @@ spec:
     tls:
       enabled: false
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spike-authorino-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: authorino
+    namespace: default
+---
+# The agent pod's identity, played by a ServiceAccount: `kubectl create token spike-agent --audience spike` is what the
+# spike presents as its bearer.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spike-agent
+  namespace: default
+---
 apiVersion: authorino.kuadrant.io/v1beta3
 kind: AuthConfig
 metadata:
@@ -34,7 +58,9 @@ spec:
     - "*"
   authentication:
     "agent":
-      anonymous: {}
+      kubernetesTokenReview:
+        audiences:
+          - spike
   metadata:
     "lease":
       # The run id is the capability, not a credential: it names the run whose lease to ask for. A request without
@@ -65,12 +91,19 @@ spec:
             operator: neq
             value: ""
     # A refused or absent lease (the broker's 410/404) leaves the metadata unset, and Authorino still applies every
-    # ok_response header: without this rule the gateway receives `Authorization: Bearer` with an empty token. That is
-    # unusable, but it is a header; deny instead, so a run without a lease reaches no gateway at all (ANR-662).
+    # ok_response header: without these rules the gateway receives `Authorization: Bearer` with an empty token, or an
+    # empty `x-account-id`. Both are unusable, but they are headers; deny instead, so a run without a usable lease
+    # reaches no gateway at all (ANR-662, ANR-667).
     "lease":
       patternMatching:
         patterns:
           - selector: auth.metadata.lease.token
+            operator: neq
+            value: ""
+    "account-id":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.lease.accountId
             operator: neq
             value: ""
   response:

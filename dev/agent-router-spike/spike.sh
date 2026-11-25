@@ -1,11 +1,15 @@
 #!/usr/bin/env sh
-# The proof (sys#334 S9, ANR-662), with the real Authorino over gRPC and WireMock as the model gateway: the agent
-# sends a run id and its own `Authorization`; Authorino authenticates it, asks the broker's run-lease route for the
-# run's key and account (with the injector's own token), and adds `Authorization` and `x-account-id` upstream. The
-# gateway's request journal must see exactly one `Authorization`, the leased one — never the client's — and the
-# account id the lease named. Three negative controls make the check able to fail: without the SecurityPolicy the
-# client's header arrives, without a run id nothing reaches the gateway, and a refused lease injects nothing (or
-# stops the request) rather than a usable credential.
+# The proof (sys#334 S9, ANR-662 and ANR-667), with the real Authorino over gRPC and WireMock as the model gateway:
+# the agent presents the service-account token of its pod (TokenReview, audience `spike`) and a run id; Authorino asks
+# the broker's run-lease route for the run's key and account with the injector's own token, and adds `Authorization`
+# and `x-account-id` upstream. Three things are checked:
+#   1. the gateway's journal holds exactly one `Authorization` and exactly one `x-account-id`, the LEASED values: a
+#      client that sends its own copies of both does not get them through (replaced, never merged);
+#   2. a caller whose bearer is not a service-account token Authorino accepts (none at all, or a token for another
+#      audience) is refused before the gateway sees the request (journal count unchanged);
+#   3. a run with no usable lease reaches no gateway: no run id, a refused lease (410/404), or a lease with no token
+#      or no account id.
+# Negative controls make the checks able to fail: without the SecurityPolicy the client's own header arrives.
 set -eu
 
 dir=$(cd "$(dirname "$0")" && pwd)
@@ -78,10 +82,18 @@ done
 
 marker=anr250-lease-marker-7f3c-run-1
 account=acct-run-1
+client_account=acct-client-DO-NOT-PASS
 
-echo "--- the agent's request: its own bearer is not the model key, and the lease names the account"
+# The agent pod's identity: a real projected service-account token for the audience the AuthConfig trusts. Every request
+# that should authenticate presents it; the injector replaces it upstream, exactly as it replaces the agent's own header.
+agent_token=$(kc create token spike-agent --audience spike --duration 1h)
+other_token=$(kc create token spike-agent --audience another-audience --duration 1h)
+[ -n "$agent_token" ] && [ -n "$other_token" ] || { echo "spike.sh: could not mint the service-account tokens" >&2; exit 1; }
+authn="Authorization: Bearer $agent_token"
+
+echo "--- the agent's request: a client-supplied Authorization AND x-account-id are both replaced by the lease's"
 before=$(count_for run-1)
-code=$(request -H 'X-Run-Id: run-1' -H 'Authorization: Bearer client-sent-DO-NOT-PASS' \
+code=$(request -H 'X-Run-Id: run-1' -H "$authn" -H "x-account-id: $client_account" \
   -d '{"model":"spike-model","messages":[{"role":"user","content":"hi"}]}')
 after=$(count_for run-1)
 echo "spike: HTTP $code, gateway requests for run-1 before=$before after=$after"
@@ -90,14 +102,17 @@ echo "spike: HTTP $code, gateway requests for run-1 before=$before after=$after"
 
 n=$(hcount run-1 authorization)
 v=$(hval run-1 authorization)
+na=$(hcount run-1 x-account-id)
 a=$(hval run-1 x-account-id)
 echo "gateway saw: Authorization occurrences=$n value=[$v]"
-echo "gateway saw: x-account-id=[$a]"
+echo "gateway saw: x-account-id occurrences=$na value=[$a]"
 [ "$n" -eq 1 ] || fail "expected exactly one Authorization at the gateway"
 [ "$v" = "Bearer $marker" ] || fail "the leased Authorization did not reach the gateway (got [$v])"
+[ "$na" -eq 1 ] || fail "expected exactly one x-account-id at the gateway"
 [ "$a" = "$account" ] || fail "the leased account id did not reach the gateway (got [$a])"
-case "$v" in *client-sent-DO-NOT-PASS*) fail "the client's own Authorization survived" ;; esac
-echo "PASS: the lease's key and account id reached the gateway; the agent's own Authorization did not"
+case "$v" in *client-sent-DO-NOT-PASS*|*"$agent_token"*) fail "a client-sent Authorization survived" ;; esac
+[ "$a" != "$client_account" ] || fail "the client's own x-account-id survived"
+echo "PASS: the lease's key and account id reached the gateway; neither client-sent value did"
 
 echo "--- the broker saw the lookup, with the injector's token, keyed by the run, and minted that account"
 last=$(kc exec deploy/spike-broker -- python -c \
@@ -125,7 +140,7 @@ echo "PASS: the check can fail — the client's header is what arrives without t
 echo "--- restoring the policy"
 kc apply -f "$dir/manifests/31-route-policy.yaml" >/dev/null
 for _ in $(seq 1 30); do
-  code=$(request -H 'X-Run-Id: run-1' -H 'Authorization: Bearer client-sent-DO-NOT-PASS' \
+  code=$(request -H 'X-Run-Id: run-1' -H "$authn" -H "x-account-id: $client_account" \
     -d '{"model":"spike-model","messages":[]}')
   if [ "$code" = 200 ] && [ "$(hval run-1 authorization)" = "Bearer $marker" ]; then break; fi
   sleep 2
@@ -135,7 +150,7 @@ echo "PASS: the policy is back and the leased headers replace the client's again
 
 echo "--- negative control 2: without a run id, nothing reaches the gateway"
 before=$(count_without_run)
-code=$(request -H 'Authorization: Bearer client-sent-DO-NOT-PASS' -d '{"model":"spike-model","messages":[]}')
+code=$(request -H "$authn" -d '{"model":"spike-model","messages":[]}')
 after=$(count_without_run)
 echo "spike: without X-Run-Id: HTTP $code, gateway requests without a run before=$before after=$after"
 case "$code" in
@@ -145,12 +160,35 @@ esac
 [ "$after" -eq "$before" ] || fail "the refused request reached the gateway"
 echo "PASS: the refused request reached no gateway"
 
+# The identity half (ANR-667): the header is only trusted when the caller is an agent pod the injector accepts. A bearer
+# the TokenReview does not accept — none, or one minted for another audience — is refused before the gateway.
+refused_identity() { # refused_identity RUN LABEL [curl header args...]
+  run=$1
+  label=$2
+  shift 2
+  before=$(count_for "$run")
+  code=$(request -H "X-Run-Id: $run" "$@" -d '{"model":"spike-model","messages":[]}')
+  after=$(count_for "$run")
+  echo "spike: $label -> HTTP $code, gateway requests for $run before=$before after=$after"
+  case "$code" in
+    401|403) ;;
+    *) fail "$label: expected 401 or 403, got $code" ;;
+  esac
+  [ "$after" -eq "$before" ] || fail "$label was refused but still reached the gateway"
+  echo "PASS: $label was refused at the authorizer ($code) and the gateway saw no request"
+}
+
+echo "--- the identity half: a caller with no accepted service-account token never reaches the gateway"
+refused_identity run-no-bearer "no bearer at all"
+refused_identity run-other-audience "a service-account token for another audience" \
+  -H "Authorization: Bearer $other_token"
+
 # A lease the broker refuses (410 lease_expired, 404 run_not_bound): either the authorizer stops the request, or it
 # reaches the gateway with nothing injected. Say which happened, with the observable.
 lease_control() { # lease_control RUN
   run=$1
   before=$(count_for "$run")
-  code=$(request -H "X-Run-Id: $run" -d '{"model":"spike-model","messages":[]}')
+  code=$(request -H "X-Run-Id: $run" -H "$authn" -d '{"model":"spike-model","messages":[]}')
   after=$(count_for "$run")
   echo "spike: $run -> HTTP $code, gateway requests for $run before=$before after=$after"
   case "$code" in
@@ -176,5 +214,17 @@ lease_control expired-run
 
 echo "--- negative control 3b: a run the broker does not know (404) injects no usable credential"
 lease_control absent-run
+
+echo "--- negative control 3c: a lease that names no account is refused, never an empty x-account-id"
+before=$(count_for noaccount-run)
+code=$(request -H 'X-Run-Id: noaccount-run' -H "$authn" -d '{"model":"spike-model","messages":[]}')
+after=$(count_for noaccount-run)
+echo "spike: noaccount-run -> HTTP $code, gateway requests for noaccount-run before=$before after=$after"
+case "$code" in
+  401|403) ;;
+  *) fail "expected 401 or 403 for a lease with no account id, got $code" ;;
+esac
+[ "$after" -eq "$before" ] || fail "a lease with no account id reached the gateway"
+echo "PASS: a lease that names no account was refused at the authorizer ($code) and the gateway saw no request"
 
 echo "spike: all checks passed"

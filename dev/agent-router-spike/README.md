@@ -20,6 +20,12 @@ header reaches the WireMock gateway: the leased provider key as `Authorization` 
 chart's objects. WireMock is practical in kind (a Deployment with a mapping ConfigMap, the same image the
 repo uses for its model stand-in), so the gateway here is WireMock, not an echo pod.
 
+**ANR-667 (2026-11-25)** turned the identity half from an assumption into a test: the AuthConfig now
+authenticates with a real `kubernetesTokenReview` (a ServiceAccount's projected token, audience `spike`),
+the first case also sends its own `x-account-id` and asserts the gateway holds exactly one of each header,
+the leased values, and two controls prove a caller without an accepted token, and a lease with no account
+id, are refused before the gateway. See the checks below.
+
 The scenario also found one fail-open, now closed in the chart: when the broker refuses a lease (410
 `lease_expired` / 404 `run_not_bound`), Authorino has no metadata but still applies every
 `ok_response` header, so the gateway received `Authorization: Bearer` with an empty token. The chart's
@@ -46,12 +52,13 @@ The scenario runs on a kind cluster, and nothing else:
    listener stands; the chart points the same `AuthConfig` at the real one.
 5. An **`AIServiceBackend` + `Backend` + `AIGatewayRoute`** (`manifests/20-aigateway.yaml`): a model
    named by `x-ai-eg-model: spike-model`, routed to the gateway. This is the route under test.
-6. **Authorino + `AuthConfig`** (`manifests/30-authorino.yaml`): authenticate (anonymous here, so the
-   scenario isolates the transport and the lookup), ask the broker for `X-Run-Id`'s lease with the
-   injector's token, cache it per run for 30 s, and add `Authorization` and `x-account-id` upstream only,
-   as `plain.selector`s — **never** `plain.value`, which Authorino v0.26.4 emits as a Go struct dump
-   (`{[34 66 …] <nil>}`), not a string (*verified 2026-11-24*, and the chart's comment says so). A
-   lease with no token is denied (`authorization.lease`).
+6. **Authorino + `AuthConfig`** (`manifests/30-authorino.yaml`): authenticate with a real
+   `kubernetesTokenReview` of the caller's service-account token against the audience `spike` (a ServiceAccount
+   `spike-agent` and, below it, the `system:auth-delegator` binding Authorino needs to ask the API server), ask the
+   broker for `X-Run-Id`'s lease with the injector's token, cache it per run for 30 s, and add `Authorization` and
+   `x-account-id` upstream only, as `plain.selector`s — **never** `plain.value`, which Authorino v0.26.4 emits as a
+   Go struct dump (`{[34 66 …] <nil>}`), not a string (*verified 2026-11-24*, and the chart's comment says so). A
+   lease with no token or no account id is denied (`authorization.lease`, `authorization.account-id`).
 7. A **`SecurityPolicy`** (`manifests/31-route-policy.yaml`) with `extAuth.grpc`, scoped to the
    **`HTTPRoute` Agent Router generates** from the `AIGatewayRoute` (same name) rather than the whole
    Gateway — also *verified 2026-11-24*: `targetRefs: kind=HTTPRoute name=spike` reports `Accepted`.
@@ -86,25 +93,36 @@ the limit is raised.
 
 `spike.sh` makes these checks, all of which can fail:
 
-- with `X-Run-Id: run-1` and a client-sent `Authorization: Bearer client-sent-DO-NOT-PASS` — `200`, the
-  gateway journal shows exactly **one** `Authorization`, `Bearer anr250-lease-marker-7f3c-run-1` (the
-  token the broker minted for `run-1`), not the client's, and `x-account-id: acct-run-1` (the account id
-  in that same lease); the broker saw `run-1` and that the injector's token was presented;
-- **negative control 1**: with the `SecurityPolicy` deleted, the same request reaches the gateway with
-  the **client's** header. This is what makes the check able to fail; the policy is then re-applied
-  and the injected header is seen again;
-- **negative control 2**: without `X-Run-Id`, the request is refused (`403`) and the gateway journals no
+- with `X-Run-Id: run-1`, its own service-account bearer and a **client-sent `x-account-id`** — `200`, the gateway
+  journal shows exactly **one** `Authorization`, `Bearer anr250-lease-marker-7f3c-run-1` (the token the broker minted
+  for `run-1`), never the client's bearer or the service-account token, and exactly **one** `x-account-id`,
+  `acct-run-1` (the account id in that same lease), never the client's; the broker saw `run-1` and that the injector's
+  token was presented;
+- **negative control 1**: with the `SecurityPolicy` deleted, the same request reaches the gateway with the **client's**
+  header. This is what makes the check able to fail; the policy is then re-applied and the injected header is seen
+  again;
+- **negative control 2**: without `X-Run-Id`, an authenticated request is refused (`403`) and the gateway journals no
   new request;
-- **negative control 3a**: `X-Run-Id: expired-run`, which the broker answers `410 lease_expired` — the
-  authorizer refuses it (`403`) and the gateway journal does not move. A lease that cannot be resolved
-  never becomes an empty `Authorization`;
-- **negative control 3b**: `X-Run-Id: absent-run`, which the broker answers `404 run_not_bound` — same
-  refusal and the same unmoved journal.
+- **the identity half**: no bearer at all, and a service-account token minted for another audience, are both refused
+  (`401`) and the gateway journal does not move — the header is only trusted for a caller the TokenReview accepts;
+- **negative control 3a**: `X-Run-Id: expired-run`, which the broker answers `410 lease_expired` — the authorizer
+  refuses it (`403`) and the gateway journal does not move. A lease that cannot be resolved never becomes an empty
+  `Authorization`;
+- **negative control 3b**: `X-Run-Id: absent-run`, which the broker answers `404 run_not_bound` — same refusal and the
+  same unmoved journal;
+- **negative control 3c**: `X-Run-Id: noaccount-run`, which the broker answers with a token but **no** `accountId` —
+  refused (`403`), so an empty `x-account-id` never reaches the gateway.
+
+Proofs that these are not vacuous, run on 2026-11-25: removing the `x-account-id` ok_response header from the live
+`AuthConfig` makes the first case fail with `got [acct-client-DO-NOT-PASS]` (the client's header arrived), and
+switching authentication back to `anonymous` makes the identity control fail with `HTTP 200` and a new journal entry.
+Both were restored from the manifests, and the full run passes again.
 
 ## What this scenario does not prove
 
-The agent's identity (`kubernetesTokenReview`) and the broker's caller rules are the chart's and the
-orchestrator's; this scenario authenticates anonymously so that only the transport and the lease
-lookup are under test. TLS on the ext-auth hop, TLS on the agent-to-Gateway hop, the NetworkPolicy
-that keeps the route off the edge, and the balance's `model_locked` are not here either. The chart
-renders the objects; this directory proves the header path they depend on.
+The broker's caller rules are the chart's and the orchestrator's, and the NetworkPolicy that keeps the route off the
+edge, the balance's `model_locked` and the ledger are not here. TLS on the ext-auth hop and TLS on the agent-to-Gateway
+hop are not here either (Envoy Gateway v1.10's `extAuth.grpc` has no TLS field, *verified 2026-11-24*). The
+`system:auth-delegator` binding is what a deployment's operator grants, written here so the TokenReview is real. What
+the identity check proves is that the caller is **an** agent pod of the accepted audience, not that it is **the** pod
+the run was bound to: the run id remains a capability.
