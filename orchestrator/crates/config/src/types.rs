@@ -147,6 +147,11 @@ pub struct Config {
     /// connect to for them, and the OAuth client it presents. Absent: off, and nothing changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_tool_servers: Option<UserToolServers>,
+    /// The person's own agents on the platform (the `AgentProvisioner`): the Platform API's URL,
+    /// which kinds are made, and what the orchestrator presents to it. Absent: off, and nothing
+    /// changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisioner: Option<Provisioner>,
     /// What the web is told (`GET /api/config`).
     #[serde(default)]
     pub ui: Ui,
@@ -172,6 +177,95 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 64))]
     pub tool_servers: Vec<ToolServer>,
+}
+
+/// The kinds of agent made for each person. The shared chat agent is never one of them.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvisionedKind {
+    /// A coding agent (a task to a pull request).
+    Coder,
+    /// A workspace agent.
+    Workspace,
+}
+
+impl ProvisionedKind {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ProvisionedKind::Coder => "coder",
+            ProvisionedKind::Workspace => "workspace",
+        }
+    }
+}
+
+/// What the orchestrator presents to the Platform API. One variant, for the local stack.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ProvisionerCredentials {
+    /// A token from an OIDC issuer by the OAuth `client_credentials` grant, with the extension
+    /// parameters of the local stack's `mock-oidc` (`user`, `audience`, `roles`). A development
+    /// adapter: use another in a deployment.
+    #[serde(rename_all = "camelCase")]
+    DevOidc {
+        /// The issuer's token endpoint (`http` or `https`, no user name or password).
+        token_url: String,
+        /// The client id.
+        client_id: String,
+        /// The client secret.
+        client_secret: SecretRef,
+        /// The user the token is for (a `mock-oidc` extension), none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+        /// The audience (a `mock-oidc` extension), none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audience: Option<String>,
+        /// The roles of the token (a `mock-oidc` extension), none: the user's own. The token
+        /// must carry `platform:agents.own`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        roles: Option<Vec<String>>,
+    },
+}
+
+/// The default of `provisioner.requestTimeoutSecs`.
+pub const DEFAULT_PROVISIONER_REQUEST_SECS: u64 = 5;
+/// The default of `provisioner.readyTimeoutSecs`.
+pub const DEFAULT_PROVISIONER_READY_SECS: u64 = 120;
+
+const fn default_provisioner_request_secs() -> u64 {
+    DEFAULT_PROVISIONER_REQUEST_SECS
+}
+
+const fn default_provisioner_ready_secs() -> u64 {
+    DEFAULT_PROVISIONER_READY_SECS
+}
+
+/// A person's own agents on the platform. **Off unless the section is present.**
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Provisioner {
+    /// The Platform API's base URL, `http` or `https`, with a host and no user name or password.
+    pub url: String,
+    /// The kinds made for each person (`coder`, `workspace`), at least one, each once. The shared
+    /// chat agent is never provisioned.
+    #[schemars(length(min = 1, max = 2))]
+    pub kinds: Vec<ProvisionedKind>,
+    /// The agent form of each kind (the platform's form without `name`, `owner` and `suspend`),
+    /// one for every kind in `kinds`.
+    #[serde(default)]
+    pub forms: BTreeMap<ProvisionedKind, serde_json::Map<String, serde_json::Value>>,
+    /// What the orchestrator presents to the platform.
+    pub credentials: ProvisionerCredentials,
+    /// Seconds one request to the platform may take, 1 to 60 (default 5).
+    #[serde(default = "default_provisioner_request_secs")]
+    #[schemars(range(min = 1, max = 60))]
+    pub request_timeout_secs: u64,
+    /// Seconds to wait for a made or resumed agent to be ready, 1 to 600 (default 120).
+    #[serde(default = "default_provisioner_ready_secs")]
+    #[schemars(range(min = 1, max = 600))]
+    pub ready_timeout_secs: u64,
 }
 
 /// What this process runs. A closed enum owned by the host library (`adam-host`); the names are

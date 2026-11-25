@@ -3262,6 +3262,7 @@ dependencies = [
  "orch-model-openai",
  "orch-pg-connect",
  "orch-ports",
+ "orch-provisioner-platform",
  "orch-registry-platform",
  "orch-secrets-openbao",
  "orch-secrets-pg",

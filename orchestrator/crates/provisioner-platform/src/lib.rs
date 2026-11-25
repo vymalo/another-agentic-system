@@ -14,13 +14,19 @@
 //! * The form of each kind is the deployment's ([`PlatformConfig::with_form`]): the adapter adds
 //!   `name`, `owner` and `suspend` and nothing else, so it holds no model, image or secret.
 
+mod oidc;
+
+pub use oidc::{OidcClientConfig, OidcClientCredentials};
+
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use orch_core::BoxError;
 use orch_ports::{
-    AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError, ProvisionedAgent,
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, PlatformCredentials,
+    PlatformCredentialsError, PlatformToken, PlatformTokenFuture, ProvisionError, ProvisionedAgent,
 };
 use reqwest::header::{AUTHORIZATION, ETAG, HeaderValue, IF_MATCH, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode};
@@ -38,8 +44,9 @@ pub struct PlatformConfig {
     /// The API's base URL (`https://platform.example.com`), `http` or `https`, with a host and no
     /// user name or password. `/v1/...` is appended.
     pub url: String,
-    /// The orchestrator's bearer token (it holds `platform:agents.own`).
-    pub token: SecretString,
+    /// What the orchestrator presents (it must hold `platform:agents.own`). Asked before every
+    /// request, so a token that expires or rotates is the port's business.
+    pub credentials: Arc<dyn PlatformCredentials>,
     /// The agent form of each kind, without `name`, `owner` and `suspend`.
     pub forms: HashMap<AgentKind, Value>,
     /// How long one request may take.
@@ -53,12 +60,20 @@ pub struct PlatformConfig {
 }
 
 impl PlatformConfig {
-    /// A configuration for `url` with `token`: no forms, 5 s per request, 120 s to be ready,
-    /// polled every 2 s, the environment's proxy honoured.
+    /// A configuration for `url` with a fixed `token`: no forms, 5 s per request, 120 s to be
+    /// ready, polled every 2 s, the environment's proxy honoured.
     pub fn new(url: impl Into<String>, token: SecretString) -> Self {
+        Self::with_credentials(url, Arc::new(StaticCredentials::new(token)))
+    }
+
+    /// The same, presenting what `credentials` gives at each request.
+    pub fn with_credentials(
+        url: impl Into<String>,
+        credentials: Arc<dyn PlatformCredentials>,
+    ) -> Self {
         PlatformConfig {
             url: url.into(),
-            token,
+            credentials,
             forms: HashMap::new(),
             timeout: Duration::from_secs(5),
             ready_timeout: Duration::from_secs(120),
@@ -100,7 +115,7 @@ impl fmt::Debug for PlatformConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PlatformConfig")
             .field("url", &self.url)
-            .field("token", &"<redacted>")
+            .field("credentials", &"<redacted>")
             .field("kinds", &self.forms.keys().collect::<Vec<_>>())
             .field("ready_timeout", &self.ready_timeout)
             .finish_non_exhaustive()
@@ -115,9 +130,6 @@ pub enum BuildError {
         "the platform URL must be an absolute http:// or https:// URL with a host and no user name or password"
     )]
     BadUrl,
-    /// The token cannot be sent in a header.
-    #[error("the platform token cannot be sent as a header")]
-    BadToken,
     /// A form is not a JSON object, or sets a field the adapter owns.
     #[error("the form of {0:?} must be a JSON object without name, owner or suspend")]
     BadForm(AgentKind),
@@ -132,12 +144,35 @@ struct Seen {
     etag: Option<HeaderValue>,
 }
 
+/// A token that never changes: for a deployment that hands the orchestrator one, and for tests.
+pub struct StaticCredentials(SecretString);
+
+impl StaticCredentials {
+    /// Presents `token` at every request.
+    pub fn new(token: SecretString) -> Self {
+        Self(token)
+    }
+}
+
+impl fmt::Debug for StaticCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("StaticCredentials(<redacted>)")
+    }
+}
+
+impl PlatformCredentials for StaticCredentials {
+    fn token(&self) -> PlatformTokenFuture<'_> {
+        let token = PlatformToken::new(self.0.expose_secret());
+        Box::pin(async move { Ok(token) })
+    }
+}
+
 /// The [`AgentProvisioner`] over the Platform API.
 #[derive(Clone)]
 pub struct PlatformProvisioner {
     http: reqwest::Client,
     base: Url,
-    authorization: HeaderValue,
+    credentials: Arc<dyn PlatformCredentials>,
     forms: HashMap<AgentKind, Value>,
     ready_timeout: Duration,
     poll_interval: Duration,
@@ -162,10 +197,6 @@ impl PlatformProvisioner {
         if !ok {
             return Err(BuildError::BadUrl);
         }
-        let mut authorization =
-            HeaderValue::from_str(&format!("Bearer {}", cfg.token.expose_secret()))
-                .map_err(|_| BuildError::BadToken)?;
-        authorization.set_sensitive(true);
         for (kind, form) in &cfg.forms {
             let object = form.as_object().ok_or(BuildError::BadForm(*kind))?;
             if ["name", "owner", "suspend"]
@@ -193,7 +224,7 @@ impl PlatformProvisioner {
         Ok(PlatformProvisioner {
             http,
             base,
-            authorization,
+            credentials: cfg.credentials,
             forms: cfg.forms,
             ready_timeout: cfg.ready_timeout,
             poll_interval: cfg.poll_interval,
@@ -236,10 +267,18 @@ impl PlatformProvisioner {
         headers: &[(reqwest::header::HeaderName, HeaderValue)],
         body: Option<&Value>,
     ) -> Result<reqwest::Response, ProvisionError> {
+        // Asked at every request, and never kept: the port owns expiry and rotation.
+        let token = self.credentials.token().await.map_err(|e| match e {
+            PlatformCredentialsError::Refused => ProvisionError::Refused,
+            _ => ProvisionError::unavailable(e),
+        })?;
+        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", token.expose()))
+            .map_err(|_| ProvisionError::Refused)?;
+        authorization.set_sensitive(true);
         let mut request = self
             .http
             .request(method, url)
-            .header(AUTHORIZATION, self.authorization.clone());
+            .header(AUTHORIZATION, authorization);
         for (name, value) in headers {
             request = request.header(name, value.clone());
         }

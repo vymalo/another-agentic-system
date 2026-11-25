@@ -71,6 +71,7 @@ mod inbox;
 mod lookup;
 mod model;
 mod pending;
+mod platform_credentials;
 mod prompt_signer;
 mod prompts;
 mod provisioner;
@@ -128,6 +129,9 @@ pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
 pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,
+};
+pub use platform_credentials::{
+    PlatformCredentials, PlatformCredentialsError, PlatformToken, PlatformTokenFuture,
 };
 pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};
 pub use prompts::{

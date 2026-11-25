@@ -426,6 +426,21 @@ A key is 64 hexadecimal characters (32 random bytes: `openssl rand -hex 32`; 64 
 
 `store: openbao` keeps the credentials in a KV v2 mount of a self-hosted OpenBao (or Vault), one path per person and server under `<mount>/orchestrator/`, named by a hash: the crate [`orch-secrets-openbao`](../../orchestrator/crates/secrets-openbao/README.md). **OpenBao seals what it keeps, so there are no keys of ours: `orchestrator secrets rewrap` has nothing to do and exits 78 for this store.** It is used under the same conditions as the sealed store (`userToolServers.enabled`, and a role that serves routes), and the pending authorizations of an OAuth flow stay in the orchestrator's own Postgres in both. The server is not contacted at startup: a server that does not answer is an unavailable credential for the person whose server needs it, not a process that will not start. No message, log line or error holds the token, a path of OpenBao or a body it answered with. **Status: unverified against a live OpenBao** (the adapter's conformance suite needs one, [its README](../../orchestrator/crates/secrets-openbao/README.md)).
 
+### `provisioner`
+
+A person's own agents on the platform (the `AgentProvisioner` port). **Absent is off**: nothing changes, and
+`--print-config` prints nothing of it. A binary built without the Cargo feature `provisioner-platform` refuses
+the section (exit 78).
+
+| Key | Meaning |
+|---|---|
+| `url` | The Platform API's base URL: `http` or `https`, a host, no user name or password. |
+| `kinds` | The kinds made for each person: `coder`, `workspace`, each once, at least one. The shared chat agent is never provisioned. |
+| `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
+| `credentials` | What the orchestrator presents. One type: `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`). A development adapter; use another in a deployment. |
+| `requestTimeoutSecs` | One request to the platform, 1 to 60 (default 5). |
+| `readyTimeoutSecs` | How long to wait for a made or resumed agent to be ready, 1 to 600 (default 120). |
+
 ### `userToolServers`
 
 *Built 2026-10-14 ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 4a: the section, the composition root and the store), 2026-10-15 (slice 4b: the routes, [`/api/user-tool-servers`](chat-api.yaml) and their servers in `GET /api/tool-servers`) and 2026-10-15 (slice 4c: authorizing an OAuth server, its callback and the Client ID Metadata Document). Attaching a person's server to a thread is the next slice.* People can add **MCP servers of their own** (a URL, and how to authenticate to it), and the orchestrator calls them for the person with a credential it keeps for them. The deployment's own [`toolServers`](#toolservers) stay as they are and a person's are only ever added on top. **Off unless `enabled: true`**: with it off or absent **nothing is built and nothing is opened**, the keys of `secrets` are only checked, and nothing changes. Adding a server also needs the permission [`tools.user.add`](#roles-and-permissions), which no role holds by default.

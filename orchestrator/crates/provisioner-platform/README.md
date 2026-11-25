@@ -67,10 +67,19 @@ stateDiagram-v2
 
 ## Configuration
 
-`PlatformConfig::new(url, token)`; defaults: 5 s per request, 120 s to be ready, polled every 2 s.
-The token must hold `platform:agents.own`. **How the orchestrator gets that token is not decided
-yet** (design task ANR-783), and this crate is not yet built into the `orchestrator` binary: the
-composition root takes a static bearer token until then.
+`PlatformConfig::new(url, token)` presents a fixed token; `PlatformConfig::with_credentials(url, credentials)`
+presents what a [`PlatformCredentials`](../ports/src/platform_credentials.rs) gives, **asked before every
+request and never kept**. Defaults: 5 s per request, 120 s to be ready, polled every 2 s. The token must
+hold `platform:agents.own`. A credentials error is `Refused` (the issuer refused the orchestrator) or
+`Unavailable` (it could not be reached); neither holds a token, a secret or a URL.
+
+Adapters of the port here: `StaticCredentials` (one token) and `OidcClientCredentials`, the **development**
+adapter: the OAuth `client_credentials` grant against a token endpoint with the extension parameters of the
+local stack's `mock-oidc` (`user`, `audience`, `roles`), the token cached until 30 s before it expires.
+
+The `orchestrator` binary builds the provisioner from the `provisioner:` section of its configuration
+(Cargo feature `provisioner-platform`, on by default; [`docs/api/config.md`](../../../docs/api/config.md#provisioner)).
+Nothing calls it yet: the message path is the next change.
 
 ## Tests
 
