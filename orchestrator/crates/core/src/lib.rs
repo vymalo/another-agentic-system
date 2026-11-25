@@ -25,6 +25,7 @@ mod live;
 mod locale;
 mod memory;
 mod mention;
+mod mission;
 mod notify;
 mod pick;
 mod pricing;
@@ -123,6 +124,11 @@ pub use memory::{
     Refusal, SaveInput, ThreadSwitch, check_call, listed,
 };
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
+pub use mission::{
+    DoneCheck, DraftError, MAX_DONE_CHECKS, MAX_MISSION_GOAL_BYTES, MAX_MISSION_MEMBERS,
+    MAX_MISSION_ROLE_CHARS, MIN_MISSION_MEMBERS, Mission, MissionActor, MissionEvent, MissionLimit,
+    MissionMember, MissionRefusal, MissionState, MissionTeam, StopReason, WaitReason,
+};
 pub use notify::{
     Notify, NotifyClass, NotifyIntent, NotifyKind, NotifyTtl, ThreadRole,
     collapse as collapse_notifications, fold as fold_notifications,
