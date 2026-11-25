@@ -1361,6 +1361,8 @@ pub struct Config {
     /// the section (and always from the environment alone: the section has no variable): 24 months
     /// and nothing priced.
     pub usage: orch_app::UsageSettings,
+    /// `retention.threads.days`: days a thread is kept after its last event (default 90).
+    pub thread_retention_days: u32,
     /// `sharing.rateLimit`: the limits of the public routes, built whenever the process serves
     /// routes (a deployment that is not `public` never reaches them, but they stand guard).
     pub public_limits: orch_api::PublicLimits,
@@ -1851,6 +1853,7 @@ impl Config {
             artifacts: resolved.artifacts,
             user_tools: resolved.user_tools,
             usage: resolved.usage,
+            thread_retention_days: resolved.thread_retention_days,
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
@@ -1923,6 +1926,7 @@ impl Config {
             tool_servers: self.tool_servers.clone(),
             sharing: self.sharing.clone(),
             usage: self.usage.clone(),
+            thread_retention_days: self.thread_retention_days,
             // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
             // they are never reached.
             files: self
@@ -2015,6 +2019,10 @@ pub struct EndpointSettings {
     pub base_url_ref: Option<orch_config::SecretRef>,
     /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
+    /// The file the bearer is read from at each call, when the reference was a `{ file }` with an
+    /// absolute path (a projected service-account token a deployment rotates). The endpoint's key
+    /// is still read once at startup: this only refreshes it.
+    pub api_key_file: Option<std::path::PathBuf>,
     /// How long one question may take.
     pub timeout: Duration,
 }
@@ -2035,6 +2043,10 @@ impl fmt::Debug for EndpointSettings {
         f.debug_struct("EndpointSettings")
             .field("base_url", &self.shown_url())
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "api_key_file",
+                &self.api_key_file.as_ref().map(|_| "<file>"),
+            )
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -2079,6 +2091,7 @@ fn model_settings(
                 base_url,
                 base_url_ref: None,
                 api_key: api_key.map(SecretString::from),
+                api_key_file: None,
                 timeout,
             },
         )]),
@@ -2809,6 +2822,8 @@ struct Resolved {
     public: Option<PublicConfig>,
     /// `usage` (ADR 0065): the retention of the usage ledger and its price table.
     usage: orch_app::UsageSettings,
+    /// `retention.threads.days`.
+    thread_retention_days: u32,
     /// `sharing` (ADR 0040), built from the file; disabled without the section.
     sharing: SharingSettings,
     /// `sharing.rateLimit`.

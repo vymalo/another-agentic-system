@@ -1563,6 +1563,9 @@ fn project(
         }),
         // The retention of the usage ledger and its price table (ADR 0065), read exactly.
         usage: usage_of(valid)?,
+        // 1 to 36500, checked by the shape pass
+        thread_retention_days: u32::try_from(c.retention.threads.days)
+            .unwrap_or(orch_app::DEFAULT_THREAD_RETENTION_DAYS),
         // Built by `sharing_of`, which can refuse; the defaults stand for a disabled deployment.
         sharing: orch_app::SharingSettings::default(),
         public_limits: orch_api::PublicLimits::default(),
@@ -1724,6 +1727,18 @@ fn models_of(valid: &Validated) -> ModelsSettings {
                         .model_api_keys
                         .get(name)
                         .map(|key| SecretString::from(key.expose().to_owned())),
+                    // A key file with an absolute path is read again at each call, so a projected
+                    // service-account token the deployment rotates is the one presented. A
+                    // relative path keeps the value the loader read at startup (it resolves
+                    // against the file's directory, which the process does not know).
+                    api_key_file: match &e.api_key {
+                        Some(orch_config::SecretRef::File(path))
+                            if std::path::Path::new(path).is_absolute() =>
+                        {
+                            Some(std::path::PathBuf::from(path))
+                        }
+                        _ => None,
+                    },
                     timeout: Duration::from_secs(e.timeout_secs),
                 },
             ))

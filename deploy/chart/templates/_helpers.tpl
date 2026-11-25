@@ -79,6 +79,11 @@ it, and the Authorino instance and its gRPC authorization Service. */}}
 {{- define "agentic.injector.authorinoService" -}}
 {{- printf "%s-authorino-authorization" (include "agentic.injector.authorinoName" .) -}}
 {{- end -}}
+{{/* The audience the orchestrator's own model calls present: a projected service-account token this chart mounts, so
+Authorino's TokenReview admits the orchestrator's pod beside the agents'. */}}
+{{- define "agentic.injector.orchestratorAudience" -}}
+{{- default (printf "%s-orchestrator" (include "agentic.fullname" .)) .Values.injector.authorino.orchestratorAudience -}}
+{{- end -}}
 {{/* The Secret holding the injector's own broker token; its content comes from AWS, never from this chart. */}}
 {{- define "agentic.injector.secret" -}}
 {{- printf "%s-injector-broker" (include "agentic.fullname" .) -}}

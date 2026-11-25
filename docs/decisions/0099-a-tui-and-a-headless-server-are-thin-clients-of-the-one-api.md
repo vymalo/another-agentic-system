@@ -1,6 +1,6 @@
-# ADR 0098 — A terminal client and a headless server are clients of the one chat API
+# ADR 0099 — A terminal client and a headless server are clients of the one chat API
 
-- **Status:** **Proposed (2026-11-25).** The owner's direction of 2026-11-25:
+- **Status:** **Accepted (2026-11-25): the direction, and Rust for the client (decision 5), by the owner on 2026-11-25.** Part 2 and below stay marked **(proposed)** until built. The owner's direction of 2026-11-25:
   a terminal client and a server version, as OpenCode has, so custom agents run on a person's own computer and still use a
   deployment's models. Nothing is built. Every part marked **(proposed)** is a choice that follows from the direction and
   that the owner or the lead may change by a dated note. It builds on [ADR 0076](0076-the-orchestrator-as-a-library-in-an-application.md)
@@ -43,10 +43,10 @@ So a headless server needs no new core, and a terminal client needs no second or
    registered with the local server as A2A agents. Their model endpoint is whatever the person configures, including a
    deployment's gateway. Which of that costs anything is the gateway's and the deployment's affair, never the client's or
    this repository's (it is a public repository).
-5. **What the terminal client is built in** is an open question for the owner or the lead, with a recommendation:
+5. **What the terminal client is built in: Rust (decided by the owner, 2026-11-25).** The options weighed:
    - **Rust, over the orchestrator's own types** (`orch-agui-proto`, `orch-agui-projection`; the SDK is generated from
      `chat-api.yaml` with `progenitor` or by hand). One toolchain with the server, can be embedded with ADR 0076 so
-     `attach` becomes `in-process` with no HTTP; a TUI library such as `ratatui`. **Recommended.**
+     `attach` becomes `in-process` with no HTTP; a TUI library such as `ratatui`. **Chosen.**
    - **TypeScript, reusing the web's generated client** (`openapi-typescript`) with a TUI such as Ink. Reuses the
      generated types and some UI logic; needs a Node runtime to ship, which a person on a laptop must install.
 6. **Security.** The headless server fails closed like the deployment: no `auth.mode` set is not "open"; the loopback
@@ -101,6 +101,6 @@ stateDiagram-v2
 
 ## Open questions
 
-1. Rust or TypeScript for the terminal client (decision 5).
+1. ~~Rust or TypeScript for the terminal client (decision 5).~~ Decided: Rust (owner, 2026-11-25).
 2. Does the local profile ship as a separate download, or as a mode of the desktop application?
 3. Should a remote attach use the device-code sign-in a deployment already offers to tools?

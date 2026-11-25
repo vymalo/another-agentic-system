@@ -80,7 +80,13 @@ data:
           {{- else }}
           baseUrl: {{ .Values.model.baseUrl | quote }}
           {{- end }}
+          {{- if .Values.injector.enabled }}
+          {{- /* Through the injector the key the endpoint sees is the injector's lease: the orchestrator presents its
+                 own service-account token, which Authorino's TokenReview admits (card ANR-670). */}}
+          apiKey: { file: /var/run/secrets/model-injector/token }
+          {{- else }}
           apiKey: { file: /run/secrets/orchestrator/model-api-key }
+          {{- end }}
           timeoutSecs: {{ .Values.model.timeoutSecs }}
     {{- /* Only with a task model: an empty `tasks:` is null, which the orchestrator refuses (exit 78). */}}
     {{- if or .Values.orchestrator.tasks.title.model .Values.orchestrator.tasks.description.model }}

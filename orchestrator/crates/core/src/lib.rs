@@ -11,6 +11,7 @@ mod answer;
 mod ask;
 mod build;
 mod child_sessions;
+pub mod client_version;
 mod commands;
 mod delete;
 mod description;

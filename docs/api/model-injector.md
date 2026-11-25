@@ -155,6 +155,57 @@ sent is **replaced**: exactly one of each arrives at the model endpoint. The spi
 one, and one `x-account-id`, the lease's account — never the client's values. A fourth case sends its own
 `x-budget-remaining` and is refused with `402` anyway (*verified 2026-11-24/25*, `dev/agent-router-spike/spike.sh`).
 
+## The orchestrator's own calls: titles and descriptions
+
+A thread's title and description are asked by the orchestrator itself, outside any run, by the
+outbox worker (`crates/app/src/dispatcher/utility.rs`). Since card ANR-670 they take the same path as
+an agent's call: the worker **binds a lease** and the request carries its id as `X-Run-Id`, so the
+injector adds the provider key and the person's account exactly as it does for a run.
+
+| | A run's call | The orchestrator's own call |
+|---|---|---|
+| Who binds | the dispatcher, at the first sight of the run's task id (ADR 0084) | the title/description worker, **before it asks the model** |
+| The lease id | the root run's id (the A2A task id) | `thread:<thread id>:<title\|description>` |
+| The agent | the run's agent | the thread's own agent |
+| The person (the account) | the run's person | the **thread's owner** (`UserId`, ADR 0065) |
+| The model | the endpoint the live card maps the pick to | the task's `endpoint` (`tasks.title` / `tasks.description`) |
+| Bound again by | a retried message of the same run | an outbox retry of the same row |
+
+**The key is `(thread, property)`, not the call.** A title is asked once per thread and the outbox
+retries the row, so binding again must answer the same lease; a **different** `UserId` for the same
+key is `409 run_already_bound` and the lease is never re-pointed (a thread has one owner). Note that
+this one code covers **both** a run id and a utility lease id — a log reader who greps it for a run
+must first ask which of the two the id is (`thread:` prefixed, or not).
+
+**The lease is the identity, not the spend.** It names who the call is for; what it cost is the
+ledger's settlement against the account the injector stamped. Settlement is idempotent by the
+**lease id**, so an outbox retry that re-binds the same `(thread, property)` key cannot add a second
+line: a per-call key would double-bill a retry, and a cancelled job would bill without a call.
+
+**A bind that fails is not a title that failed.** The worker leaves the row for its retry and asks
+no model: without a lease the injector refuses the call as unauthenticated, so proceeding would
+turn the broker's outage into a mysterious 4xx. The thread keeps its first words and stays usable;
+with no title model configured at all, nothing is written and nothing is asked.
+
+The kind that is **not** here: `ChatModel::complete` returns the answer's text only, so this process
+cannot see the call's tokens. Cost is the ledger's to settle; a usage row written here would need
+the response's usage first. That is the gap this card left open.
+
+**A selector is not proof.** `X-Run-Id` (and with it `thread:<id>:<property>`) is asserted by the
+dispatcher, so a compromised dispatcher could name another person's thread — the same exposure it
+already has with a run id. The boundary is **"a trusted service asserts a selection"**, not "the
+selector is proof of identity". The person and the account come from the binding a trusted writer
+made (`POST /internal/runs`) and the injector only reads them.
+
+### Turning it on
+
+The orchestrator's pod must be a caller the injector's `kubernetesTokenReview` accepts, so the chart
+mounts a projected service-account token for the audience `injector.authorino.orchestratorAudience`
+(empty: `<fullname>-orchestrator`) and points the model endpoint's key at it
+(`apiKey: { file: /var/run/secrets/model-injector/token }`). The file is **read again at each call**,
+so the kubelet's rotation is the token presented and not the startup copy. The deployment points
+`model.baseUrl` at the injector's Service; the chart does not guess the route.
+
 ## What this establishes, and what it does not
 
 **It establishes** that `Authorization` and `x-account-id` at the model endpoint are the injector's, for a request that

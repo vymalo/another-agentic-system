@@ -194,11 +194,15 @@ spec:
     - "*"
   authentication:
     "agent":
-      kubernetesTokenReview:{{ if not .Values.injector.authorino.audiences }} {}{{ end }}
-        {{- with .Values.injector.authorino.audiences }}
+      # The agents' audience(s) from `injector.authorino.audiences`, and always the orchestrator's own, whose projected
+      # token this chart mounts for the thread titles and descriptions (card ANR-670). A deployment that names none
+      # accepts no agent pod: Authorino's default is the protected service's host name, which no projected token carries.
+      kubernetesTokenReview:
         audiences:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
+          {{- range .Values.injector.authorino.audiences }}
+          - {{ . }}
+          {{- end }}
+          - {{ include "agentic.injector.orchestratorAudience" . }}
   metadata:
     "lease":
       # A request without a run id is denied below; do not call the broker with an empty run.

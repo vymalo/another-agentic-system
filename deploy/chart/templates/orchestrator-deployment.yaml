@@ -139,6 +139,13 @@ spec:
               mountPath: /run/secrets/openbao-ca
               readOnly: true
             {{- end }}
+            {{- if .Values.injector.enabled }}
+            {{- /* The orchestrator's own model calls (titles, descriptions): the key it presents is its service-account
+                   token for the injector's audience, read again at each call so a rotation is picked up (card ANR-670). */}}
+            - name: model-token
+              mountPath: /run/secrets/model-injector
+              readOnly: true
+            {{- end }}
             {{- if not (include "agentic.artifactsS3" .) }}
             - name: artifacts
               mountPath: /var/lib/orchestrator/artifacts
@@ -214,6 +221,15 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        {{- end }}
+        {{- if .Values.injector.enabled }}
+        - name: model-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ include "agentic.injector.orchestratorAudience" . | quote }}
+                  expirationSeconds: 3600
+                  path: token
         {{- end }}
         {{- if not (include "agentic.db.pooler" .) }}
         - name: db

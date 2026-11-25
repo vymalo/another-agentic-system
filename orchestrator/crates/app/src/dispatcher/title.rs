@@ -76,7 +76,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     .store()
                     .list_events(row.thread_id, 0, TITLE_EVENTS)
                     .await?;
-                match self.title_in_language(&row, task, &events).await {
+                match self.title_in_language(&row, task, &events).await? {
                     Some(title) => Input::Titled { ask, title },
                     None => Input::TitleDeclined { ask },
                 }
@@ -115,7 +115,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         row: &OutboxItem,
         task: &TaskSettings,
         events: &[Event],
-    ) -> Option<String> {
+    ) -> Result<Option<String>, DispatchError> {
         let spec = |retry| TaskPrompt {
             kind: TaskKind::Title,
             guidance: task.guidance.as_deref(),
@@ -123,29 +123,35 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             previous: None,
             retry,
         };
-        let title = self
+        let Some(title) = self
             .title_from(row, task, task_prompt(&spec(false), events))
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
         let Err(wrong) = check_task_language(task.language, events, &title) else {
-            return Some(title);
+            return Ok(Some(title));
         };
         tracing::debug!(
             id = %row.id,
             script = ?wrong.script,
             "the title is in a script the language rule does not allow; asking once more"
         );
-        let title = self
+        let Some(title) = self
             .title_from(row, task, task_prompt(&spec(true), events))
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
         if let Err(wrong) = check_task_language(task.language, events, &title) {
             tracing::debug!(
                 id = %row.id,
                 script = ?wrong.script,
                 "the second title is in the wrong script too; the thread keeps the first words"
             );
-            return None;
+            return Ok(None);
         }
-        Some(title)
+        Ok(Some(title))
     }
 
     /// One question to the model and the title its answer stands for (`None` for no topic yet or
@@ -155,21 +161,28 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         row: &OutboxItem,
         task: &TaskSettings,
         (system, user): (String, String),
-    ) -> Option<String> {
+    ) -> Result<Option<String>, DispatchError> {
         let request = ChatRequest {
             endpoint: task.endpoint.clone(),
             model: task.model.clone(),
             system,
             user,
             max_tokens: task.max_tokens,
+            run: None,
         };
         let text = self
-            .ask_model(row, task, &request, "the model could not title the thread")
+            .ask_model(
+                row,
+                TaskKind::Title,
+                task,
+                &request,
+                "the model could not title the thread",
+            )
             .await?;
-        let title = clean_title(&text);
+        let title = text.and_then(|text| clean_title(&text));
         if title.is_none() {
             tracing::debug!(id = %row.id, "the model had no title for the conversation yet");
         }
-        title
+        Ok(title)
     }
 }
