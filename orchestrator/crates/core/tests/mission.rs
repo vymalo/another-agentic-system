@@ -261,13 +261,13 @@ proptest! {
             }
             last = Some(trace.mission.clone());
         });
-        if let Some(mut m) = last {
-            if m.state().is_terminal() {
-                let state = m.state();
-                for event in &tail {
-                    assert!(m.apply(event).is_err());
-                    assert_eq!(m.state(), state);
-                }
+        if let Some(mut m) = last
+            && m.state().is_terminal()
+        {
+            let state = m.state();
+            for event in &tail {
+                assert!(m.apply(event).is_err());
+                assert_eq!(m.state(), state);
             }
         }
     }
