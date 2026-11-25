@@ -2716,12 +2716,15 @@ dependencies = [
 name = "orch-ports"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "getrandom 0.3.4",
  "jiff",
  "orch-core",
  "orch-ports",
+ "orch-prompt-statement",
  "proptest",
  "serde",
  "serde_json",
@@ -2734,6 +2737,47 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-signer-static"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "orch-ports",
+ "orch-prompt-statement",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-statement"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ryu-js",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+]
+
+[[package]]
+name = "orch-provisioner-platform"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2752,6 +2796,24 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "orch-secrets-openbao"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -3028,6 +3090,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-window"
+version = "0.1.0"
+dependencies = [
+ "orch-core",
+ "orch-ports",
+ "orch-window",
+ "serde",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "orchestrator"
 version = "0.1.0"
 dependencies = [
@@ -3054,6 +3130,7 @@ dependencies = [
  "orch-pg-connect",
  "orch-ports",
  "orch-registry-platform",
+ "orch-secrets-openbao",
  "orch-secrets-pg",
  "orch-signed-request",
  "orch-store-postgres",

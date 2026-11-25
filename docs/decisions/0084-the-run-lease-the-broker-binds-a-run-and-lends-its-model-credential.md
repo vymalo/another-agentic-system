@@ -131,3 +131,22 @@ alias maps to; the orchestrator records it when the run starts."*
    (decision 4): a deployment that lists no endpoint lends nothing.
 5. **The route keeps its override.** `POST /internal/runs`'s optional `model` stays, and wins over the card's
    resolution, for a caller that already knows the endpoint (decision 1's "if given").
+
+### Status note, 2026-11-24: the lease names the account (ANR-659)
+
+The lease answer is `{token, accountId, expiresAt}`. `accountId` is the run's person: a `UserId`, the key the usage ledger is kept by
+(`orch_core::UsageRow.owner`, the column `usage_tasks.owner` of migration `0023`, ADR 0065), which is the person id the injector reports as
+`x-account-id` — **not** a provider account and not an account number of a ledger service, since the orchestrator holds no other identity for the
+person. The injector gets it beside the key so it can say whose call it is. It answers only behind decision 2's caller check, and like the token
+it is never logged, never in a refusal or an error, and never in a message to an agent; `RunLease`'s `Debug` redacts both. *Unverified:* the
+injector that reads it (B2) and the gateway that trusts it (B3) are not built.
+
+### Status note, 2026-11-24: the meter asks for the account (ANR-663)
+
+The operator's pod-minute meter finds who pays for a run pod without any person id on a pod: `GET /internal/runs/{run}/account` answers
+`{accountId}` (the same `UserId` as the lease's) to **one caller, `RunCaller::Meter`**, the operator's own identity. Every other caller (the
+orchestrator, the injector, any agent, its own run included) and an unknown run get `run_not_bound`, so the answer never says whether a run
+exists; no identity is `unauthenticated`. The meter holds no lease, bind or unbind. The answer holds no credential, so it does not stop at the
+binding's deadline (a pod can outlive its run's lease); it ends with the binding. `accountId` is in no log line, no refusal and no error. `RunLeases`
+gains the required method `account`, which breaks an implementer. *Unverified:* the binary's configuration key for the meter's token
+(`SharedTokens::with_meter`) is not wired yet, as the injector's is not; the meter itself is the platform's.

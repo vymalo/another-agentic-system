@@ -21,10 +21,10 @@ message submitted through `App`, the dispatcher is the application's, and the AG
 | `AgentClient` | the caller's, generic |
 | `AgentRegistry` | the static `AgentDirectory` the caller gives |
 | `Clock`, `IdGen` | the system clock and UUIDv7 ids |
-| `ChatModel` | none: a title is the first words of its message, and no description task runs |
+| `ChatModel` | the application's, through `EmbedPorts` (`Embedded::open_with`); none by default: a title is the first words of its message, and no description task runs |
 | `Authenticator` | `RefuseAll`: the application states the person, and no bearer is checked in process |
-| `ArtifactStore` | none |
-| `UserToolPorts` | off |
+| `ArtifactStore` | the application's file store, through `EmbedPorts`; none by default |
+| `UserToolPorts` | the application's bundle, through `EmbedPorts`: its `SecretStore` sits behind `orch-credential-broker`, which the application composes (this crate stays free of `axum`); off by default |
 
 `bin/orchestrator` stays the server's composition root and does not depend on this crate. The
 dependency direction is one way: this crate knows `orch-app`, `orch-ports`, `orch-core`,
@@ -85,9 +85,9 @@ ADR 0076's later slices are not this crate's:
 - **E4**: the local agent adapter (`orch-agent-adam` driving `adam-engine` on adam's SQLite store).
   The example supplies an `AgentClient` of its own, which is what an application embedding its own
   local agents will do once E4 lands.
-- The application's `ChatModel` for titles and descriptions, its `SecretStore` (the system
-  keychain), and a filesystem `ArtifactStore`. This root leaves the title model off and the artifact
-  store empty; passing one is a composition-root change, not an API change.
+- The application's own filesystem `ArtifactStore` and keychain `SecretStore` adapters (the ports
+  to hand them through, `EmbedPorts`, are built; `tests/ports.rs` proves the supplied model is the
+  one asked, and the in-memory file store is the fake that passes its testkit).
 - **E5**: the compile check of the embedded set for iOS, Android, macOS and Linux, and its size.
 
 A thread on the device is read and written through this root only; it is not shared with a

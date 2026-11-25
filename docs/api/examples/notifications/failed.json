@@ -1,0 +1,57 @@
+{
+  "name": "failed",
+  "role": "top",
+  "after": 0,
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "alice@example.com"
+      },
+      "data": {
+        "text": "go"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "plain"
+      },
+      "data": {
+        "status": "failed"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "failed"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "intent": {
+        "class": "done",
+        "kind": "failed",
+        "cause": 3,
+        "count": 1,
+        "expires": "2026-11-24T06:00:00Z"
+      }
+    }
+  ]
+}

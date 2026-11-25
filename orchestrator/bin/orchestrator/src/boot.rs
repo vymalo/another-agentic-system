@@ -688,6 +688,18 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
         public_limits: Some(cfg.public_limits),
         browser_auth,
         cors_allowed_origins: cfg.cors_allowed_origins.clone(),
+        min_client_version: cfg
+            .min_client_version
+            .as_deref()
+            .map(|v| {
+                v.parse().map_err(
+                    |e: orch_api::client_version::NotAVersion| ConfigError::Invalid {
+                        var: "server.minClientVersion",
+                        reason: e.to_string(),
+                    },
+                )
+            })
+            .transpose()?,
         client_metadata,
         ..ApiConfig::default()
     };

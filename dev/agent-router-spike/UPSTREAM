@@ -20,6 +20,10 @@ AI_GATEWAY_DIGEST=sha256:a78d01521215b0a3fe9fe2ab3eaa35991e6b571fe00969765a0abce
 # The mock model and the external authorizer run the same pinned Python: their code is a ConfigMap.
 PYTHON_IMAGE=python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
 
+# The model gateway of the spike is WireMock, the same image compose.yaml pins for the repo's model stand-in
+# (`dev/wiremock/model`). The request journal of its admin API is what spike.sh asserts on.
+WIREMOCK_IMAGE=wiremock/wiremock@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3
+
 # Authorino: the operator chart (CRDs and operator). Its appVersion's RELATED_IMAGE_AUTHORINO is
 # quay.io/kuadrant/authorino:v0.26.4 (the version this spike verified). The index's digest for 0.25.4 is the
 # tarball's SHA-256; the URL is the one kuadrant.io/helm-charts/index.yaml gives.

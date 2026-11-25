@@ -85,7 +85,8 @@ fn a_section_names_its_keys_and_each_one_is_resolved_and_trimmed() {
 
 #[test]
 fn the_store_is_a_closed_choice_and_its_section_is_required() {
-    let errors = lines(load(&file("  store: openbao\n"), &env()));
+    // a name that is no store is refused at load, naming the key
+    let errors = lines(load(&file("  store: vault\n"), &env()));
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].starts_with("secrets.store: "), "{errors:?}");
 
@@ -419,6 +420,246 @@ secrets:
             errors,
             [
                 "secrets: required: this command reads the secret store's keys from the configuration file"
+            ]
+        );
+    }
+}
+
+/// `secrets.store: openbao` (ADR 0046, ADR 0009): a KV v2 mount of a self-hosted OpenBao, the token
+/// by reference, an optional CA file.
+mod openbao {
+    use super::*;
+
+    const TOKEN: &str = "hvs.NEVER-IN-AN-ERROR-0123456789";
+    const PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
+
+    fn bao_env() -> Fake {
+        env()
+            .env("BAO_TOKEN", TOKEN)
+            .file("/run/secrets/bao-token", &format!("{TOKEN}\n"))
+            .file("/run/secrets/bao-ca/ca.crt", &format!("{PEM}\n"))
+    }
+
+    fn section(body: &str) -> String {
+        file(&format!("  store: openbao\n  openbao:\n{body}"))
+    }
+
+    #[test]
+    fn a_good_section_resolves_the_token_and_the_ca_and_defaults_the_mount() {
+        let valid = load(
+            &section(
+                "    address: https://bao.internal:8200\n    token: { file: /run/secrets/bao-token }\n    caFile: /run/secrets/bao-ca/ca.crt\n",
+            ),
+            &bao_env(),
+        )
+        .unwrap();
+        let bao = valid
+            .config
+            .secrets
+            .as_ref()
+            .unwrap()
+            .openbao
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            valid.config.secrets.as_ref().unwrap().store,
+            SecretStoreKind::Openbao
+        );
+        assert_eq!(bao.address, "https://bao.internal:8200");
+        assert_eq!(bao.mount, "secret", "the mount defaults to `secret`");
+        assert_eq!(
+            bao.token,
+            SecretRef::File("/run/secrets/bao-token".to_owned())
+        );
+        assert_eq!(
+            valid.secrets.openbao_token.as_ref().unwrap().expose(),
+            TOKEN
+        );
+        assert!(
+            valid
+                .secrets
+                .openbao_ca
+                .as_ref()
+                .unwrap()
+                .expose()
+                .starts_with("-----BEGIN")
+        );
+        assert!(valid.secrets.user_secret_keys.is_empty());
+        assert_eq!(SecretStoreKind::Openbao.as_str(), "openbao");
+        assert_eq!(SecretStoreKind::Openbao.feature(), "secrets-openbao");
+    }
+
+    #[test]
+    fn an_env_token_and_no_ca_are_enough_and_nothing_prints_the_token() {
+        let valid = load(
+            &section("    address: https://bao.internal\n    mount: kv/orch\n    token: { env: BAO_TOKEN }\n"),
+            &bao_env(),
+        )
+        .unwrap();
+        assert!(valid.secrets.openbao_ca.is_none());
+        let shown = format!("{valid:?} {:?}", valid.secrets);
+        assert!(
+            !shown.contains(TOKEN) && shown.contains("{ env: BAO_TOKEN }"),
+            "{shown}"
+        );
+        let printed = serde_norway::to_string(&valid.config.effective()).unwrap();
+        assert!(!printed.contains(TOKEN), "{printed}");
+        assert!(
+            printed.contains("env: BAO_TOKEN") && printed.contains("mount: kv/orch"),
+            "{printed}"
+        );
+    }
+
+    #[test]
+    fn the_section_of_the_store_is_required_and_the_other_one_is_refused() {
+        assert_eq!(
+            lines(load(&file("  store: openbao\n"), &bao_env())),
+            [
+                "secrets.openbao: required when secrets.store is openbao: the server's address and the token"
+            ]
+        );
+        let both = "  store: openbao\n  openbao:\n    address: https://b\n    token: { env: BAO_TOKEN }\n  pg:\n    keys: [{ id: k1, key: { env: K1 } }]\n    current: k1\n";
+        assert_eq!(
+            lines(load(&file(both), &bao_env())),
+            ["secrets.pg: is not used with secrets.store openbao: leave it out"]
+        );
+    }
+
+    #[test]
+    fn an_address_that_is_not_https_with_a_host_is_refused_naming_the_key_and_not_quoting_it() {
+        for address in [
+            "http://bao.internal:8200",
+            "bao.internal:8200",
+            "https://",
+            "https://user:pw@bao.internal",
+            "https://bao.internal/?token=x",
+            "https://bao.internal/#frag",
+            "ftp://bao.internal",
+        ] {
+            let errors = load(
+                &section(&format!(
+                    "    address: \"{address}\"\n    token: {{ env: BAO_TOKEN }}\n"
+                )),
+                &bao_env(),
+            )
+            .unwrap_err();
+            let listed = errors.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert_eq!(listed.len(), 1, "{address}: {listed:?}");
+            assert!(
+                listed[0].starts_with("secrets.openbao.address: must be an https URL"),
+                "{listed:?}"
+            );
+            assert!(
+                !listed[0].contains("pw") && !listed[0].contains("bao.internal"),
+                "{listed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mount_is_slash_separated_names_of_a_small_alphabet() {
+        for mount in [
+            "",
+            "/secret",
+            "secret/",
+            "a//b",
+            "a/../b",
+            "a b",
+            "kvé",
+            &"x".repeat(129),
+        ] {
+            let errors = lines(load(
+                &section(&format!(
+                    "    address: https://b\n    mount: \"{mount}\"\n    token: {{ env: BAO_TOKEN }}\n"
+                )),
+                &bao_env(),
+            ));
+            assert_eq!(errors.len(), 1, "{mount:?}: {errors:?}");
+            assert!(
+                errors[0].starts_with("secrets.openbao.mount: "),
+                "{mount:?}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_token_is_required_and_is_a_reference_never_a_value() {
+        // a plain string where the token goes
+        let errors = lines(load(
+            &section(&format!("    address: https://b\n    token: {TOKEN}\n")),
+            &bao_env(),
+        ));
+        assert_eq!(
+            errors,
+            ["secrets.openbao.token: a secret is a reference: `{ env: NAME }` or `{ file: PATH }`"]
+        );
+        // absent
+        let errors = lines(load(&section("    address: https://b\n"), &bao_env()));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].starts_with("secrets.openbao.token: "),
+            "{errors:?}"
+        );
+        // a reference that does not resolve is named, with no value
+        assert_eq!(
+            lines(load(
+                &section("    address: https://b\n    token: { env: UNSET }\n"),
+                &bao_env()
+            )),
+            ["secrets.openbao.token: the environment variable UNSET is unset or empty"]
+        );
+        // an address is not a secret key, and an unknown key is refused
+        let errors = lines(load(
+            &section("    address: https://b\n    token: { env: BAO_TOKEN }\n    insecure: true\n"),
+            &bao_env(),
+        ));
+        assert_eq!(errors, ["secrets.openbao.insecure: unknown key"]);
+    }
+
+    #[test]
+    fn a_ca_file_that_cannot_be_read_or_holds_no_certificate_is_named_and_never_quoted() {
+        let missing = lines(load(
+            &section(
+                "    address: https://b\n    token: { env: BAO_TOKEN }\n    caFile: /nope/ca.crt\n",
+            ),
+            &bao_env(),
+        ));
+        assert_eq!(
+            missing,
+            ["secrets.openbao.caFile: the file /nope/ca.crt cannot be read"]
+        );
+
+        let junk = bao_env().file(
+            "/run/secrets/junk",
+            "-----BEGIN PRIVATE KEY-----\nSECRETBODY\n-----END PRIVATE KEY-----",
+        );
+        let errors = load(
+            &section("    address: https://b\n    token: { env: BAO_TOKEN }\n    caFile: /run/secrets/junk\n"),
+            &junk,
+        )
+        .unwrap_err();
+        let shown = format!("{} {errors:?}", render(&errors));
+        assert_eq!(
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "secrets.openbao.caFile: the file holds no PEM certificate (-----BEGIN CERTIFICATE-----)"
+            ]
+        );
+        assert!(
+            !shown.contains("SECRETBODY") && !shown.contains(TOKEN),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn the_rewrap_view_resolves_the_token_too_and_every_error_lists_at_once() {
+        let text = section("    address: http://b\n    mount: a b\n    token: { env: UNSET }\n");
+        assert_eq!(
+            lines(load(&text, &bao_env())),
+            [
+                "secrets.openbao.address: must be an https URL with a host, no credential, query or fragment: the token is sent with every call and never in the clear",
+                "secrets.openbao.mount: is 1 to 128 characters of A-Z, a-z, 0-9, '.', '_', '-' and '/', not starting or ending with '/' and with no empty part",
+                "secrets.openbao.token: the environment variable UNSET is unset or empty",
             ]
         );
     }

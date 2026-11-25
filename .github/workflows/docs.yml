@@ -10,6 +10,9 @@ name: Docs
 # The AG-UI golden streams (docs/api/examples/agui) must also read cleanly through the
 # reference client, @ag-ui/client 1.0.0 (tools/agui-conformance). That is a behavioural check the
 # Rust schema tests cannot make: ordering, balanced runs, and what a standard client ends up holding.
+#
+# A pull request must not break a client of docs/api/chat-api.yaml: tools/api-breaking-check compares it
+# with the base branch (a deliberate break needs a `!` in the title).
 
 on:
   pull_request:
@@ -50,3 +53,27 @@ jobs:
         run: npm --prefix tools/agui-conformance ci --no-fund --no-audit
       - name: Read every golden through the reference client
         run: node tools/agui-conformance/check.mjs
+
+  api-breaking:
+    name: API breaking changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install the pinned YAML parser
+        run: npm --prefix tools/api-breaking-check ci --no-fund --no-audit
+      - name: Test the checker's rules
+        run: npm --prefix tools/api-breaking-check test
+      - name: Compare docs/api/chat-api.yaml with the base branch
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          allow=""
+          if printf '%s' "$TITLE" | grep -Eq '^[a-z]+(\([^)]*\))?!:'; then allow="--allow"; fi
+          node tools/api-breaking-check/check.mjs --base "$BASE" $allow

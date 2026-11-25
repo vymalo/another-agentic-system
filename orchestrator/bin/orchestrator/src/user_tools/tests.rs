@@ -57,6 +57,8 @@ fn settings(keyring: bool) -> UserToolsSettings {
             )
             .unwrap()
         }),
+        #[cfg(feature = "secrets-openbao")]
+        openbao: None,
     }
 }
 

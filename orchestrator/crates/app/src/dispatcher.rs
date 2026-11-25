@@ -135,6 +135,10 @@ enum DispatchError {
     /// of it was applied (ADR 0072).
     #[error("the round's task is of another context")]
     ForeignContext,
+    /// A utility call's lease could not be bound (the broker is down, or the key names another
+    /// person): the row waits for its retry and the model is not asked.
+    #[error("the utility call's lease could not be bound: {0}")]
+    Lease(String),
 }
 
 type Done = Result<(), DispatchError>;
@@ -384,6 +388,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         let mut workers: JoinSet<()> = JoinSet::new();
         loop {
             while workers.try_join_next().is_some() {}
+            self.app
+                .set_dispatcher_slots(workers.len(), self.cfg.concurrency);
             let free = self.cfg.concurrency.saturating_sub(workers.len());
             if free > 0 {
                 let limit = u32::try_from(free.min(16)).unwrap_or(16);
@@ -420,6 +426,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     Err(e) => tracing::warn!(error = %report(&e), "claiming outbox rows failed"),
                 }
             }
+            self.app
+                .set_dispatcher_slots(workers.len(), self.cfg.concurrency);
             tokio::select! {
                 () = shutdown.cancelled() => break,
                 topic = wake.next(), if wake_open => match topic {
@@ -432,6 +440,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             }
         }
         while workers.join_next().await.is_some() {}
+        self.app.set_dispatcher_slots(0, 0);
         if let Err(e) = self.store().release_leases(&self.owner, self.now()).await {
             tracing::warn!(error = %report(&e), "releasing leases failed");
         }

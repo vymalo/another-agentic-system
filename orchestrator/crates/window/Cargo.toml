@@ -1,0 +1,30 @@
+[package]
+name = "orch-window"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "The Window port (ADR 0092, windows-v1): a view onto what a run produces, its URL guard, a conformance testkit and a fake adapter with no network."
+readme = "README.md"
+
+[features]
+default = []
+# The conformance testkit and `FakeWindow`. Enable as a dev-dependency feature in adapter crates.
+testkit = ["dep:tokio", "dep:uuid"]
+
+[dependencies]
+orch-core.workspace = true
+orch-ports.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+url.workspace = true
+tokio = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+orch-window = { path = ".", features = ["testkit"] }
+
+[lints]
+workspace = true

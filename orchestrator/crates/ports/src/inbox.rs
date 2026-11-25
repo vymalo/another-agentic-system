@@ -274,6 +274,8 @@ impl NewTimer {
                 verification,
             } => format!("{thread}:verifier_deadline:{attempt}:{verification}"),
             Timer::AskDeadline { job, ask } => format!("{thread}:ask_deadline:{job}:{ask}"),
+            Timer::HandoffAuto { proposal } => format!("{thread}:handoff_auto:{proposal}"),
+            Timer::HandoffExpiry { proposal } => format!("{thread}:handoff_expiry:{proposal}"),
         }
     }
 

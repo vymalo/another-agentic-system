@@ -1,0 +1,8 @@
+# An overlay on envoy-gateway-values.yaml, which is vendored and not edited: Envoy Gateway v1.10 ships the Lua
+# `EnvoyExtensionPolicy` DISABLED (`extensionApis.enableLua`, false by default), and the injector's 402 is a Lua filter
+# (manifests/32-budget-policy.yaml, and deploy/chart's `EnvoyExtensionPolicy`). A deployment's own EnvoyGateway resource
+# must set the same flag; deploy/chart/README.md says so beside the injector's other prerequisites.
+config:
+  envoyGateway:
+    extensionApis:
+      enableLua: true

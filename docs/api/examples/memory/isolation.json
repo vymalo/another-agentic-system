@@ -1,0 +1,42 @@
+{
+  "name": "Owner isolation",
+  "about": "The first rule of docs/api/memory-v1.md: a note is one person's. Each case runs as two people, A and B, with memory on for both and the same agent enabled for each. B must never read, count or forget A's notes, and the answer must not differ from the answer B gets for an id that never existed.",
+  "cases": [
+    {
+      "name": "B's read sees only B's notes",
+      "setup": {
+        "a": { "notes": ["I deploy with Helm", "staging is kestrel"] },
+        "b": { "notes": ["I use pnpm"] }
+      },
+      "call": { "as": "b", "tool": "memory_read", "caller": "main", "agent": "coder", "input": {} },
+      "expect": { "resultNotes": 1, "texts": ["I use pnpm"], "total": 1 }
+    },
+    {
+      "name": "A's id is not B's to forget",
+      "setup": {
+        "a": { "notes": ["I deploy with Helm"] },
+        "b": { "notes": [] }
+      },
+      "call": { "as": "b", "tool": "memory_forget", "caller": "main", "agent": "coder", "input": { "id": "m-a-1" } },
+      "expect": { "result": { "forgotten": false }, "aNotesAfter": 1, "indistinguishableFrom": "an id that never existed" }
+    },
+    {
+      "name": "B's save never lands in A's memory",
+      "setup": {
+        "a": { "notes": [] },
+        "b": { "notes": [] }
+      },
+      "call": { "as": "b", "tool": "memory_save", "caller": "main", "agent": "coder", "input": { "text": "mine only" } },
+      "expect": { "aNotesAfter": 0, "bNotesAfter": 1 }
+    },
+    {
+      "name": "a query cannot be used to probe another person's text",
+      "setup": {
+        "a": { "notes": ["I deploy with Helm"] },
+        "b": { "notes": [] }
+      },
+      "call": { "as": "b", "tool": "memory_read", "caller": "main", "agent": "coder", "input": { "query": "helm" } },
+      "expect": { "resultNotes": 0, "total": 0, "truncated": false }
+    }
+  ]
+}

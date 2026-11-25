@@ -170,6 +170,69 @@ async fn a_rotation_supersedes_the_row_it_replaces_and_keeps_one_current() {
     assert_eq!(current, 1, "one current version per name, at every commit");
 }
 
+/// A name's greatest version is kept in `vault_names`, so the next version is past every earlier
+/// one even when none of their rows is left: `max(version) + 1` is not what makes it true.
+#[tokio::test]
+async fn a_version_is_never_reissued_even_when_every_row_of_the_name_is_gone() {
+    let Some(fx) = setup().await else {
+        return;
+    };
+    let alice = fx.db.owner("alice");
+    let name = name("reused");
+    fx.vault.put(&alice, &name, &material("one")).await.unwrap();
+    let second = fx.vault.put(&alice, &name, &material("two")).await.unwrap();
+    assert_eq!(second.version().get(), 2);
+
+    let (mark,): (i64,) = fetch_one(
+        &fx.raw,
+        "SELECT high_water_version FROM vault_names WHERE name = 'reused'",
+        &[],
+    )
+    .await;
+    assert_eq!(mark, 2, "the mark follows the write, in its transaction");
+
+    // what a deletion of the name would leave: no row of vault_secrets at all
+    execute(&fx.raw, "DELETE FROM vault_secrets", &[]).await;
+    let third = fx
+        .vault
+        .put(&alice, &name, &material("three"))
+        .await
+        .unwrap();
+    assert_eq!(third.version().get(), 3, "never #v1 again");
+    // an old reference is refused, and does not resolve to the new material
+    let stale = VaultRef::new(name.clone(), SecretVersion::new(2));
+    assert!(matches!(
+        fx.vault.get(&alice, &stale).await,
+        Err(VaultError::UnknownVersion)
+    ));
+}
+
+/// The partial unique index, not only the lock, keeps one current version per name.
+#[tokio::test]
+async fn the_database_refuses_a_second_current_version_of_a_name() {
+    let Some(fx) = setup().await else {
+        return;
+    };
+    let alice = fx.db.owner("alice");
+    let name = name("single");
+    fx.vault.put(&alice, &name, &material("one")).await.unwrap();
+    let inserted = fx
+        .raw
+        .get()
+        .await
+        .unwrap()
+        .execute(
+            "INSERT INTO vault_secrets (owner, name, version, v, kid, nonce, ciphertext, created) \
+             SELECT owner, name, 2, v, kid, nonce, ciphertext, created FROM vault_secrets",
+            &[],
+        )
+        .await;
+    assert!(
+        inserted.is_err(),
+        "a second row with no `superseded` is refused"
+    );
+}
+
 /// The grace is the store's clock, and it is **fail closed**: past it the version is refused while
 /// its row is still in the table, and `purge` is what removes the row — after which the answer is
 /// the same.

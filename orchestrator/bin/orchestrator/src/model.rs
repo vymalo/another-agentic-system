@@ -30,6 +30,10 @@ impl ConfiguredModel {
             if let Some(key) = &endpoint.api_key {
                 cfg = cfg.with_api_key(key.clone());
             }
+            if let Some(path) = &endpoint.api_key_file {
+                // A rotated projected token: read again for every call, not the startup copy.
+                cfg = cfg.with_api_key_file(path);
+            }
             (name.clone(), cfg)
         });
         let chat = OpenAiChat::new(endpoints).context("cannot build the model endpoints")?;

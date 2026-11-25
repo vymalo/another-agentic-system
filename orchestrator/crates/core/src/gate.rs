@@ -852,6 +852,19 @@ pub enum Timer {
         /// The ask it was armed for.
         ask: u32,
     },
+    /// A hand-off waiting for the person goes on its own (a preset's `after` N seconds, ADR 0074
+    /// decision 10). It names the proposal it was armed for, so one that fires after the person
+    /// answered, or after a later proposal, is stale.
+    HandoffAuto {
+        /// The proposal it was armed for.
+        proposal: u32,
+    },
+    /// A hand-off waiting for the person expires (`teams.approvalExpiry`, ADR 0074 decision 10),
+    /// and the floor goes back to the person. It names its proposal like [`Timer::HandoffAuto`].
+    HandoffExpiry {
+        /// The proposal it was armed for.
+        proposal: u32,
+    },
 }
 
 /// The A2A context a verification runs in: `<thread>-verify-<attempt>-<verification>`. It is the

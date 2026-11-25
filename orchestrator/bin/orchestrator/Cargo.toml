@@ -13,7 +13,7 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-thread-tools", "tool-relay", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "secrets-pg", "auth-header", "auth-jwt"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "tool-relay", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "secrets-pg", "secrets-openbao", "auth-header", "auth-jwt"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
@@ -61,6 +61,10 @@ artifacts-s3 = ["dep:orch-artifacts-s3"]
 # `userToolServers.enabled` is true and the role serves routes (`all`, `control-plane`); no route uses it yet
 # (ADR 0046, slice 4a).
 secrets-pg = ["dep:orch-secrets-pg"]
+# `secrets.store: openbao` (ADR 0046, ADR 0009): the credentials are kept in a KV v2 mount of a self-hosted OpenBao (or Vault), which
+# seals them; the configuration holds the address, the mount and the token by reference. On by default, like `secrets-pg`; without it a
+# file that names it is refused at startup (exit 78), never ignored. Built under the same conditions as the sealed store.
+secrets-openbao = ["dep:orch-secrets-openbao"]
 # The proxy-header authenticator (`auth.mode: proxy_header`, the default, and `jwt_or_proxy_header`,
 # ADR 0033): the identity oauth2-proxy sets in `X-Auth-Request-Email`, and the development user.
 # On by default. Without it those modes are refused at startup (exit 78), never quietly ignored.
@@ -97,6 +101,7 @@ orch-registry-platform = { workspace = true, optional = true }
 orch-artifacts-fs = { workspace = true, optional = true }
 orch-artifacts-s3 = { workspace = true, optional = true }
 orch-secrets-pg = { workspace = true, optional = true }
+orch-secrets-openbao = { workspace = true, optional = true }
 orch-credential-broker.workspace = true
 orch-auth-header = { workspace = true, optional = true }
 orch-auth-jwt = { workspace = true, optional = true }

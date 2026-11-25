@@ -143,6 +143,8 @@
 #                     held by the role `prompt-sharer` only): that role lists, reads and
 #                     renders it, never sees who wrote it and cannot change it, and a
 #                     person outside the audience, the administrator included, gets 404;
+#                     the same library over /mcp (prompts/list and prompts/get as the
+#                     dev token's person, nobody else's prompt in the list);
 #                     a person without the permission is 403 for sharing and can still
 #                     unshare; the limit of 100; a delete with a stale revision is 409;
 #                     no word of a prompt is in the orchestrator's log
