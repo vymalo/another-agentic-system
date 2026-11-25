@@ -139,6 +139,62 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Me" }
+  /api/accounts/{account}:
+    parameters:
+      - name: account
+        in: path
+        required: true
+        description: "The person's key, as `getMe` answers it (`user`): the e-mail, lower-cased"
+        schema: { type: string }
+    delete:
+      operationId: deleteAccount
+      summary: Erase the caller's account, after a confirmation
+      description: |
+        Erases everything the caller owns ([ADR 0098](../decisions/0098-deleting-an-account-erases-what-a-person-owns-and-keeps-only-counts-for-a-set-time.md)):
+        their threads with everything on them (the log, the agent binding, the share links, the organisation of their list, their
+        search words; [ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)), their files, their own MCP servers (revoked at
+        the credential broker first, then deleted; [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)),
+        their prompts, memory notes, push devices and notification settings. Forks other people made of their shared threads are those
+        people's and stay.
+
+        **What is kept:** the counts of the usage ledger ([ADR 0065](../decisions/0065-a-usage-ledger-per-person.md)), under a pseudonym
+        that is not the key and cannot be turned back into it, until `account.erase.keepDays` (a configured period, 90 by default) have
+        passed; `keptUntil` says when. No content, no thread id.
+
+        **What cannot be erased, and the answer does not promise:** backups until they expire, the A2A agent's own store of its
+        context, the model provider's copy, and the account at the identity provider, which the operator holds.
+
+        The caller must send their own key as `confirm`; any other value is a 400 and nothing is touched. Only the person can delete
+        their account: **anybody else, an administrator included, gets a 404**, the one answer for "no such account" and "not yours"
+        ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). While any thread of the caller, or an edit of one, is
+        `queued`, `working` or `verifying`, or has a running ask, nothing is erased and the answer is **409 `account_busy`**: stop the
+        work (`cancelThread`), wait for it to end, and ask again. Needs the permission `account.delete`, which no role holds by default.
+        A second `DELETE` is a 404.
+      parameters:
+        - name: confirm
+          in: query
+          required: true
+          description: "The caller's own key again (`getMe` `user`). Anything else is `400 confirmation_mismatch`"
+          schema: { type: string }
+      responses:
+        "202":
+          description: The account is erased; the files follow within a sweep
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, threadsErased, filesPending, keptUntil]
+                properties:
+                  status: { type: string, enum: [erasing] }
+                  threadsErased: { type: integer, minimum: 0 }
+                  filesPending: { type: integer, minimum: 0, description: "Files whose erase is queued (the purge worker's rows)" }
+                  keptUntil: { type: [string, "null"], format: date-time, description: "When the kept usage counts are deleted; `null` when the person had none" }
+        "400": { description: "`code: confirmation_mismatch`: `confirm` is not the caller's key. Nothing was touched", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `account.delete` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The account is not the caller's, or nothing is left of it (one answer for all, an administrator's included)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: account_busy`: a thread of the caller works. Stop it, wait, ask again", $ref: "#/components/responses/Problem" }
+        "503": { description: "The credential broker or the store cannot be reached (`Retry-After`): nothing was erased, try again", $ref: "#/components/responses/Problem" }
   /api/me/usage:
     get:
       operationId: getMyUsage
@@ -2109,7 +2165,7 @@ components:
               offered: { type: array, items: { type: string }, description: "`model_not_offered`, `reasoning_not_offered`: the model aliases or reasoning levels the agent's live card offers (empty when it lists none)" }
               code:
                 type: string
-                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `searchThreads`: a burst of 20 and then two a second; `Retry-After`); `query_empty`, `query_too_long`, `bad_cursor` (400, `searchThreads`: the query is blank or too long, the cursor is not this request's); `bad_request` (400, `searchThreads`: any other malformed request); `search_unavailable` (503, `searchThreads`: the store is down or the search took too long; `Retry-After`); `bad_scope`, `bad_cursor` (400, `listPrompts`), `bad_name`, `bad_title`, `bad_description`, `bad_body`, `bad_reference`, `bad_variable`, `undeclared_variable`, `unused_variable`, `bad_audience` (400, `createPrompt`, `updatePrompt`: a save the rules of `prompts-v1.md` refuse; the members `at` and `offset` say where), `name_taken` and `too_many_prompts` (409, `createPrompt`, `updatePrompt`), `stale_revision` (409, also `updatePrompt`, `deletePrompt`, `renderPrompt`: the prompt changed since the revision sent), `invalid_answer` (422, `renderPrompt`: the members `question` and `rule` say which answer and which rule) and `rendered_too_long` (422, `renderPrompt`); `model_not_offered` and `reasoning_not_offered` (422, `runAgent`, `forkThread`, `patchThread`: the agent's live card does not offer the model or the reasoning effort picked; the member `offered` lists what it does; [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md)); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
+                description: "A stable name for the problem, where a client acts on one: `turn_open` (`forkThread`, and `runAgent` with `vymalo.fork`: try again when the turn has ended); `forbidden` (403: the caller's roles lack the permission); `no_access` (403: the caller's roles grant nothing at all); `sharing_disabled` (403, `shareThread` and `rotateThreadShare`: the deployment's cap is `disabled`); `over_cap` (409, `shareThread`: above the deployment's cap); `not_shared` (409, `rotateThreadShare`: the thread is private); `bad_anchor` and `nested_row` (422, `arrangeThread`: the thread to place it by cannot be one; a nested thread cannot be pinned or placed); `thread_active` (409, `deleteThread`: the thread works, stop it first); `account_busy` (409, `deleteAccount`: a thread of the caller works) and `confirmation_mismatch` (400, `deleteAccount`: `confirm` is not the caller's key); `too_many_streams` (429: the public streams of a link, or of all links, are taken); `url_refused` (400, `createUserToolServer`, `updateUserToolServer`: the egress guard refuses the URL, `detail` is its reason for a person); `too_many_servers` (409, `createUserToolServer`: the person holds the most they may); `stale_revision` (409, `updateUserToolServer`: the server changed since the revision sent); `credentials_not_kept` (422: the deployment keeps no credentials and the request needs one); `broker_down` (503: the credential broker cannot keep or revoke a credential now); `egress_refused` (422, `authorizeUserToolServer`: a URL the authorization must fetch is refused by the deployment's egress lists, or names a private or reserved address); `oauth_not_configured` (422, `authorizeUserToolServer`: the deployment has no address for the OAuth callback); `authorization_unavailable` (503, `authorizeUserToolServer`: the authorization could not be started now; `Retry-After`); `rate_limited` (429, `authorizeUserToolServer`: ten calls a minute per person; `searchThreads`: a burst of 20 and then two a second; `Retry-After`); `query_empty`, `query_too_long`, `bad_cursor` (400, `searchThreads`: the query is blank or too long, the cursor is not this request's); `bad_request` (400, `searchThreads`: any other malformed request); `search_unavailable` (503, `searchThreads`: the store is down or the search took too long; `Retry-After`); `bad_scope`, `bad_cursor` (400, `listPrompts`), `bad_name`, `bad_title`, `bad_description`, `bad_body`, `bad_reference`, `bad_variable`, `undeclared_variable`, `unused_variable`, `bad_audience` (400, `createPrompt`, `updatePrompt`: a save the rules of `prompts-v1.md` refuse; the members `at` and `offset` say where), `name_taken` and `too_many_prompts` (409, `createPrompt`, `updatePrompt`), `stale_revision` (409, also `updatePrompt`, `deletePrompt`, `renderPrompt`: the prompt changed since the revision sent), `invalid_answer` (422, `renderPrompt`: the members `question` and `rule` say which answer and which rule) and `rendered_too_long` (422, `renderPrompt`); `model_not_offered` and `reasoning_not_offered` (422, `runAgent`, `forkThread`, `patchThread`: the agent's live card does not offer the model or the reasoning effort picked; the member `offered` lists what it does; [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md)); `tool_server_needs_auth` and `tool_server_unavailable` (422, `putThreadTools`: a server of the person's own that is not ready; the first is a call to action (a key or an authorization to give), the second a cause that clears by itself)"
   schemas:
     BrowserAuth:
       type: object
