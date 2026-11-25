@@ -53,6 +53,16 @@ pub struct ProblemExt {
     /// `client_update_required`: the lowest application version this deployment serves.
     #[serde(rename = "minClientVersion", skip_serializing_if = "Option::is_none")]
     pub min_client_version: Option<String>,
+    /// `over_limit` (ADR 0081): the name of the limit the person reached
+    /// (`messages_per_minute`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<String>,
+    /// `over_limit`: how much of the limit the person used in its window.
+    #[serde(rename = "inUse", skip_serializing_if = "Option::is_none")]
+    pub in_use: Option<u32>,
+    /// `over_limit`: the value of the limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
 }
 
 impl Problem {
@@ -109,6 +119,19 @@ impl Problem {
         self.ext = Some(Box::new(ProblemExt {
             question: Some(question.to_owned()),
             rule: Some(rule.to_owned()),
+            ..ProblemExt::default()
+        }));
+        self
+    }
+
+    /// The same problem naming the limit the person reached, its value and the current usage
+    /// (ADR 0081, decision 4).
+    #[must_use]
+    pub fn with_limit(mut self, limit: &str, in_use: u32, max: u32) -> Self {
+        self.ext = Some(Box::new(ProblemExt {
+            limit: Some(limit.to_owned()),
+            in_use: Some(in_use),
+            max: Some(max),
             ..ProblemExt::default()
         }));
         self
@@ -204,6 +227,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
 /// | a delete of a thread that works (`AppError::ThreadActive`) | 409 with `code: thread_active` |
 /// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, `oauth_not_configured`, `egress_refused`, `tool_server_needs_auth` or `tool_server_unavailable` (an attach of a server of the person's own that is not ready), 400 `url_refused`, 503 `broker_down` or `authorization_unavailable` + `Retry-After: 5`, 503 + `Retry-After: 1` and no code when other requests kept changing the server (`Busy`) |
+/// | a message over the person's role's `messages_per_minute` (`AppError::MessageLimit`, ADR 0081) | 429 with `Retry-After` (the seconds until the oldest message in the window leaves it) and `code: over_limit`, `limit`, `inUse`, `max` |
 /// | `Conflict` | 503 + `Retry-After: 1` |
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
@@ -244,6 +268,21 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
             Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
         );
+    }
+    // A message over the person's role's `messages_per_minute` (ADR 0081, decision 4): 429 with the
+    // seconds until the oldest message in the window leaves it, and a body that names the limit,
+    // its value and the current usage.
+    if let AppError::MessageLimit {
+        limit,
+        in_use,
+        max,
+        retry_after,
+    } = err
+    {
+        let problem = Problem::new(StatusCode::TOO_MANY_REQUESTS, err.to_string())
+            .with_code("over_limit")
+            .with_limit(limit, *in_use, *max);
+        return (problem, Some(retry_after_secs(Some(*retry_after), 60)));
     }
     if let AppError::Fork(fork) = err {
         // A cut the thread does not allow: the request is well formed, what it names is not there
@@ -546,6 +585,16 @@ mod tests {
                 }),
                 409,
                 None,
+            ),
+            (
+                AppError::MessageLimit {
+                    limit: "messages_per_minute",
+                    in_use: 2,
+                    max: 2,
+                    retry_after: Duration::from_secs(30),
+                },
+                429,
+                Some("30"),
             ),
             (AppError::Contended, 503, Some("1")),
             (AppError::Store(StoreError::VersionConflict), 503, Some("1")),

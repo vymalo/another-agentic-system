@@ -1236,10 +1236,20 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         Some(None) => None,
         Some(Some(name)) => Some(name.trim().to_owned()),
     };
-    Policy::new(roles, default_role.map(orch_ports::Role::new)).unwrap_or_else(|e| {
+    let mut policy = Policy::new(roles, default_role.map(orch_ports::Role::new)).unwrap_or_else(|e| {
         tracing::error!(error = %e, "auth.defaultRole is not one of auth.roles; no role grants anything");
         Policy::deny_all()
-    })
+    });
+    // A role's `limits.messagesPerMinute` (ADR 0081, decision 2): no default, so a deployment that
+    // sets none refuses nothing.
+    if let Some(roles) = &auth.roles {
+        for (name, role) in roles {
+            if let Some(max) = role.effective_limits().messages_per_minute {
+                policy = policy.with_messages_per_minute(name.as_str(), max);
+            }
+        }
+    }
+    policy
 }
 
 /// The complete, validated configuration.

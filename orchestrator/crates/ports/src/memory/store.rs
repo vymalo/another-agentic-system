@@ -1528,6 +1528,24 @@ impl ThreadStore for MemoryStore {
             .unwrap_or_default())
     }
 
+    async fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> Result<Vec<Timestamp>, StoreError> {
+        let inner = self.lock();
+        let mut at: Vec<Timestamp> = inner
+            .threads
+            .values()
+            .filter(|e| &e.record.owner == owner)
+            .flat_map(|e| e.events.iter())
+            .filter(|s| s.event.kind() == EventKind::UserMessage && s.event.at >= since)
+            .map(|s| s.event.at)
+            .collect();
+        at.sort_unstable();
+        Ok(at)
+    }
+
     async fn list_events(
         &self,
         thread: ThreadId,

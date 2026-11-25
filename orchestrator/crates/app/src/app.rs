@@ -1070,6 +1070,49 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// The window of a role's `messages_per_minute` (ADR 0081, decision 2): one minute.
+    const MESSAGE_WINDOW_SECS: i64 = 60;
+
+    /// Refuses a message when the person is at their role's `messages_per_minute` (ADR 0081,
+    /// decision 4): 429, `Retry-After` until the oldest message in the window leaves it, and a
+    /// problem that names the limit and its value. The count is a query over the log
+    /// ([`ThreadStore::messages_since`]), never an in-memory counter, so every replica counts the
+    /// same and a restart loses nothing (decision 3). It runs before the commit, so a refused
+    /// message writes nothing and no agent is asked.
+    async fn check_message_limit(
+        &self,
+        access: &Access<'_>,
+        now: Timestamp,
+    ) -> Result<(), AppError> {
+        let Some(max) = access.messages_per_minute() else {
+            return Ok(());
+        };
+        let window = jiff::SignedDuration::from_secs(Self::MESSAGE_WINDOW_SECS);
+        let since = now.checked_sub(window).unwrap_or(now);
+        let messages = self
+            .ports
+            .store()
+            .messages_since(access.user(), since)
+            .await?;
+        if messages.len() < usize::try_from(max).unwrap_or(usize::MAX) {
+            return Ok(());
+        }
+        // The oldest message leaves the window in whole seconds, rounded up, at least one.
+        let oldest = messages.first().copied().unwrap_or(now);
+        let frees_at = oldest.checked_add(window).unwrap_or(now);
+        let millis = frees_at.duration_since(now).as_millis().max(0);
+        let seconds = u64::try_from(millis)
+            .unwrap_or(u64::MAX)
+            .div_ceil(1000)
+            .max(1);
+        Err(AppError::MessageLimit {
+            limit: "messages_per_minute",
+            in_use: u32::try_from(messages.len()).unwrap_or(u32::MAX),
+            max,
+            retry_after: Duration::from_secs(seconds),
+        })
+    }
+
     /// Creates a thread whose first message is already in the event log and queued for delegation.
     pub async fn create_thread(
         &self,
@@ -1148,6 +1191,9 @@ impl<P: Ports> App<P> {
             .await?;
 
         let now = self.ports.clock().now();
+        // The first message is a message: over the person's role's `messages_per_minute` it is
+        // refused before anything is written (ADR 0081, decision 4).
+        self.check_message_limit(&access, now).await?;
         let (mut next, mut cmds) = start_thread(
             gate,
             &Input::UserMessage {
@@ -1761,6 +1807,12 @@ impl<P: Ports> App<P> {
             replacement,
         )?;
         let now = self.ports.clock().now();
+        // The first message of a fork is a message (an edit replaces one and appends a user
+        // message): over the person's role's `messages_per_minute` it is refused before anything
+        // is written (ADR 0081, decision 4).
+        if has_message {
+            self.check_message_limit(&access, now).await?;
+        }
         // A fork has the servers its copied log left attached, but for the agent it talks to and
         // for the person who owns it: one that agent may not use, and one of a person's own
         // servers that its new owner does not own, is detached in the fork's own log, so the log
@@ -2540,6 +2592,12 @@ impl<P: Ports> App<P> {
                     .await?
             };
             (*tier, *tier_cap) = (pin.tier, pin.cap);
+        }
+        // A message over the person's role's `messages_per_minute` is refused here, before
+        // anything is written (ADR 0081, decision 4); a card action is not a message.
+        if matches!(input, Input::UserMessage { .. } | Input::StopAndSend { .. }) {
+            self.check_message_limit(&access, self.ports.clock().now())
+                .await?;
         }
         // What starts or continues the agent's work for the person is the owner's act: the servers
         // of their own they may no longer use are taken off the thread with it.
