@@ -147,6 +147,7 @@ fn question() -> ChatRequest {
         system: "Reply with a short title.".into(),
         user: "Title this: how do I fix the build?".into(),
         max_tokens: 24,
+        run: None,
     }
 }
 
@@ -218,6 +219,7 @@ impl ModelFixture for Fixture {
             system: content("system")?,
             user: content("user")?,
             max_tokens: u32::try_from(body["max_tokens"].as_u64()?).ok()?,
+            run: None,
         })
     }
 }

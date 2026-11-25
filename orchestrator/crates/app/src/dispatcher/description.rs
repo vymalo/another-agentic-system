@@ -197,6 +197,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             system,
             user,
             max_tokens: task.max_tokens,
+            run: None,
         };
         let text = self
             .ask_model(
