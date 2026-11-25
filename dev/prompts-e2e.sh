@@ -38,6 +38,11 @@
 #   * THE PERMISSION: a person without `prompts.share` creates a private prompt (201), is 403 `forbidden` for one shared with `*` and for
 #     an edit that adds an audience; sharing with `*` lets them list it, and unsharing (an empty audience) hides it at once;
 #   * THE LIMIT: a person holds 100 prompts, the 101st is 409 `too_many_prompts`, and `held` says 100;
+#   * MCP: the same library through `/mcp` with the dev token of dev/mcp-tokens.yaml (the person `dev@example.com`, who has neither
+#     `prompts.share` nor `prompt-team`): `prompts/list` has the prompt shared with everybody and the person's own, and **not** the owner's
+#     private prompt nor the one shared with `prompt-team`, and is the same set of names as `listPrompts?scope=all`; `prompts/get` with
+#     `arguments` gives one `user` message whose text is what `renderPrompt` answers for the same answers; another person's private prompt
+#     (by name or by id) is `unknown prompt`, a refused answer is a protocol error, and no token is 401;
 #   * DELETE: with a stale `revision` it is 409, then 204, then 404;
 #   * THE LOG: no word of a name, title, description, body, answer or role of a prompt is in a line of the orchestrator's log (read with
 #     `docker compose logs` when docker is there: otherwise this one check is skipped and says so).
@@ -49,6 +54,8 @@
 #   TEAM_EMAIL      prompts-team@example.com, who has the role the prompt is shared with
 #   OUTSIDER_EMAIL  prompts-outsider@example.com, who has neither
 #   ADMIN_EMAIL     admin@example.com
+#   MCP_USER_EMAIL  dev@example.com, the user of MCP_TOKEN (dev/mcp-tokens.yaml)
+#   MCP_TOKEN       dev-mcp-token-0123456789abcdef0123456789, the dummy bearer token of dev/mcp-tokens.yaml
 #   ORCH_SERVICE    orchestrator, the compose service whose log is read
 #
 # Needs curl and jq. Run by CI in .github/workflows/coder-e2e.yml (no Docker where it was written). Its first CI run (43731759281) passed
@@ -67,6 +74,9 @@ owner=$(sh "$here/auth-header.sh" "$owner_email")
 team=$(sh "$here/auth-header.sh" "$team_email")
 outsider=$(sh "$here/auth-header.sh" "$outsider_email")
 admin=$(sh "$here/auth-header.sh" "$admin_email")
+dev_email=${MCP_USER_EMAIL:-dev@example.com}
+dev=$(sh "$here/auth-header.sh" "$dev_email")
+mcp_token=${MCP_TOKEN:-dev-mcp-token-0123456789abcdef0123456789}
 service=${ORCH_SERVICE:-orchestrator}
 
 fail=0
@@ -97,6 +107,7 @@ cleanup() {
   purge "$owner" || true
   purge "$team" || true
   purge "$outsider" || true
+  purge "$dev" || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -126,6 +137,7 @@ echo "== clean up"
 purge "$owner"
 purge "$team"
 purge "$outsider"
+purge "$dev"
 
 echo "== config"
 expect "GET /api/config is 200" "$(call "$owner" GET /api/config)" 200
@@ -249,6 +261,63 @@ expect "the owner shares with everybody: 200" "$(call "$owner" PATCH "/api/promp
 rev4=$(field .revision)
 expect "the outsider lists it" "$(call "$outsider" GET '/api/prompts?scope=shared')" 200
 expect "it is there" "$(jq -r --arg id "$id" '[.items[] | select(.id == $id)] | length' "$tmp/body")" 1
+echo "== mcp"
+# The same library over the orchestrator's MCP server (/mcp, docs/api/prompts-v1.md "The same library as MCP prompts"): the bearer token of
+# dev/mcp-tokens.yaml is the person `dev@example.com`, who holds neither `prompts.share` nor the role `prompt-team`. At this point `$id` is
+# shared with everybody (`*`), so that person sees it; the owner's private prompt and the one shared with `prompt-team` are not theirs to see.
+priv_id=$(call "$owner" POST /api/prompts "{\"name\":\"private-$run\",\"title\":\"Private\",\"body\":\"private$sentinel\"}" >/dev/null; field .id)
+call "$owner" POST /api/prompts "{\"name\":\"team-$run\",\"title\":\"Team\",\"body\":\"team$sentinel\",\"audience\":[\"prompt-team\"]}" >/dev/null
+call "$dev" POST /api/prompts "{\"name\":\"devown-$run\",\"title\":\"Dev own\",\"body\":\"devown$sentinel\"}" >/dev/null
+mcp_n=0
+mcp_post() { # mcp_post TOKEN BODY: one JSON-RPC POST to /mcp; the status is printed, the message that answers is in $tmp/mcp
+  curl -sS --max-time 60 -o "$tmp/mcp-raw" -w '%{http_code}' -X POST "$base/mcp" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -H "Authorization: Bearer $1" -d "$2"
+}
+mcp_rpc() { # mcp_rpc METHOD PARAMS: the status; the answer message of the request in $tmp/mcp (JSON or a server-sent event)
+  mcp_n=$((mcp_n + 1))
+  _body=$(jq -cn --argjson id "$mcp_n" --arg m "$1" --argjson p "$2" '{jsonrpc: "2.0", id: $id, method: $m, params: $p}')
+  _st=$(mcp_post "$mcp_token" "$_body")
+  case $(head -c 1 "$tmp/mcp-raw") in
+    '{') jq -c --argjson id "$mcp_n" 'select(.id == $id)' "$tmp/mcp-raw" >"$tmp/mcp" ;;
+    *) sed -n 's/^data: *//p' "$tmp/mcp-raw" | jq -c --argjson id "$mcp_n" 'select(.id == $id)' >"$tmp/mcp" ;;
+  esac
+  printf '%s' "$_st"
+}
+mcp_field() { jq -r "($1) | select(. != null)" "$tmp/mcp"; }
+expect "initialize is 200" "$(mcp_rpc initialize '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"prompts-e2e.sh","version":"0"}}')" 200
+expect "the server offers prompts" "$(mcp_field '.result.capabilities.prompts | type')" object
+expect "prompts/list is 200" "$(mcp_rpc prompts/list '{}')" 200
+cp "$tmp/mcp" "$tmp/mcp-list"
+expect "the shared prompt is listed under its name" "$(jq -r --arg n "$name" '[.result.prompts[] | select(.name == $n)] | length' "$tmp/mcp-list")" 1
+expect "with its two variables as arguments" \
+  "$(jq -r --arg n "$name" '.result.prompts[] | select(.name == $n) | [.arguments[].name] | join(",")' "$tmp/mcp-list")" focus,depth
+expect "the person's own prompt is listed" "$(jq -r --arg n "devown-$run" '[.result.prompts[] | select(.name == $n)] | length' "$tmp/mcp-list")" 1
+expect "the owner's private prompt is NOT listed" \
+  "$(jq -r --arg n "private-$run" --arg i "$priv_id" '[.result.prompts[] | select(.name == $n or .name == $i)] | length' "$tmp/mcp-list")" 0
+expect "the prompt shared with prompt-team is NOT listed" \
+  "$(jq -r --arg n "team-$run" '[.result.prompts[] | select(.name == $n)] | length' "$tmp/mcp-list")" 0
+# what the API lists for the same person: the two lists name the same prompts
+call "$dev" GET '/api/prompts?scope=all' >/dev/null
+expect "the list is the one of listPrompts?scope=all" \
+  "$(jq -r '[.items[].name] | sort | join(",")' "$tmp/body")" "$(jq -r '[.result.prompts[].name] | sort | join(",")' "$tmp/mcp-list")"
+expect "prompts/get is 200" "$(mcp_rpc prompts/get "$(jq -cn --arg n "$name" '{name: $n, arguments: {focus: "security", depth: "4"}}')")" 200
+expect "one message, role user" "$(mcp_field '.result.messages | map(.role) | join(",")')" user
+mcp_text=$(mcp_field '.result.messages[0].content.text')
+call "$dev" GET "/api/prompts/$id" >/dev/null
+dev_rev=$(field .revision)
+call "$dev" POST "/api/prompts/$id/render" "{\"revision\":\"$dev_rev\",\"answers\":[{\"id\":\"focus\",\"values\":[\"security\"]},{\"id\":\"depth\",\"values\":[\"4\"]}]}" >/dev/null
+expect "its text is what POST /api/prompts/{id}/render answers" "$mcp_text" "$(field .text)"
+expect "and the label, not the value" "$mcp_text" "Review this PR for Security at depth 4."
+expect "the owner's private prompt is an unknown prompt for prompts/get" \
+  "$(mcp_rpc prompts/get "$(jq -cn --arg n "private-$run" '{name: $n}')")" 200
+expect "with a protocol error" "$(mcp_field '.error.message // empty' | grep -c 'unknown prompt')" 1
+expect "the same answer for the id of the private prompt" \
+  "$(mcp_rpc prompts/get "$(jq -cn --arg n "$priv_id" '{name: $n}')" >/dev/null; mcp_field '.error.message // empty' | grep -c 'unknown prompt')" 1
+expect "an answer the rules refuse is a protocol error" \
+  "$(mcp_rpc prompts/get "$(jq -cn --arg n "$name" '{name: $n, arguments: {focus: "security", depth: "6"}}')" >/dev/null; mcp_field '.error.message // empty' | grep -c 'depth')" 1
+expect "no token, no prompts: 401" "$(mcp_post "" '{"jsonrpc":"2.0","id":99,"method":"prompts/list"}')" 401
+
 withdraw=$(jq -n --arg rev "$rev4" '{revision: $rev, audience: []}')
 expect "unsharing: 200" "$(call "$owner" PATCH "/api/prompts/$id" "$withdraw")" 200
 rev5=$(field .revision)

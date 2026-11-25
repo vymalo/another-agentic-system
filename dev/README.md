@@ -3447,3 +3447,35 @@ The relay of a person's own MCP server (`dev/user-tools-relay-e2e.sh`, `[mock:ow
 - `docker compose --profile '*' config -q` (and with `-f compose.live.yaml --env-file .env.example`, `-f dev/compose.browser-auth.yaml`, `-f dev/compose.chat-browser.yaml`, `-f dev/compose.github-app.yaml`) and `sh dev/check-browser-auth-config.sh` are clean; `shellcheck` on the scripts is clean.
 
 *Unverified where this was written*, and the likeliest to fail first in the Coder E2E job: (1) that Docker's DNS gives the alias `mock-mcp-search.strangers.test` to the orchestrator's resolver (the script's last log check says `did the name resolve?` when it does not: an unreachable name is a refusal too, but not `private-address`); (2) the edge in front of the runs of the limited token (`oauth2-proxy` verifies the token and ignores its roles); (3) the image's `adam-agent` (a release build at the same commit) offering the relayed tool under the same name; (4) the order of the log's fields in the orchestrator's text format (the check reads three substrings of one line).
+
+## Load test
+
+`dev/load/run.sh` ramps concurrent runs against the `app` profile (mocks only: the WireMock agents and the scripted `mock-model`, tokens
+from `mock-oidc`; no secret, no real model, no real GitHub). Each run is one `POST /agui/agents/chat` whose message is `[mock:slow] load test`
+(the model takes 20 s, so the run stays open) read as a stream to its `RUN_FINISHED`. The tool is a Node script with no dependency (Node 22:
+`fetch` and streams): no k6 to install, and the sampling of `docker compose` and `/metrics` is a few lines beside it.
+
+```sh
+docker compose --profile app up -d --build --wait
+dev/load/run.sh                                   # steps 10, 50, 100, 200 concurrent runs, each held 25 s
+STEPS=10 HOLD_SECS=10 dev/load/run.sh             # the short ramp
+```
+
+Per step it prints one table row: the target, seconds to reach it, runs started, finished and failed, the message latency (POST to the
+response head, p50/p95), the time to the first event, open streams, the outbox queue (`orch_outbox_rows` due and leased, the age of the oldest due row,
+read from `/metrics`), database connections (`pg_stat_activity`), CPU of the orchestrator and Postgres (`docker stats`), and WireMock's own `/__admin/health`
+time idle and at the step (the mock is the limit when that number climbs with the load). A column is `n/a` when its source is not reachable. It exits 1
+when more than `MAX_ERROR_RATE` (0.02) of the runs fail.
+
+| Variable | Default | |
+|---|---|---|
+| `STEPS` | `10,50,100,200` | concurrent runs per step |
+| `HOLD_SECS`, `SAMPLE_SECS` | 25, 5 | time each step is held once reached, and the sampling interval |
+| `USERS` | the `user` role of `dev/mock-oidc/users.json` | comma list of e-mails the runs are spread over |
+| `AGENT`, `MESSAGE` | `chat`, `[mock:slow] load test` | the agent and the scripted message |
+| `BASE_URL`, `MOCK_MODEL_URL` | the edge, `mock-model` on the host | |
+| `METRICS_CMD` | `docker compose exec -T edge wget -qO- http://orchestrator:8080/metrics` | how `/metrics` is read |
+| `OUT` | none | a path: the rows as JSON |
+
+*Verified 2026-11-25*: the tool ran against a local fake of the API (ramp 3 and 6, the table and exit status as above). **Unrun against the real stack**
+(no Docker where it was written); the ramp to 200 needs a machine that holds the coder image and the stack, and the numbers it gives are that machine's.

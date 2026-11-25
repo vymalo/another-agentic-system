@@ -140,3 +140,13 @@ The lease answer is `{token, accountId, expiresAt}`. `accountId` is the run's pe
 person. The injector gets it beside the key so it can say whose call it is. It answers only behind decision 2's caller check, and like the token
 it is never logged, never in a refusal or an error, and never in a message to an agent; `RunLease`'s `Debug` redacts both. *Unverified:* the
 injector that reads it (B2) and the gateway that trusts it (B3) are not built.
+
+### Status note, 2026-11-24: the meter asks for the account (ANR-663)
+
+The operator's pod-minute meter finds who pays for a run pod without any person id on a pod: `GET /internal/runs/{run}/account` answers
+`{accountId}` (the same `UserId` as the lease's) to **one caller, `RunCaller::Meter`**, the operator's own identity. Every other caller (the
+orchestrator, the injector, any agent, its own run included) and an unknown run get `run_not_bound`, so the answer never says whether a run
+exists; no identity is `unauthenticated`. The meter holds no lease, bind or unbind. The answer holds no credential, so it does not stop at the
+binding's deadline (a pod can outlive its run's lease); it ends with the binding. `accountId` is in no log line, no refusal and no error. `RunLeases`
+gains the required method `account`, which breaks an implementer. *Unverified:* the binary's configuration key for the meter's token
+(`SharedTokens::with_meter`) is not wired yet, as the injector's is not; the meter itself is the platform's.

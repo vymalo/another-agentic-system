@@ -95,6 +95,24 @@ render instead of producing a route that forwards the client's own Authorization
 {{- if not (and (kindIs "float64" .Values.injector.broker.cacheTtlSecs) (ge (int .Values.injector.broker.cacheTtlSecs) 1) (le (int .Values.injector.broker.cacheTtlSecs) 30)) -}}
 {{- fail (printf "injector.broker.cacheTtlSecs must be a number between 1 and 30 (the lease is at most 30 s), got %v" .Values.injector.broker.cacheTtlSecs) -}}
 {{- end -}}
+{{- /* The person's balance, read from the ledger at every model call: without the listener's URL nothing would check it,
+and the model call would spend a balance nobody read (ADR 0084 decision 7). */ -}}
+{{- $budget := .Values.injector.budget -}}
+{{- if not (kindIs "string" $budget.url) -}}
+{{- fail (printf "injector.budget.url must be a string, got %v" $budget.url) -}}
+{{- end -}}
+{{- if not $budget.url -}}
+{{- fail "injector.budget.url is required when the injector is on: the ledger's budget listener, whose read answers whether the person may spend" -}}
+{{- end -}}
+{{- if not (regexMatch "^https?://[^/@?#\\s]+/?$" $budget.url) -}}
+{{- fail (printf "injector.budget.url must be an http or https URL with a host, no credential, path, query or fragment (the route is appended), got %q" $budget.url) -}}
+{{- end -}}
+{{- if and .Values.externalSecrets.enabled (not (and (kindIs "string" $budget.tokenProperty) $budget.tokenProperty)) -}}
+{{- fail "injector.budget.tokenProperty is required with externalSecrets.enabled: the AWS property of the ledger's shared secret" -}}
+{{- end -}}
+{{- if not (and (kindIs "float64" $budget.cacheTtlSecs) (ge (int $budget.cacheTtlSecs) 1) (le (int $budget.cacheTtlSecs) 30)) -}}
+{{- fail (printf "injector.budget.cacheTtlSecs must be a number between 1 and 30 (a stale balance lets a person overspend), got %v" $budget.cacheTtlSecs) -}}
+{{- end -}}
 {{- if not (and (kindIs "float64" .Values.injector.authorino.replicas) (ge (int .Values.injector.authorino.replicas) 1)) -}}
 {{- fail (printf "injector.authorino.replicas must be a positive number, got %v" .Values.injector.authorino.replicas) -}}
 {{- end -}}
@@ -106,6 +124,55 @@ render instead of producing a route that forwards the client's own Authorization
 {{- fail (printf "injector.authorino.audiences must be strings, got %v" .) -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- /* The platform's agent registry (ANR-685): a URL the binary accepts and a token that is a reference, the two together. */ -}}
+{{- $reg := .Values.orchestrator.agents.registry -}}
+{{- if not (and (kindIs "string" $reg.url) (kindIs "string" $reg.tokenProperty)) -}}
+{{- fail "orchestrator.agents.registry.url and orchestrator.agents.registry.tokenProperty must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if and $reg.url (not $reg.tokenProperty) -}}
+{{- fail "orchestrator.agents.registry.url needs orchestrator.agents.registry.tokenProperty: the AWS property of the registry's bearer" -}}
+{{- end -}}
+{{- if and $reg.tokenProperty (not $reg.url) -}}
+{{- fail "orchestrator.agents.registry.tokenProperty needs orchestrator.agents.registry.url: a token for a registry nobody reads" -}}
+{{- end -}}
+{{- if $reg.url -}}
+{{- if not (regexMatch "^https?://[^/@?#\\s]+(/[^?#\\s]*)?$" $reg.url) -}}
+{{- fail (printf "orchestrator.agents.registry.url must be an http or https URL with a host, no credential, query or fragment, got %q" $reg.url) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Where a person's own credentials are kept (ADR 0046): `postgres` (what `userSecrets` turns on) or `openbao`. With `openbao` the address is https (the token
+       is sent with every call), the token is an AWS property and not a value, the mount is a path the orchestrator accepts, and `userSecrets` is off (two
+       stores for one question). Values for OpenBao beside `postgres` would be ignored silently, so they are refused. */ -}}
+{{- $st := .Values.orchestrator.secrets -}}
+{{- if not (has (toString $st.store) (list "postgres" "openbao")) -}}
+{{- fail (printf "orchestrator.secrets.store must be postgres or openbao, got %q" (toString $st.store)) -}}
+{{- end -}}
+{{- $bao := $st.openbao -}}
+{{- if not (and (kindIs "string" $bao.address) (kindIs "string" $bao.mount) (kindIs "string" $bao.tokenProperty) (kindIs "string" $bao.caSecret)) -}}
+{{- fail "orchestrator.secrets.openbao.address, .mount, .tokenProperty and .caSecret must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if eq (toString $st.store) "openbao" -}}
+{{- if not $bao.address -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.address: the https address of the OpenBao server" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/@?#\\s]+(/[^?#\\s]*)?$" $bao.address) -}}
+{{- fail (printf "orchestrator.secrets.openbao.address must be an https URL with a host, no credential, query or fragment (the token is sent with every call), got %q" $bao.address) -}}
+{{- end -}}
+{{- if not $bao.tokenProperty -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.tokenProperty: the AWS property of the OpenBao token" -}}
+{{- end -}}
+{{- if or (gt (len $bao.mount) 128) (not (regexMatch "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" $bao.mount)) (has "." (splitList "/" $bao.mount)) (has ".." (splitList "/" $bao.mount)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.mount must be 1 to 128 characters of A-Z a-z 0-9 . _ - and / between names (no leading or trailing slash, no . or .. name), got %q" $bao.mount) -}}
+{{- end -}}
+{{- if and $bao.caSecret (not (regexMatch "^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$" $bao.caSecret)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.caSecret must be the name of a Secret of this namespace (lower case letters, digits, - and .), got %q" $bao.caSecret) -}}
+{{- end -}}
+{{- if .Values.orchestrator.userSecrets.enabled -}}
+{{- fail "orchestrator.secrets.store openbao and orchestrator.userSecrets.enabled are two stores for one question: turn userSecrets off (the keys seal the Postgres store, which OpenBao replaces)" -}}
+{{- end -}}
+{{- else if or $bao.address $bao.tokenProperty $bao.caSecret -}}
+{{- fail "orchestrator.secrets.openbao.* is set and orchestrator.secrets.store is postgres: set the store to openbao, or clear them (they would be ignored)" -}}
 {{- end -}}
 {{- /* The internal listener of the run routes (ADR 0084 decision 5, card ANR-378): a port a deployment can prepare, and a
 policy that never admits the whole namespace by accident. */ -}}
