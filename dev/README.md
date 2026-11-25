@@ -591,8 +591,7 @@ Host ports are not per project: two stacks side by side need different `*_PORT` 
 | `oauth2-proxy` | `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5-alpine`, pinned by tag and digest | not published | `app` | The real oauth2-proxy in auth_request mode: signs a browser in at `mock-oidc`, and lets a script's own token of that issuer through; answers the edge with `Authorization: Bearer <JWT>` for the orchestrator to validate. |
 | `mock-oidc` | built from [`mock-oidc/`](mock-oidc/Dockerfile) (`node:24-alpine3.23`, pinned by tag and digest; no dependencies) | `8099` (`MOCK_OIDC_PORT`) | `app` | The mock OpenID Connect issuer: discovery, `jwks`, `authorize` (approves the user of `login_hint`, the `/login-as` cookie or `dev@example.com`), `token` (the code; `client_credentials` with a `user`), `userinfo`. Users and roles: [`mock-oidc/users.json`](mock-oidc/users.json). [Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. They read the same `orchestrator.yaml`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s (`OUTBOX_LEASE_SECS`, a variable over the file). See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
-| `swagger-ui` | `swaggerapi/swagger-ui:v5.36.0`, pinned by tag and digest (as `x-swagger-ui-image` at the top of `compose.yaml`) | `8104` (`SWAGGER_UI_PORT`) | `api-docs` | Swagger UI with every OpenAPI document of the repository behind one dropdown: [Read and edit the OpenAPI documents](#read-and-edit-the-openapi-documents). |
-| `swagger-editor` | `swaggerapi/swagger-editor:v5.11.3`, pinned by tag and digest (as `x-swagger-editor-image`) | `8105` (`SWAGGER_EDITOR_PORT`) | `api-docs` | Swagger Editor 5, to change one of them. |
+| `swagger-ui` | `swaggerapi/swagger-ui:v5.36.0`, pinned by tag and digest (as `x-swagger-ui-image` at the top of `compose.yaml`) | `8104` (`SWAGGER_UI_PORT`) | `api-docs` | Swagger UI with every OpenAPI document of the repository behind one dropdown: [Read the OpenAPI documents](#read-the-openapi-documents). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest (once, as `x-adam-image` at the top of `compose.yaml`) | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). Since adam-rs `8e1133d` (adam-rs ADR 0031) every adam agent here also serves Swagger UI: `http://127.0.0.1:8090/docs` (the chat on 8097, the researcher on 8098), public on the loopback; a call from it needs the agent's token (`dev-coder-token`, `dev-chat-token`, `dev-researcher-token`), and the edge does not route to the agents. |
 | `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: the script `mock-coder` (no `mock-opencode` since adam-rs `7418467`), and the SSE twin of each of its scripts that answers a request with `"stream": true` (the coder streams its model calls). Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM), plus one script of ours beside them, `[mock:share]` ([`wiremock/coder-share/`](wiremock/coder-share), with its twins: the coder makes three files and shares them, [Files from agents](#files-from-agents-the-artifact-store)). The two folders are mounted next to each other under `/home/wiremock/mappings`, which WireMock reads recursively. |
@@ -2179,24 +2178,23 @@ dev/artifact-e2e.sh           # on the running app profile
 dev/e2e-all.sh artifact       # the same, with the summary
 ```
 
-## Read and edit the OpenAPI documents
+## Read the OpenAPI documents
 
-One opt-in profile holds two viewers. Name them, so that the default services (the database and the mocks) do not start with them; nothing is built:
+One opt-in profile holds the viewer. Name it, so that the default services (the database and the mocks) do not start with them; nothing is built:
 
 ```sh
-docker compose --profile api-docs up -d swagger-ui swagger-editor
+docker compose --profile api-docs up -d swagger-ui
 ```
 
 | What | URL | For |
 |---|---|---|
 | Swagger UI | <http://127.0.0.1:8104> | Every OpenAPI document of this repository in one page: the dropdown at the top lists them (today the [chat API](../docs/api/chat-api.yaml)). |
-| Swagger Editor | <http://127.0.0.1:8105/?url=http://127.0.0.1:8105/openapi/chat-api.yaml> | Changing one: the same files, loaded by URL (File, Import URL does the same). |
 
-Both read the files from the checkout, mounted read-only, so a refresh shows what is on disk. The editor keeps your text in the browser and
-cannot write to the checkout: copy the result into `docs/api/` yourself. A document is added in `compose.yaml`: one mount on each viewer and one
-entry in `swagger-ui`'s `URLS`; the Compose workflow fails when a document under `docs/` that says `openapi:` is not named there. The
-ports are `SWAGGER_UI_PORT` and `SWAGGER_EDITOR_PORT`, bound to `127.0.0.1`. The images are the latest stable releases of 2026-11-25, pinned by tag and digest;
-move them by reading the new tag and digest from Docker Hub (`https://hub.docker.com/v2/repositories/swaggerapi/<name>/tags`) and changing the two `x-swagger-*-image` lines.
+It reads the files from the checkout, mounted read-only, so a refresh shows what is on disk. There is no editor here: an editor in your IDE reads
+the same files. A document is added in `compose.yaml`: one mount on `swagger-ui` and one entry in its `URLS`; the Compose workflow fails when a
+document under `docs/` that says `openapi:` is not named there. The port is `SWAGGER_UI_PORT`, bound to `127.0.0.1`. The image is the latest stable
+release of 2026-11-25, pinned by tag and digest; move it by reading the new tag and digest from Docker Hub
+(`https://hub.docker.com/v2/repositories/swaggerapi/swagger-ui/tags`) and changing the `x-swagger-ui-image` line.
 
 "Try it out" calls the `servers` of the document, and `chat-api.yaml` names `/`: a call made from this page goes to Swagger UI itself, so
 make those calls against the edge or the orchestrator (`dev/auth-header.sh` gives a token). Every adam agent of this stack also serves

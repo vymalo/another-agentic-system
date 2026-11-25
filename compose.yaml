@@ -36,9 +36,9 @@
 #                Needs SMEE_URL (.env.example); smee.io is a third party that sees every payload.
 #   local-agent  a second orchestrator, built with the Cargo feature `agent-local`, that hosts an `echo`
 #                agent in its own process, with a database of its own (ADR 0015): http://127.0.0.1:8095.
-#   api-docs     Swagger UI with every OpenAPI document of this repository in one page (http://127.0.0.1:8104, a dropdown) and Swagger
-#                Editor for changing one (http://127.0.0.1:8105): `docker compose --profile api-docs up -d swagger-ui swagger-editor`
-#                (named, so that the default services, the database and the mocks, are not started with them).
+#   api-docs     Swagger UI with every OpenAPI document of this repository in one page (http://127.0.0.1:8104, a dropdown):
+#                `docker compose --profile api-docs up -d swagger-ui` (named, so that the default services, the database and the mocks,
+#                are not started with it).
 #
 # compose.live.yaml (an override, `-f compose.yaml -f compose.live.yaml`) points the coder at a real model
 # and a real GitHub, reading .env (copy .env.example): dev/README.md, "Going live".
@@ -183,10 +183,9 @@ x-orchestrator-env: &orchestrator-env
 # `adam-agent`, which must refuse local processes), and the shipped `mcp.json` no longer starts a local process, so nothing here sets it either.
 # `adam-agent` and `github-mcp-server` ship INSIDE this image beside `adam-coder` (adam-rs ADR 0005, ADR 0017): there is no second image to pull,
 # and a service that serves a folder, or the sidecar, is this image with another entrypoint.
-# Swagger UI and Swagger Editor, the `api-docs` profile (dev/README.md, "Read and edit the OpenAPI documents"). Latest stable on 2026-11-25
-# (Docker Hub, `swaggerapi/swagger-ui` v5.36.0 and `swaggerapi/swagger-editor` v5.11.3), pinned by tag and by the digest of the multi-arch index.
+# Swagger UI, the `api-docs` profile (dev/README.md, "Read the OpenAPI documents"). Still the latest stable on 2026-11-25
+# (Docker Hub, `swaggerapi/swagger-ui` v5.36.0), pinned by tag and by the digest of the multi-arch index.
 x-swagger-ui-image: &swagger-ui-image swaggerapi/swagger-ui:v5.36.0@sha256:a6c9dae9b7bf7aa691ad8cf76574d0a9c3c8ce6e0d3946d6bb55acc36f24c4e5
-x-swagger-editor-image: &swagger-editor-image swaggerapi/swagger-editor:v5.11.3@sha256:0d161e29fe89302cdb02cec39e509913538fd1f71d446031bf8361b749dfaad0
 
 x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-945208e@sha256:ef440f7eb24f9abbb3c8964d347d2ede962e1be30dc4663229729985d02edc8b
 
@@ -1133,7 +1132,7 @@ services:
       - "127.0.0.1:${ORCH_LOCAL_PORT:-8095}:8080"
 
   # Every OpenAPI document of the repository in one page: a dropdown (Swagger UI's `URLS`) over files mounted read-only into the image's web
-  # root. A new document is one `volumes` line here, one entry in `URLS`, and the same mount on `swagger-editor`; the Compose workflow
+  # root. A new document is one `volumes` line here and one entry in `URLS`; the Compose workflow
   # fails when a document under docs/ that says `openapi:` is not named in this file. "Try it out" calls the servers a document names:
   # `chat-api.yaml` names `/`, which is this page, so run those calls against the edge (http://127.0.0.1:8080) or the orchestrator itself.
   swagger-ui:
@@ -1146,16 +1145,6 @@ services:
       - ./docs/api/chat-api.yaml:/usr/share/nginx/html/openapi/chat-api.yaml:ro
     ports:
       - "127.0.0.1:${SWAGGER_UI_PORT:-8104}:8080"
-
-  # Swagger Editor 5 to change one document: open http://127.0.0.1:8105/?url=http://127.0.0.1:8105/openapi/chat-api.yaml (or File, Import
-  # URL). The editor keeps its text in the browser, and the mount is read-only: copy the result into docs/api/ yourself.
-  swagger-editor:
-    image: *swagger-editor-image
-    profiles: [api-docs]
-    volumes:
-      - ./docs/api/chat-api.yaml:/usr/share/nginx/html/openapi/chat-api.yaml:ro
-    ports:
-      - "127.0.0.1:${SWAGGER_EDITOR_PORT:-8105}:80"
 
 volumes:
   postgres-data:
