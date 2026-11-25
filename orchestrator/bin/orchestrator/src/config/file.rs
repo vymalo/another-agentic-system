@@ -1563,6 +1563,9 @@ fn project(
         }),
         // The retention of the usage ledger and its price table (ADR 0065), read exactly.
         usage: usage_of(valid)?,
+        // 1 to 36500, checked by the shape pass
+        thread_retention_days: u32::try_from(c.retention.threads.days)
+            .unwrap_or(orch_app::DEFAULT_THREAD_RETENTION_DAYS),
         // Built by `sharing_of`, which can refuse; the defaults stand for a disabled deployment.
         sharing: orch_app::SharingSettings::default(),
         public_limits: orch_api::PublicLimits::default(),

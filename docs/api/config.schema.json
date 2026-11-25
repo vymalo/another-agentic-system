@@ -923,6 +923,20 @@
       ],
       "type": "object"
     },
+    "Retention": {
+      "additionalProperties": false,
+      "description": "What the orchestrator keeps and for how long.",
+      "properties": {
+        "threads": {
+          "$ref": "#/$defs/ThreadRetention",
+          "default": {
+            "days": 90
+          },
+          "description": "The threads of the people."
+        }
+      },
+      "type": "object"
+    },
     "Role": {
       "description": "What this process runs. A closed enum owned by the host library (`adam-host`); the names are the same for every host. `all`: the control plane and the workers, in one process. `control-plane`: the HTTP server, the resource API and the surfaces, no dispatcher. `worker`: the dispatcher, and a router with only `/healthz` and `/readyz`.",
       "enum": [
@@ -1248,6 +1262,21 @@
         "title": {
           "$ref": "#/$defs/TitleTask",
           "description": "The thread title. Absent: titles are off."
+        }
+      },
+      "type": "object"
+    },
+    "ThreadRetention": {
+      "additionalProperties": false,
+      "description": "The retention of threads: a thread with no active job whose last event is older than `days` is erased by the sweep, through the same path as the person's own delete.",
+      "properties": {
+        "days": {
+          "default": 90,
+          "description": "How many days a thread is kept after its last event, 1 to 36500 (default 90).",
+          "format": "uint64",
+          "maximum": 36500,
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -1934,6 +1963,15 @@
         "endpoints": {}
       },
       "description": "The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035)."
+    },
+    "retention": {
+      "$ref": "#/$defs/Retention",
+      "default": {
+        "threads": {
+          "days": 90
+        }
+      },
+      "description": "How long threads are kept (`retention.threads.days`, default 90). Absent: 90 days."
     },
     "secrets": {
       "$ref": "#/$defs/UserSecrets",

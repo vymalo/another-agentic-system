@@ -125,6 +125,9 @@ pub struct Config {
     /// prices `GET /api/me/usage` puts on a month. Absent: 24 months kept and nothing priced.
     #[serde(default)]
     pub usage: Usage,
+    /// How long threads are kept (`retention.threads.days`, default 90). Absent: 90 days.
+    #[serde(default)]
+    pub retention: Retention,
     /// The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035).
     #[serde(default)]
     pub models: Models,
@@ -826,6 +829,43 @@ impl Default for Asks {
             max_per_job: default_ask_per_job(),
             max_running: default_ask_running(),
             timeout_secs: default_ask_timeout_secs(),
+        }
+    }
+}
+
+/// The default of `retention.threads.days`: ninety days.
+pub const DEFAULT_THREAD_RETENTION_DAYS: u64 = 90;
+/// The most `retention.threads.days` may be: a hundred years.
+pub const MAX_THREAD_RETENTION_DAYS: u64 = 36_500;
+
+/// What the orchestrator keeps and for how long.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Retention {
+    /// The threads of the people.
+    #[serde(default)]
+    pub threads: ThreadRetention,
+}
+
+/// The retention of threads: a thread with no active job whose last event is older than `days` is
+/// erased by the sweep, through the same path as the person's own delete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadRetention {
+    /// How many days a thread is kept after its last event, 1 to 36500 (default 90).
+    #[serde(default = "default_thread_retention_days")]
+    #[schemars(range(min = 1, max = 36500))]
+    pub days: u64,
+}
+
+fn default_thread_retention_days() -> u64 {
+    DEFAULT_THREAD_RETENTION_DAYS
+}
+
+impl Default for ThreadRetention {
+    fn default() -> Self {
+        ThreadRetention {
+            days: DEFAULT_THREAD_RETENTION_DAYS,
         }
     }
 }

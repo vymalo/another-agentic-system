@@ -145,9 +145,9 @@ pub use secrets::{
 };
 pub use store::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, Lease, ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewOutbox,
-    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
-    OutboxStatus, Place, SharingChange, StoreError, ThreadListing, ThreadStore,
+    CommitOutcome, ForkOrigin, IdleThread, Lease, ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent,
+    NewOutbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload,
+    OutboxStats, OutboxStatus, Place, SharingChange, StoreError, ThreadListing, ThreadStore,
 };
 pub use teams::{
     MAX_TEAM_PRESETS, StoredTeamPreset, TEAM_PRESET_PAGE, TeamPresetPage, TeamPresetRevision,

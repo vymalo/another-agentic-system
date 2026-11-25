@@ -129,6 +129,8 @@ threadTools:
 sharing:                      # a thread shared by a revocable link (see "sharing"); absent: nothing is shared
   mode: internal
   secret: { file: /run/secrets/sharing }
+retention:                    # how long threads are kept (see "retention"); absent: 90 days
+  threads: { days: 90 }
 usage:                        # the usage ledger of the people (see "usage"); absent: 24 months kept, nothing priced
   retentionMonths: 24
   prices:
@@ -476,6 +478,19 @@ before `public`, is enforced by the code. `sharing.secret` is one of the **fourt
 `sharing.previousSecret`). `server.publicUrl` is the address a link is shown under (`<publicUrl>/s/<token>`); without it a link is
 the path `/s/<token>`. The cap is **not** in [`GET /api/config`](#get-apiconfig) (its body is `{ui, search}`): the web learns it per
 person from `GET /api/me` (`sharing`, the cap when the person's roles hold `thread.share`, else `disabled`).
+
+### `retention`
+
+A thread with no active job (not `queued`, `working` or `verifying`, and no running ask) whose **last event** is older than the
+retention is erased by a sweep, through the same path as the person's own delete ([ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)):
+the log, the files, the search index and the notifications go, its edits and child sessions with it, and a fork is kept. Pinning,
+archiving and reordering are not events, so they never keep a thread alive. A thread that works is never erased; it is looked at
+again at the next pass. The section is optional and **an absent section changes nothing about a file that was valid** beyond the
+default below: 90 days are kept. The file is read once at startup, so a change is a restart.
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `retention.threads.days` | 1 to 36500, `90`. Days a thread is kept after its last event. A sweep runs once at start and then every hour, in every process that runs workers (`all` and `worker`), reads 100 threads at a time oldest first and logs one line with the count when it erased any (no person, no thread). Several replicas may run it | — | now |
 
 ### `usage`
 
