@@ -33,6 +33,18 @@ pub enum AppError {
     /// link. Taking a link down is never refused for it.
     #[error("sharing is disabled in this deployment")]
     SharingDisabled,
+    /// The person has used the token allowance of their roles for the period (ADR 0081,
+    /// `limits.tokensPerPeriod`, read from the usage ledger of ADR 0065): refused before anything is
+    /// written or sent to an agent. It names the limit and the usage, and nothing of anyone else.
+    #[error(
+        "the token allowance of your role for this month is spent ({used} of {limit} tokens used)"
+    )]
+    AllowanceSpent {
+        /// The allowance of the person's roles, in tokens.
+        limit: u64,
+        /// What the person used in the period, in tokens.
+        used: u64,
+    },
     /// A share above the deployment's cap (ADR 0040): `public` under a cap of `internal`.
     #[error("this deployment shares at most {cap}")]
     OverCap {
@@ -257,7 +269,9 @@ impl Classify for AppError {
     fn class(&self) -> ErrorClass {
         match self {
             AppError::NotFound => ErrorClass::NotFound,
-            AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+            AppError::Forbidden { .. }
+            | AppError::SharingDisabled
+            | AppError::AllowanceSpent { .. } => ErrorClass::Forbidden,
             AppError::Invalid(_) => ErrorClass::Invalid,
             AppError::Finished
             | AppError::Refused(_)
@@ -310,6 +324,7 @@ impl Classify for AppError {
             AppError::NotFound
             | AppError::Forbidden { .. }
             | AppError::SharingDisabled
+            | AppError::AllowanceSpent { .. }
             | AppError::OverCap { .. }
             | AppError::NotShared
             | AppError::ThreadActive(_)
@@ -379,6 +394,10 @@ mod tests {
             AppError::missing_permission(Permission::ThreadWrite),
             AppError::agent_not_allowed(Permission::AgentInvoke, &AgentId::new("coder")),
             AppError::SharingDisabled,
+            AppError::AllowanceSpent {
+                limit: 1000,
+                used: 1200,
+            },
             AppError::OverCap {
                 cap: SharingMode::Internal,
             },
@@ -442,7 +461,9 @@ mod tests {
             // Exhaustive: a new variant forces a class decision.
             let expected = match &e {
                 AppError::NotFound => ErrorClass::NotFound,
-                AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+                AppError::Forbidden { .. }
+                | AppError::SharingDisabled
+                | AppError::AllowanceSpent { .. } => ErrorClass::Forbidden,
                 AppError::Invalid(_) => ErrorClass::Invalid,
                 AppError::Finished
                 | AppError::Refused(_)

@@ -305,6 +305,9 @@ pub enum PolicyError {
 pub struct Policy {
     roles: BTreeMap<Role, RoleGrant>,
     default_role: Option<Role>,
+    /// The token allowance per period of the roles that set one (`limits.tokensPerPeriod`, ADR
+    /// 0081). A role that is not here has none.
+    allowances: BTreeMap<Role, u64>,
 }
 
 /// The roles of a deployment that defines none (`auth.roles` absent): `user` and `admin`, as ADR
@@ -324,6 +327,7 @@ impl Default for Policy {
         Policy {
             roles: built_in_roles(),
             default_role: Some(Role::new("user")),
+            allowances: BTreeMap::new(),
         }
     }
 }
@@ -345,7 +349,19 @@ impl Policy {
         Ok(Policy {
             roles,
             default_role,
+            allowances: BTreeMap::new(),
         })
+    }
+
+    /// The policy with the token allowances of the roles (`limits.tokensPerPeriod`, ADR 0081): a
+    /// role absent from `allowances` has none, and a role the policy does not define is ignored.
+    #[must_use]
+    pub fn with_token_allowances(mut self, allowances: BTreeMap<Role, u64>) -> Policy {
+        self.allowances = allowances
+            .into_iter()
+            .filter(|(role, _)| self.roles.contains_key(role))
+            .collect();
+        self
     }
 
     /// The policy with the agent ids of every role replaced by `canonical(id)`, so that a role
@@ -365,6 +381,7 @@ impl Policy {
         Policy {
             roles: BTreeMap::new(),
             default_role: None,
+            allowances: BTreeMap::new(),
         }
     }
 
@@ -423,6 +440,7 @@ impl Policy {
             user: who.user().clone(),
             claims: who.roles().into_iter().cloned().collect(),
             roles,
+            allowances: &self.allowances,
         }
     }
 
@@ -537,6 +555,7 @@ pub struct Access<'p> {
     /// holds only the roles the policy maps to permissions.
     claims: Vec<Role>,
     roles: Vec<(&'p Role, &'p RoleGrant)>,
+    allowances: &'p BTreeMap<Role, u64>,
 }
 
 impl<'p> Access<'p> {
@@ -581,6 +600,23 @@ impl<'p> Access<'p> {
                 })
                 .map(|(_, grant)| grant.max_tier),
         )
+    }
+
+    /// The tokens the person may use in a period (ADR 0081, `limits.tokensPerPeriod`): over the
+    /// roles that hold `agent.invoke`, the highest allowance, and none (no limit) when any of them
+    /// sets none or when there are none. A role that cannot start an agent does not lift it.
+    pub fn tokens_per_period(&self) -> Option<u64> {
+        let mut highest: Option<u64> = None;
+        let mut any = false;
+        for (role, grant) in &self.roles {
+            if !grant.holds(Permission::AgentInvoke) {
+                continue;
+            }
+            any = true;
+            let allowance = *self.allowances.get(*role)?;
+            highest = Some(highest.map_or(allowance, |h| h.max(allowance)));
+        }
+        if any { highest } else { None }
     }
 
     /// The highest of some caps, `None` (no cap) when one of them is none, or when there are none.

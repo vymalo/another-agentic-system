@@ -201,6 +201,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | a helper session that is closed, a start the agent has no context for, or four starts that wait, or a thread that notes 256 sessions (`AppError::Blocked`) | 409 with `code: session_closed`, `no_context`, `too_many_starts` or `too_many_sessions` |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
+/// | a person who spent the token allowance of their roles for the month (`AppError::AllowanceSpent`, ADR 0081) | 403 with `code: allowance_spent` |
 /// | a share above the cap (`AppError::OverCap`), a new link for a thread that is not shared (`AppError::NotShared`) | 409 with `code: over_cap`, `code: not_shared` |
 /// | a delete of a thread that works (`AppError::ThreadActive`) | 409 with `code: thread_active` |
 /// | a refusal about people's own MCP servers (`AppError::UserTool`, ADR 0046) | 404 off or no such server, 409 `too_many_servers` or `stale_revision`, 422 `credentials_not_kept`, `oauth_not_configured`, `egress_refused`, `tool_server_needs_auth` or `tool_server_unavailable` (an attach of a server of the person's own that is not ready), 400 `url_refused`, 503 `broker_down` or `authorization_unavailable` + `Retry-After: 5`, 503 + `Retry-After: 1` and no code when other requests kept changing the server (`Busy`) |
@@ -307,6 +308,14 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
             return (
                 Problem::forbidden("sharing is disabled in this deployment")
                     .with_code("sharing_disabled"),
+                None,
+            );
+        }
+        // The allowance of the person's roles for the period is spent (ADR 0081): nothing was sent
+        // to an agent; the body names the limit and what the person used.
+        AppError::AllowanceSpent { .. } => {
+            return (
+                Problem::forbidden(err.to_string()).with_code("allowance_spent"),
                 None,
             );
         }
@@ -733,6 +742,14 @@ mod tests {
         use orch_app::SharingMode;
         for (error, status, code) in [
             (AppError::SharingDisabled, 403, "sharing_disabled"),
+            (
+                AppError::AllowanceSpent {
+                    limit: 10,
+                    used: 12,
+                },
+                403,
+                "allowance_spent",
+            ),
             (
                 AppError::OverCap {
                     cap: SharingMode::Internal,
