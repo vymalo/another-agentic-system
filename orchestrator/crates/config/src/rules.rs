@@ -22,8 +22,8 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Database, Environment, LogFormat, MAX_PRESIGN_TTL_SECS,
     MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
-    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SecretStoreKind, SharingMode, Surface, ToolServer,
-    ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
+    OAUTH_CALLBACK_PATH, Prompt, Provisioner, SecretRef, SecretStoreKind, SharingMode, Surface,
+    ToolServer, ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -98,6 +98,8 @@ pub struct Secrets {
     /// `secrets.pg.keys`, in the order of the file, each read and checked to be 64 hexadecimal
     /// characters; empty without the section.
     pub user_secret_keys: Vec<UserSecretKeyValue>,
+    /// `provisioner.credentials.dev.clientSecret`; `None` unless the section names it.
+    pub provisioner_dev_client_secret: Option<Secret>,
     /// `secrets.openbao.token`; `None` unless `secrets.store` is `openbao`.
     pub openbao_token: Option<Secret>,
     /// `secrets.openbao.caFile`, read: the PEM text of the certificates. A certificate is public,
@@ -606,6 +608,11 @@ impl Checker<'_> {
         // userToolServers
         if let Some(section) = &cfg.user_tool_servers {
             self.user_tool_servers(cfg, section);
+        }
+
+        // provisioner
+        if let Some(section) = &cfg.provisioner {
+            self.provisioner(cfg, section);
         }
 
         // threadTools
@@ -1724,6 +1731,17 @@ impl Checker<'_> {
             Some(section) => self.user_secrets_openbao(section),
             None => (None, None),
         };
+        let provisioner_dev_client_secret = cfg
+            .provisioner
+            .as_ref()
+            .and_then(|p| p.credentials.dev.as_ref())
+            .and_then(|dev| {
+                self.resolve(
+                    &dev.client_secret,
+                    "provisioner.credentials.dev.clientSecret",
+                    true,
+                )
+            });
         Some(Secrets {
             database_url: database_url?,
             database_direct_url,
@@ -1743,9 +1761,59 @@ impl Checker<'_> {
             webhook_github,
             tool_servers,
             user_secret_keys,
+            provisioner_dev_client_secret,
             openbao_token,
             openbao_ca,
         })
+    }
+
+    /// `provisioner`: the platform's URL is a plain http(s) URL, the kinds are at least one and not
+    /// repeated, the timeouts are in range, a credential source is named, and the development
+    /// issuer is never used in production.
+    fn provisioner(&mut self, cfg: &Config, section: &Provisioner) {
+        if !is_plain_http_url(&section.url) {
+            self.invalid(
+                "provisioner.url",
+                "expected an absolute http:// or https:// URL with a host and no user name or password",
+            );
+        }
+        if section.kinds.is_empty() {
+            self.invalid(
+                "provisioner.kinds",
+                "name at least one kind (coder or workspace)",
+            );
+        }
+        for (i, kind) in section.kinds.iter().enumerate() {
+            if section.kinds[..i].contains(kind) {
+                self.invalid(
+                    format!("provisioner.kinds[{i}]"),
+                    "is listed more than once",
+                );
+            }
+        }
+        match &section.credentials.dev {
+            None => self.invalid(
+                "provisioner.credentials",
+                "name where the token comes from (credentials.dev, for a development stack)",
+            ),
+            Some(dev) => {
+                if cfg.server.environment == Environment::Production {
+                    self.invalid(
+                        "provisioner.credentials.dev",
+                        "refused when server.environment is production: it is for compose and tests",
+                    );
+                }
+                if !is_plain_http_url(&dev.url) {
+                    self.invalid(
+                        "provisioner.credentials.dev.url",
+                        "expected an absolute http:// or https:// URL with a host and no user name or password",
+                    );
+                }
+                if dev.client_id.trim().is_empty() {
+                    self.invalid("provisioner.credentials.dev.clientId", "must not be blank");
+                }
+            }
+        }
     }
 
     /// `userToolServers` (ADR 0046): the lists are host patterns the egress guard reads, the plain

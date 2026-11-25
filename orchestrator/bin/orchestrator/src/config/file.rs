@@ -1543,6 +1543,7 @@ fn project(
         artifacts: artifact_settings(valid)?,
         // People's own MCP servers (ADR 0046): the egress policy and the keys, only when enabled.
         user_tools: UserToolsSettings::from_file(valid).map_err(document)?,
+        provisioner: crate::provisioner::ProvisionerSettings::from_file(valid).map_err(document)?,
         auth: super::AuthSettings::from_file(&c.auth),
         models: Some(models_of(valid)),
         tool_servers: tool_servers_of(&c.tool_servers),
@@ -2102,6 +2103,41 @@ threadTools:
             ("THREAD_TOOLS_SECRET", KEY),
             ("CODER_A2A_TOKEN", "tok-123"),
         ]
+    }
+
+    #[test]
+    fn the_provisioner_is_off_without_its_section_and_read_with_it() {
+        let off = load_with_file(&base(), FILE, FlagSecrets::default()).unwrap();
+        assert!(off.config.provisioner.is_none());
+        assert!(
+            !off.merged
+                .as_deref()
+                .unwrap_or_default()
+                .contains("provisioner")
+        );
+        assert!(
+            crate::provisioner::build(off.config.provisioner.as_ref())
+                .unwrap()
+                .is_none()
+        );
+
+        let section = "\
+provisioner:
+  url: http://platform-api:8080
+  kinds: [coder]
+  readyTimeoutSecs: 30
+  credentials:
+    dev: { url: 'http://mock-oidc:8099', clientId: dev-chat, clientSecret: { env: DEV_SECRET } }
+";
+        let mut pairs = base();
+        pairs.push(("DEV_SECRET", "dev-secret-hunter2"));
+        let on =
+            load_with_file(&pairs, &format!("{FILE}{section}"), FlagSecrets::default()).unwrap();
+        let settings = on.config.provisioner.as_ref().unwrap();
+        assert_eq!(settings.kinds, [orch_ports::AgentKind::Coder]);
+        assert_eq!(settings.ready_timeout.as_secs(), 30);
+        assert!(!format!("{settings:?}").contains("hunter2"));
+        assert!(crate::provisioner::build(Some(settings)).unwrap().is_some());
     }
 
     /// Loads `pairs` (the variables) with `file` as the configuration file.

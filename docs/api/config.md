@@ -456,6 +456,21 @@ The URL a person types is **untrusted**. By default it must be `https` and every
 
 The section is **checked whether it is on or off** (a typo in a list is heard now, not on the day it is turned on), except the rule about `toolServers` ids, which only the feature being on makes. What the broker is allowed to be tuned to (lease and flow lifetimes, timeouts, response size) has no key: the defaults of [`orch-credential-broker`](../../orchestrator/crates/credential-broker/README.md) stand. `userToolServers.enabled` is read once at startup, so a change is a restart; **setting it back to `false` stops every lease of a person's server at once** (nothing is built to lease from).
 
+### `provisioner`
+
+A person's own agents, made on the platform on their first message (the shared `chat` agent is never provisioned). **Absent: off**, nothing is built and `--print-config` prints nothing of it. The section is checked whether or not a message path uses it yet; only the credentials port and its development adapter are wired (slice 1 of the provisioner); the first-message path is slice 2.
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `provisioner.url` | an absolute `http` or `https` URL with a host and no user name or password: the Platform API | — | now |
+| `provisioner.kinds` | list of `coder`, `workspace`; 1 to 2, none twice | — | now |
+| `provisioner.requestTimeoutSecs` | integer, 1 to 600, `5` | — | now |
+| `provisioner.readyTimeoutSecs` | integer, 1 to 600, `120`: how long a first message waits for the agent to be `Ready` | — | now |
+| `provisioner.credentials.dev.url` | the development issuer's base URL (`mock-oidc`); `/token` is appended. **Refused when `server.environment` is `production`** | — | now |
+| `provisioner.credentials.dev.clientId` | the client the issuer knows the orchestrator by; not blank | — | now |
+| `provisioner.credentials.dev.clientSecret` | a secret reference (`{ env: NAME }` or `{ file: PATH }`); one of the twenty-one secrets of the contract | — | now |
+| `provisioner.credentials.dev.audience` | text; none | — | now |
+
 ### `sharing`
 
 A thread can be shared by a revocable link ([ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md)). The section is the
@@ -554,7 +569,7 @@ application, the API and the log hold only the part that is not secret. Replaces
 A server's `signing.key` is a secret of the contract too, by the same rules (a reference, resolved at startup, printed by `--print-config` as the
 reference): **the nineteenth in the schema**, counting the ones that later changes added (the run routes'
 `server.internal.token` and `server.internal.agents`, ADR 0084; `secrets.openbao.token` is the twentieth); the list the test
-`the_secrets_are_the_twenty_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
+`the_secrets_are_the_twenty_one_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
 two here and the two of `sharing`): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
 printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
 `agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the

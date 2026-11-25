@@ -466,6 +466,10 @@ struct Shared {
     app: Arc<App<Stack>>,
     /// The local agents (`transport: local`), when `AGENTS_FILE` lists any.
     local: Option<Local>,
+    /// What the provisioner presents to the Platform API, when `provisioner` is configured. Held
+    /// for the first-message path, which does not call it yet.
+    #[allow(dead_code)]
+    platform_credentials: Option<orch_platform_credentials_dev::DevCredentials>,
 }
 
 /// Connects, migrates and builds the [`App`] every role runs on.
@@ -589,7 +593,13 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
             reason: e.to_string(),
         })?,
     );
-    Ok(Shared { store, app, local })
+    let platform_credentials = crate::provisioner::build(cfg.provisioner.as_ref())?;
+    Ok(Shared {
+        store,
+        app,
+        local,
+        platform_credentials,
+    })
 }
 
 /// Binds the listen address. Every role needs it: a control plane serves its API there, a worker
@@ -833,7 +843,12 @@ impl Drop for MarkStopping {
 pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     install_crypto_provider();
 
-    let Shared { store, app, local } = setup(&cfg).await?;
+    let Shared {
+        store,
+        app,
+        local,
+        platform_credentials: _platform_credentials,
+    } = setup(&cfg).await?;
 
     // Arm the shutdown signal before the address is bound. A future that waits for SIGTERM installs
     // its handler the first time it is polled, and the host polls `shutdown` only once every

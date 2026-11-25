@@ -71,6 +71,7 @@ mod inbox;
 mod lookup;
 mod model;
 mod pending;
+mod platform_credentials;
 mod prompt_signer;
 mod prompts;
 mod provisioner;
@@ -129,6 +130,7 @@ pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,
 };
+pub use platform_credentials::{CredentialsError, PlatformCredentials, PlatformToken};
 pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};
 pub use prompts::{
     MAX_PROMPTS, PROMPT_PAGE, PromptPage, PromptRevision, PromptScope, PromptStore,

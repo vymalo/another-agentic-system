@@ -50,6 +50,8 @@ orch-thread-token = { path = "crates/thread-token" }
 orch-signed-request = { path = "crates/signed-request" }
 orch-prompt-statement = { path = "crates/prompt-statement" }
 orch-prompt-signer-static = { path = "crates/prompt-signer-static" }
+orch-platform-credentials-dev = { path = "crates/platform-credentials-dev" }
+orch-provisioner-platform = { path = "crates/provisioner-platform" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
 # The adam-rs crates (ADR 0015), all pinned to one full commit sha, never a branch or a tag; a PR

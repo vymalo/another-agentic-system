@@ -920,6 +920,98 @@
         }
       ]
     },
+    "ProvisionedKind": {
+      "description": "The kinds of agent the orchestrator may make for a person. The shared `chat` agent is not one: it is never provisioned per person.",
+      "enum": [
+        "coder",
+        "workspace"
+      ],
+      "type": "string"
+    },
+    "Provisioner": {
+      "additionalProperties": false,
+      "description": "A person's own agents (the platform makes them; ADR 0022). **Off unless the section is present**: with it absent nothing is built and nothing about the shared agents changes.",
+      "properties": {
+        "credentials": {
+          "$ref": "#/$defs/ProvisionerCredentials",
+          "default": {},
+          "description": "What the orchestrator presents to the platform."
+        },
+        "kinds": {
+          "description": "The kinds of agent made per person, at least one, none twice.",
+          "items": {
+            "$ref": "#/$defs/ProvisionedKind"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array"
+        },
+        "readyTimeoutSecs": {
+          "default": 120,
+          "description": "How long a first message waits for the agent to be ready, 1 to 600 seconds (default 120).",
+          "format": "uint64",
+          "maximum": 600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "requestTimeoutSecs": {
+          "default": 5,
+          "description": "How long one request to the platform may take, 1 to 600 seconds (default 5).",
+          "format": "uint64",
+          "maximum": 600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "url": {
+          "description": "The Platform API's base URL (`https://platform.example.com`), `http` or `https`, with a host and no user name or password.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "kinds"
+      ],
+      "type": "object"
+    },
+    "ProvisionerCredentials": {
+      "additionalProperties": false,
+      "description": "Where the orchestrator gets the token it presents to the Platform API.",
+      "properties": {
+        "dev": {
+          "$ref": "#/$defs/ProvisionerDevCredentials",
+          "description": "The token endpoint of the development issuer (`mock-oidc`): a `client_credentials` request names the orchestrator's own client. For compose and tests; **refused when `server.environment` is `production`**."
+        }
+      },
+      "type": "object"
+    },
+    "ProvisionerDevCredentials": {
+      "additionalProperties": false,
+      "description": "The development issuer the orchestrator asks for its Platform API token.",
+      "properties": {
+        "audience": {
+          "description": "The audience the Platform API accepts, when the issuer needs it named.",
+          "type": "string"
+        },
+        "clientId": {
+          "description": "The client id the issuer knows the orchestrator by.",
+          "type": "string"
+        },
+        "clientSecret": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The client's secret."
+        },
+        "url": {
+          "description": "The issuer's base URL (`http://mock-oidc:8099`); `/token` is appended.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "clientId",
+        "clientSecret"
+      ],
+      "type": "object"
+    },
     "Recompute": {
       "additionalProperties": false,
       "description": "When a new description is asked for.",
@@ -2012,6 +2104,10 @@
         "endpoints": {}
       },
       "description": "The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035)."
+    },
+    "provisioner": {
+      "$ref": "#/$defs/Provisioner",
+      "description": "A person's own agents, made on the platform on their first message. Absent: off, and nothing changes."
     },
     "retention": {
       "$ref": "#/$defs/Retention",

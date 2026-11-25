@@ -147,6 +147,10 @@ pub struct Config {
     /// connect to for them, and the OAuth client it presents. Absent: off, and nothing changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_tool_servers: Option<UserToolServers>,
+    /// A person's own agents, made on the platform on their first message. Absent: off, and
+    /// nothing changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisioner: Option<Provisioner>,
     /// What the web is told (`GET /api/config`).
     #[serde(default)]
     pub ui: Ui,
@@ -2551,4 +2555,80 @@ pub struct ToolServerSigning {
 
 fn default_tool_signing_ttl_secs() -> u64 {
     DEFAULT_TOOL_SIGNING_TTL_SECS
+}
+
+/// The default of `provisioner.requestTimeoutSecs`.
+pub const DEFAULT_PROVISIONER_REQUEST_TIMEOUT_SECS: u64 = 5;
+/// The default of `provisioner.readyTimeoutSecs`.
+pub const DEFAULT_PROVISIONER_READY_TIMEOUT_SECS: u64 = 120;
+/// The most `provisioner.readyTimeoutSecs` may be.
+pub const MAX_PROVISIONER_TIMEOUT_SECS: u64 = 600;
+
+/// The kinds of agent the orchestrator may make for a person. The shared `chat` agent is not one:
+/// it is never provisioned per person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProvisionedKind {
+    /// A coding agent.
+    Coder,
+    /// A workspace agent.
+    Workspace,
+}
+
+/// Where the orchestrator gets the token it presents to the Platform API.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProvisionerCredentials {
+    /// The token endpoint of the development issuer (`mock-oidc`): a `client_credentials`
+    /// request names the orchestrator's own client. For compose and tests; **refused when
+    /// `server.environment` is `production`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<ProvisionerDevCredentials>,
+}
+
+/// The development issuer the orchestrator asks for its Platform API token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProvisionerDevCredentials {
+    /// The issuer's base URL (`http://mock-oidc:8099`); `/token` is appended.
+    pub url: String,
+    /// The client id the issuer knows the orchestrator by.
+    pub client_id: String,
+    /// The client's secret.
+    pub client_secret: SecretRef,
+    /// The audience the Platform API accepts, when the issuer needs it named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+}
+
+/// A person's own agents (the platform makes them; ADR 0022). **Off unless the section is
+/// present**: with it absent nothing is built and nothing about the shared agents changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Provisioner {
+    /// The Platform API's base URL (`https://platform.example.com`), `http` or `https`, with a
+    /// host and no user name or password.
+    pub url: String,
+    /// The kinds of agent made per person, at least one, none twice.
+    #[schemars(length(min = 1, max = 2))]
+    pub kinds: Vec<ProvisionedKind>,
+    /// How long one request to the platform may take, 1 to 600 seconds (default 5).
+    #[serde(default = "default_provisioner_request_timeout")]
+    #[schemars(range(min = 1, max = 600))]
+    pub request_timeout_secs: u64,
+    /// How long a first message waits for the agent to be ready, 1 to 600 seconds (default 120).
+    #[serde(default = "default_provisioner_ready_timeout")]
+    #[schemars(range(min = 1, max = 600))]
+    pub ready_timeout_secs: u64,
+    /// What the orchestrator presents to the platform.
+    #[serde(default)]
+    pub credentials: ProvisionerCredentials,
+}
+
+fn default_provisioner_request_timeout() -> u64 {
+    DEFAULT_PROVISIONER_REQUEST_TIMEOUT_SECS
+}
+
+fn default_provisioner_ready_timeout() -> u64 {
+    DEFAULT_PROVISIONER_READY_TIMEOUT_SECS
 }

@@ -1351,6 +1351,8 @@ pub struct Config {
     /// section and with it off (and always from the environment alone: the section has no variable).
     /// Its `Debug` shows the hosts of the lists and the ids of the keys, never a key.
     pub user_tools: Option<UserToolsSettings>,
+    /// `provisioner`: a person's own agents. `None`: off (no section, and no variable).
+    pub provisioner: Option<crate::provisioner::ProvisionerSettings>,
     /// `sharing` of the configuration file (ADR 0040): the cap on what can be shared, the secret
     /// the links are made with and what a public reader may see. Disabled without the section (and
     /// always from the environment alone: the section has no variable). Its `Debug` never shows a
@@ -1439,7 +1441,8 @@ impl fmt::Debug for Config {
             .field("shutdown_grace", &self.shutdown_grace)
             .field("log_format", &self.log_format)
             .field("artifacts", &self.artifacts)
-            .field("user_tools", &self.user_tools);
+            .field("user_tools", &self.user_tools)
+            .field("provisioner", &self.provisioner);
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
         #[cfg(feature = "registry-platform")]
@@ -1852,6 +1855,7 @@ impl Config {
             log_format,
             artifacts: resolved.artifacts,
             user_tools: resolved.user_tools,
+            provisioner: resolved.provisioner,
             usage: resolved.usage,
             thread_retention_days: resolved.thread_retention_days,
             sharing: resolved.sharing,
@@ -2814,6 +2818,8 @@ struct Resolved {
     artifacts: Option<ArtifactSettings>,
     /// `userToolServers` and the keys of `secrets`, when the feature is enabled (no variable).
     user_tools: Option<UserToolsSettings>,
+    /// `provisioner`, with the development client secret read (no variable).
+    provisioner: Option<crate::provisioner::ProvisionerSettings>,
     /// `auth.mode` and `auth.jwt`: keys that have no variable, so no string to go through.
     auth: AuthSettings,
     /// `models.endpoints` and `tasks`, read: they replace what the legacy variables make.

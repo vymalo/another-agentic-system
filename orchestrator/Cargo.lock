@@ -2846,6 +2846,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-platform-credentials-dev"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "orch-ports"
 version = "0.1.0"
 dependencies = [
@@ -3261,6 +3276,7 @@ dependencies = [
  "orch-log-filter",
  "orch-model-openai",
  "orch-pg-connect",
+ "orch-platform-credentials-dev",
  "orch-ports",
  "orch-registry-platform",
  "orch-secrets-openbao",
