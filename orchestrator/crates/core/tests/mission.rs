@@ -341,6 +341,7 @@ fn the_diagram_and_nothing_else() {
         for e in &events {
             let mut m = at(s);
             let want = expect(s, e);
+            let got = m.apply(e).ok().map(|()| m.state());
             assert_eq!(got, want, "{s:?} then {}", e.name());
         }
     }
