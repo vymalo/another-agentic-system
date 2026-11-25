@@ -21,6 +21,7 @@ mod share_link;
 mod sharing;
 mod tasks;
 mod teams;
+mod thread_sweep;
 pub mod tier;
 mod tool_servers;
 mod usage_sweep;
@@ -29,9 +30,9 @@ mod user_tools;
 pub use app::{
     AGENT_NAME_WAIT, AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView,
     Branches, ChildCloseState, ChildSessionDrop, ChildSessionStats, Creation,
-    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt,
-    ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, StartChildSession,
-    ThreadExport,
+    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, DEFAULT_THREAD_RETENTION_DAYS, FeedItem,
+    FirstMessage, ForkAt, ForkRequest, Forked, Inbound, NewThread, Received, SharedRead,
+    SiblingView, StartChildSession, ThreadExport,
 };
 pub use app::{
     DEFAULT_USAGE_RETENTION_MONTHS, DeleteStats, DownloadMode, DownloadModeError, HistorySettings,
@@ -76,6 +77,7 @@ pub use sharing::{
 };
 pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
 pub use teams::TeamPresetRefusal;
+pub use thread_sweep::{ThreadSweepConfig, ThreadSweepWorker};
 pub use tier::THREAD_TIER_KEY;
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};
 pub use usage_sweep::{

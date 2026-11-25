@@ -12,6 +12,9 @@ readme = "README.md"
 default = []
 # The scripted agent, `LocalFixture`, `LocalWorld` and a Postgres test schema: what the
 # conformance, durability and end-to-end tests run on. Enable as a dev-dependency feature.
+# The embedded build (ADR 0076, ADR 0015): adam-engine on adam-store-sqlite, no server and no
+# Postgres driver of adam's own. Wiring only; the adapter that uses it comes next.
+embedded = ["dep:adam-engine", "dep:adam-store-sqlite"]
 testkit = ["orch-ports/testkit", "dep:jiff", "dep:uuid"]
 
 [dependencies]
@@ -26,6 +29,8 @@ adam-a2a-runtime.workspace = true
 adam-store-postgres.workspace = true
 adam-notify-postgres.workspace = true
 adam-postgres.workspace = true
+adam-engine = { workspace = true, optional = true }
+adam-store-sqlite = { workspace = true, optional = true }
 a2a-lf.workspace = true
 async-trait.workspace = true
 deadpool-postgres.workspace = true

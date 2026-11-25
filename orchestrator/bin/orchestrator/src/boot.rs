@@ -788,6 +788,12 @@ fn usage_sweep_worker(app: &Arc<App<Stack>>) -> Arc<UsageSweepWorker<Stack>> {
     UsageSweepWorker::new(Arc::clone(app), UsageSweepConfig::default())
 }
 
+/// The worker's thread retention sweep over `app`: it erases the threads idle for longer than
+/// `retention.threads.days`, once at start and then every hour.
+fn thread_sweep_worker(app: &Arc<App<Stack>>) -> Arc<orch_app::ThreadSweepWorker<Stack>> {
+    orch_app::ThreadSweepWorker::new(Arc::clone(app), orch_app::ThreadSweepConfig::default())
+}
+
 /// Marks the process as stopping: `/healthz` and `/readyz` turn 503 and open event streams end
 /// once caught up, so clients reconnect elsewhere. Idempotent.
 fn mark_stopping(app: &App<Stack>) {
@@ -928,6 +934,14 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     let host = host.worker("the usage retention sweep", move |stop| async move {
         let _mark = mark;
         usage_sweep.run(stop).await;
+        Ok(())
+    });
+
+    let thread_sweep = thread_sweep_worker(&app);
+    let mark = MarkStopping(Arc::clone(&app));
+    let host = host.worker("the thread retention sweep", move |stop| async move {
+        let _mark = mark;
+        thread_sweep.run(stop).await;
         Ok(())
     });
 

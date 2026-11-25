@@ -4,6 +4,7 @@
 mod agent;
 mod artifacts;
 mod auth;
+mod entitlement;
 mod fixtures;
 mod model;
 mod pending;
@@ -25,6 +26,7 @@ pub use agent::{
 };
 pub use artifacts::{Download, MemoryArtifacts};
 pub use auth::MemoryAuth;
+pub use entitlement::MemoryEntitlement;
 pub use fixtures::{FixedClock, SeqIds, sample_releases};
 pub use model::{ModelStep, ScriptedModel};
 pub use pending::MemoryPendingAuthorizations;

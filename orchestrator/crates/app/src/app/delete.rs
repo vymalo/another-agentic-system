@@ -131,6 +131,20 @@ impl<P: Ports> App<P> {
             Err(Denied::Permission(p)) => return Err(AppError::missing_permission(p)),
             Err(Denied::OutOfScope(_) | Denied::Audience(_)) => return Err(AppError::NotFound),
         }
+        self.erase_and_purge(user, id).await.map(|_| ())
+    }
+
+    /// Erases `id` of `owner` and its edits and children, then their files, for the retention
+    /// sweep: the person's own delete without the person (no permission is asked: the sweep is the
+    /// deployment's). Returns how many threads went. Refused like a delete while the thread works.
+    ///
+    /// # Errors
+    /// As [`delete_thread`](Self::delete_thread), minus the permission.
+    pub(crate) async fn erase_idle(&self, owner: &UserId, id: ThreadId) -> Result<usize, AppError> {
+        self.erase_and_purge(owner, id).await
+    }
+
+    async fn erase_and_purge(&self, user: &UserId, id: ThreadId) -> Result<usize, AppError> {
         let deleted = self.erase(user, id).await?;
         // The files, now that nothing can reference them. A failure is the sweep's, never the
         // person's: the thread is gone, and the answer says so.
@@ -143,7 +157,7 @@ impl<P: Ports> App<P> {
         for thread in &deleted {
             self.notify(Topic::Thread(*thread)).await;
         }
-        Ok(())
+        Ok(deleted.len())
     }
 
     /// The transaction of [`delete_thread`](Self::delete_thread), decided again on what each

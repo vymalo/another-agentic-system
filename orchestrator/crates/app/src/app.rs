@@ -195,7 +195,13 @@ pub struct AppConfig {
     /// How long the usage ledger keeps a month and the prices `GET /api/me/usage` puts on it
     /// (ADR 0065: `usage` of the configuration). The default keeps 24 months and prices nothing.
     pub usage: UsageSettings,
+    /// How many days a thread with no active job is kept after its last event before the retention
+    /// sweep erases it (`retention.threads.days`; default [`DEFAULT_THREAD_RETENTION_DAYS`]).
+    pub thread_retention_days: u32,
 }
+
+/// The default of [`AppConfig::thread_retention_days`]: ninety days.
+pub const DEFAULT_THREAD_RETENTION_DAYS: u32 = 90;
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -221,6 +227,7 @@ impl Default for AppConfig {
             downloads: DownloadMode::Stream,
             user_tool_redirect: None,
             usage: UsageSettings::default(),
+            thread_retention_days: DEFAULT_THREAD_RETENTION_DAYS,
         }
     }
 }

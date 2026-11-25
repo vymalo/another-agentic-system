@@ -73,6 +73,7 @@ tokio::spawn(async move { agents.run(stop).await });
 
 | Feature | Default | Effect |
 |---|---|---|
+| `embedded` | no | Pulls `adam-engine` and `adam-store-sqlite` (one `libsqlite3-sys`) for the embedded build (ADR 0076, ADR 0015). Wiring only: no behaviour changes and nothing uses them yet |
 | `testkit` | no | `testkit::{LocalFixture, LocalWorld, LocalInstance, scripted_endpoint, SCRIPTED}`: a scripted adam agent (words `echo`, `ask`, `gate`, `slow`, `fail`), the `AgentFixture` of the conformance suite, processes that share one journal (in memory, a private schema of the test database, or the database a URL names: `LocalWorld::postgres_over(url)`, and `postgres_direct_over(url, direct_url)` behind a pooler) and can be killed; `LocalWorld::url()` and `pool(name, max)` (a `deadpool_postgres::Pool`) for a test that looks at the tables and channels. Enable as a **dev-dependency** feature |
 
 The crate reads no environment variable (adam-rs's `PgNotify` would read `NOTIFY_LOCAL_ONLY`; this crate sets it); the binary maps `AGENT_LOCAL_CONCURRENCY` and `OUTBOX_LEASE_SECS` onto

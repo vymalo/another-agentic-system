@@ -129,6 +129,8 @@ threadTools:
 sharing:                      # a thread shared by a revocable link (see "sharing"); absent: nothing is shared
   mode: internal
   secret: { file: /run/secrets/sharing }
+retention:                    # how long threads are kept (see "retention"); absent: 90 days
+  threads: { days: 90 }
 usage:                        # the usage ledger of the people (see "usage"); absent: 24 months kept, nothing priced
   retentionMonths: 24
   prices:
@@ -377,6 +379,13 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.roles.<role>.scope` | `own` \| `{ read: own, write: own }`, default `own`, and the only scope there is: **`any` is refused** (exit 78, [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). Only with a role that holds `thread.read`, `thread.write` or `artifact.read`. The key is kept for `version: 1` files | — | now (S15); `any` refused: S-A, ADR 0039 |
 | `auth.roles.<role>.agents` | list of agent ids and/or `"*"`, `["*"]`; only with a role that holds `agent.read` or `agent.invoke`; not empty | — | now (S15) |
 | `auth.roles.<role>.maxTier` | `plan` \| `edits` \| `auto` \| `bypass`; none (the default): no cap. The highest [access tier](access-tier-v1.md#8-roles-and-the-web) a person with this role may pick for a message ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)): a **ceiling, not a permission** (it is not in `permissions`), and only with a role that holds `agent.invoke` (otherwise exit 78 naming the key: it would do nothing). A value outside the four is exit 78 naming the key. For an agent, a person with several roles has the highest cap of the roles that let them invoke **it**, and one of those roles without a cap leaves them none. A message that names no tier is sent under the highest tier of the agent not above the lower of its default and the cap | — | now (ADR 0061) |
+| `auth.roles.<role>.limits` | `{ runsAtOnce?, messagesPerMinute?, webhookJobsPerMinute?, tokensPerPeriod?, modelCallsInFlight?, admissionWaitSecs? }` ([ADR 0081](../decisions/0081-limits-per-person-before-a-run-starts.md)): what one person with this role may use at a time. Absent or `{}`: the defaults below. An unknown key, a text, a fraction, zero or a negative number is exit 78 naming the key. **Nothing reads it yet**: the admission check and the park of a run follow | defaults below | now (ADR 0081, parsing only) |
+| `auth.roles.<role>.limits.runsAtOnce` | the person's jobs that have not finished (queued, working or waiting for an ask); at least 1 | `4` | now (ADR 0081, parsing only) |
+| `auth.roles.<role>.limits.messagesPerMinute` | the person's messages in the last minute; at least 1 | none | now (ADR 0081, parsing only) |
+| `auth.roles.<role>.limits.webhookJobsPerMinute` | the jobs a webhook source starts in the last minute; at least 1 | none | now (ADR 0081, parsing only) |
+| `auth.roles.<role>.limits.tokensPerPeriod` | the person's tokens in the period, from the usage ledger ([ADR 0065](../decisions/0065-a-usage-ledger-per-person.md)); at least 1. No allowance by default in the open source: a deployment that wants one sets it per role | none | now (ADR 0081, parsing only) |
+| `auth.roles.<role>.limits.modelCallsInFlight` | the orchestrator's own model calls in flight for the person (titles, descriptions); at least 1 | `4` | now (ADR 0081, parsing only) |
+| `auth.roles.<role>.limits.admissionWaitSecs` | seconds a run waits for a slot before it parks; at least 1 | the dispatcher's short wait | now (ADR 0081, parsing only) |
 | `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
 | `auth.signingClients` | the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature` ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)): at most 64, each 1 to 256 printable characters with no space, none twice, none the `auth.browser.clientId`. Absent or `[]`: no signing client | — | now (ANR-719; the intake check that reads it, and the rule that production refuses an empty list, are not built yet) |
 | `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
@@ -476,6 +485,19 @@ before `public`, is enforced by the code. `sharing.secret` is one of the **fourt
 `sharing.previousSecret`). `server.publicUrl` is the address a link is shown under (`<publicUrl>/s/<token>`); without it a link is
 the path `/s/<token>`. The cap is **not** in [`GET /api/config`](#get-apiconfig) (its body is `{ui, search}`): the web learns it per
 person from `GET /api/me` (`sharing`, the cap when the person's roles hold `thread.share`, else `disabled`).
+
+### `retention`
+
+A thread with no active job (not `queued`, `working` or `verifying`, and no running ask) whose **last event** is older than the
+retention is erased by a sweep, through the same path as the person's own delete ([ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)):
+the log, the files, the search index and the notifications go, its edits and child sessions with it, and a fork is kept. Pinning,
+archiving and reordering are not events, so they never keep a thread alive. A thread that works is never erased; it is looked at
+again at the next pass. The section is optional and **an absent section changes nothing about a file that was valid** beyond the
+default below: 90 days are kept. The file is read once at startup, so a change is a restart.
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `retention.threads.days` | 1 to 36500, `90`. Days a thread is kept after its last event. A sweep runs once at start and then every hour, in every process that runs workers (`all` and `worker`), reads 100 threads at a time oldest first and logs one line with the count when it erased any (no person, no thread). Several replicas may run it | — | now |
 
 ### `usage`
 
