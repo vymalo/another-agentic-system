@@ -827,6 +827,17 @@ impl OutboxItem {
     }
 }
 
+/// A thread the retention sweep may erase ([`ThreadStore::idle_threads`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdleThread {
+    /// The thread.
+    pub id: ThreadId,
+    /// Its owner.
+    pub owner: UserId,
+    /// When its conversation last changed.
+    pub updated_at: Timestamp,
+}
+
 /// A count of the open outbox rows at one instant, for metrics and autoscaling
 /// ([`ThreadStore::outbox_stats`]). A row is open while it is `pending` or `inflight`; the
 /// three counts partition the open rows.
@@ -1060,6 +1071,20 @@ pub trait ThreadStore:
         threads: &[(ThreadId, i64)],
         now: Timestamp,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Threads nobody has touched since `before`, for the retention sweep: top-level threads (no
+    /// child session, which goes with its parent) whose state is not `queued`, `working` or
+    /// `verifying` and whose `updated_at` is earlier than `before`, oldest first (ties by id),
+    /// strictly after the `after` position when given, at most `limit`. Every owner's threads
+    /// are read. The rail (pin, archive, order) never changes `updated_at`, so it never keeps a
+    /// thread alive. A thread with a running ask is still returned: the application refuses
+    /// its delete and moves on.
+    fn idle_threads(
+        &self,
+        before: Timestamp,
+        after: Option<(Timestamp, ThreadId)>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<IdleThread>, StoreError>> + Send;
 
     /// Claims up to `limit` threads whose files are still to be erased (a `thread_purges` row that
     /// no worker holds, or whose lease has lapsed), oldest deletion first: sets the lease to

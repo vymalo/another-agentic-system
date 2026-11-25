@@ -12,10 +12,10 @@ use orch_pg_connect::PgOptions;
 use orch_pg_migrate::Migrator;
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder,
-    NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem,
-    OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE,
-    ThreadListing, ThreadStore,
+    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, Lease,
+    ListOrder, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId,
+    OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError,
+    TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 use tokio_postgres::Row as PgRow;
 
@@ -1792,6 +1792,41 @@ impl ThreadStore for PgStore {
             .collect::<Result<Vec<_>, StoreError>>()?;
         rows.sort();
         Ok(rows.into_iter().map(|(_, id)| ThreadId(id)).collect())
+    }
+
+    async fn idle_threads(
+        &self,
+        before: Timestamp,
+        after: Option<(Timestamp, ThreadId)>,
+        limit: u32,
+    ) -> Result<Vec<IdleThread>, StoreError> {
+        let (after_at, after_id) = match after {
+            Some((at, id)) => (Some(to_db(at)), Some(id.0)),
+            None => (None, None),
+        };
+        let rows = query(
+            "SELECT id, owner, updated_at FROM threads \
+             WHERE child_of IS NULL AND state NOT IN ('queued', 'working', 'verifying') \
+               AND updated_at < $1 \
+               AND ($2::timestamptz IS NULL OR (updated_at, id) > ($2, $3::uuid)) \
+             ORDER BY updated_at, id LIMIT $4",
+        )
+        .bind(to_db(before))
+        .bind(after_at)
+        .bind(after_id)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        rows.iter()
+            .map(|row| {
+                Ok(IdleThread {
+                    id: ThreadId(row.try_get::<_, uuid::Uuid>("id").map_err(store_err)?),
+                    owner: UserId::new(&row.try_get::<_, String>("owner").map_err(store_err)?),
+                    updated_at: get_ts(row, "updated_at")?,
+                })
+            })
+            .collect()
     }
 
     async fn finish_purge(&self, thread: ThreadId) -> Result<(), StoreError> {

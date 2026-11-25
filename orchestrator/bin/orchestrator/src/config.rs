@@ -1361,6 +1361,8 @@ pub struct Config {
     /// the section (and always from the environment alone: the section has no variable): 24 months
     /// and nothing priced.
     pub usage: orch_app::UsageSettings,
+    /// `retention.threads.days`: days a thread is kept after its last event (default 90).
+    pub thread_retention_days: u32,
     /// `sharing.rateLimit`: the limits of the public routes, built whenever the process serves
     /// routes (a deployment that is not `public` never reaches them, but they stand guard).
     pub public_limits: orch_api::PublicLimits,
@@ -1851,6 +1853,7 @@ impl Config {
             artifacts: resolved.artifacts,
             user_tools: resolved.user_tools,
             usage: resolved.usage,
+            thread_retention_days: resolved.thread_retention_days,
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
@@ -1923,6 +1926,7 @@ impl Config {
             tool_servers: self.tool_servers.clone(),
             sharing: self.sharing.clone(),
             usage: self.usage.clone(),
+            thread_retention_days: self.thread_retention_days,
             // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
             // they are never reached.
             files: self
@@ -2818,6 +2822,8 @@ struct Resolved {
     public: Option<PublicConfig>,
     /// `usage` (ADR 0065): the retention of the usage ledger and its price table.
     usage: orch_app::UsageSettings,
+    /// `retention.threads.days`.
+    thread_retention_days: u32,
     /// `sharing` (ADR 0040), built from the file; disabled without the section.
     sharing: SharingSettings,
     /// `sharing.rateLimit`.

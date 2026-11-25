@@ -103,6 +103,11 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// Days a thread is kept after its last event (`retention.threads.days`).
+    pub fn thread_retention_days(&self) -> u32 {
+        self.cfg.thread_retention_days
+    }
+
     /// The settings of the usage ledger: how long it keeps a month, and the prices.
     pub fn usage_settings(&self) -> &UsageSettings {
         &self.cfg.usage

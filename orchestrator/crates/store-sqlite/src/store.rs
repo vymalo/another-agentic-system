@@ -24,10 +24,10 @@ use orch_core::{
 };
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder,
-    MAX_CHILD_SESSION_CHARS, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
-    OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange,
-    StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
+    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, Lease,
+    ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer,
+    OutboxFinal, OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received,
+    SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 use rusqlite::types::Value;
 use rusqlite::{
@@ -1804,6 +1804,37 @@ impl ThreadStore for SqliteStore {
                 .into_iter()
                 .map(|(_, id)| parse_id(&id).map(ThreadId))
                 .collect()
+        })
+        .await
+    }
+
+    async fn idle_threads(
+        &self,
+        before: Timestamp,
+        after: Option<(Timestamp, ThreadId)>,
+        limit: u32,
+    ) -> Result<Vec<IdleThread>, StoreError> {
+        let before = to_db(before)?;
+        let (after_at, after_id) = match after {
+            Some((at, id)) => (to_db(at)?, id.0.to_string()),
+            None => (i64::MIN, String::new()),
+        };
+        self.call(move |conn| {
+            rows(
+                conn,
+                "SELECT id, owner, updated_at FROM threads \
+                 WHERE child_of IS NULL AND state NOT IN ('queued', 'working', 'verifying') \
+                   AND updated_at < ?1 AND (updated_at > ?2 OR (updated_at = ?2 AND id > ?3)) \
+                 ORDER BY updated_at, id LIMIT ?4",
+                &[&before, &after_at, &after_id, &i64::from(limit)],
+                |row| {
+                    Ok(IdleThread {
+                        id: ThreadId(parse_id(&row.get::<_, String>(0).map_err(store_err)?)?),
+                        owner: UserId::new(&row.get::<_, String>(1).map_err(store_err)?),
+                        updated_at: from_db(row.get::<_, i64>(2).map_err(store_err)?)?,
+                    })
+                },
+            )
         })
         .await
     }
