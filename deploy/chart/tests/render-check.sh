@@ -2662,6 +2662,15 @@ injector_lease_required() {
     END { exit !ok }'
 }
 check "injector on: a lease without a token is denied, so the gateway never sees an empty Bearer" injector_lease_required
+injector_account_required() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^  authorization:$/ { a = 1 }
+    /^  response:$/ { a = 0 }
+    a && index($0, "selector: auth.metadata.lease.accountId") { seen = 1 }
+    a && seen && /operator: neq/ { ok = 1; seen = 0 }
+    END { exit !ok }'
+}
+check "injector on: a lease without an account id is denied, so the gateway never sees an empty x-account-id" injector_account_required
 check "injector on: a request without a run id is denied before any model call" dhas AuthConfig another-agentic-injector 'operator: neq'
 check "injector on: the run routes admit Authorino's pods (its operator label)" out_all '^              authorino-resource: "another-agentic-authorino"$'
 check "injector on: the broker token is an ExternalSecret property, not a value" dhas ExternalSecret another-agentic-injector-broker 'property: injector_broker_token'

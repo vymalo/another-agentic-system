@@ -158,10 +158,10 @@ spec:
 #  3. cache that answer per run for at most the lease;
 #  4. add `Authorization` and `x-account-id` upstream only. Envoy Gateway applies the ok_response headers and replaces
 #     a client-sent `Authorization` (verified 2026-11-24: exactly one header at the upstream).
-#  5. deny when the lease carries no token. A refused lookup (the broker's 410/404) leaves the metadata unset and
-#     Authorino still applies the ok_response headers, so without this rule the gateway receives `Authorization:
-#     Bearer` (an empty token) — unusable, but still a header. Denied, a run with no lease reaches no gateway at all
-#     (ANR-662; verified 2026-11-24 in dev/agent-router-spike/).
+#  5. deny when the lease carries no token or no account id. A refused lookup (the broker's 410/404) leaves the metadata
+#     unset and Authorino still applies the ok_response headers, so without these rules the gateway receives
+#     `Authorization: Bearer` (an empty token) — unusable, but still a header — or an empty `x-account-id`. Denied, a run
+#     with no usable lease reaches no gateway at all (ANR-662, ANR-667; verified 2026-11-24/25 in dev/agent-router-spike/).
 #
 # Spike result (ANR-662, 2026-11-24): it works. An ok_response header from Authorino reaches the WireMock gateway
 # through Agent Router, so the injector stays these objects and needs no service of our own behind the port.
@@ -220,11 +220,18 @@ spec:
             operator: neq
             value: ""
     # A refused lookup leaves the metadata unset, and Authorino still applies the ok_response headers above: without
-    # this rule the upstream receives `Authorization: Bearer` with an empty token. Deny, so no lease means no call.
+    # these rules the upstream receives `Authorization: Bearer` with an empty token or an empty `x-account-id`.
+    # Deny, so a lease with no token and no account id means no call.
     "lease":
       patternMatching:
         patterns:
           - selector: auth.metadata.lease.token
+            operator: neq
+            value: ""
+    "account-id":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.lease.accountId
             operator: neq
             value: ""
   response:
