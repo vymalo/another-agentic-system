@@ -43,9 +43,11 @@
 
 mod jcs;
 pub mod jws;
+mod presence;
 mod statement;
 
 pub use jcs::{canonical, hash_of, props_hash, sha256_b64u};
+pub use presence::{MAX_ENVELOPE_LEN, PresenceError, check_presence};
 pub use statement::{
     A2aIds, AttestedPayload, Field, JTI_LEN, MAX_LIFETIME_SECS, PERSON_TYP, Received,
     STATEMENT_TYP, Source, Statement, StatementError, UserClaims, statement_exp,

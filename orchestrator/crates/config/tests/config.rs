@@ -3211,3 +3211,38 @@ fn min_client_version_is_off_by_default_and_reads_dotted_numbers() {
         assert!(load(&text, &minimal_env()).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn signing_clients_are_read_and_default_to_none() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert!(valid.config.auth.signing_clients.is_empty());
+    let text = format!("{MINIMAL}{JWT}  signingClients: [desktop, ios, android]\n");
+    let valid = load(&text, &minimal_env()).unwrap();
+    assert_eq!(
+        valid.config.auth.signing_clients,
+        ["desktop", "ios", "android"]
+    );
+}
+
+#[test]
+fn signing_client_rules_name_their_key_and_quote_nothing() {
+    let text = format!(
+        "{MINIMAL}{JWT}  dpop: {{ publicOrigins: ['https://chat.example.com'] }}\n  \
+         browser: {{ clientId: web-client }}\n  \
+         signingClients: [desktop, desktop, 'has space', '', web-client]\n"
+    );
+    let errors = lines(load(&text, &minimal_env()));
+    let want = [
+        "auth.signingClients[1]: a client is listed more than once",
+        "auth.signingClients[2]: expected a client id: 1 to 256 printable characters, no space",
+        "auth.signingClients[3]: expected a client id: 1 to 256 printable characters, no space",
+        "auth.signingClients[4]: the web's client (auth.browser.clientId) is not a signing client",
+    ];
+    for line in want {
+        assert!(errors.iter().any(|l| l == line), "{line}\n{errors:?}");
+    }
+    assert!(
+        errors.iter().all(|l| !l.contains("has space")),
+        "{errors:?}"
+    );
+}

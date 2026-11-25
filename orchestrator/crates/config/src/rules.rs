@@ -932,6 +932,7 @@ impl Checker<'_> {
             );
         }
         self.roles(auth);
+        self.signing_clients(auth);
         match (&auth.jwt, auth.mode.reads_tokens()) {
             (None, true) => self.invalid(
                 "auth.jwt",
@@ -1188,6 +1189,38 @@ impl Checker<'_> {
                 "expected scope tokens separated by single spaces, like \"openid email profile\" \
                  (RFC 6749 section 3.3)",
             );
+        }
+    }
+
+    /// `auth.signingClients` (ADR 0087): client ids that can be told apart, bounded, and never the web's.
+    /// An error names the key and the index, never the value.
+    fn signing_clients(&mut self, auth: &Auth) {
+        if auth.signing_clients.len() > 64 {
+            self.invalid("auth.signingClients", "at most 64 clients");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, client) in auth.signing_clients.iter().enumerate() {
+            let at = format!("auth.signingClients[{i}]");
+            if client.is_empty()
+                || client.len() > 256
+                || !client.bytes().all(|b| b.is_ascii_graphic())
+            {
+                self.invalid(
+                    at,
+                    "expected a client id: 1 to 256 printable characters, no space",
+                );
+            } else if !seen.insert(client.as_str()) {
+                self.invalid(at, "a client is listed more than once");
+            } else if auth
+                .browser
+                .as_ref()
+                .is_some_and(|b| &b.client_id == client)
+            {
+                self.invalid(
+                    at,
+                    "the web's client (auth.browser.clientId) is not a signing client",
+                );
+            }
         }
     }
 

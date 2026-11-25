@@ -273,6 +273,14 @@
           },
           "description": "What each role grants, by the name the identity provider gives the role (a group, a realm role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also `admin`: operational, and no more access to threads than a user has, ADR 0039). Given, it replaces both.",
           "type": "object"
+        },
+        "signingClients": {
+          "description": "The signing clients (ADR 0087, decision 1): the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature`, for example the desktop, iOS and Android clients. Each is a client id with no space, at most 64 are listed, none twice, and none is `auth.browser.clientId` (the web is not asked for a signature). Absent or empty (the default), no client is a signing client and nothing changes.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
         }
       },
       "type": "object"
