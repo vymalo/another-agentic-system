@@ -13,6 +13,7 @@ mod gate_config;
 mod inbox;
 pub mod locale;
 pub mod mentions;
+pub mod pick;
 mod prompts;
 mod purge;
 pub mod reader;
@@ -33,9 +34,9 @@ pub use app::{
 };
 pub use app::{
     DEFAULT_USAGE_RETENTION_MONTHS, DeleteStats, DownloadMode, DownloadModeError, HistorySettings,
-    HistoryStats, JobFiles, LateSource, ReadableFile, TierStats, UploadCaller, UploadRefusal,
-    UploadRequest, UploadSettings, UploadSettingsError, UploadSlot, UsageDrop, UsageSettings,
-    UsageStats,
+    HistoryStats, JobFiles, LateSource, LoadStats, ReadableFile, SubscriberGuard, TierStats,
+    UploadCaller, UploadRefusal, UploadRequest, UploadSettings, UploadSettingsError, UploadSlot,
+    UsageDrop, UsageSettings, UsageStats,
 };
 pub use asks::{AskCall, AskHandle};
 pub use authz::{
@@ -46,6 +47,7 @@ pub use catalog::{CatalogSchemaError, THREAD_UI_CATALOG_KEY, check_catalog_schem
 pub use directory::{AgentDirectory, AgentEntry};
 pub use dispatcher::{
     Dispatcher, DispatcherConfig, FileLimits, MAX_FILES_PER_JOB, MAX_OBSERVED_PER_PARENT,
+    RUN_BINDING_TTL,
 };
 pub use error::AppError;
 pub use gate_config::{
@@ -58,6 +60,7 @@ pub use inbox::{
 };
 pub use locale::THREAD_LOCALE_KEY;
 pub use mentions::THREAD_MENTIONS_KEY;
+pub use pick::{THREAD_MODEL_KEY, THREAD_REASONING_KEY};
 pub use prompts::{EditPrompt, PromptRefusal, RenderPrompt, RenderedPrompt};
 pub use purge::{DEFAULT_PURGE_LEASE_SECS, DEFAULT_PURGE_POLL_SECS, PurgeConfig, PurgeWorker};
 pub use reader::{

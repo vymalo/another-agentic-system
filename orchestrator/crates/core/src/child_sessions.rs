@@ -802,6 +802,7 @@ pub fn start_child_for(
                     // a person's start of a child session names no interface locale: its request
                     // has no member for one (ADR 0085)
                     locale: None,
+                    pick: None,
                 }),
             )
         })

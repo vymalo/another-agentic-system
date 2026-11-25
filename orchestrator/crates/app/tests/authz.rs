@@ -240,6 +240,7 @@ async fn an_administrator_reads_and_changes_only_their_own_threads() {
                 Input::UserMessage {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     user: root.user.clone(),
                     text: "hi".into(),
                     message_id: None,
@@ -617,6 +618,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                 Input::UserMessage {
                     tier_cap: None,
                     locale: None,
+                    pick: None,
                     user: chat.user.clone(),
                     text: "x".into(),
                     message_id: None,
@@ -653,6 +655,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                         message_id: None,
                         tier: None,
                         locale: None,
+                        pick: None,
                     },
                     target: Some(AgentTarget {
                         agent_id: AgentId::new("coder"),
@@ -708,6 +711,7 @@ async fn a_fork_made_with_its_first_message_takes_write_on_the_parent_and_invoke
         mentions: Vec::new(),
         tier: None,
         locale: None,
+        pick: None,
     };
     let id = ThreadId(uuid::Uuid::from_u128(
         0x0190_0000_0000_7000_8000_0000_0000_0001,

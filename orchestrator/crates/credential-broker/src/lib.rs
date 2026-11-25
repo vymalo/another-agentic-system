@@ -11,6 +11,8 @@ mod flights;
 mod http;
 mod material;
 mod oauth;
+mod routes;
+mod run_client;
 mod run_leases;
 
 pub use broker::{Broker, BrokerBuilder, egress_refusal};
@@ -20,6 +22,8 @@ pub use config::{
     MAX_FLOW_TTL, MAX_LEASE_TTL, MAX_REFRESH_MARGIN, MAX_RESPONSE_BYTES, MAX_TIMEOUT,
 };
 pub use http::{HostLookup, LookupFuture, SystemLookup};
+pub use routes::{BindBody, MAX_FIELD_CHARS, RunCallerAuth, SharedTokens, router};
+pub use run_client::{DEFAULT_BIND_TIMEOUT, RunBindingClient, deadline_in};
 pub use run_leases::{LEASE_TTL, MAX_BINDING, RunLeaseBroker};
 
 /// Why a broker could not be built.
@@ -41,4 +45,8 @@ pub enum BuildError {
     /// The HTTP client did not start (its TLS backend).
     #[error("the HTTP client of the broker did not start")]
     Http(#[source] reqwest::Error),
+    /// The broker's address for the run routes is not an `http(s)` URL with a host, and no query,
+    /// fragment or user information.
+    #[error("the broker's address must be an http(s) URL with a host, and no query or fragment")]
+    BrokerUrl,
 }

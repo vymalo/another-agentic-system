@@ -25,6 +25,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read as _};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -36,8 +37,8 @@ use secrecy::SecretString;
 use serde_json::{Map, Value};
 
 use super::{
-    Args, Config, ConfigError, EndpointSettings, LogFormat, ModelsSettings, Resolved, Surface,
-    flag, number, parse_surfaces,
+    Args, Config, ConfigError, EndpointSettings, InternalSettings, LogFormat, ModelsSettings,
+    Resolved, Surface, flag, number, parse_surfaces,
 };
 use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings, UploadLimits};
 use crate::user_tools::UserToolsSettings;
@@ -411,6 +412,14 @@ fn load_user_secrets_from(
     let valid = config
         .validate_user_secrets(base_dir, &resolver)
         .map_err(file_errors)?;
+    if valid.secrets.store != orch_config::SecretStoreKind::Pg {
+        // OpenBao seals what it keeps: there are no keys of ours to rotate and nothing to re-seal
+        return Err(document(format!(
+            "secrets.store: secrets rewrap re-seals the Postgres store (pg), and this file names {}, \
+             which seals what it keeps",
+            valid.secrets.store.as_str()
+        )));
+    }
     let Some(pg) = valid.secrets.pg.as_ref() else {
         // the rules require the section of the store the file names
         return Err(document("secrets.pg: required when secrets.store is pg"));
@@ -1275,6 +1284,7 @@ fn load_file(
     if let Some(secrets) = &valid.config.secrets {
         let compiled = match secrets.store {
             orch_config::SecretStoreKind::Pg => cfg!(feature = "secrets-pg"),
+            orch_config::SecretStoreKind::Openbao => cfg!(feature = "secrets-openbao"),
         };
         if !compiled {
             return Err(document(format!(
@@ -1570,6 +1580,9 @@ fn project(
             .as_ref()
             .map(|cors| cors.allowed_origins.clone())
             .unwrap_or_default(),
+        min_client_version: c.server.min_client_version.clone(),
+        // The run routes' own listener (ADR 0084 decision 5), only when the file has the section.
+        internal: internal_settings(valid)?,
         #[cfg(feature = "surface-webhook")]
         webhook_generic: webhook_values(&s.webhook_generic, "WEBHOOK_GENERIC_SECRETS"),
         #[cfg(feature = "surface-webhook")]
@@ -1642,6 +1655,47 @@ fn download_mode(s3: &orch_config::ArtifactsS3) -> Result<orch_app::DownloadMode
             ))
         }),
     }
+}
+
+/// The run routes' internal listener (ADR 0084 decision 5): the address, the orchestrator's own
+/// token and each agent's, as the secrets pass read them. `None` without the section. The address
+/// and the tokens were checked when the file was validated; a missing one here is a bug the
+/// document error names.
+///
+/// # Errors
+/// A configuration error (exit 78) naming the key, never a value.
+fn internal_settings(valid: &Validated) -> Result<Option<InternalSettings>, ConfigError> {
+    let Some(section) = &valid.config.server.internal else {
+        return Ok(None);
+    };
+    let listen = section.listen.parse::<SocketAddr>().map_err(|_| {
+        ConfigError::Document(vec![
+            "server.internal.listen: not a socket address like 0.0.0.0:8081".to_owned(),
+        ])
+    })?;
+    let missing = |key: String| ConfigError::Document(vec![format!("{key}: required")]);
+    let token = valid
+        .secrets
+        .internal_token
+        .as_ref()
+        .ok_or_else(|| missing("server.internal.token".to_owned()))?;
+    let mut agent_tokens = BTreeMap::new();
+    for agent in section.agents.keys() {
+        let secret = valid
+            .secrets
+            .internal_agent_tokens
+            .get(agent)
+            .ok_or_else(|| missing(format!("server.internal.agents.{agent}")))?;
+        agent_tokens.insert(
+            AgentId::new(agent.clone()),
+            SecretString::from(secret.expose().to_owned()),
+        );
+    }
+    Ok(Some(InternalSettings {
+        listen,
+        orchestrator_token: SecretString::from(token.expose().to_owned()),
+        agent_tokens,
+    }))
 }
 
 /// The models of a valid file: its endpoints with their keys read, and the tasks that are on, each
@@ -4363,6 +4417,30 @@ secrets:
         }
 
         #[test]
+        fn the_openbao_store_has_nothing_to_re_seal_and_the_command_says_so() {
+            let text = format!(
+                "{FILE}secrets:\n  store: openbao\n  openbao:\n    address: https://bao.internal\n    token: {{ env: BAO_TOKEN }}\n"
+            );
+            let env = |name: &str| match name {
+                "DATABASE_URL" => Some("postgres://u:hunter2@db/orch".to_owned()),
+                "BAO_TOKEN" => Some("hvs.NEVER-IN-AN-ERROR-0123456789".to_owned()),
+                _ => None,
+            };
+            let ConfigError::Document(lines) =
+                load_user_secrets_from(&text, Path::new("/etc/orch"), env, only_the_keys)
+                    .unwrap_err()
+            else {
+                panic!("not a document error");
+            };
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(
+                lines[0].starts_with("secrets.store: secrets rewrap re-seals the Postgres store"),
+                "{lines:?}"
+            );
+            assert!(!lines[0].contains("hvs."), "{lines:?}");
+        }
+
+        #[test]
         fn a_file_without_the_section_is_refused_by_name() {
             let ConfigError::Document(lines) = load(FILE).unwrap_err() else {
                 panic!("not a document error");
@@ -4807,6 +4885,116 @@ secrets:
                 );
                 assert!(!errors[0].contains("not-a-key"), "{errors:?}");
             }
+        }
+
+        const BAO: &str = "\
+secrets:
+  store: openbao
+  openbao:
+    address: https://bao.internal:8200
+    mount: kv
+    token: { env: BAO_TOKEN }
+";
+        const BAO_TOKEN: &str = "hvs.NEVER-IN-AN-ERROR-0123456789";
+        const CALLBACK: &str = "oauth: { callbackUrl: 'https://chat.example.com/api/user-tool-servers/oauth/callback' }";
+
+        fn bao_pairs<'a>() -> Vec<(&'a str, &'a str)> {
+            let mut pairs = base();
+            pairs.push(("BAO_TOKEN", BAO_TOKEN));
+            pairs
+        }
+
+        #[cfg(feature = "secrets-openbao")]
+        #[test]
+        fn the_openbao_store_is_read_with_its_token_and_nothing_prints_the_token() {
+            let text = format!("{FILE}userToolServers: {{ enabled: true, {CALLBACK} }}\n{BAO}");
+            let loaded = load_file_only(&bao_pairs(), &text).unwrap();
+            let tools = loaded.config.user_tools.as_ref().unwrap();
+            let bao = tools.openbao.as_ref().expect("secrets.store openbao");
+            assert_eq!(bao.address, "https://bao.internal:8200");
+            assert_eq!(bao.mount, "kv");
+            assert!(bao.ca_pem.is_none());
+            #[cfg(feature = "secrets-pg")]
+            assert!(tools.keyring.is_none(), "no sealed keys with openbao");
+            // credentials are kept, so the Client ID Metadata Document may be served
+            assert!(tools.client_metadata().is_ok());
+            let shown = format!("{:?} {:?}", loaded.config, loaded.merged);
+            assert!(!shown.contains(BAO_TOKEN), "{shown}");
+            assert!(shown.contains("BAO_TOKEN"), "references are shown: {shown}");
+            use secrecy::ExposeSecret as _;
+            assert_eq!(bao.token.expose_secret(), BAO_TOKEN);
+        }
+
+        #[cfg(feature = "secrets-openbao")]
+        #[test]
+        fn a_bad_openbao_setup_is_refused_naming_the_key_and_no_message_holds_the_token() {
+            let pairs = bao_pairs();
+            let bad = [
+                BAO.replace("https://", "http://"),
+                BAO.replace("token: { env: BAO_TOKEN }", "token: { env: NOT_SET }"),
+                BAO.replace("token: { env: BAO_TOKEN }", &format!("token: {BAO_TOKEN}")),
+                format!("{BAO}    caFile: /no/such/ca.crt\n"),
+                BAO.replace("mount: kv", "mount: /kv"),
+            ];
+            for section in bad {
+                let text =
+                    format!("{FILE}userToolServers: {{ enabled: true, {CALLBACK} }}\n{section}");
+                let errors = lines(load_file_only(&pairs, &text));
+                assert!(
+                    !errors.is_empty() && errors.iter().all(|l| l.starts_with("secrets.openbao.")),
+                    "{errors:?}"
+                );
+                let shown = errors.join("\n");
+                assert!(!shown.contains(BAO_TOKEN), "{shown}");
+            }
+        }
+
+        #[cfg(feature = "secrets-openbao")]
+        #[test]
+        fn a_ca_bundle_the_client_refuses_is_a_configuration_error_with_no_token_in_it() {
+            let bao = crate::user_tools::OpenBaoSettings {
+                address: "https://bao.internal:8200".to_owned(),
+                mount: "kv".to_owned(),
+                token: secrecy::SecretString::from(BAO_TOKEN),
+                ca_pem: Some(
+                    "-----BEGIN CERTIFICATE-----\nnot base64 %%%\n-----END CERTIFICATE-----\n"
+                        .to_owned(),
+                ),
+            };
+            let error = crate::user_tools::openbao_store(&bao).unwrap_err();
+            let shown = format!("{error} {error:?}");
+            assert!(shown.contains("secrets.openbao"), "{shown}");
+            assert!(
+                !shown.contains(BAO_TOKEN) && !shown.contains("not base64"),
+                "{shown}"
+            );
+            assert!(
+                !format!("{bao:?}").contains(BAO_TOKEN),
+                "Debug shows no token"
+            );
+        }
+
+        #[cfg(not(feature = "secrets-openbao"))]
+        #[test]
+        fn a_build_without_the_openbao_adapter_refuses_it_naming_the_feature() {
+            let text = format!("{FILE}{BAO}");
+            assert_eq!(
+                lines(load_file_only(&bao_pairs(), &text)),
+                [
+                    "secrets.store: openbao needs the Cargo feature \"secrets-openbao\", which this \
+                     build does not have (ADR 0046)"
+                ]
+            );
+        }
+
+        #[test]
+        fn an_unknown_store_is_refused_at_load_naming_the_key() {
+            let errors = lines(load_file_only(
+                &bao_pairs(),
+                &format!("{FILE}secrets:\n  store: consul\n"),
+            ));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(errors[0].starts_with("secrets.store: "), "{errors:?}");
         }
 
         /// Where the browser comes back to (ADR 0046, slice 4c): the file's `callbackUrl`, else

@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
       # `mobileAppLinks` is live by default and production intentionally refuses to render without the real Android
@@ -115,6 +115,17 @@ jobs:
           helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/coders.values.yaml
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/coders.values.yaml > /dev/null
+      # The BFF-only shape (deploy/chart/tests/bff-only.values.yaml, card ANR-655): the web and the edge off, the orchestrator's
+      # policy admitting the BFF and nothing else, the auth configuration the BFF's own token. render-check.sh asserts it.
+      # The test-only identities above are not layered here: this shape has no web host to serve the association documents, and
+      # it turns `mobileAppLinks` off for that reason, so the wrapper's own `mobileAppLinks`/`auth.browser` would be refused.
+      - name: helm lint and template with the web and the edge off
+        env:
+          AGENTIC_SKIP_MOBILE_LINK_FIXTURE: 1
+        run: |
+          helm lint deploy/chart -f deploy/chart/tests/bff-only.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/tests/bff-only.values.yaml > /dev/null
       # oauth2-proxy's sessions in Redis (deploy/chart/tests/redis.values.yaml; with and without a volume): off by default (the cookie
       # store), so these are the renders a deployment gets when it turns it on, after adding the AWS property oauth2_redis_password.
       - name: helm lint and template with oauth2-proxy's sessions in Redis on
@@ -127,6 +138,13 @@ jobs:
           helm template another-agentic-system deploy/chart --namespace another-agentic-system \
             -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/redis.values.yaml \
             --set oauth2Proxy.redis.persistence.enabled=true > /dev/null
+      # The model-credential injector (deploy/chart/tests/injector.values.yaml, ADR 0084 S9): off by default.
+      # The controllers (Envoy Gateway, Agent Router, the Authorino operator) are the deployment's, not the chart's.
+      - name: helm lint and template with the model-credential injector on
+        run: |
+          helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/injector.values.yaml
+          helm template another-agentic-system deploy/chart --namespace another-agentic-system \
+            -f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/injector.values.yaml > /dev/null
       # The browser agent and its obscura sidecar (deploy/chart/tests/browser.values.yaml, ADR 0057): off by default, so this is the render a
       # deployment gets when it turns it on, after adding the AWS properties browser_a2a_token and obscura_mcp_token.
       - name: helm lint and template with the browser agent on
@@ -338,6 +356,18 @@ jobs:
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/coders.values.yaml docker \
             "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" > /dev/null
+          # The BFF-only shape (card ANR-655): the web and the edge off, the BFF's own token as the user (`sub`), and the
+          # `orchestrator` audience. The image reads the configuration the chart renders for it.
+          # The same opt-out: this shape renders no web host, so it turns `mobileAppLinks` off and the wrapper's identities
+          # (and the browser it implies) are refused with the edge off.
+          AGENTIC_SKIP_MOBILE_LINK_FIXTURE=1 sh deploy/chart/tests/print-config.sh \
+            deploy/chart/tests/bff-only.values.yaml docker \
+            "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^    userClaim: sub$'
+          # The platform's agent registry (card ANR-685): the image reads `agents.registry` beside `agents.file`. A build without the
+          # feature `registry-platform` refuses the URL (exit 78), so this also proves the pinned tag carries it.
+          sh deploy/chart/tests/print-config.sh \
+            deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/registry.values.yaml docker \
+            "ghcr.io/vymalo/another-agentic-system/orchestrator:$tag" | grep -q '^    url: http://another-agentic-registry'
           # Sharing on (public): the image reads `sharing` with its secret file and the `thread.share` permission of the roles.
           sh deploy/chart/tests/print-config.sh \
             deploy/chart/examples/netcup.values.yaml,deploy/chart/tests/sharing.values.yaml docker \
@@ -481,7 +511,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
       - name: The Caddyfiles validate, and the proxy does what the matrix says

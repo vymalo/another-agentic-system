@@ -35,6 +35,7 @@ fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
     Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -49,6 +50,7 @@ fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
     Input::StopAndSend {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -371,6 +373,7 @@ fn a_redelivery_carries_the_mentions_into_the_job_it_lands_in() {
                 mentions: carried.clone(),
                 tier: None,
                 locale: None,
+                pick: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");
@@ -429,6 +432,7 @@ fn a_redelivery_that_was_sent_delegates_nothing_and_still_opens_the_set() {
                 mentions: carried.clone(),
                 tier: None,
                 locale: None,
+                pick: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");

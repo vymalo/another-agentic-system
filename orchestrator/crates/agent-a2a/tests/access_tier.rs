@@ -57,6 +57,7 @@ fn request(fake: &FakeAgent, text: &str, tier: Option<AccessTier>) -> SendReques
         tier,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 

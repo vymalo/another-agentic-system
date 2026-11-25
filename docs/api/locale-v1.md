@@ -1,8 +1,7 @@
 # A2A extension: locale (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/locale/v1`
-- **Status:** **proposed 2026-11-22**, on the owner's decisions of that day (another-context `plans/2026-11-22-languages.md`,
-  decision rows 14–17): the interface offers `en-CM`, `fr-CM`, `wes-CM` and `ybb-CM` from day 0, and **the agent's language is
+- **Status:** **proposed 2026-11-22**, on the owner's decisions of that day: the interface offers `en-GB`, `fr-FR`, `gsw-CH` and `fur-IT` from day 0, and **the agent's language is
   the interface's language by default, then the person's**. **The orchestrator's side is built** (the tag and its checks, the
   card read, the activation, the local stack's scenario); **no agent lists it yet**, and the web does not send it yet.
 - **Decided in:** [ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md); the
@@ -24,8 +23,8 @@ It is a **hint**, and the whole contract follows from that word:
 - a client that does not know it sends nothing, and the agent falls back to its own default.
 
 The owner's rule for what the agent does with it: *the agent answers in the language of the interface by default, and then in
-the person's* — the person's own words win over the screen, because a person who writes in Yemba in a French interface is
-asking for Yemba.
+the person's* — the person's own words win over the screen, because a person who writes in German in a French interface is
+asking for German.
 
 ## Who does what
 
@@ -41,17 +40,17 @@ asking for Yemba.
 sequenceDiagram
   autonumber
   actor P as Person
-  participant W as Web (interface in fr-CM)
+  participant W as Web (interface in fr-FR)
   participant O as Orchestrator
   participant L as Event log
   participant A as Agent (card lists locale/v1)
 
-  W->>O: POST run, forwardedProps["vymalo.locale"] = "fr-CM"
+  W->>O: POST run, forwardedProps["vymalo.locale"] = "fr-FR"
   O->>O: is it a BCP 47 tag? (400, nothing written)
   O->>A: read the card (live, for this call)
-  A-->>O: capabilities.extensions: locale/v1, params {locale: "en-CM"}
-  O->>L: user_message {text, locale: "fr-CM"} — recorded, never shown
-  O->>A: SendStreamingMessage, A2A-Extensions: locale/v1, metadata {locale: "fr-CM"}
+  A-->>O: capabilities.extensions: locale/v1, params {locale: "en-GB"}
+  O->>L: user_message {text, locale: "fr-FR"} — recorded, never shown
+  O->>A: SendStreamingMessage, A2A-Extensions: locale/v1, metadata {locale: "fr-FR"}
   A-->>O: the answer, in French, because the person wrote French
   O-->>W: the frames, with no locale in any of them
 ```
@@ -82,7 +81,7 @@ The agent lists the extension in `capabilities.extensions`:
 {"uri": "https://agents.vymalo.com/a2a/extensions/locale/v1",
  "description": "Answers in the language of the interface the person reads.",
  "required": false,
- "params": {"locale": "en-CM"}}
+ "params": {"locale": "en-GB"}}
 ```
 
 | Param | Meaning |
@@ -116,13 +115,13 @@ The tag is a **BCP 47 language tag** ([RFC 5646](https://www.rfc-editor.org/rfc/
 orchestrator validates its **shape** and refuses anything that is not one, before anything is written (**400**).
 
 **Accepted:** a language of 2 to 8 letters, up to three three-letter extlangs, an optional script, an optional region, variants,
-extensions and a private-use part (`en-CM`, `fr-CM`, `wes-CM`, `ybb-CM`, `de-DE`, `es-419`, `zh-Hant-TW`, `sr-Latn-RS`,
+extensions and a private-use part (`en-GB`, `fr-FR`, `gsw-CH`, `fur-IT`, `de-DE`, `es-419`, `zh-Hant-TW`, `sr-Latn-RS`,
 `de-CH-1901`, `en-x-twain`), and a private-use-only tag (`x-twain`). Subtags are matched case-insensitively; the tag is carried
 **as the client wrote it**.
 
-**Refused:** an empty tag; a tag longer than 35 bytes; a non-ASCII letter; a separator other than `-` (`en_CM`, `en CM`); an
-empty subtag (`en--CM`, `-en`, `en-`); a subtag longer than its production allows (`en-CM-abcdefghi`); a repeated variant or
-extension singleton; a private-use part with no subtag (`en-CM-x`); a first subtag that is not a language; and the irregular
+**Refused:** an empty tag; a tag longer than 35 bytes; a non-ASCII letter; a separator other than `-` (`en_GB`, `en GB`); an
+empty subtag (`en--GB`, `-en`, `en-`); a subtag longer than its production allows (`en-GB-abcdefghi`); a repeated variant or
+extension singleton; a private-use part with no subtag (`en-GB-x`); a first subtag that is not a language; and the irregular
 grandfathered tags (`i-klingon`, `en-GB-oed`), which no interface produces.
 
 **The set of languages is not a list in the code.** Which ones an interface offers is the **deployment's configuration**
@@ -140,7 +139,7 @@ An ordinary A2A user message, with the tag in its metadata under the URI:
   "contextId": "01927a4e-3b00-7000-8000-000000000001",
   "parts": [{"text": "corrige la page de connexion"}],
   "extensions": ["https://agents.vymalo.com/a2a/extensions/locale/v1"],
-  "metadata": {"https://agents.vymalo.com/a2a/extensions/locale/v1": {"locale": "fr-CM"}}
+  "metadata": {"https://agents.vymalo.com/a2a/extensions/locale/v1": {"locale": "fr-FR"}}
 }}
 ```
 
@@ -177,12 +176,12 @@ setting of the thread, no new route. It rides with whatever the other extensions
 
 ## 6. The orchestrator
 
-The client sends the tag on the run that carries the message: `forwardedProps["vymalo.locale"] = "fr-CM"`. `null` or no
+The client sends the tag on the run that carries the message: `forwardedProps["vymalo.locale"] = "fr-FR"`. `null` or no
 member: no hint, nothing activated. Before **anything** is written the orchestrator checks:
 
 | Check | Refused as |
 |---|---|
-| The member is a string that is a BCP 47 tag | **400** "vymalo.locale must be a BCP 47 language tag, for example en-CM" |
+| The member is a string that is a BCP 47 tag | **400** "vymalo.locale must be a BCP 47 language tag, for example en-GB" |
 
 That is the only check. There is no cap, no role, no card read at this point: a hint is never a reason to refuse a message, and
 the card is read at the send, as it is for every other extension.
@@ -221,7 +220,7 @@ dispatcher does not fail the job for a locale, and the adapter never refuses a m
 - **It never grants anything.** A locale changes no tool, no credential, no tier, no scope, no audience. An agent that reads
   it as a permission has a defect.
 - **The agent's own words never fill a high-risk string.** This is the rule of this extension, and it is a **client rule, not a
-  prompt**. A model that writes Yemba barely must not be able to produce the text of a consent screen, the label of a button
+  prompt**. A model that writes German barely must not be able to produce the text of a consent screen, the label of a button
   that spends money, or the wording of a payment. So:
   - a **trusted component**'s label and its fields are the client's own reviewed strings, per language, and the agent names the
     component and never its words ([`trusted-components-v1.md`](trusted-components-v1.md));
@@ -276,7 +275,7 @@ at most once; extensions of a singleton that is not `x` and one or more `2*8alph
 more `1*8alphanum` subtags), and every subtag is at most eight characters; subtags are case-insensitive and carry no meaning in their case
 (section 2.1.1); and section 4.4.1 says "Protocols or specifications that specify limited buffer sizes for language tags MUST allow
 for language tags of at least 35 characters", which is the bound `MAX_LOCALE_LEN` takes. *Verified in this repository the same day:*
-the four tags of the deployment are well formed — `en-CM` and `fr-CM` are `language` + `region`, `wes-CM` and `ybb-CM` a three-letter
+the four tags of the deployment are well formed — `en-GB` and `fr-FR` are `language` + `region`, `gsw-CH` and `fur-IT` a three-letter
 `language` + `region`.
 
 *Unverified:* that any agent reads the member yet — none lists the extension, and the adam-rs side is a separate change. Whether

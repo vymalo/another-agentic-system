@@ -72,6 +72,7 @@ async fn a_catalog_from_before_the_cutover_is_never_served() {
             Input::UserMessage {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 user: orch_core::UserId::new(ALICE),
                 text: "echo again".to_owned(),
                 message_id: None,

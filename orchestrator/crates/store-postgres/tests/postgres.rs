@@ -84,6 +84,7 @@ fn delegate() -> NewOutbox {
         payload: OutboxPayload::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "go".into(),
             release: None,
             new_job: false,
@@ -2808,6 +2809,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
         OutboxPayload::Steer {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "you were wrong".to_owned(),
             release: None,
             ui_catalog: None,
@@ -2828,6 +2830,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
         OutboxPayload::Delegate {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "you were wrong".to_owned(),
             release: None,
             new_job: false,

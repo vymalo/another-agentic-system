@@ -1,0 +1,159 @@
+# The REAL external authorizer (sys#334 S9): Authorino over gRPC, where this directory's earlier version used an
+# HTTP stub. This is the chart's shape (deploy/chart, `injector`): authenticate the caller, ask the broker for the
+# run's lease, and add `Authorization` and `x-account-id` upstream only.
+#
+# Scope of this proof: authentication is a real `kubernetesTokenReview`, as the chart's AuthConfig has it. A caller must
+# present the projected token of a ServiceAccount the cluster issued for the audience `spike`; nothing else is
+# accepted. (ANR-662 ran this half anonymously on purpose; ANR-667 turns it on so that the identity half is provable
+# rather than asserted.) The broker still requires the injector's own token, so the lookup stays real.
+#
+# The ClusterRoleBinding below is what a deployment's operator grants: Authorino asks the API server for the
+# TokenReview, and `system:auth-delegator` is the role that allows it.
+#
+# Plaintext gRPC (:50051) because Envoy Gateway v1.10's extAuth.grpc has no TLS field (verified 2026-11-24); the
+# chart says the same, and TLS on this hop is a later item.
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: default
+spec:
+  replicas: 1
+  listener:
+    tls:
+      enabled: false
+  oidcServer:
+    port: 8083
+    tls:
+      enabled: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spike-authorino-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: authorino
+    namespace: default
+---
+# The agent pod's identity, played by a ServiceAccount: `kubectl create token spike-agent --audience spike` is what the
+# spike presents as its bearer.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spike-agent
+  namespace: default
+---
+apiVersion: authorino.kuadrant.io/v1beta3
+kind: AuthConfig
+metadata:
+  name: spike
+  namespace: default
+spec:
+  hosts:
+    - "*"
+  authentication:
+    "agent":
+      kubernetesTokenReview:
+        audiences:
+          - spike
+  metadata:
+    "lease":
+      # The run id is the capability, not a credential: it names the run whose lease to ask for. A request without
+      # it is denied below; do not call the broker with an empty run.
+      when:
+        - selector: request.headers.x-run-id
+          operator: neq
+          value: ""
+      http:
+        url: "http://spike-broker.default.svc.cluster.local/internal/runs/{request.headers.x-run-id}/lease"
+        method: GET
+        headers:
+          Accept:
+            value: application/json
+        # The injector's own token, presented as `Authorization: Bearer <token>` (the default credentials placeholder).
+        sharedSecretRef:
+          name: spike-injector-token
+          key: token
+      cache:
+        key:
+          selector: request.headers.x-run-id
+        ttl: 30
+    "budget":
+      # The person's balance, read from the ledger at every model call (ANR-669): a READ, never a debit, keyed by the
+      # account id in the lease Authorino just fetched — hence the second priority group (v0.26.4: lower number runs
+      # first; a config in priority 1 reads a config's answer from priority 0). Cached per account for 10 s, the
+      # chart's default: a stale balance lets a person overspend by what they spend inside the TTL.
+      priority: 1
+      when:
+        - selector: auth.metadata.lease.accountId
+          operator: neq
+          value: ""
+      http:
+        url: "http://spike-ledger.default.svc.cluster.local/budget/v1/remaining?account_id={auth.metadata.lease.accountId}"
+        method: GET
+        headers:
+          Accept:
+            value: application/json
+        # The ledger's shared secret, presented as `Authorization: Bearer <secret>` (Authorino's sharedSecretRef has no
+        # other carrier).
+        sharedSecretRef:
+          name: spike-budget-token
+          key: token
+      cache:
+        key:
+          selector: auth.metadata.lease.accountId
+        ttl: 10
+  authorization:
+    "run-id":
+      patternMatching:
+        patterns:
+          - selector: request.headers.x-run-id
+            operator: neq
+            value: ""
+    # A refused or absent lease (the broker's 410/404) leaves the metadata unset, and Authorino still applies every
+    # ok_response header: without these rules the gateway receives `Authorization: Bearer` with an empty token, or an
+    # empty `x-account-id`. Both are unusable, but they are headers; deny instead, so a run without a usable lease
+    # reaches no gateway at all (ANR-662, ANR-667).
+    "lease":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.lease.token
+            operator: neq
+            value: ""
+    "account-id":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.lease.accountId
+            operator: neq
+            value: ""
+    # `503 budget_unavailable` (or a timeout) leaves the metadata unset: refuse here, so an unread balance is never
+    # spent as if it were credit — and never misreported to the person as a spent one (that is the 402 below).
+    "budget-readable":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.budget.remaining_micros
+            operator: neq
+            value: ""
+  response:
+    success:
+      headers:
+        # `plain.value` is emitted by Authorino v0.26.4 as Go's fmt of json.RawExtension (`{[34 66 ...] <nil>}`),
+        # so the scheme and the value come from a selector (verified 2026-11-24). The lease token is bare.
+        "Authorization":
+          plain:
+            selector: "Bearer {auth.metadata.lease.token}"
+        # The lease's accountId is the run's person (the usage ledger's UserId, ADR 0065), never a provider account.
+        # A selector like the token, so a client cannot choose whose usage it is.
+        "x-account-id":
+          plain:
+            selector: "{auth.metadata.lease.accountId}"
+        # The balance the request was judged by, for the Envoy Lua filter that answers 402 (Authorino cannot set a
+        # denial code per rule). A client-sent copy is replaced, and the filter removes it before the gateway.
+        "x-budget-remaining":
+          plain:
+            selector: "{auth.metadata.budget.remaining_micros}"

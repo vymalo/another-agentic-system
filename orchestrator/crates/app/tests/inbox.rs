@@ -1061,6 +1061,9 @@ impl ThreadStore for RacyStore {
             -> Result<(), StoreError>;
         claim_purges(owner: &str, limit: u32, lease: Duration, now: Timestamp)
             -> Result<Vec<ThreadId>, StoreError>;
+        thread_pick(thread: ThreadId) -> Result<orch_core::ModelPick, StoreError>;
+        set_thread_pick(owner: &orch_core::UserId, thread: ThreadId, pick: orch_core::ModelPick)
+            -> Result<(), StoreError>;
         finish_purge(thread: ThreadId) -> Result<(), StoreError>;
         purges_pending() -> Result<u64, StoreError>;
         fork_thread(new: orch_ports::NewThreadRecord, origin: orch_ports::ForkOrigin, first: orch_ports::Commit)
@@ -1170,6 +1173,36 @@ impl orch_ports::PromptStore for RacyStore {
             id: &orch_core::prompt::PromptId,
             expected: Option<orch_ports::PromptRevision>
         ) -> Result<(), orch_ports::PromptStoreError>;
+    }
+}
+
+/// The team presets of a [`ThreadStore`] are the store's own (ADR 0074): this one delegates to its
+/// inner store's.
+impl orch_ports::TeamPresetStore for RacyStore {
+    delegate! {
+        insert_team_preset(
+            owner: &orch_core::UserId,
+            preset: &orch_core::TeamPreset,
+            at: Timestamp
+        ) -> Result<orch_ports::StoredTeamPreset, orch_ports::TeamPresetStoreError>;
+        get_team_preset(owner: &orch_core::UserId, id: &orch_core::TeamPresetId)
+            -> Result<Option<orch_ports::StoredTeamPreset>, orch_ports::TeamPresetStoreError>;
+        list_team_presets(
+            owner: &orch_core::UserId,
+            after: Option<&orch_core::TeamPresetId>,
+            limit: u32
+        ) -> Result<orch_ports::TeamPresetPage, orch_ports::TeamPresetStoreError>;
+        replace_team_preset(
+            owner: &orch_core::UserId,
+            preset: &orch_core::TeamPreset,
+            expected: orch_ports::TeamPresetRevision,
+            at: Timestamp
+        ) -> Result<orch_ports::StoredTeamPreset, orch_ports::TeamPresetStoreError>;
+        delete_team_preset(
+            owner: &orch_core::UserId,
+            id: &orch_core::TeamPresetId,
+            expected: Option<orch_ports::TeamPresetRevision>
+        ) -> Result<(), orch_ports::TeamPresetStoreError>;
     }
 }
 

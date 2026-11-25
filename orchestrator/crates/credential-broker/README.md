@@ -268,6 +268,69 @@ stateDiagram-v2
   until the server says otherwise. **`expires_in: 0` counts as nothing said** (some servers send it for a token that does not
   expire, and read as "ends now" it would make every lease a refresh).
 
+## Run leases (ADR 0084)
+
+**The orchestrator's side** is `RunBindingClient` (`src/run_client.rs`), implementing the
+`RunBindings` port of `orch-ports`: `bind` sends `POST /internal/runs` with `{run, agent, person,
+model?, expiresAt}` (camelCase, RFC 3339) and `unbind` sends `DELETE /internal/runs/{run}` (the id
+percent-encoded, so a slash cannot address another route). Both present
+`Authorization: Bearer <orchestrator token>` and expect `204`; `409` is
+`RunBindingError::Conflict`, any other status `Refused(u16)`, and a connection that does not answer
+`Unreachable`. The client follows no redirect, times out (5 s by default), reads nothing of the
+answer, and its `Debug` shows the base URL and never the token. It deliberately **does not** go
+through the egress guard: the broker is ours, on the cluster's internal listener, named by
+configuration. A deployment with no broker uses `NoRunBindings`, which accepts every call and does
+nothing. The address must be an `http(s)` URL with a host and no query, fragment or user
+information (`BuildError::BrokerUrl`).
+
+**Called by the dispatcher since ANR-417.** `orch-app`'s `Dispatcher` binds a run the moment its
+stream first names the A2A task id (the person, the agent, no model endpoint, and `expiresAt` 24 h,
+the cap above) and unbinds it once the thread is `done`, `failed` or `cancelled`, idempotently. The
+binary builds the client when `RUN_BINDING_URL` is set (`RUN_BINDING_TOKEN`, `RUN_BINDING_TIMEOUT_SECS`),
+and puts `NoRunBindings` in its place when it is not.
+
+
+The broker's first part (B1): the orchestrator binds a run as soon as it knows the run's id (the
+first frame of the delegation's stream), and the injector leases
+the run's model credential for 30 s, on the broker's **internal listener only**. `src/run_leases.rs`
+is the port implementation (`RunLeases`, with its conformance cases in `orch-ports`), and
+`src/routes.rs` is the HTTP surface:
+
+| Route | Caller | Answer |
+|---|---|---|
+| `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run (the same binding is idempotent), and the deadline is capped at 24 h |
+| `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent, and a no-op for a run that was never bound |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — **never an agent, its own run included** | `200 {"token", "accountId", "expiresAt"}` (`accountId` is the run's person — a `UserId`, the key the usage ledger is kept by (`usage_tasks.owner` of migration `0023`, ADR 0065), never a provider account or a ledger-service account number — beside the key, so the injector knows whose call it is; never logged, never in a refusal or an error, never in a message to an agent), `Cache-Control: no-store`; at most 30 s and never past the binding's |
+| `GET /internal/runs/{run}/account` | **the operator's meter identity alone** (`SharedTokens::with_meter`) | `200 {"accountId"}` (the run's person, as in the lease; never logged), `Cache-Control: no-store`; `404 run_not_bound` for an unknown run and for every other caller (the orchestrator, the injector, any agent), so the answer never says whether a run exists. It holds no credential, so a binding past its deadline still answers (a pod may outlive the lease). The meter is refused the lease, binding and unbinding |
+
+Refusals are the ruled slugs with a `{"code"}` body: `run_not_bound` (`404`), `lease_expired`
+(`410`), `unavailable` (`503`); the door answers `401 unauthenticated` (`WWW-Authenticate: Bearer`)
+and `403 not_allowed` (an agent binding or unbinding). A `422 invalid_binding` covers a body that is
+not JSON, names an id over 256 characters, or carries a deadline that is not RFC 3339. **The run id
+alone is never enough**: the caller comes from `RunCallerAuth`, and a caller that is neither the
+orchestrator nor the injector gets `run_not_bound`, so the answer never says whether a run exists.
+An **agent is refused its own run's lease** too (ADR 0084 decision 2, amended 2026-11-24): the
+binding names the agent, it does not authorise it, so a reachable agent holds no key. The lease value and the `accountId` beside it are
+written to the response and to nothing else — no log line, no error, no `Debug` holds either.
+
+`SharedTokens` is today's `RunCallerAuth`: one bearer token for the orchestrator, one for the
+injector (`with_injector`), one for the operator's meter (`with_meter`) and one per agent, from the deployment's configuration, compared by
+SHA-256 digest. The meter's token reads an account and nothing else; the injector's token reads a lease and does nothing else: binding or unbinding
+with it is `403 not_allowed`, as it is for an agent. S9 replaces it with a TokenReview
+of the service-account token, or mTLS (ADR 0084 decision 5); the routes do not change. There is **no
+entry in `docs/api/chat-api.yaml`**, and `tests/run_routes.rs` holds that, the README's table, the
+wrong-caller and cross-run refusals, the deleted and expired cases, the lease bound, the conflict and
+the door's refusals.
+
+**The binary serves them** (card ANR-578): when the configuration's `server.internal` is set and the
+process serves routes, `boot` binds that listener and mounts `orch_credential_broker::router` on it —
+`RunLeaseBroker::new(PgRunBindings, ConfiguredCredentials)` as the leases and `SharedTokens` as the
+door — the three routes and **nothing else**, no surface and no health, as a second control-plane
+component, so a SIGTERM drains it with the HTTP server. The bindings are `PgRunBindings` over the
+orchestrator's own pool; the credentials are the deployment's `models.endpoints.<name>.apiKey` as
+`ConfiguredCredentials`, which answers `Unavailable` for a model it has no key for and for a blank
+one, never an empty header. The binary's `tests/internal.rs` covers it over a real socket.
+
 ## Egress
 
 Nothing in this crate opens a connection except `http.rs`, and it does this for every request (resource metadata,
@@ -325,6 +388,8 @@ connections, cannot then prove that nothing connected).
 | `tests/egress.rs` | A policy that does not name the address, `http` without `allowing_http`; **which endpoint is refused at which address**: the token endpoint at `169.254.169.254` with a policy that does not name it (`allow-list`) and with one that does, so that the class of the address decides (`private-address`); the registration endpoint at `169.254.169.254` (class decides) and at `127.0.0.2`; the revocation endpoint at `127.0.0.2` (and at `169.254.169.254`, whose rule is read from the log: `tests/logs.rs`); the token endpoint at `127.0.0.2`. Where the address is `127.0.0.2` a tripwire listener counts connections: none. Also: a stricter policy at a refresh, a name that resolves to a private address (DNS rebinding), to a mix, to nothing, a resolver that fails, a name admitted by `allow` and connected to only through the hook, a redirect not followed, an authorization endpoint that is not http(s) or has a fragment, a response over the limit with a `Content-Length` and **without one** (chunked), a body that drips, a slow server. |
 | `tests/registration.rs` | The order of the ADR (client id, document, reuse, dynamic), the secret of a registered client, **one registration per hour per issuer and redirect URI** and never at another issuer, the authorization request (PKCE, `state`, `resource` as the definition's URL, scope or none, redirect), the root metadata fallback, OpenID-only issuers, metadata about another resource or issuer, a URL over 2 KiB in the metadata, a request over 8 KiB, a flow too large for the store refused before a client is registered, a token that is not a bearer token, and the settings checks and their upper bounds. |
 | `tests/behaviour.rs` | What is kept, lifetimes and leases (`expires_in: 0`), rotating and non-rotating refresh tokens, **the claim to refresh** (written before the request, waited for, taken over when it runs out, the access token lent while another replica refreshes, released after a failure), **a refusal after another replica rotated**, a hanging refresh that is one request, a rotate that fails once or stays down (and the callers that waited for it hear so), the state the broker writes (and does not write after an edit), revocation upstream, stores that are down, a refresh that outlives its caller, **a revoke that runs beside an authorization (in this process and in another)**, **a flow begun while another ends**, the marker of a used flow, a corrupt record, **a flow for a URL that was edited meanwhile**, and **a callback between an edit's write and its revoke** (a store of definitions that stops after the `replace`: no code is exchanged, no credential and no flow is left once the edit has revoked; slice 4c review). |
+| `tests/run_client.rs` | The orchestrator's client: the method, path, bearer and JSON body of a bind; no `model` key when the binding names none; the run id percent-encoded in an unbind; `409` as `Conflict`, `500` as `Refused(500)`, a closed port as `Unreachable`; a bad base URL refused and the token absent from `Debug`. |
+| `tests/run_routes.rs` | The internal run routes (ADR 0084): the bound agent leases and the answer is `no-store`; a wrong caller holding the right run id is `run_not_bound`, and an agent bound to one run is refused another's; a deleted binding is `run_not_bound` and an expired one `lease_expired` (`410`); the lease never passes the binding's deadline; the same binding is idempotent and a different one is `409 run_already_bound`; **the same run bound to another endpoint label is `409` too and keeps the first endpoint's token** (ADR 0084, the status note of 2026-11-24), and **two runs bound to two endpoints each lease the token of the endpoint the caller named** (the route's optional `model`, kept as sent); an agent may not bind or unbind (`403`) and a bad body is `422`; the routes are absent from `docs/api/chat-api.yaml` and listed above. |
 | `tests/hygiene.rs` | The whole life of a credential under a subscriber that keeps every level, with a planted sentinel (in the tokens, the echoed errors and the `error` code): no secret and no server path in the log. |
 | `tests/logs.rs` | What the operator reads: a store that does not recover (the refresh token is lost, said without the token), the revocation endpoint at `169.254.169.254` refused by the class of the address, for which server. |
 | unit tests | `src/discovery.rs` (the well-known URLs, the resource comparison), `src/oauth.rs` (the RFC 7636 appendix B vector, the error codes the RFCs define, `expires_in`), `src/material.rs` (records, the claim, the issuer check, the binding), `src/flights.rs` (the keyed lock, the leader and its followers), `src/http.rs` (a lookup that never answers is cut by the resolver hook at `LOOKUP_TIMEOUT`, on a paused clock, before the 30 s connect timeout of the test). |
@@ -332,5 +397,5 @@ connections, cannot then prove that nothing connected).
 ## Dependencies
 
 `orch-core` and `orch-ports` only among ours; `reqwest` (the workspace's, `rustls`), `url`, `serde`/`serde_json`, `sha2`,
-`base64`, `getrandom` (PKCE and `state`), `jiff`, `tokio`, `tracing`, `zeroize`, `thiserror`. Dev: `axum`,
-`tracing-subscriber`, `futures`.
+`base64`, `getrandom` (PKCE and `state`), `jiff`, `tokio`, `tracing`, `zeroize`, `thiserror`, and `axum` (the run routes). Dev: `tower`
+(`util`, to drive the router), `tracing-subscriber`, `futures`.

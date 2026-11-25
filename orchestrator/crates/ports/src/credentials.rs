@@ -763,10 +763,20 @@ impl std::fmt::Display for RunId {
 /// bound to leases its credential. A lookup from any other identity is refused (ADR 0084).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunCaller {
-    /// The orchestrator itself (bind and unbind).
+    /// The orchestrator itself: it binds a run, unbinds it, and may read the run's lease.
     Orchestrator,
-    /// The agent the run is bound to (lease).
+    /// The agent the run is bound to. It is named **by** the binding and is **never** enough for a
+    /// lease: an agent is refused the lease of its own run, so a reachable agent holds no key
+    /// (ADR 0084 decision 2, amended 2026-11-24).
     Agent(AgentId),
+    /// The injector: the process that adds the run's model credential to a request. It reads the
+    /// lease and does nothing else — it binds nothing and unbinds nothing (ADR 0084 decision 2,
+    /// amended 2026-11-24).
+    Injector,
+    /// The operator's pod-minute meter: it asks which account a run's pod is charged to
+    /// ([`RunLeases::account`]) and does nothing else. It is refused the lease, binding and
+    /// unbinding.
+    Meter,
 }
 
 /// What the orchestrator binds at run creation: the run, the agent it belongs to, the person it
@@ -779,25 +789,53 @@ pub struct RunBinding {
     pub agent: AgentId,
     /// The person the run spends for.
     pub person: UserId,
-    /// The model endpoint the lease is for, when the binding names one (ADR 0084 open question 4).
+    /// The model endpoint label the lease is for, when the binding names one: the `endpoint` of the
+    /// choice the live card maps the run's pick to (ADR 0084, the status note of 2026-11-24). `None`
+    /// when the card names none, and the lookup then answers `unavailable` (fail closed).
     pub model: Option<String>,
     /// When the binding ends; the broker caps it.
     pub expires_at: Timestamp,
 }
 
-/// What the injector gets: the model endpoint's bearer token and the moment it stops being valid.
-/// At most 30 s, never past the binding's deadline, `no-store`, and never logged. No `Clone`: a
-/// lease is used once and moved.
-#[derive(Debug)]
+/// What the injector gets: the model endpoint's bearer token, the ledger account whose call it is
+/// (the run's person), and the moment the token stops being valid. At most 30 s, never past the
+/// binding's deadline, `no-store`, and never logged. No `Clone`: a lease is used once and moved.
 pub struct RunLease {
     token: ToolSecret,
+    account: UserId,
     expires_at: Timestamp,
 }
 
+/// `Debug` shows the expiry and nothing of the token or the account.
+impl std::fmt::Debug for RunLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunLease")
+            .field("token", &"<redacted>")
+            .field("account", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 impl RunLease {
-    /// A lease of `token` until `expires_at`.
-    pub fn bearer(token: ToolSecret, expires_at: Timestamp) -> Self {
-        RunLease { token, expires_at }
+    /// A lease of `token` until `expires_at`, for the account `account`: the run's person, a
+    /// `UserId`, which is the key the usage ledger is kept by (`orch_core::UsageRow.owner`,
+    /// `crates/core/src/usage_record.rs`; the column `usage_tasks.owner` of migration `0023`; ADR
+    /// 0065). That person id and not a provider account or an account number of the ledger service:
+    /// the orchestrator holds no other identity for the person. The account is returned to the
+    /// injector beside the key and goes in no log line, no error and no message to an agent.
+    pub fn bearer(token: ToolSecret, account: UserId, expires_at: Timestamp) -> Self {
+        RunLease {
+            token,
+            account,
+            expires_at,
+        }
+    }
+
+    /// The ledger account the run spends for: the run's person (`UserId`), the key the ledger keeps
+    /// the rows by.
+    pub fn account(&self) -> &UserId {
+        &self.account
     }
 
     /// The token, without the `Bearer ` scheme.
@@ -839,7 +877,8 @@ impl std::fmt::Display for RunLeaseError {
 impl std::error::Error for RunLeaseError {}
 
 /// The broker's first part (B1, ADR 0084): the binding the orchestrator makes at run creation, and
-/// the lease the injector asks for, answered only to the agent the run is bound to.
+/// the lease the injector asks for, answered to the orchestrator and the injector and never to an
+/// agent (ADR 0084 decision 2, amended 2026-11-24).
 pub trait RunLeases: Send + Sync + 'static {
     /// Binds `binding`. Idempotent for the same binding; [`RunLeaseError::Conflict`] for a different
     /// one on the same run.
@@ -855,6 +894,17 @@ pub trait RunLeases: Send + Sync + 'static {
         run: &RunId,
         caller: &RunCaller,
     ) -> impl Future<Output = Result<RunLease, RunLeaseError>> + Send;
+
+    /// The account (the run's person) a bound run is charged to, for [`RunCaller::Meter`] alone:
+    /// every other caller is [`RunLeaseError::NotBound`], so the answer never says whether a run
+    /// exists. It holds no credential, so a binding past its deadline still answers (a pod may
+    /// outlive its run's lease); an unbound run is `NotBound`. A required method: an implementer
+    /// of `RunLeases` must add it.
+    fn account(
+        &self,
+        run: &RunId,
+        caller: &RunCaller,
+    ) -> impl Future<Output = Result<UserId, RunLeaseError>> + Send;
 }
 
 /// The binding store the broker keeps: one row per run, and the same binding written again is
@@ -884,4 +934,58 @@ pub trait ModelCredentials: Send + Sync + 'static {
         &self,
         model: &str,
     ) -> impl Future<Output = Result<Option<ToolSecret>, RunLeaseError>> + Send;
+}
+
+/// The orchestrator's side of ADR 0084 decisions 1 and 6: the binding it makes when a run starts
+/// and removes when the run ends. The broker's side of the same wire is [`RunLeases`]; a deployment
+/// with no broker behind it uses [`NoRunBindings`], which accepts every call and does nothing.
+///
+/// A binding is not a secret: it names the run, the agent, the person and the model endpoint, and
+/// carries a deadline. The value the lease returns is never part of it.
+pub trait RunBindings: Send + Sync + 'static {
+    /// Binds `binding`; the broker treats the same binding sent again as idempotent and a different
+    /// one for the same run as [`RunBindingError::Conflict`]. The broker caps the deadline.
+    fn bind(&self, binding: RunBinding)
+    -> impl Future<Output = Result<(), RunBindingError>> + Send;
+
+    /// Removes the run's binding; a run that was never bound is not an error.
+    fn unbind(&self, run: &RunId) -> impl Future<Output = Result<(), RunBindingError>> + Send;
+}
+
+/// Why a bind or an unbind did not happen. It holds no URL, no token and no body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunBindingError {
+    /// The broker could not be reached, or did not answer in time. A run that cannot be bound goes
+    /// on today (the failure is logged; S9 makes it park the run).
+    Unreachable,
+    /// The run is already bound to another agent (`409 run_already_bound`): a run is bound once.
+    Conflict,
+    /// The broker answered with a status that is neither a success nor a conflict.
+    Refused(u16),
+}
+
+impl std::fmt::Display for RunBindingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunBindingError::Unreachable => f.write_str("the broker is unreachable"),
+            RunBindingError::Conflict => f.write_str("the run is already bound to another agent"),
+            RunBindingError::Refused(status) => write!(f, "the broker refused the call ({status})"),
+        }
+    }
+}
+
+impl std::error::Error for RunBindingError {}
+
+/// A deployment with no broker behind it: every bind and unbind succeeds and nothing is stored.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoRunBindings;
+
+impl RunBindings for NoRunBindings {
+    async fn bind(&self, _binding: RunBinding) -> Result<(), RunBindingError> {
+        Ok(())
+    }
+
+    async fn unbind(&self, _run: &RunId) -> Result<(), RunBindingError> {
+        Ok(())
+    }
 }

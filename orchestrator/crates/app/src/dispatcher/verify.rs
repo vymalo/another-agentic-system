@@ -49,7 +49,7 @@ use orch_core::{
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentError, AgentStream, OutboxFinal, OutboxItem, OutboxPayload,
-    Ports, SendContent, SendRequest, TaskHandle, ThreadStore,
+    Ports, RunBindings, SendContent, SendRequest, TaskHandle, ThreadStore,
 };
 use tokio::time::MissedTickBehavior;
 
@@ -123,7 +123,7 @@ fn wanted(thread: &ThreadRecord, attempt: u32, verification: u32) -> bool {
             .any(|r| r.source == CheckSource::Verifier && r.attempt == attempt)
 }
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Processes one `verify` row. See the module documentation.
     pub(super) async fn verify(&self, row: OutboxItem) -> Done {
         let OutboxPayload::Verify {
@@ -267,6 +267,7 @@ impl<P: Ports> Dispatcher<P> {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         };
         self.app.record_agent_build(v.thread, &v.endpoint).await;
         match self.app.ports().agents().send_stream(request).await {

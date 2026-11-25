@@ -6,6 +6,12 @@
   [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md). **Built (2026-10-02, PR S18 of plan 10)**, as the
   decision says; the status note below lists what was decided while building it. **The web draws the description (2026-10-02, PR S19)**, see its status note. Amended (2026-10-04): `baseUrl` is the URL as text **or** `{ env: NAME }` or `{ file: PATH }`, read at startup and checked as a written one is, under the same key; the owner decided that the production gateway's address is kept in AWS Secrets Manager next to its key, not in git. A URL is not one of ADR 0034's fourteen secrets: it is shown as its reference, never redacted as a credential, and a `Debug` of the model adapter names the endpoint, not the address. A plain string is unchanged.
 
+  Status note (2026-11-24). The owner decided who chooses the utility model: titles, descriptions and suggestions are
+  made by a model that **only the operator chooses**, nothing else uses it, and it must be very fast. So the operator's
+  choice of each task's endpoint and model is the data rule, and no per-endpoint "allowed for conversations" mark is
+  added. That closes [open question 45](../open-questions.md#closed). Checked on `main` that day: no route, card or
+  setting lets a person or an agent pick a task's endpoint or model.
+
   Status note (2026-10-02, PR S18). What is built is everything decided here: named endpoints
   (`ChatRequest.endpoint`; `OpenAiChat` over a map of endpoints, each with its own client, key and timeout; an unknown
   name is `ModelError::NotConfigured`, with a case in the port's conformance testkit), the closed `TaskKind`

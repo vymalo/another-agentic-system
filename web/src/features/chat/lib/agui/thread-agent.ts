@@ -18,6 +18,7 @@ import {
   usageFromCarry,
 } from "@/features/chat/lib/usage";
 import { parseMentions } from "@/features/mentions/lib/mentions";
+import { type Effort, pickProps } from "@/features/pick/lib/pick";
 import {
   ACTIVITY_SESSION,
   ACTIVITY_SESSION_START,
@@ -322,6 +323,14 @@ export type Target = {
    * its own default and the orchestrator is told nothing.
    */
   tier?: Tier | undefined;
+  /**
+   * The model and the reasoning effort the person picked for the messages of the thread (ADR 0086,
+   * `model-pick/v1` and `reasoning/v1`): sent as `forwardedProps["vymalo.model"]` and
+   * `["vymalo.reasoningEffort"]` with each message, and with nothing else. An axis is absent until
+   * they pick one, and while the selected agent's live card does not list that extension.
+   */
+  model?: string | undefined;
+  effort?: Effort | undefined;
 };
 
 /** What `ThreadAgent` needs of the tiers of the messages it sends (`features/tier`'s `SentTiers`). */
@@ -1571,7 +1580,7 @@ export class ThreadAgent extends AbstractAgent {
     send: SendMode | undefined,
     signal: AbortSignal,
   ): Promise<BaseEvent> {
-    const { agentId, release, tools, tier } = this.options.target();
+    const { agentId, release, tools, tier, model, effort } = this.options.target();
     if (!agentId) throw new SendError("Choose an agent first.", undefined, !!action);
     const resume = input.resume?.length ? input.resume : undefined;
     // The orchestrator owns the history: it wants the one new user message, or the `resume`
@@ -1596,10 +1605,12 @@ export class ThreadAgent extends AbstractAgent {
       message && typeof message.content === "string"
         ? (this.options.mentions?.take(message.content, message.id) ?? [])
         : [];
-    // the access tier the person picked (ADR 0061) rides with the message and with nothing else: an
-    // action, a cancel or an answer to an interrupt has no message to carry it
+    // the access tier the person picked (ADR 0061) and the model and effort they picked (ADR 0086)
+    // ride with the message and with nothing else: an action, a cancel or an answer to an interrupt
+    // has no message to carry them
     const sentTier = message && tier ? tier : undefined;
     if (message && sentTier) this.options.tiers?.remember(message.id, sentTier);
+    const sentPick = message ? pickProps({ model, effort }) : {};
     const refused = () => {
       if (message) {
         this.options.mentions?.refused(message.id);
@@ -1630,6 +1641,8 @@ export class ThreadAgent extends AbstractAgent {
             ...(mentions.length > 0 ? { [MENTIONS_PROP]: mentions } : {}),
             // how much the agent may do on its own for this message (ADR 0061); no member when the person picked none
             ...(sentTier ? { [TIER_PROP]: sentTier } : {}),
+            // the model and the effort of this message (ADR 0086); no member for an axis left alone
+            ...sentPick,
             ...this.catalogProps(),
           },
           ...(resume && !action ? { resume } : {}),

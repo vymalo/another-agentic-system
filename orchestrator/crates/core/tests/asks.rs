@@ -877,6 +877,7 @@ fn stop_and_send_ends_the_asks_of_the_job_it_replaces_and_the_next_job_has_none(
     let stop = Input::StopAndSend {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: user(),
         text: "do this instead".into(),
         message_id: None,
@@ -909,6 +910,7 @@ fn a_new_job_starts_a_ledger_of_its_own_and_an_old_deadline_is_stale_in_it() {
         &Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: user(),
             text: "again, with @a".into(),
             message_id: None,
@@ -947,6 +949,7 @@ fn what_an_earlier_jobs_ask_reports_is_not_the_later_jobs_ask() {
         &Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: user(),
             text: "again, with @a".into(),
             message_id: None,
@@ -1557,6 +1560,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
             Input::UserMessage {
                 tier_cap: None,
                 locale: None,
+                pick: None,
                 user: user(),
                 text: "go".into(),
                 message_id: None,
@@ -1569,6 +1573,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
         1 => agent_name().prop_map(|n| Input::StopAndSend {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: user(),
             text: "instead".into(),
             message_id: None,
@@ -1590,6 +1595,7 @@ fn arb_input() -> impl Strategy<Value = Input> {
         1 => Just(Input::Redeliver {
             tier_cap: None,
             locale: None,
+            pick: None,
             text: "again".into(),
             sent: false,
             mentions: vec![],
@@ -1630,6 +1636,7 @@ proptest! {
         let first = Input::UserMessage {
             tier_cap: None,
             locale: None,
+            pick: None,
             user: user(),
             text: "go".into(),
             message_id: None,

@@ -35,13 +35,14 @@ as the vault for real deployments, the broker's sealed store for small and devel
    refused (`409`), because a run is bound once. `expiresAt` is the run's deadline, **capped by the broker** (24 h), and
    the binding is not a secret: it names people and agents, no value.
 
-2. **The lookup is Authorino's, and only the bound agent's.** `GET /internal/runs/{run}/lease` takes the caller's
-   identity — Authorino's own service account **and** the agent identity it authenticated (the agent pod's
-   service-account identity, or its client certificate). The broker answers only when all three hold: the caller is the
-   agent the run is bound to, the binding is live (not expired, not revoked), and the deployment has a credential for
-   the run's model. A refusal is one of the ruled slugs — `run_not_bound`, `lease_expired`, `unavailable` — and
-   `model_locked` is **not** this route's (the balance is checked per call by the injector's authorization, not per
-   lease).
+2. **The lookup answers the orchestrator and the injector — never an agent** (amended 2026-11-24; the original text
+   read "only the bound agent's"). `GET /internal/runs/{run}/lease` takes the caller's identity from `RunCallerAuth`
+   (decision 5). The broker answers only when all of these hold: the caller is `RunCaller::Orchestrator` or
+   `RunCaller::Injector`, the binding is live (not expired, not revoked), and the deployment has a credential for the
+   run's model. An agent is refused **its own run included**: the binding names the agent, it does not authorise it, so
+   a reachable agent holds no key. A refusal is one of the ruled slugs — `run_not_bound`, `lease_expired`,
+   `unavailable` — and `model_locked` is **not** this route's (the balance is checked per call by the injector's
+   authorization, not per lease).
 
 3. **The lease is short and cannot outlive the binding.** The answer is a bearer token for the model endpoint and its
    expiry: at most **30 s** and never past the binding's. The response is `no-store`, the value is never logged, and
@@ -97,12 +98,55 @@ as the vault for real deployments, the broker's sealed store for small and devel
    frontier plan reads as the former. The answer changes the store's shape, not the routes.
 2. **The lease TTL** — 30 s per lease, renewed by Authorino's cache (**recommended**, the epic's "at most 30 s"), or the
    run's whole life.
-3. **The lookup's caller identity** — Authorino's service account plus the agent identity it authenticated
-   (**recommended**), or mTLS from the injector.
+3. **The lookup's caller identity** — ~~Authorino's service account plus the agent identity it authenticated
+   (**recommended**), or mTLS from the injector.~~ **Answered 2026-11-24** (the owner, ANR-Q31): the orchestrator and
+   the injector's pods, and **agents never call it** — see decision 2 as amended. The transport (a token, a TokenReview
+   of a service-account token, or mTLS) stays decision 5's, and the identity that answers is `RunCaller::Injector`.
 4. **Does the binding name the model endpoint**, or does the lookup resolve it from the agent's AgentConfig?
-   (**Recommended:** the binding names it, so a change of the agent's model does not change a live run.)
+   **Answered 2026-11-24** (the owner, ANR-Q53): the binding names it, and the agent's card lists, per choice, the
+   endpoint label the alias maps to. See the status note of the same date below.
 
 ## What this ADR does not fix
 
 The vault's own deployment and unsealing, the balance check and `model_locked`, the egress proxy's interception for
 people's own hosts, and the operator's parity slice — each is its own slice of the epic.
+
+### Status note, 2026-11-24: question 4 answered — the binding names the endpoint, the card lists the choices' endpoints
+
+**The owner, ANR-Q53, 2026-11-24 06:32Z:** *"(a) adam's agent card lists, for each model choice, the endpoint label its
+alias maps to; the orchestrator records it when the run starts."*
+
+1. **The card's field.** On `model-pick/v1` each choice gains `endpoint`:
+   `params {choices: [{id, label, endpoint}], default?}`. `endpoint` is a **label** — the deployment's own name for a
+   model endpoint, the key of `models.endpoints.<name>` in the orchestrator's configuration — and never a provider, a
+   host, a URL or a key. It is optional: a card that lists none is the card of today, and nothing about it changes.
+2. **At bind time, once per run.** When the dispatcher first sees the run's task id (`app/src/dispatcher.rs`,
+   `bind_run`), it resolves the person's picked alias against the **live** card and writes that choice's `endpoint`
+   into `RunBinding.model` (`ports/src/credentials.rs`, the field this question introduced). With no pick, the card's
+   `default` choice is resolved the same way; with a card that lists no `endpoint`, `model` stays `None`.
+3. **One bind, one endpoint.** A later message of the same run that picks a different alias is a **`409 Conflict`**,
+   refused rather than re-pointed: the lease is for one endpoint, and re-pointing a live run would spend a person's
+   balance against a model the binding never named. This is decision 1's "a run is bound once" applied to the pick.
+4. **Fail closed.** A binding whose `model` is unset makes the lookup answer `unavailable`, never an empty credential
+   (decision 4): a deployment that lists no endpoint lends nothing.
+5. **The route keeps its override.** `POST /internal/runs`'s optional `model` stays, and wins over the card's
+   resolution, for a caller that already knows the endpoint (decision 1's "if given").
+
+### Status note, 2026-11-24: the lease names the account (ANR-659)
+
+The lease answer is `{token, accountId, expiresAt}`. `accountId` is the run's person: a `UserId`, the key the usage ledger is kept by
+(`orch_core::UsageRow.owner`, the column `usage_tasks.owner` of migration `0023`, ADR 0065), which is the person id the injector reports as
+`x-account-id` — **not** a provider account and not an account number of a ledger service, since the orchestrator holds no other identity for the
+person. The injector gets it beside the key so it can say whose call it is. It answers only behind decision 2's caller check, and like the token
+it is never logged, never in a refusal or an error, and never in a message to an agent; `RunLease`'s `Debug` redacts both. *Unverified:* the
+injector that reads it (B2) and the gateway that trusts it (B3) are not built.
+
+### Status note, 2026-11-24: the meter asks for the account (ANR-663)
+
+The operator's pod-minute meter finds who pays for a run pod without any person id on a pod: `GET /internal/runs/{run}/account` answers
+`{accountId}` (the same `UserId` as the lease's) to **one caller, `RunCaller::Meter`**, the operator's own identity. Every other caller (the
+orchestrator, the injector, any agent, its own run included) and an unknown run get `run_not_bound`, so the answer never says whether a run
+exists; no identity is `unauthenticated`. The meter holds no lease, bind or unbind. The answer holds no credential, so it does not stop at the
+binding's deadline (a pod can outlive its run's lease); it ends with the binding. `accountId` is in no log line, no refusal and no error. `RunLeases`
+gains the required method `account`, which breaks an implementer. *Unverified:* the binary's configuration key for the meter's token
+(`SharedTokens::with_meter`) is not wired yet, as the injector's is not; the meter itself is the platform's.

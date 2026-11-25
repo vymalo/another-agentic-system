@@ -143,4 +143,74 @@ describe("readSse", () => {
     await done;
     expect(ended).toBe(true);
   });
+
+  // A hidden tab: browsers throttle timers and may pause the connection, so silence there is not real.
+  describe("while the tab is hidden", () => {
+    const fakeDocument = (state: "visible" | "hidden") => {
+      const target = new EventTarget();
+      const doc = Object.assign(target, { visibilityState: state });
+      vi.stubGlobal("document", doc);
+      return {
+        set(next: "visible" | "hidden") {
+          doc.visibilityState = next;
+          target.dispatchEvent(new Event("visibilitychange"));
+        },
+      };
+    };
+    const silent = (silenceMs: number) => {
+      const never = new ReadableStream<Uint8Array>({ start() {} });
+      const state = { ended: false };
+      const done = (async () => {
+        for await (const _ of readSse(never, undefined, { silenceMs })) {
+          // nothing to read
+        }
+        state.ended = true;
+      })();
+      return { state, done };
+    };
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    it("does not let go of a silent body that is hidden for longer than the window", async () => {
+      vi.useFakeTimers();
+      fakeDocument("hidden");
+      const { state } = silent(100);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(state.ended).toBe(false);
+    });
+
+    it("restarts its clock when the tab becomes visible, and lets go after one full window", async () => {
+      vi.useFakeTimers();
+      const tab = fakeDocument("hidden");
+      const { state, done } = silent(100);
+      await vi.advanceTimersByTimeAsync(1000);
+      tab.set("visible");
+      await vi.advanceTimersByTimeAsync(99);
+      expect(state.ended).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(state.ended).toBe(true);
+    });
+
+    it("counts a visible tab as it always did", async () => {
+      vi.useFakeTimers();
+      fakeDocument("visible");
+      const { state, done } = silent(100);
+      await vi.advanceTimersByTimeAsync(99);
+      expect(state.ended).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(state.ended).toBe(true);
+    });
+
+    it("stops counting when a visible tab becomes hidden", async () => {
+      vi.useFakeTimers();
+      const tab = fakeDocument("visible");
+      const { state } = silent(100);
+      await vi.advanceTimersByTimeAsync(50);
+      tab.set("hidden");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(state.ended).toBe(false);
+    });
+  });
 });

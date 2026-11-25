@@ -6,8 +6,9 @@ use std::time::Duration;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, BoxError, ChildSessionsOffer, Classify, CommandsListing,
-    ErrorClass, ForkHistory, KnownExtension, LiveChunk, LocaleListing, Releases, TierListing,
-    Timestamp, ToolsGrant, TrustedComponentsOffer, UiActionData, UiDelivery, UiVersion,
+    ErrorClass, ForkHistory, KnownExtension, LiveChunk, LocaleListing, PickListings, Releases,
+    TierListing, Timestamp, ToolsGrant, TrustedComponentsOffer, UiActionData, UiDelivery,
+    UiVersion,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -147,6 +148,9 @@ pub struct AgentCardInfo {
     /// never guessed at), or listed well formed with the tag the agent writes in when a message
     /// names none, when it says one. Read live like the rest of the card (ADR 0008).
     pub locale: LocaleListing,
+    /// What the card says about `model-pick/v1` and `reasoning/v1` (ADR 0086). A pick the card does
+    /// not offer is refused, never dropped. Read live like the rest of the card (ADR 0008).
+    pub pick: PickListings,
 }
 
 impl AgentCardInfo {
@@ -291,6 +295,8 @@ pub struct SendRequest {
     /// orchestrator sends on the thread's behalf (a rework, an ask, the verifier), which carry no
     /// screen's language.
     pub locale: Option<orch_core::LocaleHint>,
+    /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+    pub pick: Option<orch_core::ModelPick>,
 }
 
 /// One mentioned agent as the addressed agent is told of it (`mentions/v1`,

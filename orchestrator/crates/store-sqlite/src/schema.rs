@@ -49,6 +49,31 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         description: "usage_and_search",
         sql: include_str!("../migrations/0002_usage_and_search.sql"),
     },
+    Migration {
+        version: 3,
+        description: "user_prompts",
+        sql: include_str!("../migrations/0003_user_prompts.sql"),
+    },
+    Migration {
+        version: 4,
+        description: "thread_pick",
+        sql: include_str!("../migrations/0004_thread_pick.sql"),
+    },
+    Migration {
+        version: 5,
+        description: "user_tool_servers",
+        sql: include_str!("../migrations/0005_user_tool_servers.sql"),
+    },
+    Migration {
+        version: 6,
+        description: "user_tool_oauth_pending",
+        sql: include_str!("../migrations/0006_user_tool_oauth_pending.sql"),
+    },
+    Migration {
+        version: 7,
+        description: "user_team_presets",
+        sql: include_str!("../migrations/0007_user_team_presets.sql"),
+    },
 ];
 
 /// The SHA-256 of a migration's text, lowercase hex: the `checksum` column.
@@ -179,7 +204,7 @@ mod tests {
     }
 
     /// The bundled SQLite is at least 3.35. That is what `DELETE … RETURNING` needs
-    /// (`PendingAuthorizations::take`, a later milestone of this crate) and what this store's own
+    /// (`PendingAuthorizations::take`) and what this store's own
     /// `UPDATE … RETURNING` and `AS MATERIALIZED` already run on. The version is the one
     /// `libsqlite3-sys` 0.39.1 bundles, which is the one adam-rs's `adam-store-sqlite` bundles at
     /// our pin (`7ac3281`): one build, one `sqlite3` (adam ADR 0053 decision 2). A bump of

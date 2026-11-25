@@ -15,13 +15,14 @@ use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     AccessTier, AgentId, AgentTaskState, AgentUpdate, Classify, Event, ForkHistory, Input, Mention,
-    SessionNews, ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, fork_history,
-    report,
+    SessionNews, ThreadId, ThreadState, ToolsGrant, TransitionError, UsageUpdate, UserId,
+    fork_history, report,
 };
 use orch_ports::{
     AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, BindingUpdate, ClaimOrder,
-    Clock, IdemKey, Lease, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload, Ports, SendContent,
-    SendRequest, StoreError, TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
+    Clock, IdemKey, Lease, NoRunBindings, OutboxFinal, OutboxItem, OutboxKind, OutboxPayload,
+    Ports, RunBinding, RunBindingError, RunBindings, RunId, SendContent, SendRequest, StoreError,
+    TaskHandle, TaskSnapshot, ThreadStore, Topic, Wakeup,
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -195,6 +196,8 @@ struct Adopt {
     /// The interface locale it was written with (ADR 0085), as its row holds it: the adopted
     /// message keeps it, as it keeps its tier.
     locale: Option<orch_core::LocaleHint>,
+    /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
+    pick: Option<orch_core::ModelPick>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -208,10 +211,15 @@ struct Ctx {
     /// The thread's job the delegation belongs to (an upload id names the job it was issued in).
     job: u32,
     agent: AgentId,
+    /// The person the thread belongs to: the run this delegation opens spends for them (ADR 0084).
+    person: UserId,
     endpoint: AgentEndpoint,
     revision: Option<String>,
     /// What the delegation has kept of the agent's files so far (ADR 0032).
     files: files::Budget,
+    /// The model and reasoning effort the message picked (ADR 0086), read at the bind to resolve
+    /// the endpoint the live card maps it to (ADR 0084, the status note of 2026-11-24).
+    pick: Option<orch_core::ModelPick>,
     /// For the row that follows a child session's round: the context the child thread adopted.
     /// Nothing of another context may be applied to the child (fail closed against an agent that
     /// names the parent's task, or another conversation's, as a round).
@@ -287,11 +295,19 @@ fn add(ts: Timestamp, d: Duration) -> Timestamp {
         .unwrap_or(ts)
 }
 
+/// The longest a run's binding lives, from the moment its task id is first seen (ADR 0084
+/// decision 1): the broker's own cap, because the orchestrator has no per-run deadline. A run
+/// that outlives it loses its lease, and S9 parks it.
+pub const RUN_BINDING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// The durable dispatcher. See the module documentation.
-pub struct Dispatcher<P: Ports> {
+pub struct Dispatcher<P: Ports, B: RunBindings = NoRunBindings> {
     app: Arc<App<P>>,
     cfg: DispatcherConfig,
     owner: String,
+    /// The broker that binds a run and unbinds it (ADR 0084): [`NoRunBindings`] in a deployment
+    /// with none.
+    run_bindings: B,
     /// The rounds of each parent's child sessions this process follows now (see
     /// [`MAX_OBSERVED_PER_PARENT`]).
     observing: std::sync::Mutex<std::collections::HashMap<ThreadId, usize>>,
@@ -326,12 +342,27 @@ impl Drop for ObservingSlot<'_> {
 }
 
 impl<P: Ports> Dispatcher<P> {
-    /// `owner` identifies this process in leases (unique per replica).
+    /// `owner` identifies this process in leases (unique per replica). No run is bound: the
+    /// deployment has no broker ([`NoRunBindings`]).
     pub fn new(app: Arc<App<P>>, cfg: DispatcherConfig, owner: impl Into<String>) -> Arc<Self> {
+        Dispatcher::with_run_bindings(app, cfg, owner, NoRunBindings)
+    }
+}
+
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
+    /// [`Dispatcher::new`] with the broker that binds each run and unbinds it when it ends (ADR
+    /// 0084).
+    pub fn with_run_bindings(
+        app: Arc<App<P>>,
+        cfg: DispatcherConfig,
+        owner: impl Into<String>,
+        run_bindings: B,
+    ) -> Arc<Self> {
         Arc::new(Dispatcher {
             app,
             cfg,
             owner: owner.into(),
+            run_bindings,
             observing: std::sync::Mutex::default(),
         })
     }
@@ -353,6 +384,8 @@ impl<P: Ports> Dispatcher<P> {
         let mut workers: JoinSet<()> = JoinSet::new();
         loop {
             while workers.try_join_next().is_some() {}
+            self.app
+                .set_dispatcher_slots(workers.len(), self.cfg.concurrency);
             let free = self.cfg.concurrency.saturating_sub(workers.len());
             if free > 0 {
                 let limit = u32::try_from(free.min(16)).unwrap_or(16);
@@ -389,6 +422,8 @@ impl<P: Ports> Dispatcher<P> {
                     Err(e) => tracing::warn!(error = %report(&e), "claiming outbox rows failed"),
                 }
             }
+            self.app
+                .set_dispatcher_slots(workers.len(), self.cfg.concurrency);
             tokio::select! {
                 () = shutdown.cancelled() => break,
                 topic = wake.next(), if wake_open => match topic {
@@ -401,6 +436,7 @@ impl<P: Ports> Dispatcher<P> {
             }
         }
         while workers.join_next().await.is_some() {}
+        self.app.set_dispatcher_slots(0, 0);
         if let Err(e) = self.store().release_leases(&self.owner, self.now()).await {
             tracing::warn!(error = %report(&e), "releasing leases failed");
         }
@@ -455,6 +491,9 @@ impl<P: Ports> Dispatcher<P> {
         if let Err(e) = self.app.ports().wakeup().notify(Topic::Outbox).await {
             tracing::debug!(error = %report(&e), "wakeup notify failed");
         }
+        // The thread may have reached an end state under this row (ADR 0084): its run's binding
+        // goes with it, whichever path ended the job.
+        self.end_run(thread).await;
     }
 
     /// Whether the store has no such thread any more (deleted, ADR 0043). A store that cannot
@@ -571,6 +610,97 @@ impl<P: Ports> Dispatcher<P> {
         Ok(())
     }
 
+    // --------------------------------------------------------- the run's binding
+
+    /// Binds the run whose task id the delegation's stream has just named (ADR 0084, the ruling of
+    /// 2026-11-23: the bind is at the first sight of the id, before any of the delegation's events
+    /// are applied). A broker that cannot be reached is logged and the run goes on; S9 parks it.
+    ///
+    /// The binding names the endpoint the live card maps the run's pick to ([`Self::run_endpoint`]).
+    /// A later message of a run already bound that picks another alias asks for that choice's
+    /// endpoint and the broker refuses it (`409`, ADR 0084, the status note of 2026-11-24): the run
+    /// keeps the endpoint it was bound to, never re-pointed.
+    async fn bind_run(&self, ctx: &Ctx, task: &str) {
+        let binding = RunBinding {
+            run: RunId::new(task),
+            agent: ctx.agent.clone(),
+            person: ctx.person.clone(),
+            model: self.run_endpoint(ctx).await,
+            expires_at: add(self.now(), RUN_BINDING_TTL),
+        };
+        match self.run_bindings.bind(binding).await {
+            Ok(()) => tracing::debug!(run = %task, thread = %ctx.thread, "the run is bound"),
+            Err(RunBindingError::Conflict) => tracing::warn!(
+                run = %task,
+                thread = %ctx.thread,
+                "the run is already bound to another model endpoint; the pick is refused and the run keeps its own"
+            ),
+            Err(e) => tracing::warn!(
+                run = %task,
+                thread = %ctx.thread,
+                error = %e,
+                "binding the run failed; the run goes on (S9 parks it instead)"
+            ),
+        }
+    }
+
+    /// The endpoint label the run's binding names (ADR 0084, the status note of 2026-11-24): the
+    /// `endpoint` of the choice the run's picked alias maps to on the **live** card, or the card's
+    /// `default` choice when the message picked no model.
+    ///
+    /// `None` when the card names no endpoint for that choice, lists no `model-pick/v1` (or lists it
+    /// badly), or cannot be read: the binding then names no model, and the lookup answers
+    /// `unavailable` (fail closed).
+    async fn run_endpoint(&self, ctx: &Ctx) -> Option<String> {
+        let picked = ctx.pick.as_ref().and_then(|pick| pick.model.as_ref());
+        match self.app.card_pick_listings(&ctx.endpoint).await {
+            Ok(listings) => {
+                let endpoint = listings.model.offer()?.endpoint_for(picked)?;
+                Some(endpoint.to_owned())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    agent = %ctx.agent,
+                    thread = %ctx.thread,
+                    error = %report(&e),
+                    "the agent card could not be read to resolve the run's model endpoint; the binding names none"
+                );
+                None
+            }
+        }
+    }
+
+    /// Unbinds the run of `thread` once its job is over: `done`, `failed` or `cancelled` (ADR 0084
+    /// decision 6). Called after every row, so that every end state follows, whichever path reached
+    /// it; a run that was never bound, or one unbound already, is no error. A broker that cannot be
+    /// reached is logged and the binding stays until it expires; S9 parks the run instead. A
+    /// message that arrives between the end and this read moves the thread on and leaves a binding
+    /// behind until it expires, which spends nothing: a run that ended makes no call.
+    async fn end_run(&self, thread: ThreadId) {
+        let Ok(Some(record)) = self.store().get_thread(None, thread).await else {
+            return;
+        };
+        if !record.state.is_terminal() {
+            return;
+        }
+        let Ok(Some(binding)) = self.store().get_binding(thread).await else {
+            return;
+        };
+        let Some(task) = binding.task_id.filter(|task| !task.is_empty()) else {
+            return;
+        };
+        let run = RunId::new(task.as_str());
+        match self.run_bindings.unbind(&run).await {
+            Ok(()) => tracing::debug!(run = %task, thread = %thread, "the run is unbound"),
+            Err(e) => tracing::warn!(
+                run = %task,
+                thread = %thread,
+                error = %e,
+                "unbinding the run failed; it stays bound until it expires"
+            ),
+        }
+    }
+
     /// Applies an input under the row's lease, treating a late/replayed update for a finished
     /// thread as a no-op. A lost lease is [`DispatchError::Fenced`].
     async fn apply_quiet(&self, row: &OutboxItem, input: Input, key: String) -> Done {
@@ -659,9 +789,16 @@ impl<P: Ports> Dispatcher<P> {
             thread: row.thread_id,
             job: thread.job.number,
             agent: binding.agent_id.clone(),
+            person: thread.owner.clone(),
             endpoint: entry.endpoint.clone(),
             revision: binding.revision.clone(),
             files: files::Budget::default(),
+            // the row is the message whose pick names the run's model alias, and only a delegation
+            // sends a task (a steer goes into one already bound)
+            pick: match &row.payload {
+                OutboxPayload::Delegate { pick, .. } => pick.clone(),
+                _ => None,
+            },
             // every row of a child thread, not only the follow of a round: nothing of another
             // context may be applied to a helper's thread (fail closed)
             expected_context: (thread.child_of.is_some()
@@ -705,7 +842,7 @@ impl<P: Ports> Dispatcher<P> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release, new_job, ui_catalog, mentions, tier, tier_cap, locale) =
+        let (content, release, new_job, ui_catalog, mentions, tier, tier_cap, locale, pick) =
             match row.payload.clone() {
                 OutboxPayload::Delegate {
                     text,
@@ -716,6 +853,7 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                 } => (
                     SendContent::Text(text),
                     release,
@@ -725,6 +863,7 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                 ),
                 OutboxPayload::Action {
                     action,
@@ -742,7 +881,8 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     // an action is the person's act on a surface, not a message of a screen with a
-                    // language (ADR 0085)
+                    // language (ADR 0085), and names no model (ADR 0086)
+                    None,
                     None,
                 ),
                 // taken before this function (`process`): it is followed, never sent
@@ -800,6 +940,7 @@ impl<P: Ports> Dispatcher<P> {
                 tier,
                 tier_cap,
                 locale,
+                pick,
                 ..
             } = &row.payload
                 && state != ThreadState::Cancelled
@@ -818,6 +959,7 @@ impl<P: Ports> Dispatcher<P> {
                             tier: *tier,
                             tier_cap: *tier_cap,
                             locale: locale.clone(),
+                            pick: pick.clone(),
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -950,6 +1092,7 @@ impl<P: Ports> Dispatcher<P> {
             // hint, so nothing is read from the card here and a card without the extension gets the
             // plain message
             locale,
+            pick,
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
@@ -961,6 +1104,7 @@ impl<P: Ports> Dispatcher<P> {
                     tier,
                     tier_cap,
                     locale,
+                    pick,
                     ..
                 },
                 None,
@@ -970,6 +1114,7 @@ impl<P: Ports> Dispatcher<P> {
                 tier: *tier,
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
+                pick: pick.clone(),
                 previous: binding.task_id.clone(),
             }),
             _ => None,
@@ -1218,6 +1363,7 @@ impl<P: Ports> Dispatcher<P> {
             tier: adopt.tier,
             tier_cap: adopt.tier_cap,
             locale: adopt.locale.clone(),
+            pick: adopt.pick.clone(),
         };
         match self
             .app
@@ -1254,6 +1400,7 @@ impl<P: Ports> Dispatcher<P> {
             tier,
             tier_cap,
             locale,
+            pick,
             ..
         } = row.payload.clone()
         else {
@@ -1334,6 +1481,7 @@ impl<P: Ports> Dispatcher<P> {
             tier_cap: plain_cap(sent_tier, tier_cap),
             // the language of the screen the message came from, as the row holds it (ADR 0085)
             locale,
+            pick,
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;
@@ -1570,6 +1718,11 @@ impl<P: Ports> Dispatcher<P> {
                             env_state(&env),
                             env.revision.clone(),
                         );
+                        // The run is bound here, before the message is recorded as sent and before
+                        // any of its events is applied (ADR 0084, the ruling of 2026-11-23).
+                        if !env.task_id.is_empty() {
+                            self.bind_run(ctx, &env.task_id).await;
+                        }
                         if !self
                             .store()
                             .mark_sent(&ctx.lease, update, self.now())

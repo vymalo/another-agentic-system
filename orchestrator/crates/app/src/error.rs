@@ -65,6 +65,11 @@ pub enum AppError {
     /// have (ADR 0024). The detail names the server's id and never a URL or a credential.
     #[error("{0}")]
     Unprocessable(String),
+    /// A model or a reasoning effort the person picked that the live card of the thread's agent does
+    /// not offer (ADR 0086): refused before anything is written, never silently replaced by the
+    /// agent's default. The refusal carries the stable code and the list the card offers.
+    #[error("{0}")]
+    PickNotOffered(orch_core::PickRefusal),
     /// A change of how the person's list shows a thread that cannot be made (ADR 0042): well
     /// formed, and what it names is in the way. `code` is the stable name a client acts on
     /// (`bad_anchor`, `nested_row`), and `child_thread` for the thread of a helper session that
@@ -257,6 +262,7 @@ impl Classify for AppError {
             AppError::Finished
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
+            | AppError::PickNotOffered(_)
             | AppError::Arrangement { .. }
             | AppError::Blocked { .. }
             | AppError::OverCap { .. }
@@ -311,6 +317,7 @@ impl Classify for AppError {
             | AppError::Finished
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
+            | AppError::PickNotOffered(_)
             | AppError::Arrangement { .. }
             | AppError::Blocked { .. }
             | AppError::UserTool(_)
@@ -381,6 +388,10 @@ mod tests {
             AppError::Finished,
             AppError::Refused("taken".into()),
             AppError::Unprocessable("no such server".into()),
+            AppError::PickNotOffered(orch_core::PickRefusal::ModelNotOffered {
+                picked: "deep".into(),
+                offered: vec!["fast".into()],
+            }),
             AppError::arrangement("bad_anchor"),
             AppError::arrangement("nested_row"),
             AppError::blocked("session_closed", "closed"),
@@ -436,6 +447,7 @@ mod tests {
                 AppError::Finished
                 | AppError::Refused(_)
                 | AppError::Unprocessable(_)
+                | AppError::PickNotOffered(_)
                 | AppError::Arrangement { .. }
                 | AppError::Blocked { .. }
                 | AppError::OverCap { .. }

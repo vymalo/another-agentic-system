@@ -46,6 +46,13 @@ pub struct ProblemExt {
     /// `invalid_answer`: the rule that failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
+    /// `model_not_offered` and `reasoning_not_offered` (ADR 0086): the aliases or levels the agent's
+    /// live card offers, empty when it lists none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offered: Option<Vec<String>>,
+    /// `client_update_required`: the lowest application version this deployment serves.
+    #[serde(rename = "minClientVersion", skip_serializing_if = "Option::is_none")]
+    pub min_client_version: Option<String>,
 }
 
 impl Problem {
@@ -65,6 +72,23 @@ impl Problem {
     #[must_use]
     pub fn with_code(mut self, code: &str) -> Self {
         self.code = Some(code.to_owned());
+        self
+    }
+
+    /// The same problem with a stable `type` (RFC 9457), where a client matches on it.
+    #[must_use]
+    pub fn with_type(mut self, uri: &str) -> Self {
+        self.r#type = uri.to_owned();
+        self
+    }
+
+    /// The same problem saying the lowest application version this deployment serves.
+    #[must_use]
+    pub fn with_min_client_version(mut self, version: &str) -> Self {
+        self.ext = Some(Box::new(ProblemExt {
+            min_client_version: Some(version.to_owned()),
+            ..ProblemExt::default()
+        }));
         self
     }
 
@@ -172,6 +196,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Invalid` | 400, the domain message |
 /// | `Rejected` | 409 |
 /// | something well formed that cannot be done: a tool server that is unknown or not offered for the thread's agent, or too many (`AppError::Unprocessable`) | 422 |
+/// | a model or a reasoning effort the agent's live card does not offer (`AppError::PickNotOffered`, ADR 0086) | 422 with `code: model_not_offered` or `reasoning_not_offered` and `offered` |
 /// | a change of the person's list that cannot be made (`AppError::Arrangement`), a fork or a share of a child session's thread, or what a person asks of a helper session that its state or the card does not allow (ADR 0072) | 422 with `code: bad_anchor`, `code: nested_row`, `code: child_thread`, `child_mentions`, `session_closes_on_stop`, `not_child_thread`, `no_child_sessions`, `unknown_helper` or `bad_description` |
 /// | a helper session that is closed, a start the agent has no context for, or four starts that wait, or a thread that notes 256 sessions (`AppError::Blocked`) | 409 with `code: session_closed`, `no_context`, `too_many_starts` or `too_many_sessions` |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
@@ -233,6 +258,17 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
                 None,
             ),
         };
+    }
+    // A pick the agent's card does not offer (ADR 0086): the code a client acts on, and what is
+    // offered. The detail names the pick the person made and nothing of the card but its list.
+    if let AppError::PickNotOffered(refusal) = err {
+        let mut problem = Problem::new(StatusCode::UNPROCESSABLE_ENTITY, refusal.to_string())
+            .with_code(refusal.code());
+        problem.ext = Some(Box::new(ProblemExt {
+            offered: Some(refusal.offered().to_vec()),
+            ..ProblemExt::default()
+        }));
+        return (problem, None);
     }
     if let AppError::Unprocessable(detail) = err {
         return (

@@ -820,7 +820,7 @@ for (const scheme of ["light", "dark"] as const) {
       const box = page.getByLabel("Message", { exact: true });
       await expect(box).toBeVisible();
       await box.fill("/rev");
-      await expect(page.getByRole("listbox", { name: "Your prompts" })).toBeVisible();
+      await expect(page.getByRole("listbox", { name: "Commands and prompts" })).toBeVisible();
       await shot(page, "prompts-menu");
 
       await page.keyboard.press("Enter");
@@ -862,7 +862,8 @@ for (const scheme of ["light", "dark"] as const) {
       const box = page.getByLabel("Message", { exact: true });
       await expect(box).toBeVisible();
       await box.fill("/");
-      await expect(page.getByRole("listbox", { name: "Agent commands" })).toBeVisible();
+      await expect(page.getByRole("group", { name: "Agent commands" })).toBeVisible();
+      await expect(page.getByRole("group", { name: "Your prompts" })).toBeVisible();
       await shot(page, "commands-menu");
     });
 

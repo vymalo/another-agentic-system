@@ -100,11 +100,12 @@ fn the_only_url_that_may_be_a_reference_is_a_model_endpoints_base_url() {
 /// ADR 0034: "the secrets are the eight values of today that are secrets" and, with ADR 0032, the
 /// two credentials of the S3 store, with ADR 0024, the bearer and the headers of a tool server, and,
 /// with ADR 0046, the keys that seal a person's credentials, with issue 290, the direct connection
-/// string of the database, and, with ADR 0080, the key a tool server's requests are signed with. An
-/// eighteenth, or a string where one of these is, would be a change of the contract, so it fails
-/// here first.
+/// string of the database, with ADR 0080, the key a tool server's requests are signed with, and,
+/// with ADR 0084, the run routes' own tokens (the orchestrator's and one per agent), and with ADR 0046
+/// the token of the OpenBao secret store. A twenty-first,
+/// or a string where one of these is, would be a change of the contract, so it fails here first.
 #[test]
-fn the_secrets_are_the_seventeen_the_contract_names() {
+fn the_secrets_are_the_twenty_the_contract_names() {
     assert_eq!(
         secret_fields(&orch_config::schema()),
         [
@@ -115,6 +116,8 @@ fn the_secrets_are_the_seventeen_the_contract_names() {
             "Endpoint.apiKey",
             "Registry.agentToken",
             "Registry.token",
+            "ServerInternal.agents",
+            "ServerInternal.token",
             "Sharing.previousSecret",
             "Sharing.secret",
             "ThreadTools.previousSecret",
@@ -123,6 +126,7 @@ fn the_secrets_are_the_seventeen_the_contract_names() {
             "ToolServer.headers",
             "ToolServerSigning.key",
             "UserSecretKey.key",
+            "UserSecretsOpenbao.token",
             "WebhookGeneric.secrets",
             "WebhookGithub.secrets",
         ]

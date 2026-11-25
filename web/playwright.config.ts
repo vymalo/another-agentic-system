@@ -39,7 +39,7 @@ export default defineConfig({
       name: "mobile",
       use: { ...devices["Pixel 7"] },
       testMatch:
-        /create-thread|follow-up|cancel|failure|verification|ci-card|export|quote\.spec|choices|cards\.spec|files\.spec|inline-images|icons\.spec|tools\.spec|agent-menu|registry\.spec|panel|theme\.spec|steps\.spec|step-io|stream\.spec|thinking\.spec|fork\.spec|branches\.spec|regenerate\.spec|answer-view|description\.spec|roles\.spec|steer\.spec|mentions\.spec|sessions\.spec|tier\.spec|commands\.spec|asks\.spec|share\.spec|usage\.spec|usage-page\.spec|my-tools\.spec|prompts\.spec|prompt-composer\.spec|rail\.spec|search\.spec|delete\.spec|code-math\.spec|plan\.spec|components-[a-z]+\.spec|speech\.spec|shortcuts\.spec/,
+        /create-thread|follow-up|cancel|failure|verification|ci-card|export|quote\.spec|choices|cards\.spec|files\.spec|inline-images|icons\.spec|tools\.spec|agent-menu|registry\.spec|panel|theme\.spec|steps\.spec|step-io|stream\.spec|thinking\.spec|fork\.spec|branches\.spec|regenerate\.spec|answer-view|description\.spec|roles\.spec|steer\.spec|mentions\.spec|sessions\.spec|tier\.spec|slash-menu\.spec|asks\.spec|share\.spec|usage\.spec|usage-page\.spec|my-tools\.spec|prompts\.spec|prompt-composer\.spec|rail\.spec|search\.spec|delete\.spec|code-math\.spec|plan\.spec|components-[a-z]+\.spec|speech\.spec|shortcuts\.spec/,
     },
   ],
 });

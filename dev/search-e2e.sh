@@ -213,7 +213,16 @@ expect "COEUR finds cœur" "$(ids_of "$(lookup "$(jq -n --arg q "${run}one COEUR
 expect "strasse finds Straße" "$(ids_of "$(lookup "$(jq -n --arg q "${run}one strasse" '{q: $q}')")")" "$t1"
 expect "two words of one message find it" "$(ids_of "$(lookup "$(jq -n --arg q "${run}three ${run}tide" '{q: $q}')")")" "$t3"
 expect "one word of each of two messages does not" "$(ids_of "$(lookup "$(jq -n --arg q "${run}one ${run}two" '{q: $q}')")")" ""
-expect "the middle of a word is not a prefix" "$(ids_of "$(lookup "$(jq -n --arg q "ne ${common}" '{q: $q}')")")" ""
+page=$(lookup "$(jq -n --arg q "ne ${common}" '{q: $q}')" || true)
+expect "the middle of a word is not a prefix" "$(ids_of "$page")" ""
+if [ -n "$(ids_of "$page")" ]; then
+  # A re-run hides a failure here (sys#434): say what matched. The terms are what the server searched, the marked words are what
+  # in each hit made it match, so a word the index should not hold, or a substring match, shows up in the log.
+  echo "     query 'ne ${common}', terms: $(printf '%s' "$page" | jq -c '.query.terms')"
+  printf '%s' "$page" | jq -r --argjson ours "$mine" '
+    .results[] | select(.thread.id as $i | $ours | index($i)) | . as $r
+    | .hits[] | "     thread \($r.thread.id) \(.field) seq=\(.seq // "-") role=\(.role // "-") marked=\([.snippet.matches[]? as $m | .snippet.text[$m.start:$m.end]] | join("|")) text=\(.snippet.text)"' || true
+fi
 
 echo "== the agent's final answer"
 export_json=$(api GET "/api/threads/$t4/export" || true)

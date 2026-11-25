@@ -10,7 +10,9 @@
 //! * **shared setup** ([`setup`]): the pool, migrations, wakeup, the A2A client, the agent
 //!   directory and the [`App`], everything every role needs;
 //! * **the control plane** ([`control_plane_router`], [`serve`]): the HTTP server (health, the
-//!   resource API and the configured surfaces), which serves user inputs and event streams;
+//!   resource API and the configured surfaces), which serves user inputs and event streams; and,
+//!   when `server.internal` is set, the credential broker's run routes on their own listener
+//!   ([`run_routes`], ADR 0084 decision 5): the three routes and nothing else;
 //! * **the worker** ([`dispatcher`], [`inbox_worker`], [`purge_worker`], [`usage_sweep_worker`], and for a
 //!   worker-only process [`serve`] over the health-only router): the dispatcher, which delivers the
 //!   outbox to agents, and the inbox worker, which applies timers and reports to their threads, the
@@ -39,18 +41,22 @@ use orch_app::{
     UsageSweepConfig, UsageSweepWorker,
 };
 use orch_core::BoxError;
+use orch_credential_broker::{RunLeaseBroker, SharedTokens};
 use orch_ports::{
     AgentTransport, CompositeRegistry, FixedRegistry, PortSet, SystemClock, UuidV7Ids,
 };
-use orch_store_postgres::{PgStore, PgWakeup};
+use orch_store_postgres::{PgRunBindings, PgStore, PgWakeup};
+use secrecy::ExposeSecret as _;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::artifacts::ConfiguredArtifacts;
 use crate::auth::ConfiguredAuth;
 use crate::config::{Config, ConfigError, Surface};
+use crate::credentials::ConfiguredCredentials;
 use crate::local::{self, Agents, Local};
 use crate::model::ConfiguredModel;
+use crate::run_bindings::ConfiguredRunBindings;
 use crate::user_tools::ConfiguredUserTools;
 
 /// How long the wakeup listener may take to attach before the service starts anyway. It keeps
@@ -613,6 +619,44 @@ async fn listen(cfg: &Config) -> anyhow::Result<TcpListener> {
     Ok(listener)
 }
 
+/// The internal listener of the broker's run routes and its router (ADR 0084 decision 5), when the
+/// configuration has `server.internal` and this role serves routes: the broker's three run routes
+/// and **nothing else** — no surface, no health, no edge route. `None` without the section, and for
+/// a role that serves no routes (a worker that shares the file binds nothing).
+async fn run_routes(
+    cfg: &Config,
+    store: &PgStore,
+) -> anyhow::Result<Option<(TcpListener, Router)>> {
+    let Some(settings) = cfg.internal.as_ref() else {
+        return Ok(None);
+    };
+    if !cfg.role.runs_control_plane() {
+        return Ok(None);
+    }
+    let listener = TcpListener::bind(settings.listen)
+        .await
+        .map_err(|source| Fatal::Listen {
+            addr: settings.listen,
+            source,
+        })?;
+    tracing::info!(
+        addr = %listener.local_addr().context("internal listener address")?,
+        agents = settings.agent_tokens.len(),
+        "the run routes listen"
+    );
+    let agents = settings
+        .agent_tokens
+        .iter()
+        .map(|(agent, token)| (token.expose_secret().to_owned(), agent.clone()));
+    let tokens = SharedTokens::new(settings.orchestrator_token.expose_secret(), agents);
+    let leases = RunLeaseBroker::new(
+        PgRunBindings::from_pool(store.pool().clone()),
+        ConfiguredCredentials::build(&cfg.models),
+    );
+    let router = orch_credential_broker::router(Arc::new(leases), Arc::new(tokens));
+    Ok(Some((listener, router)))
+}
+
 /// The control plane's router over `app`: health, the resource API and the configured surfaces.
 fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, ConfigError> {
     // What the web signs in with (ADR 0054): the issuer is the one the tokens say, `auth.jwt.issuer`.
@@ -644,6 +688,18 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
         public_limits: Some(cfg.public_limits),
         browser_auth,
         cors_allowed_origins: cfg.cors_allowed_origins.clone(),
+        min_client_version: cfg
+            .min_client_version
+            .as_deref()
+            .map(|v| {
+                v.parse().map_err(
+                    |e: orch_api::client_version::NotAVersion| ConfigError::Invalid {
+                        var: "server.minClientVersion",
+                        reason: e.to_string(),
+                    },
+                )
+            })
+            .transpose()?,
         client_metadata,
         ..ApiConfig::default()
     };
@@ -681,13 +737,19 @@ async fn serve(
 }
 
 /// The worker's dispatcher over `app`. It runs until its token is cancelled, then stops its
-/// workers and releases their leases.
-fn dispatcher(cfg: &Config, app: &Arc<App<Stack>>) -> Arc<Dispatcher<Stack>> {
-    Dispatcher::new(
+/// workers and releases their leases. The broker that binds each run comes from the configuration
+/// (ADR 0084): [`ConfiguredRunBindings::Off`] when no URL is set, so nothing is bound.
+fn dispatcher(
+    cfg: &Config,
+    app: &Arc<App<Stack>>,
+) -> Result<Arc<Dispatcher<Stack, ConfiguredRunBindings>>, ConfigError> {
+    let run_bindings = ConfiguredRunBindings::build(cfg.run_binding.as_ref())?;
+    Ok(Dispatcher::with_run_bindings(
         Arc::clone(app),
         dispatcher_config(cfg),
         cfg.instance_id.clone(),
-    )
+        run_bindings,
+    ))
 }
 
 /// The dispatcher's settings from the configuration: the slots, the order a claim takes the due rows
@@ -784,6 +846,9 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
 
     // Bind and build everything that can fail before any component starts.
     let listener = listen(&cfg).await?;
+    // The broker's run routes on their own port, when the configuration has one (ADR 0084
+    // decision 5). Bound here, with everything else that can fail, before any component starts.
+    let run_routes = run_routes(&cfg, &store).await?;
     let grace = Some(cfg.shutdown_grace);
     let host = Host::new(cfg.role)
         .control_plane_drain(grace)
@@ -813,7 +878,16 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
         })
     };
 
-    let dispatcher = dispatcher(&cfg, &app);
+    // The run routes drain with the control plane: they are a route, and the host drains them
+    // before the workers. A process that serves no routes never has one (`run_routes` is `None`).
+    let host = match run_routes {
+        Some((listener, router)) => host.control_plane("the run routes", move |stop| async move {
+            serve(listener, router, stop).await
+        }),
+        None => host,
+    };
+
+    let dispatcher = dispatcher(&cfg, &app)?;
     let mark = MarkStopping(Arc::clone(&app));
     let ready_when_started = (!cfg.role.runs_control_plane()).then(|| Arc::clone(&app));
     if ready_when_started.is_some() {

@@ -3,6 +3,219 @@ Value checks that must stop a render, not surface as a broken rollout or, worse,
 Included from orchestrator-configmap.yaml, which every render contains, so they always run.
 */}}
 {{- define "agentic.validate" -}}
+{{- /* The surfaces a deployment may turn off (card ANR-655). A value that removes a component removes what exists for it only,
+       and refuses the settings that would then point at nothing: the render is a deployment, not a half of one. */ -}}
+{{- if not (kindIs "bool" .Values.web.enabled) -}}
+{{- fail (printf "web.enabled must be true or false, got %v" .Values.web.enabled) -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.edge.enabled) -}}
+{{- fail (printf "edge.enabled must be true or false, got %v" .Values.edge.enabled) -}}
+{{- end -}}
+{{- if not .Values.edge.enabled -}}
+{{- if .Values.ingress.enabled -}}
+{{- fail "edge.enabled: false needs ingress.enabled: false: the Ingress sends the host to the edge, which is not rendered, so the host would answer nothing" -}}
+{{- end -}}
+{{- if .Values.auth.browser.enabled -}}
+{{- fail "edge.enabled: false needs auth.browser.enabled: false: the browser's tokens are obtained at the edge's routes (ADR 0054), which are not rendered without it" -}}
+{{- end -}}
+{{- if include "agentic.oauth2Redis" . -}}
+{{- fail "edge.enabled: false needs oauth2Proxy.sessionStore: cookie: the Redis holds oauth2-proxy's sessions, and oauth2-proxy is not rendered without the edge" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.edge.enabled (not .Values.web.enabled) -}}
+{{- fail "web.enabled: false needs edge.enabled: false: the edge's catch-all routes the browser to this chart's web Service, which is not rendered without it" -}}
+{{- end -}}
+{{- if and (not .Values.web.enabled) .Values.mobileAppLinks.enabled -}}
+{{- fail "web.enabled: false needs mobileAppLinks.enabled: false: the association documents are a ConfigMap of the web and are served by the edge, neither of which is rendered" -}}
+{{- end -}}
+{{- /* The BFF peer of the orchestrator's policy: a namespace and the labels of its pods, or nothing at all. A namespace without
+       labels (or labels without one) is refused: an empty selector admits every pod of the namespace. With the edge off and the
+       policies on it is required, because the BFF is then the only caller the deployment names. */ -}}
+{{- $bff := default dict .Values.networkPolicy.bff -}}
+{{- if not (kindIs "map" $bff) -}}
+{{- fail (printf "networkPolicy.bff must be a map with namespace and matchLabels, got %s" (kindOf $bff)) -}}
+{{- end -}}
+{{- $bffNS := toString (default "" $bff.namespace) -}}
+{{- $bffLabels := default dict $bff.matchLabels -}}
+{{- if not (kindIs "map" $bffLabels) -}}
+{{- fail (printf "networkPolicy.bff.matchLabels must be a map of labels selecting the BFF's pods, got %s" (kindOf $bffLabels)) -}}
+{{- end -}}
+{{- if and $bffNS (not $bffLabels) -}}
+{{- fail "networkPolicy.bff.namespace needs networkPolicy.bff.matchLabels: a peer with no pod selector admits every pod of the namespace" -}}
+{{- end -}}
+{{- if and $bffLabels (not $bffNS) -}}
+{{- fail "networkPolicy.bff.matchLabels needs networkPolicy.bff.namespace: name the namespace the BFF's pods run in" -}}
+{{- end -}}
+{{- if and $bffNS (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $bffNS)) -}}
+{{- fail (printf "networkPolicy.bff.namespace must be a Kubernetes namespace name (lower-case letters, digits and -, a letter or a digit at both ends), got %q" $bffNS) -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled (not .Values.edge.enabled) (not (include "agentic.bff" .)) -}}
+{{- fail "edge.enabled: false with networkPolicy.enabled needs networkPolicy.bff (its namespace and matchLabels): the orchestrator would then admit no caller at all, and the BFF is what calls it" -}}
+{{- end -}}
+{{- /* The model-credential injector (ADR 0084, S9): every value it needs, so a half-configured injector stops the
+render instead of producing a route that forwards the client's own Authorization. */ -}}
+{{- if not (kindIs "bool" .Values.injector.enabled) -}}
+{{- fail (printf "injector.enabled must be true or false, got %v" .Values.injector.enabled) -}}
+{{- end -}}
+{{- if .Values.injector.enabled -}}
+{{- if not (and (kindIs "string" .Values.injector.gatewayClassName) .Values.injector.gatewayClassName) -}}
+{{- fail "injector.gatewayClassName is required when the injector is on: the GatewayClass of the Envoy Gateway installation" -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.injector.upstream.url) .Values.injector.upstream.url) -}}
+{{- fail "injector.upstream.url is required when the injector is on: the OpenAI-compatible endpoint it fronts" -}}
+{{- end -}}
+{{- $upstream := urlParse .Values.injector.upstream.url -}}
+{{- if not (and (has $upstream.scheme (list "http" "https")) $upstream.hostname) -}}
+{{- fail (printf "injector.upstream.url must be an http or https URL with a host, got %q" .Values.injector.upstream.url) -}}
+{{- end -}}
+{{- $port := regexFind ":[0-9]+$" $upstream.host | trimPrefix ":" -}}
+{{- if and $port (or (lt (int $port) 1) (gt (int $port) 65535)) -}}
+{{- fail (printf "injector.upstream.url has a port outside 1-65535: %q" $port) -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.injector.model) .Values.injector.model) -}}
+{{- fail "injector.model is required when the injector is on: the model name the route selects" -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.injector.modelHeader) .Values.injector.modelHeader) -}}
+{{- fail "injector.modelHeader is required when the injector is on" -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9!#$%&'*+.^_`|~-]+$" .Values.injector.modelHeader) -}}
+{{- fail (printf "injector.modelHeader is not an HTTP header name: %q" .Values.injector.modelHeader) -}}
+{{- end -}}
+{{- if and (not .Values.injector.broker.url) (not .Values.orchestrator.internal.enabled) -}}
+{{- fail "injector needs the broker's run-lease route: set injector.broker.url, or turn on orchestrator.internal (the default address is its listener)" -}}
+{{- end -}}
+{{- $broker := include "agentic.injector.brokerUrl" . -}}
+{{- $brokerURL := urlParse $broker -}}
+{{- if not (and (has $brokerURL.scheme (list "http" "https")) $brokerURL.host) -}}
+{{- fail (printf "the injector's broker URL must be an http or https URL with a host, got %q" $broker) -}}
+{{- end -}}
+{{- if and .Values.externalSecrets.enabled (not (and (kindIs "string" .Values.injector.broker.tokenProperty) .Values.injector.broker.tokenProperty)) -}}
+{{- fail "injector.broker.tokenProperty is required with externalSecrets.enabled: the AWS property of the injector's own token" -}}
+{{- end -}}
+{{- if not (and (kindIs "float64" .Values.injector.broker.cacheTtlSecs) (ge (int .Values.injector.broker.cacheTtlSecs) 1) (le (int .Values.injector.broker.cacheTtlSecs) 30)) -}}
+{{- fail (printf "injector.broker.cacheTtlSecs must be a number between 1 and 30 (the lease is at most 30 s), got %v" .Values.injector.broker.cacheTtlSecs) -}}
+{{- end -}}
+{{- /* The person's balance, read from the ledger at every model call: without the listener's URL nothing would check it,
+and the model call would spend a balance nobody read (ADR 0084 decision 7). */ -}}
+{{- $budget := .Values.injector.budget -}}
+{{- if not (kindIs "string" $budget.url) -}}
+{{- fail (printf "injector.budget.url must be a string, got %v" $budget.url) -}}
+{{- end -}}
+{{- if not $budget.url -}}
+{{- fail "injector.budget.url is required when the injector is on: the ledger's budget listener, whose read answers whether the person may spend" -}}
+{{- end -}}
+{{- if not (regexMatch "^https?://[^/@?#\\s]+/?$" $budget.url) -}}
+{{- fail (printf "injector.budget.url must be an http or https URL with a host, no credential, path, query or fragment (the route is appended), got %q" $budget.url) -}}
+{{- end -}}
+{{- if and .Values.externalSecrets.enabled (not (and (kindIs "string" $budget.tokenProperty) $budget.tokenProperty)) -}}
+{{- fail "injector.budget.tokenProperty is required with externalSecrets.enabled: the AWS property of the ledger's shared secret" -}}
+{{- end -}}
+{{- if not (and (kindIs "float64" $budget.cacheTtlSecs) (ge (int $budget.cacheTtlSecs) 1) (le (int $budget.cacheTtlSecs) 30)) -}}
+{{- fail (printf "injector.budget.cacheTtlSecs must be a number between 1 and 30 (a stale balance lets a person overspend), got %v" $budget.cacheTtlSecs) -}}
+{{- end -}}
+{{- if not (and (kindIs "float64" .Values.injector.authorino.replicas) (ge (int .Values.injector.authorino.replicas) 1)) -}}
+{{- fail (printf "injector.authorino.replicas must be a positive number, got %v" .Values.injector.authorino.replicas) -}}
+{{- end -}}
+{{- if not (kindIs "slice" .Values.injector.authorino.audiences) -}}
+{{- fail "injector.authorino.audiences must be a list of audiences for the agent's service-account token" -}}
+{{- end -}}
+{{- range .Values.injector.authorino.audiences -}}
+{{- if not (kindIs "string" .) -}}
+{{- fail (printf "injector.authorino.audiences must be strings, got %v" .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* The platform's agent registry (ANR-685): a URL the binary accepts and a token that is a reference, the two together. */ -}}
+{{- $reg := .Values.orchestrator.agents.registry -}}
+{{- if not (and (kindIs "string" $reg.url) (kindIs "string" $reg.tokenProperty)) -}}
+{{- fail "orchestrator.agents.registry.url and orchestrator.agents.registry.tokenProperty must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if and $reg.url (not $reg.tokenProperty) -}}
+{{- fail "orchestrator.agents.registry.url needs orchestrator.agents.registry.tokenProperty: the AWS property of the registry's bearer" -}}
+{{- end -}}
+{{- if and $reg.tokenProperty (not $reg.url) -}}
+{{- fail "orchestrator.agents.registry.tokenProperty needs orchestrator.agents.registry.url: a token for a registry nobody reads" -}}
+{{- end -}}
+{{- if $reg.url -}}
+{{- if not (regexMatch "^https?://[^/@?#\\s]+(/[^?#\\s]*)?$" $reg.url) -}}
+{{- fail (printf "orchestrator.agents.registry.url must be an http or https URL with a host, no credential, query or fragment, got %q" $reg.url) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Where a person's own credentials are kept (ADR 0046): `postgres` (what `userSecrets` turns on) or `openbao`. With `openbao` the address is https (the token
+       is sent with every call), the token is an AWS property and not a value, the mount is a path the orchestrator accepts, and `userSecrets` is off (two
+       stores for one question). Values for OpenBao beside `postgres` would be ignored silently, so they are refused. */ -}}
+{{- $st := .Values.orchestrator.secrets -}}
+{{- if not (has (toString $st.store) (list "postgres" "openbao")) -}}
+{{- fail (printf "orchestrator.secrets.store must be postgres or openbao, got %q" (toString $st.store)) -}}
+{{- end -}}
+{{- $bao := $st.openbao -}}
+{{- if not (and (kindIs "string" $bao.address) (kindIs "string" $bao.mount) (kindIs "string" $bao.tokenProperty) (kindIs "string" $bao.caSecret)) -}}
+{{- fail "orchestrator.secrets.openbao.address, .mount, .tokenProperty and .caSecret must be strings (the token is the AWS property's name, never a value)" -}}
+{{- end -}}
+{{- if eq (toString $st.store) "openbao" -}}
+{{- if not $bao.address -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.address: the https address of the OpenBao server" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/@?#\\s]+(/[^?#\\s]*)?$" $bao.address) -}}
+{{- fail (printf "orchestrator.secrets.openbao.address must be an https URL with a host, no credential, query or fragment (the token is sent with every call), got %q" $bao.address) -}}
+{{- end -}}
+{{- if not $bao.tokenProperty -}}
+{{- fail "orchestrator.secrets.store openbao needs orchestrator.secrets.openbao.tokenProperty: the AWS property of the OpenBao token" -}}
+{{- end -}}
+{{- if or (gt (len $bao.mount) 128) (not (regexMatch "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" $bao.mount)) (has "." (splitList "/" $bao.mount)) (has ".." (splitList "/" $bao.mount)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.mount must be 1 to 128 characters of A-Z a-z 0-9 . _ - and / between names (no leading or trailing slash, no . or .. name), got %q" $bao.mount) -}}
+{{- end -}}
+{{- if and $bao.caSecret (not (regexMatch "^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$" $bao.caSecret)) -}}
+{{- fail (printf "orchestrator.secrets.openbao.caSecret must be the name of a Secret of this namespace (lower case letters, digits, - and .), got %q" $bao.caSecret) -}}
+{{- end -}}
+{{- if .Values.orchestrator.userSecrets.enabled -}}
+{{- fail "orchestrator.secrets.store openbao and orchestrator.userSecrets.enabled are two stores for one question: turn userSecrets off (the keys seal the Postgres store, which OpenBao replaces)" -}}
+{{- end -}}
+{{- else if or $bao.address $bao.tokenProperty $bao.caSecret -}}
+{{- fail "orchestrator.secrets.openbao.* is set and orchestrator.secrets.store is postgres: set the store to openbao, or clear them (they would be ignored)" -}}
+{{- end -}}
+{{- /* The internal listener of the run routes (ADR 0084 decision 5, card ANR-378): a port a deployment can prepare, and a
+policy that never admits the whole namespace by accident. */ -}}
+{{- if not (kindIs "bool" .Values.orchestrator.internal.enabled) -}}
+{{- fail (printf "orchestrator.internal.enabled must be true or false, got %v" .Values.orchestrator.internal.enabled) -}}
+{{- end -}}
+{{- if .Values.orchestrator.internal.enabled -}}
+{{- if not (and (kindIs "float64" .Values.orchestrator.internal.port) (gt (int .Values.orchestrator.internal.port) 1024) (lt (int .Values.orchestrator.internal.port) 65536)) -}}
+{{- fail (printf "orchestrator.internal.port must be a number between 1025 and 65535, got %v" .Values.orchestrator.internal.port) -}}
+{{- end -}}
+{{- if eq (int .Values.orchestrator.internal.port) 8080 -}}
+{{- fail "orchestrator.internal.port must differ from 8080, the public listener" -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.orchestrator.internal.tokenProperty) .Values.orchestrator.internal.tokenProperty) -}}
+{{- fail "orchestrator.internal.tokenProperty is required when the run routes are on: the AWS property of the orchestrator's own token" -}}
+{{- end -}}
+{{- if not (kindIs "map" .Values.orchestrator.internal.agents) -}}
+{{- fail "orchestrator.internal.agents must map an agent id to the AWS property of its token" -}}
+{{- end -}}
+{{- $seen := list (toString .Values.orchestrator.internal.tokenProperty) -}}
+{{- range $agent, $property := .Values.orchestrator.internal.agents -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,62}$" (toString $agent)) -}}
+{{- fail (printf "orchestrator.internal.agents has the key %q, which is not an agent id" (toString $agent)) -}}
+{{- end -}}
+{{- if not (and (kindIs "string" $property) $property) -}}
+{{- fail (printf "orchestrator.internal.agents.%s must be the AWS property of the agent's token" (toString $agent)) -}}
+{{- end -}}
+{{- if has (toString $property) $seen -}}
+{{- fail (printf "orchestrator.internal.agents.%s names a token another caller of the run routes already has: each caller has its own" (toString $agent)) -}}
+{{- end -}}
+{{- $seen = append $seen (toString $property) -}}
+{{- end -}}
+{{- if .Values.orchestrator.internal.injector.enabled -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" (toString .Values.orchestrator.internal.injector.namespace)) -}}
+{{- fail "orchestrator.internal.injector.namespace is required when the injector may reach the run routes, and is a namespace name" -}}
+{{- end -}}
+{{- if not .Values.orchestrator.internal.injector.matchLabels -}}
+{{- fail "orchestrator.internal.injector.matchLabels is required when the injector may reach the run routes: an empty selector admits every pod of the namespace" -}}
+{{- end -}}
+{{- end -}}
+{{- else if .Values.orchestrator.internal.injector.enabled -}}
+{{- fail "orchestrator.internal.injector.enabled needs orchestrator.internal.enabled" -}}
+{{- end -}}
 {{- /* The deployment's own values: no defaults, so a forgotten one is an error. */ -}}
 {{- if not .Values.host -}}
 {{- fail "host is required: the public hostname, no scheme (for example agentic.servers.segning.pro)" -}}

@@ -39,6 +39,7 @@ fn message(text: &str, catalog: Option<&UiCatalogData>) -> Input {
     Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,

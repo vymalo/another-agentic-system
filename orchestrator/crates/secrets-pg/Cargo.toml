@@ -19,8 +19,11 @@ thiserror.workspace = true
 # and the migrations in the history sqlx kept.
 orch-pg-connect.workspace = true
 orch-pg-migrate.workspace = true
-tokio-postgres.workspace = true
+# `with-jiff-0_2` binds the write's instant (a `jiff::Timestamp`, the store's clock) as a
+# `timestamptz`, so the 24-hour grace of the vault is the clock's and not the database's.
+tokio-postgres = { workspace = true, features = ["with-jiff-0_2"] }
 deadpool-postgres.workspace = true
+jiff.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 zeroize.workspace = true

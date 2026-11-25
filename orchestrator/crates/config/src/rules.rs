@@ -22,8 +22,8 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Database, Environment, LogFormat, MAX_PRESIGN_TTL_SECS,
     MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
-    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SharingMode, Surface, ToolServer, ToolServerSigning,
-    UrlRef, UserSecrets, UserToolServers,
+    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SecretStoreKind, SharingMode, Surface, ToolServer,
+    ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -84,6 +84,10 @@ pub struct Secrets {
     /// keeps it in a secret store does not want it printed: `Debug` shows the reference. An
     /// endpoint whose URL is written in the file has no entry; use [`Validated::model_base_url`].
     pub model_base_urls: BTreeMap<String, Secret>,
+    /// `server.internal.token`: the orchestrator's own bearer token on the run routes (ADR 0084).
+    pub internal_token: Option<Secret>,
+    /// `server.internal.agents`: each agent's bearer token on the run routes, by agent id.
+    pub internal_agent_tokens: BTreeMap<String, Secret>,
     /// `webhooks.generic.secrets`; empty when the section is absent or this process serves no
     /// routes (a worker is not asked for secrets it would never use).
     pub webhook_generic: Vec<Secret>,
@@ -94,6 +98,11 @@ pub struct Secrets {
     /// `secrets.pg.keys`, in the order of the file, each read and checked to be 64 hexadecimal
     /// characters; empty without the section.
     pub user_secret_keys: Vec<UserSecretKeyValue>,
+    /// `secrets.openbao.token`; `None` unless `secrets.store` is `openbao`.
+    pub openbao_token: Option<Secret>,
+    /// `secrets.openbao.caFile`, read: the PEM text of the certificates. A certificate is public,
+    /// but it is held as a `Secret` for the one reader that resolves a file the same way.
+    pub openbao_ca: Option<Secret>,
 }
 
 /// One key of `secrets.pg.keys`, resolved. `Debug` shows the reference, never the key.
@@ -215,6 +224,10 @@ pub struct ValidatedUserSecrets {
     pub secrets: UserSecrets,
     /// `secrets.pg.keys`, resolved; empty unless `secrets.store` is `pg`.
     pub keys: Vec<UserSecretKeyValue>,
+    /// `secrets.openbao.token`; `None` unless `secrets.store` is `openbao`.
+    pub openbao_token: Option<Secret>,
+    /// `secrets.openbao.caFile`, read; `None` unless the file names one.
+    pub openbao_ca: Option<Secret>,
     /// `log.format`.
     pub log_format: LogFormat,
 }
@@ -394,6 +407,7 @@ impl Config {
         checker.user_secrets(&section);
         let (database_url, database_direct_url) = checker.database(&self.database);
         let keys = checker.user_secret_keys(&section);
+        let (openbao_token, openbao_ca) = checker.user_secrets_openbao(&section);
         let mut errors = checker.errors;
         match database_url {
             Some(database_url) if errors.is_empty() => Ok(ValidatedUserSecrets {
@@ -401,6 +415,8 @@ impl Config {
                 database_direct_url,
                 secrets: section,
                 keys,
+                openbao_token,
+                openbao_ca,
                 log_format: self.log.format,
             }),
             _ => {
@@ -468,6 +484,7 @@ impl Checker<'_> {
         if cfg.server.listen.parse::<SocketAddr>().is_err() {
             self.invalid("server.listen", "not a socket address like 0.0.0.0:8080");
         }
+        self.internal(cfg);
         if let Some(listed) = &cfg.server.surfaces {
             for (i, surface) in listed.iter().enumerate() {
                 if listed[..i].contains(surface) {
@@ -489,6 +506,7 @@ impl Checker<'_> {
         }
 
         self.cors(cfg);
+        self.min_client_version(cfg);
 
         // ui.history: the web may not ask for more turns than a page may hold
         for (key, turns) in [
@@ -696,6 +714,41 @@ impl Checker<'_> {
         self.auth(cfg);
     }
 
+    /// `server.internal` (ADR 0084 decision 5): the run routes' own address, and the agent ids the
+    /// tokens are keyed by. The tokens themselves are resolved with the secrets.
+    fn internal(&mut self, cfg: &Config) {
+        let Some(internal) = &cfg.server.internal else {
+            return;
+        };
+        match internal.listen.parse::<SocketAddr>() {
+            Err(_) => self.invalid(
+                "server.internal.listen",
+                "not a socket address like 0.0.0.0:8081",
+            ),
+            Ok(addr) => {
+                // Port 0 asks the operating system for a port, and two such requests never collide.
+                if addr.port() != 0
+                    && let Ok(listen) = cfg.server.listen.parse::<SocketAddr>()
+                    && listen == addr
+                {
+                    self.invalid(
+                        "server.internal.listen",
+                        "is server.listen: one process cannot serve two listeners on one address",
+                    );
+                }
+            }
+        }
+        for agent in internal.agents.keys() {
+            if !is_agent_id(agent) {
+                self.invalid(
+                    format!("server.internal.agents.{}", crate::tree::display_key(agent)),
+                    "not an agent id: lower-case letters, digits and -, at most 63, starting with \
+                     a letter or a digit",
+                );
+            }
+        }
+    }
+
     /// `toolServers[].signing` (ADR 0080): no bearer beside it, a header of its own that no `headers` entry takes, an audience
     /// the contract can carry. The lifetime's bounds are a shape error (`range`), checked before this runs.
     fn tool_server_signing(&mut self, at: &str, server: &ToolServer, signing: &ToolServerSigning) {
@@ -879,6 +932,7 @@ impl Checker<'_> {
             );
         }
         self.roles(auth);
+        self.signing_clients(auth);
         match (&auth.jwt, auth.mode.reads_tokens()) {
             (None, true) => self.invalid(
                 "auth.jwt",
@@ -1010,6 +1064,24 @@ impl Checker<'_> {
         }
     }
 
+    /// `server.minClientVersion`: one to four dotted decimal numbers of at most nine digits.
+    fn min_client_version(&mut self, cfg: &Config) {
+        let Some(version) = &cfg.server.min_client_version else {
+            return;
+        };
+        let parts: Vec<&str> = version.split('.').collect();
+        let ok = parts.len() <= 4
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.len() <= 9 && p.bytes().all(|b| b.is_ascii_digit()));
+        if !ok {
+            self.invalid(
+                "server.minClientVersion",
+                "one to four dotted decimal numbers of at most nine digits, such as `1.4.0`, or leave it out",
+            );
+        }
+    }
+
     fn cors(&mut self, cfg: &Config) {
         let Some(cors) = &cfg.server.cors else {
             return;
@@ -1117,6 +1189,38 @@ impl Checker<'_> {
                 "expected scope tokens separated by single spaces, like \"openid email profile\" \
                  (RFC 6749 section 3.3)",
             );
+        }
+    }
+
+    /// `auth.signingClients` (ADR 0087): client ids that can be told apart, bounded, and never the web's.
+    /// An error names the key and the index, never the value.
+    fn signing_clients(&mut self, auth: &Auth) {
+        if auth.signing_clients.len() > 64 {
+            self.invalid("auth.signingClients", "at most 64 clients");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, client) in auth.signing_clients.iter().enumerate() {
+            let at = format!("auth.signingClients[{i}]");
+            if client.is_empty()
+                || client.len() > 256
+                || !client.bytes().all(|b| b.is_ascii_graphic())
+            {
+                self.invalid(
+                    at,
+                    "expected a client id: 1 to 256 printable characters, no space",
+                );
+            } else if !seen.insert(client.as_str()) {
+                self.invalid(at, "a client is listed more than once");
+            } else if auth
+                .browser
+                .as_ref()
+                .is_some_and(|b| &b.client_id == client)
+            {
+                self.invalid(
+                    at,
+                    "the web's client (auth.browser.clientId) is not a signing client",
+                );
+            }
         }
     }
 
@@ -1403,6 +1507,43 @@ impl Checker<'_> {
         }
     }
 
+    /// The tokens of `server.internal` (ADR 0084 decision 5): the orchestrator's own and one per
+    /// agent, each at least as long as a key, and no two callers sharing one. The door compares
+    /// the orchestrator's token first, so a duplicate would silently make one caller another.
+    fn internal_tokens(&mut self, cfg: &Config) -> (Option<Secret>, BTreeMap<String, Secret>) {
+        let Some(section) = &cfg.server.internal else {
+            return (None, BTreeMap::new());
+        };
+        let token = self.resolve(&section.token, "server.internal.token", true);
+        if let Some(token) = &token {
+            self.at_least(token, "server.internal.token");
+        }
+        let mut agents = BTreeMap::new();
+        for (agent, reference) in &section.agents {
+            let at = format!("server.internal.agents.{}", crate::tree::display_key(agent));
+            if let Some(secret) = self.resolve(reference, &at, true) {
+                self.at_least(&secret, &at);
+                agents.insert(agent.clone(), secret);
+            }
+        }
+        let mut seen: Vec<(String, &str)> = Vec::new();
+        if let Some(token) = &token {
+            seen.push(("server.internal.token".to_owned(), token.expose()));
+        }
+        for (agent, secret) in &agents {
+            let at = format!("server.internal.agents.{}", crate::tree::display_key(agent));
+            if seen.iter().any(|(_, value)| *value == secret.expose()) {
+                self.invalid(
+                    &at,
+                    "is the same token as another caller of the run routes: each caller has its own",
+                );
+            } else {
+                seen.push((at, secret.expose()));
+            }
+        }
+        (token, agents)
+    }
+
     /// Resolves every secret the process uses. `None` when `database.url` cannot be.
     fn secrets(&mut self, cfg: &Config) -> Option<Secrets> {
         let surfaces = cfg.mounted_surfaces();
@@ -1515,6 +1656,7 @@ impl Checker<'_> {
                 }
             }
         }
+        let (internal_token, internal_agent_tokens) = self.internal_tokens(cfg);
         let webhook_generic = match &cfg.webhooks.generic {
             Some(section) if serves => self.list(
                 &section.secrets,
@@ -1578,6 +1720,10 @@ impl Checker<'_> {
             Some(section) => self.user_secret_keys(section),
             None => Vec::new(),
         };
+        let (openbao_token, openbao_ca) = match &cfg.secrets {
+            Some(section) => self.user_secrets_openbao(section),
+            None => (None, None),
+        };
         Some(Secrets {
             database_url: database_url?,
             database_direct_url,
@@ -1591,10 +1737,14 @@ impl Checker<'_> {
             s3_secret_access_key,
             model_api_keys,
             model_base_urls,
+            internal_token,
+            internal_agent_tokens,
             webhook_generic,
             webhook_github,
             tool_servers,
             user_secret_keys,
+            openbao_token,
+            openbao_ca,
         })
     }
 
@@ -1742,9 +1892,50 @@ impl Checker<'_> {
         }
     }
 
-    /// The rules of `secrets` that need no secret read: the store has its section, ids are of a
-    /// small alphabet and not repeated, `current` names a key.
+    /// The rules of `secrets` that need no secret read: the store has its section and no other, ids
+    /// are of a small alphabet and not repeated, `current` names a key; for OpenBao, an `https`
+    /// address and a mount of the alphabet the adapter writes paths in.
     fn user_secrets(&mut self, section: &UserSecrets) {
+        let store = section.store.as_str();
+        let other = match section.store {
+            SecretStoreKind::Pg => section.openbao.is_some().then_some("openbao"),
+            SecretStoreKind::Openbao => section.pg.is_some().then_some("pg"),
+        };
+        if let Some(other) = other {
+            self.invalid(
+                format!("secrets.{other}"),
+                format!("is not used with secrets.store {store}: leave it out"),
+            );
+        }
+        match section.store {
+            SecretStoreKind::Pg => self.user_secrets_pg(section),
+            SecretStoreKind::Openbao => {
+                let Some(bao) = &section.openbao else {
+                    self.invalid(
+                        "secrets.openbao",
+                        "required when secrets.store is openbao: the server's address and the token",
+                    );
+                    return;
+                };
+                if !is_openbao_address(&bao.address) {
+                    self.invalid(
+                        "secrets.openbao.address",
+                        "must be an https URL with a host, no credential, query or fragment: the \
+                         token is sent with every call and never in the clear",
+                    );
+                }
+                if !is_openbao_mount(&bao.mount) {
+                    self.invalid(
+                        "secrets.openbao.mount",
+                        "is 1 to 128 characters of A-Z, a-z, 0-9, '.', '_', '-' and '/', not \
+                         starting or ending with '/' and with no empty part",
+                    );
+                }
+            }
+        }
+    }
+
+    fn user_secrets_pg(&mut self, section: &UserSecrets) {
         let store = section.store.as_str();
         let Some(pg) = &section.pg else {
             self.invalid(
@@ -1767,6 +1958,37 @@ impl Checker<'_> {
         if !pg.keys.iter().any(|key| key.id == pg.current) {
             self.invalid("secrets.pg.current", "names no key of secrets.pg.keys");
         }
+    }
+
+    /// Resolves `secrets.openbao.token` (required, a secret) and reads `secrets.openbao.caFile`
+    /// (when named). Nothing when the store is not `openbao`. An error names the key and never the
+    /// value.
+    fn user_secrets_openbao(&mut self, section: &UserSecrets) -> (Option<Secret>, Option<Secret>) {
+        let Some(bao) = section
+            .openbao
+            .as_ref()
+            .filter(|_| section.store == SecretStoreKind::Openbao)
+        else {
+            return (None, None);
+        };
+        let token = self.resolve(&bao.token, "secrets.openbao.token", true);
+        let ca = bao.ca_file.as_ref().and_then(|file| {
+            let secret = self.resolve(
+                &SecretRef::File(file.clone()),
+                "secrets.openbao.caFile",
+                true,
+            )?;
+            if secret.expose().contains("-----BEGIN CERTIFICATE-----") {
+                Some(secret)
+            } else {
+                self.invalid(
+                    "secrets.openbao.caFile",
+                    "the file holds no PEM certificate (-----BEGIN CERTIFICATE-----)",
+                );
+                None
+            }
+        });
+        (token, ca)
     }
 
     /// Resolves the keys of `secrets.pg`: each is 64 hexadecimal characters. A key that does not
@@ -1945,6 +2167,35 @@ impl Checker<'_> {
         }
         Ok(text.to_owned())
     }
+}
+
+/// The address of `secrets.openbao`: `https`, a host, no credential, query or fragment.
+fn is_openbao_address(raw: &str) -> bool {
+    raw.len() <= 2048
+        && Url::parse(raw).is_ok_and(|u| {
+            u.scheme() == "https"
+                && u.host().is_some()
+                && u.port() != Some(0)
+                && u.username().is_empty()
+                && u.password().is_none()
+                && u.query().is_none()
+                && u.fragment().is_none()
+        })
+}
+
+/// The mount of `secrets.openbao`: parts of `A-Z a-z 0-9 . _ -` joined by single `/`, 1 to 128
+/// characters, neither `.` nor `..` as a part.
+fn is_openbao_mount(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.len() <= 128
+        && raw.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        })
 }
 
 /// A key id of `secrets.pg.keys`: 1 to 64 characters of `A-Z a-z 0-9 . _ -`.
@@ -2158,6 +2409,17 @@ fn is_slug(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// An agent id, the rule of `orch_core::is_valid_agent_id` (this crate depends on no core crate):
+/// lower-case letters, digits and `-`, at most 63 bytes, starting with a letter or a digit.
+fn is_agent_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && id.len() <= 63
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// An S3 bucket name as the services take it: 3 to 63 characters of `a-z`, `0-9`, `-` and `.`,

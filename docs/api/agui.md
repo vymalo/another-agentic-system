@@ -82,6 +82,11 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > `locale/v1`. It is a hint: it is **not** on `TEXT_MESSAGE_START` and no activity is emitted for it, but the log records it on the
 > `user_message` (the log is the state), so an export shows it.
 
+> **Model pick** (2026-11-23, [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md), contract
+> [`model-pick-v1.md`](model-pick-v1.md), the orchestrator's side built, no agent lists `model-pick/v1` yet): `forwardedProps["vymalo.model"]`
+> and `["vymalo.reasoningEffort"]` on the run that carries a message, checked against the agent's live card before anything is
+> written (**422** `model_not_offered` / `reasoning_not_offered` with `offered`; not a hint); see [Model pick](#model-pick).
+
 > **Commands** (2026-11-19, [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md), contract
 > [`commands-v1.md`](commands-v1.md), the orchestrator's card read and capabilities key built, adam's side built, the web's `/` menu
 > next): the capabilities document's `custom[<commands/v1 URI>] = {commands: [{name, description, argumentHint?}]}` while the live card
@@ -476,7 +481,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | `forwardedProps["vymalo.fork"]` (ADR 0042) on a run | `{from, after}`: the run **creates** its thread as a fork of the thread `from` (a UUID), cut at the end of the turn that holds the event `after`, and its message is the fork's first. Read on every run, so one that is not exactly those two members (a UUID and an integer) is **400** before the stream, and so is one that comes with `vymalo.gate` or `vymalo.tools` (a fork has the deployment's gate and its parent's tools, ADR 0029). `vymalo.mentions` and `vymalo.uiCatalog` apply to the message. A thread that exists already is the **replay** when it is the fork this request made, else **409**. See [A fork made with its first message](#a-fork-made-with-its-first-message) A `from` that is the thread of a child session (ADR 0072) is **422** `child_thread`, as for `forkThread`; so is a run on a child's own thread (a message, a steer or an action), which S3 opens. |
 | `forwardedProps["vymalo.mentions"]` (ADR 0026) on a run | The agents the message mentions, `[{agentId, label, start, end, cardUrl?}]` (at most 16; `null` or no member: none): `label` is `@` and 1 to 63 more characters and equals the message text at `start`..`end`, **counted in UTF-16 code units** (what a JavaScript string indexes), never beginning or ending inside a surrogate pair; the references are sorted by `start` and do not overlap. Read on every run, so one that is not an array of at most 16 objects with exactly those members of the right types is **400** before the stream. They go with the run's **message** (the one new message of the run, a stop included: they are the message's own) and are checked before it is written: a label that is not the text at its offsets, an offset past the end or inside a surrogate pair, references out of order or overlapping, an `agentId` the live registry does not list (`unknown agent '<id>' in mentions`), a `cardUrl` that is not the registry's (`the card of '<id>' moved; refresh the agent list`), an agent the caller's roles may not invoke (`you may not use '<id>'`) and the thread's own agent (`an agent cannot be mentioned in its own thread`) are **422**; a registry that cannot answer is **503** (`Retry-After`); nothing is written in any of them. Recorded in the `user_message` as sent, shown on the message (`vymalo.mentions`, [Mentions](#mentions)) and told to the addressed agent when its card lists `mentions/v1`. On a run with no message to carry them (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.tier"]` (ADR 0061) on a run | The access tier the person picked for the run's message: one of `plan`, `edits`, `auto`, `bypass`, spelled exactly (`null` or no member: none). Read on every run, so one that is not a string of those four words is **400** before the stream. It goes with the run's **message** (the one new message of the run, a stop and a fork's first message included: it is the message's own) and is checked before anything is written: a tier above what the caller's roles allow (`auth.roles.<role>.maxTier`) is **422** (`the tier 'bypass' is above what your role allows`), and so is one the thread's agent does not honour by its **live** card (`this agent does not take the tier 'plan'`: the card does not list `access-tier/v1`, lists it badly or lists other tiers); a card that cannot be read is **503** (`Retry-After`); nothing is written in any of them. A tier is never silently dropped. A run whose message names none is sent under none, except for a person whose roles cap the tier for this agent: the highest tier the agent offers that is not above the lower of its default and the cap (**422** `this agent has no tier your role allows` when there is none), so the cap holds when the chip is left alone; an answer to a blocked job continues the job's tier, lowered to the cap and rounded down to what the card honours (**422** `start a new chat` when it cannot be kept). Recorded in the `user_message` as sent (the tier the message was sent under, named, continued or decided), shown on the message (`vymalo.tier`, [Access tier](#access-tier)) and sent to the agent when the card read again at the send still honours it. On a run with no message to carry it (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
-| `forwardedProps["vymalo.locale"]` (ADR 0085) on a run | The BCP 47 language tag of the interface the person reads, for the run's message: `"fr-CM"` (`null` or no member: none). Read on every run, so one that is not a tag is **400** before the stream (`vymalo.locale must be a BCP 47 language tag, for example en-CM`). It goes with the run's **message** (the one new message of the run, a stop included) and nothing else checks it: it is a **hint**, so there is no cap, no card read here and no refusal over it. It is sent to the agent when the card read again at the send lists `locale/v1` well formed, and dropped (the plain message) when it does not. **The log records it once**, on the `user_message` (`locale`, omitted when the run names none), so an export and a fork show it and a redelivery carries it; **no frame carries it and no activity is emitted for it**, so the interface shows nothing of it. On a run with no message to carry it (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning. See [Locale](#locale) |
+| `forwardedProps["vymalo.locale"]` (ADR 0085) on a run | The BCP 47 language tag of the interface the person reads, for the run's message: `"fr-FR"` (`null` or no member: none). Read on every run, so one that is not a tag is **400** before the stream (`vymalo.locale must be a BCP 47 language tag, for example en-GB`). It goes with the run's **message** (the one new message of the run, a stop included) and nothing else checks it: it is a **hint**, so there is no cap, no card read here and no refusal over it. It is sent to the agent when the card read again at the send lists `locale/v1` well formed, and dropped (the plain message) when it does not. **The log records it once**, on the `user_message` (`locale`, omitted when the run names none), so an export and a fork show it and a redelivery carries it; **no frame carries it and no activity is emitted for it**, so the interface shows nothing of it. On a run with no message to carry it (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning. See [Locale](#locale) |
 | `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The id must be one the thread has now: an A2UI surface, whose version is the surface's, or a trusted card (`trusted-<seq>`, ADR 0083), which has no surface and no dialect and is accepted as it is. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
@@ -575,6 +580,24 @@ What each side reads:
 
 Goldens: [`steer`, `stop-and-send`](examples/README.md) (the viewer's stream) and `run-steer`, `run-stop-and-send` (the two
 responses, in order).
+
+## An agent that is asleep
+
+An agent whose deployment scales to zero while it is idle is **woken** by the platform (a held request or a `503` with
+`Retry-After`, the platform's plan for sleep when idle, [plat#83](https://github.com/vymalo/another-agentic-platform/pull/83);
+[ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md)). The
+**stream is unaffected**: it is a projection of the log, so a client's connection stays open and simply has no new events
+while the agent is at zero. What a client sees is what a **dispatch** is doing.
+
+- **The state.** While a send is being retried against a sleeping agent the thread reads **`waking`** — a `RunAgentState` a
+  client already renders, so nothing new is required of it.
+- **The event.** One custom event, `vymalo.waking`, with `{ thread, since, attempt, wakeTimeoutSecs }`, so a client can say
+  *why* it is waiting rather than showing a generic spinner.
+- **The bound.** `agents.sleep.wakeTimeoutSecs` in `GET /api/config` ([config.md](config.md)); absent means this deployment
+  does not wake agents and a client renders the ordinary `queued` state. Nothing here is required for a client to work.
+- **The failure.** Past the bound the thread goes **`failed`** with a message a person can read — *"the agent did not wake
+  within N seconds"* — never a silent hang and never a raw `503`. A **suspended** agent is refused by name, because a
+  person suspended it and a retry will not help ([ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md), decision 6).
 
 ## Verification (the gate)
 
@@ -1453,8 +1476,8 @@ TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...}, "
 **Built 2026-11-22, on the orchestrator's side only** ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md),
 contract [`locale-v1.md`](locale-v1.md)); no agent lists the extension yet and the web does not send the member yet.
 
-- **In:** `forwardedProps["vymalo.locale"]` on the run that carries the message, a BCP 47 tag (`"en-CM"`, `"fr-CM"`, `"wes-CM"`,
-  `"ybb-CM"` today; `null` or no member: none). Read on every run, so one that is not a tag is **400** before the stream. It is a
+- **In:** `forwardedProps["vymalo.locale"]` on the run that carries the message, a BCP 47 tag (`"en-GB"`, `"fr-FR"`, `"gsw-CH"`,
+  `"fur-IT"` today; `null` or no member: none). Read on every run, so one that is not a tag is **400** before the stream. It is a
   hint, so nothing else is checked and no message is ever refused over it.
 - **Log:** nothing. The `user_message` has no `locale`, there is no `vymalo.locale` on any frame, and no activity is emitted for
   it. A reload, another tab, an export, a fork and a share link show nothing of the interface's language.
@@ -1464,9 +1487,33 @@ contract [`locale-v1.md`](locale-v1.md)); no agent lists the extension yet and t
   always was. The orchestrator's own messages (a rework, an ask, a verifier's task) carry none.
 
 ```
-POST /agui/agents/coder   forwardedProps: {"vymalo.locale": "fr-CM"}
+POST /agui/agents/coder   forwardedProps: {"vymalo.locale": "fr-FR"}
                           messages: [{role: "user", content: "corrige la page de connexion"}]
-→ A2A metadata {"https://agents.vymalo.com/a2a/extensions/locale/v1": {"locale": "fr-CM"}}
+→ A2A metadata {"https://agents.vymalo.com/a2a/extensions/locale/v1": {"locale": "fr-FR"}}
+```
+
+## Model pick
+
+**Built 2026-11-23, on the orchestrator's side only** ([ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md),
+contract [`model-pick-v1.md`](model-pick-v1.md)); no agent lists `model-pick/v1` yet and the web has no control yet.
+
+- **In:** `forwardedProps["vymalo.model"]` (an alias the agent offers: 1 to 64 characters of `a-z0-9._-`) and
+  `forwardedProps["vymalo.reasoningEffort"]` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) on the run that carries
+  the message; `null` or no member: none. Each is read on every run, so a value that is not one is **400** before the stream.
+  A message that names none is sent with the thread's default (`PATCH /api/threads/{id}`), then the agent's own.
+- **Checked:** the resolved pick against the thread's agent's **live** card, before anything is written. **Not a hint**: a choice
+  the card does not list (or a card that lists the extension not at all) is **422** `model_not_offered` or `reasoning_not_offered`
+  with `offered`, and nothing is written; a card that cannot be read is **503**.
+- **Log:** the `user_message` holds `pick: {model?, reasoningEffort?}` (omitted when none): the log is the state, so a
+  redelivery, a fork's first message, an edit and an export carry it. **No frame carries it yet** and no activity is emitted for
+  it; the chip is the web's (slice 3).
+- **To the agent:** `metadata[model-pick/v1] = {"model": id}` and `metadata[reasoning/v1] = {"effort": level}`, each URI activated
+  for that message alone and only when it names that axis; an agent whose card no longer offers it is sent nothing.
+
+```
+POST /agui/agents/coder   forwardedProps: {"vymalo.model": "deep", "vymalo.reasoningEffort": "high"}
+                          messages: [{role: "user", content: "think about the migration"}]
+→ A2A metadata {".../model-pick/v1": {"model": "deep"}, ".../reasoning/v1": {"effort": "high"}}
 ```
 
 ## Commands

@@ -41,6 +41,8 @@ struct ThreadEntry {
     /// Seqs above `search_through` that a commit indexed (its own events, while it caught the old log up
     /// only in part): the rows beyond the watermark of the Postgres store.
     search_ahead: std::collections::BTreeSet<i64>,
+    /// The thread's default model and reasoning effort (ADR 0086): the `pick` column of the Postgres store.
+    pick: orch_core::ModelPick,
 }
 
 impl ThreadEntry {
@@ -133,6 +135,8 @@ pub struct MemoryStore {
     search_control: Arc<SearchControl>,
     /// The prompt library (ADR 0070): every person's prompts and what is shared with whom.
     pub(super) prompts: Arc<Mutex<super::prompts::PromptShelf>>,
+    /// The team presets (ADR 0074): every person's saved teams.
+    pub(super) team_presets: Arc<Mutex<super::teams::TeamShelf>>,
 }
 
 /// Test hooks of [`ThreadSearch::search_threads`]: a search can be made to fail as an unreachable store
@@ -687,6 +691,7 @@ fn insert_thread(
             search_through: 0,
             search_fold: search::FOLD_VERSION,
             search_ahead: std::collections::BTreeSet::new(),
+            pick: orch_core::ModelPick::default(),
         },
     );
     let (mut record, events) =
@@ -1510,6 +1515,31 @@ impl ThreadStore for MemoryStore {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
+        Ok(self
+            .lock()
+            .threads
+            .get(&thread)
+            .map(|e| e.pick.clone())
+            .unwrap_or_default())
+    }
+
+    async fn set_thread_pick(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        pick: orch_core::ModelPick,
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock();
+        let entry = inner
+            .threads
+            .get_mut(&thread)
+            .filter(|e| &e.record.owner == owner)
+            .ok_or(StoreError::NotFound)?;
+        entry.pick = pick;
+        Ok(())
     }
 
     async fn get_binding(&self, thread: ThreadId) -> Result<Option<AgentBinding>, StoreError> {

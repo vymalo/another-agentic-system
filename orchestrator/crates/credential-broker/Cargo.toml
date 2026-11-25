@@ -24,10 +24,11 @@ sha2.workspace = true
 getrandom.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
+axum.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
-axum.workspace = true
+tower = { workspace = true, features = ["util"] }
 # `test-util`: a test on a paused clock (a lookup that never answers).
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "test-util"] }
 tracing-subscriber.workspace = true

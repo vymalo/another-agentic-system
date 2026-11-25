@@ -90,7 +90,7 @@ dependencies = [
 [[package]]
 name = "adam-a2a"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "a2a-lf",
  "a2a-server-lf",
@@ -122,7 +122,7 @@ dependencies = [
 [[package]]
 name = "adam-a2a-runtime"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
@@ -146,7 +146,7 @@ dependencies = [
 [[package]]
 name = "adam-agent-fs"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-error",
  "jiff",
@@ -161,7 +161,7 @@ dependencies = [
 [[package]]
 name = "adam-core"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-error",
  "async-trait",
@@ -177,12 +177,12 @@ dependencies = [
 [[package]]
 name = "adam-error"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 
 [[package]]
 name = "adam-host"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-error",
  "thiserror",
@@ -194,7 +194,7 @@ dependencies = [
 [[package]]
 name = "adam-model"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-error",
  "async-trait",
@@ -208,7 +208,7 @@ dependencies = [
 [[package]]
 name = "adam-notify-postgres"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -229,7 +229,7 @@ dependencies = [
 [[package]]
 name = "adam-postgres"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -248,7 +248,7 @@ dependencies = [
 [[package]]
 name = "adam-runtime"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -269,7 +269,7 @@ dependencies = [
 [[package]]
 name = "adam-store-postgres"
 version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=7ac32810c0be5d1ab590c8f24d78eceb205865b0#7ac32810c0be5d1ab590c8f24d78eceb205865b0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -2596,6 +2596,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -2640,6 +2641,22 @@ dependencies = [
  "tokio-util",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "orch-embed"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "orch-agui-projection",
+ "orch-agui-proto",
+ "orch-app",
+ "orch-core",
+ "orch-ports",
+ "orch-store-sqlite",
+ "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -2699,12 +2716,15 @@ dependencies = [
 name = "orch-ports"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "getrandom 0.3.4",
  "jiff",
  "orch-core",
  "orch-ports",
+ "orch-prompt-statement",
  "proptest",
  "serde",
  "serde_json",
@@ -2717,6 +2737,31 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-signer-static"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "orch-ports",
+ "orch-prompt-statement",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-statement"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ryu-js",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
 ]
 
 [[package]]
@@ -2738,12 +2783,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-secrets-openbao"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "orch-secrets-pg"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "deadpool-postgres",
  "getrandom 0.3.4",
+ "jiff",
  "orch-core",
  "orch-pg-connect",
  "orch-pg-migrate",
@@ -2803,6 +2867,7 @@ dependencies = [
 name = "orch-store-sqlite"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "jiff",
  "orch-core",
  "orch-ports",
@@ -2813,6 +2878,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
  "uuid",
 ]
@@ -3008,6 +3074,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-window"
+version = "0.1.0"
+dependencies = [
+ "orch-core",
+ "orch-ports",
+ "orch-window",
+ "serde",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "orchestrator"
 version = "0.1.0"
 dependencies = [
@@ -3034,6 +3114,7 @@ dependencies = [
  "orch-pg-connect",
  "orch-ports",
  "orch-registry-platform",
+ "orch-secrets-openbao",
  "orch-secrets-pg",
  "orch-signed-request",
  "orch-store-postgres",
@@ -4378,7 +4459,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

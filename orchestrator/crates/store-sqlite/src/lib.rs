@@ -25,19 +25,29 @@
 //! [`orch_core::search::document_keys`] makes, matched by prefix: **not** FTS5, which is not
 //! compiled into every bundled SQLite and whose folding is not `fold`'s.
 //!
-//! The third supertrait, [`PromptStore`](orch_ports::PromptStore) (the prompt library, ADR 0070),
-//! is **declared and not built**: its methods answer [`PromptStoreError::Internal`](orch_ports::PromptStoreError)
-//! naming milestone 2b, never an empty page, which a caller could not tell from "nothing was
-//! saved". `Wakeup`, `UserToolServerStore` and `PendingAuthorizations` are not part of this crate
-//! yet either.
+//! **`PromptStore`** (ADR 0070, migration `0003`): a person's saved prompts and the roles they
+//! share each with, in a table beside the log. [`SqliteWakeup`] is the in-process `Wakeup`.
+//!
+//! **`TeamPresetStore`** (ADR 0074, migration `0007`): a person's saved teams (a lead, two to eight
+//! members, a charter, the cap of hand-offs, the approval mode, the checkpoint rules), in a table
+//! beside the log with a revision per write and the limit of fifty per person.
+//!
+//! **`UserToolServerStore`** (ADR 0046, migration `0005`): the definitions of people's own MCP
+//! servers, one table beside the log, one counter for revisions, the limit of eight and every
+//! compare-and-swap kept by the one writing transaction.
+//!
+//! **`PendingAuthorizations`** (ADR 0046, slice 4c, migration `0006`): the OAuth authorizations
+//! that have begun, `state → (owner, server, until)` kept as the state's SHA-256 and taken once by
+//! one `DELETE … RETURNING`, in a table beside the log.
 //!
 //! # Conformance hooks
 //!
-//! [`SqliteStore::forget_usage_ledger`], [`SqliteStore::forget_search_index`] and
-//! [`SqliteStore::age_search_index`] make the store behave as if the log predated the ledger or the
-//! index, or as if every thread had been indexed under an older fold version. They are **test
-//! hooks, not production paths**: the conformance testkit's `forget` and `age` arguments are the
-//! only callers, and without them the cases that play an older log are skipped, which is not green.
+//! [`SqliteStore::forget_usage_ledger`], [`SqliteStore::forget_search_index`],
+//! [`SqliteStore::age_search_index`] and [`SqliteStore::refuse_writes`] make the store behave as if
+//! the log predated the ledger or the index, as if every thread had been indexed under an older fold
+//! version, or as a file that became read-only does. They are **test hooks, not production paths**:
+//! the conformance testkit's `forget`, `age` and `breaker` arguments are the only callers, and
+//! without them the cases that need one are skipped, which is not green.
 //!
 //! # Concurrency
 //!
@@ -58,13 +68,18 @@
 
 mod codec;
 mod error;
+mod pending_authorizations;
+mod prompts;
 mod schema;
 mod search;
 mod store;
-mod unbuilt;
+mod teams;
 mod usage;
+mod user_tool_servers;
+mod wakeup;
 
 pub use schema::MIGRATIONS_TABLE;
+pub use wakeup::SqliteWakeup;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -217,6 +232,26 @@ impl SqliteStore {
                 store::exec(tx, "UPDATE threads SET search_fold = ?1", &[&stale])?;
                 Ok(())
             })
+        })
+        .await
+    }
+
+    /// Makes every write of the store fail from now on, as a file that became read-only does:
+    /// `PRAGMA query_only` is on, so `CREATE`, `DELETE`, `DROP`, `INSERT` and `UPDATE` are refused
+    /// (`SQLITE_READONLY`) and nothing is lost. What the conformance case that looks into the text of
+    /// a `PendingAuthorizations` error needs, as the Postgres adapter's closed pool is.
+    ///
+    /// **A conformance hook, not a production path**, like
+    /// [`forget_usage_ledger`](Self::forget_usage_ledger): the `breaker` argument of
+    /// `orch_ports::pending_authorizations_conformance!` is its only caller.
+    ///
+    /// # Errors
+    /// [`StoreError::Unavailable`] when the file stays locked past the busy timeout;
+    /// [`StoreError::Internal`] when SQLite rejects the pragma.
+    pub async fn refuse_writes(&self) -> Result<(), StoreError> {
+        self.call(|conn| {
+            conn.pragma_update(None, "query_only", true)
+                .map_err(error::store_err)
         })
         .await
     }

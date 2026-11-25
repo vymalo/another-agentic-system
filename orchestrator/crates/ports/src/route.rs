@@ -118,6 +118,7 @@ mod tests {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         }
     }
 

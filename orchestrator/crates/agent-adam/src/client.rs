@@ -181,6 +181,7 @@ impl AgentClient for LocalAgentClient {
             access_tier: orch_core::TierListing::Absent,
             // a local agent is never sent a locale: the card it would list it on is not read
             locale: orch_core::LocaleListing::Absent,
+            pick: orch_core::PickListings::default(),
             commands: orch_core::CommandsListing::Absent,
             child_sessions: None,
             trusted_components: None,
@@ -195,6 +196,14 @@ impl AgentClient for LocalAgentClient {
         if let Some(tier) = req.tier {
             return Err(AgentError::Unsupported(format!(
                 "the agent no longer takes the access tier '{tier}'"
+            )));
+        }
+        if let Some(pick) = req.pick.as_ref() {
+            // The card of a local agent lists nothing (`read_card`: no `model-pick/v1`, no
+            // `reasoning/v1`), and a pick is never dropped (ADR 0086): running the agent's own
+            // default when another model was asked for would be worse than refusing.
+            return Err(AgentError::Unsupported(format!(
+                "a local agent does not offer the model or reasoning effort '{pick:?}'"
             )));
         }
         if req.steer {

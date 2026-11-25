@@ -20,10 +20,10 @@ use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, sessions_news, snapshot, usage_totals, wants_task_read};
 use orch_core::{
     ACCESS_TIER_EXTENSION, BoxError, CHILD_SESSIONS_EXTENSION, KnownExtension, LOCALE_EXTENSION,
-    MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
-    THREAD_TOOLS_EXTENSION, TRUSTED_COMPONENTS_EXTENSION, TrustedComponentsOffer,
-    UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery, UiVersion,
-    history_preamble,
+    MENTIONS_EXTENSION, MODEL_PICK_EXTENSION, REASONING_EXTENSION, STEER_EXTENSION,
+    STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, TRUSTED_COMPONENTS_EXTENSION,
+    TrustedComponentsOffer, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery,
+    UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
@@ -43,6 +43,7 @@ use crate::extensions::{build_from_card, extensions_from_card};
 use crate::files::{Fetcher, FileFetch};
 use crate::locale::{locale_from_card, locale_metadata};
 use crate::mentions::mentions_metadata;
+use crate::pick::{pick_from_card, pick_metadata};
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 use crate::thread_tools::{mint, thread_tools_metadata};
 use crate::trusted::trusted_components_from_card;
@@ -699,6 +700,8 @@ struct Riders<'a> {
     mentions: Option<&'a Value>,
     tier: Option<&'a Value>,
     locale: Option<&'a Value>,
+    model: Option<&'a Value>,
+    effort: Option<&'a Value>,
     uploads: Option<&'a Value>,
 }
 
@@ -743,6 +746,12 @@ fn extensions_of(
     }
     if riders.locale.is_some() {
         uris.push(LOCALE_EXTENSION.to_owned());
+    }
+    if riders.model.is_some() {
+        uris.push(MODEL_PICK_EXTENSION.to_owned());
+    }
+    if riders.effort.is_some() {
+        uris.push(REASONING_EXTENSION.to_owned());
     }
     if riders.uploads.is_some() {
         uris.push(UPLOADS_EXTENSION.to_owned());
@@ -839,6 +848,14 @@ fn user_message(
     if let Some(locale) = riders.locale {
         metadata.insert(LOCALE_EXTENSION.to_owned(), locale.clone());
     }
+    // The model and the reasoning effort the person picked, each under its own extension and only
+    // when the message names it (`crate::pick`: the card was checked, a pick is never a hint).
+    if let Some(model) = riders.model {
+        metadata.insert(MODEL_PICK_EXTENSION.to_owned(), model.clone());
+    }
+    if let Some(effort) = riders.effort {
+        metadata.insert(REASONING_EXTENSION.to_owned(), effort.clone());
+    }
     // What the deployment offers for large files, only when the live card lists the extension and
     // the agent has the endpoint the tool is on (`crate::uploads`).
     if let Some(uploads) = riders.uploads {
@@ -870,6 +887,7 @@ impl AgentClient for A2aAgentClient {
             trusted_components: trusted_components_from_card(&card),
             build: build_from_card(&card),
             locale: locale_from_card(&card),
+            pick: pick_from_card(&card),
         })
     }
 
@@ -923,6 +941,9 @@ impl AgentClient for A2aAgentClient {
         // The language of the person's screen, only to an agent that lists the extension
         // (ADR 0085): a hint, so a card without it is sent the plain message, never nothing.
         let locale = locale_metadata(&req, &locale_from_card(&card));
+        // A pick is never dropped (ADR 0086): a card that does not offer it is refused here, before
+        // anything is sent.
+        let pick = pick_metadata(&req, &pick_from_card(&card))?;
         let uploads = uploads_metadata(&req, &known, thread_tools.is_some());
         // a steer asks for no reporting of its own (the task keeps reporting on the stream that
         // started it), but the contract wants `child-sessions/v1` on every request about a child
@@ -947,6 +968,8 @@ impl AgentClient for A2aAgentClient {
             mentions: mentions.as_ref(),
             tier: tier.as_ref(),
             locale: locale.as_ref(),
+            model: pick.model.as_ref(),
+            effort: pick.effort.as_ref(),
             uploads: uploads.as_ref(),
         };
         let client = Arc::new(

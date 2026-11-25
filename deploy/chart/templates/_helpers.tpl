@@ -64,8 +64,50 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- define "agentic.secret.oauth2redis" -}}{{- include "agentic.component" (dict "root" . "component" "oauth2-redis") -}}{{- end -}}
 {{- define "agentic.secret.browser" -}}{{- include "agentic.component" (dict "root" . "component" "browser") -}}{{- end -}}
 
+{{/* The model-credential injector's names (values.yaml, `injector`): the Gateway, the Service Envoy Gateway pins for
+it, and the Authorino instance and its gRPC authorization Service. */}}
+{{- define "agentic.injector.gatewayName" -}}
+{{- default (printf "%s-injector" (include "agentic.fullname" .)) .Values.injector.gatewayName -}}
+{{- end -}}
+{{- define "agentic.injector.envoyServiceName" -}}
+{{- default (printf "%s-envoy" (include "agentic.injector.gatewayName" .)) .Values.injector.envoyServiceName -}}
+{{- end -}}
+{{- define "agentic.injector.authorinoName" -}}
+{{- default (printf "%s-authorino" (include "agentic.fullname" .)) .Values.injector.authorino.name -}}
+{{- end -}}
+{{/* The Authorino operator names every instance's authorization Service <CR name>-authorino-authorization. */}}
+{{- define "agentic.injector.authorinoService" -}}
+{{- printf "%s-authorino-authorization" (include "agentic.injector.authorinoName" .) -}}
+{{- end -}}
+{{/* The Secret holding the injector's own broker token; its content comes from AWS, never from this chart. */}}
+{{- define "agentic.injector.secret" -}}
+{{- printf "%s-injector-broker" (include "agentic.fullname" .) -}}
+{{- end -}}
+{{/* The broker's run-lease base URL: a value, else the orchestrator's internal listener. */}}
+{{- define "agentic.injector.brokerUrl" -}}
+{{- if .Values.injector.broker.url -}}
+{{- .Values.injector.broker.url -}}
+{{- else -}}
+{{- printf "http://%s.%s.svc:%v" (include "agentic.component" (dict "root" . "component" "orchestrator")) .Release.Namespace (int .Values.orchestrator.internal.port) -}}
+{{- end -}}
+{{- end -}}
+{{/* The Secret holding the shared secret of the ledger's budget read; its content comes from AWS, never from this chart. */}}
+{{- define "agentic.injector.budgetSecret" -}}
+{{- printf "%s-injector-budget" (include "agentic.fullname" .) -}}
+{{- end -}}
+{{/* The ledger's budget read: the deployment's listener, then its one route and the account it is asked about. */}}
+{{- define "agentic.injector.budgetUrl" -}}
+{{- printf "%s/budget/v1/remaining?account_id={auth.metadata.lease.accountId}" (trimSuffix "/" (toString .Values.injector.budget.url)) -}}
+{{- end -}}
+
 {{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
 {{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}
+
+{{/* "true" or nothing: whether the BFF peer is set (`networkPolicy.bff`: a namespace and the labels of its pods). */}}
+{{- define "agentic.bff" -}}
+{{- $b := .Values.networkPolicy.bff -}}
+{{- if and $b $b.namespace $b.matchLabels -}}true{{- end -}}
+{{- end -}}
 
 {{/* CNPG Clusters; CNPG makes the Secret <cluster>-app, whose key `uri` is the connection string. */}}
 {{- define "agentic.db.orchestrator" -}}{{- include "agentic.component" (dict "root" . "component" "db") -}}{{- end -}}
@@ -377,6 +419,11 @@ appendonly no
      the Secret key and the file one of them is: `user-secrets-key-<id>`. */}}
 {{- define "agentic.userSecrets" -}}{{- if .Values.orchestrator.userSecrets.enabled -}}true{{- end -}}{{- end -}}
 {{- define "agentic.userSecrets.file" -}}{{- printf "user-secrets-key-%s" . -}}{{- end -}}
+
+{{/* "true" or nothing: whether a person's own credentials are kept in OpenBao (`orchestrator.secrets.store: openbao`, ADR 0046) and not in
+     Postgres. The token is the Secret key `openbao-token` (an AWS property, mounted as a file); the CA, when there is one, is the key `ca.crt`
+     of the Secret `orchestrator.secrets.openbao.caSecret`, mounted at `/run/secrets/openbao-ca`. */}}
+{{- define "agentic.secrets.openbao" -}}{{- if eq (toString .Values.orchestrator.secrets.store) "openbao" -}}true{{- end -}}{{- end -}}
 
 {{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
      this release with `rustfs.enabled` and no endpoint of its own). */}}

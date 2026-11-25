@@ -1,3 +1,4 @@
+{{- if .Values.web.enabled }}
 {{- $root := dict "root" . "component" "web" -}}
 {{- $name := include "agentic.component" $root -}}
 {{- if .Values.mobileAppLinks.enabled }}
@@ -139,3 +140,4 @@ spec:
       port: 3000
       targetPort: http
       protocol: TCP
+{{- end }}

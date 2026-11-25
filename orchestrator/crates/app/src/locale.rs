@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::AppError;
 
 /// The key of a run's `forwardedProps` that carries the message's interface locale (`locale/v1`): a
-/// BCP 47 language tag, for example `en-CM`.
+/// BCP 47 language tag, for example `en-GB`.
 pub const THREAD_LOCALE_KEY: &str = "vymalo.locale";
 
 /// Why a locale was refused before it could be carried: **400**.
@@ -44,7 +44,7 @@ pub fn parse(value: &Value) -> Result<Option<LocaleHint>, LocaleRequestError> {
 
 fn not_a_locale() -> LocaleRequestError {
     LocaleRequestError(format!(
-        "{THREAD_LOCALE_KEY} must be a BCP 47 language tag, for example en-CM"
+        "{THREAD_LOCALE_KEY} must be a BCP 47 language tag, for example en-GB"
     ))
 }
 
@@ -58,10 +58,10 @@ mod tests {
     #[test]
     fn a_tag_is_read_and_none_is_none() {
         assert_eq!(
-            parse(&json!("fr-CM"))
+            parse(&json!("fr-FR"))
                 .unwrap()
                 .map(|l| l.as_str().to_owned()),
-            Some("fr-CM".to_owned())
+            Some("fr-FR".to_owned())
         );
         assert_eq!(parse(&json!(null)).unwrap(), None);
     }
@@ -75,8 +75,8 @@ mod tests {
             json!("en-"),
             json!("klingon please"),
             json!(3),
-            json!(["en-CM"]),
-            json!({"locale": "en-CM"}),
+            json!(["en-GB"]),
+            json!({"locale": "en-GB"}),
         ] {
             let error = parse(&bad).unwrap_err();
             assert!(

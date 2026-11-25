@@ -23,6 +23,7 @@ fn started() -> Snapshot {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         },
     )
     .unwrap();

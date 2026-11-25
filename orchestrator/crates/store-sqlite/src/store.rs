@@ -1896,6 +1896,51 @@ impl ThreadStore for SqliteStore {
         .await
     }
 
+    async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
+        let text: Option<Option<String>> = self
+            .call(move |conn| {
+                row_opt(
+                    conn,
+                    "SELECT pick FROM threads WHERE id = ?1",
+                    &[&thread.0.to_string()],
+                    |row| row.get(0).map_err(store_err),
+                )
+            })
+            .await?;
+        text.flatten()
+            .map(|text| serde_json::from_str(&text))
+            .transpose()
+            .map_err(|e| StoreError::corrupt_with("cannot read the thread's pick", e))
+            .map(Option::unwrap_or_default)
+    }
+
+    async fn set_thread_pick(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        pick: orch_core::ModelPick,
+    ) -> Result<(), StoreError> {
+        let owner = owner.as_str().to_owned();
+        let text = (!pick.is_empty())
+            .then(|| serde_json::to_string(&pick))
+            .transpose()
+            .map_err(|e| StoreError::corrupt_with("cannot serialise the thread's pick", e))?;
+        self.call(move |conn| {
+            write(conn, |tx| {
+                let touched = exec(
+                    tx,
+                    "UPDATE threads SET pick = ?3 WHERE id = ?1 AND owner = ?2",
+                    &[&thread.0.to_string(), &owner, &text],
+                )?;
+                if touched == 0 {
+                    return Err(StoreError::NotFound);
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+
     async fn get_binding(&self, thread: ThreadId) -> Result<Option<AgentBinding>, StoreError> {
         self.call(move |conn| {
             row_opt(

@@ -38,6 +38,7 @@ fn request(ep: &AgentEndpoint, message: &str, context: Option<&str>) -> SendRequ
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 

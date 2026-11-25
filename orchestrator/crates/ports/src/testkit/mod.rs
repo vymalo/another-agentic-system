@@ -1,9 +1,11 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`UsageLedger`](crate::UsageLedger), [`ThreadSearch`](crate::ThreadSearch),
+//! [`SecretStore`](crate::SecretStore), [`VaultStore`](crate::VaultStore), [`UsageLedger`](crate::UsageLedger),
+//! [`ThreadSearch`](crate::ThreadSearch),
 //! [`UserToolServerStore`](crate::UserToolServerStore),
-//! [`PendingAuthorizations`](crate::PendingAuthorizations) and
+//! [`PendingAuthorizations`](crate::PendingAuthorizations),
+//! [`TeamPresetStore`](crate::TeamPresetStore), [`PromptSigner`](crate::PromptSigner) and
 //! [`CredentialBroker`](crate::CredentialBroker) implementation must pass it.
 //!
 //! ```ignore
@@ -19,15 +21,18 @@ pub mod bearer;
 pub mod chat_model;
 pub mod credential_broker;
 pub mod pending_authorizations;
+pub mod prompt_signer;
 pub mod prompt_store;
 pub mod registry;
 pub mod run_leases;
 pub mod secret_store;
+pub mod teams;
 pub mod thread_search;
 pub mod thread_store;
 pub mod tool_server;
 pub mod usage_ledger;
 pub mod user_tool_server_store;
+pub mod vault_store;
 pub mod wakeup;
 
 /// Generates one `#[tokio::test]` per `ThreadStore` conformance case. `$make` is an
@@ -90,6 +95,7 @@ macro_rules! thread_store_conformance {
             eject_lands_after_the_former_block a_bad_anchor_or_a_nested_row_is_refused
             arranging_is_the_owners_alone rail_pages_never_split_a_block
             an_arrangement_that_changes_nothing_writes_nothing
+            a_threads_default_pick_is_its_owners_and_goes_with_the_thread
             a_rank_that_would_pass_the_cap_re_spreads_the_list
             ties_of_rank_are_broken_by_newest_first
             a_thread_is_nested_under_a_top_level_thread_of_its_owner
@@ -212,6 +218,7 @@ macro_rules! agent_client_conformance {
             a_tier_is_refused_by_an_agent_that_does_not_list_the_extension
             a_plain_message_under_a_cap_is_not_sent_to_an_agent_that_lists_tiers
             a_locale_never_holds_a_message_back
+            a_pick_is_refused_by_an_agent_that_does_not_offer_it
         );
     };
     (@cases $make:path; $($case:ident)*) => {
@@ -394,6 +401,47 @@ macro_rules! tool_server_conformance {
                 match $make().await {
                     Some(fixture) => $crate::testkit::tool_server::$case(fixture).await,
                     None => eprintln!("skipped: no tool server available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `PromptSigner` conformance case (ADR 0087, the note of 2026-11-25).
+/// `$make` is an `async fn() -> Option<S>` returning a fresh signer (`None` skips the suite), and `$unavailable` an
+/// `async fn(&S)` after which that signer has no certificate it may sign with. Each case gives up after 20 s. The
+/// calling crate needs `tokio` (with `macros`, `rt` and `time`) as a dev-dependency.
+#[macro_export]
+macro_rules! prompt_signer_conformance {
+    ($make:path, unavailable = $unavailable:path) => {
+        $crate::prompt_signer_conformance!(@cases $make;
+            the_payload_is_attached_byte_for_byte
+            the_protected_header_is_the_statements
+            the_signature_verifies_under_the_leaf_key
+            each_payload_gets_its_own_statement
+            a_signer_that_signs_is_not_unavailable
+        );
+        #[tokio::test]
+        async fn an_unavailable_signer_refuses_and_says_so() {
+            match $make().await {
+                Some(signer) => {
+                    $crate::testkit::prompt_signer::an_unavailable_signer_refuses_and_says_so(
+                        signer,
+                        $unavailable,
+                    )
+                    .await
+                }
+                None => eprintln!("skipped: no prompt signer available"),
+            }
+        }
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(signer) => $crate::testkit::prompt_signer::$case(signer).await,
+                    None => eprintln!("skipped: no prompt signer available"),
                 }
             }
         )*
@@ -774,6 +822,45 @@ macro_rules! prompt_store_conformance {
     };
 }
 
+/// Generates one `#[tokio::test]` per `TeamPresetStore` conformance case (ADR 0074): what the API
+/// relies on from any store of people's team presets. `$make` is an `async fn() -> Option<S>`
+/// returning a fresh store (`None` skips the suite). Each case uses owners of its own and gives up
+/// after 60 s. The calling crate needs `tokio` (with `macros`, `rt` and `rt-multi-thread`, or
+/// `time`) as a dev-dependency.
+#[macro_export]
+macro_rules! team_preset_store_conformance {
+    ($make:path) => {
+        $crate::team_preset_store_conformance!(@cases $make;
+            insert_then_get_round_trips a_missing_preset_is_none every_field_round_trips
+            bounds_are_refused_with_words another_owner_never_reads_or_writes_it ids_are_global
+            names_are_unique_per_owner a_listing_is_the_owners_ordered_by_id pages_follow_the_id
+            a_page_is_positive_and_bounded replace_with_the_current_revision_replaces_whole
+            a_stale_replace_is_a_conflict_and_changes_nothing
+            a_rename_to_a_taken_name_is_name_taken_and_changes_nothing
+            delete_removes_the_preset_and_the_second_delete_is_not_found
+            a_stale_delete_is_a_conflict
+            a_write_after_a_delete_is_not_found_and_brings_nothing_back
+            revisions_are_never_given_twice at_most_fifty_per_owner
+            concurrent_inserts_never_pass_the_limit
+            concurrent_inserts_of_one_id_have_one_winner
+            concurrent_replaces_from_one_revision_have_one_winner
+            concurrent_inserts_of_one_name_have_one_winner the_order_of_refusals
+            a_summary_says_the_lead_and_the_member_count
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::teams::$case(store).await,
+                    None => eprintln!("skipped: no team preset store available"),
+                }
+            }
+        )*
+    };
+}
+
 /// Generates one `#[tokio::test]` per `PendingAuthorizations` conformance case (ADR 0046, slice 4c).
 /// `$make` is an `async fn() -> Option<S>` returning a fresh store (`None` skips the suite). Each case
 /// uses owners, servers and states of its own and gives up after 60 s. The calling crate needs `tokio`
@@ -968,25 +1055,25 @@ macro_rules! bearer_token_conformance {
 macro_rules! run_leases_conformance {
     ($make:path) => {
         #[tokio::test]
-        async fn binds_then_leases_to_the_bound_agent() {
+        async fn binds_then_leases_to_the_injector() {
+            match $make().await {
+                Some(b) => $crate::testkit::run_leases::binds_then_leases_to_the_injector(&b).await,
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn refuses_every_agent_its_own_run_included() {
             match $make().await {
                 Some(b) => {
-                    $crate::testkit::run_leases::binds_then_leases_to_the_bound_agent(&b).await
+                    $crate::testkit::run_leases::refuses_every_agent_its_own_run_included(&b).await
                 }
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
         #[tokio::test]
-        async fn refuses_another_agent() {
+        async fn leases_to_the_orchestrator_too() {
             match $make().await {
-                Some(b) => $crate::testkit::run_leases::refuses_another_agent(&b).await,
-                None => eprintln!("skipped: no run-lease broker available"),
-            }
-        }
-        #[tokio::test]
-        async fn refuses_the_orchestrator_lease() {
-            match $make().await {
-                Some(b) => $crate::testkit::run_leases::refuses_the_orchestrator_lease(&b).await,
+                Some(b) => $crate::testkit::run_leases::leases_to_the_orchestrator_too(&b).await,
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
@@ -1043,5 +1130,45 @@ macro_rules! run_leases_conformance {
                 None => eprintln!("skipped: no run-lease broker available"),
             }
         }
+        #[tokio::test]
+        async fn answers_the_account_to_the_meter_alone() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::answers_the_account_to_the_meter_alone(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+    };
+}
+
+/// Generates one `#[tokio::test]` per `VaultStore` conformance case (ADR 0083, amended 2026-11-21;
+/// decision row 114 of 2026-11-22). `$make` is an `async fn() -> Option<(S, FixedClock)>` returning
+/// a fresh store **and the clock its 24-hour grace runs on** (`None` skips the suite). The clock is
+/// the fixture's so a case proves the grace by moving it: no case sleeps. Each case uses owners and
+/// names of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! vault_store_conformance {
+    ($make:path) => {
+        $crate::vault_store_conformance!(@cases $make;
+            put_then_get_round_trips a_name_is_written_at_v1_and_the_next_write_at_v2
+            material_reads_back_byte_for_byte a_reference_the_store_does_not_hold_is_unknown
+            a_superseded_version_reads_for_the_grace_and_is_refused_after
+            the_current_version_never_expires purge_removes_only_the_versions_past_the_grace
+            concurrent_puts_take_two_versions_and_lose_nothing owners_never_see_each_others_vault
+            no_error_or_debug_text_shows_a_secret
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some((store, clock)) => $crate::testkit::vault_store::$case(store, clock).await,
+                    None => eprintln!("skipped: no vault store available"),
+                }
+            }
+        )*
     };
 }

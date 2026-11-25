@@ -15,6 +15,7 @@ use crate::gate::{CheckResult, CiReport, ReworkData};
 use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
+use crate::pick::ModelPick;
 use crate::reasoning::AgentReasoningData;
 use crate::share::{ThreadSharedData, ThreadUnsharedData};
 use crate::step::AgentStepData;
@@ -349,6 +350,13 @@ pub struct UserMessageData {
     /// log written before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<LocaleHint>,
+    /// The model and the reasoning effort this message was sent with (ADR 0086, `model-pick/v1`):
+    /// the pick as it was resolved (the message's own over the thread's default) and checked
+    /// against the agent's live card. Recorded because **the log is the state**: a redelivery, a
+    /// fork's first message and an edit carry it. Omitted when the message named none, and in every
+    /// log written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<ModelPick>,
 }
 
 impl UserMessageData {
@@ -364,6 +372,7 @@ impl UserMessageData {
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         }
     }
 }

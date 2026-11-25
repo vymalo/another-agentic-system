@@ -94,6 +94,10 @@ flowchart LR
     app --> adapters
     disp --> adapters
   end
+  subgraph EMBED["The same core, embedded in an application (ADR 0076 decision 4)"]
+    embed["<b>orch-embed</b><br/>App + Dispatcher over orch-store-sqlite,<br/>the caller's agents and directory,<br/>no HTTP server"]
+    sqlite[("one SQLite file<br/>a thread's log, one process")]
+  end
   subgraph PG["Postgres: the only state"]
     tables[("threads · events (the chat)<br/>a2a_bindings · outbox")]
     notify(["LISTEN / NOTIFY<br/>orch_thread · orch_outbox<br/>hints, never data"])
@@ -110,6 +114,8 @@ flowchart LR
   desktop -- "/api/* and /agui/* with DPoP<br/>CORS: server.cors.allowedOrigins" --> edge
   edge -- "everything else" --> web
   edge -- "/api/*, /agui/*, /mcp (bearer, no identity), /healthz, /readyz" --> api
+  app -. "the same App and Dispatcher, wired twice" .-> embed
+  embed --> sqlite
   adapters -- "sqlx: one txn per commit" --> tables
   tables --> notify
   notify -. "wake every replica" .-> adapters
@@ -123,6 +129,13 @@ flowchart LR
   style surfaces stroke-dasharray: 5 5
 ```
 
+- **The same core runs embedded.** The orchestrator is also a library: `orch-embed`
+  (`orchestrator/crates/embed`) wires the same `orch-app` `App` and `Dispatcher` to one SQLite file and
+  the caller's own agents, with no HTTP server and no Postgres, so an application runs a thread in its
+  own process ([ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md), decision
+  4). The two compounds are roots, not layers: `bin/orchestrator` is the server's and does not depend on
+  the crate, and the crate reimplements nothing the application already owns. A thread has one home —
+  one process opens the file, and a second is refused by the store's lock.
 - **The web never talks to the orchestrator server to server.** It is a static export served by Caddy (ADR 0047), whose
   runtime settings are `/config.json`; the browser calls `/api/*` and `/agui/*` on its own origin, and the edge routes those paths
   to the orchestrator and everything else to the web. The desktop app is the same export in a Tauri window: it calls the API's
@@ -239,6 +252,14 @@ Prose for what the diagram compresses:
   replica re-claims the row; because `sent_at` is set it resumes the agent's task
   (`SubscribeToTask`, else polling `GetTask`) instead of sending again, and the agent's own ids
   make each stored update idempotent.
+- **The run is bound when its task id is first seen.** With `RUN_BINDING_URL` set, the dispatcher tells
+  the credential broker who spends for a run (the thread's owner), which agent it is, the model endpoint
+  label the live card maps the run's pick to (the picked alias's `endpoint`, or the card's default choice)
+  and its deadline (24 h, the broker's own cap) on the **first frame** of the delegation's stream, before
+  that frame is applied, and unbinds it once the thread is `done`, `failed` or `cancelled`
+  ([ADR 0084](decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)).
+  The run's first model call can beat that: the injector answers `run_not_bound` and adam parks and
+  retries it (ADR 0067 decision 9). A broker that cannot be reached is logged and the run goes on.
 - **An `input-required` turn ends the run and the delegation, not the thread.** The thread becomes
   `blocked` and the run ends `RUN_FINISHED{outcome: interrupt}`, carrying an interrupt id and the
   agent's question. The user's answer is the next run: `resume` (or, as accepted today, a plain user

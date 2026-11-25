@@ -27,6 +27,9 @@
 //!   `orch-credential-broker` implements it;
 //! - [`SecretStore`]: where the opaque, sealed material of a person's credentials is kept, by
 //!   `(owner, server)`, with a compare-and-swap `rotate` (ADR 0046); [`SecretMaterial`] never prints;
+//! - [`VaultStore`]: a person's **named** secrets, a new version for every write and the versions a
+//!   rotation superseded readable for [`SUPERSEDED_GRACE`] (24 hours), which a configuration names
+//!   as `vault:<name>#v<n>` ([`VaultRef`]) and never holds (ADR 0083, amended 2026-11-21);
 //! - [`UserToolServerStore`]: the definitions of a person's own MCP servers, by `(owner, id)`, at most
 //!   eight per person; a definition holds no secret and a URL the guard accepted, and every write of
 //!   an existing one is a compare and swap on a [`ServerRevision`] (ADR 0046);
@@ -38,9 +41,15 @@
 //! - [`PendingAuthorizations`]: the OAuth authorizations that have begun and whose callback has not
 //!   come, `state → (owner, server, until)`, used at most once, kept by the state's digest (ADR 0046,
 //!   slice 4c); [`NoPendingAuthorizations`] refuses every call;
+//! - [`TeamPresetStore`]: a person's saved teams (a lead, up to eight members, a charter, the cap of
+//!   hand-offs, the approval mode, the checkpoint rules), kept beside the log with a revision per
+//!   write (ADR 0074); a supertrait of [`ThreadStore`], as the prompt library is;
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
 //!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
 //!   relay apply one function;
+//! - [`PromptSigner`]: who signs the orchestrator's prompt statement on the cloud path, with a certified key; it
+//!   takes only an [`AttestedPayload`], a statement the integrity rule of `orch-prompt-statement` passed (ADR 0087,
+//!   the note of 2026-11-25);
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
@@ -59,15 +68,18 @@ mod inbox;
 mod lookup;
 mod model;
 mod pending;
+mod prompt_signer;
 mod prompts;
 mod registry;
 mod route;
 mod search;
 mod secrets;
 mod store;
+mod teams;
 mod tools;
 mod usage_ledger;
 mod user_tools;
+mod vault;
 mod wakeup;
 
 #[cfg(feature = "testkit")]
@@ -94,8 +106,9 @@ pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
 pub use credentials::{
     CredentialBroker, CredentialError, CredentialLease, CredentialRef, KeepsCredentials,
     MAX_CREDENTIAL_REF_BYTES, MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, ModelCredentials,
-    NoBroker, OAuthStart, OAuthState, OAuthStateError, RedirectUri, RedirectUriError, RunBinding,
-    RunBindingStore, RunCaller, RunId, RunLease, RunLeaseError, RunLeases,
+    NoBroker, NoRunBindings, OAuthStart, OAuthState, OAuthStateError, RedirectUri,
+    RedirectUriError, RunBinding, RunBindingError, RunBindingStore, RunBindings, RunCaller, RunId,
+    RunLease, RunLeaseError, RunLeases,
 };
 pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
@@ -111,6 +124,7 @@ pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,
 };
+pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};
 pub use prompts::{
     MAX_PROMPTS, PROMPT_PAGE, PromptPage, PromptRevision, PromptScope, PromptStore,
     PromptStoreError, PromptSummary, PromptViewer, StoredPrompt,
@@ -135,6 +149,10 @@ pub use store::{
     NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
     OutboxStatus, Place, SharingChange, StoreError, ThreadListing, ThreadStore,
 };
+pub use teams::{
+    MAX_TEAM_PRESETS, StoredTeamPreset, TEAM_PRESET_PAGE, TeamPresetPage, TeamPresetRevision,
+    TeamPresetStore, TeamPresetStoreError, TeamPresetSummary,
+};
 pub use tools::{
     ActingFor, MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, MAX_USER_SERVER_TOOLS,
     MAX_USER_TOOL_SCHEMA_BYTES, MAX_USER_TOOL_TITLE_BYTES, MIN_SCRUBBABLE_SECRET_BYTES,
@@ -147,5 +165,9 @@ pub use user_tools::{
     MAX_SCOPES, MAX_USER_TOOL_SERVERS, NoUserToolServers, ServerRevision, StoredServer,
     ToolServerStatus, UnavailableReason, UserAuth, UserToolServer, UserToolServerId,
     UserToolServerState, UserToolServerStore, UserToolServerStoreError,
+};
+pub use vault::{
+    MAX_VAULT_NAME_CHARS, SUPERSEDED_GRACE, VAULT_PREFIX, VaultError, VaultName, VaultRef,
+    VaultRefError, VaultStore,
 };
 pub use wakeup::{Topic, Wakeup, WakeupCapabilities, WakeupError};

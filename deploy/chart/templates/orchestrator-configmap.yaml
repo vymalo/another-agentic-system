@@ -40,6 +40,19 @@ data:
         {{- end }}
       {{- end }}
       {{- end }}
+      {{- /* The run routes (ADR 0084 decision 5): their own listener and their tokens, which are files of the Secret. Only when
+             the listener is on: the pinned image may not know `server.internal`, and the default render must not write it. */}}
+      {{- if .Values.orchestrator.internal.enabled }}
+      internal:
+        listen: {{ printf "0.0.0.0:%d" (int .Values.orchestrator.internal.port) | quote }}
+        token: { file: /run/secrets/orchestrator/internal-token }
+        {{- with .Values.orchestrator.internal.agents }}
+        agents:
+          {{- range $agent, $_ := . }}
+          {{ $agent }}: { file: {{ printf "/run/secrets/orchestrator/internal-agent-%s-token" (toString $agent) | quote }} }
+          {{- end }}
+        {{- end }}
+      {{- end }}
     log:
       format: json
     database:
@@ -53,6 +66,11 @@ data:
       {{- end }}
     agents:
       file: agents.yaml
+      {{- with .Values.orchestrator.agents.registry.url }}
+      registry:
+        url: {{ . | quote }}
+        token: { file: /run/secrets/orchestrator/agent-registry-token }
+      {{- end }}
     {{- if include "agentic.hasModel" . }}
     models:
       endpoints:
@@ -134,6 +152,19 @@ data:
             key: { file: {{ printf "/run/secrets/orchestrator/%s" (include "agentic.userSecrets.file" (toString .id)) }} }
           {{- end }}
         current: {{ .Values.orchestrator.userSecrets.current | toString | quote }}
+    {{- else if include "agentic.secrets.openbao" . }}
+    {{- /* `orchestrator.secrets.store: openbao`: the token is a file reference (an AWS property, mounted), the CA a file of a named Secret. */}}
+    {{- with .Values.orchestrator.secrets.openbao }}
+    secrets:
+      store: openbao
+      openbao:
+        address: {{ .address | quote }}
+        mount: {{ .mount | quote }}
+        token: { file: /run/secrets/orchestrator/openbao-token }
+        {{- if .caSecret }}
+        caFile: /run/secrets/openbao-ca/ca.crt
+        {{- end }}
+    {{- end }}
     {{- end }}
     threadTools:
       url: {{ printf "http://%s:8080" $self | quote }}

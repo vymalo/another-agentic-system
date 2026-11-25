@@ -97,6 +97,7 @@ fn message(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
         locale: None,
+        pick: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -299,6 +300,7 @@ async fn the_first_message_of_a_fork_keeps_the_cap_when_the_card_offers_no_tier_
                         mentions: Vec::new(),
                         tier: None,
                         locale: None,
+                        pick: None,
                     }),
                 },
                 target: None,
@@ -468,6 +470,7 @@ async fn a_steer_the_card_cannot_give_a_tier_within_the_cap_is_not_sent_into_the
                     OutboxPayload::Delegate {
                         tier_cap: Some(Edits),
                         locale: None,
+                        pick: None,
                         ..
                     }
                 ) && r.sent_at.is_none()

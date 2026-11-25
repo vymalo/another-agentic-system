@@ -3,31 +3,31 @@
   "skills": {
     "adam-a2a-extensions": {
       "source": "vymalo/another-adam-rs",
-      "commit": "94a25a5f470e90f6487a1788549e1f7020c776ba",
+      "commit": "50bee181953278cfa3184497ee79f2eb56bed0d0",
       "sourceType": "github",
       "skillPath": ".agents/skills/adam-a2a-extensions/SKILL.md",
-      "computedHash": "513640f18cf60f1d31f89fbb422ffe0d7f989a2fe4f02b9a5cebc87add95e21d"
+      "computedHash": "5b9844c4e1317b39aa7e441ca453155c7337168e8f2e94fe1e7ef8a80853270d"
     },
     "adam-agent-folder": {
       "source": "vymalo/another-adam-rs",
-      "commit": "94a25a5f470e90f6487a1788549e1f7020c776ba",
+      "commit": "50bee181953278cfa3184497ee79f2eb56bed0d0",
       "sourceType": "github",
       "skillPath": ".agents/skills/adam-agent-folder/SKILL.md",
-      "computedHash": "66ed44f14eb50d8f94360d3a00cfd9e9ec7a0a0cc6abfe024d6795ecf66b3a46"
+      "computedHash": "3bf949af54a360c65d7844371cf1785f007b82083fa189bf870c3ec3fb569618"
     },
     "adam-coder-deploy": {
       "source": "vymalo/another-adam-rs",
-      "commit": "94a25a5f470e90f6487a1788549e1f7020c776ba",
+      "commit": "50bee181953278cfa3184497ee79f2eb56bed0d0",
       "sourceType": "github",
       "skillPath": ".agents/skills/adam-coder-deploy/SKILL.md",
-      "computedHash": "bdfe7ca2900e303af98a4ad7f45f8e64376fd3ef25cd571c9d7824e58a7ece8e"
+      "computedHash": "c7e6f0002417663eeb1306caa10c207191f9c219038b4d41b2f85b057f6799e4"
     },
     "adam-embed": {
       "source": "vymalo/another-adam-rs",
-      "commit": "94a25a5f470e90f6487a1788549e1f7020c776ba",
+      "commit": "50bee181953278cfa3184497ee79f2eb56bed0d0",
       "sourceType": "github",
       "skillPath": ".agents/skills/adam-embed/SKILL.md",
-      "computedHash": "e33dc91b52384f0f5f6e87fa0d803487d29936d1076310f7e9ad41a7d7bf2f85"
+      "computedHash": "7ed7df0cc2d0953daedc062bbf0054294af2882817cee58f77e8487324329dd2"
     },
     "adam-store-adapter": {
       "source": "vymalo/another-adam-rs",
@@ -38,10 +38,10 @@
     },
     "adam-upgrade": {
       "source": "vymalo/another-adam-rs",
-      "commit": "94a25a5f470e90f6487a1788549e1f7020c776ba",
+      "commit": "50bee181953278cfa3184497ee79f2eb56bed0d0",
       "sourceType": "github",
       "skillPath": ".agents/skills/adam-upgrade/SKILL.md",
-      "computedHash": "b200da76dec8b61b52de180910c67616080bf07133a0bcc2656e47a8ad19d0f8"
+      "computedHash": "9dad24c0f8d7462c5101573ca6508bc7a0ff73213abd895e4c051b6fe665172e"
     },
     "api-and-interface-design": {
       "source": "addyosmani/agent-skills",

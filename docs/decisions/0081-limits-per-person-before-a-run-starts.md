@@ -1,7 +1,10 @@
 # ADR 0081 — Limits per person before a run starts: the role's allowance, checked before dispatch
 
-- **Status:** **proposed (2026-11-21).** The requirements are the owner's answers of 2026-11-21 in the resource-governance
-  plan (`another-context plans/2026-11-21-resource-governance.md`, questions 2, 3, 4 and 7): "wait, then park; never fail a
+- **Status:** **accepted (2026-11-24).** The owner accepted this record as it stands on 2026-11-24, with one answer to
+  the question it left open: *"No token allowance by default in the open source (a deployment may set one per role)"*.
+  So `tokens_per_period` has no default; a deployment that wants one sets it per role. The role names and their numbers
+  are as written below. Proposed on 2026-11-21.
+- The requirements are the owner's decisions of 2026-11-21 (resource-governance questions 2, 3, 4 and 7): "wait, then park; never fail a
   run because a slot is busy", "role now, plan later", and a device's settings never cap a cloud agent. It folds system
   issues **#282** (nothing checks a person's allowance before a run starts) and **#170** (a webhook burst starts every
   job). The code follows in the plan's slice 8; this record fixes the semantics that slice implements.
@@ -134,3 +137,5 @@ sequenceDiagram
 - The webhook source's identity: the repository, the installation, or the source's configured id.
 - Whether the thread store needs new query methods or the existing job, usage and inbox queries suffice; the slice
   decides and states the port change, with provided defaults for the in-memory store and the testkit.
+
+Edited 2026-11-24: a private repository's name, paths and issue numbers were removed from the sources above (privacy); no decision changed.

@@ -41,6 +41,8 @@ import { useBoxMentions } from "@/features/mentions/hooks/use-mentions";
 import { MentionsStore } from "@/features/mentions/lib/store";
 import { ThreadPanel } from "@/features/panel/components/thread-panel";
 import { PanelProvider } from "@/features/panel/hooks/use-panel";
+import { PickChips } from "@/features/pick/components/pick-chip";
+import { usePick } from "@/features/pick/hooks/use-pick";
 import {
   sidebarIsColumn,
   useSearchFocusRequests,
@@ -184,18 +186,28 @@ function Chat({ threadId }: { threadId: string | null }) {
   const capabilities = useAgentCapabilities(toolsAgentId);
   // The access tier (ADR 0061): a chip while the card lists the extension, up to what the roles allow
   const tier = useTier({ threadId, capabilities });
+  // The model and the reasoning effort (ADR 0086): a chip per axis the live card lists, from the
+  // agent list's `pick` (read from the card on every read, never cached)
+  const pick = usePick({
+    listing: agents.agents.find((agent) => agent.id === toolsAgentId)?.pick,
+  });
   // The agent's own commands (ADR 0079): the same card, read for the "/" menu of the box
   const commands = useCommands(capabilities);
   const [sentTiers] = useState(() => new SentTiers());
 
   // A send goes to the thread's own agent; only a new thread takes the picker's choice. The access
-  // tier goes with the message of either, once the person has picked one.
+  // tier and the pick go with the message of either, once the person has picked one.
   const target = useMemo<Target>(
     () =>
       threadId === null
-        ? { ...effective, tools: newTools, tier: tier.send }
-        : { agentId: meta.thread?.target.agentId ?? null, release: null, tier: tier.send },
-    [threadId, effective, newTools, meta.thread?.target.agentId, tier.send],
+        ? { ...effective, tools: newTools, tier: tier.send, ...pick.send }
+        : {
+            agentId: meta.thread?.target.agentId ?? null,
+            release: null,
+            tier: tier.send,
+            ...pick.send,
+          },
+    [threadId, effective, newTools, meta.thread?.target.agentId, tier.send, pick.send],
   );
 
   // the mentions of the message in the box (ADR 0026), asked for by the agent when it sends it
@@ -374,6 +386,7 @@ function Chat({ threadId }: { threadId: string | null }) {
               />
             )}
             <TierChip view={tier} capabilities={capabilities} agentName={toolsAgentName} />
+            <PickChips view={pick} refresh={retryAgents} agentName={toolsAgentName} />
           </>
         }
         notices={

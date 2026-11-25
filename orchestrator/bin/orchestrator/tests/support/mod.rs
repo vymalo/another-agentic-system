@@ -48,29 +48,27 @@ pub fn listening_addr(line: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The address of the broker's **run routes** (ADR 0084 decision 5), which the binary logs on its
+/// internal listener as `the run routes listen addr=…`: a line of its own, so a test that waits for
+/// the main listener never accepts it and a test that waits for it never accepts the main one.
+pub fn run_routes_listening_addr(line: &str) -> Option<String> {
+    if !line.contains("the run routes listen") {
+        return None;
+    }
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+        return json["fields"]["addr"].as_str().map(str::to_owned);
+    }
+    line.split_whitespace()
+        .find_map(|word| word.strip_prefix("addr="))
+        .map(str::to_owned)
+}
+
 /// Waits until `run` logs the address it listens on. `Err` is its exit status, when it exits first
 /// (a binary that cannot bind its address says nothing of the sort and exits `EX_OSERR`).
 ///
 /// The borrow of `run` is never held across a wait.
 pub async fn listening<P: Process>(run: &RefCell<P>) -> Result<String, ExitStatus> {
-    let deadline = Instant::now() + BIND_WITHIN;
-    loop {
-        {
-            let mut run = run.borrow_mut();
-            if let Some(addr) = run.log().lines().find_map(listening_addr) {
-                return Ok(addr);
-            }
-            if let Some(status) = run.exited() {
-                return Err(status);
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the binary did not say where it listens within {BIND_WITHIN:?}; log:\n{}",
-                run.log()
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    listening_to(run, "where it listens", listening_addr).await
 }
 
 /// [`listening`] for a binary that was told [`ANY_PORT`]: no other process can hold the address it is
@@ -82,5 +80,61 @@ pub async fn bound<P: Process>(run: &RefCell<P>) -> String {
             "the binary exited ({status:?}) before it listened; log:\n{}",
             run.borrow().log()
         ),
+    }
+}
+
+/// Waits until `run` logs the address of its **run routes** (ADR 0084 decision 5). `Err` is its
+/// exit status, when it exits first: a `server.internal` the configuration refuses stops it with
+/// exit 78 before either listener is bound.
+pub async fn run_routes_listening<P: Process>(run: &RefCell<P>) -> Result<String, ExitStatus> {
+    listening_to(
+        run,
+        "where its run routes listen",
+        run_routes_listening_addr,
+    )
+    .await
+}
+
+/// [`run_routes_listening`] for a binary that was told [`ANY_PORT`], as [`bound`] is for
+/// [`listening`].
+pub async fn run_routes_bound<P: Process>(run: &RefCell<P>) -> String {
+    match run_routes_listening(run).await {
+        Ok(addr) => addr,
+        Err(status) => panic!(
+            "the binary exited ({status:?}) before its run routes listened; log:\n{}",
+            run.borrow().log()
+        ),
+    }
+}
+
+/// Both waits: one deadline, the process's own exit ending it early, and no borrow of `run` held
+/// across a sleep. `what` is the failure's words and `parse` the line that answers.
+async fn listening_to<P>(
+    run: &RefCell<P>,
+    what: &str,
+    parse: fn(&str) -> Option<String>,
+) -> Result<String, ExitStatus>
+where
+    P: Process,
+{
+    let deadline = Instant::now() + BIND_WITHIN;
+    loop {
+        {
+            let mut run = run.borrow_mut();
+            if let Some(addr) = run.log().lines().find_map(parse) {
+                return Ok(addr);
+            }
+            if let Some(status) = run.exited() {
+                return Err(status);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the binary did not say {what} within {BIND_WITHIN:?}; {} bytes logged, exited={:?}, log:\n{}",
+                run.log().len(),
+                run.exited(),
+                run.log()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

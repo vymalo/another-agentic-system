@@ -248,6 +248,7 @@ fn sent(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             mentions: Vec::new(),
             tier: None,
             locale: None,
+            pick: None,
         }),
     )
 }

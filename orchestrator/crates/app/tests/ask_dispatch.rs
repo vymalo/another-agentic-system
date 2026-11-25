@@ -938,6 +938,7 @@ async fn an_ask_carries_what_the_person_said_in_the_whole_thread_and_nothing_of_
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         },
         None,
     )
@@ -1675,6 +1676,7 @@ async fn sent_and_forgotten(
             tier: None,
             tier_cap: None,
             locale: None,
+            pick: None,
         },
     )
     .await

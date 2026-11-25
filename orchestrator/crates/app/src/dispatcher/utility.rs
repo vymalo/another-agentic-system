@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use orch_core::{Classify, ErrorClass, report};
-use orch_ports::{ChatModel, ChatRequest, ModelError, OutboxItem, Ports};
+use orch_ports::{ChatModel, ChatRequest, ModelError, OutboxItem, Ports, RunBindings};
 
 use super::Dispatcher;
 use crate::TaskSettings;
@@ -12,7 +12,7 @@ use crate::TaskSettings;
 /// How many times a model that stumbles is asked before the request is declined.
 const ATTEMPTS: u32 = 3;
 
-impl<P: Ports> Dispatcher<P> {
+impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// The model's answer to `request`, or `None` when it cannot be had (said in the log of the
     /// process, as `failure`, never in the thread).
     ///

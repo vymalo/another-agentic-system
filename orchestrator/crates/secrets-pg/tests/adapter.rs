@@ -386,7 +386,7 @@ async fn the_table_holds_no_plaintext() {
         }
     }
     // nor in the sequence, the index or anywhere else the schema keeps a value: the only relations
-    // are the table, its index and key, the sequence and the history
+    // are the two tables, the sequence and the history (the vault's table holds no row of this test)
     let (relations,): (i64,) = fetch_one(
         &raw,
         "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -395,8 +395,8 @@ async fn the_table_holds_no_plaintext() {
     )
     .await;
     assert_eq!(
-        relations, 3,
-        "user_secrets, its sequence and the history table"
+        relations, 5,
+        "user_secrets, vault_secrets, vault_names, their sequence and the history table"
     );
 }
 
@@ -543,7 +543,14 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
         &[],
     )
     .await;
-    assert_eq!(mine, [(1, "user secrets".to_owned(), true)]);
+    assert_eq!(
+        mine,
+        [
+            (1, "user secrets".to_owned(), true),
+            (2, "vault secrets".to_owned(), true),
+            (3, "vault names".to_owned(), true),
+        ]
+    );
     // the orchestrator's history knows none of this crate's migrations, and this crate's none of its
     let theirs: Vec<(i64, String)> = fetch_all(
         &pool,
@@ -572,7 +579,7 @@ async fn the_migrations_are_idempotent_and_live_beside_the_orchestrators_own() {
         &[],
     )
     .await;
-    assert_eq!(count, 1);
+    assert_eq!(count, 3, "the three migrations of this crate, once each");
     // and the store works
     let server = credential("0123456789");
     secrets.put(&alice, &server, &material("x")).await.unwrap();

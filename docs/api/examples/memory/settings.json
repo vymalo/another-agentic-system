@@ -1,0 +1,69 @@
+{
+  "name": "The person's memory settings",
+  "about": "docs/api/memory-v1.md, 'The switch, and the grants': the grants are off by default, a change is the additive event `memory_switched`, and the settings round-trip through GET/PUT /api/me/memory-settings. Memory is off until the person turns it on, one switch per agent (ADR 0091, the owner's answer to ANR-Q59, 2026-11-24).",
+  "cases": [
+    {
+      "name": "a person who never touched memory has no grants",
+      "call": { "method": "GET", "path": "/api/me/memory-settings" },
+      "expect": { "status": 200, "body": { "default": { "read": false, "write": false }, "agents": {} } }
+    },
+    {
+      "name": "enabling one agent leaves the others off",
+      "call": {
+        "method": "PUT",
+        "path": "/api/me/memory-settings",
+        "body": { "agent": "coder", "read": true, "write": true }
+      },
+      "expect": {
+        "status": 200,
+        "events": ["memory_switched"],
+        "body": {
+          "default": { "read": false, "write": false },
+          "agents": { "coder": { "read": true, "write": true } }
+        }
+      }
+    },
+    {
+      "name": "a read-only grant is asymmetric on purpose",
+      "call": {
+        "method": "PUT",
+        "path": "/api/me/memory-settings",
+        "body": { "agent": "researcher", "read": true, "write": false }
+      },
+      "expect": {
+        "status": 200,
+        "agents": { "researcher": { "read": true, "write": false } },
+        "note": "read: true with write: false is the shape a person gives an agent they want to consult memory but never change it"
+      }
+    },
+    {
+      "name": "turning it back off is the same call, and it keeps nothing pending",
+      "call": {
+        "method": "PUT",
+        "path": "/api/me/memory-settings",
+        "body": { "agent": "coder", "read": false, "write": false }
+      },
+      "expect": {
+        "status": 200,
+        "events": ["memory_switched"],
+        "agents": { "coder": { "read": false, "write": false } },
+        "pendingNotes": 0,
+        "note": "with no approval step there is nothing to expire or discard when a grant goes away (ADR 0091 decision 2)"
+      }
+    },
+    {
+      "name": "another person's settings are not visible",
+      "call": { "as": "b", "method": "GET", "path": "/api/me/memory-settings" },
+      "expect": { "status": 200, "agents": {}, "note": "the route is the caller's own data (ADR 0039); there is no route to another person's" }
+    },
+    {
+      "name": "a malformed grant is refused, and nothing is written",
+      "call": {
+        "method": "PUT",
+        "path": "/api/me/memory-settings",
+        "body": { "agent": "coder", "read": "yes" }
+      },
+      "expect": { "status": 400, "code": "invalid", "events": [], "agents": {} }
+    }
+  ]
+}

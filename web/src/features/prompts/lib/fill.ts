@@ -19,7 +19,8 @@ export type PromptQuery = { query: string };
 /**
  * The trigger of the `/` menu: the text begins with `/` and holds no white space, so the message is
  * one `/name` (`/` alone lists everything). A slash anywhere else, or a message with a space, is a
- * message and not a command.
+ * message and not a command. The one `/` menu (`useSlashMenu`) applies the same rule through
+ * `commandQueryOf`; this is the prompts' own spelling of it.
  */
 export function promptQueryOf(text: string): PromptQuery | null {
   if (!text.startsWith("/")) return null;

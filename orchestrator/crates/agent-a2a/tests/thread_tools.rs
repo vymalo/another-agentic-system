@@ -87,6 +87,7 @@ fn request(fake: &FakeAgent, message_id: &str, thread_tools: Option<ToolsGrant>)
         tier: None,
         tier_cap: None,
         locale: None,
+        pick: None,
     }
 }
 

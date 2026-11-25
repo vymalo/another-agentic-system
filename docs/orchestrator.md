@@ -69,8 +69,8 @@ event log, which every surface reads.
 
 ## Crate layout
 
-**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has twenty-eight
-library crates (two of them test-only) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
+**Built.** The workspace (`orchestrator/Cargo.toml`, `members = ["crates/*", "bin/*"]`) has thirty-seven
+library crates (two of them test-only, and one a signer for tests) and one binary. Dependencies below are read from the `Cargo.toml` files. Each crate has
 a README with its API, environment and tests; the [workspace README](../orchestrator/README.md#crates)
 has the same map with one line per crate.
 
@@ -93,12 +93,14 @@ flowchart TB
     artfs["<b>orch-artifacts-fs</b><br/>ArtifactStore over a directory<br/>atomic rename, mode 0600 (feature artifacts-fs)"]
     arts3["<b>orch-artifacts-s3</b><br/>ArtifactStore over an S3 bucket<br/>object_store, aws only (feature artifacts-s3)"]
     authjwt["<b>orch-auth-jwt</b><br/>Authenticator over bearer tokens (JWT) and the issuer's JWKS<br/>fails closed (feature auth-jwt)"]
+    signerstatic["<b>orch-prompt-signer-static</b><br/>PromptSigner for tests: a key and a chain from files,<br/>never renewed"]
     authheader["<b>orch-auth-header</b><br/>Authenticator over X-Auth-Request-Email<br/>(feature auth-header)"]
     registry["<b>orch-registry-platform</b><br/>AgentRegistry over the platform's agent-registry/v1<br/>read live, cache headers, fails closed (feature registry-platform)"]
   end
   subgraph G_MAP["Pure helpers of the adapters and a surface: no async, no I/O"]
     a2amap["<b>orch-a2a-mapping</b><br/>A2A values to envelopes<br/>and idempotency keys"]
     token["<b>orch-thread-token</b><br/>the thread-tools token: HS256 JWS,<br/>claims, keys, issuer, vectors"]
+    statement["<b>orch-prompt-statement</b><br/>the prompt statement of the cloud path: RFC 8785 payload,<br/>integrity rule against the request, JWS with x5c (ADR 0087)"]
     signed["<b>orch-signed-request</b><br/>the signed requests to a tool server: a COSE_Sign1 claim object,<br/>Ed25519, bound to the request, its thread and its owner (ADR 0080)"]
     config["<b>orch-config</b><br/>the configuration file: types, JSON Schema,<br/>three-pass validation, secrets by reference"]
     svgclean["<b>orch-svg-clean</b><br/>allow-list sanitizer for SVG<br/>quick-xml, served inline"]
@@ -119,8 +121,12 @@ flowchart TB
     proto["<b>orch-agui-proto</b><br/>AG-UI 1.0 wire types, vendored schema,<br/>feature testkit"]
     proj["<b>orch-agui-projection</b><br/>Projector: events to frames<br/>translate: RunAgentInput to Input"]
   end
-  subgraph G_BIN["Binary: the composition root"]
+  subgraph G_BIN["Composition roots: one binary, one library"]
     bin["<b>orchestrator</b><br/>flags, env, AGENTS_FILE, wiring, shutdown<br/>features: surface-agui, surface-mcp, surface-thread-tools, tool-relay, surface-webhook, registry-platform, artifacts-fs, artifacts-s3, secrets-pg, auth-header, auth-jwt (default), agent-local (off)"]
+    embed["<b>orch-embed</b><br/>Embedded: App + Dispatcher over orch-store-sqlite,<br/>the caller's AgentClient and static directory,<br/>no HTTP server (ADR 0076 decision 4)"]
+  end
+  subgraph G_EMBED["The embedded root's store: ADR 0076"]
+    storesql["<b>orch-store-sqlite</b><br/>one SQLite file, WAL, one connection,<br/>one process, no Postgres"]
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
@@ -138,8 +144,15 @@ flowchart TB
   toolsmcp --> signed
   broker --> ports
   secretspg --> ports
+  ports --> statement
+  signerstatic --> ports
+  signerstatic --> statement
   artfs --> ports
   arts3 --> ports
+  embed --> app
+  embed --> storesql
+  embed --> proj
+  storesql --> ports
   authjwt --> ports
   authheader --> ports
   adam --> a2amap
@@ -196,8 +209,44 @@ flowchart TB
 How to read it: an arrow points from a crate to a crate it depends on; a dotted arrow is a
 dependency behind a Cargo feature, a dev-dependency (tests only), or a planned one. To keep it
 readable the graph omits the `orch-core` edge of every crate but `orch-agui-proto` (which has no
-`orch-*` dependency at all) and the `orch-ports` edge of the binary, the surface crate and the test
-crates.
+`orch-*` dependency at all) and the `orch-ports` edge of the binary, the library root, the surface
+crate and the test crates.
+
+## Two composition roots
+
+**Built.** The same core, ports, application and dispatcher are wired twice, and the two roots do not
+depend on each other ([ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md),
+decision 4).
+
+| Root | What it is | What it chooses |
+|---|---|---|
+| `orchestrator` (`orchestrator/bin/orchestrator`) | **the server**: flags, `ORCH_CONFIG_FILE` and the environment over it, `AGENTS_FILE`, the surfaces, `/healthz` and `/readyz`, shutdown | `PgStore` and `PgWakeup` on Postgres, `A2aAgentClient` (and, behind `agent-local`, `ByTransport`), `PlatformRegistry` when `AGENT_REGISTRY_URL` is set, the authenticator the configuration names, the artifact stores, the credential broker and the user tool servers |
+| `orch-embed` (`orchestrator/crates/embed`) | **the library**: `Embedded`, for an application that runs the orchestrator in its own process | `SqliteStore` and `SqliteWakeup` on one SQLite file, the caller's `AgentClient`, a static `AgentDirectory`, an authenticator that refuses (`RefuseAll`: the application states the person), no model, no artifact store, no user tool servers, and **no HTTP server** |
+
+An application embeds it by opening a file and asking for a thread:
+
+```rust
+use orch_core::{AgentId, UserId};
+use orch_embed::Embedded;
+
+let embed = Embedded::open("orch.sqlite", UserId::new("me@example.com"), directory, agents).await?;
+let thread = embed.create_thread(&AgentId::new("helper"), "hello").await?;
+for event in embed.collect_agui(thread.id).await? {
+    // the AG-UI 1.0 frames of the run, as `orch-agui-projection` folds them from the log
+}
+embed.shutdown().await;
+```
+
+`Embedded` offers `create_thread`, `post_message`, `read_thread`, `events`, `stream_agui`,
+`collect_agui`, `app` (for an operation the root does not wrap) and `shutdown`; dropping it cancels the
+dispatcher. A thread has one home: a second process that opens the same file is refused by the store's
+lock (ADR 0076 decision 6). The crate's [README](../orchestrator/crates/embed/README.md) has the full
+API and the port-by-port table, and `examples/run_thread.rs` runs one thread end to end on a scripted
+agent — CI's `embed` job runs it and fails when the crate's normal tree holds `axum`, `sqlx`,
+`tokio-postgres` or `hyper`, so "no HTTP server" is checked, not promised.
+
+What neither root does yet: the local agent adapter that runs `adam-engine` on adam's SQLite store (E4)
+and the compile check of the embedded set for iOS, Android, macOS and Linux (E5) are **not built**.
 
 Rules the graph enforces, each checkable in the manifests:
 
@@ -246,6 +295,8 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`, adam-rs's store and notifier (on `tokio-postgres` since adam-rs `7ac3281`) over `deadpool-postgres` pools that `orch-pg-connect` builds (ADR 0076, sys#382 E1, 2026-11-21); feature `testkit` | **Built** (ADR 0015) |
 | `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys (a `raw` part of an artifact is `AgentUpdate::File`, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); a `data` part that names an upload under the `uploads/v1` URI is `AgentUpdate::FileUploaded`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); no I/O, no async | **Built** |
 | `orch-svg-clean` (`crates/svg-clean`) | A pure allow-list sanitizer for SVG on `quick-xml` ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the API sends an SVG inline only through it | **Built** (S11) |
+| `orch-store-sqlite` (`crates/store-sqlite`) | **ADR 0076, sys#382 E2 (built):** `ThreadStore` and the three supertraits it builds (`UsageLedger`, `ThreadSearch`, `PromptStore`), plus `Wakeup` (`SqliteWakeup`, in process), `UserToolServerStore` and `PendingAuthorizations`, on one SQLite file with bundled SQLite, WAL, one connection behind a semaphore and an exclusive lock that refuses a second process; every conformance testkit green, with no skip. Its README states what its schema changes from the Postgres one | **Built** |
+| `orch-embed` (`crates/embed`) | **ADR 0076, sys#382 E3 (built):** the library composition root: `App` and `Dispatcher` over `orch-store-sqlite`, the caller's `AgentClient` and static `AgentDirectory`, no authenticator, model, artifact store or servers of the person's own, and no HTTP server. It offers `create_thread`, `post_message`, `read_thread`, `events`, `stream_agui` and `collect_agui` as Rust calls; the AG-UI stream is `orch-agui-projection`'s fold of the log. Its example runs one thread on the scripted agent and asserts the events; CI's `embed` job runs it and fails when the normal tree holds `axum`, `sqlx`, `tokio-postgres` or `hyper`. The local agent adapter (E4) and the target compile check (E5) are not built | **Built** |
 | `orch-app` (`crates/app`) | `App`, `Dispatcher` (and, before it commits an agent's file, the ingest: [Files from agents](#files-from-agents), and the ingest of an upload, [Uploads](#uploads-adr-0058)); **ADR 0046, slice 4a:** the permission `tools.user.add` (held by no role by default, `admin` does not imply it) and `App::user_tools()`, the ports of people's own MCP servers the bundle holds; **slice 4b (built 2026-10-15):** the operations the routes call, `add_user_tool_server`, `list_own_tool_servers`, `edit_user_tool_server` and `delete_user_tool_server`, with the permission and owner checks inside and no port given to a handler (add and edit need `tools.user.add`, list and delete none; a listing asks the broker for nothing; a failed `store` takes the definition back; a new URL, kind, scopes or client revokes the credential first; delete is revoke, then delete, and in a deployment that keeps no credentials just delete) | **Built** |
 | `orch-api` (`crates/api`) | HTTP edge, resource API (with `GET /api/threads/{id}/artifacts/{sha256}`, the files agents handed over), `SurfaceRoutes` (`plain`, `streaming` and `machine` routes); **ADR 0046, slice 4b (built 2026-10-15):** `POST`, `GET`, `PATCH` and `DELETE` of `/api/user-tool-servers` (people's own MCP servers; a 404 while `userToolServers` is off; the body of a route that carries a secret is read without echoing a value, and the secret is write-only) and a person's own servers in `GET /api/tool-servers`; **slice 4c (built 2026-10-15):** `POST /api/user-tool-servers/{id}/authorize` (the URL to open at the server's authorization server, a per-person rate limit), the **OAuth callback** `GET /api/user-tool-servers/oauth/callback` (outside sign-in: the person is found by the `state` alone; a fixed page, never the query; run to its end in a task of its own) and the Client ID Metadata Document at the path of `oauth.clientMetadataUrl` | **Built** |
 | `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
@@ -255,6 +306,8 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
 | `orch-signed-request` (`crates/signed-request`) | The signed requests to a tool server ([`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md), [ADR 0080](decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)): `Signer` writes the header `Tool-Request-Claims` for one HTTP request, a tagged `COSE_Sign1` (Ed25519) in the claim-object profile of `cratestack-cose` 0.17.2 whose payload binds the method, the path, the SHA-256 of the exact body bytes, the thread and its owner; `SigningKey` reads a PKCS#8 PEM and derives the `kid`; with the feature `verify`, the reference of the receiving side (checks 1 to 5). Pure, no clock, a known-answer vector made by the real `sign_claims`; `interop/` runs the real `open_claims` on its bytes | **Built** (proven on mocks; no tool server verifies it yet) |
+| `orch-prompt-statement` (`crates/prompt-statement`) | **ADR 0087, the note of 2026-11-25:** pure. The prompt statement the orchestrator signs on the cloud path (`Statement`, `UserClaims`), RFC 8785, the integrity rule (`attest`: `user` against the AG-UI request, else `403 prompt_signature_invalid` and no `AttestedPayload`) and the JWS with `x5c`; never verifies a signature. The PKI signer, the intake check and the carriage to the agent are not built | **Built** |
+| `orch-prompt-signer-static` (`crates/prompt-signer-static`) | **ADR 0087, the note of 2026-11-25:** a `PromptSigner` for tests: an Ed25519 key and its leaf's chain from PEM files, never renewed, `set_unavailable` as the stand-in of an expired certificate; held to `prompt_signer_conformance!` and to the shared vector V2. Not for a deployment | **Built** (test-only) |
 | `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; the id of an upload slot (`mint_upload_id`, `verify_upload_id`: a MAC over the thread, job, hash, size, type and expiry, with its own domain line); pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
 | `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit. **ADR 0046, slice 4a:** the `userToolServers` section (`enabled`, `egress.allow`, `egress.deny`, `egress.allowHttp`, `oauth.clientName`, `oauth.clientMetadataUrl`; absent is off, `allowHttp` is refused in production, and with the feature on a `toolServers[].id` may not start with `u-`) and the permission `tools.user.add`; **slice 4c:** `oauth.callbackUrl` (an `https` address, or `http` on a loopback IP literal outside production; by default `server.publicUrl` and the callback's path; required when the sealed store is kept), and the rule that `clientMetadataUrl` is on the callback's origin and under none of the reserved paths | **Built** (S9) |
 | `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools); **ADR 0046, slice 5a (built 2026-10-15):** also the thread owner's own `u-` servers, `RelayTools::with_user_servers`, a fresh `CredentialBroker::lease` for every list and every call, through the guarded client, a server whose credential cannot be had left out and failing a call as a step, a 401 or 403 marking the definition `needs_reauth`); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
@@ -928,8 +981,12 @@ What the diagrams cannot say:
 ## Local agents
 
 **Built** (`orch-agent-adam`, behind the binary's Cargo feature `agent-local`, off by default; [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
-*Decided, not built ([ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md), 2026-11-19):* the orchestrator embedded as a library in an
-application runs its local agents through `adam-engine` on adam's SQLite store, beside `orch-store-sqlite`, with no HTTP server.
+[ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md) (2026-11-19): the
+orchestrator can be embedded as a library in an application. `orch-store-sqlite` (slice E2) and the
+library composition root `orch-embed` (slice E3) are **built**: a thread's log can live in SQLite on
+the device, and an application runs it with no HTTP server. **Not built:** the local agent adapter that
+runs `adam-engine` on adam's SQLite store (slice E4) and the compile check of the embedded set for iOS,
+Android, macOS and Linux (slice E5).
 An `AGENTS_FILE` entry with `transport: local` and `agent: <kind>` is an agent that runs in the
 orchestrator's own process, on the durable runtime of adam-rs. Remote agents stay plain A2A. The kinds are
 a closed enum (`LocalKind`, today `Echo`, which repeats the message back); the endpoint carries only the
@@ -2427,6 +2484,9 @@ queue, whatever it runs itself.
 | `orch_outbox_rows{state="waiting"}` | `pending` in retry backoff |
 | `orch_outbox_rows{state="leased"}` | `inflight` under a live lease: a worker is on it |
 | `orch_outbox_oldest_due_age_seconds` | whole seconds since the oldest due row became due, `0` when none |
+| `dispatcher_slots_in_use` | gauge, **this process only** (aggregate with `sum`; the outbox gauges above are global, aggregate those with `max`): dispatcher slots busy with an outbox row, `0` where no dispatcher runs |
+| `dispatcher_slots_configured` | gauge, this process only (`sum`): the dispatcher's concurrency (default 32), `0` where no dispatcher runs |
+| `sse_subscribers_open` | gauge, this process only (`sum`): server-sent-event streams open now (connect, run and shared-thread streams). No label: none names a person, a thread, a token or a secret |
 
 The queue that matters for scaling is `due + leased`: rows waiting for a worker plus rows workers
 are busy with. Because the values are global, an aggregation across the replicas that report them

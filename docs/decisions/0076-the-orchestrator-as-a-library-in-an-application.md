@@ -184,3 +184,17 @@ What sqlx 0.9 did is kept as recordings made by running sqlx itself before it le
 string (`orchestrator/crates/pg-connect/tests/sqlx-0.9-reads.tsv`), the version, description, checksum and transaction of
 every migration and the advisory lock key it took (`orchestrator/crates/pg-migrate/tests/`), so an existing database still
 migrates as a no-op and sqlx's own checks pass on what `orch-pg-migrate` writes. Slices E2 to E6 are not built.
+
+### Status note, 2026-11-24: E2 and E3 are built
+
+Slice E2 is built: `orch-store-sqlite` implements `ThreadStore` and its supertraits (`UsageLedger`, `ThreadSearch`,
+`PromptStore`), `Wakeup`, `UserToolServerStore` and `PendingAuthorizations` on one SQLite file, and passes each port's
+conformance testkit without a skip. Slice E3 is built as `orch-embed` (`orchestrator/crates/embed`): a composition root
+that wires `orch-app`'s `App` and `Dispatcher` to `orch-store-sqlite`, the caller's `AgentClient` and static
+`AgentDirectory`, with no HTTP server, no `axum` and no bearer check in process; it offers the chat API's operations
+(`create_thread`, `post_message`, `read_thread`, `events`) and the AG-UI projection (`stream_agui`, `collect_agui`) as
+Rust calls. Its example runs a thread on the in-process scripted agent and asserts the AG-UI events, and CI's `embed` job
+runs it and fails when the embedded build's normal dependency tree holds `axum`, `sqlx`, `tokio-postgres` or `hyper`.
+The composition root does not yet choose the application's `ChatModel`, `SecretStore` or filesystem `ArtifactStore`, and
+E4 (local agents through `adam-engine` on adam's SQLite store), E5 (the target compile check and the size) and E6 (the
+minimum application version) are not built.

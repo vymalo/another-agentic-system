@@ -60,23 +60,40 @@ fn expect_unavailable(result: Result<RunLease, RunLeaseError>, case: &str) {
     }
 }
 
-/// Binds a run and leases it to the bound agent.
-pub async fn binds_then_leases_to_the_bound_agent(broker: &impl RunLeases) {
+/// Binds a run and leases it to the injector.
+pub async fn binds_then_leases_to_the_injector(broker: &impl RunLeases) {
     broker.bind(binding("run-1", 60)).await.expect("bind");
     let lease = broker
-        .lease(&RunId::new("run-1"), &RunCaller::Agent(coder()))
+        .lease(&RunId::new("run-1"), &RunCaller::Injector)
         .await
         .expect("lease");
     assert_eq!(lease.token(), &token(), "the deployment's key is leased");
+    assert_eq!(
+        lease.account(),
+        &person(),
+        "the lease names the person's account"
+    );
+    let shown = format!("{lease:?}");
+    assert!(
+        !shown.contains(person().as_str()) && !shown.contains("provider-key-for-tests"),
+        "Debug shows neither the account nor the key"
+    );
     assert!(
         lease.expires_at() <= Timestamp::now() + Duration::from_secs(30),
         "a lease lives at most 30 s"
     );
 }
 
-/// A lookup from another agent is refused.
-pub async fn refuses_another_agent(broker: &impl RunLeases) {
+/// Every agent is refused, **its own run included**: the binding names the agent, it does not
+/// authorise it (ADR 0084 decision 2, amended 2026-11-24).
+pub async fn refuses_every_agent_its_own_run_included(broker: &impl RunLeases) {
     broker.bind(binding("run-2", 60)).await.expect("bind");
+    expect_not_bound(
+        broker
+            .lease(&RunId::new("run-2"), &RunCaller::Agent(coder()))
+            .await,
+        "the bound agent, for its own run",
+    );
     expect_not_bound(
         broker
             .lease(&RunId::new("run-2"), &RunCaller::Agent(chat()))
@@ -85,22 +102,20 @@ pub async fn refuses_another_agent(broker: &impl RunLeases) {
     );
 }
 
-/// The orchestrator binds and unbinds; it does not lease.
-pub async fn refuses_the_orchestrator_lease(broker: &impl RunLeases) {
+/// The orchestrator leases too: with the injector it is one of the two callers the lookup answers.
+pub async fn leases_to_the_orchestrator_too(broker: &impl RunLeases) {
     broker.bind(binding("run-3", 60)).await.expect("bind");
-    expect_not_bound(
-        broker
-            .lease(&RunId::new("run-3"), &RunCaller::Orchestrator)
-            .await,
-        "the orchestrator",
-    );
+    broker
+        .lease(&RunId::new("run-3"), &RunCaller::Orchestrator)
+        .await
+        .expect("the orchestrator leases");
 }
 
 /// An unknown run is refused.
 pub async fn refuses_an_unknown_run(broker: &impl RunLeases) {
     expect_not_bound(
         broker
-            .lease(&RunId::new("never-bound"), &RunCaller::Agent(coder()))
+            .lease(&RunId::new("never-bound"), &RunCaller::Injector)
             .await,
         "unknown run",
     );
@@ -110,7 +125,7 @@ pub async fn refuses_an_unknown_run(broker: &impl RunLeases) {
 pub async fn refuses_an_expired_binding(broker: &impl RunLeases) {
     broker.bind(expired("run-4")).await.expect("bind");
     match broker
-        .lease(&RunId::new("run-4"), &RunCaller::Agent(coder()))
+        .lease(&RunId::new("run-4"), &RunCaller::Injector)
         .await
     {
         Err(RunLeaseError::Expired) => {}
@@ -124,7 +139,7 @@ pub async fn unbinds(broker: &impl RunLeases) {
     broker.unbind(&RunId::new("run-5")).await.expect("unbind");
     expect_not_bound(
         broker
-            .lease(&RunId::new("run-5"), &RunCaller::Agent(coder()))
+            .lease(&RunId::new("run-5"), &RunCaller::Injector)
             .await,
         "after unbind",
     );
@@ -157,7 +172,7 @@ pub async fn refuses_a_binding_with_no_model(broker: &impl RunLeases) {
     broker.bind(no_model).await.expect("bind");
     expect_unavailable(
         broker
-            .lease(&RunId::new("run-7"), &RunCaller::Agent(coder()))
+            .lease(&RunId::new("run-7"), &RunCaller::Injector)
             .await,
         "no model",
     );
@@ -170,7 +185,7 @@ pub async fn refuses_a_model_with_no_credential(broker: &impl RunLeases) {
     broker.bind(unknown).await.expect("bind");
     expect_unavailable(
         broker
-            .lease(&RunId::new("run-8"), &RunCaller::Agent(coder()))
+            .lease(&RunId::new("run-8"), &RunCaller::Injector)
             .await,
         "no credential",
     );
@@ -180,11 +195,45 @@ pub async fn refuses_a_model_with_no_credential(broker: &impl RunLeases) {
 pub async fn a_lease_never_outlives_its_binding(broker: &impl RunLeases) {
     broker.bind(binding("run-9", 5)).await.expect("bind");
     let lease = broker
-        .lease(&RunId::new("run-9"), &RunCaller::Agent(coder()))
+        .lease(&RunId::new("run-9"), &RunCaller::Injector)
         .await
         .expect("lease");
     assert!(
         lease.expires_at() <= Timestamp::now() + Duration::from_secs(5),
         "the binding's deadline bounds the lease"
+    );
+}
+
+/// The meter alone is answered the account of a bound run; every other caller, and an unknown run,
+/// is `run_not_bound`, and the meter is refused the lease.
+pub async fn answers_the_account_to_the_meter_alone(broker: &impl RunLeases) {
+    broker.bind(binding("run-10", 60)).await.expect("bind");
+    let run = RunId::new("run-10");
+    let account = broker
+        .account(&run, &RunCaller::Meter)
+        .await
+        .expect("the meter reads the account");
+    assert_eq!(account, person(), "the account is the binding's person");
+    for (caller, name) in [
+        (RunCaller::Orchestrator, "the orchestrator"),
+        (RunCaller::Injector, "the injector"),
+        (RunCaller::Agent(coder()), "the bound agent"),
+        (RunCaller::Agent(chat()), "another agent"),
+    ] {
+        match broker.account(&run, &caller).await {
+            Err(RunLeaseError::NotBound) => {}
+            other => panic!("{name}: expected run_not_bound, got {other:?}"),
+        }
+    }
+    match broker
+        .account(&RunId::new("never-bound"), &RunCaller::Meter)
+        .await
+    {
+        Err(RunLeaseError::NotBound) => {}
+        other => panic!("unknown run: expected run_not_bound, got {other:?}"),
+    }
+    expect_not_bound(
+        broker.lease(&run, &RunCaller::Meter).await,
+        "the meter, for the lease",
     );
 }

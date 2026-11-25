@@ -225,6 +225,7 @@ mod tests {
                 mentions: Vec::new(),
                 tier: None,
                 locale: None,
+                pick: None,
             }),
         )
     }

@@ -273,6 +273,14 @@
           },
           "description": "What each role grants, by the name the identity provider gives the role (a group, a realm role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also `admin`: operational, and no more access to threads than a user has, ADR 0039). Given, it replaces both.",
           "type": "object"
+        },
+        "signingClients": {
+          "description": "The signing clients (ADR 0087, decision 1): the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature`, for example the desktop, iOS and Android clients. Each is a client id with no space, at most 64 are listed, none twice, and none is `auth.browser.clientId` (the web is not asked for a signature). Absent or empty (the default), no client is a signing client and nothing changes.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
         }
       },
       "type": "object"
@@ -958,7 +966,8 @@
     "SecretStoreKind": {
       "description": "Which store keeps a person's secrets, one of the implementations of the `SecretStore` port. A build that does not have the Cargo feature of the one named refuses it (exit 78), never ignores it.",
       "enum": [
-        "pg"
+        "pg",
+        "openbao"
       ],
       "type": "string"
     },
@@ -988,9 +997,17 @@
           "minLength": 1,
           "type": "string"
         },
+        "internal": {
+          "$ref": "#/$defs/ServerInternal",
+          "description": "The **internal listener** of the credential broker's run routes (ADR 0084 decision 5): a second port, never through the edge, that serves `POST /internal/runs`, `DELETE /internal/runs/{run}` and `GET /internal/runs/{run}/lease` and nothing else. Absent: no second listener."
+        },
         "listen": {
           "default": "0.0.0.0:8080",
           "description": "The socket address to listen on (default `0.0.0.0:8080`). Replaces `LISTEN_ADDR`.",
+          "type": "string"
+        },
+        "minClientVersion": {
+          "description": "The lowest application version this deployment serves: one to four dotted decimal numbers (`1.4.0`). A client states its version in the request header `X-Client-Version`; a request of the resource API from a lower version, or from a client that states none or an unreadable one, is refused with the problem `client_update_required` (status 426), which the application shows as \"update the application\" (`docs/api/client-version.md`). Absent: no client is refused. A hard cutover raises it.",
           "type": "string"
         },
         "publicUrl": {
@@ -1022,7 +1039,7 @@
     },
     "ServerCors": {
       "additionalProperties": false,
-      "description": "The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token, never a cookie.",
+      "description": "The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision` and `X-Client-Version`, exposes `WWW-Authenticate`, `Date` and `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token, never a cookie.",
       "properties": {
         "allowedOrigins": {
           "description": "Each an origin compared exactly with the request's `Origin`: `scheme://host[:port]`, with no path, query, fragment, credentials or trailing slash, for example `tauri://localhost` or `http://tauri.localhost`. Never `*` or `null`. In production `http://` is refused, but for `localhost`, `127.0.0.1`, `[::1]` and a name under `.localhost` (Tauri's own on Windows and Android).",
@@ -1059,6 +1076,32 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "ServerInternal": {
+      "additionalProperties": false,
+      "description": "The internal listener the run routes are served on (ADR 0084 decision 5): its own address, the orchestrator's bearer token (the bind and the unbind) and one token per agent (the lease). Every token is a reference; a value is never in the file. Only a process that serves routes binds it, so a worker that shares the file reads and checks the section and opens nothing.",
+      "properties": {
+        "agents": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SecretRef"
+          },
+          "description": "The token of each agent, by agent id: the one `GET /internal/runs/{run}/lease` presents, and it may lease only the runs bound to it. At least 32 bytes each, and no two the same.",
+          "type": "object"
+        },
+        "listen": {
+          "default": "0.0.0.0:8081",
+          "description": "The socket address to listen on (default `0.0.0.0:8081`). It must differ from `server.listen`: one process cannot bind two listeners on one address.",
+          "type": "string"
+        },
+        "token": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The orchestrator's own bearer token, the one `POST /internal/runs` and `DELETE /internal/runs/{run}` present. At least 32 bytes."
+        }
+      },
+      "required": [
+        "token"
+      ],
       "type": "object"
     },
     "Sharing": {
@@ -1579,17 +1622,55 @@
       "additionalProperties": false,
       "description": "The store of a person's own credentials (ADR 0046): the tokens, keys and client secrets of the MCP servers people add, kept by `(person, server)`, sealed at rest.",
       "properties": {
+        "openbao": {
+          "$ref": "#/$defs/UserSecretsOpenbao",
+          "description": "The OpenBao store. Required with `store: openbao`."
+        },
         "pg": {
           "$ref": "#/$defs/UserSecretsPg",
           "description": "The sealed Postgres store. Required with `store: pg`."
         },
         "store": {
           "$ref": "#/$defs/SecretStoreKind",
-          "description": "Which store: `pg` (a sealed table in the orchestrator's own database). The section of the store chosen is required."
+          "description": "Which store: `pg` (a sealed table in the orchestrator's own database) or `openbao` (a KV v2 mount of a self-hosted OpenBao). The section of the store chosen is required."
         }
       },
       "required": [
         "store"
+      ],
+      "type": "object"
+    },
+    "UserSecretsOpenbao": {
+      "additionalProperties": false,
+      "description": "The OpenBao (or Vault) KV v2 store: where it is, which mount, and the token it is let in with. OpenBao seals what it keeps, so there is no key here. The token is a reference, never a value.",
+      "properties": {
+        "address": {
+          "description": "The server's address: an `https` URL with a host and no credential, query or fragment (`https://bao.internal:8200`). A token never travels in the clear.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        "caFile": {
+          "description": "A file of PEM certificates the server's certificate is checked against, besides the system's own roots (a private authority). Absent: the system's roots alone. Relative to the configuration file's directory, read at startup.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "mount": {
+          "default": "secret",
+          "description": "The KV v2 mount (`secret` by default): 1 to 128 characters of `A-Z a-z 0-9 . _ -` and `/`, not starting or ending with `/`.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "token": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The token the orchestrator reads and writes with, a secret."
+        }
+      },
+      "required": [
+        "address",
+        "token"
       ],
       "type": "object"
     },
