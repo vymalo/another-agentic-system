@@ -2716,12 +2716,15 @@ dependencies = [
 name = "orch-ports"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "getrandom 0.3.4",
  "jiff",
  "orch-core",
  "orch-ports",
+ "orch-prompt-statement",
  "proptest",
  "serde",
  "serde_json",
@@ -2734,6 +2737,31 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-signer-static"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "orch-ports",
+ "orch-prompt-statement",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-statement"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ryu-js",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
 ]
 
 [[package]]

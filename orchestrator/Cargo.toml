@@ -48,6 +48,8 @@ orch-surface-webhook = { path = "crates/surface-webhook" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-thread-token = { path = "crates/thread-token" }
 orch-signed-request = { path = "crates/signed-request" }
+orch-prompt-statement = { path = "crates/prompt-statement" }
+orch-prompt-signer-static = { path = "crates/prompt-signer-static" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
 # The adam-rs crates (ADR 0015), all pinned to one full commit sha, never a branch or a tag; a PR
@@ -140,3 +142,5 @@ base64 = "0.22"
 # Ed25519 for the signed requests to a tool server (`orch-signed-request`, ADR 0080): already in the tree as rustls'
 # crypto provider, so the crate adds no new library.
 aws-lc-rs = "1.18"
+# RFC 8785 numbers as ECMAScript prints them (`orch-prompt-statement`); already in the lock through adam-a2a.
+ryu-js = "1"
