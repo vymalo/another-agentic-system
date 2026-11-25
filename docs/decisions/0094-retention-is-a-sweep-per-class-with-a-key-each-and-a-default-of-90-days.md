@@ -1,8 +1,8 @@
 # ADR 0094 — Retention is one sweep per class, one key each, and a default of 90 days
 
 - **Status:** **Proposed (2026-11-24).** Mechanism for open questions 28, 29 and 46 (issue
-  [#157](https://github.com/vymalo/another-agentic-system/issues/157)). Nothing is built. The questions stay Open until
-  the ages are recorded (ANR-289).
+  [#157](https://github.com/vymalo/another-agentic-system/issues/157)). Nothing is built. The ages are recorded (see
+  *Decision of the ages*, 2026-11-25) and the questions are Closed; the mechanism is built slice by slice.
 - **Owner's decision, ANR-Q51, 2026-11-24 06:07Z:** *"(b) An open-source default of 90 days for all of them"*. Recorded
   in the owner's decision log of 2026-11-24, row 2. The ages are the owner's; this ADR is the
   mechanism, and 90 days is the default it ships.
@@ -90,4 +90,17 @@ Each row is one change with its decisive test. No row changes a default except t
   is a change of default from "kept for ever", chosen by the owner for the open-source distribution; an operator who wants
   the old behaviour writes `forever`.
 - The inbox floor makes a short window a startup error rather than a silent duplicate.
-- Questions 28, 29 and 46 link to this ADR and stay Open until ANR-289 records the ages.
+- Questions 28, 29 and 46 link to this ADR; they were Closed on 2026-11-25 once the ages were recorded (below).
+
+## Decision of the ages (2026-11-25)
+
+Status note, recorded by ANR-289. The owner decided the ages on 2026-11-24 (ANR-Q51, 06:07Z), in their words: *"(b) An open-source default of 90 days for all of them"*. Each class, as the owner gave it:
+
+| Class | Retention |
+|---|---|
+| The local agents' journal (`orch_agent_runs`, `orch_agent_journal`) | 90 days, an open-source default |
+| Finished inbox rows and their watches | 90 days, an open-source default; never below the redelivery floor |
+| Files in the artifact store, and orphaned objects | 90 days, an open-source default |
+| Adam's coder's finished runs | 90 days, an open-source default |
+
+The value is the project's default, not only a setting of a reference deployment; a deployment that wants another value, or `forever`, sets the class's key. The owner's answer names no quota, so none is set by default. This note changes no mechanism: the sweeps, keys and the floor stay as decided above and are still not built.
