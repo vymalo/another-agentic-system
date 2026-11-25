@@ -161,3 +161,18 @@ fn the_protected_header_and_signing_input_are_the_ones_v2_was_signed_over() {
         statement
     );
 }
+
+#[test]
+fn v3cs_content_and_forwarded_props_hash_as_the_vectors_say() {
+    let v = vectors();
+    let c = &v["v3c"];
+    assert_eq!(hash_of(&c["content"]), s(&c["content_sha256"]));
+    assert_eq!(
+        String::from_utf8(canonical(&c["forwardedProps"])).unwrap(),
+        s(&c["props_jcs"])
+    );
+    assert_eq!(
+        props_hash(Some(&c["forwardedProps"])),
+        s(&c["props_sha256"])
+    );
+}
