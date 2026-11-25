@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run |
 //! | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent |
-//! | `GET /internal/runs/{run}/lease` | the orchestrator or the injector, never an agent | `200 {token, expiresAt}`, `Cache-Control: no-store` |
+//! | `GET /internal/runs/{run}/lease` | the orchestrator or the injector, never an agent | `200 {token, accountId, expiresAt}`, `Cache-Control: no-store` |
 //!
 //! A refusal is one of the ruled slugs: `run_not_bound` (`404`), `lease_expired` (`410`) and
 //! `unavailable` (`503`), plus `unauthenticated` (`401`) and `not_allowed` (`403`) for the door.
@@ -15,9 +15,9 @@
 //! broker's own authentication of the request, and a caller that is not the run's agent is
 //! `run_not_bound` — the answer never says whether a run exists.
 //!
-//! The lease value is written to the response body and nothing else: it is never logged, and no
-//! error holds it. `POST` and `DELETE` are the orchestrator's: an agent that tries to bind is
-//! `not_allowed`, and a lookup is refused for the orchestrator itself.
+//! The lease value and the account it names are written to the response body and nothing else:
+//! neither is ever logged, and no error holds either. `POST` and `DELETE` are the orchestrator's: an
+//! agent that tries to bind is `not_allowed`, and a lookup is refused for the orchestrator itself.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -123,11 +123,13 @@ pub struct BindBody {
     pub expires_at: String,
 }
 
-/// The lease body: the one answer that holds a secret.
+/// The lease body: the one answer that holds a secret, beside the account whose call it is.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LeaseBody {
     token: String,
+    /// The run's person (`UserId`), the key the usage ledger is kept by (ADR 0065). Never logged.
+    account_id: String,
     expires_at: Timestamp,
 }
 
@@ -270,6 +272,7 @@ where
         Ok(lease) => {
             let body = LeaseBody {
                 token: lease.token().expose().to_owned(),
+                account_id: lease.account().to_string(),
                 expires_at: lease.expires_at(),
             };
             let mut response = (StatusCode::OK, Json(body)).into_response();

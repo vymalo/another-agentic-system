@@ -1,0 +1,80 @@
+{
+  "name": "done-and-pull-request",
+  "role": "top",
+  "after": 0,
+  "events": [
+    {
+      "seq": 1,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "user_message",
+      "actor": {
+        "type": "user",
+        "name": "alice@example.com"
+      },
+      "data": {
+        "text": "go"
+      }
+    },
+    {
+      "seq": 2,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "artifact",
+      "actor": {
+        "type": "agent",
+        "name": "plain"
+      },
+      "data": {
+        "name": "pull_request",
+        "uri": "https://example.com/org/repo/pull/7"
+      }
+    },
+    {
+      "seq": 3,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "agent_status",
+      "actor": {
+        "type": "agent",
+        "name": "plain"
+      },
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "seq": 4,
+      "threadId": "00000000-0000-0000-0000-000000000001",
+      "at": "2026-11-24T00:00:00Z",
+      "kind": "thread_state",
+      "actor": {
+        "type": "system",
+        "name": "orchestrator"
+      },
+      "data": {
+        "state": "done"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "intent": {
+        "class": "done",
+        "kind": "pull_request",
+        "cause": 2,
+        "count": 1,
+        "expires": "2026-11-24T06:00:00Z"
+      }
+    },
+    {
+      "intent": {
+        "class": "done",
+        "kind": "done",
+        "cause": 4,
+        "count": 1,
+        "expires": "2026-11-24T06:00:00Z"
+      }
+    }
+  ]
+}

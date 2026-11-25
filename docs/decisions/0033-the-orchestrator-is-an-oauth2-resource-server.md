@@ -74,6 +74,14 @@
   no request that has a copy, and `/readyz` does not wait on it while one verifies. *Verified 2026-10-16:* `tests/slow.rs` of the crate, over real
   sockets, seven of its cases failing on the previous code, and the unit tests of `src/lib.rs` for the ways a fetch task ends; the behaviour against a real issuer is *unverified*. The diagrams of the cache as built
   are in the [crate's README](../../orchestrator/crates/auth-jwt/README.md).
+  **Amended (2026-11-24): a deployment behind its own BFF reads the user from `sub`.** Owner decision 4 of 2026-10-02 keeps the
+  e-mail as the chart's default `userClaim` (`email`), and this note does not change it. A deployment that puts its own BFF in
+  front of the orchestrator (card ANR-655) turns this chart's web and the edge off and has the BFF present its own token: the
+  person is that token's `sub`, the audience names the orchestrator (`auth.jwt.audiences: [orchestrator]`, which another-idp
+  issues: card F9, Franck), and the roles still come from `auth.rolesClaim` (`agentic_roles`). Nothing else here moves: the token
+  rules, the claim reading of 2026-10-16 and the 401/503 answers stand, and `sub` is read as the text it is (blank, or a control
+  character, is still no user). The shape CI renders and has the pinned image read is
+  [`deploy/chart/tests/bff-only.values.yaml`](../../deploy/chart/tests/bff-only.values.yaml).
 
 ## Context
 

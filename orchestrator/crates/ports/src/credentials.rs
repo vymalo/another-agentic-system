@@ -793,19 +793,45 @@ pub struct RunBinding {
     pub expires_at: Timestamp,
 }
 
-/// What the injector gets: the model endpoint's bearer token and the moment it stops being valid.
-/// At most 30 s, never past the binding's deadline, `no-store`, and never logged. No `Clone`: a
-/// lease is used once and moved.
-#[derive(Debug)]
+/// What the injector gets: the model endpoint's bearer token, the ledger account whose call it is
+/// (the run's person), and the moment the token stops being valid. At most 30 s, never past the
+/// binding's deadline, `no-store`, and never logged. No `Clone`: a lease is used once and moved.
 pub struct RunLease {
     token: ToolSecret,
+    account: UserId,
     expires_at: Timestamp,
 }
 
+/// `Debug` shows the expiry and nothing of the token or the account.
+impl std::fmt::Debug for RunLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunLease")
+            .field("token", &"<redacted>")
+            .field("account", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 impl RunLease {
-    /// A lease of `token` until `expires_at`.
-    pub fn bearer(token: ToolSecret, expires_at: Timestamp) -> Self {
-        RunLease { token, expires_at }
+    /// A lease of `token` until `expires_at`, for the account `account`: the run's person, a
+    /// `UserId`, which is the key the usage ledger is kept by (`orch_core::UsageRow.owner`,
+    /// `crates/core/src/usage_record.rs`; the column `usage_tasks.owner` of migration `0023`; ADR
+    /// 0065). That person id and not a provider account or an account number of the ledger service:
+    /// the orchestrator holds no other identity for the person. The account is returned to the
+    /// injector beside the key and goes in no log line, no error and no message to an agent.
+    pub fn bearer(token: ToolSecret, account: UserId, expires_at: Timestamp) -> Self {
+        RunLease {
+            token,
+            account,
+            expires_at,
+        }
+    }
+
+    /// The ledger account the run spends for: the run's person (`UserId`), the key the ledger keeps
+    /// the rows by.
+    pub fn account(&self) -> &UserId {
+        &self.account
     }
 
     /// The token, without the `Bearer ` scheme.

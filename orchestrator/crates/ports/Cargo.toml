@@ -12,10 +12,12 @@ readme = "README.md"
 default = []
 # In-memory implementations (MemoryStore, MemoryWakeup, ScriptedAgent) and the
 # conformance testkit. Enable as a dev-dependency feature in adapter crates.
-testkit = ["dep:tokio", "dep:tokio-stream"]
+testkit = ["dep:tokio", "dep:tokio-stream", "dep:aws-lc-rs", "dep:base64"]
 
 [dependencies]
 orch-core.workspace = true
+# The payload a `PromptSigner` takes (pure: no I/O, no clock).
+orch-prompt-statement.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -34,6 +36,9 @@ subtle.workspace = true
 url.workspace = true
 tokio = { workspace = true, optional = true }
 tokio-stream = { workspace = true, optional = true }
+# The prompt signer testkit verifies each statement: Ed25519 under the leaf's key, base64 of the JWS.
+aws-lc-rs = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

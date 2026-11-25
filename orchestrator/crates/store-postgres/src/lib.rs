@@ -45,6 +45,7 @@ mod run_leases;
 mod search;
 pub mod sql;
 mod store;
+mod teams;
 mod usage;
 mod user_tool_servers;
 mod wakeup;
@@ -57,5 +58,6 @@ pub use prompts::{
 pub use run_leases::PgRunBindings;
 pub use sql::PgPool;
 pub use store::{MIGRATIONS_TABLE, PgStore};
+pub use teams::{LOCK_TIMEOUT as TEAM_LOCK_TIMEOUT, TEAM_OWNER_LOCK_CLASS};
 pub use user_tool_servers::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgUserToolServers};
 pub use wakeup::PgWakeup;

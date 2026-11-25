@@ -99,7 +99,7 @@ they serialize if started together (a test does).
 The associated data is the same encoding with a **`vault` domain in front**: `vault ‖ owner ‖ name ‖ version ‖ kid` (see
 [the envelope](#the-envelope)), so a row moved to another owner, name or version does not open, and neither does one copied between
 `vault_secrets` and `user_secrets`. A write takes `pg_advisory_xact_lock(vault_advisory_lock_key(owner, name))`, numbers the next version
-with `max(version) + 1` under it, marks the current row superseded and inserts the new one, in one `READ COMMITTED` transaction whose wait
+with `max(high_water_version, max(version)) + 1` under it (`vault_names`, `migrations/0003_vault_names.sql`, one row per `(owner, name)` written in the same transaction, so a version is never reissued even if every row of the name is gone), marks the current row superseded and inserts the new one, in one `READ COMMITTED` transaction whose wait
 for the lock is bounded (`LOCK_TIMEOUT`). `purge` is one `DELETE` of the superseded rows at or before `now - SUPERSEDED_GRACE`; a read
 compares the same instant itself, so a version past its grace is refused even before the row goes.
 

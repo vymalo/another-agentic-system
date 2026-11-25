@@ -1,3 +1,4 @@
+{{- if .Values.edge.enabled }}
 {{- $root := dict "root" . "component" "edge" -}}
 {{- $name := include "agentic.component" $root -}}
 # The edge: Caddy (files/Caddyfile). Stateless; Traefik sends every request of the host here.
@@ -121,3 +122,4 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
+{{- end }}

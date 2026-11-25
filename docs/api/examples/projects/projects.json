@@ -1,0 +1,805 @@
+{
+  "name": "A whole save",
+  "about": "A createProject payload to `ok` (201) or to the error: the status, the `code`, and where (`at`). Every case is sent by the person `owner@example.com` (or the one a case names in `as_owner`), who owns no project yet, in the workspace `ws-1`, where the agent `coder` and the model server `ms-1` exist. A string value written as {\"$concat\": [piece, ...]} is the pieces joined, a piece being a string or {\"$repeat\": text, \"times\": n}; a reader expands it before use. Counts of list members (repositories, members, model servers) are in the page's constants and are not pinned by a vector. See docs/api/projects-v1.md, The fields of a project.",
+  "cases": [
+    {
+      "name": "the smallest cloud project",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a cloud project with every member",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "description": "The site and its client",
+        "instructions": "Read the contributing guide first.",
+        "members": [
+          {
+            "email": "a@example.com",
+            "role": "member"
+          }
+        ],
+        "tier": {
+          "default": "edits",
+          "ceiling": "auto"
+        },
+        "defaultAgent": "coder",
+        "modelServers": [
+          "ms-1"
+        ],
+        "cleanup": {
+          "staleDays": 7,
+          "mode": "ask"
+        }
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a local project with a folder and no members",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "local",
+        "repositories": [
+          {
+            "name": "site",
+            "path": "/home/person/dev/site",
+            "defaultBranch": "main",
+            "worktrees": false
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a local project has no members but its owner (row 19)",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "local",
+        "repositories": [
+          {
+            "name": "site",
+            "path": "/home/person/dev/site",
+            "defaultBranch": "main",
+            "worktrees": false
+          }
+        ],
+        "members": [
+          {
+            "email": "a@example.com",
+            "role": "member"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "code": "local_project_members",
+        "at": "members"
+      }
+    },
+    {
+      "name": "a cloud repository needs a url",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.0.url"
+      }
+    },
+    {
+      "name": "a cloud repository has no path",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true,
+            "path": "/tmp/x"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.0.path"
+      }
+    },
+    {
+      "name": "a local repository needs a path",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "local",
+        "repositories": [
+          {
+            "name": "site",
+            "defaultBranch": "main",
+            "worktrees": false
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.0.path"
+      }
+    },
+    {
+      "name": "a repository name is unique in the project",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          },
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/y.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.1.name"
+      }
+    },
+    {
+      "name": "a repository name is a lower-case alias",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "API",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.0.name"
+      }
+    },
+    {
+      "name": "a default branch is a branch name",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "a..b",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.0.defaultBranch"
+      }
+    },
+    {
+      "name": "the worktree switch is a boolean",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": "yes"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.0.worktrees"
+      }
+    },
+    {
+      "name": "a url is https or ssh, with no password",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://user:pw@git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_repository",
+        "at": "repositories.0.url"
+      }
+    },
+    {
+      "name": "an ssh url is allowed",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "git@git.example.com:org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "the name must not start with a space",
+      "create": {
+        "name": " Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_name",
+        "at": "name"
+      }
+    },
+    {
+      "name": "the name must not be empty",
+      "create": {
+        "name": "",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_name",
+        "at": "name"
+      }
+    },
+    {
+      "name": "the longest name",
+      "create": {
+        "name": {
+          "$concat": [
+            {
+              "$repeat": "n",
+              "times": 80
+            }
+          ]
+        },
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a name one over the limit",
+      "create": {
+        "name": {
+          "$concat": [
+            {
+              "$repeat": "n",
+              "times": 81
+            }
+          ]
+        },
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_name",
+        "at": "name"
+      }
+    },
+    {
+      "name": "the longest instructions",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "instructions": {
+          "$concat": [
+            {
+              "$repeat": "i",
+              "times": 16384
+            }
+          ]
+        }
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "instructions one byte over the limit",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "instructions": {
+          "$concat": [
+            {
+              "$repeat": "i",
+              "times": 16385
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_instructions",
+        "at": "instructions"
+      }
+    },
+    {
+      "name": "instructions have no U+0000",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "instructions": "a\u0000b"
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_instructions",
+        "at": "instructions"
+      }
+    },
+    {
+      "name": "a tier default is one of the four words",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "tier": {
+          "default": "root"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_tier",
+        "at": "tier.default"
+      }
+    },
+    {
+      "name": "a tier default is not above the ceiling",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "tier": {
+          "default": "auto",
+          "ceiling": "edits"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_tier",
+        "at": "tier.default"
+      }
+    },
+    {
+      "name": "a ceiling alone is allowed",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "tier": {
+          "ceiling": "plan"
+        }
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "the owner is not in the members",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "members": [
+          {
+            "email": "owner@example.com",
+            "role": "member"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_members",
+        "at": "members.0.email"
+      },
+      "as_owner": "owner@example.com"
+    },
+    {
+      "name": "a member is named once, whatever the case",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "members": [
+          {
+            "email": "a@example.com",
+            "role": "member"
+          },
+          {
+            "email": "A@Example.com",
+            "role": "member"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_members",
+        "at": "members.1.email"
+      }
+    },
+    {
+      "name": "a member's role is member",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "members": [
+          {
+            "email": "a@example.com",
+            "role": "owner"
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_members",
+        "at": "members.0.role"
+      }
+    },
+    {
+      "name": "a cleanup of 0 days",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "cleanup": {
+          "staleDays": 0,
+          "mode": "ask"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_cleanup",
+        "at": "cleanup.staleDays"
+      }
+    },
+    {
+      "name": "a cleanup of 366 days",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "cleanup": {
+          "staleDays": 366,
+          "mode": "ask"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_cleanup",
+        "at": "cleanup.staleDays"
+      }
+    },
+    {
+      "name": "automatic clean-up is a mode the person may choose (row 20)",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "cleanup": {
+          "staleDays": 7,
+          "mode": "auto"
+        }
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "a clean-up mode is ask or auto",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "cleanup": {
+          "staleDays": 7,
+          "mode": "never"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_cleanup",
+        "at": "cleanup.mode"
+      }
+    },
+    {
+      "name": "a model server is an id, never a url",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "modelServers": [
+          "https://models.example.com"
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_model_servers",
+        "at": "modelServers.0"
+      }
+    },
+    {
+      "name": "a model server is named once",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ],
+        "modelServers": [
+          "ms-1",
+          "ms-1"
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_model_servers",
+        "at": "modelServers.1"
+      }
+    },
+    {
+      "name": "home is cloud or local",
+      "create": {
+        "name": "Docs site",
+        "workspaceId": "ws-1",
+        "home": "both",
+        "repositories": [
+          {
+            "name": "api",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "the first rule that fails wins: the name before the repositories",
+      "create": {
+        "name": "",
+        "workspaceId": "ws-1",
+        "home": "cloud",
+        "repositories": [
+          {
+            "name": "API",
+            "url": "https://git.example.com/org/x.git",
+            "defaultBranch": "main",
+            "worktrees": true
+          }
+        ]
+      },
+      "expect": {
+        "status": 400,
+        "code": "bad_name",
+        "at": "name"
+      }
+    }
+  ]
+}

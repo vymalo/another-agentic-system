@@ -519,7 +519,7 @@ fn lock_key_in(domain: &str, owner: &str, slot: &str) -> i64 {
 /// This crate's migrations, in their own history table.
 fn migrator() -> Result<Migrator, SecretError> {
     let migrations = orch_pg_migrate::migrations!(
-        "migrations": "0001_user_secrets.sql", "0002_vault_secrets.sql"
+        "migrations": "0001_user_secrets.sql", "0002_vault_secrets.sql", "0003_vault_names.sql"
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)

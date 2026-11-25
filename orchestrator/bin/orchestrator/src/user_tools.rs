@@ -9,6 +9,7 @@
 //! | false or absent | any | refuse | refuse | `Off` |
 //! | true | absent | Postgres | refuse | `WithoutCredentials` |
 //! | true | `store: pg` | Postgres | `orch-credential-broker` over a sealed Postgres store | `Full` |
+//! | true | `store: openbao` | Postgres | `orch-credential-broker` over a KV v2 mount of OpenBao | `Full` |
 //!
 //! The mode is not chosen here: it is what the constructor of the bundle was (`off`,
 //! `without_credentials`, `full`), so it cannot disagree with the ports. The secret store is built
@@ -34,7 +35,7 @@
 use adam_host::Role;
 use jiff::Timestamp;
 use orch_core::UserId;
-#[cfg(feature = "secrets-pg")]
+#[cfg(any(feature = "secrets-pg", feature = "secrets-openbao"))]
 use orch_credential_broker::Broker;
 use orch_credential_broker::BrokerConfig;
 use orch_ports::{
@@ -44,7 +45,7 @@ use orch_ports::{
     StoredServer, ToolSecret, UserToolPorts as _, UserToolServer, UserToolServerId,
     UserToolServerState, UserToolServerStore, UserToolServerStoreError, UserTools,
 };
-#[cfg(feature = "secrets-pg")]
+#[cfg(any(feature = "secrets-pg", feature = "secrets-openbao"))]
 use orch_store_postgres::PgPendingAuthorizations;
 use orch_store_postgres::{PgStore, PgUserToolServers};
 
@@ -74,6 +75,44 @@ pub struct UserToolsSettings {
     /// no `secrets` section, and credentials cannot be kept.
     #[cfg(feature = "secrets-pg")]
     pub keyring: Option<orch_secrets_pg::Keyring>,
+    /// `secrets.openbao`, with the token read: the credentials are kept in OpenBao and not in
+    /// Postgres. `None`: the store is not `openbao`.
+    #[cfg(feature = "secrets-openbao")]
+    pub openbao: Option<OpenBaoSettings>,
+}
+
+/// The prefix, under the mount, of every path this deployment's secrets are written at. Fixed:
+/// the paths are named by a hash of the owner and the server, so a prefix only keeps the
+/// orchestrator's secrets apart from whatever else shares the mount.
+#[cfg(feature = "secrets-openbao")]
+const OPENBAO_PREFIX: &str = "orchestrator";
+
+/// How long one call to OpenBao may take before the credential is reported unavailable.
+#[cfg(feature = "secrets-openbao")]
+const OPENBAO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `secrets.openbao` of a valid file, with the token and the CA read. `Debug` shows neither.
+#[cfg(feature = "secrets-openbao")]
+#[derive(Clone)]
+pub struct OpenBaoSettings {
+    /// `secrets.openbao.address`: an `https` URL.
+    pub address: String,
+    /// `secrets.openbao.mount`.
+    pub mount: String,
+    /// `secrets.openbao.token`, read.
+    pub token: secrecy::SecretString,
+    /// The PEM certificates of `secrets.openbao.caFile`, read.
+    pub ca_pem: Option<String>,
+}
+
+#[cfg(feature = "secrets-openbao")]
+impl std::fmt::Debug for OpenBaoSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenBaoSettings")
+            .field("mount", &self.mount)
+            .field("ca", &self.ca_pem.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The redirect URI the broker is given, from the address the file names (`userToolServers.oauth
@@ -132,6 +171,8 @@ impl UserToolsSettings {
             }
             None => None,
         };
+        #[cfg(feature = "secrets-openbao")]
+        let openbao = openbao_settings(valid)?;
         Ok(Some(UserToolsSettings {
             egress,
             allow_http: section.egress.allow_http,
@@ -140,6 +181,8 @@ impl UserToolsSettings {
             callback,
             #[cfg(feature = "secrets-pg")]
             keyring,
+            #[cfg(feature = "secrets-openbao")]
+            openbao,
         }))
     }
 
@@ -152,10 +195,16 @@ impl UserToolsSettings {
     /// The words for the operator, naming the key, for a document that cannot be made (the file's
     /// rules have checked the URL and the origin, so this is not a path a valid file takes).
     pub fn client_metadata(&self) -> Result<Option<orch_api::ClientMetadata>, String> {
+        #[allow(unused_mut)]
+        let mut keeps_credentials = false;
         #[cfg(feature = "secrets-pg")]
-        let keeps_credentials = self.keyring.is_some();
-        #[cfg(not(feature = "secrets-pg"))]
-        let keeps_credentials = false;
+        {
+            keeps_credentials |= self.keyring.is_some();
+        }
+        #[cfg(feature = "secrets-openbao")]
+        {
+            keeps_credentials |= self.openbao.is_some();
+        }
         let (true, Some(url), Some(callback)) = (
             keeps_credentials,
             self.client_metadata_url.as_deref(),
@@ -167,6 +216,62 @@ impl UserToolsSettings {
             .map(Some)
             .map_err(|e| format!("userToolServers.oauth.clientMetadataUrl: {e}"))
     }
+}
+
+/// The settings of `secrets.openbao` when the file's store is `openbao`. The file's rules have checked
+/// the address, the mount and read the token and the CA; a missing one is not a path a valid file
+/// takes and is refused, never ignored. No message holds the token.
+///
+/// # Errors
+/// The words for the operator, naming the key.
+#[cfg(feature = "secrets-openbao")]
+fn openbao_settings(valid: &orch_config::Validated) -> Result<Option<OpenBaoSettings>, String> {
+    let Some(section) = valid
+        .config
+        .secrets
+        .as_ref()
+        .filter(|s| s.store == orch_config::SecretStoreKind::Openbao)
+    else {
+        return Ok(None);
+    };
+    let (Some(bao), Some(token)) = (&section.openbao, &valid.secrets.openbao_token) else {
+        return Err("secrets.openbao: the address and the token are required".to_owned());
+    };
+    Ok(Some(OpenBaoSettings {
+        address: bao.address.clone(),
+        mount: bao.mount.clone(),
+        token: secrecy::SecretString::from(token.expose().to_owned()),
+        ca_pem: valid
+            .secrets
+            .openbao_ca
+            .as_ref()
+            .map(|ca| ca.expose().to_owned()),
+    }))
+}
+
+/// The OpenBao adapter for `bao`. The client is built and nothing is sent: a CA bundle that is not PEM is a
+/// configuration error (exit 78), whose words hold neither the bundle nor the token.
+///
+/// # Errors
+/// [`crate::config::ConfigError::Invalid`] naming `secrets.openbao`.
+#[cfg(feature = "secrets-openbao")]
+pub(crate) fn openbao_store(
+    bao: &OpenBaoSettings,
+) -> Result<orch_secrets_openbao::OpenBaoSecretStore, crate::config::ConfigError> {
+    use orch_secrets_openbao::{OpenBaoConfig, OpenBaoSecretStore};
+
+    OpenBaoSecretStore::new(OpenBaoConfig {
+        address: bao.address.clone(),
+        mount: bao.mount.clone(),
+        prefix: OPENBAO_PREFIX.to_owned(),
+        token: bao.token.clone(),
+        timeout: OPENBAO_TIMEOUT,
+        ca_pem: bao.ca_pem.clone(),
+    })
+    .map_err(|e| crate::config::ConfigError::Invalid {
+        var: "secrets.openbao",
+        reason: e.to_string(),
+    })
 }
 
 /// Why the keys of `secrets.pg` do not make a ring: the key path that is wrong and what is wrong
@@ -307,6 +412,9 @@ pub enum ConfiguredBroker {
     /// The broker, over `secrets.store: pg` and the definitions.
     #[cfg(feature = "secrets-pg")]
     Full(Broker<orch_secrets_pg::PgSecretStore, PgUserToolServers>),
+    /// The broker, over `secrets.store: openbao` and the definitions.
+    #[cfg(feature = "secrets-openbao")]
+    FullOpenBao(Broker<orch_secrets_openbao::OpenBaoSecretStore, PgUserToolServers>),
 }
 
 impl From<NoBroker> for ConfiguredBroker {
@@ -322,6 +430,15 @@ impl From<Broker<orch_secrets_pg::PgSecretStore, PgUserToolServers>> for Configu
     }
 }
 
+#[cfg(feature = "secrets-openbao")]
+impl From<Broker<orch_secrets_openbao::OpenBaoSecretStore, PgUserToolServers>>
+    for ConfiguredBroker
+{
+    fn from(broker: Broker<orch_secrets_openbao::OpenBaoSecretStore, PgUserToolServers>) -> Self {
+        ConfiguredBroker::FullOpenBao(broker)
+    }
+}
+
 impl CredentialBroker for ConfiguredBroker {
     async fn store(
         &self,
@@ -333,6 +450,8 @@ impl CredentialBroker for ConfiguredBroker {
             ConfiguredBroker::Off(broker) => broker.store(owner, server, material).await,
             #[cfg(feature = "secrets-pg")]
             ConfiguredBroker::Full(broker) => broker.store(owner, server, material).await,
+            #[cfg(feature = "secrets-openbao")]
+            ConfiguredBroker::FullOpenBao(broker) => broker.store(owner, server, material).await,
         }
     }
 
@@ -346,6 +465,10 @@ impl CredentialBroker for ConfiguredBroker {
             ConfiguredBroker::Off(broker) => broker.begin_oauth(owner, server, redirect).await,
             #[cfg(feature = "secrets-pg")]
             ConfiguredBroker::Full(broker) => broker.begin_oauth(owner, server, redirect).await,
+            #[cfg(feature = "secrets-openbao")]
+            ConfiguredBroker::FullOpenBao(broker) => {
+                broker.begin_oauth(owner, server, redirect).await
+            }
         }
     }
 
@@ -365,6 +488,10 @@ impl CredentialBroker for ConfiguredBroker {
             ConfiguredBroker::Full(broker) => {
                 broker.complete_oauth(owner, server, state, code, iss).await
             }
+            #[cfg(feature = "secrets-openbao")]
+            ConfiguredBroker::FullOpenBao(broker) => {
+                broker.complete_oauth(owner, server, state, code, iss).await
+            }
         }
     }
 
@@ -377,6 +504,8 @@ impl CredentialBroker for ConfiguredBroker {
             ConfiguredBroker::Off(broker) => broker.lease(owner, server).await,
             #[cfg(feature = "secrets-pg")]
             ConfiguredBroker::Full(broker) => broker.lease(owner, server).await,
+            #[cfg(feature = "secrets-openbao")]
+            ConfiguredBroker::FullOpenBao(broker) => broker.lease(owner, server).await,
         }
     }
 
@@ -389,6 +518,8 @@ impl CredentialBroker for ConfiguredBroker {
             ConfiguredBroker::Off(broker) => broker.revoke(owner, server).await,
             #[cfg(feature = "secrets-pg")]
             ConfiguredBroker::Full(broker) => broker.revoke(owner, server).await,
+            #[cfg(feature = "secrets-openbao")]
+            ConfiguredBroker::FullOpenBao(broker) => broker.revoke(owner, server).await,
         }
     }
 }
@@ -401,8 +532,8 @@ pub enum ConfiguredPending {
     /// refused.
     Off(NoPendingAuthorizations),
     /// `user_tool_oauth_pending`, in the pool of the thread store. Built where the broker is, and
-    /// only a build with `secrets-pg` has one.
-    #[cfg(feature = "secrets-pg")]
+    /// only a build with a secret store (`secrets-pg` or `secrets-openbao`) has one.
+    #[cfg(any(feature = "secrets-pg", feature = "secrets-openbao"))]
     Pg(PgPendingAuthorizations),
 }
 
@@ -423,7 +554,7 @@ impl PendingAuthorizations for ConfiguredPending {
     ) -> Result<(), PendingAuthorizationError> {
         match self {
             ConfiguredPending::Off(store) => store.put(state, owner, server, expires_at, now).await,
-            #[cfg(feature = "secrets-pg")]
+            #[cfg(any(feature = "secrets-pg", feature = "secrets-openbao"))]
             ConfiguredPending::Pg(store) => store.put(state, owner, server, expires_at, now).await,
         }
     }
@@ -435,7 +566,7 @@ impl PendingAuthorizations for ConfiguredPending {
     ) -> Result<Option<PendingAuthorization>, PendingAuthorizationError> {
         match self {
             ConfiguredPending::Off(store) => store.take(state, now).await,
-            #[cfg(feature = "secrets-pg")]
+            #[cfg(any(feature = "secrets-pg", feature = "secrets-openbao"))]
             ConfiguredPending::Pg(store) => store.take(state, now).await,
         }
     }
@@ -582,6 +713,32 @@ async fn assemble(
         );
         announce(&tools, settings);
         return Ok((tools, Some(secrets)));
+    }
+
+    #[cfg(feature = "secrets-openbao")]
+    if let Some(bao) = &settings.openbao {
+        // Built without a connection: OpenBao is asked when a credential is, and a server that does not answer
+        // is that credential's `Unavailable`, as the sealed store's outage is; the process does not wait for it.
+        let secrets = openbao_store(bao)?;
+        let broker = Broker::builder(secrets, servers.clone(), settings.egress.clone())
+            .config(oauth)
+            .build()
+            .map_err(|e| crate::config::ConfigError::Invalid {
+                var: "userToolServers",
+                reason: e.to_string(),
+            })?;
+        tracing::info!(
+            mount = %bao.mount,
+            "the credentials of people's own MCP servers are kept in OpenBao (secrets.store openbao)"
+        );
+        let tools = UserTools::full(
+            settings.egress.clone(),
+            ConfiguredServers::Pg(servers),
+            broker,
+            ConfiguredPending::Pg(PgPendingAuthorizations::from_pool(store.pool().clone())),
+        );
+        announce(&tools, settings);
+        return Ok((tools, Sealed::default()));
     }
 
     // no `secrets` section (a store this build lacks was refused when the file was read)

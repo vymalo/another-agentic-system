@@ -115,9 +115,10 @@ model:
 
 # The model-credential injector (ADR 0084, epic sys#334 slice S9): Agent Router (Envoy AI Gateway) in front of the
 # model endpoint, Envoy Gateway's gRPC external authorization, and Authorino. Authorino authenticates the agent pod,
-# asks the broker's run-lease route for the run's model key, and adds it to the upstream request only, replacing any
-# client-sent `Authorization`. OFF by default: nothing of this section is rendered and a deployment that does not set
-# it renders exactly as before.
+# asks the broker's run-lease route for the run's model key and account, and adds them to the upstream request only
+# (`Authorization` and `x-account-id`), replacing any client-sent `Authorization` and never taking the account from the
+# client. OFF by default: nothing of this section is rendered and a deployment that does not set it renders exactly as
+# before.
 # The controllers are the deployment's, not this chart's: Envoy Gateway, Agent Router's CRDs and controller, and the
 # Authorino operator. The agents' `model.baseUrl` points at the injector's Gateway Service, never at the model.
 injector:
@@ -162,7 +163,7 @@ orchestrator:
     repository: ghcr.io/vymalo/another-agentic-system/orchestrator
     # Bumped on every green build of main by .github/workflows/orchestrator.yml (`sha-<7 hex>`).
     # A plain key, so deploy/chart/bump-tag.sh can edit it.
-    tag: sha-7a509cb
+    tag: sha-ba532a6
     pullPolicy: IfNotPresent
   # RUST_LOG.
   logLevel: info
@@ -170,6 +171,15 @@ orchestrator:
   # to the web; thread-tools is reached by the agents inside the cluster, never through the edge.
   # Others (mcp, webhook-*) need keys and edge routes this chart does not have yet: refused.
   surfaces: [agui, thread-tools]
+  # The platform's agent registry (`agents.registry`, docs/api/config.md; the binary's CompositeRegistry: the agents file's agents first,
+  # then the registry's). OFF with an empty `url`: nothing of it is rendered and the configuration has no `registry` key. `url` is the
+  # registry service, http or https, with no credential in it; `tokenProperty` is the property of the AWS secret (`externalSecrets.key`)
+  # that holds its bearer, mounted as a file and read as `{ file }`, never a value of this chart. The two go together: one without the
+  # other is refused. Needs an `orchestrator.image.tag` whose build has the feature `registry-platform` (a build without it exits 78).
+  agents:
+    registry:
+      url: ""
+      tokenProperty: ""
   # The internal listener the run routes are served on (ADR 0084 decision 5, card ANR-378): a second port that no edge
   # routes, for the credential broker's run routes (`POST /internal/runs`, `DELETE /internal/runs/{run}`,
   # `GET /internal/runs/{run}/lease`, ANR-147a). OFF by default, and the orchestrator serves nothing there until it is on:
@@ -315,6 +325,20 @@ orchestrator:
     # The id of the key that seals every new secret and every secret that `orchestrator secrets rewrap` re-seals. One of the `keys`.
     # To rotate: add a key (its own property), make it current, sync, run rewrap, then remove the old key (README.md).
     current: k1
+  # Where a person's own credentials are kept (ADR 0046, `secrets.store` of the orchestrator's configuration). `postgres` (the default) is the
+  # sealed table in the orchestrator's own database, and what `userSecrets` above turns on: nothing here is rendered for it. `openbao` keeps them in
+  # a KV v2 mount of a self-hosted OpenBao, which seals them; the configuration then has `secrets.store: openbao` and `secrets.openbao`, and
+  # `userSecrets` must stay off (the two are two answers to one question). Needs an `orchestrator.image.tag` whose build has the feature
+  # `secrets-openbao` (an older image refuses the section, exit 78). The token is the AWS property `tokenProperty`, mounted as a file and read
+  # as `{ file }`, never a value of this chart. `address` is https. `caSecret` names a Secret of this namespace with a `ca.crt` key (a private
+  # authority), mounted as a file; empty: the image's own roots.
+  secrets:
+    store: postgres
+    openbao:
+      address: ""
+      mount: secret
+      tokenProperty: ""
+      caSecret: ""
   # Seconds the pod may take to stop (the process drains for `server.shutdownGraceSecs`, 15).
   terminationGracePeriodSeconds: 30
   # Calls from a page of another origin (`server.cors`, ADR 0047): the desktop app (`tauri://localhost` on macOS and Linux,
@@ -436,11 +460,14 @@ chat:
       memory: 1Gi
 
 web:
+  # The chat surface of this chart. On, and the edge routes the browser to it; off, its Deployment, its Service and its
+  # mobile-app-links ConfigMap are not rendered (a deployment whose BFF serves the pages itself: templates/_validate.tpl).
+  enabled: true
   image:
     repository: ghcr.io/vymalo/another-agentic-system/web
     # Bumped by .github/workflows/web.yml. The image is built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start,
     # which Next inlines at build time: images before the one of this chart's first release have none.
-    tag: sha-729dbdb
+    tag: sha-fc9b293
     pullPolicy: IfNotPresent
   replicas: 1
   resources:
@@ -705,6 +732,10 @@ oauth2Proxy:
 # The edge: Caddy 2 in front of oauth2-proxy, the orchestrator and the web, on one origin (files/Caddyfile).
 # Traefik only terminates TLS and passes everything here.
 edge:
+  # The Caddy edge in front of oauth2-proxy, the orchestrator and the web, and the Ingress that sends the host to it. On by
+  # default. Off, the edge, oauth2-proxy and the Ingress are not rendered, and `ingress.enabled` and `auth.browser.enabled`
+  # cannot be on (templates/_validate.tpl): a deployment whose own BFF is the only caller of the orchestrator.
+  enabled: true
   # 2.11.4 (verified 2026-10-03, Docker Hub and mirror.gcr.io: the digest is the image index of the -alpine tag).
   image:
     repository: caddy
@@ -953,6 +984,14 @@ networkPolicy:
   orchestratorFrom:
     - matchLabels:
         app.kubernetes.io/name: coder
+  # The BFF in front of the orchestrator: the namespace of its pods and the labels that select them. Both are required together —
+  # a namespace without labels, or labels without a namespace, is refused, because a peer with an empty selector admits every pod
+  # of the namespace and one with no namespace admits nothing. Rendered as one more peer of the orchestrator's policy, so a
+  # deployment whose BFF is another chart's can let it in. **Required with `edge.enabled: false`**: with the edge gone the BFF is what calls the orchestrator, and a
+  # policy that admits no pod at all is a broken deployment, not a quiet one (templates/_validate.tpl).
+  bff:
+    namespace: ""
+    matchLabels: {}
 
 # uid/gid are those of each image: the orchestrator is distroless `nonroot`, the web is `node`, oauth2-proxy
 # and Caddy run as 65532, the adam image as 10001.
