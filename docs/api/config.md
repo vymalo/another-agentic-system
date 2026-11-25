@@ -201,7 +201,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.history.maxTurns`, `.maxPageBytes` | `maxTurns` 1 to 1000, `100`: the largest `limit` of a page of a thread's history and the most a `since` read goes back; `maxPageBytes` 65 536 to 67 108 864, `4194304`: the frames of a page as JSON, the newest chain returned whole whatever its size | — | now; [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md), [`history.md`](history.md) |
 | `server.internal.listen` | socket address, `0.0.0.0:8081`; never `server.listen` on a port that is not 0 (exit 78 naming the key) | — | now; [ADR 0084](../decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), card ANR-578. The **internal listener** of the credential broker's run routes, below. Absent: no second listener |
 | `server.internal.token` | **secret**, required, at least 32 bytes | — | now. The orchestrator's own bearer on the run routes: `POST /internal/runs` and `DELETE /internal/runs/{run}` |
-| `server.internal.agents` | map from an agent id (`a-z`, `0-9`, `-`, at most 63) to a **secret**, at least 32 bytes each; none | — | now. Each agent's bearer on `GET /internal/runs/{run}/lease`, and it leases only the runs bound to it. No two callers may share a token (exit 78 naming the second key) |
+| `server.internal.agents` | map from an agent id (`a-z`, `0-9`, `-`, at most 63) to a **secret**, at least 32 bytes each; none | — | now. Each agent's bearer on the internal listener, so an agent is told apart and refused: binding or unbinding is `403`, and it may not read a run's lease, its own run included (ADR 0084 decision 2, amended 2026-11-24). No two callers may share a token (exit 78 naming the second key) |
 | `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header`, and an `http://` `auth.jwt.issuer` or `jwksUrl` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
@@ -236,7 +236,11 @@ server:
 |---|---|---|
 | `POST /internal/runs` | the orchestrator (its `token`) | `204`; `409 run_already_bound` for a different binding of a run |
 | `DELETE /internal/runs/{run}` | the orchestrator (its `token`) | `204`, idempotent |
-| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","expiresAt"}`, `Cache-Control: no-store` |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","accountId","expiresAt"}`, `Cache-Control: no-store` |
+
+`accountId` is the run's person, the identity the usage ledger is keyed by (ADR 0065): a `UserId`, the claim the deployment maps a principal
+from (`email` or `sub`) — never a provider account or an account number of a ledger service. The injector gets it beside the key so it can say
+whose call it is (ADR 0084, amended 2026-11-24). It is in no log line, no refusal, no error and no message to an agent.
 
 A refusal is one of the ruled slugs: `run_not_bound` (`404`, also for a caller that is not the run's agent, so the answer never
 says whether a run exists), `lease_expired` (`410`), `unavailable` (`503`, among them a model the deployment has no key for: never
@@ -293,6 +297,7 @@ Not proven here: other poolers (Pgpool-II, Supavisor), PgBouncer versions other 
 | `agents.registry.agentToken` | **secret**, none | `AGENT_REGISTRY_AGENT_TOKEN` | now |
 | `agents.registry.timeoutSecs` | 1 to 60, `3` | `AGENT_REGISTRY_TIMEOUT_SECS` | now |
 | `agents.registry.maxAgeSecs` | 1 to 3600, `60` | `AGENT_REGISTRY_MAX_AGE_SECS` | now |
+| `agents.sleep.wakeTimeoutSecs` | 1 to 300, absent by default and then the deployment never wakes an agent; how long a dispatch waits for a sleeping agent before the thread fails with a readable message ([ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md)) | — | proposed |
 
 ### `gate`
 

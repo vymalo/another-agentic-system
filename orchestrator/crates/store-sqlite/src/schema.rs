@@ -69,6 +69,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         description: "user_tool_oauth_pending",
         sql: include_str!("../migrations/0006_user_tool_oauth_pending.sql"),
     },
+    Migration {
+        version: 7,
+        description: "user_team_presets",
+        sql: include_str!("../migrations/0007_user_team_presets.sql"),
+    },
 ];
 
 /// The SHA-256 of a migration's text, lowercase hex: the `checksum` column.

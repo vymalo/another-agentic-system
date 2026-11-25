@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # The S9 spike's cluster (sys#334 S9): Envoy Gateway v1.10.0 with Agent Router's values, Agent
-# Router v1.3.0, a mock model that echoes the headers it received, a mock of the broker's run-lease
-# route, and the real Authorino over gRPC. Safe to run again: every step is an upgrade or an apply.
+# Router v1.3.0, WireMock as the model gateway, a mock of the broker's run-lease route, and the
+# real Authorino over gRPC. Safe to run again: every step is an upgrade or an apply.
 #
 #   sh dev/agent-router-spike/up.sh     # about 5 minutes the first time (the images are ~1.5 GB)
 #   sh dev/agent-router-spike/spike.sh  # the proof
@@ -63,10 +63,17 @@ hc upgrade -i authorino-operator "$tmp/authorino-operator.tgz" \
 kc wait -n authorino-operator deployment/authorino-operator --for=condition=Available --timeout=5m
 
 kc apply -f "$dir/manifests/"
-kc wait -n default pods -l app=spike-mock --for=condition=Ready --timeout=3m
+kc wait -n default pods -l app=spike-gateway --for=condition=Ready --timeout=3m
 kc wait -n default pods -l app=spike-broker --for=condition=Ready --timeout=3m
 kc wait -n default deployment/authorino --for=condition=Available --timeout=5m
-kc wait -n envoy-gateway-system pods -l gateway.envoyproxy.io/owning-gateway-name=spike --for=condition=Ready --timeout=10m
+# The Gateway's Deployment, not its pods: a rolling update leaves the old pod Terminating for a while, and waiting on
+# pods with this label times out on it (the spike hit exactly that on 2026-11-24).
+for _ in $(seq 1 60); do
+  [ -n "$(kc -n envoy-gateway-system get deploy -l gateway.envoyproxy.io/owning-gateway-name=spike -o name)" ] && break
+  sleep 2
+done
+kc wait -n envoy-gateway-system deployment -l gateway.envoyproxy.io/owning-gateway-name=spike \
+  --for=condition=Available --timeout=10m
 
 # What the controller made of the AIGatewayRoute: the spike's finding starts here.
 echo "up.sh: HTTPRoutes in the cluster:"

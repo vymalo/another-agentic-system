@@ -152,12 +152,23 @@ spec:
     tls:
       enabled: false
 ---
-# The injector's contract, and the only place the model credential is decided:
+# The injector's contract, and the only place the model credential and the caller's account are decided:
 #  1. authenticate the agent pod (a TokenReview of its service-account token);
 #  2. ask the broker's run-lease route for the run named by `X-Run-Id`, with the injector's own token;
 #  3. cache that answer per run for at most the lease;
-#  4. add `Authorization` upstream only. Envoy Gateway applies the ok_response headers and replaces a client-sent
-#     `Authorization` (verified 2026-11-24: exactly one header at the upstream).
+#  4. add `Authorization` and `x-account-id` upstream only. Envoy Gateway applies the ok_response headers and replaces
+#     a client-sent `Authorization` (verified 2026-11-24: exactly one header at the upstream).
+#  5. deny when the lease carries no token. A refused lookup (the broker's 410/404) leaves the metadata unset and
+#     Authorino still applies the ok_response headers, so without this rule the gateway receives `Authorization:
+#     Bearer` (an empty token) — unusable, but still a header. Denied, a run with no lease reaches no gateway at all
+#     (ANR-662; verified 2026-11-24 in dev/agent-router-spike/).
+#
+# Spike result (ANR-662, 2026-11-24): it works. An ok_response header from Authorino reaches the WireMock gateway
+# through Agent Router, so the injector stays these objects and needs no service of our own behind the port.
+#
+# `x-account-id` is the lease's `accountId`: the run's person, the `UserId` the usage ledger is keyed by (ADR 0065),
+# never a provider account and never the client's own claim. Like the token it is a selector, so the client cannot
+# choose it.
 #
 # `plain.expression`/`selector`, never `plain.value`: Authorino v0.26.4 emits a static `plain.value` as a Go struct
 # dump rather than a string (verified 2026-11-24). The lease token is bare, so the scheme is prepended here.
@@ -208,12 +219,23 @@ spec:
           - selector: request.headers.x-run-id
             operator: neq
             value: ""
+    # A refused lookup leaves the metadata unset, and Authorino still applies the ok_response headers above: without
+    # this rule the upstream receives `Authorization: Bearer` with an empty token. Deny, so no lease means no call.
+    "lease":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.lease.token
+            operator: neq
+            value: ""
   response:
     success:
       headers:
         "Authorization":
           plain:
             selector: "Bearer {auth.metadata.lease.token}"
+        "x-account-id":
+          plain:
+            selector: "{auth.metadata.lease.accountId}"
 ---
 # The generated HTTPRoute of the AIGatewayRoute above has the same name. Scoping the policy to it (rather than the
 # whole Gateway) is what the spike verified: `targetRefs: kind=HTTPRoute name=<route>` reports Accepted.

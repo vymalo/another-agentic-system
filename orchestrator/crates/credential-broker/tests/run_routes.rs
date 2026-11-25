@@ -147,7 +147,54 @@ async fn the_injector_gets_the_lease_and_no_store() {
     );
     let body: Value = serde_json::from_str(&body).expect("JSON");
     assert_eq!(body["token"], "model-bearer");
+    assert_eq!(
+        body["accountId"], "person@example.com",
+        "the lease names the account"
+    );
     assert!(body["expiresAt"].is_string());
+}
+
+#[tokio::test]
+async fn the_account_id_is_in_the_lease_and_in_no_refusal() {
+    let (app, _) = app();
+    bind(&app, "run-acct", "coder", &at(Duration::from_secs(60))).await;
+    // Every refusal of the route is the slug and nothing else: no account id in it.
+    for (token, run) in [(CODER, "run-acct"), (INJECTOR, "run-unknown")] {
+        let (_, _, body) = lease(&app, run, Some(token)).await;
+        assert!(
+            !body.contains("person@example.com"),
+            "refusal holds the account: {body}"
+        );
+    }
+    // And the lease's Debug, which is what a log line or an error would use, holds neither.
+    let broker = broker();
+    broker
+        .bind(orch_ports::RunBinding {
+            run: orch_ports::RunId::new("run-dbg"),
+            agent: orch_core::AgentId("coder".to_owned()),
+            person: orch_core::UserId::new("acc-00000000deadbeef"),
+            model: Some(MODEL.to_owned()),
+            expires_at: Timestamp::now() + Duration::from_secs(60),
+        })
+        .await
+        .expect("bind");
+    let lease = broker
+        .lease(
+            &orch_ports::RunId::new("run-dbg"),
+            &orch_ports::RunCaller::Injector,
+        )
+        .await
+        .expect("lease");
+    assert_eq!(lease.account().as_str(), "acc-00000000deadbeef");
+    let shown = format!("{lease:?}");
+    assert!(
+        !shown.contains("acc-00000000deadbeef"),
+        "Debug holds the account: {shown}"
+    );
+    assert!(
+        !shown.contains("model-bearer"),
+        "Debug holds the key: {shown}"
+    );
 }
 
 #[tokio::test]

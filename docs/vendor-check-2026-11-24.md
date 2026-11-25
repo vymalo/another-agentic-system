@@ -146,6 +146,76 @@ slice 9 picks a product, these must be read, with the date:
 3. The README of `zed-industries/codex-acp`.
 4. OpenCode: whether `--format json` reports usage, and the terms of any OpenCode-hosted service.
 
+## Read on 2026-11-24, second pass (ANR-631)
+
+Read by a second session, after the first could reach only the Claude Code docs and GitHub. Quotes are exact, with the
+same [bracket] rule as above: a bracketed word replaces or leaves out a vendor word that this repository's wording rules
+keep out.
+
+### Anthropic Consumer Terms (item 1)
+
+Read 2026-11-24 at [anthropic.com/legal/consumer-terms](https://www.anthropic.com/legal/consumer-terms) (the page states
+*Effective Oct 8, 2025*, and that it applies to a consumer resident in the EEA or Switzerland):
+
+- **Account sharing** (§2): *"You may not share your Account login information, Anthropic API key, or Account credentials
+  with anyone else or make your Account available to anyone else."*
+- **Automated use** (§3): *"Except when you are accessing our Services via an Anthropic API Key or where we otherwise
+  explicitly permit it, to access the Services through automated or non-human means, whether through a bot, script, or
+  otherwise."*
+- **Commercial use** (§11): *"Non-commercial use only. You agree that you will not use our Services for any commercial or
+  business purposes…"*
+
+The **Commercial Terms** (the other half of item 1) were **not read** in this pass; the consumer page points to them for
+any Anthropic API key, and that reading is **unverified**.
+
+### OpenAI: Codex authentication (item 2)
+
+Read 2026-11-24 at [developers.openai.com/codex/auth](https://developers.openai.com/codex/auth):
+
+- **Two ways to sign in:** *"Sign in with ChatGPT for subscription access"* and *"Sign in with an API key for
+  usage-based access"*. *"The ChatGPT desktop app, Codex CLI, and IDE extension support both sign-in methods for local
+  work. Codex cloud requires signing in with ChatGPT."*
+- **Running it for a job rather than a person:** *"Use API key authentication for programmatic Codex CLI workflows, such
+  as CI/CD jobs. Don't expose Codex execution in untrusted or public environments."* The same page says API-key sign-in
+  covers *"local Codex workflows"* and that *"some features that… rely on ChatGPT workspace access or cloud services are
+  limited or unavailable"*.
+- **Where the credential sits:** *"Codex caches login details locally in a plaintext file at `~/.codex/auth.json` or in
+  your OS-specific credential store"*, and *"treat `~/.codex/auth.json` like a password: it contains access tokens."*
+- **A custom model provider** (§ Alternative model providers): a provider may set `requires_openai_auth = true` to use
+  OpenAI authentication *"when you access OpenAI models through an LLM proxy server"*, or `env_key = "<NAME>"` for *"a
+  provider-specific API key from the local environment variable"*, or `[model_providers.<id>.gateway_oauth]` for
+  *"browser sign-in through your organization's identity provider"*, or a command-backed token. The page does not use the
+  words `base_url`; the provider's own configuration reference would, and that is **unverified**.
+
+**Unverified in this pass:** OpenAI's Terms of Use, Services Agreement and Usage Policies, and
+[`/codex/noninteractive`](https://developers.openai.com/codex/noninteractive) — three long policy pages and one more
+documentation page were not read, and any legal reading is the owner's in any case.
+
+### `zed-industries/codex-acp` (item 3)
+
+Read 2026-11-24 at [its README](https://github.com/zed-industries/codex-acp/blob/main/README.md):
+
+- **What it adapts:** *"This tool implements an ACP adapter around the Codex CLI"*, supporting context @-mentions, images,
+  tool calls *"(with permission requests)"*, edit review, TODO lists, slash commands (`/review`, `/review-branch`,
+  `/review-commit`, `/init`, `/compact`, `/logout`) and *"Client MCP servers"*.
+- **Sign-in it offers:** *"ChatGPT subscription (requires [a subscription we do not name here] and doesn't work in remote
+  projects)"*, `CODEX_API_KEY`, `OPENAI_API_KEY`. The brackets are this page's rule: the vendor names a paid plan.
+- **Licence:** *"Apache-2.0"*.
+- **It is moving:** *"Development has moved to [agentclientprotocol/codex-acp]… The new adapter is built on the new Codex
+  App Server… Use `@agentclientprotocol/codex-acp` for new installs."*
+
+### OpenCode (item 4)
+
+Read 2026-11-24 at [opencode.ai/docs/cli](https://opencode.ai/docs/cli/): *"Use `opencode run` to submit a prompt without
+opening the interactive interface. It is designed for scripts, CI jobs, and other workflows that need model output
+directly in the terminal."*
+
+- **`--format json` and usage: unverified.** The CLI page read on this date documents `opencode run`, `opencode mini`,
+  `--standalone`, `--server`, `debug paths` and `uninstall`, and **does not mention a `--format` option or any token
+  usage**. The earlier row's claim that `opencode run --format json` exists comes from the repository's docs source, not
+  from this page, and stays **unverified** until someone reads it.
+- **The terms of any OpenCode-hosted service: unverified** — no terms page was read in this pass.
+
 ## The question for the owner
 
 **Which product, if any, does slice 9's outside worker adapt?** The candidates are Claude Code, Codex and OpenCode,
@@ -153,5 +223,6 @@ each on the person's own key, as #342 says. This page records only what each one
 yours. Points that bear on it:
 - Claude Code's terms, quoted above, set conditions for running it in a hosted sandbox: the Commercial Terms, an
   unmodified binary, the end user's own credentials, and no intermediated usage.
-- Codex's and OpenCode's terms are still unread.
+- Codex's sign-in methods are quoted above; its Terms of Use, Services Agreement and Usage Policies are still unread, and OpenCode's terms are still unread.
+- The second pass above says exactly which of the four items were read and which remain **unverified**, and why.
 - OpenCode alone speaks ACP natively.

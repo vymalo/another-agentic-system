@@ -31,6 +31,18 @@
 //! A member that is removed takes its pending hand-off with it, and a turn of it that was running
 //! counts as stopped, so a fan-in it was part of can still complete.
 //!
+//! # And the preset a team is saved as
+//!
+//! [`presets`] holds the other half of ADR 0074 decision 13: the team a person **saves** — a name, a
+//! title, the lead, the members with their optional release and how their history reaches them, a
+//! charter, the cap of hand-offs, when a hand-off waits for the person, the checkpoint rules and the
+//! budget of a push. It reuses this module's vocabulary rather than defining a second one:
+//! [`MemberName`], [`MIN_MEMBERS`], [`MAX_MEMBERS`], [`MAX_NAME_CHARS`], [`MAX_ROLE_CHARS`],
+//! [`MIN_MAX_HANDOFFS`], [`MAX_HANDOFFS_CEILING`] and [`TeamRefusal`] are the ledger's, and a preset
+//! that breaks one of their rules is refused **with that refusal**. The preset's own bounds are the
+//! ones the ledger does not own: the approval's seconds, the charter's bytes, the push budget and
+//! how many presets a person holds.
+//!
 //! [ADR 0074]: https://github.com/vymalo/another-agentic-system/blob/main/docs/decisions/0074-agent-team.md
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,6 +51,15 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::AgentId;
+
+mod presets;
+
+pub use presets::{
+    BadTeamPresetId, CheckpointRules, DEFAULT_PUSH_TOKENS, HandoffApproval, MAX_APPROVAL_SECONDS,
+    MAX_CHARTER_BYTES, MAX_PUSH_TOKENS, MAX_TEAM_PRESETS, MAX_TEAM_TITLE_CHARS,
+    MIN_APPROVAL_SECONDS, MIN_PUSH_TOKENS, MemberHistory, PAGE, TeamMember, TeamMemberInput,
+    TeamPreset, TeamPresetError, TeamPresetId, TeamPresetInput, validate,
+};
 
 /// The hand-offs one person's message allows when a preset says nothing (ADR 0074 decision 8).
 pub const DEFAULT_MAX_HANDOFFS: u32 = 6;
