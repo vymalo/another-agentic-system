@@ -69,6 +69,8 @@ jobs:
           kubectl --context kind-agent-router-spike -n default logs deploy/authorino --tail=40 || true
           kubectl --context kind-agent-router-spike -n default logs deploy/spike-gateway --tail=40 || true
           kubectl --context kind-agent-router-spike -n default logs deploy/spike-broker --tail=40 || true
+          kubectl --context kind-agent-router-spike -n default logs deploy/spike-ledger --tail=40 || true
+          kubectl --context kind-agent-router-spike -n default get envoyextensionpolicy spike-balance -o yaml || true
       - name: Delete the cluster
         if: always()
         run: sh dev/agent-router-spike/down.sh || true

@@ -9,7 +9,9 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use orch_app::{ChildSessionStats, DeleteStats, HistoryStats, SharingStats, TierStats, UsageStats};
+use orch_app::{
+    ChildSessionStats, DeleteStats, HistoryStats, LoadStats, SharingStats, TierStats, UsageStats,
+};
 use orch_ports::{OutboxStats, Ports};
 
 use crate::ApiState;
@@ -173,6 +175,26 @@ pub(crate) fn render_history(stats: &HistoryStats) -> String {
     )
 }
 
+/// What this process carries now: `dispatcher_slots_in_use`, `dispatcher_slots_configured` and
+/// `sse_subscribers_open`. Unlike the outbox gauges, which every replica reads from the store (so
+/// aggregate them with `max`), these are this process's own: aggregate them with `sum`. A role
+/// without a dispatcher reports 0 slots. No label, so none can hold a person, a thread, a token or a
+/// secret.
+pub(crate) fn render_load(stats: &LoadStats) -> String {
+    format!(
+        "# HELP dispatcher_slots_in_use Dispatcher slots busy with an outbox row, this process only (aggregate with sum).\n\
+         # TYPE dispatcher_slots_in_use gauge\n\
+         dispatcher_slots_in_use {}\n\
+         # HELP dispatcher_slots_configured Dispatcher slots this process was configured with, 0 where no dispatcher runs (aggregate with sum).\n\
+         # TYPE dispatcher_slots_configured gauge\n\
+         dispatcher_slots_configured {}\n\
+         # HELP sse_subscribers_open Server-sent-event streams open on this process now (aggregate with sum).\n\
+         # TYPE sse_subscribers_open gauge\n\
+         sse_subscribers_open {}\n",
+        stats.slots_in_use, stats.slots_configured, stats.subscribers
+    )
+}
+
 pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Response {
     match state.app.outbox_stats().await {
         Ok((now, stats)) => {
@@ -194,6 +216,7 @@ pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Respons
             text.push_str(&render_tier(&state.app.tier_stats()));
             text.push_str(&render_child_sessions(&state.app.child_session_stats()));
             text.push_str(&render_history(&state.app.history_stats()));
+            text.push_str(&render_load(&state.app.load_stats()));
             let mut response = text.into_response();
             response
                 .headers_mut()
@@ -292,6 +315,27 @@ orch_outbox_oldest_due_age_seconds 42
         );
         // The clock read behind the row's due time (skew between replicas): clamp to zero.
         assert_eq!(age_of(ago(-5)), "0");
+    }
+
+    #[test]
+    fn the_load_gauges_are_written_without_a_label() {
+        let text = render_load(&LoadStats {
+            slots_in_use: 5,
+            slots_configured: 32,
+            subscribers: 7,
+        });
+        assert!(text.contains("dispatcher_slots_in_use 5\n"), "{text}");
+        assert!(text.contains("dispatcher_slots_configured 32\n"), "{text}");
+        assert!(text.contains("sse_subscribers_open 7\n"), "{text}");
+        assert!(
+            !text.contains('{'),
+            "no label, so none can name a person: {text}"
+        );
+        assert!(
+            text.contains("# TYPE sse_subscribers_open gauge\n"),
+            "{text}"
+        );
+        assert!(text.contains("aggregate with sum"), "{text}");
     }
 
     #[test]

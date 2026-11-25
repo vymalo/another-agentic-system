@@ -121,6 +121,7 @@ commented; the ones that matter:
 | `model.baseUrlFromSecret`, `externalSecrets.properties.modelBaseUrl` | `false`, `model_base_url` | `true`: the address is the AWS property instead of a value ([below](#the-gateways-address-from-the-aws-secret)). **OFF by default; turn it on only once `orchestrator.image.tag` is at or after this feature's merge commit.** Refused: with `model.baseUrl` also set, with no property name, or as a string |
 | `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
+| `orchestrator.agents.registry.url`, `.tokenProperty` | `""`, `""` | the platform's **agent registry** (`agents.registry.url` and `.token`, [config](../../docs/api/config.md#agents)) beside the agents file: the file's agents first, then the registry's. **OFF with an empty `url`**: no `registry` key is written. `tokenProperty` is the AWS property of the registry's bearer, mounted as a file and read as `{ file }`, never a value. Needs an `orchestrator.image.tag` whose build has `registry-platform` (otherwise exit 78). Refused: a URL with no property, a property with no URL, a URL that is not http or https with a host, or one with a credential, query or fragment |
 | `orchestrator.internal.enabled`, `.port` | `false`, `8081` | the credential broker's **run routes** (`POST /internal/runs`, `DELETE /internal/runs/{run}`, `GET /internal/runs/{run}/lease`, [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), cards ANR-378 and ANR-578) on a second port that **no Ingress and no edge route names**. It writes `server.internal` into the orchestrator's configuration, so the broker's router and **only** it is served there (no surface, no health); **OFF by default**, and a deployment turns it on only with an `orchestrator.image.tag` at or after the run routes' merge commit and a model endpoint whose key every lease answers. Refused: a port that is 8080 or outside 1025–65535, a non-boolean `enabled`, or `enabled` without `tokenProperty` |
 | `orchestrator.internal.tokenProperty`, `.agents` | `""`, `{}` | the **tokens of the run routes**: the AWS property of the orchestrator's own token (the bind and the unbind), and, per agent id, the property of the token it leases with. Read as files of the orchestrator's Secret, never as values of this chart. Refused: an empty property, a key that is not an agent id, an empty or non-string value, or two callers naming one property (the door would answer an agent as the orchestrator) |
 | `orchestrator.internal.injector.enabled`, `.namespace`, `.matchLabels` | `false`, `""`, `{}` | whether the **injector's** pods (Authorino or Agent Router, S9) may reach that port to look a lease up. The orchestrator's own pods are always admitted (the bind). **Refused: `enabled` without a namespace or without labels** — a policy with an empty selector admits every pod of the namespace, which is worse than no policy. `enabled` also needs `orchestrator.internal.enabled` |
@@ -151,6 +152,7 @@ commented; the ones that matter:
 | `ingress.clusterIssuer`, `className` | `cert-cloudflare`, `traefik` | the certificate's issuer |
 | `ingress.rateLimit.enabled`, `.average`, `.period`, `.burst`, `.sourceDepth` | `false`, `20`, `1s`, `50`, `0` | [a limit per client address at the Ingress](#a-limit-per-client-at-the-edge): a Traefik `RateLimit`, **off** because the limit is only as good as the address it counts. `average` per `period` (whole numbers from 1; `ms`, `s`, `m`, `h`), a bucket of `burst`, the client being the peer (`sourceDepth: 0`) or the N-th entry from the right of `X-Forwarded-For` (1 to 5). A wrong number is refused, on or off; on without `ingress.enabled` is refused. The deployer's own `router.middlewares` annotation is kept after ours |
 | `database.name`, `.owner`, `.storage.*`, `.imageName` | `orchestrator`, `orchestrator`, `longhorn` 10Gi, `""` | the one CNPG Cluster ([one cluster, three databases](#one-database-cluster)); the chat agent has no `chat.database` any more |
+| `nodeSelector`, `tolerations` | `{}`, `[]` | placement of every pod of the release, **the database cluster's too** (`spec.affinity.nodeSelector` and `tolerations`, only when set: the default render has no `affinity` key) |
 | `database.instances`, `database.resources` | `1`, `{}` | [the size of the cluster](#scaling-the-database-issue-290): a whole number from 1 to 20 (3 is a primary and two replicas), and the Cluster's `resources` (`requests`, `limits`, `claims`; a starting point is `500m` and `1Gi` with a `2Gi` memory limit, **not a measurement**). Empty: nothing is rendered |
 | `database.pooler.enabled`, `.instances`, `.resources`, `.parameters` | `false`, `2`, `{}`, `max_prepared_statements: "200"`, `max_client_conn: "1000"`, `default_pool_size: "20"` | [a CloudNativePG `Pooler`](#scaling-the-database-issue-290) (PgBouncer, **transaction mode**, which is not a value) in front of the primary for the orchestrator's `database.url`, with `database.directUrl` on the cluster itself. **Off**, and then nothing of it is rendered. **Turn it on only once `orchestrator.image.tag` is at or after the commit that introduced `database.directUrl`** ([the pinned image](#the-pinned-orchestrator-image)). Refused: `max_prepared_statements` 0, removed or not a whole number, `pool_mode` among the parameters, a count that is not a whole number from 1 to 20, a boolean parameter, a misspelt `resources` key |
 | `sharedDatabase.coders` | `[]` | one entry `{ name, secretName, passwordProperty }` per coder: a role, a `Database` and the Secret that coder's chart reads (key `uri`), on the one cluster ([several coders](#several-coders-one-per-github-owner)). Refused: a name that is not lower-case letters and digits, `agent`, `postgres`, `template0`, `template1`, the orchestrator's database or owner, or a name, Secret or property used twice; a missing `passwordProperty` (except for the name `coder`) |
@@ -160,6 +162,7 @@ commented; the ones that matter:
 | `externalSecrets.properties.backupS3AccessKeyId`, `backupS3SecretAccessKey` | `backup_s3_access_key_id`, `backup_s3_secret_access_key` | [the two new properties](#the-aws-secret); read only with `backup.enabled` |
 | `sharing.mode`, `sharing.roles`, `sharing.public.stepIo`, `.files` | `disabled`, `[user, admin]`, `false`, `false` | [sharing a thread by a link](#sharing-a-thread): `disabled` (the render has no trace of it), `internal` (signed-in readers) or `public` (the edge lets the page and the public API through without sign-in). `roles` are the roles that are given `thread.share` |
 | `orchestrator.userSecrets.enabled`, `.keys`, `.current` | `false`, `[{ id: k1, property: user_secrets_key }]`, `k1` | [the key of the stored secrets](#the-key-of-the-stored-secrets-adr-0046-slice-3): off, the render has no `secrets` section and asks the AWS secret for nothing; on, each key is a property of the AWS secret mounted as a file and named in `secrets.pg.keys`, and `current` seals. Refused: no key, more than 16, an id outside `A-Z a-z 0-9 . _ -` or over 64 characters or used twice, a property used twice (two ids for one key rotate nothing) or missing (with ExternalSecrets on), a `current` that is not a key's id, and an `enabled` that is not a boolean. **Read only by an orchestrator image since slice 3** ([the pinned image](#the-pinned-orchestrator-image)) |
+| `orchestrator.secrets.store`, `.openbao.address`, `.mount`, `.tokenProperty`, `.caSecret` | `postgres`, `""`, `secret`, `""`, `""` | where a person's own credentials are kept ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), `secrets.store` of the [configuration](../../docs/api/config.md#secrets)). `postgres` is the sealed table, which `orchestrator.userSecrets` turns on: **nothing of OpenBao is rendered**, byte for byte the render of a chart that has never heard of it. `openbao` writes `secrets.store: openbao` and `secrets.openbao` (the address, the mount, the token as `{ file: /run/secrets/orchestrator/openbao-token }`). `tokenProperty` is the AWS property of the token, read by the orchestrator's ExternalSecret and mounted as a file, never a value of this chart; `caSecret` is a Secret of this namespace whose `ca.crt` key is mounted at `/run/secrets/openbao-ca/ca.crt` and named as `caFile` (a private authority; empty: the image's own roots). **Add the property to the AWS secret before turning it on** (an ExternalSecret that asks for a property the AWS secret lacks stops the whole Secret syncing), and only with an `orchestrator.image.tag` whose build has `secrets-openbao` (an older image refuses the section, exit 78). Refused: a store that is neither, `openbao` without an address or a token property, an address that is not `https` or has a credential, query or fragment, a mount that is not names of `A-Z a-z 0-9 . _ -` between single `/`, a CA secret that is not a name, `openbao` together with `userSecrets.enabled` (two stores for one question), a non-string value, and OpenBao values set while the store is `postgres` (they would be ignored). The policy of the token is in [the configuration](../../docs/api/config.md#secrets) |
 | `auth.browser.enabled`, `.clientId`, `.scope` | `false`, `another-agentic-web`, `openid email profile offline_access` | [tokens in the browser](#tokens-in-the-browser-adr-0054): the web signs in itself at the issuer as a public, DPoP-bound client, and the edge stops gating it. `false` (the render has no trace of it) until the Keycloak client is imported and the realm is set. Refused: as a string, with no client id, or a scope without `openid` |
 | `externalSecrets.*` | `ssegning-aws`, `prod/another-agentic/env`, 1 h | the store, the AWS secret, the property of each value |
 | `webSearch.enabled`, `webSearch.image.tag`, `webSearch.allowFrom`, `webSearch.egressExcept`, `egressExceptV6`, `webSearch.replicas`, `webSearch.resources` | `false`, `sha-0000000` (**bumped by CI** with the first image), the coder's pods (`app.kubernetes.io/instance: coder`), the private and special-purpose ranges, the same for IPv6, 1, 25m/64Mi and 256Mi | the [search pod](#web-search-and-context7); the placeholder tag is refused with `enabled: true` |
@@ -1647,8 +1650,10 @@ lease, and one that lists no agent token admits no lookup at all (`401 unauthent
 
 The injector is the half of [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
 that keeps the deployment's model key out of every agent. It is a second, **internal** path to the model, rendered by this
-chart and **off by default**:
+chart and **off by default**. The header contract — who may set `Authorization` and `x-account-id`, what is checked, what
+is refused, and what the header does not authorise — is [`docs/api/model-injector.md`](../../docs/api/model-injector.md).
 
+In one picture:
 ```
 agent ──Authorization: its own (or none)──▶ Gateway (Agent Router, ClusterIP)
                                               │  ext-authz gRPC
@@ -1673,7 +1678,7 @@ What the chart renders when `injector.enabled` is true (values.yaml, `injector`)
 | `Gateway` + `EnvoyProxy` | Agent Router's Gateway, and the EnvoyProxy that pins its Service name and makes it `ClusterIP`. The Service lives in Envoy Gateway's namespace; **the Gateway has no Ingress and no edge route.** |
 | `ClientTrafficPolicy` | `bufferLimit` (`50Mi`): a model answer is larger than Envoy's default 32 KiB. |
 | `Backend`, `BackendTLSPolicy`, `AIServiceBackend`, `AIGatewayRoute` | the upstream from `injector.upstream.url`, and the route that selects it by `injector.modelHeader: injector.model`. With an `https` upstream the policy validates it against the system CA. |
-| `Authorino`, `AuthConfig` | the authorizer: a `kubernetesTokenReview` of the agent's service-account token, the broker lookup keyed by `X-Run-Id` and cached per run for at most `broker.cacheTtlSecs` (≤ 30 s, the lease), and `Authorization: Bearer {auth.metadata.lease.token}` plus `x-account-id: {auth.metadata.lease.accountId}` in `response.success.headers`. A lease with no token is denied, so a refused lookup never forwards an empty `Bearer`. |
+| `Authorino`, `AuthConfig` | the authorizer: a `kubernetesTokenReview` of the agent's service-account token, the broker lookup keyed by `X-Run-Id` and cached per run for at most `broker.cacheTtlSecs` (≤ 30 s, the lease), and `Authorization: Bearer {auth.metadata.lease.token}` plus `x-account-id: {auth.metadata.lease.accountId}` in `response.success.headers`. A lease with no token or no account id is denied, so a refused lookup never forwards an empty `Bearer` or an empty `x-account-id`. |
 | `SecurityPolicy` | `extAuth.grpc` to Authorino's Service, scoped to the **`HTTPRoute` Agent Router generates** from the `AIGatewayRoute` (same name), not to the whole Gateway. |
 | `ExternalSecret` | the injector's own broker token, from `injector.broker.tokenProperty` of the AWS secret. A property name, never a value. |
 
@@ -1705,11 +1710,24 @@ injector:
   model: deploy-model                         # the name the agents send in x-ai-eg-model
   broker:
     tokenProperty: injector_broker_token      # AWS property of the injector's own token
+  budget:
+    url: http://another-ledger.ledger.svc:8201  # the usage ledger's budget listener (a READ, never a debit)
+    tokenProperty: injector_budget_token      # AWS property of the ledger's shared secret
 orchestrator:
   internal:
     enabled: true                             # the run-lease listener the AuthConfig queries
     tokenProperty: internal_orchestrator_token
 ```
+
+**The balance (ANR-669).** Every model call reads the person's balance from the ledger's budget read for the lease's
+account (`GET <budget.url>/budget/v1/remaining?account_id=…`), cached per account for `budget.cacheTtlSecs` (10 s; 1 to
+30, a longer one refused because a stale balance lets a person overspend). A balance the ledger could not answer is a
+`403`; zero, negative or an account the ledger does not know is a `402` with `{"error":"model_locked"}`. The `402` is an
+`EnvoyExtensionPolicy` Lua filter on the generated route, not an Authorino rule, because Authorino v0.26.4's denial
+status is one code for the whole authorization phase; [`docs/api/model-injector.md`](../../docs/api/model-injector.md)
+says which and why, and `dev/agent-router-spike/` proves it. **The deployment's EnvoyGateway resource must set
+`extensionApis.enableLua: true`**: v1.10 ships Lua policies disabled and reports the policy as `Invalid` otherwise. The
+injector adds no debit route and moves no money — the ledger settles what was spent, and the injector can only refuse.
 
 The agents then point at the injector, not at the model: `model.baseUrl` (and each agent's `MODEL_BASE_URL`) is
 `http://<fullname>-injector-envoy.<Envoy Gateway namespace>.svc/v1`. The Service name is pinned by `injector.envoyServiceName`
@@ -1719,17 +1737,23 @@ ingress** from Envoy Gateway's namespace is not rendered, so a cluster with a de
 
 **Fail closed.** With `injector.enabled` false nothing of this section is rendered and the render is byte-identical to
 before (`tests/render-check.sh`). With it true, the render is refused when `gatewayClassName`, `upstream.url`, `model`,
-the broker URL (or `orchestrator.internal.enabled`), the token property (with `externalSecrets.enabled`), a
-`cacheTtlSecs` above 30, or a non-positive replica count is missing; an upstream that is not an `http`/`https` URL is
+the broker URL (or `orchestrator.internal.enabled`), `budget.url`, the token properties (with
+`externalSecrets.enabled`), a `cacheTtlSecs` above 30 (broker or budget) or a non-positive replica count is missing; an
+upstream or ledger URL that is not an `http`/`https` URL, or a ledger URL that carries a path, query or credential, is
 refused too.
 
 **What this does not cover yet, stated plainly.** None of it is run on a cluster by this chart's tests — only rendered
 (`tests/golden/injector.yaml`); the transport is proven separately by `dev/agent-router-spike/`, and its spike result above
-recorded header pass-through for the key and the account id, and the refusal with no lease. TLS on the ext-auth hop is not
+recorded header pass-through for the key and the account id, and the refusal with no lease; ANR-669 added the balance
+read and its `402` there. TLS on the ext-auth hop is not
 rendered (Envoy Gateway v1.10's `extAuth.grpc` has no TLS field, *verified 2026-11-24*); TLS on the agent-to-Gateway hop
 is not rendered either. And the broker's injector token is the seam `SharedTokens::with_injector` (*in the broker crate*),
 which the orchestrator binary does not yet pass and `orchestrator.internal` does not yet name: until that wiring lands,
-the AuthConfig's lookup answers `401 unauthenticated`, and every model call through the injector fails closed.
+the AuthConfig's lookup answers `401 unauthenticated`, and every model call through the injector fails closed. The
+ledger side has a gap of its own: another-backend's budget listener reads its secret from `x-lightbridge-budget-token`,
+while Authorino's `sharedSecretRef` can only send `Authorization: Bearer`, so the listener must accept the bearer (or a
+rewriter must stand between them) before the read works in production (*verified 2026-11-25* in another-backend's
+`crates/another-service/src/budget_remaining.rs`).
 
 ## The browser agent (ADR 0057)
 

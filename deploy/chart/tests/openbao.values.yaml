@@ -1,0 +1,10 @@
+# Layered over examples/netcup.values.yaml by the checks (render-check.sh) and by print-config.sh: a person's own credentials kept in OpenBao
+# (`orchestrator.secrets.store: openbao`, ADR 0046), the token an AWS property and the CA a named Secret. Not a deployment's values.
+orchestrator:
+  secrets:
+    store: openbao
+    openbao:
+      address: https://bao.example.svc:8200
+      mount: secret
+      tokenProperty: openbao_token
+      caSecret: openbao-ca

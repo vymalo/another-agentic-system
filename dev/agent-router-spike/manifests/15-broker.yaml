@@ -64,6 +64,13 @@ data:
                 return self._send(410, {"code": "lease_expired"})
             if run == "absent-run":
                 return self._send(404, {"code": "run_not_bound"})
+            # A lease that names no person: the injector must refuse it too, or the upstream receives an empty
+            # `x-account-id` (ANR-667).
+            if run == "noaccount-run":
+                return self._send(200,
+                    {"token": "anr250-lease-marker-7f3c-" + run,
+                     "expiresAt": "2099-01-01T00:00:00Z"},
+                    headers=[("cache-control", "no-store")])
             account = "acct-" + run
             with LOCK:
                 LAST["accountId"] = account

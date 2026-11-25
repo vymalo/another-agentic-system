@@ -773,6 +773,10 @@ pub enum RunCaller {
     /// lease and does nothing else — it binds nothing and unbinds nothing (ADR 0084 decision 2,
     /// amended 2026-11-24).
     Injector,
+    /// The operator's pod-minute meter: it asks which account a run's pod is charged to
+    /// ([`RunLeases::account`]) and does nothing else. It is refused the lease, binding and
+    /// unbinding.
+    Meter,
 }
 
 /// What the orchestrator binds at run creation: the run, the agent it belongs to, the person it
@@ -890,6 +894,17 @@ pub trait RunLeases: Send + Sync + 'static {
         run: &RunId,
         caller: &RunCaller,
     ) -> impl Future<Output = Result<RunLease, RunLeaseError>> + Send;
+
+    /// The account (the run's person) a bound run is charged to, for [`RunCaller::Meter`] alone:
+    /// every other caller is [`RunLeaseError::NotBound`], so the answer never says whether a run
+    /// exists. It holds no credential, so a binding past its deadline still answers (a pod may
+    /// outlive its run's lease); an unbound run is `NotBound`. A required method: an implementer
+    /// of `RunLeases` must add it.
+    fn account(
+        &self,
+        run: &RunId,
+        caller: &RunCaller,
+    ) -> impl Future<Output = Result<UserId, RunLeaseError>> + Send;
 }
 
 /// The binding store the broker keeps: one row per run, and the same binding written again is

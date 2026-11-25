@@ -91,6 +91,14 @@ it, and the Authorino instance and its gRPC authorization Service. */}}
 {{- printf "http://%s.%s.svc:%v" (include "agentic.component" (dict "root" . "component" "orchestrator")) .Release.Namespace (int .Values.orchestrator.internal.port) -}}
 {{- end -}}
 {{- end -}}
+{{/* The Secret holding the shared secret of the ledger's budget read; its content comes from AWS, never from this chart. */}}
+{{- define "agentic.injector.budgetSecret" -}}
+{{- printf "%s-injector-budget" (include "agentic.fullname" .) -}}
+{{- end -}}
+{{/* The ledger's budget read: the deployment's listener, then its one route and the account it is asked about. */}}
+{{- define "agentic.injector.budgetUrl" -}}
+{{- printf "%s/budget/v1/remaining?account_id={auth.metadata.lease.accountId}" (trimSuffix "/" (toString .Values.injector.budget.url)) -}}
+{{- end -}}
 
 {{/* "true" or nothing: whether oauth2-proxy keeps its sessions in the Redis of this release (`oauth2Proxy.sessionStore: redis`). */}}
 {{- define "agentic.oauth2Redis" -}}{{- if eq (toString .Values.oauth2Proxy.sessionStore) "redis" -}}true{{- end -}}{{- end -}}
@@ -411,6 +419,11 @@ appendonly no
      the Secret key and the file one of them is: `user-secrets-key-<id>`. */}}
 {{- define "agentic.userSecrets" -}}{{- if .Values.orchestrator.userSecrets.enabled -}}true{{- end -}}{{- end -}}
 {{- define "agentic.userSecrets.file" -}}{{- printf "user-secrets-key-%s" . -}}{{- end -}}
+
+{{/* "true" or nothing: whether a person's own credentials are kept in OpenBao (`orchestrator.secrets.store: openbao`, ADR 0046) and not in
+     Postgres. The token is the Secret key `openbao-token` (an AWS property, mounted as a file); the CA, when there is one, is the key `ca.crt`
+     of the Secret `orchestrator.secrets.openbao.caSecret`, mounted at `/run/secrets/openbao-ca`. */}}
+{{- define "agentic.secrets.openbao" -}}{{- if eq (toString .Values.orchestrator.secrets.store) "openbao" -}}true{{- end -}}{{- end -}}
 
 {{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
      this release with `rustfs.enabled` and no endpoint of its own). */}}

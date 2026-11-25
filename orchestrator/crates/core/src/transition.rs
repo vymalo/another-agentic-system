@@ -2915,6 +2915,13 @@ fn timer_fired(state: ThreadState, job: &mut Job, timer: Timer) -> (ThreadState,
     if let Timer::AskDeadline { job: of, ask } = timer {
         return (state, ask::deadline(job, of, ask));
     }
+    // A hand-off's timers are the team's, folded by `TeamLedger::due`, not a job's.
+    if matches!(
+        timer,
+        Timer::HandoffAuto { .. } | Timer::HandoffExpiry { .. }
+    ) {
+        return (state, vec![]);
+    }
     match state {
         ThreadState::Verifying => {}
         ThreadState::Queued
@@ -2958,7 +2965,9 @@ fn timer_fired(state: ThreadState, job: &mut Job, timer: Timer) -> (ThreadState,
             }
         }
         // handled above, for every state
-        Timer::AskDeadline { .. } => (state, vec![]),
+        Timer::AskDeadline { .. } | Timer::HandoffAuto { .. } | Timer::HandoffExpiry { .. } => {
+            (state, vec![])
+        }
     }
 }
 
