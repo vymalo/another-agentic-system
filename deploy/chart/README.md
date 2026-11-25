@@ -1650,8 +1650,10 @@ lease, and one that lists no agent token admits no lookup at all (`401 unauthent
 
 The injector is the half of [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
 that keeps the deployment's model key out of every agent. It is a second, **internal** path to the model, rendered by this
-chart and **off by default**:
+chart and **off by default**. The header contract — who may set `Authorization` and `x-account-id`, what is checked, what
+is refused, and what the header does not authorise — is [`docs/api/model-injector.md`](../../docs/api/model-injector.md).
 
+In one picture:
 ```
 agent ──Authorization: its own (or none)──▶ Gateway (Agent Router, ClusterIP)
                                               │  ext-authz gRPC
