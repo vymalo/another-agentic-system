@@ -42,6 +42,8 @@ async fn the_supplied_model_titles_the_thread() {
             TaskKind::Title,
             TaskSettings::new(TaskKind::Title, "app", "gateway-model"),
         )]),
+        min_client_version: None,
+        admission: None,
     };
     let embed = Embedded::open_with(
         database("model"),
