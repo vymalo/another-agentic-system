@@ -50,6 +50,8 @@ pub struct Injector {
     at_zero: BTreeSet<UserId>,
     /// The account the injector stamped for each call it let through, in order.
     stamped: Arc<Mutex<Vec<UserId>>>,
+    /// The key the lease handed out for each call, in order: what `Authorization` carried.
+    keys: Arc<Mutex<Vec<String>>>,
     /// Every question the worker sent to the injector, refused or not.
     asked: Arc<AtomicUsize>,
 }
@@ -61,6 +63,7 @@ impl Injector {
             leases,
             at_zero: BTreeSet::new(),
             stamped: Arc::default(),
+            keys: Arc::default(),
             asked: Arc::default(),
         }
     }
@@ -79,6 +82,13 @@ impl Injector {
 
     pub fn asked(&self) -> usize {
         self.asked.load(Ordering::SeqCst)
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -99,6 +109,10 @@ impl ChatModel for Injector {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(account.clone());
+        self.keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(lease.token().expose().to_owned());
         if self.at_zero.contains(&account) {
             // The Envoy filter's answer for a spent balance, before the model endpoint.
             return Err(ModelError::Rejected("402: model_locked".to_owned()));

@@ -135,6 +135,10 @@ enum DispatchError {
     /// of it was applied (ADR 0072).
     #[error("the round's task is of another context")]
     ForeignContext,
+    /// A utility call's lease could not be bound (the broker is down, or the key names another
+    /// person): the row waits for its retry and the model is not asked.
+    #[error("the utility call's lease could not be bound: {0}")]
+    Lease(String),
 }
 
 type Done = Result<(), DispatchError>;

@@ -170,7 +170,14 @@ injector:
   authorino:
     name: ""
     replicas: 1
+    # The audiences the agents' projected service-account token must carry. Empty renders only the orchestrator's
+    # audience below, which no agent's token carries: set the agents' audience here when the injector is on.
     audiences: []
+    # The audience of the projected token this chart mounts for the **orchestrator's own model calls** (thread titles and
+    # descriptions): the injector's TokenReview admits it beside the agents'. Empty: `<fullname>-orchestrator`. The token
+    # is the key the orchestrator's model endpoint presents, so a deployment that turns the injector on must point
+    # `model.baseUrl` at the injector's Service.
+    orchestratorAudience: ""
 
 orchestrator:
   image:

@@ -18,7 +18,9 @@ use std::sync::Arc;
 
 use orch_core::{AgentId, ThreadState};
 use orch_ports::memory::MemoryRunLeases;
-use orch_ports::{OutboxKind, OutboxStatus, RunCaller, RunId, RunLeases, ToolSecret};
+use orch_ports::{
+    OutboxKind, OutboxStatus, RunBinding, RunBindingError, RunBindings as _, RunId, ToolSecret,
+};
 use support::billing::{
     Broker, ENDPOINT, Injector, LEASE_TOKEN, TestApp, app_with, create, quiet, spawn, wait_state,
 };
@@ -60,7 +62,9 @@ async fn a_title_call_names_the_thread_owners_account_through_the_injector() {
     // Alice's thread: the model answers, and the title lands in her thread.
     w.model.then_answer("Which branch to use");
     let a = create(&app, &alice(), "plain", "ask me about the build").await;
-    wait_state(&app, &alice(), a.id, ThreadState::Blocked).await;
+    // The title is written by a worker of its own after the agent's first reply, so the title is
+    // what this test waits for -- never a thread state: the state is the agent's script's business
+    // (the first word of the message picks it), and the title's arrival says the reply happened.
     eventually("alice's title", || async {
         (title_of(&app, a.id).await != "ask me about the build").then_some(())
     })
@@ -70,10 +74,9 @@ async fn a_title_call_names_the_thread_owners_account_through_the_injector() {
 
     // Bob's thread through the same model: a second person, a second lease.
     w.model.then_answer("Bob's build");
-    let b = create(&app, &bob(), "plain", "bob asks about the build").await;
-    wait_state(&app, &bob(), b.id, ThreadState::Blocked).await;
+    let b = create(&app, &bob(), "plain", "ask me about bob's build").await;
     eventually("bob's title", || async {
-        (app.get_thread(&bob(), b.id).await.unwrap().title != "bob asks about the build")
+        (app.get_thread(&bob(), b.id).await.unwrap().title != "ask me about bob's build")
             .then_some(())
     })
     .await;
@@ -83,8 +86,19 @@ async fn a_title_call_names_the_thread_owners_account_through_the_injector() {
     // Two questions reached the model, each with the lease the worker bound for its thread.
     let calls = w.model.calls();
     assert_eq!(calls.len(), 2, "one title question each: {calls:?}");
-    let binds = broker.binds();
-    assert_eq!(binds.len(), 2, "one binding per title call");
+    // Only the title leases. The dispatcher also binds each **run** it delegates, under the
+    // agent's own task id (`dispatcher.rs`'s `bind_run`, ADR 0084), and those are neither this
+    // card's nor a second title: this test counts the `thread:<id>:title` leases by their id.
+    let binds: Vec<_> = broker
+        .binds()
+        .into_iter()
+        .filter(|binding| binding.run.as_str().starts_with("thread:"))
+        .collect();
+    assert_eq!(
+        binds.len(),
+        2,
+        "one title lease per title call, and the run leases are not counted: {binds:?}"
+    );
     let mut leases_seen = BTreeSet::new();
     for (call, (owner, thread)) in calls.iter().zip([(alice(), a.id), (bob(), b.id)]) {
         let lease = call
@@ -115,16 +129,29 @@ async fn a_title_call_names_the_thread_owners_account_through_the_injector() {
             Some(ENDPOINT),
             "the lease is for the title task's endpoint"
         );
-        // What the injector stamps as `x-account-id`: the lease's account, the person's UserId.
-        let lease = leases
-            .lease(&lease, &RunCaller::Injector)
-            .await
-            .expect("the injector can read the lease of the call");
-        assert_eq!(lease.account(), &owner, "the account is the thread owner's");
-        assert_eq!(lease.token().expose(), LEASE_TOKEN, "the injected key");
+        assert!(
+            binding.expires_at > jiff::Timestamp::now(),
+            "the lease is live when it is bound: the worker's clock and the broker's agree (both \
+             are the system clock), so an expired lease cannot be what refuses a call"
+        );
     }
+    // The account and the key are asserted from what the **injector** read at call time (its
+    // `leases.lease(..., RunCaller::Injector)` inside `complete`), never from a lookup after the
+    // fact: `ask_model` unbinds the lease once the call is over, so a re-read here would assert the
+    // lease's absence — which is the behaviour we want — and not its content.
+    assert_eq!(
+        injector.stamped(),
+        [alice(), bob()],
+        "the account stamped per call"
+    );
+    assert_eq!(
+        injector.keys(),
+        [LEASE_TOKEN, LEASE_TOKEN],
+        "the key the injector added upstream"
+    );
     assert_eq!(leases_seen.len(), 2, "two threads, two leases");
-    assert_eq!(injector.stamped(), [alice(), bob()]);
+    // The leases are short-lived by design: each `thread:` lease is unbound once its call is over
+    // (`utility.rs`'s `unbind_utility_lease`), so a credential does not outlive the call.
     let mut unbound = broker.unbinds();
     unbound.sort();
     let mut want: Vec<RunId> = leases_seen.into_iter().collect();
@@ -185,4 +212,36 @@ async fn a_person_at_zero_gets_no_title_call_and_the_default_title_stands() {
         .await
         .unwrap();
     assert_eq!(renamed.title, "Mine, at zero");
+}
+
+/// The lease of a `(thread, property)` pair is bound **once**, for the thread's owner: a second
+/// binder that names another person answers the broker's `409 run_already_bound` and the lease is
+/// not re-pointed (a thread has one owner). The idempotent case — the same binding again, which is
+/// what an outbox retry sends — is the broker's own rule and is exercised by the first test.
+#[tokio::test]
+async fn a_second_binder_with_another_user_is_a_conflict_not_a_repoint() {
+    let leases = Arc::new(MemoryRunLeases::with_token(
+        ENDPOINT,
+        ToolSecret::new(LEASE_TOKEN),
+    ));
+    let broker = Broker::new(Arc::clone(&leases));
+    let run = RunId::new("thread:t-1:title");
+    let binding = |person| RunBinding {
+        run: run.clone(),
+        agent: AgentId::new("plain"),
+        person,
+        model: Some(ENDPOINT.to_owned()),
+        expires_at: jiff::Timestamp::now() + jiff::SignedDuration::from_secs(300),
+    };
+    broker.bind(binding(alice())).await.unwrap();
+    assert_eq!(
+        broker.bind(binding(bob())).await.unwrap_err(),
+        RunBindingError::Conflict,
+        "a different person for the same lease is 409 run_already_bound"
+    );
+    assert_eq!(
+        leases.binding(&run).unwrap().person,
+        alice(),
+        "the lease still names the first person: no re-point"
+    );
 }
