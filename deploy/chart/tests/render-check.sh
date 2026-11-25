@@ -1811,6 +1811,13 @@ render -f "$mb_values" --set-json 'affinity={"nodeAffinity":{"requiredDuringSche
 mig_job
 check "migrate before the switch: the release's own affinity, node selector and tolerations are kept, and the pod affinity is added to them" sh -c "
   grep -Eq '^ +nodeAffinity:\$' '$sec2' && grep -Eq '^ +podAffinity:\$' '$sec2' && grep -Eq '^      nodeSelector:\$' '$sec2' && grep -Eq '^ +pool: agents\$' '$sec2' && grep -Eq '^      tolerations:\$' '$sec2'"
+# The database cluster is placed like the other pods when the release has a node selector and tolerations, and carries no `affinity` otherwise.
+render
+check "database cluster: no affinity key in the default render" lacks '^  affinity:$'
+render --set nodeSelector.workload=another --set-json 'tolerations=[{"key":"workload","operator":"Equal","value":"another","effect":"NoSchedule"}]'
+doc Cluster another-agentic-db > "$sec"
+check "database cluster: the release's node selector and tolerations are in spec.affinity" sh -c "
+  grep -Eq '^  affinity:\$' '$sec' && grep -Eq '^      workload: another\$' '$sec' && grep -Eq '^        key: workload\$' '$sec'"
 # The orchestrator is not touched by turning the Job on when the S3 target is not RustFS: its Deployment, ConfigMap and ExternalSecret are byte for byte the same.
 render --set orchestrator.artifacts.s3.bucket=agentic-files --set orchestrator.artifacts.s3.endpoint=https://s3.example.org
 cp "$out" "$out.mx-off"
