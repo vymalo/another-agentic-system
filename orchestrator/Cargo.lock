@@ -3028,6 +3028,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-window"
+version = "0.1.0"
+dependencies = [
+ "orch-core",
+ "orch-ports",
+ "orch-window",
+ "serde",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "orchestrator"
 version = "0.1.0"
 dependencies = [
