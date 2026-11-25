@@ -297,6 +297,7 @@ Not proven here: other poolers (Pgpool-II, Supavisor), PgBouncer versions other 
 | `agents.registry.agentToken` | **secret**, none | `AGENT_REGISTRY_AGENT_TOKEN` | now |
 | `agents.registry.timeoutSecs` | 1 to 60, `3` | `AGENT_REGISTRY_TIMEOUT_SECS` | now |
 | `agents.registry.maxAgeSecs` | 1 to 3600, `60` | `AGENT_REGISTRY_MAX_AGE_SECS` | now |
+| `agents.sleep.wakeTimeoutSecs` | 1 to 300, absent by default and then the deployment never wakes an agent; how long a dispatch waits for a sleeping agent before the thread fails with a readable message ([ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md)) | — | proposed |
 
 ### `gate`
 

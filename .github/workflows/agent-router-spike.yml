@@ -67,6 +67,7 @@ jobs:
           kubectl --context kind-agent-router-spike -n envoy-gateway-system logs -l job-name=eg-gateway-helm-certgen --tail=40 || true
           kubectl --context kind-agent-router-spike -n envoy-ai-gateway-system logs -l app.kubernetes.io/name=ai-gateway --tail=40 || true
           kubectl --context kind-agent-router-spike -n default logs deploy/authorino --tail=40 || true
+          kubectl --context kind-agent-router-spike -n default logs deploy/spike-gateway --tail=40 || true
           kubectl --context kind-agent-router-spike -n default logs deploy/spike-broker --tail=40 || true
       - name: Delete the cluster
         if: always()

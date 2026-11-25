@@ -1,6 +1,6 @@
 # The REAL external authorizer (sys#334 S9): Authorino over gRPC, where this directory's earlier version used an
 # HTTP stub. This is the chart's shape (deploy/chart, `injector`): authenticate the caller, ask the broker for the
-# run's lease, and add `Authorization` upstream only.
+# run's lease, and add `Authorization` and `x-account-id` upstream only.
 #
 # Scope of this proof: authentication is `anonymous` on purpose. The card's question here is the transport plus the
 # lease lookup; the agent-pod identity (TokenReview) and the broker's caller rules belong to the chart, and adding a
@@ -64,6 +64,15 @@ spec:
           - selector: request.headers.x-run-id
             operator: neq
             value: ""
+    # A refused or absent lease (the broker's 410/404) leaves the metadata unset, and Authorino still applies every
+    # ok_response header: without this rule the gateway receives `Authorization: Bearer` with an empty token. That is
+    # unusable, but it is a header; deny instead, so a run without a lease reaches no gateway at all (ANR-662).
+    "lease":
+      patternMatching:
+        patterns:
+          - selector: auth.metadata.lease.token
+            operator: neq
+            value: ""
   response:
     success:
       headers:
@@ -72,3 +81,8 @@ spec:
         "Authorization":
           plain:
             selector: "Bearer {auth.metadata.lease.token}"
+        # The lease's accountId is the run's person (the usage ledger's UserId, ADR 0065), never a provider account.
+        # A selector like the token, so a client cannot choose whose usage it is.
+        "x-account-id":
+          plain:
+            selector: "{auth.metadata.lease.accountId}"

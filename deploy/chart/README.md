@@ -1657,9 +1657,10 @@ agent ──Authorization: its own (or none)──▶ Gateway (Agent Router, Clu
                                               │  GET /internal/runs/{X-Run-Id}/lease
                                               ▼
                                           the broker's internal listener
-                                              │  {token, expiresAt}
+                                              │  {token, accountId, expiresAt}
                                               ▼
                                           ok_response: Authorization = Bearer <token>
+                                                       x-account-id  = <accountId>
                                               │
                                               ▼
                                           the model endpoint
@@ -1672,14 +1673,25 @@ What the chart renders when `injector.enabled` is true (values.yaml, `injector`)
 | `Gateway` + `EnvoyProxy` | Agent Router's Gateway, and the EnvoyProxy that pins its Service name and makes it `ClusterIP`. The Service lives in Envoy Gateway's namespace; **the Gateway has no Ingress and no edge route.** |
 | `ClientTrafficPolicy` | `bufferLimit` (`50Mi`): a model answer is larger than Envoy's default 32 KiB. |
 | `Backend`, `BackendTLSPolicy`, `AIServiceBackend`, `AIGatewayRoute` | the upstream from `injector.upstream.url`, and the route that selects it by `injector.modelHeader: injector.model`. With an `https` upstream the policy validates it against the system CA. |
-| `Authorino`, `AuthConfig` | the authorizer: a `kubernetesTokenReview` of the agent's service-account token, the broker lookup keyed by `X-Run-Id` and cached per run for at most `broker.cacheTtlSecs` (≤ 30 s, the lease), and `Authorization: Bearer {auth.metadata.lease.token}` in `response.success.headers`. |
+| `Authorino`, `AuthConfig` | the authorizer: a `kubernetesTokenReview` of the agent's service-account token, the broker lookup keyed by `X-Run-Id` and cached per run for at most `broker.cacheTtlSecs` (≤ 30 s, the lease), and `Authorization: Bearer {auth.metadata.lease.token}` plus `x-account-id: {auth.metadata.lease.accountId}` in `response.success.headers`. A lease with no token is denied, so a refused lookup never forwards an empty `Bearer`. |
 | `SecurityPolicy` | `extAuth.grpc` to Authorino's Service, scoped to the **`HTTPRoute` Agent Router generates** from the `AIGatewayRoute` (same name), not to the whole Gateway. |
 | `ExternalSecret` | the injector's own broker token, from `injector.broker.tokenProperty` of the AWS secret. A property name, never a value. |
 
-`Authorization` is a `plain.selector`, never a `plain.value`: Authorino v0.26.4 emits a static `plain.value` as a Go struct
-dump, not a string (*verified 2026-11-24* on v0.26.4), and the real case needs the lease's value anyway. Envoy Gateway
-applies the ok_response headers to the upstream request and **replaces** a client-sent `Authorization`: exactly one header
-arrives at the model (*verified 2026-11-24*, Envoy Gateway v1.10.0 with Agent Router v1.3.0; `dev/agent-router-spike/`).
+`Authorization` and `x-account-id` are `plain.selector`s, never `plain.value`: Authorino v0.26.4 emits a static `plain.value` as
+a Go struct dump, not a string (*verified 2026-11-24* on v0.26.4), and the real case needs the lease's values anyway. Envoy
+Gateway applies the ok_response headers to the upstream request and **replaces** a client-sent `Authorization`: exactly one
+header arrives at the model (*verified 2026-11-24*, Envoy Gateway v1.10.0 with Agent Router v1.3.0; `dev/agent-router-spike/`).
+`x-account-id` is the lease's `accountId`, the run's person — the `UserId` the usage ledger is keyed by (ADR 0065), never a
+provider account and never the client's claim, because it is read from the lease and not from the request.
+
+**Spike result (ANR-662, 2026-11-24): an injected header reaches the model gateway through Agent Router + Authorino, and
+the injector needs no service of our own.** In kind, WireMock's request journal shows exactly one `Authorization` (the
+leased key) and `x-account-id: acct-<run>` for a valid run; a request with no `X-Run-Id` is `403` with no gateway
+request; a run whose lease the broker refuses (`410 lease_expired` or `404 run_not_bound`) is `403` with no gateway
+request. The scenario found the fail-open the `authorization.lease` rule now closes: a refused lookup leaves the metadata
+unset and Authorino still applies the ok_response headers, so the gateway would have received `Authorization: Bearer`
+with an empty token (unusable, but a header). It is refused at the authorizer now. WireMock is practical in kind and is
+what the scenario uses, not an echo pod.
 
 Turning it on takes the controllers (Envoy Gateway, Agent Router's CRDs and controller, the Authorino operator — none is
 this chart's) and these values:
@@ -1712,7 +1724,8 @@ the broker URL (or `orchestrator.internal.enabled`), the token property (with `e
 refused too.
 
 **What this does not cover yet, stated plainly.** None of it is run on a cluster by this chart's tests — only rendered
-(`tests/golden/injector.yaml`) and proven for the transport by `dev/agent-router-spike/`. TLS on the ext-auth hop is not
+(`tests/golden/injector.yaml`); the transport is proven separately by `dev/agent-router-spike/`, and its spike result above
+recorded header pass-through for the key and the account id, and the refusal with no lease. TLS on the ext-auth hop is not
 rendered (Envoy Gateway v1.10's `extAuth.grpc` has no TLS field, *verified 2026-11-24*); TLS on the agent-to-Gateway hop
 is not rendered either. And the broker's injector token is the seam `SharedTokens::with_injector` (*in the broker crate*),
 which the orchestrator binary does not yet pass and `orchestrator.internal` does not yet name: until that wiring lands,

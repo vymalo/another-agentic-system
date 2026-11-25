@@ -1,4 +1,4 @@
-# ADR 0093 — An inspector reads a run, and "replay from a step" is a fork of the journal into a new run
+# ADR 0094 — An inspector reads a run, and "replay from a step" is a fork of the journal into a new run
 
 - **Status:** **proposed (2026-11-24)** (task ANR-261, issue [#404](https://github.com/vymalo/another-agentic-system/issues/404),
   ROADMAP M8, first gap of ANR-10). **Nothing is built.** Every name and shape below is the design's, for the owner to
