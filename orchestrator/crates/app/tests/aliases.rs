@@ -240,6 +240,7 @@ async fn a_role_and_a_tool_server_that_name_an_alias_are_about_the_agent() {
         permissions: BTreeSet::from([Permission::AgentInvoke]),
         agents: AgentScope::from_patterns(["coder"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let policy = Policy::new(BTreeMap::from([(Role::new("clerk"), grant)]), None).unwrap();
     let app = App::new(

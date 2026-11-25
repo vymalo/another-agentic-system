@@ -49,6 +49,7 @@ fn grant(cap: Option<AccessTier>) -> RoleGrant {
         ]),
         agents: AgentScope::All,
         max_tier: cap,
+        tokens_per_period: None,
     }
 }
 

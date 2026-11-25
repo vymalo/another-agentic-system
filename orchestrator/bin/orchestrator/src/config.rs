@@ -1220,6 +1220,7 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
                     let grant = RoleGrant {
                         permissions: role.permissions.iter().copied().map(permission).collect(),
                         max_tier: role.max_tier.map(tier),
+                        tokens_per_period: role.effective_limits().tokens_per_period,
                         agents: role
                             .agents
                             .as_ref()

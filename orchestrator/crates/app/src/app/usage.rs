@@ -20,6 +20,7 @@ use orch_ports::{Clock, Ports, UsageLedger};
 
 use super::App;
 use crate::AppError;
+use crate::authz::Access;
 
 /// The default of [`UsageSettings::retention_months`]: two years.
 pub const DEFAULT_USAGE_RETENTION_MONTHS: u32 = 24;
@@ -129,6 +130,35 @@ impl<P: Ports> App<P> {
         let month = month.unwrap_or_else(|| UsageMonth::of(self.ports.clock().now()));
         let totals = self.ports.store().month(owner, month).await?;
         Ok(price_month(self.cfg.usage.prices.as_ref(), &totals))
+    }
+
+    /// Refuses a message of a person who has used what their roles allow this UTC month
+    /// (`tokensPerPeriod`, ADR 0081): the tokens of the month's ledger, every model and every task
+    /// of theirs, against the largest allowance of their roles. With no allowance the ledger is not
+    /// read. Called before anything is written or sent, so a refused message reaches no agent.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::AllowanceSpent`] when the month's tokens are at or above the allowance;
+    /// [`AppError::Store`] when the ledger cannot be read.
+    pub(crate) async fn check_allowance(
+        &self,
+        access: &Access<'_>,
+        owner: &UserId,
+    ) -> Result<(), AppError> {
+        let Some(limit) = access.tokens_per_period() else {
+            return Ok(());
+        };
+        let month = UsageMonth::of(self.ports.clock().now());
+        let totals = self.ports.store().month(owner, month).await?;
+        let used = totals
+            .models
+            .iter()
+            .fold(0u64, |sum, m| sum.saturating_add(m.tokens.total_tokens));
+        if used >= limit {
+            return Err(AppError::AllowanceSpent { limit });
+        }
+        Ok(())
     }
 
     /// The retention sweep removed `tasks` tasks.

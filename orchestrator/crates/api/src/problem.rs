@@ -327,6 +327,16 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
                 None,
             );
         }
+        // The month's token allowance is spent (ADR 0081): adam reads the code as `Rejected`.
+        AppError::AllowanceSpent { limit } => {
+            return (
+                Problem::forbidden(format!(
+                    "the allowance of {limit} tokens for this month is spent"
+                ))
+                .with_code("allowance_spent"),
+                None,
+            );
+        }
         // A thread that works is not deleted (ADR 0043): the client offers to stop it first.
         AppError::ThreadActive(_) => {
             return (

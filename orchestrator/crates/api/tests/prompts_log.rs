@@ -93,6 +93,7 @@ async fn nothing_a_prompt_holds_is_in_any_log_line() {
         permissions: permissions.iter().copied().collect(),
         agents: AgentScope::from_patterns(["*"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let policy = Policy::new(
         [

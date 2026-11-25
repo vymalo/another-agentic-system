@@ -332,6 +332,7 @@ async fn capped_world_listing(backend: Backend, params: Option<Value>) -> World 
         ]),
         agents: AgentScope::All,
         max_tier: Some(AccessTier::Edits),
+        tokens_per_period: None,
     };
     World::with(
         backend,

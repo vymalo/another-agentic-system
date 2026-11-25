@@ -911,6 +911,7 @@ async fn find_agent_asks_the_audience_and_not_the_roles() {
                     permissions: BTreeSet::from([Permission::AgentInvoke, Permission::ThreadWrite]),
                     agents: AgentScope::from_patterns(["open"]),
                     max_tier: None,
+                    tokens_per_period: None,
                 },
             ),
             (Role::new("admin"), RoleGrant::admin()),

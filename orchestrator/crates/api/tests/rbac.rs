@@ -391,6 +391,7 @@ async fn me_says_who_you_are_what_your_roles_are_and_what_they_grant() {
 async fn me_says_the_highest_tier_the_roles_allow_and_nothing_when_there_is_no_cap() {
     let role = |cap: Option<orch_core::AccessTier>| RoleGrant {
         max_tier: cap,
+        tokens_per_period: None,
         ..RoleGrant::user()
     };
     let policy = Policy::new(
@@ -438,12 +439,14 @@ async fn me_says_the_highest_tier_the_roles_allow_and_nothing_when_there_is_no_c
 async fn a_role_that_cannot_invoke_an_agent_does_not_lift_the_cap_the_screen_is_told() {
     let invoking = |cap: Option<orch_core::AccessTier>| RoleGrant {
         max_tier: cap,
+        tokens_per_period: None,
         ..RoleGrant::user()
     };
     let reader = RoleGrant {
         permissions: BTreeSet::from([Permission::AgentRead, Permission::ThreadRead]),
         agents: AgentScope::All,
         max_tier: None,
+        tokens_per_period: None,
     };
     let policy = Policy::new(
         [
@@ -476,6 +479,7 @@ async fn a_fork_body_names_the_tier_of_its_message_and_a_capped_role_that_names_
 {
     let capped = RoleGrant {
         max_tier: Some(orch_core::AccessTier::Edits),
+        tokens_per_period: None,
         ..RoleGrant::user()
     };
     let policy = Policy::new(
@@ -572,6 +576,7 @@ async fn me_lists_the_agents_of_a_role_and_answers_a_person_who_may_do_nothing()
         permissions: BTreeSet::from([Permission::AgentRead, Permission::AgentInvoke]),
         agents: AgentScope::from_patterns(["plain"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let policy = Policy::new(
         [
@@ -1032,11 +1037,13 @@ async fn arranging_the_list_needs_thread_read_and_not_thread_write() {
         permissions: BTreeSet::from([Permission::ThreadRead]),
         agents: AgentScope::from_patterns(["*"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let writer = RoleGrant {
         permissions: BTreeSet::from([Permission::ThreadWrite, Permission::AgentInvoke]),
         agents: AgentScope::from_patterns(["*"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let policy = Policy::new(
         [
@@ -1098,6 +1105,7 @@ async fn deleting_needs_thread_delete_and_not_thread_write_and_no_role_reaches_a
         permissions: BTreeSet::from([Permission::ThreadRead, Permission::ThreadDelete]),
         agents: AgentScope::from_patterns(["*"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let keeper = RoleGrant {
         permissions: BTreeSet::from([
@@ -1107,6 +1115,7 @@ async fn deleting_needs_thread_delete_and_not_thread_write_and_no_role_reaches_a
         ]),
         agents: AgentScope::from_patterns(["*"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let policy = Policy::new(
         [

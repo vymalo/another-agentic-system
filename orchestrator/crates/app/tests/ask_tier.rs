@@ -49,6 +49,7 @@ fn grant(agents: &[&str], cap: Option<AccessTier>) -> RoleGrant {
         ]),
         agents: AgentScope::from_patterns(agents.iter().copied()),
         max_tier: cap,
+        tokens_per_period: None,
     }
 }
 
@@ -57,6 +58,7 @@ fn reader() -> RoleGrant {
         permissions: BTreeSet::from([Permission::AgentRead, Permission::ThreadRead]),
         agents: AgentScope::All,
         max_tier: None,
+        tokens_per_period: None,
     }
 }
 

@@ -229,6 +229,7 @@ async fn the_document_says_what_the_person_asking_may_use_of_this_agent() {
             ]),
             agents: AgentScope::All,
             max_tier: cap,
+            tokens_per_period: None,
         };
         let policy = Policy::new(
             [(Role::new("careful"), grant)].into(),

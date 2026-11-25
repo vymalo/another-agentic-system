@@ -244,6 +244,9 @@ pub struct RoleGrant {
     /// The highest access tier the role may pick for a message (`auth.roles.<role>.maxTier`, ADR
     /// 0061): a ceiling, not a permission. `None`: no cap.
     pub max_tier: Option<AccessTier>,
+    /// The tokens the role's people may use in a UTC month, from the usage ledger (ADR 0081,
+    /// `auth.roles.<role>.limits.tokensPerPeriod`). `None`: no allowance.
+    pub tokens_per_period: Option<u64>,
     /// The agents `agent.read` and `agent.invoke` are about.
     pub agents: AgentScope,
 }
@@ -254,6 +257,7 @@ impl RoleGrant {
         RoleGrant {
             permissions: BTreeSet::new(),
             max_tier: None,
+            tokens_per_period: None,
             agents: AgentScope::Only(BTreeSet::new()),
         }
     }
@@ -272,6 +276,7 @@ impl RoleGrant {
                 Permission::ArtifactRead,
             ]),
             max_tier: None,
+            tokens_per_period: None,
             agents: AgentScope::All,
         }
     }
@@ -581,6 +586,24 @@ impl<'p> Access<'p> {
                 })
                 .map(|(_, grant)| grant.max_tier),
         )
+    }
+
+    /// The tokens the person may use in a UTC month (ADR 0081): over the roles that hold
+    /// `agent.invoke`, the largest allowance, and none (no allowance) when any of them has none or
+    /// when no role can invoke an agent. A role that cannot start an agent does not lift it.
+    pub fn tokens_per_period(&self) -> Option<u64> {
+        let mut largest: Option<u64> = None;
+        let mut any = false;
+        for (_, grant) in self
+            .roles
+            .iter()
+            .filter(|(_, g)| g.holds(Permission::AgentInvoke))
+        {
+            any = true;
+            let allowance = grant.tokens_per_period?;
+            largest = Some(largest.map_or(allowance, |l| l.max(allowance)));
+        }
+        if any { largest } else { None }
     }
 
     /// The highest of some caps, `None` (no cap) when one of them is none, or when there are none.
@@ -1336,6 +1359,7 @@ mod tests {
                         ]),
                         agents: AgentScope::All,
                         max_tier: None,
+                        tokens_per_period: None,
                     },
                 ),
                 (
@@ -1347,6 +1371,7 @@ mod tests {
                         ]),
                         agents: AgentScope::from_patterns(["coder"]),
                         max_tier: None,
+                        tokens_per_period: None,
                     },
                 ),
             ]),
@@ -1878,6 +1903,7 @@ mod tests {
                     RoleGrant {
                         permissions: BTreeSet::from([Permission::Admin]),
                         max_tier: None,
+                        tokens_per_period: None,
                         agents: AgentScope::Only(BTreeSet::new()),
                     },
                 ),
@@ -2024,6 +2050,7 @@ mod tests {
                     RoleGrant {
                         permissions: BTreeSet::from([Permission::Admin]),
                         max_tier: None,
+                        tokens_per_period: None,
                         agents: AgentScope::Only(BTreeSet::new()),
                     },
                 ),

@@ -159,6 +159,7 @@ fn grant(permissions: &[Permission]) -> RoleGrant {
         permissions: permissions.iter().copied().collect::<BTreeSet<_>>(),
         agents: AgentScope::from_patterns(["*"]),
         max_tier: None,
+        tokens_per_period: None,
     }
 }
 

@@ -29,6 +29,13 @@ pub enum AppError {
         /// What was refused, fit to show the caller: it names no one else's thread or role.
         detail: String,
     },
+    /// The person has used the tokens their roles allow in the month (ADR 0081): nothing was
+    /// written and no agent was called.
+    #[error("the allowance of {limit} tokens for this month is spent")]
+    AllowanceSpent {
+        /// The limit, `auth.roles.<role>.limits.tokensPerPeriod`.
+        limit: u64,
+    },
     /// The deployment's sharing cap is `disabled` (ADR 0040): nothing can be shared or given a new
     /// link. Taking a link down is never refused for it.
     #[error("sharing is disabled in this deployment")]
@@ -257,7 +264,9 @@ impl Classify for AppError {
     fn class(&self) -> ErrorClass {
         match self {
             AppError::NotFound => ErrorClass::NotFound,
-            AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+            AppError::Forbidden { .. }
+            | AppError::AllowanceSpent { .. }
+            | AppError::SharingDisabled => ErrorClass::Forbidden,
             AppError::Invalid(_) => ErrorClass::Invalid,
             AppError::Finished
             | AppError::Refused(_)
@@ -309,6 +318,7 @@ impl Classify for AppError {
             AppError::RegistryUnavailable { .. } | AppError::CardUnavailable { .. } => None,
             AppError::NotFound
             | AppError::Forbidden { .. }
+            | AppError::AllowanceSpent { .. }
             | AppError::SharingDisabled
             | AppError::OverCap { .. }
             | AppError::NotShared
@@ -378,6 +388,7 @@ mod tests {
             AppError::NotFound,
             AppError::missing_permission(Permission::ThreadWrite),
             AppError::agent_not_allowed(Permission::AgentInvoke, &AgentId::new("coder")),
+            AppError::AllowanceSpent { limit: 10 },
             AppError::SharingDisabled,
             AppError::OverCap {
                 cap: SharingMode::Internal,
@@ -442,7 +453,9 @@ mod tests {
             // Exhaustive: a new variant forces a class decision.
             let expected = match &e {
                 AppError::NotFound => ErrorClass::NotFound,
-                AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+                AppError::Forbidden { .. }
+                | AppError::AllowanceSpent { .. }
+                | AppError::SharingDisabled => ErrorClass::Forbidden,
                 AppError::Invalid(_) => ErrorClass::Invalid,
                 AppError::Finished
                 | AppError::Refused(_)

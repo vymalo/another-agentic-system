@@ -1226,6 +1226,7 @@ fn grant_without_invoke(cap: Option<orch_core::AccessTier>, invoke: bool) -> orc
                     permissions,
                     agents: AgentScope::All,
                     max_tier: cap,
+                    tokens_per_period: None,
                 },
             )]),
             Some(orch_ports::Role::new("careful")),

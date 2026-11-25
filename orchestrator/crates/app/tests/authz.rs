@@ -49,6 +49,7 @@ fn role(permissions: &[Permission], agents: &[&str]) -> RoleGrant {
         permissions: permissions.iter().copied().collect::<BTreeSet<_>>(),
         agents: AgentScope::from_patterns(agents),
         max_tier: None,
+        tokens_per_period: None,
     }
 }
 

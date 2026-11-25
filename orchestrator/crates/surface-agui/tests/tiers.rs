@@ -359,6 +359,7 @@ async fn a_tier_above_what_the_role_allows_is_422_and_one_up_to_it_goes() {
         ]),
         agents: AgentScope::All,
         max_tier: Some(AccessTier::Edits),
+        tokens_per_period: None,
     };
     let policy = Policy::new(
         [(Role::new("careful"), capped)].into(),

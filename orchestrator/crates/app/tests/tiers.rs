@@ -253,6 +253,7 @@ fn capped(cap: Option<AccessTier>) -> RoleGrant {
         ]),
         agents: AgentScope::All,
         max_tier: cap,
+        tokens_per_period: None,
     }
 }
 
@@ -1019,6 +1020,7 @@ async fn the_cap_of_a_person_is_that_of_the_roles_that_let_them_use_the_agent() 
         permissions: BTreeSet::from([Permission::AgentRead, Permission::ThreadRead]),
         agents: AgentScope::All,
         max_tier: None,
+        tokens_per_period: None,
     };
     let app = under(
         &w,

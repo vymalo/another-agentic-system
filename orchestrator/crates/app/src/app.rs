@@ -1124,6 +1124,7 @@ impl<P: Ports> App<P> {
                 "title must be at most {MAX_TITLE_CHARS} characters"
             )));
         }
+        self.check_allowance(&access, user).await?;
         self.validate_target(&access, &req.target).await?;
         self.check_mentions(
             &access,
@@ -1694,6 +1695,7 @@ impl<P: Ports> App<P> {
         // it replaces, each lowered to what the person's cap and the agent's card allow.
         let replacement = match replacement {
             Some(mut replacement) => {
+                self.check_allowance(&access, who.user()).await?;
                 self.check_mentions(
                     &access,
                     &target.agent_id,
@@ -2505,6 +2507,7 @@ impl<P: Ports> App<P> {
         } = &mut input
         {
             *mentions = self.canonical_mentions(std::mem::take(mentions));
+            self.check_allowance(&access, who.user()).await?;
             self.check_mentions(&access, &thread.target.agent_id, text, mentions)
                 .await?;
             // The access tier it is sent under (ADR 0061). A message that names none but continues

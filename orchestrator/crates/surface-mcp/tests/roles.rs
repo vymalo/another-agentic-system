@@ -25,6 +25,7 @@ fn policy() -> Policy {
         ]),
         agents: AgentScope::from_patterns(["plain"]),
         max_tier: None,
+        tokens_per_period: None,
     };
     let mut roles = orch_app::built_in_roles();
     roles.insert(Role::new("chat"), chat);
@@ -174,6 +175,7 @@ async fn start_job_under_a_capped_role_runs_at_the_cap_not_at_the_agents_default
         ]),
         agents: AgentScope::from_patterns(["plain"]),
         max_tier: Some(AccessTier::Edits),
+        tokens_per_period: None,
     };
     let mut roles = orch_app::built_in_roles();
     roles.insert(Role::new("chat"), capped);
