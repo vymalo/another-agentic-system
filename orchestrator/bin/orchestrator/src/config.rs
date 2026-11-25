@@ -2015,6 +2015,10 @@ pub struct EndpointSettings {
     pub base_url_ref: Option<orch_config::SecretRef>,
     /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
+    /// The file the bearer is read from at each call, when the reference was a `{ file }` with an
+    /// absolute path (a projected service-account token a deployment rotates). The endpoint's key
+    /// is still read once at startup: this only refreshes it.
+    pub api_key_file: Option<std::path::PathBuf>,
     /// How long one question may take.
     pub timeout: Duration,
 }
@@ -2035,6 +2039,10 @@ impl fmt::Debug for EndpointSettings {
         f.debug_struct("EndpointSettings")
             .field("base_url", &self.shown_url())
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "api_key_file",
+                &self.api_key_file.as_ref().map(|_| "<file>"),
+            )
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -2079,6 +2087,7 @@ fn model_settings(
                 base_url,
                 base_url_ref: None,
                 api_key: api_key.map(SecretString::from),
+                api_key_file: None,
                 timeout,
             },
         )]),

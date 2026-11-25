@@ -2638,6 +2638,17 @@ check "injector on: Envoy Gateway pins a ClusterIP Service the agents can name" 
 check "injector on: the route selects the model by header and reaches the upstream Backend" out_all '^              name: x-ai-eg-model$' '^              value: "injector-model"$' '^        hostname: "model.example.invalid"$' '^        port: 8080$'
 check "injector on: the SecurityPolicy is gRPC and scoped to the generated HTTPRoute" out_all '^      kind: HTTPRoute$' '^      name: another-agentic-injector$' '^  extAuth:$' '^        - name: another-agentic-authorino-authorino-authorization$' '^          port: 50051$'
 check "injector on: Authorino authenticates the agent pod with a TokenReview" dhas AuthConfig another-agentic-injector 'kubernetesTokenReview'
+injector_audiences() {
+  doc AuthConfig another-agentic-injector | awk '
+    /^      kubernetesTokenReview:$/ { k = 1 }
+    k && /^        audiences:$/ { a = 1 }
+    a && /^          - another-agentic-injector$/ { agents = 1 }
+    a && /^          - another-agentic-orchestrator$/ { orchestrator = 1 }
+    END { exit !(a && agents && orchestrator) }'
+}
+check "injector on: the TokenReview audiences admit the agents and the orchestrator's own calls" injector_audiences
+check "injector on: the orchestrator mounts a projected token for its own model calls" out_all '^        - name: model-token$' '^                  audience: "another-agentic-orchestrator"$' '^                  expirationSeconds: 3600$'
+check "injector on: the orchestrator's model key is that projected token, read from its file" dhas ConfigMap another-agentic-orchestrator 'apiKey: \{ file: /var/run/secrets/model-injector/token \}'
 check "injector on: the lease lookup is the broker's run route, keyed by X-Run-Id" dhas AuthConfig another-agentic-injector 'url: "http://another-agentic-orchestrator.another-agentic-system.svc:8081/internal/runs/\{request.headers.x-run-id\}/lease"'
 check "injector on: the lookup presents the injector's own token from a Secret, never a value" dhas AuthConfig another-agentic-injector 'name: another-agentic-injector-broker'
 injector_lease_cached() {

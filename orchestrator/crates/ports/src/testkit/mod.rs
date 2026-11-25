@@ -23,6 +23,7 @@ pub mod credential_broker;
 pub mod pending_authorizations;
 pub mod prompt_signer;
 pub mod prompt_store;
+pub mod provisioner;
 pub mod registry;
 pub mod run_leases;
 pub mod secret_store;
@@ -1167,6 +1168,46 @@ macro_rules! vault_store_conformance {
                 match $make().await {
                     Some((store, clock)) => $crate::testkit::vault_store::$case(store, clock).await,
                     None => eprintln!("skipped: no vault store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `AgentProvisioner` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated
+/// [`ProvisionerFixture`](provisioner::ProvisionerFixture) (`None` skips the suite). Each case gives
+/// up after 30 s. The calling crate needs `tokio` (with `macros`, `rt` and `time`) as a
+/// dev-dependency.
+#[macro_export]
+macro_rules! agent_provisioner_conformance {
+    ($make:path) => {
+        $crate::agent_provisioner_conformance!(@cases $make;
+            the_first_call_makes_the_agent_and_returns_it_ready
+            two_first_calls_at_once_make_one_agent
+            a_second_call_makes_nothing_more
+            a_suspended_agent_is_resumed_and_the_call_waits_for_ready
+            a_kind_has_its_own_agent
+            another_owners_agent_is_never_touched
+            state_never_makes_an_agent
+            suspend_and_delete_of_an_absent_agent_change_nothing
+            a_deleted_agent_is_made_again
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => {
+                        tokio::time::timeout(
+                            ::std::time::Duration::from_secs(30),
+                            $crate::testkit::provisioner::$case(fixture),
+                        )
+                        .await
+                        .expect("conformance case timed out");
+                    }
+                    None => eprintln!("skipped: no provisioner available"),
                 }
             }
         )*

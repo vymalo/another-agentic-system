@@ -71,6 +71,7 @@ async fn a_scripted_model_says_none_when_it_has_no_script_and_remembers_its_ques
         system: "s".into(),
         user: user.into(),
         max_tokens: 8,
+        run: None,
     };
     assert_eq!(model.complete(&ask("one")).await.unwrap(), "A title");
     assert_eq!(model.complete(&ask("two")).await.unwrap(), "NONE");
@@ -94,6 +95,7 @@ async fn no_model_has_nothing_to_answer() {
             system: "s".into(),
             user: "u".into(),
             max_tokens: 8,
+            run: None,
         })
         .await
         .unwrap_err();

@@ -70,6 +70,7 @@ mod model;
 mod pending;
 mod prompt_signer;
 mod prompts;
+mod provisioner;
 mod registry;
 mod route;
 mod search;
@@ -128,6 +129,10 @@ pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerEr
 pub use prompts::{
     MAX_PROMPTS, PROMPT_PAGE, PromptPage, PromptRevision, PromptScope, PromptStore,
     PromptStoreError, PromptSummary, PromptViewer, StoredPrompt,
+};
+pub use provisioner::{
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, InvalidAgentOwner, MAX_OWNER_CHARS,
+    ProvisionError, ProvisionedAgent,
 };
 pub use registry::{
     AUDIENCE_EVERYONE, AgentAudience, AgentListing, AgentRegistry, AudienceRoles,
