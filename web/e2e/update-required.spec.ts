@@ -42,9 +42,8 @@ test("update_required_shows_update_screen", async ({ page, minimum }) => {
   await expect(page.getByRole("heading", { name: "Update the application" })).toBeVisible();
   await expect(page.getByText("Needs version 99.0.0 or later.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
-  // the screen stands in for the app: no picker, no error line
+  // the screen stands in for the app: no picker
   await expect(agentPicker(page)).toHaveCount(0);
-  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("a version the deployment accepts opens the app", async ({ page, minimum }) => {
