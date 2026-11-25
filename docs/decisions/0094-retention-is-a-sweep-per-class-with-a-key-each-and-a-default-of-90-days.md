@@ -4,7 +4,7 @@
   [#157](https://github.com/vymalo/another-agentic-system/issues/157)). Nothing is built. The questions stay Open until
   the ages are recorded (ANR-289).
 - **Owner's decision, ANR-Q51, 2026-11-24 06:07Z:** *"(b) An open-source default of 90 days for all of them"*. Recorded
-  in another-context `decisions-2026-11-24.md` row 2 (`#118`, `d77e314`). The ages are the owner's; this ADR is the
+  in the owner's decision log of 2026-11-24, row 2. The ages are the owner's; this ADR is the
   mechanism, and 90 days is the default it ships.
 
 ## Context
