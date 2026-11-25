@@ -1,7 +1,7 @@
 //! Conformance testkit (ADR 0009): every [`ThreadStore`](crate::ThreadStore),
 //! [`Wakeup`](crate::Wakeup), [`AgentClient`](crate::AgentClient), [`ChatModel`](crate::ChatModel),
 //! [`AgentRegistry`](crate::AgentRegistry), [`Authenticator`](crate::Authenticator),
-//! [`SecretStore`](crate::SecretStore), [`VaultStore`](crate::VaultStore), [`UsageLedger`](crate::UsageLedger),
+//! [`SecretStore`](crate::SecretStore), [`VaultStore`](crate::VaultStore), [`AccountErase`](crate::AccountErase), [`UsageLedger`](crate::UsageLedger),
 //! [`ThreadSearch`](crate::ThreadSearch),
 //! [`UserToolServerStore`](crate::UserToolServerStore),
 //! [`PendingAuthorizations`](crate::PendingAuthorizations),
@@ -14,6 +14,7 @@
 //! ```
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+pub mod account_erase;
 pub mod agent_client;
 pub mod artifact_store;
 pub mod authenticator;
@@ -1208,6 +1209,38 @@ macro_rules! agent_provisioner_conformance {
                         .expect("conformance case timed out");
                     }
                     None => eprintln!("skipped: no provisioner available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `AccountErase` conformance case (ADR 0098). `$make` is an
+/// `async fn() -> Option<W>` returning a fresh [`EraseWorld`](account_erase::EraseWorld): the adapter and
+/// the means to seed and read the records it erases (`None` skips the suite). Each case uses people of
+/// its own and gives up after 60 s. The calling crate needs `tokio` (with `macros` and
+/// `rt-multi-thread`) as a dev-dependency.
+#[macro_export]
+macro_rules! account_erase_conformance {
+    ($make:path) => {
+        $crate::account_erase_conformance!(@cases $make;
+            everything_of_the_person_is_gone_and_nothing_of_another_is_touched
+            a_person_with_a_running_job_is_refused_and_nothing_changes
+            a_neighbours_running_job_does_not_block_the_erase
+            only_the_minimal_kept_records_remain
+            a_person_without_usage_has_no_kept_until
+            a_late_result_for_an_erased_thread_is_dropped_and_counted
+            a_second_erase_is_not_found_and_touches_nobody
+            a_keep_of_zero_days_is_refused_and_changes_nothing
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(world) => $crate::testkit::account_erase::$case(world).await,
+                    None => eprintln!("skipped: no account-erase adapter available"),
                 }
             }
         )*
