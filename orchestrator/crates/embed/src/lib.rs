@@ -30,7 +30,7 @@
 //! | `AgentClient` | the caller's, generic ([`orch_ports::AgentClient`]) |
 //! | `AgentRegistry` | the static [`orch_app::AgentDirectory`] the caller gives |
 //! | `Clock`, `IdGen` | the system clock and UUIDv7 ids |
-//! | `ChatModel` | none: the application's titles are the first words of its messages, and no description task runs |
+//! | `ChatModel` | the application's, through [`EmbedPorts`]; none by default: titles are the first words of the messages and no description task runs |
 //! | `Authenticator` | [`orch_ports::RefuseAll`]: the application states the person, and no bearer is checked in process |
 //! | `ArtifactStore` | none |
 //! | `UserToolPorts` | off |
@@ -43,7 +43,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -52,11 +52,12 @@ use orch_agui_projection::{Audience, ChildMeta, Frame, Projector, ThreadMeta};
 use orch_agui_proto as agui;
 use orch_app::{
     AgentDirectory, App, AppConfig, AppError, Dispatcher, DispatcherConfig, FeedItem, GateError,
-    NewThread,
+    NewThread, TaskSettings,
 };
-use orch_core::{AgentId, AgentTarget, Event, ThreadId, ThreadRecord, UserId};
+use orch_core::{AgentId, AgentTarget, Event, TaskKind, ThreadId, ThreadRecord, UserId};
 use orch_ports::{
-    AgentClient, NoArtifacts, NoModel, NoUserTools, PortSet, RefuseAll, SystemClock, UuidV7Ids,
+    AgentClient, ArtifactStore, ChatModel, NoArtifacts, NoModel, NoUserTools, PortSet, RefuseAll,
+    SystemClock, UserToolPorts, UuidV7Ids,
 };
 use orch_store_sqlite::{SqliteStore, SqliteWakeup};
 use tokio::task::JoinHandle;
@@ -65,9 +66,52 @@ use tokio_util::sync::CancellationToken;
 /// Events read per page when a whole thread is read or streamed.
 const PAGE: u32 = 500;
 
-/// The ports of an embedded application: SQLite, the caller's agent client, no authenticator, no
-/// model, no artifact store and no servers of the person's own.
-pub type Stack<A> = PortSet<SqliteStore, SqliteWakeup, A, SystemClock, UuidV7Ids, NoModel>;
+/// The ports of an embedded application: SQLite, the caller's agent client and, unless the caller
+/// supplies them through [`EmbedPorts`], no model, no artifact store and no servers of the person's
+/// own. There is never an authenticator.
+pub type Stack<A, M = NoModel, X = NoArtifacts, T = NoUserTools> = PortSet<
+    SqliteStore,
+    SqliteWakeup,
+    A,
+    SystemClock,
+    UuidV7Ids,
+    M,
+    orch_ports::FixedRegistry,
+    RefuseAll,
+    X,
+    T,
+>;
+
+/// The application's own pieces, handed to [`Embedded::open_with`] through ports that already exist.
+///
+/// Each field defaults to the refusing port, so `EmbedPorts::default()` is what [`Embedded::open`]
+/// builds. The secret store enters through `user_tools`: the application builds the bundle over its
+/// own `SecretStore` with `orch-credential-broker` (this crate does not depend on it, nor on
+/// `axum`), and hands it here.
+#[derive(Debug, Clone)]
+pub struct EmbedPorts<M = NoModel, X = NoArtifacts, T = NoUserTools> {
+    /// The model client the orchestrator asks for thread titles and descriptions (the app's
+    /// gateway credentials live behind it).
+    pub model: M,
+    /// The file store behind the files agents hand over.
+    pub artifacts: X,
+    /// The person's own MCP servers and the credentials kept for them.
+    pub user_tools: T,
+    /// The utility tasks (titles, descriptions) that ask `model`. Empty by default: a task that is
+    /// absent is off and the model is never asked (ADR 0035).
+    pub tasks: BTreeMap<TaskKind, TaskSettings>,
+}
+
+impl Default for EmbedPorts {
+    fn default() -> Self {
+        EmbedPorts {
+            model: NoModel,
+            artifacts: NoArtifacts,
+            user_tools: NoUserTools::off(),
+            tasks: BTreeMap::new(),
+        }
+    }
+}
 
 /// What an embedded orchestrator failed to do.
 #[derive(Debug, thiserror::Error)]
@@ -87,8 +131,13 @@ pub enum EmbedError {
 /// caller's runtime, and the person the application states.
 ///
 /// Dropping it cancels the dispatcher; [`shutdown`](Self::shutdown) waits for it to end.
-pub struct Embedded<A: AgentClient> {
-    app: Arc<App<Stack<A>>>,
+pub struct Embedded<
+    A: AgentClient,
+    M: ChatModel = NoModel,
+    X: ArtifactStore = NoArtifacts,
+    T: UserToolPorts = NoUserTools,
+> {
+    app: Arc<App<Stack<A, M, X, T>>>,
     person: UserId,
     shutdown: CancellationToken,
     dispatcher: JoinHandle<()>,
@@ -110,6 +159,23 @@ impl<A: AgentClient> Embedded<A> {
         directory: AgentDirectory,
         agents: A,
     ) -> Result<Self, EmbedError> {
+        Embedded::open_with(path, person, directory, agents, EmbedPorts::default()).await
+    }
+}
+
+impl<A: AgentClient, M: ChatModel, X: ArtifactStore, T: UserToolPorts> Embedded<A, M, X, T> {
+    /// [`open`](Embedded::open) with the application's own model client, file store and
+    /// user-tool bundle in place of the refusing ones.
+    ///
+    /// # Errors
+    /// As [`open`](Embedded::open).
+    pub async fn open_with(
+        path: impl AsRef<Path>,
+        person: UserId,
+        directory: AgentDirectory,
+        agents: A,
+        parts: EmbedPorts<M, X, T>,
+    ) -> Result<Self, EmbedError> {
         let store = SqliteStore::open(path)?;
         store.migrate().await?;
         let registry = directory.fixed_registry();
@@ -119,14 +185,15 @@ impl<A: AgentClient> Embedded<A> {
             agents,
             clock: SystemClock,
             ids: UuidV7Ids,
-            model: NoModel,
+            model: parts.model,
             auth: RefuseAll,
             registry,
-            artifacts: NoArtifacts,
-            user_tools: NoUserTools::off(),
+            artifacts: parts.artifacts,
+            user_tools: parts.user_tools,
         };
         let config = AppConfig {
             stream_poll: std::time::Duration::from_millis(50),
+            tasks: parts.tasks,
             ..AppConfig::default()
         };
         let app = Arc::new(App::new(ports, directory, config)?);
@@ -149,7 +216,7 @@ impl<A: AgentClient> Embedded<A> {
     }
 
     /// The application, for an operation this root does not wrap.
-    pub fn app(&self) -> &Arc<App<Stack<A>>> {
+    pub fn app(&self) -> &Arc<App<Stack<A, M, X, T>>> {
         &self.app
     }
 
@@ -271,7 +338,9 @@ impl<A: AgentClient> Embedded<A> {
     }
 }
 
-impl<A: AgentClient> Drop for Embedded<A> {
+impl<A: AgentClient, M: ChatModel, X: ArtifactStore, T: UserToolPorts> Drop
+    for Embedded<A, M, X, T>
+{
     fn drop(&mut self) {
         self.shutdown.cancel();
         self.dispatcher.abort();
