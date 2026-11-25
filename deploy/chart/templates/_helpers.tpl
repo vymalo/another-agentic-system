@@ -412,6 +412,11 @@ appendonly no
 {{- define "agentic.userSecrets" -}}{{- if .Values.orchestrator.userSecrets.enabled -}}true{{- end -}}{{- end -}}
 {{- define "agentic.userSecrets.file" -}}{{- printf "user-secrets-key-%s" . -}}{{- end -}}
 
+{{/* "true" or nothing: whether a person's own credentials are kept in OpenBao (`orchestrator.secrets.store: openbao`, ADR 0046) and not in
+     Postgres. The token is the Secret key `openbao-token` (an AWS property, mounted as a file); the CA, when there is one, is the key `ca.crt`
+     of the Secret `orchestrator.secrets.openbao.caSecret`, mounted at `/run/secrets/openbao-ca`. */}}
+{{- define "agentic.secrets.openbao" -}}{{- if eq (toString .Values.orchestrator.secrets.store) "openbao" -}}true{{- end -}}{{- end -}}
+
 {{/* The S3 artifact store (`orchestrator.artifacts.store: s3`): "true" or nothing; its bucket; its endpoint (the RustFS Service of
      this release with `rustfs.enabled` and no endpoint of its own). */}}
 {{- define "agentic.artifactsS3" -}}{{- if eq (toString .Values.orchestrator.artifacts.store) "s3" -}}true{{- end -}}{{- end -}}

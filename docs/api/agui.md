@@ -581,6 +581,24 @@ What each side reads:
 Goldens: [`steer`, `stop-and-send`](examples/README.md) (the viewer's stream) and `run-steer`, `run-stop-and-send` (the two
 responses, in order).
 
+## An agent that is asleep
+
+An agent whose deployment scales to zero while it is idle is **woken** by the platform (a held request or a `503` with
+`Retry-After`, the platform's plan for sleep when idle, [plat#83](https://github.com/vymalo/another-agentic-platform/pull/83);
+[ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md)). The
+**stream is unaffected**: it is a projection of the log, so a client's connection stays open and simply has no new events
+while the agent is at zero. What a client sees is what a **dispatch** is doing.
+
+- **The state.** While a send is being retried against a sleeping agent the thread reads **`waking`** — a `RunAgentState` a
+  client already renders, so nothing new is required of it.
+- **The event.** One custom event, `vymalo.waking`, with `{ thread, since, attempt, wakeTimeoutSecs }`, so a client can say
+  *why* it is waiting rather than showing a generic spinner.
+- **The bound.** `agents.sleep.wakeTimeoutSecs` in `GET /api/config` ([config.md](config.md)); absent means this deployment
+  does not wake agents and a client renders the ordinary `queued` state. Nothing here is required for a client to work.
+- **The failure.** Past the bound the thread goes **`failed`** with a message a person can read — *"the agent did not wake
+  within N seconds"* — never a silent hang and never a raw `503`. A **suspended** agent is refused by name, because a
+  person suspended it and a retry will not help ([ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md), decision 6).
+
 ## Verification (the gate)
 
 *Built 2026-09-30 (MVP slice 3, [ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)).* A thread whose gate

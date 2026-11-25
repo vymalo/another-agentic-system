@@ -22,8 +22,8 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Database, Environment, LogFormat, MAX_PRESIGN_TTL_SECS,
     MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
-    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SharingMode, Surface, ToolServer, ToolServerSigning,
-    UrlRef, UserSecrets, UserToolServers,
+    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SecretStoreKind, SharingMode, Surface, ToolServer,
+    ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -98,6 +98,11 @@ pub struct Secrets {
     /// `secrets.pg.keys`, in the order of the file, each read and checked to be 64 hexadecimal
     /// characters; empty without the section.
     pub user_secret_keys: Vec<UserSecretKeyValue>,
+    /// `secrets.openbao.token`; `None` unless `secrets.store` is `openbao`.
+    pub openbao_token: Option<Secret>,
+    /// `secrets.openbao.caFile`, read: the PEM text of the certificates. A certificate is public,
+    /// but it is held as a `Secret` for the one reader that resolves a file the same way.
+    pub openbao_ca: Option<Secret>,
 }
 
 /// One key of `secrets.pg.keys`, resolved. `Debug` shows the reference, never the key.
@@ -219,6 +224,10 @@ pub struct ValidatedUserSecrets {
     pub secrets: UserSecrets,
     /// `secrets.pg.keys`, resolved; empty unless `secrets.store` is `pg`.
     pub keys: Vec<UserSecretKeyValue>,
+    /// `secrets.openbao.token`; `None` unless `secrets.store` is `openbao`.
+    pub openbao_token: Option<Secret>,
+    /// `secrets.openbao.caFile`, read; `None` unless the file names one.
+    pub openbao_ca: Option<Secret>,
     /// `log.format`.
     pub log_format: LogFormat,
 }
@@ -398,6 +407,7 @@ impl Config {
         checker.user_secrets(&section);
         let (database_url, database_direct_url) = checker.database(&self.database);
         let keys = checker.user_secret_keys(&section);
+        let (openbao_token, openbao_ca) = checker.user_secrets_openbao(&section);
         let mut errors = checker.errors;
         match database_url {
             Some(database_url) if errors.is_empty() => Ok(ValidatedUserSecrets {
@@ -405,6 +415,8 @@ impl Config {
                 database_direct_url,
                 secrets: section,
                 keys,
+                openbao_token,
+                openbao_ca,
                 log_format: self.log.format,
             }),
             _ => {
@@ -1656,6 +1668,10 @@ impl Checker<'_> {
             Some(section) => self.user_secret_keys(section),
             None => Vec::new(),
         };
+        let (openbao_token, openbao_ca) = match &cfg.secrets {
+            Some(section) => self.user_secrets_openbao(section),
+            None => (None, None),
+        };
         Some(Secrets {
             database_url: database_url?,
             database_direct_url,
@@ -1675,6 +1691,8 @@ impl Checker<'_> {
             webhook_github,
             tool_servers,
             user_secret_keys,
+            openbao_token,
+            openbao_ca,
         })
     }
 
@@ -1822,9 +1840,50 @@ impl Checker<'_> {
         }
     }
 
-    /// The rules of `secrets` that need no secret read: the store has its section, ids are of a
-    /// small alphabet and not repeated, `current` names a key.
+    /// The rules of `secrets` that need no secret read: the store has its section and no other, ids
+    /// are of a small alphabet and not repeated, `current` names a key; for OpenBao, an `https`
+    /// address and a mount of the alphabet the adapter writes paths in.
     fn user_secrets(&mut self, section: &UserSecrets) {
+        let store = section.store.as_str();
+        let other = match section.store {
+            SecretStoreKind::Pg => section.openbao.is_some().then_some("openbao"),
+            SecretStoreKind::Openbao => section.pg.is_some().then_some("pg"),
+        };
+        if let Some(other) = other {
+            self.invalid(
+                format!("secrets.{other}"),
+                format!("is not used with secrets.store {store}: leave it out"),
+            );
+        }
+        match section.store {
+            SecretStoreKind::Pg => self.user_secrets_pg(section),
+            SecretStoreKind::Openbao => {
+                let Some(bao) = &section.openbao else {
+                    self.invalid(
+                        "secrets.openbao",
+                        "required when secrets.store is openbao: the server's address and the token",
+                    );
+                    return;
+                };
+                if !is_openbao_address(&bao.address) {
+                    self.invalid(
+                        "secrets.openbao.address",
+                        "must be an https URL with a host, no credential, query or fragment: the \
+                         token is sent with every call and never in the clear",
+                    );
+                }
+                if !is_openbao_mount(&bao.mount) {
+                    self.invalid(
+                        "secrets.openbao.mount",
+                        "is 1 to 128 characters of A-Z, a-z, 0-9, '.', '_', '-' and '/', not \
+                         starting or ending with '/' and with no empty part",
+                    );
+                }
+            }
+        }
+    }
+
+    fn user_secrets_pg(&mut self, section: &UserSecrets) {
         let store = section.store.as_str();
         let Some(pg) = &section.pg else {
             self.invalid(
@@ -1847,6 +1906,37 @@ impl Checker<'_> {
         if !pg.keys.iter().any(|key| key.id == pg.current) {
             self.invalid("secrets.pg.current", "names no key of secrets.pg.keys");
         }
+    }
+
+    /// Resolves `secrets.openbao.token` (required, a secret) and reads `secrets.openbao.caFile`
+    /// (when named). Nothing when the store is not `openbao`. An error names the key and never the
+    /// value.
+    fn user_secrets_openbao(&mut self, section: &UserSecrets) -> (Option<Secret>, Option<Secret>) {
+        let Some(bao) = section
+            .openbao
+            .as_ref()
+            .filter(|_| section.store == SecretStoreKind::Openbao)
+        else {
+            return (None, None);
+        };
+        let token = self.resolve(&bao.token, "secrets.openbao.token", true);
+        let ca = bao.ca_file.as_ref().and_then(|file| {
+            let secret = self.resolve(
+                &SecretRef::File(file.clone()),
+                "secrets.openbao.caFile",
+                true,
+            )?;
+            if secret.expose().contains("-----BEGIN CERTIFICATE-----") {
+                Some(secret)
+            } else {
+                self.invalid(
+                    "secrets.openbao.caFile",
+                    "the file holds no PEM certificate (-----BEGIN CERTIFICATE-----)",
+                );
+                None
+            }
+        });
+        (token, ca)
     }
 
     /// Resolves the keys of `secrets.pg`: each is 64 hexadecimal characters. A key that does not
@@ -2025,6 +2115,35 @@ impl Checker<'_> {
         }
         Ok(text.to_owned())
     }
+}
+
+/// The address of `secrets.openbao`: `https`, a host, no credential, query or fragment.
+fn is_openbao_address(raw: &str) -> bool {
+    raw.len() <= 2048
+        && Url::parse(raw).is_ok_and(|u| {
+            u.scheme() == "https"
+                && u.host().is_some()
+                && u.port() != Some(0)
+                && u.username().is_empty()
+                && u.password().is_none()
+                && u.query().is_none()
+                && u.fragment().is_none()
+        })
+}
+
+/// The mount of `secrets.openbao`: parts of `A-Z a-z 0-9 . _ -` joined by single `/`, 1 to 128
+/// characters, neither `.` nor `..` as a part.
+fn is_openbao_mount(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.len() <= 128
+        && raw.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        })
 }
 
 /// A key id of `secrets.pg.keys`: 1 to 64 characters of `A-Z a-z 0-9 . _ -`.
