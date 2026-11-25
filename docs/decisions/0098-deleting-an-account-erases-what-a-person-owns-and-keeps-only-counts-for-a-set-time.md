@@ -34,7 +34,8 @@ There is no account row: a person is the key their credential gives (`getMe`). S
    Only that person may call it: any other caller, an administrator included, gets **404**, the one answer for "no such account" and "not yours"
    (ADR 0039). The caller confirms by sending the key again as `?confirm=`; a different value is a `400 confirmation_mismatch` and nothing is
    touched. A role withholds it by not holding the permission **`account.delete`** (403 `forbidden`), as `thread.delete` can be withheld.
-   The contract is [`chat-api.yaml`](../api/chat-api.yaml) `deleteAccount`.
+   The contract is the OpenAPI operation `deleteAccount` written out under *The route* below; it enters [`chat-api.yaml`](../api/chat-api.yaml) with
+   slice E3, which serves it (see *Why the contract is not edited here*).
 2. **A job in progress refuses it: `409 account_busy`.** The delete does not stop work for the person: while any thread of the caller, or an edit
    of one, is `queued`, `working` or `verifying`, or has a running ask, nothing is erased. The answer names how many threads work and no more.
    A client offers "Stop and delete" as ADR 0043 does (stop, wait, ask again). The check and the erase are one decision of the store: a thread that
@@ -75,10 +76,77 @@ There is no account row: a person is the key their credential gives (`getMe`). S
 
 | # | Slice | Decisive test | Repository |
 |---|---|---|---|
-| E1 | This ADR and the contract (`deleteAccount`, the permission, the two problem codes) | the contract lints and `tools/docs-check` passes | sys |
+| E1 | This ADR, with the operation, the permission and the two problem codes written out under *The route* | `tools/docs-check` passes; `deleteAccount` is not in `chat-api.yaml` yet | sys |
 | E2 | The `AccountErase` port and its testkit, an in-memory adapter | after an erase the person's threads, prompts, memory, devices and servers read as empty and another person's are untouched; the ledger rows hold no key | sys |
-| E3 | Postgres adapters, the route, the revoke step, the keep sweep and the metric | the same on Postgres in one transaction; a job in progress is `409 account_busy` and nothing changed; a broker down is 503 and nothing changed; another caller is 404; a ledger row older than `keepDays` is gone and a younger one stays | sys |
+| E3 | Postgres adapters, the route (and `deleteAccount` with the two problem codes **entering `chat-api.yaml`**), the revoke step, the keep sweep and the metric | the same on Postgres in one transaction; a job in progress is `409 account_busy` and nothing changed; a broker down is 503 and nothing changed; another caller is 404; a ledger row older than `keepDays` is gone and a younger one stays | sys |
 | E4 | The web: the dialog with the list of what goes, what is kept and what cannot be erased, then the e2e on mocks (`dev/` scenario) | the scenario signs in, creates a thread, deletes the account and reads `404` for the thread and an empty list | sys |
+
+## The route
+
+Why the contract is not edited here: `orchestrator/crates/api/tests/contract.rs` asserts that every operation of `chat-api.yaml` (but the
+`/agui/*` ones) is one the crate serves ("the contract has no other"). An operation added before a handler serves it fails that test, so the
+operation below enters `chat-api.yaml` in the pull request that serves it (slice E3), as written here, with the `Problem` `code` list gaining
+`account_busy` (409) and `confirmation_mismatch` (400). Until then this block is the contract of the route; the checker
+`tools/api-breaking-check` sees an addition as no break.
+
+```yaml
+  /api/accounts/{account}:
+    parameters:
+      - name: account
+        in: path
+        required: true
+        description: "The person's key, as `getMe` answers it (`user`): the e-mail, lower-cased"
+        schema: { type: string }
+    delete:
+      operationId: deleteAccount
+      summary: Erase the caller's account, after a confirmation
+      description: |
+        Erases everything the caller owns ([ADR 0098](../decisions/0098-deleting-an-account-erases-what-a-person-owns-and-keeps-only-counts-for-a-set-time.md)):
+        their threads with everything on them (the log, the agent binding, the share links, the organisation of their list, their
+        search words; [ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)), their files, their own MCP servers (revoked at
+        the credential broker first, then deleted; [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md)),
+        their prompts, memory notes, push devices and notification settings. Forks other people made of their shared threads are those
+        people's and stay.
+
+        **What is kept:** the counts of the usage ledger ([ADR 0065](../decisions/0065-a-usage-ledger-per-person.md)), under a pseudonym
+        that is not the key and cannot be turned back into it, until `account.erase.keepDays` (a configured period, 90 by default) have
+        passed; `keptUntil` says when. No content, no thread id.
+
+        **What cannot be erased, and the answer does not promise:** backups until they expire, the A2A agent's own store of its
+        context, the model provider's copy, and the account at the identity provider, which the operator holds.
+
+        The caller must send their own key as `confirm`; any other value is a 400 and nothing is touched. Only the person can delete
+        their account: **anybody else, an administrator included, gets a 404**, the one answer for "no such account" and "not yours"
+        ([ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)). While any thread of the caller, or an edit of one, is
+        `queued`, `working` or `verifying`, or has a running ask, nothing is erased and the answer is **409 `account_busy`**: stop the
+        work (`cancelThread`), wait for it to end, and ask again. Needs the permission `account.delete`, which no role holds by default.
+        A second `DELETE` is a 404.
+      parameters:
+        - name: confirm
+          in: query
+          required: true
+          description: "The caller's own key again (`getMe` `user`). Anything else is `400 confirmation_mismatch`"
+          schema: { type: string }
+      responses:
+        "202":
+          description: The account is erased; the files follow within a sweep
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, threadsErased, filesPending, keptUntil]
+                properties:
+                  status: { type: string, enum: [erasing] }
+                  threadsErased: { type: integer, minimum: 0 }
+                  filesPending: { type: integer, minimum: 0, description: "Files whose erase is queued (the purge worker's rows)" }
+                  keptUntil: { type: [string, "null"], format: date-time, description: "When the kept usage counts are deleted; `null` when the person had none" }
+        "400": { description: "`code: confirmation_mismatch`: `confirm` is not the caller's key. Nothing was touched", $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { description: "No role of the caller holds `account.delete` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
+        "404": { description: "The account is not the caller's, or nothing is left of it (one answer for all, an administrator's included)", $ref: "#/components/responses/Problem" }
+        "409": { description: "`code: account_busy`: a thread of the caller works. Stop it, wait, ask again", $ref: "#/components/responses/Problem" }
+        "503": { description: "The credential broker or the store cannot be reached (`Retry-After`): nothing was erased, try again", $ref: "#/components/responses/Problem" }
+```
 
 ## Configuration
 
