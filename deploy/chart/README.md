@@ -81,7 +81,7 @@ One AWS Secrets Manager secret, **`prod/another-agentic/env`** (region `eu-centr
 | `browser_a2a_token` | one token of at least 32 bytes, **only with `browser.enabled`** | orchestrator; the browser agent; the chat (only with `browser.chatSubagent`) | orchestrator: env `BROWSER_A2A_TOKEN`; the browser: Secret `another-agentic-browser`, env `A2A_BEARER_TOKENS`; the chat: Secret `another-agentic-chat`, env `BROWSER_A2A_TOKEN` |
 | `obscura_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`: obscura refuses a shorter one), **only with `browser.enabled`**: the bearer of the browser's obscura sidecar | the browser pod only (the sidecar, and the agent beside it) | Secret `another-agentic-browser`, env `OBSCURA_MCP_TOKEN` of both containers |
 | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | the S3 credentials, **only with `orchestrator.artifacts.store: s3` or `orchestrator.artifacts.migrate.enabled`** (which reads them in a Secret of its own, also while the store is still `fs`): the keys AWS or the server gave, or, with `rustfs.enabled`, two random values (`openssl rand -hex 20`, `openssl rand -hex 32`) that become RustFS's root credentials | orchestrator; RustFS (with `rustfs.enabled`) | orchestrator: keys `artifacts-s3-access-key-id` and `artifacts-s3-secret-access-key`, **files** → `artifacts.s3.accessKeyId` and `secretAccessKey: { file }`; RustFS: Secret `another-agentic-rustfs`, env `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` |
-| `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.enabled` | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
+| `brave_api_key` | the Brave Search API's subscription token | **the search pod only**, with `webSearch.provider: brave` (not the default) | Secret `another-agentic-websearch`, env `BRAVE_API_KEY` |
 | `search_mcp_token` | at least 32 random bytes (`openssl rand -hex 32`): the bearer that guards the search pod | the search pod; the orchestrator (with `toolServers.websearch`); **the chat agent** (with `webSearch.enabled`: its researcher sub-agent, [ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)); **the coder's chart** (its own property: added by [vymalo/another-adam-rs#84](https://github.com/vymalo/another-adam-rs/pull/84), not merged when this was written) | the pod: Secret `another-agentic-websearch`, env `SEARCH_MCP_TOKEN`; the orchestrator: key `search-mcp-token`, **file** `/run/secrets/orchestrator/search-mcp-token` → `toolServers[websearch].bearer: { file }` |
 | `context7_api_key` | Context7's API key | orchestrator, with `toolServers.context7` | key `context7-api-key`, **file** `/run/secrets/orchestrator/context7-api-key` → `toolServers[context7].bearer: { file }` |
 | `agent_db_password` | the password of the database role `agent`, random and URL-safe (`openssl rand -hex 32`: it is written into a URI) | the chat agent's role and its ExternalSecret (the browser agent's runs are in the same database: [the browser agent](#the-browser-agent-adr-0057)) | Secret `another-agentic-db-agent` (`kubernetes.io/basic-auth`: `username`, `password`, `uri`): CNPG reads the role's password from it, the chat agent's `DATABASE_URL` is its key `uri` ([below](#one-database-cluster)) |
@@ -958,10 +958,10 @@ orchestrator:
 ```
 
 The pieces are independent except that `websearch` needs the pod (`webSearch.enabled`), which the chart enforces. The AWS secret
-needs `brave_api_key` and `search_mcp_token` for the pod, `search_mcp_token` for `websearch`, `context7_api_key` for `context7`.
+needs `search_mcp_token` for the pod (and `brave_api_key` with `provider: brave`), `search_mcp_token` for `websearch`, `context7_api_key` for `context7`.
 With none enabled the rendered configuration has **no `toolServers` key**, and the render is the one of a chart without this section.
 
-**Order of operations.** (1) Put the property in the AWS secret first (`brave_api_key`, `search_mcp_token`, `context7_api_key`, as
+**Order of operations.** (1) Put the property in the AWS secret first (`search_mcp_token`, `context7_api_key`, and `brave_api_key` only with `provider: brave`, as
 needed). (2) Only then enable the server in the Application's values. (3) Watch the ExternalSecrets go to `SecretSynced`
 (`kubectl -n another-agentic-system get externalsecret`). The orchestrator's own ExternalSecret reads the new key: a property that
 does not exist in AWS makes that whole ExternalSecret fail, its Secret is not updated, and the orchestrator, one replica with
@@ -976,7 +976,7 @@ is the design here, and the warning is expected; Context7 is https and has none)
 
 ### The search pod
 
-`dev/searxng-mcp` (the dev stack's search server; provider `brave`, the key in `BRAVE_API_KEY`). **Where the coder calls it:**
+`dev/searxng-mcp` (the dev stack's search server; provider `searxng` by default: `webSearch.searxngUrl` is our own SearXNG, `webSearch.searxngTo` the peers its egress may reach on `searxngPort`, both required; `webSearch.provider: brave` keeps the Brave API possible, with the key in `BRAVE_API_KEY`). **Where the coder calls it:**
 `http://another-agentic-websearch.<namespace>.svc:8080/mcp` (Service `another-agentic-websearch`, port 8080, path `/mcp`,
 MCP over Streamable HTTP, plain request and JSON answer, no session), header `Authorization: Bearer <search_mcp_token>`. Its tools
 are `web_search {query, limit?}` and `fetch {url}`. `/healthz` (the probes) needs no token; `/mcp` without it is 401, and the server

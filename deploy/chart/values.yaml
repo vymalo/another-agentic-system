@@ -498,12 +498,12 @@ web:
     limits:
       memory: 512Mi
 
-# Web search: our own MCP server (dev/searxng-mcp, image `searxng-mcp`) over the Brave Search API, as a pod of this release.
+# Web search: our own MCP server (dev/searxng-mcp, image `searxng-mcp`) over our own SearXNG (provider `searxng`, the default; the
+# Brave Search API stays possible with `provider: brave`), as a pod of this release.
 # OFF by default. It gives an agent two tools, `web_search` and `fetch` (a public page as text, refusing private addresses);
 # it is reached with a bearer token by the orchestrator (orchestrator.toolServers.websearch) and by the coder (its own chart, which
 # reads the same property: added by vymalo/another-adam-rs#84, not merged when this was written),
-# and by nothing else (a NetworkPolicy). Needs two properties of the AWS secret (externalSecrets.properties.braveApiKey and
-# searchMcpToken). Turning it on is `webSearch.enabled: true`, once the image exists (see `image.tag`).
+# and by nothing else (a NetworkPolicy). Needs the AWS property searchMcpToken, and with `provider: brave` braveApiKey too. Turning it on is `webSearch.enabled: true`, once the image exists (see `image.tag`).
 webSearch:
   enabled: false
   image:
@@ -513,6 +513,14 @@ webSearch:
     # and the chart refuses to render it with `enabled: true`.
     tag: sha-cf750fe
     pullPolicy: IfNotPresent
+  # searxng (default): our own SearXNG, no key. brave: the Brave Search API, a paid SaaS and a key (externalSecrets.properties.braveApiKey).
+  provider: searxng
+  # The address of our SearXNG and the peers the pod's egress may reach on its port (NetworkPolicyPeers, written as in a
+  # NetworkPolicy; the pod's other egress excludes every private range). Required with `provider: searxng`.
+  # E.g. http://searxng.another-orchestrator.svc:8080 and a podSelector on that namespace.
+  searxngUrl: ""
+  searxngPort: 8080
+  searxngTo: []
   replicas: 1
   # Who may call it besides the orchestrator's pods: NetworkPolicyPeers, written as they are in a NetworkPolicy (a
   # `podSelector` alone means this namespace; add a `namespaceSelector` for another one). The coder is another release in
