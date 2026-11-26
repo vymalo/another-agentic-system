@@ -56,7 +56,7 @@ pub use prompts::{
     LOCK_TIMEOUT as PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, list_sql as prompt_list_sql,
 };
 pub use run_leases::PgRunBindings;
-pub use sql::PgPool;
+pub use sql::{PgPool, PoolStats};
 pub use store::{MIGRATIONS_TABLE, PgStore};
 pub use teams::{LOCK_TIMEOUT as TEAM_LOCK_TIMEOUT, TEAM_OWNER_LOCK_CLASS};
 pub use user_tool_servers::{LOCK_TIMEOUT, OWNER_LOCK_CLASS, PgUserToolServers};

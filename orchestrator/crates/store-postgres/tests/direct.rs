@@ -563,3 +563,25 @@ async fn a_dropped_transaction_is_rolled_back_and_its_connection_kept() {
         .unwrap();
     assert_ne!(name, "orch-in-tx", "the transaction was not rolled back");
 }
+
+/// `db_pool_connections` reads these: with K connections checked out, `in_use` is K, and giving
+/// them back moves them to idle.
+#[tokio::test]
+async fn the_pool_stats_follow_checked_out_connections() {
+    let db = database_or_skip!();
+    let pool = db.pool("pool-stats", 5).await;
+    let stats = pool.stats();
+    assert_eq!((stats.max, stats.in_use()), (5, 0));
+    let held = [
+        pool.acquire().await.unwrap(),
+        pool.acquire().await.unwrap(),
+        pool.acquire().await.unwrap(),
+    ];
+    let stats = pool.stats();
+    assert_eq!(stats.in_use(), 3, "{stats:?}");
+    assert_eq!(stats.size, 3 + stats.idle);
+    drop(held);
+    let stats = pool.stats();
+    assert_eq!(stats.in_use(), 0, "{stats:?}");
+    assert_eq!(stats.idle, 3, "{stats:?}");
+}
