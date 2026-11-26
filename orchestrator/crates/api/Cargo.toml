@@ -24,6 +24,9 @@ jiff.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
+ciborium.workspace = true
+ciborium-ll.workspace = true
+bytes.workspace = true
 url.workspace = true
 
 [dev-dependencies]
@@ -33,7 +36,6 @@ orch-auth-jwt = { workspace = true, features = ["testkit"] }
 orch-artifacts-fs.workspace = true
 orch-credential-broker.workspace = true
 tempfile = "3"
-bytes.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -7,6 +7,7 @@ every page below is a view of it or of a decision about it ([`../architecture.md
 |---|---|---|
 | [`extensions.md`](extensions.md) | **Start here for the extensions:** every A2A extension this system defines in one table (URI, status, who defines and who uses it, what it is for), how they all work, and what a new page holds | Index of the pages below; the status of each is its own |
 | [`chat-api.yaml`](chat-api.yaml) | OpenAPI 3.1: the resource API (agents, threads, export, cancel, health) and the AG-UI operations | Built |
+| [`../decisions/0100-cbor-is-a-second-media-type-of-the-chat-api.md`](../decisions/0100-cbor-is-a-second-media-type-of-the-chat-api.md) | CBOR beside JSON: send `Content-Type: application/cbor`, ask with `Accept: application/cbor`; same schemas, JSON the default, `Vary: Accept`, 406 / 400 / 413, SSE stays JSON | Built |
 | [`agui.md`](agui.md) | The AG-UI 1.0 binding: run, connect and capabilities, the log-to-AG-UI mapping, the `vymalo.*` schemas, A2UI | Built |
 | [`webhooks.md`](webhooks.md) | CI results by webhook: the generic signed shape and the GitHub adapter | Built |
 | [`ui-catalog-v1.md`](ui-catalog-v1.md) | The web's component catalog, sent to agents (A2A extension `ui-catalog/v1`) | Contract accepted; the orchestrator's handshake and the refetch (`get_ui_catalog` on the thread tools) are built. **Retired by `ui-catalog-v2.md` at the A2UI v1.0 cutover**; the contract of what is built until then |

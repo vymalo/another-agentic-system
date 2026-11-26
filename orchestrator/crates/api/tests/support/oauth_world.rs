@@ -74,7 +74,11 @@ impl Contract {
         let Some(content) = response.get("content").and_then(Value::as_object) else {
             return Some(None);
         };
-        let (content_type, media) = content.iter().next().unwrap();
+        let (content_type, media) = content
+            .iter()
+            .find(|(ct, _)| ct.ends_with("json"))
+            .or_else(|| content.iter().next())
+            .unwrap();
         Some(Some((
             content_type.clone(),
             media.get("schema").cloned().unwrap_or_else(|| json!({})),

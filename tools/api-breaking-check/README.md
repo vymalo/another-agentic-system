@@ -4,6 +4,8 @@ Fails a pull request that breaks a client of [`docs/api/chat-api.yaml`](../../do
 compares the file with the one on the base branch and lists, one per line, what a client would notice.
 It is oasdiff's idea in the few rules this contract needs; it is not oasdiff.
 
+It also fails a document where a JSON request or answer lacks its CBOR twin on the same schema (`missingCbor`, ADR 0100).
+
 ```sh
 npm --prefix tools/api-breaking-check ci                       # once per clone
 node tools/api-breaking-check/check.mjs --base origin/main     # the working tree against a ref

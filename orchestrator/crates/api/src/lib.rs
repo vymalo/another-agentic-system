@@ -21,6 +21,7 @@
 mod artifacts;
 mod auth;
 mod authorize_limit;
+pub mod cbor;
 pub mod client_version;
 pub mod cors;
 mod export;
@@ -547,6 +548,8 @@ pub fn router_with_surfaces<P: Ports>(
     // A person's prompts are never kept by a cache, whatever answers: the identity layer's 401, the
     // guard's `no_access`, a timeout, a 404 or a 405 included (ADR 0070).
     let router = router.layer(axum::middleware::from_fn(prompts::no_store_for_prompts));
+    // CBOR beside JSON on every JSON body, in one place (ADR 0100).
+    let router = router.layer(axum::middleware::from_fn(cbor::negotiate));
     // Outermost: a preflight is answered before identity (it carries no credentials), and every
     // answer, a refusal included, says which origin may read it.
     match cors::layer(&cfg.cors_allowed_origins) {

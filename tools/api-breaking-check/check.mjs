@@ -181,6 +181,34 @@ function compareSchema(where, o, n, side, add) {
   }
 }
 
+// ADR 0100: every JSON body of the API is also offered as CBOR on the same schema. Returns one line
+// per request body or response that lists one of the two media types of a pair without the other.
+export function missingCbor(doc) {
+  const out = [];
+  const pairs = [
+    ["application/json", "application/cbor"],
+    ["application/problem+json", "application/problem+cbor"],
+  ];
+  for (const [path, item] of Object.entries(doc.paths ?? {})) {
+    for (const method of METHODS) {
+      const op = item[method];
+      if (!op) continue;
+      const bodies = [["request body", op.requestBody?.content]];
+      for (const [status, response] of Object.entries(op.responses ?? {})) bodies.push([`response ${status}`, response?.content]);
+      for (const [what, content] of bodies) {
+        if (!content) continue;
+        for (const [json, cbor] of pairs) {
+          if (json in content && !(cbor in content)) out.push(`${method.toUpperCase()} ${path}: ${what} lists ${json} but not ${cbor}`);
+          if (cbor in content && !(json in content)) out.push(`${method.toUpperCase()} ${path}: ${what} lists ${cbor} but not ${json}`);
+          if (json in content && cbor in content && JSON.stringify(content[json].schema) !== JSON.stringify(content[cbor].schema))
+            out.push(`${method.toUpperCase()} ${path}: ${what} gives ${json} and ${cbor} different schemas`);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function cli() {
   const args = process.argv.slice(2);
   const get = (flag) => {
@@ -211,6 +239,18 @@ function cli() {
   } catch (e) {
     console.error(`api-breaking-check: cannot compare: ${e.message}`);
     process.exit(2);
+  }
+  let cbor;
+  try {
+    cbor = missingCbor(parse(newText));
+  } catch (e) {
+    console.error(`api-breaking-check: cannot read the document: ${e.message}`);
+    process.exit(2);
+  }
+  if (cbor.length > 0) {
+    console.log(`api-breaking-check: ${cbor.length} operation${cbor.length === 1 ? "" : "s"} without both media types (ADR 0100):`);
+    for (const line of cbor) console.log(`  - ${line}`);
+    process.exit(1);
   }
   if (found.length === 0) {
     console.log("api-breaking-check: no breaking change");

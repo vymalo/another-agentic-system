@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parse } from "yaml";
-import { breaking } from "../check.mjs";
+import { breaking, missingCbor } from "../check.mjs";
 
 const base = parse(`
 openapi: 3.1.0
@@ -112,4 +112,39 @@ test("a request type may widen, a response type may not", () => {
 
 test("a response property that is no longer always present is breaking", () => {
   assert.match(found(edit((d) => (d.components.schemas.Thing.required = ["id"]))), /property kind is no longer always present/);
+});
+
+test("every JSON body is also CBOR on the same schema (ADR 0100)", () => {
+  const ok = parse(`
+paths:
+  /a:
+    post:
+      requestBody:
+        content:
+          application/json: { schema: { $ref: "#/x" } }
+          application/cbor: { schema: { $ref: "#/x" } }
+      responses:
+        "200":
+          content:
+            application/json: { schema: { type: string } }
+            application/cbor: { schema: { type: string } }
+`);
+  assert.deepEqual(missingCbor(ok), []);
+  const one = parse(`
+paths:
+  /a:
+    get:
+      responses:
+        "200":
+          content:
+            application/json: { schema: { type: string } }
+        "404":
+          content:
+            application/problem+json: { schema: { type: string } }
+            application/problem+cbor: { schema: { type: integer } }
+`);
+  const found = missingCbor(one);
+  assert.equal(found.length, 2);
+  assert.match(found[0], /response 200 lists application\/json but not application\/cbor/);
+  assert.match(found[1], /different schemas/);
 });

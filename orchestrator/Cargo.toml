@@ -84,6 +84,8 @@ tokio-util = { version = "0.7.19", features = ["rt"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 futures = "0.3.34"
 bytes = "1"
+ciborium = "=0.2.2"
+ciborium-ll = "=0.2.2"
 # The S3 artifact store (ADR 0032, `orch-artifacts-s3`): only the `aws` backend (S3 and compatible servers),
 # not the local file system, Azure, GCP or plain HTTP. Its reqwest is the workspace's 0.13 and its TLS
 # provider aws-lc-rs, the one backend of this process.

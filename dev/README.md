@@ -264,6 +264,7 @@ taken away, which is how [`user-tools-relay-e2e.sh`](user-tools-relay-e2e.sh) sh
 H=$(dev/auth-header.sh admin@example.com)
 curl -s -H "$H" http://127.0.0.1:8080/api/me | jq .                  # who the token says, and what its roles grant
 curl -s -H "$H" 'http://127.0.0.1:8080/api/threads' | jq 'map({id, owner, title})'   # the caller's own threads, for every role
+curl -s -H "$H" -H 'Accept: application/cbor' http://127.0.0.1:8080/api/me -o me.cbor   # the same answer as CBOR (ADR 0100); JSON stays the default, SSE stays JSON
 ```
 
 oauth2-proxy lets a token of the issuer through (`--skip-jwt-bearer-tokens`, the issuer and the client id `dev-chat` in

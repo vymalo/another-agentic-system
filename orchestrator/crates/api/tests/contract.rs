@@ -123,12 +123,17 @@ impl Contract {
         let declared = self.resolve(responses.get(status.to_string())?);
         let content = declared.get("content").and_then(Value::as_object);
         Some(content.and_then(|c| {
-            c.iter().next().map(|(ct, media)| {
-                (
-                    ct.clone(),
-                    media.get("schema").cloned().unwrap_or_else(|| json!({})),
-                )
-            })
+            // the JSON entry is the one real answers are checked against; its CBOR twin is held
+            // equal by `tools/api-breaking-check` and `tests/cbor.rs`
+            c.iter()
+                .find(|(ct, _)| ct.ends_with("json"))
+                .or_else(|| c.iter().next())
+                .map(|(ct, media)| {
+                    (
+                        ct.clone(),
+                        media.get("schema").cloned().unwrap_or_else(|| json!({})),
+                    )
+                })
         }))
     }
 

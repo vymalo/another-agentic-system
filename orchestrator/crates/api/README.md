@@ -81,6 +81,15 @@ never fetched is kept out of the service. `/healthz` does not follow it.
 
 ### Roles and permissions
 
+### CBOR beside JSON ([ADR 0100](../../../docs/decisions/0100-cbor-is-a-second-media-type-of-the-chat-api.md))
+
+`cbor::negotiate` is one layer over the whole router. `Content-Type: application/cbor` on a request is decoded
+(ciborium `=0.2.2`) into the JSON the handlers read; `Accept: application/cbor` (ranked above JSON by `q`) answers a
+JSON or problem body as `application/cbor` or `application/problem+cbor`; no `Accept`, `*/*` or JSON gives JSON; `Accept`
+naming neither is 406 (a write is refused before it runs); `Vary: Accept` is set. Limits: the 1 MiB body limit (413), 64
+levels, no indefinite-length item, text map keys only (400). SSE and any non-JSON answer are untouched. Tests:
+`tests/cbor.rs` (equal values in both encodings, the refusals, the stream).
+
 What a person may do is the application's ([`orch-app`](../app/README.md#api-at-a-glance), `authz`): the handlers pass the
 `Principal` and map the answer. `AppError::NotFound` is the 404 `no such thread` (a thread the person may not read is the
 answer for one that does not exist), `AppError::Forbidden` is a 403 whose `code` is `forbidden` (a permission or an agent
