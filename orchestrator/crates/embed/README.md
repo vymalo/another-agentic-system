@@ -78,6 +78,21 @@ CI runs it in the `embed` job of `.github/workflows/orchestrator.yml`, together 
 holds `axum`, `sqlx`, `tokio-postgres` or `hyper`: a request from ADR 0076 decision 4, checked on
 the tree rather than on a planted crate.
 
+### Kill and resume
+
+`examples/kill_and_resume.rs` runs itself as a child process. The child hosts a local adam agent
+(`orch-agent-adam`'s `testkit::stepper_agents`, three journaled steps) on a SQLite journal of its
+own, beside the thread log, and is killed with SIGKILL while the last step waits. A second process
+on the same two files resumes the thread and the adam run once the lease (1 s) has expired and
+finishes it. Each step appends one line to a file; the check is that the file holds `0`, `1`, `2`
+once each. `-- --no-resume` starts a new thread instead, which repeats the first steps and makes
+the example exit non-zero. CI runs both.
+
+```sh
+cd orchestrator
+cargo run -p orch-embed --example kill_and_resume --locked
+```
+
 ## The chat contract
 
 `stream_agui_from` (replay after a seq), `post_message_with_id` (a client message id: a retry is one
@@ -91,9 +106,6 @@ and `orch-api` re-exports it.
 
 ADR 0076's later slices are not this crate's:
 
-- **E4**: the local agent adapter (`orch-agent-adam` driving `adam-engine` on adam's SQLite store).
-  The example supplies an `AgentClient` of its own, which is what an application embedding its own
-  local agents will do once E4 lands.
 - The application's own filesystem `ArtifactStore` and keychain `SecretStore` adapters (the ports
   to hand them through, `EmbedPorts`, are built; `tests/ports.rs` proves the supplied model is the
   one asked, and the in-memory file store is the fake that passes its testkit).

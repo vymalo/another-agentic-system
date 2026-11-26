@@ -212,6 +212,15 @@ jobs:
       - run: cargo clippy -p orch-embed --all-targets --locked -- -D warnings
       - run: cargo test -p orch-embed --locked
       - run: cargo run -p orch-embed --example run_thread --locked
+      - run: cargo run -p orch-embed --example kill_and_resume --locked
+      - name: The kill-and-resume check fails when the work is not resumed
+        # The same example with --no-resume starts the thread over instead of resuming it, which runs the
+        # first steps twice: it must exit non-zero, so the check is seen red on every run, not once.
+        run: |
+          if cargo run -p orch-embed --example kill_and_resume --locked -- --no-resume; then
+            echo "::error::the kill-and-resume check passed with resume disabled"
+            exit 1
+          fi
       - name: The embedded build carries no HTTP server, Postgres driver or sqlx
         # ADR 0076 decision 4: the normal tree, dev-dependencies excluded (the example's scripted
         # agent is one). A crate that brings any of these back fails here.

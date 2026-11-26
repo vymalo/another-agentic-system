@@ -234,6 +234,149 @@ fn hosted_scripted(shared: Arc<Shared>, instance: String) -> Hosted {
     )
 }
 
+/// The name of the stepping agent of [`stepper_agents`] (the `name` of its endpoints).
+#[cfg(feature = "embedded")]
+pub const STEPPER: &str = "stepper";
+
+/// A run of the stepping agent: the lines it appends and how far it got.
+#[cfg(feature = "embedded")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StepperState {
+    steps: u32,
+    log: String,
+    hold: String,
+    phase: u32,
+}
+
+#[cfg(feature = "embedded")]
+fn stepper_initial(input: &Inbound) -> Result<StepperState, AgentError> {
+    let text = input
+        .payload
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let mut words = text.split_whitespace();
+    let (Some(steps), Some(log), Some(hold)) = (
+        words.next().and_then(|w| w.parse::<u32>().ok()),
+        words.next(),
+        words.next(),
+    ) else {
+        return Err(AgentError::permanent(
+            "unusable start message: expected `<steps> <log file> <hold file>`",
+        ));
+    };
+    Ok(StepperState {
+        steps: steps.max(1),
+        log: log.to_owned(),
+        hold: hold.to_owned(),
+        phase: 0,
+    })
+}
+
+/// Runs `steps` journaled steps. Step `k` appends the line `k` to the log file once its work is
+/// done and before it commits; the last step first waits until the hold file exists, so a test
+/// can kill the process in the middle of a run. A step that was never committed runs again after
+/// a restart, and appends its line then: a line twice in the log is a step run twice.
+#[cfg(feature = "embedded")]
+#[derive(Clone, Copy)]
+struct Stepper;
+
+#[cfg(feature = "embedded")]
+#[async_trait]
+impl Agent for Stepper {
+    type State = StepperState;
+
+    fn name(&self) -> &str {
+        STEPPER
+    }
+
+    fn init(&self, input: Inbound) -> Result<StepperState, AgentError> {
+        stepper_initial(&input)
+    }
+
+    async fn step(
+        &self,
+        _ctx: &mut Ctx,
+        mut state: StepperState,
+    ) -> Result<Transition<StepperState>, AgentError> {
+        use std::io::Write as _;
+        let last = state.phase + 1 == state.steps;
+        if last {
+            while !std::path::Path::new(&state.hold).exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&state.log)
+            .map_err(|e| AgentError::permanent(format!("the log file: {e}")))?;
+        writeln!(file, "{}", state.phase)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| AgentError::permanent(format!("the log file: {e}")))?;
+        if last {
+            let output = json!({ "text": format!("done after {} steps", state.steps) });
+            Ok(Transition::Done { state, output })
+        } else {
+            state.phase += 1;
+            Ok(Transition::Continue(state))
+        }
+    }
+}
+
+#[cfg(feature = "embedded")]
+impl AgentStarter for Stepper {
+    type State = StepperState;
+
+    fn name(&self) -> &str {
+        STEPPER
+    }
+
+    fn init(&self, input: Inbound) -> Result<StepperState, AgentError> {
+        stepper_initial(&input)
+    }
+}
+
+/// Local agents on the SQLite file `path` that host the stepping agent ([`STEPPER`]) alone: what the
+/// kill-and-resume example of `orch-embed` runs. The first message is
+/// `<steps> <log file> <hold file>`; see the agent's description above.
+///
+/// # Errors
+/// When the file cannot be opened.
+#[cfg(feature = "embedded")]
+pub fn stepper_agents(
+    path: impl AsRef<std::path::Path>,
+    opts: LocalOptions,
+) -> Result<LocalAgents, LocalAgentsError> {
+    let store = adam_store_sqlite::SqliteStore::open(path)
+        .and_then(|store| store.with_table_prefix(crate::TABLE_PREFIX))
+        .map_err(LocalAgentsError::store)?;
+    let hosted = Hosted::new(
+        STEPPER,
+        "runs journaled steps and logs each to a file (tests)",
+        |builder, steps| {
+            if steps {
+                builder.agent(Stepper)
+            } else {
+                builder.starter(Stepper)
+            }
+        },
+    );
+    Ok(LocalAgents::assemble(
+        Arc::new(store),
+        None,
+        adam_runtime::BroadcastSink::default(),
+        opts,
+        vec![hosted],
+    ))
+}
+
+/// An endpoint of the stepping agent.
+#[cfg(feature = "embedded")]
+pub fn stepper_endpoint(id: &str) -> AgentEndpoint {
+    AgentEndpoint::local(AgentId::new(id), STEPPER)
+}
+
 /// An endpoint of the scripted agent, as the configuration key `id` names it.
 pub fn scripted_endpoint(id: &str) -> AgentEndpoint {
     AgentEndpoint::local(AgentId::new(id), SCRIPTED)

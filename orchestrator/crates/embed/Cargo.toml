@@ -25,6 +25,8 @@ tokio-util.workspace = true
 # The example runs a thread on the in-process scripted agent; the crate itself names no adapter
 # beyond the SQLite store (ADR 0076 decision 4).
 orch-ports = { workspace = true, features = ["testkit"] }
+# The kill-and-resume example (ADR 0076 E4b) hosts a local adam agent on SQLite files.
+orch-agent-adam = { workspace = true, features = ["embedded", "testkit"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
