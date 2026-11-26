@@ -26,6 +26,7 @@ orch-store-sqlite = { path = "crates/store-sqlite" }
 orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-agent-adam = { path = "crates/agent-adam" }
+orch-provisioner-platform = { path = "crates/provisioner-platform" }
 orch-registry-platform = { path = "crates/registry-platform" }
 orch-auth-header = { path = "crates/auth-header" }
 orch-auth-jwt = { path = "crates/auth-jwt" }
@@ -75,6 +76,7 @@ adam-store-sqlite = { git = "https://github.com/vymalo/another-adam-rs", rev = "
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ciborium = "=0.2.2"
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 uuid = { version = "1.26", features = ["v7", "serde"] }

@@ -3239,6 +3239,12 @@ icons are generated from one drawing, `public/brand/panda.svg`: after changing i
 Playwright already pins (no other tool needed), and commit the result.
 `pnpm screens` writes a screenshot of every state, desktop and phone, light and dark, to
 [`e2e/__screens__/`](e2e/__screens__/) (`e2e/screens.spec.ts`); look at them after a visual change.
+**The committed set is generated in one environment: the `screens` target of [`Dockerfile`](Dockerfile)** (the build's base and
+locked dependencies, plus Playwright's Chromium and the fonts it installs). `sh scripts/screens-docker.sh write` regenerates the
+set there and `sh scripts/screens-docker.sh check` compares (the CI job `screens` of `web.yml` runs it and fails on a difference,
+naming each image and whether its dimensions changed: same dimensions with different bytes is rasterisation or fonts, changed
+dimensions is layout). A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
+images nobody changed.
 **The docs embed these files** (the repository README, this file, [DESIGN.md](DESIGN.md) and
 [`dev/README.md`](../dev/README.md), each as a `<picture>` of the `-light-` and `-dark-` file of a state). A screen that is
 renamed or dropped breaks a doc: `tools/docs-check` fails on an image path that does not resolve, in `![](…)` and in the

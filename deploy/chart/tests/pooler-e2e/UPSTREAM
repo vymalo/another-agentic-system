@@ -13,7 +13,7 @@
 #
 # VERIFIED 2026-10-28, from the sources named (anonymous requests through the sandbox's proxy; the module sources READ, not run):
 #
-#   * CloudNativePG 1.30.1 is the operator of backup-e2e/UPSTREAM (chart 0.29.1). Its `Pooler` (api/v1/pooler_types.go at v1.30.1): `spec.cluster.name` (immutable),
+#   * CloudNativePG 1.30.2 is the operator of backup-e2e/UPSTREAM (chart 0.29.2). Its `Pooler` (api/v1/pooler_types.go at v1.30.1): `spec.cluster.name` (immutable),
 #     `spec.type` (`rw`, the default), `spec.instances` (default 1), `spec.template` (a pod template: `spec.containers` is required, and a container named `pgbouncer`
 #     is the one whose resources and image are taken), `spec.pgbouncer.poolMode` (`session`, the default, or `transaction`) and `spec.pgbouncer.parameters` (a map of
 #     strings). The webhook (internal/webhook/v1/pooler_webhook.go) refuses a parameter that is not in its list; `max_prepared_statements`, `max_client_conn`,

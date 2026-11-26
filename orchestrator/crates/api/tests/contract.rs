@@ -123,12 +123,14 @@ impl Contract {
         let declared = self.resolve(responses.get(status.to_string())?);
         let content = declared.get("content").and_then(Value::as_object);
         Some(content.and_then(|c| {
-            c.iter().next().map(|(ct, media)| {
-                (
-                    ct.clone(),
-                    media.get("schema").cloned().unwrap_or_else(|| json!({})),
-                )
-            })
+            c.iter()
+                .find(|(ct, _)| *ct != "application/cbor")
+                .map(|(ct, media)| {
+                    (
+                        ct.clone(),
+                        media.get("schema").cloned().unwrap_or_else(|| json!({})),
+                    )
+                })
         }))
     }
 
@@ -2843,4 +2845,36 @@ mod validator_bites {
         normalize_nullable(&mut v);
         assert_eq!(v, json!({"type": ["string", "null"]}));
     }
+}
+
+/// Every `content` map that lists `application/json` lists `application/cbor` with the same
+/// schema (ADR 0102), anywhere in the document.
+#[test]
+fn every_json_body_is_also_offered_as_cbor() {
+    fn walk(value: &Value, at: &str, bad: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(json) = map.get("application/json")
+                    && map.get("application/cbor") != Some(json)
+                {
+                    bad.push(at.to_owned());
+                }
+                for (key, child) in map {
+                    walk(child, &format!("{at}/{key}"), bad);
+                }
+            }
+            Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    walk(child, &format!("{at}/{i}"), bad);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut bad = Vec::new();
+    walk(&Contract::load().doc, "", &mut bad);
+    assert!(
+        bad.is_empty(),
+        "JSON only, or a different schema for CBOR: {bad:?}"
+    );
 }

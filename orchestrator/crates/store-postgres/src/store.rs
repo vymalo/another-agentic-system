@@ -2155,6 +2155,28 @@ impl ThreadStore for PgStore {
         .collect()
     }
 
+    async fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> Result<Vec<Timestamp>, StoreError> {
+        // A person's messages of the minute, over the log: the thread's owner and the event's
+        // time (ADR 0081, decision 3). No index of its own yet: the window is one minute.
+        let rows = query(
+            "SELECT e.at FROM events e JOIN threads t ON t.id = e.thread_id \
+             WHERE t.owner = $1 AND e.kind = $2 AND e.at >= $3 ORDER BY e.at",
+        )
+        .bind(owner.as_str())
+        .bind(EventKind::UserMessage.as_str())
+        .bind(to_db(since))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        rows.iter()
+            .map(|row| row.try_get::<_, Timestamp>("at").map_err(store_err))
+            .collect()
+    }
+
     async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
         let row = query("SELECT pick FROM threads WHERE id = $1")
             .bind(thread.0)

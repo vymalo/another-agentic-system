@@ -308,6 +308,10 @@ pub struct Policy {
     /// The token allowance per period of the roles that set one (`limits.tokensPerPeriod`, ADR
     /// 0081). A role that is not here has none.
     allowances: BTreeMap<Role, u64>,
+    /// The per-minute message limit of each role that sets one (`auth.roles.<role>.limits.
+    /// messagesPerMinute`, ADR 0081, decision 2). A role left out sets none, and a deployment that
+    /// sets none refuses nothing.
+    message_limits: BTreeMap<Role, u32>,
 }
 
 /// The roles of a deployment that defines none (`auth.roles` absent): `user` and `admin`, as ADR
@@ -328,6 +332,7 @@ impl Default for Policy {
             roles: built_in_roles(),
             default_role: Some(Role::new("user")),
             allowances: BTreeMap::new(),
+            message_limits: BTreeMap::new(),
         }
     }
 }
@@ -350,6 +355,7 @@ impl Policy {
             roles,
             default_role,
             allowances: BTreeMap::new(),
+            message_limits: BTreeMap::new(),
         })
     }
 
@@ -361,6 +367,15 @@ impl Policy {
             .into_iter()
             .filter(|(role, _)| self.roles.contains_key(role))
             .collect();
+        self
+    }
+
+    /// The same policy with `role`'s **messages per minute** limit (`auth.roles.<role>.limits.
+    /// messagesPerMinute`, ADR 0081, decision 2). A limit, not a permission: it needs no entry in
+    /// `roles` and grants nothing; a role that sets none refuses nothing.
+    #[must_use]
+    pub fn with_messages_per_minute(mut self, role: &str, max: u32) -> Policy {
+        self.message_limits.insert(Role::new(role), max);
         self
     }
 
@@ -382,6 +397,7 @@ impl Policy {
             roles: BTreeMap::new(),
             default_role: None,
             allowances: BTreeMap::new(),
+            message_limits: BTreeMap::new(),
         }
     }
 
@@ -441,6 +457,7 @@ impl Policy {
             claims: who.roles().into_iter().cloned().collect(),
             roles,
             allowances: &self.allowances,
+            message_limits: &self.message_limits,
         }
     }
 
@@ -556,9 +573,27 @@ pub struct Access<'p> {
     claims: Vec<Role>,
     roles: Vec<(&'p Role, &'p RoleGrant)>,
     allowances: &'p BTreeMap<Role, u64>,
+    /// The policy's per-role message limits (ADR 0081): read by
+    /// [`messages_per_minute`](Self::messages_per_minute).
+    message_limits: &'p BTreeMap<Role, u32>,
 }
 
 impl<'p> Access<'p> {
+    /// The person's id: the e-mail the identity layer authenticated.
+    pub fn user(&self) -> &UserId {
+        &self.user
+    }
+
+    /// The **lowest** `messages_per_minute` among the person's roles that set one (ADR 0081,
+    /// decision 2): the role's limit is a ceiling, so a second role never raises it. `None` when
+    /// no role of the person sets one, and a deployment that sets none refuses nothing.
+    pub fn messages_per_minute(&self) -> Option<u32> {
+        self.roles
+            .iter()
+            .filter_map(|(role, _)| self.message_limits.get(*role).copied())
+            .min()
+    }
+
     /// The roles that count: the known roles the credential carried, or the default role.
     pub fn roles(&self) -> impl Iterator<Item = &'p Role> + '_ {
         self.roles.iter().map(|(role, _)| *role)
