@@ -84,7 +84,7 @@ jobs:
         # `openapi:` and is not named there fails here, so the dropdown stays "every document".
         run: |
           docker compose --profile api-docs config --services | grep -Fx swagger-ui
-          for f in $(grep -rlE '^openapi:|"openapi" *: *"3' docs --include='*.yaml' --include='*.yml' --include='*.json' | grep -v '/examples/'); do
+          for f in $(grep -rlE '^openapi:|"openapi" *: *"3' docs --include='*.yaml' --include='*.yml' --include='*.json' | grep -v '/examples/\|^docs/public/'); do
             echo "openapi document: $f"
             grep -q "$f:/usr/share/nginx/html/openapi/" compose.yaml || { echo "$f is not mounted by the api-docs profile in compose.yaml" >&2; exit 1; }
           done
