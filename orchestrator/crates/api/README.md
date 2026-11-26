@@ -79,6 +79,13 @@ never fetched is kept out of the service. `/healthz` does not follow it.
 **The identity header is only trustworthy behind a proxy (oauth2-proxy) that strips client-supplied copies**; with
 `auth.mode: jwt` it is not read at all.
 
+### CBOR ([ADR 0100](../../../docs/decisions/0100-cbor-is-a-second-media-type-of-the-same-bodies.md), `src/cbor.rs`)
+
+`Content-Type: application/cbor` on a request and `Accept: application/cbor` on an answer select CBOR for the same bodies as JSON,
+which stays the default. One middleware over the resource API does it: the request is checked and converted to the JSON value the
+handler reads, a JSON answer is encoded as CBOR. An `Accept` naming neither is 406, another media type 415, bad CBOR 400
+`bad_cbor` (indefinite length, depth over 64, trailing data, byte strings). Errors stay `application/problem+json`; SSE is untouched.
+
 ### Roles and permissions
 
 What a person may do is the application's ([`orch-app`](../app/README.md#api-at-a-glance), `authz`): the handlers pass the

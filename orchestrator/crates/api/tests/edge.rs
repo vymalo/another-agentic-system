@@ -959,3 +959,122 @@ async fn the_export_is_the_owners_alone_and_unknown_threads_are_404() {
         .await;
     assert_eq!(r.status(), 405);
 }
+
+fn cbor_of(value: &serde_json::Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(value, &mut out).unwrap();
+    out
+}
+
+fn value_of_cbor(bytes: &[u8]) -> serde_json::Value {
+    ciborium::de::from_reader(bytes).unwrap()
+}
+
+#[tokio::test]
+async fn cbor_answers_equal_the_json_answers_and_json_stays_the_default() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread().await;
+    for path in [
+        "/api/agents".to_owned(),
+        "/api/threads".to_owned(),
+        format!("/api/threads/{id}"),
+        "/api/me".to_owned(),
+    ] {
+        let json = e.call(reqwest::Method::GET, &path, Some(ALICE)).await;
+        assert_eq!(json.status(), 200, "{path}");
+        assert_eq!(json.headers()["content-type"], "application/json", "{path}");
+        assert!(json.headers()["vary"].to_str().unwrap().contains("Accept"));
+        let as_json: serde_json::Value = json.json().await.unwrap();
+
+        let cbor = e
+            .call_with(&path, ALICE, ("accept", "application/cbor"))
+            .await;
+        assert_eq!(cbor.status(), 200, "{path}");
+        assert_eq!(cbor.headers()["content-type"], "application/cbor", "{path}");
+        assert!(cbor.headers()["vary"].to_str().unwrap().contains("Accept"));
+        let as_cbor = value_of_cbor(&cbor.bytes().await.unwrap());
+        assert_eq!(as_json, as_cbor, "{path}");
+
+        let any = e.call_with(&path, ALICE, ("accept", "*/*")).await;
+        assert_eq!(any.headers()["content-type"], "application/json", "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_cbor_request_makes_the_same_change_as_the_json_one() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let a = e.thread().await;
+    let b = e.thread().await;
+    let body = serde_json::json!({ "pinned": true });
+    let url = |id: &str| format!("{}/api/threads/{id}/rail", e.base);
+
+    let json = e
+        .client
+        .patch(url(&a))
+        .header("X-Auth-Request-Email", ALICE)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json.status(), 200);
+    let json: serde_json::Value = json.json().await.unwrap();
+
+    let cbor = e
+        .client
+        .patch(url(&b))
+        .header("X-Auth-Request-Email", ALICE)
+        .header("content-type", "application/cbor")
+        .header("accept", "application/cbor")
+        .body(cbor_of(&body))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cbor.status(), 200);
+    assert_eq!(cbor.headers()["content-type"], "application/cbor");
+    let mut cbor = value_of_cbor(&cbor.bytes().await.unwrap());
+    let mut json = json;
+    // The two threads differ by id and time alone.
+    for v in [&mut json, &mut cbor] {
+        for member in ["id", "createdAt", "updatedAt"] {
+            v.as_object_mut().unwrap().remove(member);
+        }
+    }
+    assert_eq!(json["pinned"], true);
+    assert_eq!(json, cbor);
+}
+
+#[tokio::test]
+async fn cbor_errors_are_the_documented_ones() {
+    let e = edge(ApiConfig::default(), vec![]).await;
+    let id = e.thread().await;
+    let url = format!("{}/api/threads/{id}/rail", e.base);
+    let send = |ct: &'static str, body: Vec<u8>| {
+        e.client
+            .patch(&url)
+            .header("X-Auth-Request-Email", ALICE)
+            .header("content-type", ct)
+            .body(body)
+            .send()
+    };
+    // Malformed, indefinite-length and trailing CBOR are 400 with a code.
+    for body in [vec![0xa1], vec![0xbf, 0xff], vec![0xa0, 0x00]] {
+        let r = send("application/cbor", body).await.unwrap();
+        assert_eq!(r.status(), 400);
+        let p: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(p["code"], "bad_cbor");
+    }
+    // A body over the limit is refused, not decoded.
+    let r = send("application/cbor", vec![0x5a, 0, 0x20, 0, 0])
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    // An Accept that names neither media type is 406.
+    let r = e
+        .call_with("/api/agents", ALICE, ("accept", "text/html"))
+        .await;
+    assert_eq!(r.status(), 406);
+    assert_eq!(r.headers()["content-type"], "application/problem+json");
+    // A body that is neither JSON nor CBOR is 415.
+    let r = send("text/plain", b"x".to_vec()).await.unwrap();
+    assert_eq!(r.status(), 415);
+}

@@ -75,3 +75,9 @@ change is a `v2` URI and a new page, not an edit.
 The orchestrator reads the extensions of a live card into one closed set, and the AG-UI capabilities document lists
 each listed one under `custom` (see [`agui.md`](agui.md#capabilities-document)), so the web can flag an agent that
 lacks one before the person sends a message that needs it.
+
+## CBOR
+
+Every JSON body of `chat-api.yaml` is also offered as `application/cbor` with the same schema (ADR 0100). Send
+`Content-Type: application/cbor` for a request and `Accept: application/cbor` for an answer; JSON is the default. Errors stay
+`application/problem+json`, and the event streams stay `text/event-stream`.

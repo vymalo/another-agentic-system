@@ -139,6 +139,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Me" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/Me" }
   /api/me/usage:
     get:
       operationId: getMyUsage
@@ -192,6 +194,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MyUsage" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/MyUsage" }
   /api/agents:
     get:
       operationId: listAgents
@@ -220,6 +224,8 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Agent" } }
+            application/cbor:
+              schema: { type: array, items: { $ref: "#/components/schemas/Agent" } }
   /api/registry:
     get:
       operationId: getRegistry
@@ -242,6 +248,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Registry" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/Registry" }
   /api/config:
     get:
       operationId: getConfig
@@ -260,6 +268,8 @@ paths:
           description: The public configuration
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/PublicConfig" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/PublicConfig" }
   /api/tool-servers:
     get:
@@ -297,6 +307,10 @@ paths:
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ToolServer" }
+            application/cbor:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/ToolServer" }
@@ -394,6 +408,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/UserToolServers" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/UserToolServers" }
     post:
       operationId: createUserToolServer
       summary: Add an MCP server of one's own
@@ -429,6 +445,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/CreateUserToolServerRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/CreateUserToolServerRequest" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "201":
@@ -436,6 +454,8 @@ paths:
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/UserToolServer" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/UserToolServer" }
         "400": { description: "The body is not JSON or not an object of the members above, a value cannot be used (name, header, scope, secret), or the URL is refused (`code: url_refused`, the guard's public reason in `detail`)", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `tools.user.add` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -479,6 +499,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/UpdateUserToolServerRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/UpdateUserToolServerRequest" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
@@ -486,6 +508,8 @@ paths:
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/UserToolServer" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/UserToolServer" }
         "400": { description: "As `createUserToolServer`, and an edit that names none of `name`, `url`, `auth` and `secret`", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `tools.user.add` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -566,6 +590,8 @@ paths:
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/UserToolAuthorization" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/UserToolAuthorization" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `tools.user.add` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -679,6 +705,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OAuthClientMetadata" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/OAuthClientMetadata" }
         "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
   /api/search/threads:
     post:
@@ -728,6 +756,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/SearchThreadsRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/SearchThreadsRequest" }
       responses:
         "200":
           description: One page of results
@@ -735,6 +765,8 @@ paths:
             Cache-Control: { description: "`no-store`: the page holds a person's words", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/ThreadSearchPage" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/ThreadSearchPage" }
         "400": { description: "`code: query_empty` (nothing is left of `q` after it is trimmed), `query_too_long` (more than 200 characters), `bad_cursor` (`cursor` is not a position of a page of this request: it is checked against the terms, `archived` and `branches` of the request, not the text of `q`, and a position that is not valid is refused); or `code: bad_request`: not JSON, not one object, a member that is not allowed (there is no `owner`: ADR 0039), a member twice, a member of the wrong type (`null` too), a lone surrogate, `limit` out of range or not an integer literal (`20.0` is refused), `archived` or `branches` not one of their words", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
@@ -781,6 +813,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PromptList" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/PromptList" }
         "400": { description: "`code: bad_scope` or `bad_cursor`", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -805,6 +839,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/CreatePromptRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/CreatePromptRequest" }
       responses:
         "201":
           description: The prompt as saved
@@ -812,6 +848,8 @@ paths:
             Cache-Control: { description: "`no-store`", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/Prompt" }
         "400": { description: "`code: bad_request` (not one JSON object of these members, a member twice in any object of it, a member of the wrong type, `null`, a lone surrogate, a body over 64 KiB) or one of the codes above", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
@@ -838,6 +876,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Prompt" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/Prompt" }
         "400": { description: "`code: bad_request`: the id is not one", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -860,6 +900,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/UpdatePromptRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/UpdatePromptRequest" }
       responses:
         "200":
           description: The prompt as it is now
@@ -867,6 +909,8 @@ paths:
             Cache-Control: { description: "`no-store`", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/Prompt" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/Prompt" }
         "400": { description: "`code: bad_request` (as `createPrompt`, and no `revision`, a `revision` that is not `^[1-9][0-9]{0,18}$`, or nothing to change) or a code of the values", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
@@ -920,6 +964,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/RenderPromptRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/RenderPromptRequest" }
       responses:
         "200":
           description: The text
@@ -927,6 +973,8 @@ paths:
             Cache-Control: { description: "`no-store`", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/RenderedPrompt" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/RenderedPrompt" }
         "400": { description: "`code: bad_request`: not one JSON object of `revision` and `answers` (and `note`), a `revision` of the wrong form, a member of the wrong type, or an id that is not one", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
@@ -990,6 +1038,8 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Thread" } }
+            application/cbor:
+              schema: { type: array, items: { $ref: "#/components/schemas/Thread" } }
   /api/threads/{threadId}:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
     get:
@@ -1003,6 +1053,8 @@ paths:
           description: Thread
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/Thread" }
         "404": { $ref: "#/components/responses/Problem" }
     patch:
@@ -1041,12 +1093,16 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ThreadPatch" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/ThreadPatch" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
           description: The thread, with what was changed
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/Thread" }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
@@ -1127,12 +1183,16 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ThreadArrangement" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/ThreadArrangement" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
           description: The thread as it is now, with `pinned`, `archived` and `nestedUnder` where they hold
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/Thread" }
         "400": { description: "A body that is not an object, with none of the members, with a member this API does not know, or with a value that is not of the member's type (a `place` that is not `top`, `before` or `after` an id, an id that is not a thread id)", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read` (`code: forbidden`), or their roles grant nothing (`code: no_access`)", $ref: "#/components/responses/Problem" }
@@ -1176,12 +1236,16 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ThreadToolsRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/ThreadToolsRequest" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "200":
           description: The set after the change
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/ThreadTools" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/ThreadTools" }
         "400": { description: "A body that is not exactly an object with a `servers` array of strings, or an id that is not `^[a-z0-9][a-z0-9-]{0,30}$`", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing; or the set adds a server and the caller may not use the thread's agent (`agent.invoke`: no role names it, or its audience leaves them out)", $ref: "#/components/responses/Problem" }
@@ -1231,6 +1295,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ThreadExport" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/ThreadExport" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /api/threads/{threadId}/cancel:
@@ -1263,12 +1329,16 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ChildSessionClose" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/ChildSessionClose" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "202":
           description: Close asked
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/ChildSessionCloseAccepted" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/ChildSessionCloseAccepted" }
         "400": { description: "The body is not JSON or not a `ChildSessionClose` (an unknown member, `cancel` that is not a boolean)", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`", $ref: "#/components/responses/Problem" }
@@ -1297,6 +1367,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ChildSessionStart" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/ChildSessionStart" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "202":
@@ -1305,6 +1377,8 @@ paths:
             Location: { description: "`/api/threads/<id>`", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/ChildSessionStartAccepted" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/ChildSessionStartAccepted" }
         "400": { description: "The body is not JSON or not a `ChildSessionStart`: an unknown member, a missing member, `keepOpen` that is not a boolean, a `tier` that is not one of the four words", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the thread's agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
@@ -1382,6 +1456,8 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ForkRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/ForkRequest" }
       responses:
         "401": { $ref: "#/components/responses/Problem" }
         "201":
@@ -1391,12 +1467,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Thread" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/Thread" }
         "200":
           description: The fork this request's `id` named, made by an earlier request
           headers:
             Location: { description: "`/api/threads/<id>`", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/Thread" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/Thread" }
         "400": { description: "The body is not JSON or not a `ForkRequest`: both or neither of `after` and `replace`, `messageId` without `text`, `replace` without `text`, an empty or too long text, a `messageId` longer than 256 bytes, an unknown agent or release, an unknown member, a thread that is too long to fork, a `tier` that is not one of the four words or comes without `text`", $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles do not name the target agent (`agent.invoke`)", $ref: "#/components/responses/Problem" }
@@ -1425,6 +1505,8 @@ paths:
           description: The branches
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/Branches" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/Branches" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
@@ -1531,12 +1613,16 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ThreadShareRequest" }
+          application/cbor:
+            schema: { $ref: "#/components/schemas/ThreadShareRequest" }
       responses:
         "200":
           description: The link
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/ThreadShareLink" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/ThreadShareLink" }
         "400": { description: "The body is not exactly `{visibility}`, or `visibility` is not `internal` or `public` (`private` included: stop sharing with `unshareThread`)", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
@@ -1572,6 +1658,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ThreadShareLink" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/ThreadShareLink" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.share` (`code: forbidden`), or the cap is `disabled` (`code: sharing_disabled`)", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
@@ -1595,6 +1683,8 @@ paths:
             X-Robots-Tag: { description: "`noindex, nofollow`", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/SharedThread" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/SharedThread" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
@@ -1666,6 +1756,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BrowserAuth" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/BrowserAuth" }
         "404": { description: "This deployment does not configure browser sign-in (`auth.browser` is absent)", $ref: "#/components/responses/Problem" }
         "429": { description: "Too many requests; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
   /api/public/shared/{token}:
@@ -1690,6 +1782,8 @@ paths:
             X-Robots-Tag: { description: "`noindex, nofollow`", schema: { type: string } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/SharedThread" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/SharedThread" }
         "404": { description: "Every way a link can fail, with the same body as `getSharedThread`'s 404", $ref: "#/components/responses/Problem" }
         "429": { description: "Too many requests for this link or for all links; `Retry-After` says when to try again", $ref: "#/components/responses/Problem" }
@@ -1795,6 +1889,8 @@ paths:
         required: true
         content:
           application/json:
+            schema: { $ref: "#/components/schemas/AgUiRunAgentInput" }
+          application/cbor:
             schema: { $ref: "#/components/schemas/AgUiRunAgentInput" }
       responses:
         "200":
@@ -1939,6 +2035,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/HistoryPage" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/HistoryPage" }
         "400": { description: "`before`, `since` or `after` is not an integer of 1 or more, `limit` is outside 1 to `server.history.maxTurns`, or parameters that exclude each other are given", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
@@ -1964,6 +2062,8 @@ paths:
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/HistoryPage" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/HistoryPage" }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
@@ -1994,6 +2094,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/HistoryPage" }
+            application/cbor:
+              schema: { $ref: "#/components/schemas/HistoryPage" }
         "400": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "406": { $ref: "#/components/responses/Problem" }
@@ -2023,6 +2125,8 @@ paths:
           headers: { Cache-Control: { description: "`no-store`", schema: { type: string } } }
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/AgUiAgentCapabilities" }
+            application/cbor:
               schema: { $ref: "#/components/schemas/AgUiAgentCapabilities" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { description: "The caller's roles do not name the agent for `agent.read`, or grant nothing", $ref: "#/components/responses/Problem" }
