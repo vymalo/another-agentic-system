@@ -2543,10 +2543,12 @@ dependencies = [
  "adam-store-postgres",
  "adam-store-sqlite",
  "async-trait",
+ "axum",
  "deadpool-postgres",
  "futures",
  "jiff",
  "orch-a2a-mapping",
+ "orch-agent-a2a",
  "orch-agent-adam",
  "orch-core",
  "orch-pg-connect",
@@ -2559,6 +2561,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
 ]
 
