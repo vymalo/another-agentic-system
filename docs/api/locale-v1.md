@@ -3,7 +3,7 @@
 - **URI:** `https://agents.vymalo.com/a2a/extensions/locale/v1`
 - **Status:** **proposed 2026-11-22**, on the owner's decisions of that day: the interface offers `en-GB`, `fr-FR`, `gsw-CH` and `fur-IT` from day 0, and **the agent's language is
   the interface's language by default, then the person's**. **The orchestrator's side is built** (the tag and its checks, the
-  card read, the activation, the local stack's scenario); **no agent lists it yet**, and the web does not send it yet.
+  card read, the activation, the local stack's scenario); **adam lists it whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does (proven against the real chat by `dev/locale-real-e2e.sh`)**, and the web does not send it yet.
 - **Decided in:** [ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator. **Used by:** agents that can write in more than one language and want to know which one
