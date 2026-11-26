@@ -371,10 +371,12 @@ check "search pod on: no Brave key is read" count 'property: brave_api_key$' 0
 check "search pod on: the orchestrator's ExternalSecret reads neither the Brave key nor the bearer" dlacks ExternalSecret another-agentic-orchestrator 'brave|search'
 check "search pod on: its NetworkPolicy lets it reach our SearXNG" dhas NetworkPolicy another-agentic-websearch 'app: searxng'
 check "search pod on: ... on 8080" dhas NetworkPolicy another-agentic-websearch 'port: 8080'
+# shellcheck disable=SC2086
 render $ws_on --set webSearch.provider=brave
 check "Brave by choice: the Brave key is read by one ExternalSecret" count 'property: brave_api_key$' 1
 check "Brave by choice: the provider is brave" dhas Deployment another-agentic-websearch 'value: "brave"'
 check "Brave by choice: no SearXNG egress rule" dlacks NetworkPolicy another-agentic-websearch 'app: searxng'
+# shellcheck disable=SC2086
 render $ws_on
 config_of config.yaml "$cfg"
 check "search pod on, no tool server: the configuration is still the default one" cfg_lacks 'toolServers'
@@ -501,6 +503,7 @@ refused "the search pod with the placeholder image tag (no image has been built)
 refused "the search pod on a tag that is not a commit" --set webSearch.enabled=true --set webSearch.image.tag=latest
 refused "the search pod on SearXNG with no address" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234
 refused "the search pod on SearXNG with no egress peer" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set webSearch.searxngUrl=http://searxng.search.svc:8080
+# shellcheck disable=SC2086
 refused "the search pod on an unknown provider" $ws_on --set webSearch.provider=bing
 refused "the search pod on Brave with no AWS property for the key" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set webSearch.provider=brave --set externalSecrets.properties.braveApiKey=
 refused "the search pod with no AWS property for the bearer" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set externalSecrets.properties.searchMcpToken=
