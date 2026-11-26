@@ -19,7 +19,7 @@
 #     installed in the operator's namespace (web/docs/installation.mdx, "The plugin must be installed in the same namespace as the CloudNativePG operator"), needs
 #     cert-manager (its Certificates and Issuer are in the chart) and creates the Service `barman-cloud` the operator finds by its label `cnpg.io/pluginName`.
 #     Its CRD `ObjectStore` is a template of the chart (`crds.create: true`).
-#   * cert-manager v1.21.2, the newest stable in https://charts.jetstack.io/index.yaml on 2026-10-17 (chart created 2026-09-11, `kubeVersion` >=1.22). The chart
+#   * cert-manager v1.21.3 (moved 2026-11-26; its digest re-read from https://charts.jetstack.io/index.yaml and the file recomputed that day, chart created 2026-10-23, `kubeVersion` >=1.22). The chart
 #     installs its CRDs with `crds.enabled=true` (off by default) and runs a post-install check of the webhook (`startupapicheck`), which `helm --wait` waits for.
 #     That cert-manager 1.21 is tested on Kubernetes 1.35 is *unverified* (its supported-releases page was not found where it was looked for).
 #   * RustFS: the image of compose.yaml's service `rustfs` (rustfs/rustfs:1.0.1-preview.17, the index digest below; Docker Hub answers it for the tag and the
@@ -51,7 +51,7 @@ plugin_chart_url=https://github.com/cloudnative-pg/charts/releases/download/plug
 plugin_chart_sha256=7fb78e89f25c18737e5649ae3c5e840065052f89757d541eaf310a1706ebd7dd
 cert_manager_version=v1.21.3
 cert_manager_chart_url=https://charts.jetstack.io/charts/cert-manager-v1.21.3.tgz
-cert_manager_chart_sha256=73a56e1728edd6c99f1f31082618c3259d279a76b7ebd3d4bdc5475c2442d34a
+cert_manager_chart_sha256=9ec67938b2981d8b333af61b3fcf53e26b4f6f5deb7ccda3de4ea116bb373a17
 # By tag and digest, the pin of compose.yaml (`rustfs`):
 rustfs_image=rustfs/rustfs:1.0.1-preview.17@sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
 # The cluster the workflow makes (the pin of dev/kagent/UPSTREAM):
