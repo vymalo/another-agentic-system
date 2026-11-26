@@ -11,7 +11,7 @@
  * `PROFILES`). The first word of the first message picks a scripted agent
  * behaviour: see scripts.ts and web/README.md.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
@@ -3108,8 +3108,17 @@ export function createMockServer(options: MockOptions = {}): http.Server {
 
   // ---- sharing (ADR 0040) ---------------------------------------------------------------
 
-  /** 32 random bytes as 43 characters of unpadded base64url: the shape of a real token (`nonce || MAC`). */
-  const newToken = (): string => randomBytes(32).toString("base64url");
+  /**
+   * 32 bytes as 43 characters of unpadded base64url: the shape of a real token (`nonce || MAC`).
+   *
+   * Deterministic on purpose, and the one place the mock is: a screen of the share dialog is a committed still
+   * (`e2e/screens.spec.ts`, "share dialog"), and a random token made that still differ on every run (ANR-1004). A
+   * counter keeps two links apart — the contract needs a new link to differ from the old one — while the same run
+   * draws the same bytes.
+   */
+  let shareTokens = 0;
+  const newToken = (): string =>
+    createHash("sha256").update(`mock-share-token-${++shareTokens}`).digest("base64url");
 
   /** `thread_shared`'s data: what the link is stored as, and the hash that tells one link from another. */
   const shareEventData = (threadId: string): Event["data"] => {
