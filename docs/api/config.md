@@ -794,5 +794,3 @@ GET /api/config
 - It is `getConfig` in [`chat-api.yaml`](chat-api.yaml), served by the resource API of every role that serves routes, and
   the contract test of the API checks it (200 with exactly `{ "search": …, "ui": … }`, 401 without an identity). A deployment with no
   `ui` section serves the defaults.
-</content>
-</invoke>

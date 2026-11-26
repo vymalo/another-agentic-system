@@ -289,5 +289,3 @@ stateDiagram-v2
 - *Verified 2026-10-02* in `jsonschema` 0.58.3's source: `Validator::iter_errors` returns every error, not the first.
 - *Unverified*: that serde rejects `flatten` together with `deny_unknown_fields` in every case (serde's documentation
   says they are not supported together); the decision avoids `flatten` either way.
-</content>
-</invoke>

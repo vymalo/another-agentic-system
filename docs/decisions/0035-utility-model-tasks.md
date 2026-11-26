@@ -283,5 +283,3 @@ neither, titles are off and no model is asked, as today with `ORCH_TITLE_MODEL` 
   (`MAX_TITLE_CHARS`); one field with two writers and two lengths would blur whose words it is.
 - **The description from the agent** (an A2A artifact): an agent knows its task, not the thread across jobs and agents,
   and not every agent would send one.
-</content>
-</invoke>
