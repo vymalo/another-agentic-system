@@ -57,6 +57,7 @@ pub(crate) use usage::sandbox_rejection;
 pub use usage::{DEFAULT_USAGE_RETENTION_MONTHS, UsageDrop, UsageSettings, UsageStats};
 
 use crate::dispatcher::FileLimits;
+use crate::provisioning::Provisioning;
 use crate::sharing::{SharingCounters, SharingSettings};
 use crate::tier::TierPin;
 use crate::tool_servers::ToolServerInfo;
@@ -200,6 +201,10 @@ pub struct AppConfig {
     /// How many days a thread with no active job is kept after its last event before the retention
     /// sweep erases it (`retention.threads.days`; default [`DEFAULT_THREAD_RETENTION_DAYS`]).
     pub thread_retention_days: u32,
+    /// A person's own agents (ANR-806): when set, a message to an agent of a provisioned kind makes
+    /// or resumes the person's agent and waits for it to be ready **before** the message is
+    /// written, so before anything is dispatched. `None` (the default) provisions nothing.
+    pub provisioning: Option<Provisioning>,
 }
 
 /// The default of [`AppConfig::thread_retention_days`]: ninety days.
@@ -230,6 +235,7 @@ impl Default for AppConfig {
             user_tool_redirect: None,
             usage: UsageSettings::default(),
             thread_retention_days: DEFAULT_THREAD_RETENTION_DAYS,
+            provisioning: None,
         }
     }
 }
@@ -642,6 +648,21 @@ impl<P: Ports> App<P> {
             load_gauges: Arc::default(),
             authorize_locks: AuthorizeLocks::default(),
         })
+    }
+
+    /// Makes or resumes the person's own agent for a message to `agent` and waits until it is
+    /// ready, when the deployment provisions that kind (ANR-806); nothing otherwise.
+    async fn ensure_own_agent(&self, user: &UserId, agent: &AgentId) -> Result<(), AppError> {
+        match &self.cfg.provisioning {
+            Some(provisioning) => {
+                // the agent the deployment calls `coder` may be configured as `adam` with the
+                // alias `coder` (ADR 0049): any of its names says the kind
+                let mut names = vec![agent.clone()];
+                names.extend(self.agents.aliases_of(agent));
+                provisioning.ensure(user, &names).await
+            }
+            None => Ok(()),
+        }
     }
 
     /// The ports this service runs on.
@@ -1197,6 +1218,9 @@ impl<P: Ports> App<P> {
         // The first message is a message: over the person's role's `messages_per_minute` it is
         // refused before anything is written (ADR 0081, decision 4).
         self.check_message_limit(&access, now).await?;
+        // The person's own agent, made or resumed and ready, before anything is written or
+        // dispatched (ANR-806).
+        self.ensure_own_agent(user, &req.target.agent_id).await?;
         let (mut next, mut cmds) = start_thread(
             gate,
             &Input::UserMessage {
@@ -1837,6 +1861,7 @@ impl<P: Ports> App<P> {
         // is written (ADR 0081, decision 4).
         if has_message {
             self.check_message_limit(&access, now).await?;
+            self.ensure_own_agent(user, &target.agent_id).await?;
         }
         // A fork has the servers its copied log left attached, but for the agent it talks to and
         // for the person who owns it: one that agent may not use, and one of a person's own
@@ -2623,6 +2648,10 @@ impl<P: Ports> App<P> {
         // anything is written (ADR 0081, decision 4); a card action is not a message.
         if matches!(input, Input::UserMessage { .. } | Input::StopAndSend { .. }) {
             self.check_message_limit(&access, self.ports.clock().now())
+                .await?;
+            // The person's own agent, made or resumed and ready, before the message is written and
+            // so before the dispatcher sends it (ANR-806).
+            self.ensure_own_agent(who.user(), &thread.target.agent_id)
                 .await?;
         }
         // What starts or continues the agent's work for the person is the owner's act: the servers

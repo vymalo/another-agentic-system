@@ -61,6 +61,8 @@ name: Coder E2E
 #              with the coder as a GitHub App (`-f dev/compose.github-app.yaml`; GITHUB_AUTH=app), then
 #              the web's own sign-in (the stack with `-f dev/compose.browser-auth.yaml` and dev/browser-auth-e2e.sh: a public client of the mock
 #              issuer, PKCE, DPoP-bound tokens through the edge to the real orchestrator, a refresh token used once, revocation), then
+#              a person's own agent (the stack with `-f dev/compose.provisioner.yaml` and dev/provisioner-e2e.sh: a first message to the coder makes the person's agent on a
+#              platform stand-in and waits until it is ready, a suspended one is resumed, an agent that is never ready ends the run at the configured bound with a 503), then
 #              the chat's browser sub-agent (the stack with `-f dev/compose.chat-browser.yaml` and dev/chat-browser-e2e.sh: the chat calls
 #              the browser as a remote sub-agent and its screenshot comes back as a file of the chat's run), then
 #              restart the orchestrator as a control plane beside two workers (profile `split`) and run
@@ -287,6 +289,20 @@ jobs:
           # shellcheck disable=SC2086
           docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 orchestrator edge mock-oidc
           dev/browser-auth-e2e.sh
+      - name: A person's own agent (the stack with dev/compose.provisioner.yaml; dev/provisioner-e2e.sh, ANR-806)
+        # The orchestrator has a `provisioner` section (dev/orchestrator.provisioner.yaml) and the platform is `mock-platform`, a WireMock the script gives one
+        # state machine per person: a first message to the coder makes the person's agent (`PUT If-None-Match: *`) and waits until it is ready before the message
+        # is written, a suspended agent is resumed (`PUT If-Match`, `suspend: false`) by the first message and by a later one to the same thread, a message to an
+        # agent that is not provisioned (`chat`) asks the platform nothing, and an agent that never gets ready ends the run at `provisioner.readyTimeoutSecs`
+        # (6 s here) with a 503 `agent_not_ready` and no thread. The orchestrator is the image built from this checkout above. The next step recreates the
+        # orchestrator, the edge and mock-oidc on the default files.
+        timeout-minutes: 10
+        env:
+          COMPOSE_FILES: -f compose.yaml -f dev/compose.provisioner.yaml
+        run: |
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 orchestrator edge mock-oidc mock-platform
+          dev/provisioner-e2e.sh
       - name: The chat's browser sub-agent (the stack with dev/compose.chat-browser.yaml; dev/chat-browser-e2e.sh, ADR 0057)
         # What the chart renders with `browser.chatSubagent: true`: a one-shot copies the chat's folder into a volume and adds
         # dev/agents/browser/chat-subagent.md (`a2a:` the browser's card, `auth: bearer:BROWSER_A2A_TOKEN`, `files: true`), and the chat gets

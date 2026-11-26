@@ -79,6 +79,11 @@ impl World {
     }
 
     pub fn app_with(&self, cfg: AppConfig) -> Arc<TestApp> {
+        self.app_with_directory(cfg, directory())
+    }
+
+    /// Like [`app_with`](Self::app_with) over another directory (aliases, other agents).
+    pub fn app_with_directory(&self, cfg: AppConfig, directory: AgentDirectory) -> Arc<TestApp> {
         Arc::new(
             App::new(
                 PortSet {
@@ -90,10 +95,10 @@ impl World {
                     ids: self.ids.clone(),
                     model: self.model.clone(),
                     auth: orch_ports::RefuseAll,
-                    registry: directory().fixed_registry(),
+                    registry: directory.fixed_registry(),
                     user_tools: orch_ports::NoUserTools::off(),
                 },
-                directory(),
+                directory,
                 cfg,
             )
             .expect("a valid gate"),

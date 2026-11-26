@@ -15,6 +15,7 @@ pub mod locale;
 pub mod mentions;
 pub mod pick;
 mod prompts;
+mod provisioning;
 mod purge;
 pub mod reader;
 mod share_link;
@@ -65,6 +66,7 @@ pub use locale::THREAD_LOCALE_KEY;
 pub use mentions::THREAD_MENTIONS_KEY;
 pub use pick::{THREAD_MODEL_KEY, THREAD_REASONING_KEY};
 pub use prompts::{EditPrompt, PromptRefusal, RenderPrompt, RenderedPrompt};
+pub use provisioning::{OUTER_SLACK, Provisioning};
 pub use purge::{DEFAULT_PURGE_LEASE_SECS, DEFAULT_PURGE_POLL_SECS, PurgeConfig, PurgeWorker};
 pub use reader::{
     ReaderAudience, ReaderRules, SharedThreadView, THE_OWNER, inert, reader_event, reader_thread,
