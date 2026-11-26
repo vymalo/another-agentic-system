@@ -20,6 +20,11 @@
 #   admin@example.com   an agent that never gets ready: the run ends at `provisioner.readyTimeoutSecs` of dev/orchestrator.provisioner.yaml
 #                       (6 s) with a 503, `code: agent_not_ready`, "not ready after 6s", and no thread
 #
+# Since ANR-1061 the message is SENT to the person's own agent, not to the deployment's `adam`: the script lists `coder-<owner>` of dev and of the
+# holder in `mock-registry` (the platform's registry, which the orchestrator reads live), both at `mock-own-agent`, a WireMock A2A agent with a
+# journal of its own, and asserts that the message of each person is in that journal and that the thread ends with that agent's answer
+# (`Data: ...`, which `adam` never says).
+#
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   (a) a first message makes the agent: the platform saw one `PUT If-None-Match: *` for `coder-<owner>` whose body names the agent, the
 #       owner, `suspend: false` and the deployment's form of the coder, with a bearer token; it polled until ready; the thread ends
@@ -36,6 +41,8 @@
 #   MOCK_PLATFORM_URL   http://127.0.0.1:${MOCK_PLATFORM_PORT:-8105}, the platform's WireMock (its admin API)
 #   AGENT_ID            adam   the coder (its alias `coder` is what the provisioner's kind is read from)
 #   READY_TIMEOUT       6      the `readyTimeoutSecs` of dev/orchestrator.provisioner.yaml
+#   MOCK_REGISTRY_URL   http://127.0.0.1:${MOCK_REGISTRY_PORT:-8084}, the platform's registry stand-in (its admin API)
+#   MOCK_OWN_AGENT_URL  http://127.0.0.1:${MOCK_OWN_AGENT_PORT:-8106}, the person's own agent (its admin API)
 #   TIMEOUT             120    seconds to wait for a thread to stop
 #
 # It RESETS the stubs and the request journal of `mock-platform` first, so run it on a stack you are not in the middle of another scenario
@@ -48,6 +55,10 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 platform=${MOCK_PLATFORM_URL:-http://127.0.0.1:${MOCK_PLATFORM_PORT:-8105}}
 platform=${platform%/}
+registry=${MOCK_REGISTRY_URL:-http://127.0.0.1:${MOCK_REGISTRY_PORT:-8084}}
+registry=${registry%/}
+own=${MOCK_OWN_AGENT_URL:-http://127.0.0.1:${MOCK_OWN_AGENT_PORT:-8106}}
+own=${own%/}
 agent=${AGENT_ID:-adam}
 ready_timeout=${READY_TIMEOUT:-6}
 timeout=${TIMEOUT:-120}
@@ -111,6 +122,12 @@ find_requests() { # find_requests METHOD PATH: the requests, oldest first
 
 total_requests() { admin GET /requests | jq -r '.requests | length'; }
 
+# in_own_agent MARKER: how many messages the person's own agent was sent that hold MARKER (the flat shape of /requests/find)
+in_own_agent() {
+  curl -fsS --max-time 30 -X POST "$own/__admin/requests/find" -H 'content-type: application/json' -d '{"method":"POST","urlPath":"/a2a"}' |
+    jq --arg m "$1" '[.requests[] | .body // "" | select(contains($m))] | length'
+}
+
 sse_events() { sed -n 's/^data: *//p' "$1"; }
 
 # run EMAIL_HEADER_FILE THREAD AGENT TEXT: one AG-UI run; writes $tmp/run.sse, $tmp/run.head; prints the HTTP status
@@ -165,12 +182,25 @@ stub holder Ready "" GET "$holder_path" 200 ready '"s4"'
 stub admin Started Stuck PUT "$admin_path" 201 saving '"a1"' If-None-Match '*'
 stub admin Started "" GET "$admin_path" 404 "" ""
 stub admin Stuck "" GET "$admin_path" 200 saving '"a2"'
+# The registry lists the agents the platform made for dev and the holder, at the one stand-in (the orchestrator reads it live, 2 s of cache).
+if curl -fsS --max-time 10 "$own/__admin/health" >/dev/null 2>&1; then ok "mock-own-agent answers at $own"; else bad "mock-own-agent does not answer at $own"; finish; fi
+curl -fsS --max-time 10 -X DELETE "$own/__admin/requests" >/dev/null
+items=$(jq -n --arg card "http://mock-own-agent:8080/.well-known/agent-card.json" --arg d "coder-$dev_owner" --arg h "coder-$holder_owner" '[
+  {href: $card, type: "application/json", title: "Dev coder", service: [$d], tags: ["coding"], audience: ["*"]},
+  {href: $card, type: "application/json", title: "Holder coder", service: [$h], tags: ["coding"], audience: ["*"]}]')
+curl -fsS --max-time 10 -X POST "$registry/__admin/mappings" -H 'content-type: application/json' \
+  -d "$(jq -n --argjson items "$items" '{
+    name: "the platform lists the agents of dev and the holder", priority: 1,
+    request: {method: "GET", urlPath: "/registry/v1/agents"},
+    response: {status: 200, headers: {"Content-Type": "application/linkset+json", "Cache-Control": "private, max-age=2"},
+      jsonBody: {linkset: [{profile: [{href: "https://agents.vymalo.com/registry/v1"}], item: $items}]}}}')" >/dev/null
 ok "stubs for three people: $(admin GET /mappings | jq -r '.mappings | length') mappings"
 
 # --- (a) a first message makes the agent ------------------------------------------------------------------------
 thread=$(uuid)
 echo "(a) dev's first message, thread $thread"
-code=$(run "$tmp/dev.h" "$thread" "$agent" hi)
+marker_a="own-agent-marker-a-$(uuid)"
+code=$(run "$tmp/dev.h" "$thread" "$agent" "hi $marker_a")
 if [ "$code" = 200 ]; then ok "the run was accepted (HTTP 200)"; else bad "POST /agui/agents/$agent answered HTTP ${code:-none}: $(head -c 300 "$tmp/err") $(head -c 300 "$tmp/run.sse")"; finish; fi
 state=$(settle "$tmp/dev.h" "$thread")
 case $state in
@@ -210,6 +240,17 @@ if [ -n "$last_poll" ] && [ -n "$first_event_ms" ] && [ "$first_event_ms" -ge "$
 else
   bad "the thread's first event ($first_event, ${first_event_ms:-?} ms) is before the platform's last poll (${last_poll:-?} ms), or one of them is missing"
 fi
+# The message went to the person's own agent (ANR-1061), and its answer is the thread's.
+if [ "$(in_own_agent "$marker_a")" -ge 1 ]; then
+  ok "the message is in the journal of the person's own agent (coder-<owner>), not only at the shared one"
+else
+  bad "the person's own agent was sent no message that holds $marker_a"
+fi
+if jq -e '[.events[] | tostring | select(contains("Data: nine seasons"))] | length >= 1' "$tmp/export.json" >/dev/null 2>&1; then
+  ok "the thread holds the person's own agent's answer, which the deployment's agent never gives"
+else
+  bad "the thread does not hold the answer of the person's own agent"
+fi
 # An agent that is not provisioned is not asked for.
 before=$(total_requests)
 chat_thread=$(uuid)
@@ -225,7 +266,8 @@ fi
 # --- (b) a suspended agent is resumed -----------------------------------------------------------------------------
 thread_b=$(uuid)
 echo "(b) the holder's first message to a suspended agent, thread $thread_b"
-code=$(run "$tmp/holder.h" "$thread_b" "$agent" hi)
+marker_b="own-agent-marker-b-$(uuid)"
+code=$(run "$tmp/holder.h" "$thread_b" "$agent" "hi $marker_b")
 if [ "$code" = 200 ]; then ok "the run was accepted (HTTP 200)"; else bad "POST /agui/agents/$agent as the holder answered HTTP ${code:-none}: $(head -c 300 "$tmp/err") $(head -c 300 "$tmp/run.sse")"; finish; fi
 state=$(settle "$tmp/holder.h" "$thread_b")
 case $state in
@@ -245,13 +287,16 @@ if [ "$(admin GET /scenarios | jq -r '.scenarios[] | select(.name == "holder") |
 else
   bad "the platform's agent of the holder did not reach ready"
 fi
+if [ "$(in_own_agent "$marker_b")" -ge 1 ]; then ok "the holder's message is in the journal of the holder's own agent"; else bad "the holder's own agent was sent no message that holds $marker_b"; fi
 # Suspended again: the next message to the same thread resumes it again.
 admin POST /scenarios/reset >/dev/null
-code=$(run "$tmp/holder.h" "$thread_b" "$agent" "thanks")
+marker_b2="own-agent-marker-b2-$(uuid)"
+code=$(run "$tmp/holder.h" "$thread_b" "$agent" "thanks $marker_b2")
 state=$(settle "$tmp/holder.h" "$thread_b")
 resumes=$(count PUT "$holder_path" If-Match '"s1"')
 if [ "$code" = 200 ] && [ "$resumes" = 2 ]; then
   ok "a second message to the same thread resumed the agent again (two resumes, thread $state)"
+  if [ "$(in_own_agent "$marker_b2")" -ge 1 ]; then ok "and reached the same own agent: the thread keeps its agent across messages"; else bad "the second message did not reach the holder's own agent"; fi
 else
   bad "the second message: HTTP $code, $resumes resumes of $holder_path (want 2), thread '$state'"
 fi
@@ -291,4 +336,6 @@ fi
 # --- left as it was found ---------------------------------------------------------------------------------------------
 admin POST /mappings/reset >/dev/null
 admin DELETE /requests >/dev/null
+curl -fsS --max-time 10 -X POST "$registry/__admin/mappings/reset" >/dev/null
+curl -fsS --max-time 10 -X DELETE "$own/__admin/requests" >/dev/null
 finish

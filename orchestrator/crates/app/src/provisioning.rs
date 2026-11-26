@@ -125,6 +125,16 @@ impl Provisioning {
         })
     }
 
+    /// The id the person's own agent is listed under (`<kind>-<owner>`, the name
+    /// [`ProvisionedAgent::name`] carries), for a thread aimed at the agent known by `names`; none
+    /// for an agent the deployment does not provision. A pure function of the person and the
+    /// kind, so the dispatcher finds the agent the message path made without storing anything
+    /// (ANR-1061, ADR 0103).
+    pub(crate) fn own_agent_id(&self, user: &UserId, names: &[AgentId]) -> Option<AgentId> {
+        let kind = self.kind_of(names)?;
+        Some(AgentId::new(kind.agent_name(&Self::owner_of(user))))
+    }
+
     /// Makes or resumes the person's agent for a message to the agent known by `names` and waits
     /// until it is ready. Nothing to do (and `Ok`) for an agent the deployment does not provision.
     ///

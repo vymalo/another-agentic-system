@@ -689,6 +689,17 @@ impl<P: Ports> App<P> {
         }
     }
 
+    /// The id of `user`'s own agent for a thread bound to `agent`, when the deployment provisions
+    /// that kind (ANR-1061): where the dispatcher sends what the person says, instead of at the
+    /// deployment's configured agent. `None` when provisioning is off or the agent's names (its
+    /// id and aliases) say no provisioned kind.
+    pub(crate) fn own_agent_id(&self, user: &UserId, agent: &AgentId) -> Option<AgentId> {
+        let provisioning = self.cfg.provisioning.as_ref()?;
+        let mut names = vec![agent.clone()];
+        names.extend(self.agents.aliases_of(agent));
+        provisioning.own_agent_id(user, &names)
+    }
+
     /// The ports this service runs on.
     pub fn ports(&self) -> &P {
         &self.ports

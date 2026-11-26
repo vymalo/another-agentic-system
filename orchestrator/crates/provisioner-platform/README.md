@@ -79,7 +79,7 @@ local stack's `mock-oidc` (`user`, `audience`, `roles`), the token cached until 
 
 The `orchestrator` binary builds the provisioner from the `provisioner:` section of its configuration
 (Cargo feature `provisioner-platform`, on by default; [`docs/api/config.md`](../../../docs/api/config.md#provisioner)).
-The message path of `orch-app` calls it: before a message to the agent the deployment calls `coder` or `workspace` is written, `ensure_ready` makes or resumes the person's agent and waits ([`Provisioning`](../app/README.md), ANR-806). The wait-ready bound the application reports is the `readyTimeoutSecs` given to this adapter.
+The message path of `orch-app` calls it: before a message to the agent the deployment calls `coder` or `workspace` is written, `ensure_ready` makes or resumes the person's agent and waits ([`Provisioning`](../app/README.md), ANR-806), and the dispatcher then sends the message to that agent, found in the registry under the name `ensure_ready` returns (ANR-1061). The wait-ready bound the application reports is the `readyTimeoutSecs` given to this adapter.
 
 ## Tests
 

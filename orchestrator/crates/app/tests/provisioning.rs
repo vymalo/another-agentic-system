@@ -779,3 +779,168 @@ async fn a_fork_message_is_stamped_when_the_agent_is_ready_and_not_before_the_wa
         .expect("the fork's own message");
     assert!(message.at >= ready, "stamped before the agent was ready");
 }
+
+// --- the message goes to the person's own agent (ANR-1061) ------------------------------------
+
+use orch_core::AgentId;
+use orch_ports::memory::Call;
+
+/// The deployment's `coder` and `plain`, and the platform's agents of alice and bob, listed in the
+/// registry under the names the provisioner gives them.
+fn directory_with_own_agents() -> orch_app::AgentDirectory {
+    let entry = |id: &str| orch_app::AgentEntry {
+        endpoint: orch_ports::AgentEndpoint::a2a(
+            AgentId::new(id),
+            format!("https://{id}.example.com/.well-known/agent-card.json"),
+            None,
+        ),
+        name: id.to_owned(),
+    };
+    let own = |user: &orch_core::UserId| AgentKind::Coder.agent_name(&owner(user));
+    orch_app::AgentDirectory::new(vec![
+        entry("coder"),
+        entry("plain"),
+        entry(&own(&alice())),
+        entry(&own(&bob())),
+    ])
+}
+
+fn app_over_own_agents(w: &World, provisioned: bool) -> std::sync::Arc<TestApp> {
+    w.app_with_directory(
+        AppConfig {
+            stream_poll: Duration::from_millis(100),
+            provisioning: provisioned
+                .then(|| Provisioning::new(MemoryProvisioner::new(), [AgentKind::Coder], BOUND)),
+            ..AppConfig::default()
+        },
+        directory_with_own_agents(),
+    )
+}
+
+fn sent_to(w: &World) -> Vec<String> {
+    w.agent
+        .sends()
+        .into_iter()
+        .map(|c| match c {
+            Call::Send(call) => call.agent.to_string(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_message_to_a_provisioned_coder_goes_to_the_persons_own_agent_every_time() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, true);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let mine = AgentKind::Coder.agent_name(&owner(&alice()));
+
+    let t = create(&app, &alice(), "coder", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    app.post_message(&alice(), t.id, "echo again".to_owned())
+        .await
+        .unwrap();
+    eventually("the second turn to finish", || async {
+        (w.agent.sends().len() == 2).then_some(())
+    })
+    .await;
+
+    assert_eq!(
+        sent_to(&w),
+        [mine.clone(), mine],
+        "both messages reach the person's agent, never the configured `coder`"
+    );
+    // the thread is still the coder's as far as the person and the gates are concerned
+    let thread = w.store.get_thread(None, t.id).await.unwrap().unwrap();
+    assert_eq!(thread.target.agent_id, AgentId::new("coder"));
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn two_people_reach_two_agents_and_a_fork_keeps_the_agent() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, true);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+
+    let a = create(&app, &alice(), "coder", "echo a").await;
+    wait_state(&app, &alice(), a.id, ThreadState::Done).await;
+    let b = create(&app, &bob(), "coder", "echo b").await;
+    wait_state(&app, &bob(), b.id, ThreadState::Done).await;
+    let fork = app
+        .fork_and_send(
+            &alice(),
+            a.id,
+            thread_n(61),
+            1,
+            None,
+            FirstMessage {
+                text: "echo forked".to_owned(),
+                message_id: Some("m-fork".to_owned()),
+                run_id: Some("run-fork".to_owned()),
+                origin: Origin::Agui,
+                ui_catalog: None,
+                mentions: Vec::new(),
+                tier: None,
+                locale: None,
+                pick: None,
+            },
+        )
+        .await
+        .unwrap();
+    eventually("the fork's turn", || async {
+        (w.agent.sends().len() == 3).then_some(())
+    })
+    .await;
+    let _ = fork;
+
+    let alice_agent = AgentKind::Coder.agent_name(&owner(&alice()));
+    let bob_agent = AgentKind::Coder.agent_name(&owner(&bob()));
+    assert_ne!(alice_agent, bob_agent);
+    assert_eq!(sent_to(&w), [alice_agent.clone(), bob_agent, alice_agent]);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_provisioning_the_message_still_goes_to_the_configured_agent() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, false);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "coder", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(sent_to(&w), ["coder"]);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_the_deployment_does_not_provision_is_not_redirected() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, true);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(sent_to(&w), ["plain"]);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_own_agent_the_registry_never_lists_ends_the_delegation_after_its_retries() {
+    let w = World::new();
+    // the registry lists `coder` only: the person's agent is made but never appears
+    let app = w.app_with(AppConfig {
+        stream_poll: Duration::from_millis(100),
+        provisioning: Some(Provisioning::new(
+            MemoryProvisioner::new(),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+        ..AppConfig::default()
+    });
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "coder", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Failed).await;
+    assert!(
+        w.agent.sends().is_empty(),
+        "nothing reached the shared agent in its place"
+    );
+    run.shutdown().await;
+}

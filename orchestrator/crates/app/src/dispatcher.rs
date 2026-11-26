@@ -739,10 +739,30 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // The registry is read now, for every row: an agent the platform removed is dead-lettered
         // when the registry answers without it (ADR 0022), and a registry that cannot answer
         // leaves the row to be tried again, never dead.
-        let entry = match self.app.resolve_agent(&binding.agent_id).await {
+        //
+        // Where a person's message goes (ANR-1061): for a kind the deployment provisions it is the
+        // person's own agent, which the message path made ready, looked up under its name in the
+        // registry; the thread keeps the configured agent as its target (gates, tiers and tools
+        // are the configured agent's). Derived from the thread's owner and the binding's agent,
+        // so every message and a fork go to the same agent and nothing is stored.
+        let own = self.app.own_agent_id(&thread.owner, &binding.agent_id);
+        let lookup = own.as_ref().unwrap_or(&binding.agent_id);
+        let entry = match self.app.resolve_agent(lookup).await {
             Ok(Some(entry)) => entry,
+            // ready on the platform and not listed yet: the registry reads the platform live, so
+            // give it a few tries before giving the person a dead row
+            Ok(None) if own.is_some() && row.attempts < self.cfg.max_attempts => {
+                tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, "the person's own agent is not listed yet; will retry");
+                self.retry(
+                    row,
+                    self.backoff(row.attempts),
+                    format!("agent '{lookup}' is not listed yet"),
+                )
+                .await?;
+                return Ok(None);
+            }
             Ok(None) => {
-                let reason = format!("agent '{}' is no longer listed", binding.agent_id);
+                let reason = format!("agent '{lookup}' is no longer listed");
                 // A person's start or close of a session is no delegation: it ends with the
                 // word, and the job it was asked beside is not failed (ADR 0072)
                 match &row.payload {
@@ -776,7 +796,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 return Ok(None);
             }
             Err(AppError::RegistryUnavailable { source }) => {
-                tracing::warn!(id = %row.id, agent = %binding.agent_id, attempt = row.attempts, error = %report(&source), "the agent registry cannot say where the agent is; will retry");
+                tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&source), "the agent registry cannot say where the agent is; will retry");
                 self.retry(
                     row,
                     self.backoff(row.attempts),
