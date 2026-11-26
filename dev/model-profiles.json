@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "mock-persona": {
+      "endpoint": "Persona"
+    },
+    "mock-persona-one": {
+      "endpoint": "One"
+    },
+    "mock-persona-two": {
+      "endpoint": "Two"
+    }
+  }
+}

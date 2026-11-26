@@ -2,7 +2,7 @@
 {{- $root := dict "root" . "component" "websearch" -}}
 {{- $name := include "agentic.component" $root -}}
 {{- $secret := include "agentic.secret.websearch" . -}}
-# Web search: dev/searxng-mcp, an MCP server with `web_search` (Brave) and `fetch` (a public page as text, SSRF-guarded: it
+# Web search: dev/searxng-mcp, an MCP server with `web_search` (SearXNG by default, Brave by choice) and `fetch` (a public page as text, SSRF-guarded: it
 # refuses private, loopback and link-local addresses, on the address the connection is made to). `POST /mcp` with
 # `Authorization: Bearer <search_mcp_token>`; the server refuses to start without the token. Stateless: no volume, any
 # number of replicas. Callers: the orchestrator's pods and `webSearch.allowFrom` (NetworkPolicy).
@@ -56,18 +56,24 @@ spec:
             - name: PORT
               value: "8080"
             - name: WEB_SEARCH_PROVIDER
-              value: brave
+              value: {{ .Values.webSearch.provider | quote }}
+            {{- if eq .Values.webSearch.provider "searxng" }}
+            # Our own SearXNG (a Service of the deployment): an address, no secret.
+            - name: SEARXNG_URL
+              value: {{ .Values.webSearch.searxngUrl | quote }}
+            {{- else }}
             - name: BRAVE_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: BRAVE_API_KEY
+            {{- end }}
             - name: SEARCH_MCP_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: SEARCH_MCP_TOKEN
-          # /healthz needs no token and asks nothing of Brave.
+          # /healthz needs no token and asks nothing of the provider.
           startupProbe:
             httpGet:
               path: /healthz

@@ -3,6 +3,11 @@
 # Not a deployment's values: see README.md, "Web search and Context7", for what a deployment sets.
 webSearch:
   enabled: true
+  searxngUrl: http://searxng.search.svc:8080
+  searxngTo:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: searxng
   image:
     tag: sha-abc1234
 orchestrator:

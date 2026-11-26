@@ -1,0 +1,84 @@
+{
+  "mappings": [
+    {
+      "name": "picked script: the model a message picked answers, and says which one it is (one, stream)",
+      "priority": 1,
+      "metadata": {
+        "twinOf": "picked script: the model a message picked answers, and says which one it is (one)"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona-one"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-picked-one\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-one\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-picked-one\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-one\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I answered as {{jsonPath request.body '$.model'}}.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-picked-one\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-one\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-picked-one\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-one\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 4,
+          "totalDuration": 200
+        }
+      }
+    },
+    {
+      "name": "picked script: the model a message picked answers, and says which one it is (two, stream)",
+      "priority": 1,
+      "metadata": {
+        "twinOf": "picked script: the model a message picked answers, and says which one it is (two)"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona-two"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-picked-two\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-two\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-picked-two\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-two\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I answered as {{jsonPath request.body '$.model'}}.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-picked-two\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-two\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-picked-two\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona-two\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 4,
+          "totalDuration": 200
+        }
+      }
+    }
+  ]
+}

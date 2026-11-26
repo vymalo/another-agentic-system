@@ -254,6 +254,16 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+    {{- if eq .Values.webSearch.provider "searxng" }}
+    # Our SearXNG: the one private destination the pod may reach (`webSearch.searxngTo`, peers as in a NetworkPolicy).
+    - to:
+        {{- range .Values.webSearch.searxngTo }}
+        - {{ toYaml . | nindent 10 | trim }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.webSearch.searxngPort }}
+    {{- end }}
 {{- end }}
 {{- if .Values.browser.enabled }}
 ---

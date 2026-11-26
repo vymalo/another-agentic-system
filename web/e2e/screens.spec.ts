@@ -972,14 +972,19 @@ for (const scheme of ["light", "dark"] as const) {
       await page.keyboard.type("echo ask @");
       await expect(page.getByRole("listbox", { name: "Agents to mention" })).toBeVisible();
       await shot(page, "mentions-list");
-      // a pick writes the label into the controlled box a render later: typing before it landed
-      // goes into the old text and is lost, so each pick is waited for before the next key
+      // a pick writes the label into the controlled box a render later, and puts the caret after it a
+      // frame after that: a key typed before either goes into the old text or lands before the caret
+      // that is about to move, so each pick is waited for, caret included, before the next key
+      const afterTheFrame = () =>
+        page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => done())));
       await page.keyboard.press("Enter"); // the Reviewer
       await expect(box).toHaveValue("echo ask @reviewer ");
+      await afterTheFrame();
       await page.keyboard.type("to check the data and @ver");
       await expect(box).toHaveValue("echo ask @reviewer to check the data and @ver");
       await page.keyboard.press("Enter"); // the Verifier
       await expect(box).toHaveValue("echo ask @reviewer to check the data and @verifier ");
+      await afterTheFrame();
       await page.keyboard.type("to sign it off");
       await expect(box).toHaveValue(
         "echo ask @reviewer to check the data and @verifier to sign it off",

@@ -336,7 +336,7 @@ config_of config.yaml "$cfg"
 
 # ---- Web search and the tool servers: off by default, on by values --------------------------------------------------------
 ws_values="$chart/tests/web-search.values.yaml"
-ws_on="--set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234"
+ws_on="--set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set webSearch.searxngUrl=http://searxng.search.svc:8080 --set webSearch.searxngTo[0].podSelector.matchLabels.app=searxng"
 
 render
 config_of config.yaml "$cfg"
@@ -355,18 +355,30 @@ check "search pod on: six Deployments, six Services, six NetworkPolicies, five E
 check "search pod on: still no Secret object" lacks '^kind: Secret$'
 check "search pod on: a Service another-agentic-websearch, ClusterIP, 8080" dhas Service another-agentic-websearch 'port: 8080'
 check "search pod on: its image is ours, by commit" dhas Deployment another-agentic-websearch 'image: "ghcr.io/vymalo/another-agentic-system/searxng-mcp:sha-abc1234"'
-check "search pod on: Brave is the provider" dhas Deployment another-agentic-websearch 'value: brave'
+check "search pod on: SearXNG is the provider" dhas Deployment another-agentic-websearch 'value: "searxng"'
+check "search pod on: ... at the address given" dhas Deployment another-agentic-websearch 'value: "http://searxng.search.svc:8080"'
+check "search pod on: no Brave anywhere in the render" lacks 'brave|BRAVE'
 check "search pod on: no secret-named variable has a literal value (the Brave key and the bearer are secretKeyRefs)" fails literal_secret_env
 doc Deployment another-agentic-websearch > "$sec"
-check "search pod on: BRAVE_API_KEY and SEARCH_MCP_TOKEN come from its own Secret" sec_all 'name: BRAVE_API_KEY$' 'key: BRAVE_API_KEY$' 'name: SEARCH_MCP_TOKEN$' 'key: SEARCH_MCP_TOKEN$' 'name: another-agentic-websearch$'
+check "search pod on: SEARCH_MCP_TOKEN comes from its own Secret" sec_all 'name: SEARCH_MCP_TOKEN$' 'key: SEARCH_MCP_TOKEN$' 'name: another-agentic-websearch$'
 check "search pod on: uid 1000, non-root, RuntimeDefault seccomp" sec_all 'runAsUser: 1000$' 'runAsNonRoot: true$' 'type: RuntimeDefault$'
 check "search pod on: no escalation, all capabilities dropped, read-only root, no service account token" sec_all 'allowPrivilegeEscalation: false$' 'drop: \["ALL"\]$' 'readOnlyRootFilesystem: true$' 'automountServiceAccountToken: false$'
 check "search pod on: startup, liveness and readiness probes, all on /healthz" sh -c "[ \"\$(grep -Ec 'path: /healthz\$' '$sec')\" -eq 3 ]"
 check "search pod on: resource requests and a memory limit" sec_all 'requests:$' 'limits:$' 'memory: 256Mi$'
 doc ExternalSecret another-agentic-websearch > "$sec"
-check "search pod on: its ExternalSecret reads brave_api_key and search_mcp_token from the AWS secret, on ssegning-aws" sec_all 'property: brave_api_key$' 'property: search_mcp_token$' 'key: prod/another-agentic/env$' 'name: ssegning-aws$'
-check "search pod on: the Brave key is read by that ExternalSecret alone" count 'property: brave_api_key$' 1
+check "search pod on: its ExternalSecret reads search_mcp_token from the AWS secret, on ssegning-aws" sec_all 'property: search_mcp_token$' 'key: prod/another-agentic/env$' 'name: ssegning-aws$'
+check "search pod on: no Brave key is read" count 'property: brave_api_key$' 0
 check "search pod on: the orchestrator's ExternalSecret reads neither the Brave key nor the bearer" dlacks ExternalSecret another-agentic-orchestrator 'brave|search'
+check "search pod on: its NetworkPolicy lets it reach our SearXNG" dhas NetworkPolicy another-agentic-websearch 'app: searxng'
+check "search pod on: ... on 8080" dhas NetworkPolicy another-agentic-websearch 'port: 8080'
+# shellcheck disable=SC2086
+render $ws_on --set webSearch.provider=brave
+check "Brave by choice: the Brave key is read by one ExternalSecret" count 'property: brave_api_key$' 1
+check "Brave by choice: the provider is brave" dhas Deployment another-agentic-websearch 'value: "brave"'
+check "Brave by choice: no SearXNG egress rule" dlacks NetworkPolicy another-agentic-websearch 'app: searxng'
+# shellcheck disable=SC2086
+render $ws_on
+config_of config.yaml "$cfg"
 check "search pod on, no tool server: the configuration is still the default one" cfg_lacks 'toolServers'
 check "search pod on: every image is ours by commit or a tag with a digest" images_ok
 doc NetworkPolicy another-agentic-websearch > "$sec"
@@ -423,7 +435,7 @@ check "tool servers on: the orchestrator's ExternalSecret reads search_mcp_token
 check "tool servers on: ... as the keys search-mcp-token and context7-api-key, which it mounts as files" sec_all 'secretKey: search-mcp-token$' 'secretKey: context7-api-key$'
 doc Deployment another-agentic-orchestrator > "$sec"
 check "tool servers on: the search pod's bearer is one property read by the orchestrator, the search pod and the chat agent" count 'property: search_mcp_token$' 3
-check "tool servers on: the Brave key is still read by the search pod alone" count 'property: brave_api_key$' 1
+check "tool servers on: no Brave key is read" count 'property: brave_api_key$' 0
 check "tool servers on: the orchestrator mounts both keys as files" sec_all 'path: search-mcp-token$' 'path: context7-api-key$'
 check "tool servers on: and passes no key as a variable (the agents' bearers are the only ones)" fails sec_all 'name: (SEARCH_MCP_TOKEN|CONTEXT7_API_KEY|BRAVE_API_KEY)$' 
 check "tool servers on: no secret-named variable has a literal value" fails literal_secret_env
@@ -439,7 +451,7 @@ check "Context7 alone: nothing of the search pod or its key in the render" lacks
 check "Context7 alone: its key is read by the orchestrator's ExternalSecret, still four ExternalSecrets" sh -c "
   [ \"\$(grep -Ec 'property: context7_api_key\$' '$out')\" -eq 1 ] && [ \"\$(grep -Ec '^kind: ExternalSecret\$' '$out')\" -eq 4 ]"
 # The properties and a server's settings are values.
-render -f "$ws_values" --set externalSecrets.properties.searchMcpToken=other_token --set externalSecrets.properties.context7ApiKey=other_c7 --set externalSecrets.properties.braveApiKey=other_brave
+render -f "$ws_values" --set externalSecrets.properties.searchMcpToken=other_token --set externalSecrets.properties.context7ApiKey=other_c7 --set externalSecrets.properties.braveApiKey=other_brave --set webSearch.provider=brave
 check "the three new AWS properties are values (a rename is a values change)" out_all 'property: other_token$' 'property: other_c7$' 'property: other_brave$'
 render --set orchestrator.toolServers.context7.enabled=true --set orchestrator.toolServers.context7.url=https://context7.example.org/mcp --set 'orchestrator.toolServers.context7.agents={chat}' --set orchestrator.toolServers.context7.timeoutSecs=30
 config_of config.yaml "$cfg"
@@ -489,7 +501,11 @@ refused "no AWS secret" --set externalSecrets.key=
 refused "no database" --set database.instances=0
 refused "the search pod with the placeholder image tag (no image has been built)" --set webSearch.enabled=true --set webSearch.image.tag=sha-0000000
 refused "the search pod on a tag that is not a commit" --set webSearch.enabled=true --set webSearch.image.tag=latest
-refused "the search pod with no AWS property for the Brave key" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set externalSecrets.properties.braveApiKey=
+refused "the search pod on SearXNG with no address" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234
+refused "the search pod on SearXNG with no egress peer" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set webSearch.searxngUrl=http://searxng.search.svc:8080
+# shellcheck disable=SC2086
+refused "the search pod on an unknown provider" $ws_on --set webSearch.provider=bing
+refused "the search pod on Brave with no AWS property for the key" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set webSearch.provider=brave --set externalSecrets.properties.braveApiKey=
 refused "the search pod with no AWS property for the bearer" --set webSearch.enabled=true --set webSearch.image.tag=sha-abc1234 --set externalSecrets.properties.searchMcpToken=
 refused "the websearch tool server without the search pod" --set orchestrator.toolServers.websearch.enabled=true
 refused "the websearch tool server with no property for its bearer" -f "$ws_values" --set externalSecrets.properties.searchMcpToken=

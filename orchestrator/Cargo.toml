@@ -63,16 +63,16 @@ orch-agui-projection = { path = "crates/agui-projection" }
 # rustls on aws-lc-rs, the one TLS backend of this process. `orch-agent-adam` builds their pools with
 # `orch-pg-connect`; `adam-postgres` is named for the one thing that needs it, the `PgConfig` the
 # notifier's listener connects with (`PgNotify::new` takes nothing else).
-adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29", default-features = false, features = ["supervisor"] }
-adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-engine = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
-adam-store-sqlite = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
+adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46", default-features = false, features = ["supervisor"] }
+adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-engine = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-store-sqlite = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

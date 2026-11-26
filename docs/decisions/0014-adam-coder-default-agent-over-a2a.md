@@ -916,3 +916,47 @@ as one more turn after the history of every request of a run whose context names
   `org.opencontainers.image.revision` `945208ef3ed8f4bbef60b7d1286f08f4e7624c38`, digest `sha256:ef440f7e...`.
 - *Unverified where this was written*: the image was not pulled locally; `dev/locale-real-e2e.sh`, which proves the chain
   on the real chat agent, is run by `Coder E2E` only.
+
+### Status note, 2026-11-26: model pick, reasoning and the prompt statement on the real adam (adam-rs 9f90f1e6)
+
+The pin moves from `945208e` to `9f90f1e6`, 99 commits of adam-rs `main`, and it is deliberately **not** adam-rs's head:
+#399 moved adam's own workspace to Rust 1.98, while this repository is on 1.94.1. `9f90f1e6` is the newest commit of
+adam-rs `main` before that move whose `coder` image exists, so this bump keeps the toolchain where it is and the next bump
+is the one that raises it (ANR-983 and ANR-1001 build on this).
+
+- **What it brings, and the reason the M1 cards wait for it** (another-context `plans/2026-11-26-extensions-roadmap.md`):
+  `model-pick/v1` (#349: a served agent takes the model a message names; #364: each choice carries its endpoint label),
+  `reasoning/v1` (#354: the card lists the model's levels and a level it does not take is refused; a usage call reports
+  the level it named), `prompt-statement/v1` (#419: the statement and the person's envelope on every model call),
+  `uploads/v1` on the card (#397, #407, #417: no `params`; the inline threshold is the setting, 10 MiB by default,
+  bounded at 256 MiB), and a kept-open child that asks the person, and only a shown one (#362).
+- **Also in the range:** `SessionConfig`, `SessionBounds` and `admit` (the seven limits, narrowed only), the plugin types
+  and the hook set of adam-rs ADR 0050 (H1, H1b, H2), the TurnKeys port and the Ed25519 turn signature of ADR 0068 T1,
+  the device-state port and the resource report (ADR 0065), the process pool with its Linux limits, a folder's eager or
+  lazy tool loading (ADR 0066), and the fix that a known window with no room is a minimal budget rather than no limit.
+- **The vendored files did not change**: `git diff --stat 945208e 9f90f1e6 -- bin/adam-coder/agent dev/git-server
+  dev/coder-agent dev/wiremock` is empty, so nothing is re-copied and `dev/coder/check-vendored.sh` still matches.
+- **Nothing in the run store moved** (`git diff --stat 945208e 9f90f1e6 -- crates/adam-store-postgres` is empty):
+  no migration, and no `Store` method gained a required implementation here (this repository implements none of adam's
+  traits; it uses adam's Postgres store as it is).
+- **The crates** name `9f90f1e6` on every `rev` line (ten, since `adam-engine` and `adam-store-sqlite` joined the list),
+  and `Cargo.lock` names that one rev on twenty packages. Re-resolving also added the turn-signature tree
+  (`ed25519-dalek`, `curve25519-dalek-derive`, `fiat-crypto`, `signature`): a side effect of the new crates, not a
+  separate update. `cargo check -p orchestrator --features agent-local --all-targets --locked` is green with no code
+  change, so nothing had to be migrated.
+- **The vendored `adam-*` skills** move with the skills CLI (`skills@1.9.0 update -p -y`) from `50bee181` to adam-rs's
+  head, `67dccc5d`, which is `9f90f1e6` plus 54 commits. `git diff 9f90f1e6 67dccc5d -- .agents/skills` is two files:
+  `adam-a2a-extensions` describes `prompt-statement/v1` with a turn key (`TURN_SIGNING_KEY_FILE`, `Turn-Signature`,
+  `adam-request/v1`) and `adam-upgrade` points at adam-rs's `.agents/docs/` (ADR 0079). **The first of those describes
+  something this pin does not have yet**: the turn signature on a model request is a later adam-rs commit, so the card,
+  the statement and the envelope are here and the signature is not. `adam-coder-deploy` kept its `50bee181` pin because
+  its text did not change.
+- *Verified 2026-11-26* (anonymous ghcr API, HTTP 200): `coder:sha-9f90f1e` is one `linux/amd64` OCI manifest (no index;
+  3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, label
+  `org.opencontainers.image.revision` `9f90f1e67b00c5cc7235acce738bced83f2ebd46`, digest `sha256:8352a52c...` (the
+  registry's `Docker-Content-Digest`). `dev/coder/check-vendored.sh` passes; `docker compose --profile '*' config -q` is
+  clean; `node tools/docs-check/check-docs.mjs` is clean; `cargo clippy` is clean for the workspace and for
+  `-p orchestrator --features agent-local`, and `cargo test -p orchestrator --features agent-local` and
+  `-p orch-agent-adam` pass on this head.
+- *Unverified where this was written*: the 3.11 GB image was not pulled locally; every scenario on it is the Coder E2E
+  workflow's, in the pull request that pins it.

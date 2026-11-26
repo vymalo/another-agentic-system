@@ -754,6 +754,19 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if and .Values.webSearch.enabled (eq (toString .Values.webSearch.image.tag) "sha-0000000") -}}
 {{- fail "webSearch.enabled needs webSearch.image.tag to name a built image: sha-0000000 is the placeholder, and the first build of .github/workflows/searxng-mcp.yml on main replaces it" -}}
 {{- end -}}
+{{- if .Values.webSearch.enabled -}}
+{{- if not (has (toString .Values.webSearch.provider) (list "searxng" "brave")) -}}
+{{- fail "webSearch.provider must be searxng or brave" -}}
+{{- end -}}
+{{- if eq (toString .Values.webSearch.provider) "searxng" -}}
+{{- if not (regexMatch "^https?://[^/\\s]+" (toString .Values.webSearch.searxngUrl)) -}}
+{{- fail "webSearch.provider: searxng needs webSearch.searxngUrl, the address of our SearXNG (http://<service>.<namespace>.svc:8080)" -}}
+{{- end -}}
+{{- if not .Values.webSearch.searxngTo -}}
+{{- fail "webSearch.provider: searxng needs webSearch.searxngTo, the peers the pod's egress may reach on the SearXNG port: its egress to the internet excludes every private range" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.orchestrator.toolServers.websearch.enabled (not .Values.webSearch.enabled) -}}
 {{- fail "orchestrator.toolServers.websearch.enabled points at the search pod, which webSearch.enabled=false does not deploy" -}}
 {{- end -}}

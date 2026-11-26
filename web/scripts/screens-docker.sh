@@ -11,6 +11,8 @@ docker build -f "$root/web/Dockerfile" --target screens -t web-screens "$root"
 chmod 777 "$out"
 docker run --rm -v "$out:/app/web/e2e/__screens__" web-screens
 dir="$root/web/e2e/__screens__"
+# SCREENS_KEEP=<dir>: a copy of what the image drew, for CI to upload when the comparison fails (the set is still only ever written by `write`)
+if [ -n "${SCREENS_KEEP:-}" ]; then mkdir -p "$SCREENS_KEEP" && cp "$out"/*.png "$SCREENS_KEEP"/; fi
 if [ "$mode" = write ]; then
   cp "$out"/*.png "$dir"/
   echo "wrote $(ls "$out" | wc -l) images"

@@ -52,7 +52,10 @@ the adam crates pinned in `orchestrator/Cargo.toml`.
      `adam_service::serve(&ServiceConfig, agents, shutdown)`, or for a composition of your own.
      `adam_agent::folder::load(path)`, `card_of`, `assemble` are the pieces
      (`bin/adam-agent/README.md`, "Library"). `bin/adam-agent` is `publish = false`: depend on it
-     by git rev too.
+     by git rev too. Served that way it also takes a per-message model pick (`model-pick/v1`) when
+     the deployment profiles more than one model; a hand-built `LlmAgent` honours `vymalo.model`
+     only if you give it `LlmAgentBuilder::model_choices(..)` and your front writes the key, as
+     `RuntimeTaskBackend::with_model_choices` does (ADR 0064, amended 2026-11-23).
    * **Your own agent with Rust tools**: depend on the `adam` facade
      (`crates/adam/README.md`): `use adam::prelude::*` gives `#[tool]`, `tools!`, `Tool`, `State`,
      `LlmAgent`; features `macros` (default), `a2a` (the card), `mcp` (`mcp.json` tools), `dev`
@@ -65,6 +68,32 @@ the adam crates pinned in `orchestrator/Cargo.toml`.
      it the level is dropped silently (ADR 0063 decision 6; `.models(..)` on the engine does not reach the client).
      Details and the tool rules:
      `crates/adam/README.md` ("`#[tool]`", "Agent directories"), `docs/reference/agent-files.md`.
+   * **A host may put compiled hooks around every tool call and around a person's message** (ADR 0050,
+     slices H1 and H1b): `LlmAgentBuilder::hooks(HookSet)` or `.plugin(one)` (`adam-plugin`, re-exported
+     by `adam-llm-agent`) runs `before_tool` and `after_tool` **inside** the call's journaled step
+     `tool:<call id>`, so a hook may rewrite the arguments or the text the model reads, deny the call,
+     ask (not built: the call is not run) or stop the run, and a replay that finds the step recorded
+     asks no hook. `message_received` runs in the step that takes a person's message in
+     (`message:start`, `message:<inbound id>`; taken only when a set is installed): a hook may allow
+     the message, rewrite its text, or refuse it — a refused start fails the run `Rejected` with the
+     reason, and one refused while the task works is left out and the task goes on. A message's files
+     reach the hook by reference (name, media type, size, SHA-256), never their bytes. The verdict is
+     recorded with the call (`HookedOutput`) or the message (`MessageDecision`). A hook gets no `Ctx`
+     and adds no step of its own. `EngineBuilder` takes no `HookSet` yet, and an agent file's
+     `plugins:` is a later slice, so a served folder agent installs none.
+     https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0050-hooks-around-the-agent-loop-compiled-first-and-programs-second.md
+   * **Limiting commands in your own tools** (ADR 0065): `adam_code_tools::Governor` pairs an
+     `adam_budget::Admission` (`adam-admission-local`'s `LocalAdmission` over a `Budget`) with a
+     `adam_workspace::Confine`. Build the confine with `adam_confine::best_effort()` (a systemd
+     scope where the user manager delegates memory, cpu and pids, else `Rlimits`; Unix only, and
+     `describe()` says what is not enforced) and run commands through
+     `adam_code_tools::shell::run_timed_governed(.., Some(Governed { governor, conversation }))`:
+     a command takes a seat of `Pool::Processes` (a full pool is `RunError::Busy`, retryable) and
+     its group is ended when it ends, so nothing it started outlives its seat. Read
+     `ShellOutcome::stopped` for the limit that ended it. A confine you write passes
+     `adam_confine_testkit::confine_conformance!`. Not governed yet: background commands, language
+     servers, git. Sources: `crates/adam-code-tools/src/governor.rs`, `crates/adam-confine/`
+     at https://github.com/vymalo/another-adam-rs/tree/main/crates/adam-confine.
    * **A wrapper agent must delegate the split.** `adam_runtime::Agent` has provided `split`/`join`
      methods (and so does `AgentStarter`) that let a run keep its transcript in an append-only body
      beside a small head; the default keeps the whole state in the head, the v4 format. An agent of
@@ -99,9 +128,16 @@ https://github.com/vymalo/another-adam-rs/blob/main/docs/guides/embed-in-an-app.
   a `SecretSource` (the default refuses every name), with `.tools(..)` a `ToolSet` of its own (`#[tool]`
   functions) that the files select with `tools:`, with `.models(..)` the deployment's `ModelProfiles` (without
   them an agent whose file sets `reasoning_effort` or `model_preset` is refused at `start`, fail closed) and with
+  `.admission(..)` the process's pools ([ADR 0065], slice 2: `adam_budget::DynAdmission`, in practice
+  `Arc::new(adam_admission_local::LocalAdmission::new(budget))`, which bounds the model calls and tool calls in
+  flight; without it nothing is admitted), and with
   `.reasoning_effort(..)` the root's level when its file sets none — the folder's own key wins, the builder's level
   wins over the agent's `model_preset` and the profile, and it is validated when it applies (a file's own level is
-  validated instead). The engine reads no environment variable.
+  validated instead). `Say::with_model(alias)` asks that a message's run be answered by a model that has a
+  profile there (anything else is `EngineError::Invalid`, nothing written; the choice holds for the run until
+  a later message names another), and a folder's `model_fallback:` is the alias a run continues on, once, when
+  the endpoint refuses its model as locked (ADR 0064, amended 2026-11-23). The engine reads no environment variable.
+  [ADR 0065]: https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0065-resource-governance-admission-pools-and-os-limits.md
 * **Then** `start().await?`, `send`, `steer`, `answer`, `cancel`, `list`, `get`, `events`, `commands` (the folder's
   `/name` commands, which a message expands), `files` and `file` (what a tool handed over, by SHA-256), `firings` (the runs
   `schedules/` fired, which `get`, `events` and `cancel` reach too), `helpers`, `start_session`, `sessions` and
