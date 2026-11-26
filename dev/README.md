@@ -1643,6 +1643,27 @@ configured agents only." (`GET /api/registry` says which source and why; a run o
 
 Gate layers and the verifier belong to the agents of `agents.yaml`: a registry agent runs under the deployment's gate (`ORCH_GATE`, none here).
 
+## A person's own agent: made on the first message, resumed on the next (ANR-806)
+
+The platform makes the agents ([ADR 0022](../docs/decisions/0022-platform-provisions-agents-system-discovers-them.md)); with a `provisioner` section
+([`docs/api/config.md`](../docs/api/config.md#provisioner)) the orchestrator asks it for **the person's own agent** before it accepts a message to the coder. The
+default stack has no platform to ask, so this is an override:
+
+```sh
+docker compose -f compose.yaml -f dev/compose.provisioner.yaml --profile app up -d --build --wait
+dev/provisioner-e2e.sh        # a first message makes the agent, a suspended one resumes, a wait that runs out ends at readyTimeoutSecs
+```
+
+| What | Where |
+|---|---|
+| The platform | `mock-platform`, a WireMock on `http://127.0.0.1:8105` with no stub of its own: the script stubs the owner routes (`/v1/owners/{owner}/agents/{name}`) of each person as a state machine (a WireMock scenario) |
+| The settings | the marked `provisioner` block of [`orchestrator.provisioner.yaml`](orchestrator.provisioner.yaml), `dev-oidc` credentials against `mock-oidc` (the secret is `PROVISIONER_CLIENT_SECRET` of the override), `readyTimeoutSecs: 6`; [`check-provisioner-config.sh`](check-provisioner-config.sh) asserts that nothing else differs from `orchestrator.yaml` |
+| Which messages | the agent the deployment calls `coder` (here `adam`, whose alias it is) when `kinds` lists `coder`; the owner is 24 hex digits of the SHA-256 of the person's user id and the agent `coder-<owner>`. `chat` and every other agent are never asked for |
+| The scenario | [`provisioner-e2e.sh`](provisioner-e2e.sh): dev's first message (create with `If-None-Match: *`, poll until ready, the thread's first event not before the last poll), the holder's suspended agent (`If-Match`, `suspend: false`, again after the scenarios are reset), and admin's agent that is never ready (503 `agent_not_ready` after the bound, `Retry-After`, no thread) |
+
+It does not combine with another override that replaces the orchestrator's configuration (`compose.browser-auth.yaml`, `compose.live.yaml`). It is not in
+`dev/e2e-all.sh`, which runs on the default stack; the Coder E2E workflow runs it as its own step.
+
 ## Thread titles: the orchestrator asks a model
 
 MVP slice 6 ([ADR 0005](../docs/decisions/0005-openai-compatible-model-endpoint.md) amended 2026-10-01; [`docs/orchestrator.md`](../docs/orchestrator.md) "Thread titles") is the first time the

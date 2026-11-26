@@ -4,6 +4,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use orch_app::{AppError, AttachmentRefusal, PromptRefusal, TeamPresetRefusal, UserToolRefusal};
 use orch_core::{Classify, ErrorClass, ForkError, report};
+use orch_ports::ProvisionError;
 use serde::Serialize;
 
 /// RFC 9457 problem details (`application/problem+json`), the contract's `Problem` response.
@@ -233,6 +234,8 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | `Transient` (the store) | 503 + `Retry-After: 5` |
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
 /// | the live card of an agent cannot be read, and the request needs to know whether it honours an access tier (`AppError::CardUnavailable`, ADR 0061) | 503 "the card of the agent <id> could not be read" + `Retry-After: 5` |
+/// | the person's own agent is not ready within the wait-ready bound (`AppError::AgentNotReady`, ANR-806) | 503 `code: agent_not_ready`, "your <kind> agent is not ready after <n>s" + `Retry-After: 5`; nothing was written |
+/// | the platform cannot make or wake the person's own agent (`AppError::Provisioning`) | 503 "your <kind> agent could not be made ready" + `Retry-After: 5` when it may pass (the platform is down or the agent is being deleted), 500 when the platform refused the orchestrator or its form |
 /// | an agent that rate limits | 503 + its `Retry-After` |
 /// | any other agent failure | 502 |
 /// | `Corrupt`, `Internal`, anything else | 500 |
@@ -267,6 +270,31 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         tracing::warn!(error = %report(err), "an agent card could not be read to check the access tier");
         return (
             Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+            Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
+        );
+    }
+    // The person's own agent (ANR-806): not ready in time, or the platform could not make it. The
+    // caller did nothing wrong and nothing was written; the detail names the kind and, for a wait
+    // that ran out, the bound, and never the platform's address or answer (those are logged).
+    if matches!(
+        err,
+        AppError::AgentNotReady { .. }
+            | AppError::Provisioning {
+                source: ProvisionError::Unavailable { .. }
+                    | ProvisionError::NotReady { .. }
+                    | ProvisionError::Deleting,
+                ..
+            }
+    ) {
+        tracing::warn!(error = %report(err), "the person's own agent is not ready");
+        let problem = Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string());
+        let problem = if matches!(err, AppError::AgentNotReady { .. }) {
+            problem.with_code("agent_not_ready")
+        } else {
+            problem
+        };
+        return (
+            problem,
             Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
         );
     }
@@ -828,6 +856,45 @@ mod tests {
             "this agent does not take the tier 'plan'".to_owned(),
         ));
         assert_eq!(problem.status, 422);
+        assert_eq!(retry_after, None);
+    }
+
+    #[test]
+    fn an_own_agent_that_is_not_ready_is_a_503_that_names_the_bound_and_not_the_platform() {
+        use orch_ports::AgentState;
+        use std::time::Duration;
+
+        let (problem, retry_after) = problem_for(&AppError::AgentNotReady {
+            kind: "coder",
+            waited: Duration::from_secs(120),
+            last: Some(AgentState::Saving),
+        });
+        assert_eq!(problem.status, 503);
+        assert_eq!(problem.code.as_deref(), Some("agent_not_ready"));
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("your coder agent is not ready after 120s")
+        );
+        assert_eq!(retry_after, Some(5));
+
+        // the platform down: a 503 too, with no code and no word of the platform's answer
+        let (problem, retry_after) = problem_for(&AppError::Provisioning {
+            kind: "workspace",
+            source: ProvisionError::unavailable("https://platform.internal answered 502"),
+        });
+        assert_eq!(problem.status, 503);
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("your workspace agent could not be made ready")
+        );
+        assert_eq!(retry_after, Some(5));
+
+        // the platform refusing the orchestrator is the deployment's fault: a 500, not the person's
+        let (problem, retry_after) = problem_for(&AppError::Provisioning {
+            kind: "coder",
+            source: ProvisionError::Refused,
+        });
+        assert_eq!(problem.status, 500);
         assert_eq!(retry_after, None);
     }
 

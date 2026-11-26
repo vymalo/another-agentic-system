@@ -1253,6 +1253,23 @@ pub trait ThreadStore:
         limit: u32,
     ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
 
+    /// Whether an event of `thread` carries the idempotency `key` (the first event of a commit
+    /// carries the key itself): a repeat of that request is a replay, and
+    /// [`commit`](Self::commit) will answer [`CommitOutcome::Duplicate`] to it. A read, so a
+    /// caller can leave a replay alone before it does work that only a first request needs.
+    ///
+    /// **Provided**: the default says no, so an implementer that has not written the lookup keeps
+    /// compiling and every request is treated as a first one (the commit still refuses the
+    /// duplicate). Every store of this repository overrides it.
+    fn key_recorded(
+        &self,
+        thread: ThreadId,
+        key: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        let _ = (thread, key);
+        async { Ok(false) }
+    }
+
     /// The newest `limit` events of `kind`, newest first: one bounded read for "the last artifact",
     /// which would otherwise be a scan of the whole log.
     fn latest_events(

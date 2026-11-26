@@ -429,7 +429,17 @@ A key is 64 hexadecimal characters (32 random bytes: `openssl rand -hex 32`; 64 
 ### `provisioner`
 
 A person's own agents on the platform (the `AgentProvisioner` port). **Absent is off**: nothing changes, and
-`--print-config` prints nothing of it. A binary built without the Cargo feature `provisioner-platform` refuses
+`--print-config` prints nothing of it.
+
+**On the message path** (ANR-806): with the section, a person's message to the agent the deployment calls `coder` or
+`workspace` (its id or one of its aliases, and a kind listed in `kinds`) first asks the platform for **the person's own
+agent** of that kind, `<kind>-<owner>`, where `<owner>` is 24 hex digits of the SHA-256 of the person's user id. The agent
+is made when there is none (a first message), resumed when it is suspended, and waited for until it is `ready`; only then is
+the message written and sent. Two messages at once make one agent. The wait ends at `readyTimeoutSecs`: the person gets a
+**503** `code: agent_not_ready`, "your coder agent is not ready after 120s", with `Retry-After`, and **nothing is written**
+(they send the message again; the agent keeps getting ready meanwhile). A platform that is down is a 503 "your coder agent
+could not be made ready"; one that refuses the orchestrator's token or the form is a 500 (the deployment's fault, never the
+person's), logged with the cause. The shared `chat` agent and any other agent never go through it. A binary built without the Cargo feature `provisioner-platform` refuses
 the section (exit 78).
 
 | Key | Meaning |
@@ -439,7 +449,7 @@ the section (exit 78).
 | `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
 | `credentials` | What the orchestrator presents. One type: `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`). A development adapter; use another in a deployment. |
 | `requestTimeoutSecs` | One request to the platform, 1 to 60 (default 5). |
-| `readyTimeoutSecs` | How long to wait for a made or resumed agent to be ready, 1 to 600 (default 120). |
+| `readyTimeoutSecs` | How long to wait for a made or resumed agent to be ready, 1 to 600 (default 120). **The bound of a person's message path**: the application gives up at it (and, as a backstop for an adapter that does not, 10 s later), with the 503 above; it is not the dispatch's timeout. |
 
 ### `userToolServers`
 

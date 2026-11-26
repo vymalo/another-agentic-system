@@ -1978,6 +1978,20 @@ impl ThreadStore for SqliteStore {
         .await
     }
 
+    async fn key_recorded(&self, thread: ThreadId, key: &str) -> Result<bool, StoreError> {
+        let key = key.to_owned();
+        self.call(move |conn| {
+            row_opt(
+                conn,
+                "SELECT 1 FROM events WHERE thread_id = ?1 AND idempotency_key = ?2 LIMIT 1",
+                &[&thread.0.to_string(), &key],
+                |_| Ok(()),
+            )
+            .map(|found| found.is_some())
+        })
+        .await
+    }
+
     async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
         let text: Option<Option<String>> = self
             .call(move |conn| {
