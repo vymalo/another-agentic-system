@@ -42,7 +42,7 @@ pub use echo::TierStats;
 mod history;
 mod load;
 pub use history::{HistorySettings, HistoryStats};
-pub use load::{LoadStats, SubscriberGuard};
+pub use load::{LoadStats, PoolProbe, PoolReading, SubscriberGuard};
 mod sessions;
 pub use sessions::{ChildCloseState, StartChildSession};
 mod share;

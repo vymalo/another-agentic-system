@@ -598,6 +598,17 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
             reason: e.to_string(),
         })?,
     );
+    let pools = store.pool().clone();
+    app.set_pool_probe(Arc::new(move || {
+        let s = pools.stats();
+        vec![orch_app::PoolReading {
+            pool: "thread-store",
+            max: s.max,
+            in_use: s.in_use(),
+            idle: s.idle,
+            waiting: s.waiting,
+        }]
+    }));
     Ok(Shared { store, app, local })
 }
 
