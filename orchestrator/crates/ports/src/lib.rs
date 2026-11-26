@@ -179,10 +179,11 @@ pub use tools::{
 };
 pub use usage_ledger::{UsageBackfill, UsageLedger};
 pub use user_tools::{
-    DefinitionError, MAX_CLIENT_ID_BYTES, MAX_HEADER_NAME_BYTES, MAX_NAME_CHARS, MAX_SCOPE_BYTES,
-    MAX_SCOPES, MAX_USER_TOOL_SERVERS, NoUserToolServers, ServerRevision, StoredServer,
-    ToolServerStatus, UnavailableReason, UserAuth, UserToolServer, UserToolServerId,
-    UserToolServerState, UserToolServerStore, UserToolServerStoreError,
+    DefinitionError, LAST4_CHARS, LAST4_MIN_SECRET_CHARS, MAX_CLIENT_ID_BYTES,
+    MAX_HEADER_NAME_BYTES, MAX_NAME_CHARS, MAX_SCOPE_BYTES, MAX_SCOPES, MAX_USER_TOOL_SERVERS,
+    NoUserToolServers, ServerRevision, StoredServer, ToolServerStatus, UnavailableReason, UserAuth,
+    UserToolServer, UserToolServerId, UserToolServerState, UserToolServerStore,
+    UserToolServerStoreError, last4_of,
 };
 pub use vault::{
     MAX_VAULT_NAME_CHARS, SUPERSEDED_GRACE, VAULT_PREFIX, VaultError, VaultName, VaultRef,

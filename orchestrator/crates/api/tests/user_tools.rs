@@ -722,6 +722,46 @@ async fn a_none_server_goes_through_its_whole_life() {
 }
 
 #[tokio::test]
+async fn saved_credential_returns_last4_and_never_the_value() {
+    let h = Harness::full().await;
+    // a typed key of 12 characters or more shows its last four, in the answer and in the listing
+    let added = h.add("alice", bearer("GitHub")).await;
+    let id = id_of(&added);
+    assert_eq!(added["last4"], "3a9c", "{added}");
+    let listed = h.list("alice").await;
+    assert_eq!(listed.json()["servers"][0]["last4"], "3a9c");
+    // a key given again changes it, and a rename or a header change keeps it
+    let r = h
+        .patch("alice", &id, json!({"secret": "SENTINEL-token-second"}))
+        .await;
+    assert_eq!(r.json()["last4"], "cond", "{}", r.text());
+    let r = h.patch("alice", &id, json!({"name": "Renamed"})).await;
+    assert_eq!(r.json()["last4"], "cond", "{}", r.text());
+    // a new URL revokes the credential, and the end of its key goes with it
+    let r = h.patch("alice", &id, json!({"url": OTHER_URL})).await;
+    assert_eq!(r.json()["hasCredential"], false);
+    assert!(r.json().get("last4").is_none(), "{}", r.text());
+    // a key shorter than twelve characters shows nothing; a `none` server never has one
+    let short = h
+        .add(
+            "alice",
+            json!({"name": "Short", "url": URL, "auth": {"kind": "bearer"}, "secret": "SHORT-key-1"}),
+        )
+        .await;
+    assert_eq!(short["hasCredential"], true);
+    assert!(short.get("last4").is_none(), "{short}");
+    let plain = h.add("alice", none("Plain")).await;
+    assert!(plain.get("last4").is_none(), "{plain}");
+    // the value is nowhere in what the person was told
+    for body in [added.to_string(), listed.text(), short.to_string()] {
+        assert!(
+            !body.contains(TOKEN) && !body.contains("SHORT-key-1"),
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_bearer_server_is_keyed_rekeyed_moved_and_deleted() {
     let h = Harness::full().await;
     let added = h.add("alice", bearer("GitHub")).await;

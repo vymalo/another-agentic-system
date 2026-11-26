@@ -253,7 +253,7 @@ project's clients and keep evolving.
 |---|---|---|
 | Missions, then federation ([sys#342](https://github.com/vymalo/another-agentic-system/issues/342)) | After R3 | They need cloud agents, limits and sys ADR 0064 first |
 | Windows: browser frames, web and phone previews ([sys#339](https://github.com/vymalo/another-agentic-system/issues/339)) | After R3 | No release needs them |
-| The app factory ([ADR 0073](docs/decisions/0073-app-factory-board-and-model-selection.md)) | After R3, after memory and its refinement | Its agents need R3's coder in the cloud |
+| The app factory ([ADR 0073](docs/decisions/0073-app-factory-board-and-model-selection.md)) | After R3, after memory and its refinement | Its agents need R3's coder in the cloud. Amended 2026-11-26: the board is a component of this repository outside the core, apps are one SQLite container on the platform built in the person's own GitHub |
 | Memory, then its refinement ([sys#337](https://github.com/vymalo/another-agentic-system/issues/337)) | Memory after R2; refinement after R3 | Not needed to run R1 or R2 |
 | An agent asks the person for a credential ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) S1 to S7, S11, S12) | After hooks | The broker's first part and the injector are in R1 |
 | The API gaps 3 to 8 and the reference client ([sys#336](https://github.com/vymalo/another-agentic-system/issues/336)) | Later | A person's own MCP servers are not in R1 |

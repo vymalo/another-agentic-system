@@ -72,7 +72,19 @@ cd orchestrator
 cargo run -p orch-embed --example run_thread --locked
 ```
 
-CI runs it in the `embed` job of `.github/workflows/orchestrator.yml`, together with
+`examples/kill_resume.rs` is the durability proof (ADR 0076, sys#382 E4b). It runs itself in three
+processes: the first creates a thread with the scripted local agent (`testkit` of `orch-agent-adam`,
+the `steps 5` script: five journaled steps, each an artifact) on two SQLite files and is killed with
+SIGKILL after the second; the second opens the same files and waits for the thread to be `Done`,
+then asserts the log holds `step-1` to `step-5` once each, in order. It takes about 30 s: the
+dispatcher's job lease is 30 s. `KILL_RESUME_DISABLED=1` starts the second process without a
+worker, so nothing resumes and the example fails.
+
+```sh
+cargo run -p orch-embed --example kill_resume --locked
+```
+
+CI runs both examples in the `embed` job of `.github/workflows/orchestrator.yml`, together with
 `cargo fmt --check`, `cargo clippy -p orch-embed --all-targets -- -D warnings` and
 `cargo test -p orch-embed`. The same job fails when the embedded build's normal dependency tree
 holds `axum`, `sqlx`, `tokio-postgres` or `hyper`: a request from ADR 0076 decision 4, checked on

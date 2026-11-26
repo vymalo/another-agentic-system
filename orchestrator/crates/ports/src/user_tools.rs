@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::credentials::CredentialRef;
 use crate::egress::{EgressTarget, MAX_URL_BYTES};
-use crate::tools::is_reserved_header;
+use crate::tools::{ToolSecret, is_reserved_header};
 
 /// The most servers one person holds: 8 (ADR 0046). The existing 16 attached to one thread stand.
 pub const MAX_USER_TOOL_SERVERS: usize = 8;
@@ -553,6 +553,7 @@ pub struct UserToolServer {
     auth: UserAuth,
     state: UserToolServerState,
     credential: Option<CredentialRef>,
+    last4: Option<String>,
 }
 
 impl UserToolServer {
@@ -630,6 +631,7 @@ impl UserToolServer {
             auth,
             state,
             credential,
+            last4: None,
         })
     }
 
@@ -645,6 +647,23 @@ impl UserToolServer {
     pub fn with_credential(mut self, credential: CredentialRef) -> Self {
         self.credential = Some(credential);
         self
+    }
+
+    /// The same definition that shows `last4` as the end of the key it keeps: what
+    /// [`last4_of`] gave when the person typed it, or what a store read back. `None` clears it.
+    /// A value that is not four characters is dropped, so a definition never shows more.
+    #[must_use]
+    pub fn with_last4(mut self, last4: Option<String>) -> Self {
+        self.last4 = last4.filter(|text| text.chars().count() == LAST4_CHARS);
+        self
+    }
+
+    /// The last four characters of the key the person typed, kept beside its reference (ADR 0083,
+    /// rule 3 of the trusted components): never the key, never more than four characters, absent for
+    /// a key of fewer than [`LAST4_MIN_SECRET_CHARS`] characters and for a credential that is not a
+    /// typed key (an OAuth authorization).
+    pub fn last4(&self) -> Option<&str> {
+        self.last4.as_deref()
     }
 
     /// The id.
@@ -690,11 +709,27 @@ impl fmt::Debug for UserToolServer {
             .field("auth", &self.auth)
             .field("state", &self.state)
             .field("credential", &self.credential)
+            .field("last4", &self.last4)
             .finish()
     }
 }
 
 // ------------------------------------------------------------------------------- the revision
+
+/// How many characters of a key a definition shows.
+pub const LAST4_CHARS: usize = 4;
+
+/// A key shorter than this shows nothing: four characters of a short key are too much of it.
+pub const LAST4_MIN_SECRET_CHARS: usize = 12;
+
+/// The last four characters of `secret`, or `None` for one of fewer than
+/// [`LAST4_MIN_SECRET_CHARS`] characters. Called once, where the value is in hand (the save); never
+/// from a stored secret.
+pub fn last4_of(secret: &ToolSecret) -> Option<String> {
+    let text = secret.expose();
+    let count = text.chars().count();
+    (count >= LAST4_MIN_SECRET_CHARS).then(|| text.chars().skip(count - LAST4_CHARS).collect())
+}
 
 /// The revision of a stored definition: what the store gives to every write of it and a read returns,
 /// so that a write based on a read can say which one it is based on.

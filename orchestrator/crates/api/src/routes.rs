@@ -707,6 +707,7 @@ pub(crate) struct PublicConfigView<'a> {
     config: &'a orch_app::PublicConfig,
     search: crate::search::SearchCapability,
     prompts: crate::prompts::PromptsCapability,
+    teams: crate::teams::TeamsCapability,
 }
 
 pub(crate) async fn public_config<P: Ports>(
@@ -716,6 +717,7 @@ pub(crate) async fn public_config<P: Ports>(
         config: state.app.public_config(),
         search: crate::search::SearchCapability::default(),
         prompts: crate::prompts::PromptsCapability::default(),
+        teams: crate::teams::TeamsCapability::default(),
     };
     Json(serde_json::to_value(view).unwrap_or(serde_json::Value::Null))
 }

@@ -37,7 +37,7 @@ of the owner's advisory lock, one counter for revisions, the audience as a JSON 
 [`store-postgres/src/teams.rs`](../store-postgres/src/teams.rs) the same way: one `BEGIN IMMEDIATE`
 transaction in place of the owner's advisory lock, one counter for revisions, the owner predicate in
 every statement, and the limit of fifty kept by the one writer. The definitions of people's own MCP servers (`src/user_tool_servers.rs`,
-`migrations/0005_user_tool_servers.sql`) mirror
+`migrations/0005_user_tool_servers.sql`, and `0008_user_tool_server_last4.sql` for the `last4` column) mirror
 [`store-postgres/src/user_tool_servers.rs`](../store-postgres/src/user_tool_servers.rs) the same way:
 `BEGIN IMMEDIATE` in place of the owner's advisory lock makes the limit of eight atomic, the id, the
 count and the insert with nobody between them, and the compare and swap of a revision is one

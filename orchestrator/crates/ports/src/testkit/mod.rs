@@ -774,6 +774,7 @@ macro_rules! user_tool_server_store_conformance {
             concurrent_replaces_from_one_revision_have_one_winner
             a_replace_racing_a_delete_never_brings_the_server_back
             set_state_changes_the_state_only delete_removes_the_server_and_is_idempotent
+            the_last_four_characters_of_a_key_are_stored_with_the_definition
         );
     };
     (@cases $make:path; $($case:ident)*) => {

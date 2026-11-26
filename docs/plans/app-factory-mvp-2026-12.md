@@ -1,6 +1,6 @@
 # App Factory Technical Plan (2026-12): Maintainable Mobile Apps & Cloud Containers
 
-> **Status:** Proposed for review (`@stephane-segning`) — revised 2026-11-18 for container-only MVP (see [ADR 0073](../decisions/0073-app-factory-board-and-model-selection.md))  
+> **Status:** Superseded in part by the [Amended (2026-11-26)](../decisions/0073-app-factory-board-and-model-selection.md#amended-2026-11-26) note of ADR 0073 (the board a component of this repository outside the core, one SQLite container per app run by a platform app kind and built in the person's own GitHub, model pick by ADR 0086, specialists as child sessions; no Compose stack). Was: Proposed for review (`@stephane-segning`) — revised 2026-11-18 for container-only MVP (see [ADR 0073](../decisions/0073-app-factory-board-and-model-selection.md))  
 > **Target Window:** 2026-11-18 to 2026-12-31  
 > **Backbone:** `another-agentic-system` + [another-adam-rs](https://github.com/vymalo/another-adam-rs) + [another-agentic-images](https://github.com/vymalo/another-agentic-images) (**no Kubernetes for MVP — plain OCI containers + Docker Compose + Caddy TLS**)  
 > **Generated App Stack:** [fespalier](https://github.com/fespalier/fespalier) (Flutter UI) + [cratestack](https://github.com/cratestack/cratestack) (`.cstack` schema-first server, offline SQLite, typed Dart client) + [authkestra](https://github.com/Authkestra/authkestra) (OIDC OP, passkeys, device-signed sessions, `authkestra-mcp`)  

@@ -2279,7 +2279,8 @@ pub struct AuthRole {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tier: Option<AuthTier>,
     /// The limits of a person with this role, checked before a run starts (ADR 0081). Absent: the
-    /// defaults of [`AuthLimits`]. Nothing reads them yet.
+    /// defaults of [`AuthLimits`]. Only `tokensPerPeriod` is read so far (a message over it is
+    /// refused with 403 `allowance_spent`); the others follow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<AuthLimits>,
 }

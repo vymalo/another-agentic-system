@@ -20,6 +20,7 @@ pub mod reader;
 mod share_link;
 mod sharing;
 mod tasks;
+mod teams;
 mod thread_sweep;
 pub mod tier;
 mod tool_servers;
@@ -76,6 +77,7 @@ pub use sharing::{
     SharingSettings, SharingStats,
 };
 pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
+pub use teams::TeamPresetRefusal;
 pub use thread_sweep::{ThreadSweepConfig, ThreadSweepWorker};
 pub use tier::THREAD_TIER_KEY;
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};

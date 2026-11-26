@@ -305,6 +305,9 @@ pub enum PolicyError {
 pub struct Policy {
     roles: BTreeMap<Role, RoleGrant>,
     default_role: Option<Role>,
+    /// The token allowance per period of the roles that set one (`limits.tokensPerPeriod`, ADR
+    /// 0081). A role that is not here has none.
+    allowances: BTreeMap<Role, u64>,
     /// The per-minute message limit of each role that sets one (`auth.roles.<role>.limits.
     /// messagesPerMinute`, ADR 0081, decision 2). A role left out sets none, and a deployment that
     /// sets none refuses nothing.
@@ -328,6 +331,7 @@ impl Default for Policy {
         Policy {
             roles: built_in_roles(),
             default_role: Some(Role::new("user")),
+            allowances: BTreeMap::new(),
             message_limits: BTreeMap::new(),
         }
     }
@@ -350,8 +354,20 @@ impl Policy {
         Ok(Policy {
             roles,
             default_role,
+            allowances: BTreeMap::new(),
             message_limits: BTreeMap::new(),
         })
+    }
+
+    /// The policy with the token allowances of the roles (`limits.tokensPerPeriod`, ADR 0081): a
+    /// role absent from `allowances` has none, and a role the policy does not define is ignored.
+    #[must_use]
+    pub fn with_token_allowances(mut self, allowances: BTreeMap<Role, u64>) -> Policy {
+        self.allowances = allowances
+            .into_iter()
+            .filter(|(role, _)| self.roles.contains_key(role))
+            .collect();
+        self
     }
 
     /// The same policy with `role`'s **messages per minute** limit (`auth.roles.<role>.limits.
@@ -380,6 +396,7 @@ impl Policy {
         Policy {
             roles: BTreeMap::new(),
             default_role: None,
+            allowances: BTreeMap::new(),
             message_limits: BTreeMap::new(),
         }
     }
@@ -439,6 +456,7 @@ impl Policy {
             user: who.user().clone(),
             claims: who.roles().into_iter().cloned().collect(),
             roles,
+            allowances: &self.allowances,
             message_limits: &self.message_limits,
         }
     }
@@ -554,6 +572,7 @@ pub struct Access<'p> {
     /// holds only the roles the policy maps to permissions.
     claims: Vec<Role>,
     roles: Vec<(&'p Role, &'p RoleGrant)>,
+    allowances: &'p BTreeMap<Role, u64>,
     /// The policy's per-role message limits (ADR 0081): read by
     /// [`messages_per_minute`](Self::messages_per_minute).
     message_limits: &'p BTreeMap<Role, u32>,
@@ -616,6 +635,23 @@ impl<'p> Access<'p> {
                 })
                 .map(|(_, grant)| grant.max_tier),
         )
+    }
+
+    /// The tokens the person may use in a period (ADR 0081, `limits.tokensPerPeriod`): over the
+    /// roles that hold `agent.invoke`, the highest allowance, and none (no limit) when any of them
+    /// sets none or when there are none. A role that cannot start an agent does not lift it.
+    pub fn tokens_per_period(&self) -> Option<u64> {
+        let mut highest: Option<u64> = None;
+        let mut any = false;
+        for (role, grant) in &self.roles {
+            if !grant.holds(Permission::AgentInvoke) {
+                continue;
+            }
+            any = true;
+            let allowance = *self.allowances.get(*role)?;
+            highest = Some(highest.map_or(allowance, |h| h.max(allowance)));
+        }
+        if any { highest } else { None }
     }
 
     /// The highest of some caps, `None` (no cap) when one of them is none, or when there are none.

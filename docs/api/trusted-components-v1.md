@@ -166,6 +166,11 @@ exists:
 - Nothing redacts it, and nothing needs to: no member is a secret. `last4` is never derived by the
   agent or the orchestrator; the client sends the four characters the API returned, and only for a
   kind of secret where a suffix is safe to show. For a generated secret it is omitted.
+  `POST` and `PATCH /api/user-tool-servers` return it as `last4` (and the listing shows it): the
+  save that had the typed key in hand records its last four characters beside the broker's
+  reference, never more, and **not at all for a key of fewer than 12 characters**, for an `oauth2`
+  or `none` server, or after the credential was revoked (a new URL, a new kind). A rename keeps it;
+  a new key replaces it.
 - A secret a person does see once is on the device, from the API's response, and never in a frame,
   a log or an event (ADR 0083, decision 3 and "Consequences").
 

@@ -1,6 +1,6 @@
 # ADR 0073 — App Factory board outside the orchestrator, model selection by pinned agent containers, and container-only MVP runtime
 
-- **Status:** proposed (2026-11-18). Decides the orchestration boundary and container-only runtime for the mobile-app and cloud-backend factory ([app-factory plan](../plans/app-factory-mvp-2026-12.md)). Does not amend invariants 1 or 3 of [`CLAUDE.md`](../../CLAUDE.md); keeps [`ADR 0063`](0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md), Kubernetes operator integration ([`another-agentic-platform`](https://github.com/vymalo/another-agentic-platform)), and `another-adam-rs` [`ADR 0045`](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md) slices 3–8 deferred until after the initial release.
+- **Status:** proposed (2026-11-18). **Amended (2026-11-26):** decisions 2, 3 and 4 are replaced, decision 1 stands (the board is a component of this repository) and decision 5 stands; built now, no person invited until the safe cloud coder and gVisor run on a real node; see *Amended (2026-11-26)* at the end. Decides the orchestration boundary and container-only runtime for the mobile-app and cloud-backend factory ([app-factory plan](../plans/app-factory-mvp-2026-12.md)). Does not amend invariants 1 or 3 of [`CLAUDE.md`](../../CLAUDE.md); keeps [`ADR 0063`](0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md), Kubernetes operator integration ([`another-agentic-platform`](https://github.com/vymalo/another-agentic-platform)), and `another-adam-rs` [`ADR 0045`](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md) slices 3–8 deferred until after the initial release.
 
 ## Context
 
@@ -82,3 +82,17 @@ stateDiagram-v2
 - **Easier:** `another-agentic-system` keeps invariants 1, 3 and 5 intact with zero new database migrations or protocol extensions required in the orchestrator; container-only deployment eliminates Kubernetes/Helm/CNPG operational overhead for MVP; `factory-board` dogfoods `cratestack-pg` + `authkestra`; per-card model choice works immediately through `GET /api/agents`.
 - **Harder:** Deployment includes one extra companion container (`factory-board`) when factory mode is enabled, and model choices are coarse per-agent containers rather than arbitrary model IDs until `ADR 0063` is built. Without Kubernetes `runPods` (`M1`), coding workspaces share a trusted host container runtime with per-thread git worktree isolation.
 - **Required elsewhere:** The App Factory plan ([`docs/plans/app-factory-mvp-2026-12.md`](../plans/app-factory-mvp-2026-12.md)), the `vymalo/app-factory-blueprint` repository, and optional factory routes in `web/`.
+
+## Amended (2026-11-26)
+
+The owner's decisions of 2026-11-20 (one container per app, on SQLite) and 2026-11-26 (the factory joins the hosted product) make three of the five decisions above out of date. The text above is kept as it was decided; this note says what stands.
+
+| Decision | Now |
+|---|---|
+| 1. The board is outside the orchestrator | **Stands.** The board lives in this repository, beside the threads, as a **separate component outside `orch-core`**: it is neither an operator's service nor part of another-backend. The orchestrator is still never told what a repository, a card or a store is. |
+| 2. Plain containers, Compose, Caddy, Postgres | **Replaced.** A generated app's backend is **one container**: CrateStack on SQLite, with Authkestra OP and devsig, run by the platform operator as a new kind of workload (a platform AD, to come). The factory itself is not a Compose stack. Neither `compose.factory.yaml` nor a per-app Postgres is built from this ADR. |
+| 3. Model choice by model-pinned agent containers | **Replaced.** The model for a card is picked as [ADR 0086](0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md) says (`model-pick/v1`, the orchestrator's side built). No agent container is pinned to a model. |
+| 4. Specialists by `@mention` of separate agents | **Replaced.** Specialists are child sessions of the lead agent ([ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md); adam-rs ADR 0045, whose slices 7 part 1 and 8 are built, the coder lists `child-sessions/v1`). |
+| 5. Human step-up for deploy and store actions | **Stands.** |
+
+The plan [`docs/plans/app-factory-mvp-2026-12.md`](../plans/app-factory-mvp-2026-12.md) is superseded by this note where it says otherwise, and the row "The app factory" of [`ROADMAP.md`](../../ROADMAP.md) points here. **Build now, invite later:** no person is invited until the safe cloud coder and gVisor run on a real node. *Unverified:* that the platform's new kind exists; its AD is not written.

@@ -9,6 +9,7 @@ use crate::app::AttachmentRefusal;
 use crate::authz::Permission;
 use crate::prompts::PromptRefusal;
 use crate::sharing::SharingMode;
+use crate::teams::TeamPresetRefusal;
 use crate::user_tools::UserToolRefusal;
 
 /// Application failure. The API maps these to RFC 9457 problems by [`class`](Classify::class).
@@ -34,6 +35,18 @@ pub enum AppError {
     /// link. Taking a link down is never refused for it.
     #[error("sharing is disabled in this deployment")]
     SharingDisabled,
+    /// The person has used the token allowance of their roles for the period (ADR 0081,
+    /// `limits.tokensPerPeriod`, read from the usage ledger of ADR 0065): refused before anything is
+    /// written or sent to an agent. It names the limit and the usage, and nothing of anyone else.
+    #[error(
+        "the token allowance of your role for this month is spent ({used} of {limit} tokens used)"
+    )]
+    AllowanceSpent {
+        /// The allowance of the person's roles, in tokens.
+        limit: u64,
+        /// What the person used in the period, in tokens.
+        used: u64,
+    },
     /// A share above the deployment's cap (ADR 0040): `public` under a cap of `internal`.
     #[error("this deployment shares at most {cap}")]
     OverCap {
@@ -101,6 +114,11 @@ pub enum AppError {
     /// is too long. See [`PromptRefusal`].
     #[error(transparent)]
     Prompt(PromptRefusal),
+    /// A request about a person's team presets is refused (ADR 0074): a rule of the page, an agent
+    /// the person may not use, a name taken, the limit, a stale revision, no such preset. See
+    /// [`TeamPresetRefusal`].
+    #[error(transparent)]
+    TeamPreset(TeamPresetRefusal),
     /// A person's own file is refused (ADR 0067, slice 12): a size, an empty body, a type that is
     /// not one media type, a name that is not usable, or a deployment that keeps no files. See
     /// [`AttachmentRefusal`].
@@ -278,7 +296,9 @@ impl Classify for AppError {
     fn class(&self) -> ErrorClass {
         match self {
             AppError::NotFound => ErrorClass::NotFound,
-            AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+            AppError::Forbidden { .. }
+            | AppError::SharingDisabled
+            | AppError::AllowanceSpent { .. } => ErrorClass::Forbidden,
             AppError::Invalid(_) => ErrorClass::Invalid,
             AppError::Finished
             | AppError::Refused(_)
@@ -311,6 +331,11 @@ impl Classify for AppError {
                 | PromptRefusal::InvalidAnswer(_)
                 | PromptRefusal::RenderedTooLong => ErrorClass::Rejected,
             },
+            AppError::TeamPreset(refusal) => match refusal {
+                TeamPresetRefusal::NotFound => ErrorClass::NotFound,
+                TeamPresetRefusal::Invalid(_) => ErrorClass::Invalid,
+                _ => ErrorClass::Rejected,
+            },
             AppError::Attachment(refusal) => match refusal {
                 AttachmentRefusal::NoStore => ErrorClass::Unsupported,
                 AttachmentRefusal::TooLarge { .. }
@@ -340,6 +365,7 @@ impl Classify for AppError {
             AppError::NotFound
             | AppError::Forbidden { .. }
             | AppError::SharingDisabled
+            | AppError::AllowanceSpent { .. }
             | AppError::OverCap { .. }
             | AppError::NotShared
             | AppError::ThreadActive(_)
@@ -352,6 +378,7 @@ impl Classify for AppError {
             | AppError::Blocked { .. }
             | AppError::UserTool(_)
             | AppError::Prompt(_)
+            | AppError::TeamPreset(_)
             | AppError::Attachment(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
@@ -410,6 +437,10 @@ mod tests {
             AppError::missing_permission(Permission::ThreadWrite),
             AppError::agent_not_allowed(Permission::AgentInvoke, &AgentId::new("coder")),
             AppError::SharingDisabled,
+            AppError::AllowanceSpent {
+                limit: 1000,
+                used: 1200,
+            },
             AppError::OverCap {
                 cap: SharingMode::Internal,
             },
@@ -450,6 +481,9 @@ mod tests {
             AppError::Prompt(PromptRefusal::TooMany { limit: 100 }),
             AppError::Prompt(PromptRefusal::StaleRevision),
             AppError::Prompt(PromptRefusal::RenderedTooLong),
+            AppError::TeamPreset(TeamPresetRefusal::NotFound),
+            AppError::TeamPreset(TeamPresetRefusal::NameTaken),
+            AppError::TeamPreset(TeamPresetRefusal::StaleRevision),
             AppError::Fork(ForkError::OutOfRange),
             AppError::Fork(ForkError::TurnOpen),
             AppError::Store(StoreError::unavailable(io("down"))),
@@ -479,7 +513,9 @@ mod tests {
             // Exhaustive: a new variant forces a class decision.
             let expected = match &e {
                 AppError::NotFound => ErrorClass::NotFound,
-                AppError::Forbidden { .. } | AppError::SharingDisabled => ErrorClass::Forbidden,
+                AppError::Forbidden { .. }
+                | AppError::SharingDisabled
+                | AppError::AllowanceSpent { .. } => ErrorClass::Forbidden,
                 AppError::Invalid(_) => ErrorClass::Invalid,
                 AppError::Finished
                 | AppError::Refused(_)
@@ -506,6 +542,11 @@ mod tests {
                 AppError::Prompt(refusal) => match refusal {
                     PromptRefusal::NotFound => ErrorClass::NotFound,
                     PromptRefusal::Invalid(_) => ErrorClass::Invalid,
+                    _ => ErrorClass::Rejected,
+                },
+                AppError::TeamPreset(refusal) => match refusal {
+                    TeamPresetRefusal::NotFound => ErrorClass::NotFound,
+                    TeamPresetRefusal::Invalid(_) => ErrorClass::Invalid,
                     _ => ErrorClass::Rejected,
                 },
                 AppError::Attachment(refusal) => match refusal {

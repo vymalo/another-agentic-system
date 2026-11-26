@@ -1170,6 +1170,7 @@ impl<P: Ports> App<P> {
             )));
         }
         self.validate_target(&access, &req.target).await?;
+        self.check_allowance(&access, user).await?;
         self.check_mentions(
             &access,
             &req.target.agent_id,
@@ -1419,6 +1420,24 @@ impl<P: Ports> App<P> {
     /// The agent is read from the registry now, as sending will; one the registry does not list has
     /// no audience to keep the person out of, and the dispatcher says it is no longer listed. A
     /// registry that cannot say is [`AppError::RegistryUnavailable`].
+    /// Refuses, before anything is written or sent, a person who has used the token allowance of
+    /// their roles in the current UTC month (ADR 0081, `limits.tokensPerPeriod`), read from the
+    /// usage ledger (ADR 0065). Nothing is read when no allowance is set, which is the default.
+    async fn check_allowance(&self, access: &Access<'_>, user: &UserId) -> Result<(), AppError> {
+        let Some(limit) = access.tokens_per_period() else {
+            return Ok(());
+        };
+        let month = orch_core::UsageMonth::of(self.ports.clock().now());
+        let totals = orch_ports::UsageLedger::month(self.ports.store(), user, month).await?;
+        let used = totals.models.iter().fold(0_u64, |sum, line| {
+            sum.saturating_add(line.tokens.total_tokens)
+        });
+        if used >= limit {
+            return Err(AppError::AllowanceSpent { limit, used });
+        }
+        Ok(())
+    }
+
     async fn may_invoke(&self, access: &Access<'_>, thread: &ThreadRecord) -> Result<(), AppError> {
         // The thread keeps the id it was created with, which may be an alias since (ADR 0049):
         // the roles speak of the canonical one.
@@ -1733,6 +1752,10 @@ impl<P: Ports> App<P> {
             r
         });
         self.validate_target(&access, &target).await?;
+        if replacement.is_some() {
+            // a fork that starts with a new message starts an agent: the allowance applies
+            self.check_allowance(&access, who.user()).await?;
+        }
         // The parent as it was when read: its state and its log up to `last_seq` agree, whatever
         // is written to it from now on.
         let events = self.read_log(parent_id, parent.last_seq).await?;
@@ -2451,6 +2474,7 @@ impl<P: Ports> App<P> {
             Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
         ) {
             self.may_invoke(&access, &thread).await?;
+            self.check_allowance(&access, who.user()).await?;
         }
         // A message to a helper session's thread (ADR 0072, S3) is refused by the core before
         // anything is written when the session cannot take it: closed, a mention, or a Stop & send

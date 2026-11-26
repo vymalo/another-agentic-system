@@ -1237,10 +1237,21 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         Some(None) => None,
         Some(Some(name)) => Some(name.trim().to_owned()),
     };
-    let mut policy = Policy::new(roles, default_role.map(orch_ports::Role::new)).unwrap_or_else(|e| {
-        tracing::error!(error = %e, "auth.defaultRole is not one of auth.roles; no role grants anything");
-        Policy::deny_all()
-    });
+    let allowances: std::collections::BTreeMap<orch_ports::Role, u64> = auth
+        .roles
+        .iter()
+        .flatten()
+        .filter_map(|(name, role)| {
+            let tokens = role.limits.as_ref()?.tokens_per_period?;
+            Some((orch_ports::Role::new(name.as_str()), tokens))
+        })
+        .collect();
+    let mut policy = Policy::new(roles, default_role.map(orch_ports::Role::new))
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "auth.defaultRole is not one of auth.roles; no role grants anything");
+            Policy::deny_all()
+        })
+        .with_token_allowances(allowances);
     // A role's `limits.messagesPerMinute` (ADR 0081, decision 2): no default, so a deployment that
     // sets none refuses nothing.
     if let Some(roles) = &auth.roles {

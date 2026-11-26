@@ -653,7 +653,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     }
 
     // 401 on every operation that requires identity.
-    let auth_ops: [(&str, reqwest::Method, String); 35] = [
+    let auth_ops: [(&str, reqwest::Method, String); 40] = [
         ("getMe", reqwest::Method::GET, "/api/me".into()),
         ("getMyUsage", reqwest::Method::GET, "/api/me/usage".into()),
         ("listAgents", reqwest::Method::GET, "/api/agents".into()),
@@ -710,6 +710,23 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "renderPrompt",
             reqwest::Method::POST,
             "/api/prompts/p-abcdefghijkl/render".into(),
+        ),
+        ("listTeams", reqwest::Method::GET, "/api/teams".into()),
+        ("createTeam", reqwest::Method::POST, "/api/teams".into()),
+        (
+            "getTeam",
+            reqwest::Method::GET,
+            "/api/teams/t-abcdefghijkl".into(),
+        ),
+        (
+            "replaceTeam",
+            reqwest::Method::PUT,
+            "/api/teams/t-abcdefghijkl".into(),
+        ),
+        (
+            "deleteTeam",
+            reqwest::Method::DELETE,
+            "/api/teams/t-abcdefghijkl".into(),
         ),
         ("listThreads", reqwest::Method::GET, "/api/threads".into()),
         (
@@ -907,6 +924,7 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
         json!({
             "search": {"maxQueryLength": 200, "maxTerms": 8},
             "prompts": {"limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768},
+            "teams": {"limit": 50, "minMembers": 2, "maxMembers": 8, "maxCharterBytes": 4096, "minMaxHandoffs": 6, "maxMaxHandoffs": 20, "defaultMaxHandoffs": 6, "minPushTokens": 4000, "maxPushTokens": 100000, "defaultPushTokens": 24000},
             "ui": {
                 "showDescriptions": true,
                 "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
@@ -1287,6 +1305,48 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
     let r = h.send(reqwest::Method::DELETE, &one, Some(ALICE)).await;
     assert_eq!(r.status, 204);
     c.check("deletePrompt", &r);
+
+    // the team presets (ADR 0074)
+    let team = r#"{"name":"duo","title":"Duo","lead":"a","members":[{"name":"a","target":{"agentId":"plain"},"role":"leads"},{"name":"b","target":{"agentId":"plain"},"role":"helps"}],"charter":"","maxHandoffs":6,"pushTokens":24000}"#;
+    let r = h.post("/api/teams", Some(ALICE), Some(team)).await;
+    assert_eq!(r.status, 201);
+    c.check("createTeam", &r);
+    let team_id = r.json()["id"].as_str().unwrap().to_owned();
+    let team_revision = r.json()["revision"].as_str().unwrap().to_owned();
+    let r = h.post("/api/teams", Some(ALICE), Some("{}")).await;
+    assert_eq!(r.status, 400);
+    c.check("createTeam", &r);
+    let r = h.get("/api/teams", Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    c.check("listTeams", &r);
+    let r = h.get("/api/teams?cursor=nope", Some(ALICE)).await;
+    assert_eq!(r.status, 400);
+    c.check("listTeams", &r);
+    let one = format!("/api/teams/{team_id}");
+    let r = h.get(&one, Some(ALICE)).await;
+    assert_eq!(r.status, 200);
+    c.check("getTeam", &r);
+    let r = h.get("/api/teams/t-zzzzzzzzzzzz", Some(ALICE)).await;
+    assert_eq!(r.status, 404);
+    c.check("getTeam", &r);
+    let replaced = team.replace('{', &format!("{{\"revision\":\"{team_revision}\","));
+    let r = h.put(&one, Some(ALICE), Some(&replaced)).await;
+    assert_eq!(r.status, 200);
+    c.check("replaceTeam", &r);
+    let r = h.put(&one, Some(ALICE), Some(&replaced)).await;
+    assert_eq!(r.status, 200);
+    let stale = replaced
+        .replace("\"duo\"", "\"duo2\"")
+        .replace(&format!("\"{team_revision}\""), "\"999999\"");
+    let r = h.put(&one, Some(ALICE), Some(&stale)).await;
+    assert_eq!(r.status, 409);
+    c.check("replaceTeam", &r);
+    let r = h.send(reqwest::Method::DELETE, &one, Some(ALICE)).await;
+    assert_eq!(r.status, 204);
+    c.check("deleteTeam", &r);
+    let r = h.send(reqwest::Method::DELETE, &one, Some(ALICE)).await;
+    assert_eq!(r.status, 404);
+    c.check("deleteTeam", &r);
 
     // listThreads
     for i in 0..3 {

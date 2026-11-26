@@ -320,6 +320,43 @@ pub async fn replace_with_the_current_revision_replaces_whole<S: UserToolServerS
     .await;
 }
 
+/// The last four characters of a typed key are stored with the definition, come back with it, are
+/// replaced whole by a `replace` and survive a `set_state`.
+pub async fn the_last_four_characters_of_a_key_are_stored_with_the_definition<
+    S: UserToolServerStore,
+>(
+    store: S,
+) {
+    within(async {
+        let owner = owner();
+        let first = server_with("00000000aa", UserAuth::Bearer)
+            .with_state(UserToolServerState::Connected)
+            .with_credential(CredentialRef::new("cred-1").unwrap())
+            .with_last4(Some("a1b2".to_owned()));
+        let r1 = store.insert(&owner, &first).await.unwrap();
+        let got = store.get(&owner, first.id()).await.unwrap().unwrap();
+        assert_eq!(got.server().last4(), Some("a1b2"));
+        assert_eq!(got.server(), &first);
+
+        let r2 = store
+            .set_state(&owner, first.id(), UserToolServerState::NeedsReauth, r1)
+            .await
+            .unwrap();
+        let got = store.get(&owner, first.id()).await.unwrap().unwrap();
+        assert_eq!(
+            got.server().last4(),
+            Some("a1b2"),
+            "a state change keeps it"
+        );
+
+        let cleared = first.clone().with_last4(None);
+        store.replace(&owner, &cleared, r2).await.unwrap();
+        let got = store.get(&owner, first.id()).await.unwrap().unwrap();
+        assert_eq!(got.server().last4(), None, "a replace writes it whole");
+    })
+    .await;
+}
+
 /// `replace` with a revision that is not the stored one is a `Conflict` (class `Conflict`) and
 /// changes nothing: after a `replace`, and after a `set_state`. This is the lost update an upsert
 /// would make: an edit that read the definition before the broker marked it.

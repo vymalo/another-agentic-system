@@ -11,6 +11,7 @@
 //! | `ask` | `input-required`; the next message completes it with an artifact |
 //! | `gate` | `working` until [`LocalWorld::release_gate`], then an artifact and `completed` |
 //! | `slow` | `working` until it is cancelled |
+//! | `steps N` | N journaled steps, each an artifact `step-k`, parked 300 ms between, then `completed` |
 //! | `fail` | `failed` with [`FAILURE_MESSAGE`] |
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -151,6 +152,32 @@ impl Agent for Scripted {
                     wake_at: Some(wake_at),
                 })
             }
+            "steps" => {
+                let total = state
+                    .text
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .unwrap_or(5);
+                if state.phase >= total {
+                    let output = json!({ "text": format!("steps: {total}") });
+                    return Ok(Transition::Done { state, output });
+                }
+                state.phase += 1;
+                ctx.emit(RunEvent::Artifact {
+                    id: None,
+                    name: format!("step-{}", state.phase),
+                    mime_type: Some("text/plain".to_owned()),
+                    data: json!(format!("step {}", state.phase)),
+                    file: None,
+                })
+                .await;
+                let wake_at = ctx.now() + jiff::SignedDuration::from_millis(300);
+                Ok(Transition::Park {
+                    state,
+                    wake_at: Some(wake_at),
+                })
+            }
             "gate" if state.phase == 0 => {
                 // One commit first, so the task is `working` (not `submitted`) while it waits.
                 state.phase = 1;
@@ -232,6 +259,30 @@ fn hosted_scripted(shared: Arc<Shared>, instance: String) -> Hosted {
             }
         },
     )
+}
+
+impl LocalAgents {
+    /// The scripted agent on the SQLite file at `path` (the embedded build), migrated. For the
+    /// kill-and-resume example and its test: one process writes the file.
+    #[cfg(feature = "embedded")]
+    pub async fn sqlite_scripted(
+        path: impl AsRef<std::path::Path>,
+        opts: LocalOptions,
+    ) -> Result<Self, LocalAgentsError> {
+        let store = adam_store_sqlite::SqliteStore::open(path)
+            .and_then(|store| store.with_table_prefix(crate::TABLE_PREFIX))
+            .map_err(LocalAgentsError::store)?;
+        let hosted = vec![hosted_scripted(Shared::new(), opts.instance_id.clone())];
+        let agents = LocalAgents::assemble(
+            Arc::new(store),
+            None,
+            BroadcastSink::default(),
+            opts,
+            hosted,
+        );
+        agents.migrate().await?;
+        Ok(agents)
+    }
 }
 
 /// An endpoint of the scripted agent, as the configuration key `id` names it.
