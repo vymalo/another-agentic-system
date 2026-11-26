@@ -10,7 +10,8 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
 use orch_app::{
-    ChildSessionStats, DeleteStats, HistoryStats, LoadStats, SharingStats, TierStats, UsageStats,
+    ChildSessionStats, DeleteStats, HistoryStats, LoadStats, PoolReading, SharingStats, TierStats,
+    UsageStats,
 };
 use orch_ports::{OutboxStats, Ports};
 
@@ -195,6 +196,47 @@ pub(crate) fn render_load(stats: &LoadStats) -> String {
     )
 }
 
+/// The database pools of this process: `db_pool_connections{pool,state}` (`in_use` and `idle`),
+/// `db_pool_max_connections{pool}` and `db_pool_waiting{pool}`. The label `pool` is a fixed name
+/// the binary chooses, so none holds a person or a thread. This process only: aggregate with `sum`.
+/// Nothing is written when no pool is registered.
+pub(crate) fn render_pools(pools: &[PoolReading]) -> String {
+    if pools.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "# HELP db_pool_connections Database pool connections of this process, checked out (in_use) or held idle (aggregate with sum).\n\
+         # TYPE db_pool_connections gauge\n",
+    );
+    for p in pools {
+        out.push_str(&format!(
+            "db_pool_connections{{pool=\"{0}\",state=\"in_use\"}} {1}\ndb_pool_connections{{pool=\"{0}\",state=\"idle\"}} {2}\n",
+            p.pool, p.in_use, p.idle
+        ));
+    }
+    out.push_str(
+        "# HELP db_pool_max_connections The most connections the pool will hold (aggregate with sum).\n\
+         # TYPE db_pool_max_connections gauge\n",
+    );
+    for p in pools {
+        out.push_str(&format!(
+            "db_pool_max_connections{{pool=\"{}\"}} {}\n",
+            p.pool, p.max
+        ));
+    }
+    out.push_str(
+        "# HELP db_pool_waiting Callers waiting for a pool connection now (aggregate with sum).\n\
+         # TYPE db_pool_waiting gauge\n",
+    );
+    for p in pools {
+        out.push_str(&format!(
+            "db_pool_waiting{{pool=\"{}\"}} {}\n",
+            p.pool, p.waiting
+        ));
+    }
+    out
+}
+
 pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Response {
     match state.app.outbox_stats().await {
         Ok((now, stats)) => {
@@ -217,6 +259,7 @@ pub(crate) async fn serve<P: Ports>(State(state): State<ApiState<P>>) -> Respons
             text.push_str(&render_child_sessions(&state.app.child_session_stats()));
             text.push_str(&render_history(&state.app.history_stats()));
             text.push_str(&render_load(&state.app.load_stats()));
+            text.push_str(&render_pools(&state.app.pool_readings()));
             let mut response = text.into_response();
             response
                 .headers_mut()
@@ -336,6 +379,34 @@ orch_outbox_oldest_due_age_seconds 42
             "{text}"
         );
         assert!(text.contains("aggregate with sum"), "{text}");
+    }
+
+    #[test]
+    fn the_pool_gauges_follow_the_readings_and_name_only_the_pool() {
+        let text = render_pools(&[PoolReading {
+            pool: "thread-store",
+            max: 10,
+            in_use: 4,
+            idle: 2,
+            waiting: 1,
+        }]);
+        assert!(
+            text.contains("db_pool_connections{pool=\"thread-store\",state=\"in_use\"} 4\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("db_pool_connections{pool=\"thread-store\",state=\"idle\"} 2\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("db_pool_max_connections{pool=\"thread-store\"} 10\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("db_pool_waiting{pool=\"thread-store\"} 1\n"),
+            "{text}"
+        );
+        assert_eq!(render_pools(&[]), "", "no pool registered, no sample");
     }
 
     #[test]

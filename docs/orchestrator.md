@@ -2487,6 +2487,25 @@ queue, whatever it runs itself.
 | `dispatcher_slots_in_use` | gauge, **this process only** (aggregate with `sum`; the outbox gauges above are global, aggregate those with `max`): dispatcher slots busy with an outbox row, `0` where no dispatcher runs |
 | `dispatcher_slots_configured` | gauge, this process only (`sum`): the dispatcher's concurrency (default 32), `0` where no dispatcher runs |
 | `sse_subscribers_open` | gauge, this process only (`sum`): server-sent-event streams open now (connect, run and shared-thread streams). No label: none names a person, a thread, a token or a secret |
+| `db_pool_connections{pool,state}` | gauge, this process only (`sum`): connections of the database pool, `state` `in_use` (checked out) or `idle`. `pool` is a fixed name the binary chooses (`thread-store`, the pool the request path, the dispatcher and the other stores share), never a person or a thread |
+| `db_pool_max_connections{pool}` | gauge, this process only (`sum`): the most connections the pool will hold (`database.maxConnections`, default 10) |
+| `db_pool_waiting{pool}` | gauge, this process only (`sum`): callers waiting for a connection now; above `0` for long, the pool is the bottleneck (a wait past 30 s fails the call) |
+
+**Run-pod quota use is a cluster query, not a metric of the orchestrator.** The quota is a Kubernetes
+`ResourceQuota` made by the coder's chart (adam-rs `deploy/coder`, `runPods.quota`), and the cluster
+already reports it: kube-state-metrics' `kube_resourcequota{type="used"}` and `{type="hard"}`. The
+orchestrator does not talk to the cluster and does not know the quota's name, so a metric of its own
+would be a second, staler copy that needs a Kubernetes client and a role it does not have. Ask the
+cluster:
+
+```promql
+# fraction of the run-pod pod quota in use, per namespace and quota
+kube_resourcequota{type="used", resource="pods"} / kube_resourcequota{type="hard", resource="pods"}
+```
+
+The same for `resource="requests.cpu"`, `"requests.memory"` or `"limits.cpu"`, whatever the quota
+sets. *Unverified:* the exact `resource` names depend on what `runPods.quota` sets in the deployed
+chart; list them with `kube_resourcequota{type="hard"}`.
 
 The queue that matters for scaling is `due + leased`: rows waiting for a worker plus rows workers
 are busy with. Because the values are global, an aggregation across the replicas that report them
