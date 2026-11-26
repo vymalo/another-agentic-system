@@ -49,6 +49,10 @@ uuid = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 orch-ports = { workspace = true, features = ["testkit"] }
 orch-agent-adam = { path = ".", features = ["testkit"] }
+# The parity test serves the local runtime over A2A HTTP and reads it back through the remote client.
+orch-agent-a2a.workspace = true
+axum.workspace = true
+url.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

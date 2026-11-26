@@ -11,11 +11,11 @@ use orch_core::{
 use orch_pg_connect::PgOptions;
 use orch_pg_migrate::Migrator;
 use orch_ports::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, Lease,
-    ListOrder, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId,
-    OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError,
-    TIMER_SOURCE, ThreadListing, ThreadStore,
+    Admission, AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder,
+    Commit, CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease,
+    Lease, ListOrder, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
+    OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange,
+    StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 use tokio_postgres::Row as PgRow;
 
@@ -1594,6 +1594,9 @@ async fn finish_inbox_row(
     .map_err(store_err)
 }
 
+/// `admt`: the class of the per-person admission lock (ADR 0081), apart from the prompt library's.
+const ADMISSION_LOCK_CLASS: i32 = 0x6164_6d74;
+
 async fn rollback(tx: Tx) {
     // The transaction is abandoned either way; a failed ROLLBACK closes the connection.
     let _ = tx.rollback().await;
@@ -1844,6 +1847,53 @@ impl ThreadStore for PgStore {
             .await
             .map_err(store_err)?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+
+    async fn admit_commit(
+        &self,
+        owner: &UserId,
+        limit: u32,
+        thread: ThreadId,
+        expected_version: i64,
+        commit: Commit,
+    ) -> Result<Admission, StoreError> {
+        // One transaction-scoped lock per person (the prompt library's shape, its own class), held
+        // from the count until the commit has ended, so admissions of one person take turns and
+        // the second counts the first's job. The commit runs on its own connection and
+        // transaction; this one only holds the lock and reads.
+        let mut guard = self.pool.begin().await.map_err(store_err)?;
+        let locked = query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(ADMISSION_LOCK_CLASS)
+            .bind(owner.as_str())
+            .execute(&mut *guard)
+            .await;
+        if let Err(err) = locked {
+            rollback(guard).await;
+            return Err(store_err(err));
+        }
+        let running: Result<i64, _> = query_scalar(
+            "SELECT count(*) FROM outbox WHERE owner = $1 AND kind = 'delegate' \
+             AND status IN ('pending', 'inflight')",
+        )
+        .bind(owner.as_str())
+        .fetch_one(&mut *guard)
+        .await;
+        let running = match running {
+            Ok(n) => u32::try_from(n).unwrap_or(u32::MAX),
+            Err(err) => {
+                rollback(guard).await;
+                return Err(store_err(err));
+            }
+        };
+        let answer = if running >= limit {
+            Ok(Admission::NoRoom { running })
+        } else {
+            self.commit(thread, expected_version, commit)
+                .await
+                .map(Admission::Admitted)
+        };
+        rollback(guard).await;
+        answer
     }
 
     async fn commit(

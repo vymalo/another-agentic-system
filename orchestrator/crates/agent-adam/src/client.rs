@@ -30,6 +30,11 @@ pub(crate) struct Entry {
 }
 
 impl Entry {
+    #[cfg(feature = "testkit")]
+    pub(crate) fn backend(&self) -> RuntimeTaskBackend {
+        self.backend.clone()
+    }
+
     pub(crate) fn new(description: String, backend: RuntimeTaskBackend) -> Self {
         Entry {
             description,

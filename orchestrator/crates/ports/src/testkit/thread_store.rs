@@ -8612,3 +8612,129 @@ pub async fn a_session_id_is_bounded<S: ThreadStore>(store: S) {
     let read = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
     assert_eq!(read.child_of.map(|c| c.session), Some(longest));
 }
+
+/// A thread with no open job, for the admission cases.
+async fn idle_thread<S: ThreadStore>(store: &S, owner: &UserId, n: u128) {
+    store
+        .create_thread(
+            new_thread(owner, n),
+            commit(ThreadState::Done, vec![user_event("hi", None)], vec![]),
+        )
+        .await
+        .unwrap();
+}
+
+/// Two messages at once from a person with one place left: one is admitted, the other is told
+/// there is no room and writes nothing (ADR 0081). Repeated, so a store that does not serialise
+/// the count and the commit is caught.
+pub async fn two_messages_at_once_one_passes<S: ThreadStore>(store: S) {
+    use crate::Admission;
+    let store = Arc::new(store);
+    for round in 0..15u128 {
+        let owner = UserId::new(&format!("racer{round}@example.com"));
+        let (a, b) = (round * 10 + 1, round * 10 + 2);
+        idle_thread(&*store, &owner, a).await;
+        idle_thread(&*store, &owner, b).await;
+        let ask = |n: u128, row: u128| {
+            let store = Arc::clone(&store);
+            let owner = owner.clone();
+            async move {
+                store
+                    .admit_commit(
+                        &owner,
+                        1,
+                        thread_id(n),
+                        1,
+                        commit(ThreadState::Queued, vec![], vec![delegate(row)]),
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let (x, y) = tokio::join!(ask(a, a), ask(b, b));
+        let admitted = [&x, &y]
+            .iter()
+            .filter(|r| matches!(r, Admission::Admitted(CommitOutcome::Applied { .. })))
+            .count();
+        assert_eq!(admitted, 1, "round {round}: {x:?} {y:?}");
+        assert!(
+            [&x, &y]
+                .iter()
+                .any(|r| matches!(r, Admission::NoRoom { running: 1 })),
+            "round {round}: {x:?} {y:?}"
+        );
+    }
+}
+
+/// A person under the limit sees no change: the commit is what `commit` would have made. At the
+/// limit nothing is written, another person is not counted, and a job that finished makes room.
+pub async fn a_person_under_the_limit_sees_no_change<S: ThreadStore>(store: S) {
+    use crate::Admission;
+    for n in 1..=3 {
+        idle_thread(&store, &alice(), n).await;
+    }
+    idle_thread(&store, &bob(), 4).await;
+    let admit = |n: u128, row: u128, who: UserId| {
+        let store = &store;
+        async move {
+            store
+                .admit_commit(
+                    &who,
+                    2,
+                    thread_id(n),
+                    1,
+                    commit(
+                        ThreadState::Queued,
+                        vec![user_event("again", None)],
+                        vec![delegate(row)],
+                    ),
+                )
+                .await
+                .unwrap()
+        }
+    };
+    for (n, row) in [(1, 1), (2, 2)] {
+        let Admission::Admitted(outcome) = admit(n, row, alice()).await else {
+            panic!("alice has room");
+        };
+        let (thread, events) = applied(outcome);
+        assert_eq!(thread.version, 2);
+        assert_eq!(events.last().map(|e| e.seq), Some(2));
+    }
+    assert_eq!(admit(3, 3, alice()).await, Admission::NoRoom { running: 2 });
+    assert!(
+        store
+            .list_open_outbox(thread_id(3))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused admission writes nothing"
+    );
+    assert_eq!(
+        store
+            .get_thread(None, thread_id(3))
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
+        1
+    );
+    // bob's places are his own
+    assert!(matches!(
+        admit(4, 4, bob()).await,
+        Admission::Admitted(CommitOutcome::Applied { .. })
+    ));
+    // a finished job makes room
+    let got = claim(&store, "a", t0()).await;
+    assert!(got.iter().any(|r| r.id == outbox_id(1)));
+    assert!(
+        store
+            .complete_outbox(&lease(1, "a", 1), OutboxFinal::Delivered, t0())
+            .await
+            .is_ok()
+    );
+    assert!(matches!(
+        admit(3, 3, alice()).await,
+        Admission::Admitted(CommitOutcome::Applied { .. })
+    ));
+}

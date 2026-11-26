@@ -432,6 +432,15 @@ impl LocalAgents {
             .map_err(LocalAgentsError::store)
     }
 
+    /// The task backend of a hosted kind, for a test that serves it over A2A HTTP and compares that path with
+    /// the in-process one.
+    #[cfg(feature = "testkit")]
+    #[must_use]
+    pub fn task_backend(&self, kind: &str) -> Option<adam_a2a::DynTaskBackend> {
+        let entry = self.entries.get(kind)?;
+        Some(Arc::new(entry.backend()))
+    }
+
     /// The [`AgentClient`](orch_ports::AgentClient) for the endpoints of these agents.
     pub fn client(&self) -> LocalAgentClient {
         LocalAgentClient::new(Arc::clone(&self.entries))
