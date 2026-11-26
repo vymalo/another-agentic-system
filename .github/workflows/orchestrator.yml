@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:19.0
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: orch_test
@@ -288,7 +288,7 @@ jobs:
             return 1
           }
           docker run -d --name postgres --network host -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orch_test \
-            postgres:16 -c max_connections=300 -c fsync=off
+            postgres:19.0 -c max_connections=300 -c fsync=off
           # pg_isready is the PostgreSQL protocol's own readiness answer, and it is what PgBouncer's image itself probes:
           # a TCP connect is not (a listener accepts before the server is ready), and a query through the pooler is more
           # than readiness (it needs a pool and a server connection, which is what the tests then exercise).
@@ -340,7 +340,7 @@ jobs:
       packages: write
     services:
       postgres:
-        image: postgres:16
+        image: postgres:19.0
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: orch

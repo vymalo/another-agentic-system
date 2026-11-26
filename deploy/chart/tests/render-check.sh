@@ -211,6 +211,7 @@ check "the orchestrator restarts on a new configuration" dhas Deployment another
 check "the database URL is the CNPG app secret's uri, mounted as a file" dhas Deployment another-agentic-orchestrator 'secretName: another-agentic-db-app'
 check "the artifacts claim is kept by Helm and Argo CD" dhas PersistentVolumeClaim another-agentic-artifacts 'helm.sh/resource-policy: keep'
 check "one CNPG Cluster: the orchestrator's, which holds the chat agent's database too (README.md, \"One database cluster\")" count '^kind: Cluster$' 1
+check "the CNPG Cluster runs a pinned standard image (tag and digest), not the operator's default" has '^  imageName: "ghcr.io/cloudnative-pg/postgresql:[0-9.]*-[0-9]*-standard-[a-z]*@sha256:[0-9a-f]{64}"$'
 check "the chat agent runs adam-agent, with the thread tools allowed over http" dhas Deployment another-agentic-chat 'MCP_ALLOW_INSECURE'
 chat_db_url() { doc Deployment another-agentic-chat | awk '/- name: DATABASE_URL$/ { getline; getline; getline; n = $2; getline; k = $2 } END { exit (n == "another-agentic-db-agent" && k == "uri") ? 0 : 1 }'; }
 check "the chat agent's database URL is the key uri of the Secret its role's ExternalSecret templates" chat_db_url

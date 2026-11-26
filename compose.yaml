@@ -226,7 +226,7 @@ x-adam-agent-env: &adam-agent-env
 
 services:
   postgres:
-    image: postgres:16.15-alpine # CI uses postgres:16
+    image: postgres:19.0-alpine3.24 # CI uses postgres:19.0
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres # local development only
@@ -605,7 +605,7 @@ services:
 
   coder-postgres:
     profiles: [app]
-    image: postgres:16.15-alpine
+    image: postgres:19.0-alpine3.24
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres # local development only
@@ -885,7 +885,7 @@ services:
 
   agents-postgres:
     profiles: [app]
-    image: postgres:16.15-alpine
+    image: postgres:19.0-alpine3.24
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres # local development only
@@ -1098,7 +1098,7 @@ services:
 
   local-postgres:
     profiles: [local-agent]
-    image: postgres:16.15-alpine
+    image: postgres:19.0-alpine3.24
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres # local development only
