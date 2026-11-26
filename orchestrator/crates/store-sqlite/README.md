@@ -21,7 +21,7 @@ root of ADR 0076 decision 4 will.
 
 | Port | State |
 |---|---|
-| `ThreadStore` — all 43 methods | **built**, and green on `thread_store_conformance!` (no skip); the thread's default model and reasoning effort ([ADR 0086](../../../docs/decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md)) is `threads.pick`, migration `0004_thread_pick.sql` |
+| `ThreadStore` — all 43 methods | **built**, and green on `thread_store_conformance!` (no skip); the thread's default model and reasoning effort ([ADR 0086](../../../docs/decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md)) is `threads.pick`, migration `0004_thread_pick.sql`; `admit_commit` counts and commits in one immediate transaction: the single writer is the lock |
 | `UsageLedger` (ADR 0065) | **built** (milestone 2a, migration `0002`), green on `usage_ledger_conformance!` with its `forget` hook (no skip) |
 | `ThreadSearch` (ADR 0068) | **built** (milestone 2a, migration `0002`), green on `thread_search_conformance!` with its `forget` and `age` hooks (no skip) |
 | `PromptStore` (ADR 0070) | **built** (milestone 2b, migration `0003`), green on `prompt_store_conformance!` (no skip; the suite needs no hook) |

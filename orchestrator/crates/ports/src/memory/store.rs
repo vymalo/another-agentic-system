@@ -11,12 +11,12 @@ use orch_core::{
 };
 
 use crate::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus,
-    Lease, ListOrder, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind,
-    OutboxStats, OutboxStatus, Parking, Place, Received, SearchBackfill, SearchPosition,
-    SearchRank, SearchRequest, SearchRow, SearchRows, SharingChange, StoreError, TIMER_SOURCE,
-    ThreadListing, ThreadSearch, ThreadStore, UsageBackfill, UsageLedger,
+    Admission, AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder,
+    Commit, CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease,
+    InboxStatus, Lease, ListOrder, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem,
+    OutboxKind, OutboxStats, OutboxStatus, Parking, Place, Received, SearchBackfill,
+    SearchPosition, SearchRank, SearchRequest, SearchRow, SearchRows, SharingChange, StoreError,
+    TIMER_SOURCE, ThreadListing, ThreadSearch, ThreadStore, UsageBackfill, UsageLedger,
 };
 
 struct StoredEvent {
@@ -133,6 +133,8 @@ struct Purge {
 #[derive(Clone, Default)]
 pub struct MemoryStore {
     inner: Arc<Mutex<Inner>>,
+    /// Serialises [`ThreadStore::admit_commit`]: the count and the commit are one step.
+    admission: Arc<tokio::sync::Mutex<()>>,
     search_control: Arc<SearchControl>,
     /// The prompt library (ADR 0070): every person's prompts and what is shared with whom.
     pub(super) prompts: Arc<Mutex<super::prompts::PromptShelf>>,
@@ -1486,6 +1488,35 @@ impl ThreadStore for MemoryStore {
             self.commit_now(other, version, first)?;
         }
         self.commit_now(thread, expected_version, commit)
+    }
+
+    async fn admit_commit(
+        &self,
+        owner: &UserId,
+        limit: u32,
+        thread: ThreadId,
+        expected_version: i64,
+        commit: Commit,
+    ) -> Result<Admission, StoreError> {
+        let _admission = self.admission.lock().await;
+        let running = {
+            let inner = self.lock();
+            let open = inner.outbox.iter().filter(|row| {
+                row.kind == OutboxKind::Delegate
+                    && matches!(row.status, OutboxStatus::Pending | OutboxStatus::Inflight)
+                    && inner
+                        .threads
+                        .get(&row.thread_id)
+                        .is_some_and(|e| &e.record.owner == owner)
+            });
+            u32::try_from(open.count()).unwrap_or(u32::MAX)
+        };
+        if running >= limit {
+            return Ok(Admission::NoRoom { running });
+        }
+        self.commit(thread, expected_version, commit)
+            .await
+            .map(Admission::Admitted)
     }
 
     async fn ui_catalog_event(

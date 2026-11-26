@@ -46,6 +46,7 @@ pub mod wakeup;
 macro_rules! thread_store_conformance {
     ($make:path) => {
         $crate::thread_store_conformance!(@cases $make;
+            two_messages_at_once_one_passes a_person_under_the_limit_sees_no_change
             ping create_get_roundtrip event_data_roundtrip owner_isolation list_newest_first_before_limit
             commit_contiguous_seq version_conflict_writes_nothing duplicate_key_writes_nothing
             concurrent_writers_keep_seq_contiguous list_events_after_limit latest_events_newest_first
