@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use orch_app::{AppError, PromptRefusal, UserToolRefusal};
+use orch_app::{AppError, AttachmentRefusal, PromptRefusal, UserToolRefusal};
 use orch_core::{Classify, ErrorClass, ForkError, report};
 use serde::Serialize;
 
@@ -313,6 +313,24 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         return (
             Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()),
             None,
+        );
+    }
+    // A person's own file (ADR 0067, slice 12): each refusal has the status and the code the
+    // contract names, and a deployment with no store is a cause that clears, not a client's fault.
+    if let AppError::Attachment(refusal) = err {
+        let (status, retry) = match refusal {
+            AttachmentRefusal::TooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, None),
+            AttachmentRefusal::Empty
+            | AttachmentRefusal::BadMediaType
+            | AttachmentRefusal::BadFilename => (StatusCode::BAD_REQUEST, None),
+            AttachmentRefusal::NoStore => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some(RETRY_AFTER_UNAVAILABLE),
+            ),
+        };
+        return (
+            Problem::new(status, refusal.to_string()).with_code(refusal.code()),
+            retry,
         );
     }
     // The person's list (ADR 0042): well formed, what it names is in the way, and the client acts on

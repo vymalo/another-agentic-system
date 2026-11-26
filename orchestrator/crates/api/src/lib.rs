@@ -19,6 +19,7 @@
 //! [ADR 0033]: ../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md
 
 mod artifacts;
+mod attachments;
 mod auth;
 mod authorize_limit;
 mod cbor;
@@ -372,6 +373,10 @@ pub fn router_with_surfaces<P: Ports>(
         .route(
             "/api/threads/{thread_id}/artifacts/{sha256}",
             get(artifacts::get_artifact::<P>),
+        )
+        .route(
+            "/api/threads/{thread_id}/attachments",
+            post(attachments::upload_attachment::<P>),
         )
         // Sharing by a revocable link (ADR 0040): the owner's routes, then what a signed-in reader
         // of a shared thread asks.

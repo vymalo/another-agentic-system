@@ -51,7 +51,7 @@ const STEER_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 use live::{LiveRelay, LiveTiming};
 
 pub use files::{FileLimits, MAX_FILES_PER_JOB};
-pub(crate) use files::{canonical_media_type, clean_filename};
+pub(crate) use files::{canonical_media_type, clean_filename, sniff};
 
 /// Tunables of the dispatcher.
 #[derive(Debug, Clone)]

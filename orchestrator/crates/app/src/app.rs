@@ -31,6 +31,8 @@ use tokio::time::Instant;
 #[path = "child_sessions.rs"]
 mod child_sessions;
 pub use child_sessions::{ChildSessionDrop, ChildSessionStats};
+mod attachments;
+pub use attachments::{AttachmentRefusal, StoredAttachment};
 mod delete;
 pub use delete::{DeleteStats, LateSource};
 mod downloads;
