@@ -5,7 +5,7 @@
   [ADR 0089](0089-the-run-identity-stays-the-agents-task-id-bound-on-first-sight.md) (the run identity), each with a
   dated note, and builds on [ADR 0087](0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)
   (the prompt statement and the gateway's verifier) and [ADR 0009](0009-swappable-implementations-at-build-time.md)
-  (ports). Names marked *(proposed)* are this record's until the slices fix them. The number 0100 is taken by the cold-thread archive, so this record is 0101.
+  (ports). **Amended 2026-11-26 (two owner decisions):** the PKI is **one agents intermediate**, with the person and the run in each run's leaf (section 5; an intermediate per person is a rejected alternative), and the orchestrator's own model calls are **signed with the orchestrator's own certificate**, not sent through the injector (section 7). Names marked *(proposed)* are this record's until the slices fix them. The number 0100 is taken by the cold-thread archive, so this record is 0101.
 
 ## Context
 
@@ -102,13 +102,15 @@ never sent unsigned. The sidecar is local to the run's pod, so it adds no networ
 (ADR 0009) *(proposed: `RunCertificates`, "sign this CSR for this bound run")* with two adapters, OpenBao's PKI for a
 real deployment and a test CA for development and the conformance kit; the binding's path is a closed enum.
 
-### 5. The PKI: the owner's starting point, and this record's recommendation
+### 5. The PKI: one agents intermediate, the person and the run in the leaf
 
-**The owner's starting point** is one intermediate CA per person for their cloud agents, and one leaf per agent per run;
-revoking a person's intermediate cuts all their agents. Weighed against OpenBao (above) and the deployment's PKI, which
-today has one root and two intermediates, one issuer per mount:
+**Decided 2026-11-26 (amended, below).** There is **one agents intermediate CA**, one issuer in its own mount, and
+**one leaf per agent per run**, with the person and the run named in the leaf's URI SAN. The owner's words
+(2026-11-26): *"Certificate choice: One shared intermediate"*. This is option B of the table; the owner's first
+direction, an intermediate per person (option A), is **rejected** (reasons below). Weighed against OpenBao and the
+deployment's PKI, which today has one root and two intermediates, one issuer per mount:
 
-| | **A. An intermediate per person** (the owner's) | **B. One agents intermediate, the person in the leaf's SAN** |
+| | A. An intermediate per person (rejected) | **B. One agents intermediate, the person in the leaf's SAN (decided)** |
 |---|---|---|
 | Issuers | one per person: thousands of issuers in one mount, against OpenBao's "strongly recommended" one per mount, or thousands of mounts | one, as the device certificates are issued |
 | CRLs | one per person's issuer, each rebuilt on its own; the verifier must fetch them all or skip leaf revocation | one |
@@ -119,11 +121,11 @@ today has one root and two intermediates, one issuer per mount:
 | Cut a person's agents | one entry on the parent's CRL | the broker refuses new leaves for the person and revokes their live leaves (it knows each run's serial); within the CRL's freshness |
 | What a compromised issuer can do | issue for any person (the broker signs for every person in both) | the same |
 
-**Recommendation: B.** Both give the person and the run in the leaf, and the same revocation reach; A costs an issuer, a
-CRL and a chain per person against OpenBao's own guidance and protects nothing more, since one service issues for
-everyone in both. The leaf profile above is the same in both, so the choice changes the issuing role and the verifier's
-trust step only, which are the gateway's and the deployment's to record. **Until the owner rules, A stands as his
-starting point.** Issuance latency at run start is *unverified*: no signing against the deployed OpenBao has been timed.
+**Why A is rejected:** OpenBao recommends one issuer per mount; there is one CRL per issuer, so A multiplies CRLs and
+chains by the number of people; and a per-person intermediate isolates nothing, because one service, the broker, issues
+for every person in both options. The leaf profile above is the same in both, so the choice changes the issuing role
+and the verifier's trust step only, which are the gateway's and the deployment's to record. Issuance latency at run
+start is *unverified*: no signing against the deployed OpenBao has been timed.
 
 ### 6. The binding names its path, and the lease is only the injector's
 
@@ -136,9 +138,9 @@ starting point.** Issuance latency at run start is *unverified*: no signing agai
 - **A bring-your-own A2A image** does not call our gateway; nothing is issued to it.
 - **The injector** is kept as built, off by default, for completely custom deployments (ADR 0084, as amended). Its page
   says so.
-- **The orchestrator's own calls** (titles and descriptions, `thread:<id>:<property>`) keep their current path until a
-  slice signs them; the recommendation is that the orchestrator issue itself a leaf for that lease id under the thread's
-  owner and sign in process (question 3).
+- **The orchestrator's own calls** (titles and descriptions, `thread:<id>:<property>`) are **decided** (2026-11-26,
+  amended below): the orchestrator signs them with **its own certificate**, in process, and does not send them through
+  the injector. Until its slice lands they keep their current path.
 
 ## The new path
 
@@ -218,16 +220,16 @@ stateDiagram-v2
   person, any run), and it issues per pod, not per run; refused.
 - **The operator asks for the certificate**: the operator sees no run and holds no secret, and would carry key material
   it has no business with; refused.
+- **An intermediate per person** (the owner's first direction, rejected by his decision of 2026-11-26 for one shared agents intermediate): OpenBao recommends one issuer per mount, there is one CRL per issuer, and it isolates nothing because one service issues for all (section 5).
+- **The orchestrator's own calls through the injector** (rejected by the owner, 2026-11-26): they are signed with the orchestrator's own certificate.
 - **The orchestrator makes the key and sends it to the pod**: a private key on the wire; refused.
 
 ## Questions for the owner
 
-1. **The PKI:** B (one agents intermediate, the person in the leaf) as recommended, or A (an intermediate per person) as
-   first said?
+1. ~~**The PKI:** B (one agents intermediate, the person in the leaf) as recommended, or A (an intermediate per person) as first said?~~ **Decided 2026-11-26: B.** See section 5 and the amendment.
 2. **Where the sidecar is built:** in adam-rs, beside the request signature it reuses (recommended), or in this
    repository?
-3. **The orchestrator's own calls:** signed with a leaf the orchestrator issues itself (recommended), or kept on the
-   injector where one is enabled?
+3. ~~**The orchestrator's own calls:** signed with a leaf the orchestrator issues itself (recommended), or kept on the injector where one is enabled?~~ **Decided 2026-11-26: signed with the orchestrator's own certificate, not through the injector.** See section 7 and the amendment.
 
 ## Slices
 
