@@ -234,7 +234,7 @@ services:
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
       # Creates `orch_test` on first start, the database `cargo test` expects (see orchestrator/README.md).
       - ./dev/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
@@ -611,7 +611,7 @@ services:
       POSTGRES_PASSWORD: postgres # local development only
       POSTGRES_DB: coder
     volumes:
-      - coder-postgres-data:/var/lib/postgresql/data
+      - coder-postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d coder"]
       interval: 5s
@@ -891,7 +891,7 @@ services:
       POSTGRES_PASSWORD: postgres # local development only
       POSTGRES_DB: agents
     volumes:
-      - agents-postgres-data:/var/lib/postgresql/data
+      - agents-postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d agents"]
       interval: 5s
@@ -1104,7 +1104,7 @@ services:
       POSTGRES_PASSWORD: postgres # local development only
       POSTGRES_DB: orch
     volumes:
-      - local-postgres-data:/var/lib/postgresql/data
+      - local-postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d orch"]
       interval: 5s
