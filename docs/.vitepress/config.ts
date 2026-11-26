@@ -19,13 +19,23 @@ function pages(dir: string, skip: string[] = []) {
 
 // The shared section structure: see STRUCTURE.md. The platform's site uses the same one.
 const sidebar = [
-  { text: "Overview", items: [{ text: "Vision", link: "/vision" }, { text: "MVP and build order", link: "/mvp" }] },
-  { text: "Getting started", items: [{ text: "Run it locally", link: "/getting-started" }, { text: "Tester note", link: "/tester-note" }] },
-  { text: "Concepts", items: [{ text: "Lessons as requirements", link: "/lessons-from-agent-canvas" }, { text: "Open questions", link: "/open-questions" }] },
-  { text: "Architecture", items: [{ text: "Architecture", link: "/architecture" }, { text: "Orchestrator", link: "/orchestrator" }] },
+  {
+    text: "Overview",
+    items: [
+      { text: "Vision", link: "/vision" },
+      { text: "MVP and build order", link: "/mvp" },
+      { text: "Lessons as requirements", link: "/lessons-from-agent-canvas" },
+      { text: "Open questions", link: "/open-questions" },
+    ],
+  },
+  { text: "Get started", items: [{ text: "Run it locally", link: "/getting-started" }, { text: "Tester note", link: "/tester-note" }] },
   { text: "Guides", collapsed: true, items: [...pages("plans"), { text: "Vendor check", link: "/vendor-check-2026-11-24" }] },
-  { text: "API", collapsed: true, items: [{ text: "Chat API (OpenAPI)", link: "/api/chat-api" }, { text: "API index", link: "/api/" }] },
-  { text: "Reference", collapsed: true, items: pages("api", ["chat-api.md"]) },
+  {
+    text: "Reference",
+    collapsed: true,
+    items: [{ text: "Chat API (OpenAPI)", link: "/api/chat-api" }, { text: "API index", link: "/api/" }, ...pages("api", ["chat-api.md"])],
+  },
+  { text: "Architecture", items: [{ text: "Architecture", link: "/architecture" }, { text: "Orchestrator", link: "/orchestrator" }] },
   { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions")] },
   { text: "Contributing", items: [{ text: "How to contribute", link: "/contributing" }] },
 ];
@@ -58,8 +68,8 @@ export default withMermaid(
     base: process.env.DOCS_BASE ?? "/another-agentic-system/",
     cleanUrls: true,
     rewrites: { "api/README.md": "api/index.md" },
-    // Pages link to source files outside docs/: tools/docs-check checks the links that stay inside the repository.
-    ignoreDeadLinks: true,
+    // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
+    ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
     srcExclude: ["**/node_modules/**", "**/examples/**"],
     themeConfig: {
       md3: { style: "expressive", seed: "#0f766e" },
