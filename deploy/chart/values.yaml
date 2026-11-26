@@ -433,7 +433,7 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-945208e (since 2026-11-23: adam-rs 7ea653f plus #347, the interface language reaching the model as one more turn after the history, never in `system`; sha-7ea653f earlier the same day: adam-rs 7ac3281 plus #321, #324, #327, #328, #329, #333 and #335, ADR 0014's status note "adam-rs 7ea653f2": a lean first request with tool groups and the compaction recap, a typed reasoning level on the model wire, the interface language (locale/v1 on the card from `chat.defaultLocale` -> DEFAULT_LOCALE), and fixes; sha-7ac3281 since 2026-11-21: adam-rs 8501494 plus #254, #272 and #294 to #313, ADR 0014's status note "adam-rs 7ac3281"; sha-8501494 and sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-9f90f1e (since 2026-11-26: adam-rs 945208e plus 99 commits — model-pick/v1, reasoning/v1, prompt-statement/v1, uploads/v1 on the card, a kept-open child that asks, the session limits of `admit`, the plugin hooks of ADR 0050 and the TurnKeys port of ADR 0068 T1, ADR 0014's status note "adam-rs 9f90f1e6"; it is the last commit before adam-rs #399 raised adam's own workspace to Rust 1.98, so the next bump raises this repository's 1.94.1; sha-945208e earlier: adam-rs 7ea653f plus #347, the interface language reaching the model as one more turn after the history, never in `system`; sha-7ea653f: adam-rs 7ac3281 plus #321, #324, #327, #328, #329, #333 and #335, ADR 0014's status note "adam-rs 7ea653f2": a lean first request with tool groups and the compaction recap, a typed reasoning level on the model wire, the interface language (locale/v1 on the card from `chat.defaultLocale` -> DEFAULT_LOCALE), and fixes; sha-7ac3281 since 2026-11-21: adam-rs 8501494 plus #254, #272 and #294 to #313, ADR 0014's status note "adam-rs 7ac3281"; sha-8501494 and sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
   # epic #380 here): every adam agent writes A2UI v1.0 only (`"version": "1.0"`, the URI `https://a2ui.org/a2a-extension/a2ui/v1.0`, the basic catalog of v1.0),
   # reads only `ui-catalog/v2` documents, and draws nothing in a turn whose message carries no `a2uiRendererCapabilities["1.0"]` — which the orchestrator
   # of this chart sends on every message, the chat's included. It also carries adam-rs ADR 0020
@@ -460,8 +460,8 @@ chat:
   # startup. A2UI stayed v0.9.1 there. No new variable is required.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-945208e
-    digest: sha256:ef440f7eb24f9abbb3c8964d347d2ede962e1be30dc4663229729985d02edc8b
+    tag: sha-9f90f1e
+    digest: sha256:8352a52c2a7e41a00af71274b783e7d0fb5277bb1ffbd25921f3d64d50c876ea
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""

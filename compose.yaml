@@ -116,11 +116,17 @@ x-orchestrator-env: &orchestrator-env
 
 # The adam-rs image of every agent that is adam: the coder, its `github-mcp` sidecar, and the agents that are only a folder (adam-agent).
 # One image, pinned ONCE here by tag AND digest, and the tag is the adam-rs commit in dev/coder/UPSTREAM, which
-# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-23 (ghcr API, anonymous pull, HTTP 200):
-# `coder:sha-945208e` is one linux/amd64 OCI manifest (3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
-# label org.opencontainers.image.revision 945208ef3ed8f4bbef60b7d1286f08f4e7624c38, `/opt/obscura/bin` on its PATH, and the digest below is the
-# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `7ea653f` plus adam-rs #347 (the interface language reaches the
-# model as one more turn after the history, never in `system`; ADR 0014's status note "adam-rs 945208e" has it). `7ea653f` is `7ac3281` plus
+# dev/coder/check-vendored.sh asserts. linux/amd64 only, about 3 GB. Verified 2026-11-26 (ghcr API, anonymous pull, HTTP 200):
+# `coder:sha-9f90f1e` is one linux/amd64 OCI manifest (3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`,
+# label org.opencontainers.image.revision 9f90f1e67b00c5cc7235acce738bced83f2ebd46, `/opt/obscura/bin` on its PATH, and the digest below is the
+# sha-256 of the manifest the registry returned (its Docker-Content-Digest). It is `945208e` plus 99 commits of adam-rs main: `model-pick/v1`
+# (a served agent takes the model a message names, with its endpoint label), `reasoning/v1` (the levels it takes, one it does not is refused),
+# `prompt-statement/v1` (the statement and the person's envelope on every model call), `uploads/v1` on the card (no params; the inline threshold
+# is the setting, 10 MiB by default), a kept-open child that asks the person and only a shown one, `session_config`/`admit` (the seven limits,
+# narrowed only), the plugin and hook sets of adam-rs ADR 0050, and the TurnKeys port of ADR 0068 T1. It is the last adam-rs main commit before
+# adam-rs #399 moved its workspace to Rust 1.98 (this repository is on 1.94.1): the next bump of this pin is the one that raises it.
+# ADR 0014's status note "adam-rs 9f90f1e6" has the list this stack sees. `945208e` is `7ea653f` plus adam-rs #347 (the interface language reaches the
+# model as one more turn after the history, never in `system`). `7ea653f` is `7ac3281` plus
 # adam-rs #321, #324, #327, #328, #329, #333 and #335 (the `locale/v1` card among them). `7ac3281` is `8501494` plus
 # adam-rs #254, #272 and #294 to #313 (ADR 0014's status note "adam-rs 7ac3281" lists what this stack sees): the coder's commands run where the coder runs, with no devcontainer and no
 # `rebuild_environment` (#272, adam-rs ADR 0052; the vendored instructions.md changed with it), reasoning effort per agent and model profiles
@@ -187,7 +193,7 @@ x-orchestrator-env: &orchestrator-env
 # (Docker Hub, `swaggerapi/swagger-ui` v5.36.0), pinned by tag and by the digest of the multi-arch index.
 x-swagger-ui-image: &swagger-ui-image swaggerapi/swagger-ui:v5.36.0@sha256:a6c9dae9b7bf7aa691ad8cf76574d0a9c3c8ce6e0d3946d6bb55acc36f24c4e5
 
-x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-945208e@sha256:ef440f7eb24f9abbb3c8964d347d2ede962e1be30dc4663229729985d02edc8b
+x-adam-image: &adam-image ghcr.io/vymalo/another-adam-rs/coder:sha-9f90f1e@sha256:8352a52c2a7e41a00af71274b783e7d0fb5277bb1ffbd25921f3d64d50c876ea
 
 # What every agent that is a folder shares (`chat`, `researcher`, and the one you add: dev/README.md, "Add a fourth
 # agent by writing a folder"). YAML merge keys are shallow: a service that needs more `depends_on` repeats the list.
