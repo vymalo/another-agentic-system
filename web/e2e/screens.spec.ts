@@ -972,10 +972,18 @@ for (const scheme of ["light", "dark"] as const) {
       await page.keyboard.type("echo ask @");
       await expect(page.getByRole("listbox", { name: "Agents to mention" })).toBeVisible();
       await shot(page, "mentions-list");
+      // a pick writes the label into the controlled box a render later: typing before it landed
+      // goes into the old text and is lost, so each pick is waited for before the next key
       await page.keyboard.press("Enter"); // the Reviewer
+      await expect(box).toHaveValue("echo ask @reviewer ");
       await page.keyboard.type("to check the data and @ver");
+      await expect(box).toHaveValue("echo ask @reviewer to check the data and @ver");
       await page.keyboard.press("Enter"); // the Verifier
+      await expect(box).toHaveValue("echo ask @reviewer to check the data and @verifier ");
       await page.keyboard.type("to sign it off");
+      await expect(box).toHaveValue(
+        "echo ask @reviewer to check the data and @verifier to sign it off",
+      );
       await expect(page.getByRole("list", { name: "Mentioned agents" })).toBeVisible();
       await page.keyboard.press("Enter");
       await expect(
