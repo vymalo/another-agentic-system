@@ -5,7 +5,7 @@
   dated note here. Builds on [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
   (the run lease) and adam-rs
   [ADR 0067](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0067-a-model-call-through-an-injector-names-its-run-and-a-refusal-parks-the-run.md)
-  (a model call names its run, and a refusal parks the run). **Amended 2026-11-26** by ADR 0101 (proposed): the run's
+  (a model call names its run, and a refusal parks the run). **Amended 2026-11-26** by ADR 0101 (accepted 2026-11-26): the run's
   certificate names this id; see the status note of that date. "adam ADR 0067" below is adam-rs's, not this repository's
   ADR 0067.
 
@@ -100,7 +100,7 @@ The thread id (c1), a minted id in the message (c2), and an id computed in advan
 
 ### Status note, 2026-11-26: the run's certificate names the same id ([ADR 0101](0101-a-cloud-runs-model-calls-are-signed-for-the-run-and-the-injector-stays-for-custom-cases.md))
 
-ADR 0101 (proposed, on the owner's direction of 2026-11-26) gives each cloud run a certificate of its own whose URI SAN
+ADR 0101 (accepted 2026-11-26, on the owner's direction of 2026-11-26) gives each cloud run a certificate of its own whose URI SAN
 names the person and **this record's run id**: adam's task id, bound on first sight. The recommendation above stands,
 and option (b) is now also the identity a key is issued for:
 

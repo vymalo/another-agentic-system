@@ -1,12 +1,11 @@
 # ADR 0101 — A cloud run's model calls are signed for the run, and the injector stays only for custom cases
 
-- **Status:** **proposed (2026-11-26)**, on the owner's direction of 2026-11-26 (below). **Nothing is built.** It
+- **Status:** **Accepted (2026-11-26): by the owner, by merging**, on his direction of 2026-11-26 (below). **Nothing is built.** It
   **amends** [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) (the run lease) and
   [ADR 0089](0089-the-run-identity-stays-the-agents-task-id-bound-on-first-sight.md) (the run identity), each with a
   dated note, and builds on [ADR 0087](0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)
   (the prompt statement and the gateway's verifier) and [ADR 0009](0009-swappable-implementations-at-build-time.md)
-  (ports). Names marked *(proposed)* are this record's until the slices fix them. The number 0100 is claimed by three
-  open pull requests, so this record takes 0101.
+  (ports). Names marked *(proposed)* are this record's until the slices fix them. The number 0100 is taken by the cold-thread archive, so this record is 0101.
 
 ## Context
 
