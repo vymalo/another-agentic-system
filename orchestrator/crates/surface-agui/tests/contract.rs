@@ -142,11 +142,14 @@ impl Contract {
     /// The `(content type, schema)` the contract documents for a status.
     fn body(&self, id: &str, status: u16) -> (String, Value, Option<Value>) {
         let response = self.resolve(&self.operation(id)["responses"][status.to_string()]);
-        let (ct, media) = response["content"]
+        let content = response["content"]
             .as_object()
-            .unwrap_or_else(|| panic!("{id} {status} documents no body"))
-            .iter()
-            .next()
+            .unwrap_or_else(|| panic!("{id} {status} documents no body"));
+        // A JSON body is also offered as CBOR with the same schema; the JSON entry is the one these
+        // tests read, whatever order the document's keys come in.
+        let (ct, media) = content
+            .get_key_value("application/json")
+            .or_else(|| content.iter().next())
             .unwrap();
         (
             ct.clone(),
