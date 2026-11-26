@@ -1,10 +1,10 @@
 # ADR 0100 — A thread nobody reads goes cold to object storage and comes back on the next message
 
-- **Status:** **Proposed (2026-11-26), task ANR-819.** Nothing is built. The owner's direction of 2026-11-25: *"We need
+- **Status:** **Accepted (2026-11-26): by the owner, by merging.** Task ANR-819. Nothing is built. The owner's direction of 2026-11-25: *"We need
   to support other databases too, if an org decides e.g to use mongo-db for storing messages rather than postgres. Goal
   here is to have the possibility to save data that are accessed by users only once somewhere where it's cheap. E.g
   partitioning with postgres, archiving even to S3 at some point and reloading only when the users sends a message."*
-  Every number and name below is the planner's choice until the owner accepts it. It **amends invariant 3** (one event log
+  Every number and name below was the planner's choice; the owner accepted the ADR as it stands, and its open questions stay open. It **amends invariant 3** (one event log
   in Postgres) the way [ADR 0076](0076-the-orchestrator-as-a-library-in-an-application.md) did for SQLite, and builds on
   [ADR 0032](0032-files-from-agents-live-in-an-artifact-store.md) (the artifact store), [ADR 0043](0043-deleting-a-thread-erases-it.md)
   (erase), [ADR 0094](0094-retention-is-a-sweep-per-class-with-a-key-each-and-a-default-of-90-days.md) (the sweeps),
