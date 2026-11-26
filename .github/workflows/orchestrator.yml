@@ -212,6 +212,10 @@ jobs:
       - run: cargo clippy -p orch-embed --all-targets --locked -- -D warnings
       - run: cargo test -p orch-embed --locked
       - run: cargo run -p orch-embed --example run_thread --locked
+      - name: A killed embedded application resumes its thread and its local run
+        # ADR 0076 E4b: SIGKILL after the second journaled step, then a second process on the same
+        # SQLite files; each step is in the log once. About 30 s (the dispatcher's job lease).
+        run: cargo run -p orch-embed --example kill_resume --locked
       - name: The embedded build carries no HTTP server, Postgres driver or sqlx
         # ADR 0076 decision 4: the normal tree, dev-dependencies excluded (the example's scripted
         # agent is one). A crate that brings any of these back fails here.

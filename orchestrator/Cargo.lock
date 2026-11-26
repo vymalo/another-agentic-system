@@ -2828,6 +2828,7 @@ name = "orch-embed"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "orch-agent-adam",
  "orch-agui-projection",
  "orch-agui-proto",
  "orch-app",
