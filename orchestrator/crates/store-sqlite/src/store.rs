@@ -23,11 +23,11 @@ use orch_core::{
     ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
 };
 use orch_ports::{
-    AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, Lease,
-    ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer,
-    OutboxFinal, OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received,
-    SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
+    Admission, AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder,
+    Commit, CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease,
+    Lease, ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewInbox, NewOutbox, NewThreadRecord,
+    NewTimer, OutboxFinal, OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Place,
+    Received, SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 use rusqlite::types::Value;
 use rusqlite::{
@@ -1868,6 +1868,36 @@ impl ThreadStore for SqliteStore {
     ) -> Result<CommitOutcome, StoreError> {
         self.call(move |conn| write(conn, |tx| commit_in(tx, thread, expected_version, commit)))
             .await
+    }
+
+    async fn admit_commit(
+        &self,
+        owner: &UserId,
+        limit: u32,
+        thread: ThreadId,
+        expected_version: i64,
+        commit: Commit,
+    ) -> Result<Admission, StoreError> {
+        // No lock: the one writer's immediate transaction makes the count and the commit one step.
+        let owner = owner.as_str().to_owned();
+        self.call(move |conn| {
+            write(conn, |tx| {
+                let running: i64 = tx
+                    .query_row(
+                        "SELECT count(*) FROM outbox WHERE owner = ?1 AND kind = 'delegate' \
+                         AND status IN ('pending', 'inflight')",
+                        [&owner],
+                        |row| row.get(0),
+                    )
+                    .map_err(store_err)?;
+                let running = u32::try_from(running).unwrap_or(u32::MAX);
+                if running >= limit {
+                    return Ok(Admission::NoRoom { running });
+                }
+                commit_in(tx, thread, expected_version, commit).map(Admission::Admitted)
+            })
+        })
+        .await
     }
 
     async fn list_events(
