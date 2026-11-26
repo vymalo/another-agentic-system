@@ -95,7 +95,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Generate the screens in the image and compare
+        env:
+          SCREENS_KEEP: ${{ runner.temp }}/screens-generated
         run: sh web/scripts/screens-docker.sh check
+      # what the image drew, kept when the comparison fails, so the set is committed from the image and never by hand
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: screens-generated
+          path: ${{ runner.temp }}/screens-generated
+          retention-days: 7
+          if-no-files-found: ignore
 
   image:
     needs: [check, e2e]
