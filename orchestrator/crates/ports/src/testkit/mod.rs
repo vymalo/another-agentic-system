@@ -49,6 +49,7 @@ macro_rules! thread_store_conformance {
             two_messages_at_once_one_passes a_person_under_the_limit_sees_no_change
             ping create_get_roundtrip event_data_roundtrip owner_isolation list_newest_first_before_limit
             commit_contiguous_seq version_conflict_writes_nothing duplicate_key_writes_nothing
+            a_recorded_key_is_seen_before_a_commit_and_only_in_its_thread
             concurrent_writers_keep_seq_contiguous list_events_after_limit latest_events_newest_first
             messages_since_counts_the_owners_in_the_window
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread

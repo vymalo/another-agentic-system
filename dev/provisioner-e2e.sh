@@ -181,13 +181,13 @@ puts=$(count PUT "$dev_path" If-None-Match '*')
 if [ "$puts" = 1 ]; then ok "the platform saw one PUT If-None-Match: * for coder-<owner>"; else bad "the platform saw $puts conditional creates for $dev_path, want 1"; fi
 find_requests PUT "$dev_path" > "$tmp/puts.json"
 if jq -e --arg owner "$dev_owner" --arg name "coder-$dev_owner" '
-    .[0].request.body | fromjson | (.name == $name and .owner == $owner and .suspend == false and .image == "dev/coder:mock" and .model == "mock-model")' \
+    .[0].body | fromjson | (.name == $name and .owner == $owner and .suspend == false and .image == "dev/coder:mock" and .model == "mock-model")' \
   "$tmp/puts.json" >/dev/null 2>&1; then
   ok "the create names the agent, the owner, suspend false and the deployment's form of the coder"
 else
-  bad "the create's body is not the agent's form: $(jq -c '.[0].request.body' "$tmp/puts.json" 2>/dev/null)"
+  bad "the create's body is not the agent's form: $(jq -c '.[0].body' "$tmp/puts.json" 2>/dev/null)"
 fi
-if jq -e '.[0].request.headers | to_entries | any(.key | ascii_downcase == "authorization") and (map(select(.key | ascii_downcase == "authorization"))[0].value | test("^Bearer ."))' \
+if jq -e '.[0].headers | to_entries | any(.key | ascii_downcase == "authorization") and (map(select(.key | ascii_downcase == "authorization"))[0].value | test("^Bearer ."))' \
   "$tmp/puts.json" >/dev/null 2>&1; then
   ok "the platform was asked with a bearer token"
 else
@@ -199,13 +199,16 @@ else
   bad "the platform's agent of dev did not reach ready: $(admin GET /scenarios | jq -c '.scenarios[] | select(.name == "dev")')"
 fi
 # The thread's first event is written after the platform's last answer about the agent: the message waited for ready.
-last_poll=$(find_requests GET "$dev_path" | jq -r 'last | .loggedDateString // empty' | cut -c1-19)
+# Both are compared in milliseconds: WireMock's loggedDate is epoch milliseconds, and an event's `at` carries its fraction.
+last_poll=$(find_requests GET "$dev_path" | jq -r 'last | .loggedDate // empty')
 api "$tmp/dev.h" GET "/api/threads/$thread/export" > "$tmp/export.json" 2>/dev/null || echo '{"events":[]}' > "$tmp/export.json"
-first_event=$(jq -r '.events[0].at // empty' "$tmp/export.json" | cut -c1-19)
-if [ -n "$last_poll" ] && [ -n "$first_event" ] && [ "$(date -u -d "${first_event}Z" +%s)" -ge "$(date -u -d "${last_poll}Z" +%s)" ]; then
-  ok "the thread's first event ($first_event) is not before the platform's last poll ($last_poll)"
+first_event=$(jq -r '.events[0].at // empty' "$tmp/export.json")
+first_event_ms=""
+if [ -n "$first_event" ]; then first_event_ms=$(date -u -d "$first_event" +%s%3N 2>/dev/null || true); fi
+if [ -n "$last_poll" ] && [ -n "$first_event_ms" ] && [ "$first_event_ms" -ge "$last_poll" ]; then
+  ok "the thread's first event ($first_event, ${first_event_ms} ms) is not before the platform's last poll (${last_poll} ms)"
 else
-  bad "the thread's first event ($first_event) is before the platform's last poll ($last_poll), or one of them is missing"
+  bad "the thread's first event ($first_event, ${first_event_ms:-?} ms) is before the platform's last poll (${last_poll:-?} ms), or one of them is missing"
 fi
 # An agent that is not provisioned is not asked for.
 before=$(total_requests)
@@ -231,7 +234,7 @@ case $state in
 esac
 resumes=$(count PUT "$holder_path" If-Match '"s1"')
 if [ "$resumes" = 1 ]; then ok "the platform saw one PUT If-Match: \"s1\" (the ETag it had just read)"; else bad "the platform saw $resumes resumes of $holder_path, want 1"; fi
-if find_requests PUT "$holder_path" | jq -e '.[0].request.body | fromjson | (.suspend == false and .image == "dev/coder:mock")' >/dev/null 2>&1; then
+if find_requests PUT "$holder_path" | jq -e '.[0].body | fromjson | (.suspend == false and .image == "dev/coder:mock")' >/dev/null 2>&1; then
   ok "the resume says suspend: false and carries the form"
 else
   bad "the resume's body is not suspend: false and the form"

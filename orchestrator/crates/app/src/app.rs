@@ -202,8 +202,12 @@ pub struct AppConfig {
     /// sweep erases it (`retention.threads.days`; default [`DEFAULT_THREAD_RETENTION_DAYS`]).
     pub thread_retention_days: u32,
     /// A person's own agents (ANR-806): when set, a message to an agent of a provisioned kind makes
-    /// or resumes the person's agent and waits for it to be ready **before** the message is
-    /// written, so before anything is dispatched. `None` (the default) provisions nothing.
+    /// or resumes the person's agent and waits for it to be ready **before** the request that
+    /// starts the agent's work is written (a message, a Stop & send, an action on a card, a first
+    /// message, a fork's message, a helper session's start). Sends the dispatcher makes on its own
+    /// (re-delegation, redelivery, an `@mention` or `ask_agent`) do not provision. The message
+    /// still goes to the deployment's configured agent, not to the person's own. `None` (the
+    /// default) provisions nothing.
     pub provisioning: Option<Provisioning>,
 }
 
@@ -650,9 +654,29 @@ impl<P: Ports> App<P> {
         })
     }
 
+    /// Whether `key` is recorded in the log of `thread`: the request that carries it was applied
+    /// already, so applying it again writes nothing. No key, no replay.
+    pub(crate) async fn is_replay_of_key(
+        &self,
+        thread: ThreadId,
+        key: Option<&str>,
+    ) -> Result<bool, AppError> {
+        match key {
+            Some(key) => Ok(self.ports.store().key_recorded(thread, key).await?),
+            None => Ok(false),
+        }
+    }
+
     /// Makes or resumes the person's own agent for a message to `agent` and waits until it is
     /// ready, when the deployment provisions that kind (ANR-806); nothing otherwise.
-    async fn ensure_own_agent(&self, user: &UserId, agent: &AgentId) -> Result<(), AppError> {
+    ///
+    /// **The agent's names are the switch:** the kind is read from the agent's id and its aliases
+    /// (ADR 0049), so aliasing any agent to `coder` or `workspace` turns provisioning on for it.
+    pub(crate) async fn ensure_own_agent(
+        &self,
+        user: &UserId,
+        agent: &AgentId,
+    ) -> Result<(), AppError> {
         match &self.cfg.provisioning {
             Some(provisioning) => {
                 // the agent the deployment calls `coder` may be configured as `adam` with the
@@ -1218,9 +1242,18 @@ impl<P: Ports> App<P> {
         // The first message is a message: over the person's role's `messages_per_minute` it is
         // refused before anything is written (ADR 0081, decision 4).
         self.check_message_limit(&access, now).await?;
-        // The person's own agent, made or resumed and ready, before anything is written or
-        // dispatched (ANR-806).
+        // The person's own agent, made or resumed and ready, before the thread is written
+        // (ANR-806). A thread of this person's with this id exists already when the request is
+        // a repeat: nothing is written, so the platform is not asked either.
+        match self.ports.store().get_thread(None, id).await {
+            Ok(Some(existing)) if &existing.owner == user => return Ok(Creation::Exists),
+            Ok(Some(_)) => return Err(AppError::NotFound),
+            Ok(None) => {}
+            Err(e) => return Err(e.into()),
+        }
         self.ensure_own_agent(user, &req.target.agent_id).await?;
+        // the wait may have taken seconds: the message is stamped when it is written, after it
+        let now = self.ports.clock().now();
         let (mut next, mut cmds) = start_thread(
             gate,
             &Input::UserMessage {
@@ -1863,6 +1896,12 @@ impl<P: Ports> App<P> {
             self.check_message_limit(&access, now).await?;
             self.ensure_own_agent(user, &target.agent_id).await?;
         }
+        // the wait may have taken seconds: the fork's message is stamped when it is written
+        let now = if has_message {
+            self.ports.clock().now()
+        } else {
+            now
+        };
         // A fork has the servers its copied log left attached, but for the agent it talks to and
         // for the person who owns it: one that agent may not use, and one of a person's own
         // servers that its new owner does not own, is detached in the fork's own log, so the log
@@ -2649,8 +2688,15 @@ impl<P: Ports> App<P> {
         if matches!(input, Input::UserMessage { .. } | Input::StopAndSend { .. }) {
             self.check_message_limit(&access, self.ports.clock().now())
                 .await?;
-            // The person's own agent, made or resumed and ready, before the message is written and
-            // so before the dispatcher sends it (ANR-806).
+        }
+        // The person's own agent, made or resumed and ready, before what starts its work is written
+        // (ANR-806): a message, a Stop & send and an action on a card. A repeat of a request whose
+        // key is recorded writes nothing and so asks nothing: it gets the answer it had.
+        if matches!(
+            input,
+            Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
+        ) && !self.is_replay_of_key(id, key.as_deref()).await?
+        {
             self.ensure_own_agent(who.user(), &thread.target.agent_id)
                 .await?;
         }

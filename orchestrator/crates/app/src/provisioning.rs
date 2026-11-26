@@ -25,6 +25,9 @@ use crate::error::AppError;
 /// How long past the wait-ready bound the application itself waits for the provisioner. The
 /// adapter bounds its own wait and answers [`ProvisionError::NotReady`]; this is the backstop for
 /// an adapter that does not, and it leaves the adapter's requests room to finish.
+///
+/// Public only so that the tests can bound how long a wait may last (`tests/provisioning.rs`
+/// asserts it ends between the wait-ready bound and the bound plus this); nothing configures it.
 pub const OUTER_SLACK: Duration = Duration::from_secs(10);
 
 /// Characters of the owner key: 24 hex digits (96 bits of the person's hash), so that the longest
@@ -94,6 +97,11 @@ impl Provisioning {
     /// The owner key of a person: 24 hex digits of the SHA-256 of their user id. The same person
     /// always has the same key, two people never do, and the key names nobody (an e-mail is not
     /// a legal key and is not the platform's business).
+    ///
+    /// The key is an unsalted hash of the user id: a stable pseudonym, **not a secret**. It is a
+    /// function of the id the identity provider gives, so a deployment that changes which claim
+    /// names a person (`sub`, an e-mail) moves every person to a new key, and so to a new agent;
+    /// the old ones are left where they are (ADR 0103).
     pub fn owner_of(user: &UserId) -> AgentOwner {
         let digest = Sha256::digest(user.as_str().as_bytes());
         let hex: String = digest
