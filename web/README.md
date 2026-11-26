@@ -3244,7 +3244,9 @@ locked dependencies, plus Playwright's Chromium and the fonts it installs). `sh 
 set there and `sh scripts/screens-docker.sh check` compares (the CI job `screens` of `web.yml` runs it and fails on a difference,
 naming each image and whether its dimensions changed: same dimensions with different bytes is rasterisation or fonts, changed
 dimensions is layout). A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
-images nobody changed.
+images nobody changed. **A re-baseline is a workflow, not a hand**: Actions → *Update screens* (`update-screens.yml`) draws the set
+in the same image and opens one pull request with it, so a still drawn outside the image cannot land; its `screens` job compares the
+new set with the image again, which is also how a still that is not deterministic shows up.
 **The docs embed these files** (the repository README, this file, [DESIGN.md](DESIGN.md) and
 [`dev/README.md`](../dev/README.md), each as a `<picture>` of the `-light-` and `-dark-` file of a state). A screen that is
 renamed or dropped breaks a doc: `tools/docs-check` fails on an image path that does not resolve, in `![](…)` and in the

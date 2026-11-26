@@ -46,7 +46,10 @@ async function shot(page: Page, name: string, { hovering = false, full = false }
   // the caret and the scroll-to-bottom button's fade are noise in a still
   // (a still of something the pointer is resting on keeps the pointer there)
   if (!hovering) await page.mouse.move(0, 0);
-  await page.waitForTimeout(250);
+  // The form's last layout change (a field appearing, the card growing) settles a few frames later, and a still taken
+  // before it is one rasterisation step away from the next run's: 500 ms is the wait two identical runs proved enough
+  // (ANR-1004; at 250 ms `tools-add-form`'s card corner differed by one level between runs).
+  await page.waitForTimeout(500);
   // a page that scrolled itself (the document, not the chat) is a still with its header cut off
   expect(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)).toBe(0);
   await page.screenshot({
