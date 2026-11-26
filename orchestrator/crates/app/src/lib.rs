@@ -33,6 +33,7 @@ pub use app::{
     FirstMessage, ForkAt, ForkRequest, Forked, Inbound, NewThread, Received, SharedRead,
     SiblingView, StartChildSession, ThreadExport,
 };
+pub use app::{AttachmentRefusal, StoredAttachment};
 pub use app::{
     DEFAULT_USAGE_RETENTION_MONTHS, DeleteStats, DownloadMode, DownloadModeError, HistorySettings,
     HistoryStats, JobFiles, LateSource, LoadStats, ReadableFile, SubscriberGuard, TierStats,

@@ -136,7 +136,7 @@ power loss may lose the last transactions).
 | `SqliteStore::migrate()` | applies `migrations/` in one `BEGIN IMMEDIATE` transaction, recording each file in `schema_migrations` (`version`, `description`, `checksum`, `applied_at`); idempotent; `Corrupt` when an applied file changed afterwards |
 | `SqliteStore::path()` | the file (its real path) |
 | `SqliteStore::forget_usage_ledger()`, `forget_search_index()`, `age_search_index()` | the conformance hooks (see below): **test only**, never a production path |
-| `impl ThreadStore for SqliteStore` | the 41 methods of the port, with the contract of [`orch_ports::store`](../ports/src/store.rs): one transaction per write, the version check and the outbox and inbox fences inside it, the leases, the rail order, forks, child sessions, the purges, and the per-thread rules of the two claims; the commit also writes the ledger and the index |
+| `impl ThreadStore for SqliteStore` | the methods of the port, with the contract of [`orch_ports::store`](../ports/src/store.rs): one transaction per write, the version check and the outbox and inbox fences inside it, the leases, the rail order, forks, child sessions, the purges, and the per-thread rules of the two claims; the commit also writes the ledger and the index |
 | `impl UsageLedger for SqliteStore` | `month`, `thread_rows`, `backfill`, `sweep` (ADR 0065) |
 | `impl ThreadSearch for SqliteStore` | `search_threads`, `backfill_search`, `search_backlog` (ADR 0068) |
 | `impl PromptStore for SqliteStore` | `insert_prompt`, `get_prompt`, `list_prompts`, `replace_prompt`, `delete_prompt` (ADR 0070) |

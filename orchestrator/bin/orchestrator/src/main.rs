@@ -12,6 +12,7 @@ mod local;
 mod logging;
 mod migrate;
 mod model;
+mod provisioner;
 mod run_bindings;
 mod search;
 mod secrets;

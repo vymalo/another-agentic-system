@@ -5,7 +5,8 @@
   dated note here. Builds on [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
   (the run lease) and adam-rs
   [ADR 0067](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0067-a-model-call-through-an-injector-names-its-run-and-a-refusal-parks-the-run.md)
-  (a model call names its run, and a refusal parks the run). "adam ADR 0067" below is adam-rs's, not this repository's
+  (a model call names its run, and a refusal parks the run). **Amended 2026-11-26** by ADR 0101 (accepted 2026-11-26): the run's
+  certificate names this id; see the status note of that date. "adam ADR 0067" below is adam-rs's, not this repository's
   ADR 0067.
 
 ## Context
@@ -96,3 +97,17 @@ only for (c2), which amends decision 2 of adam ADR 0067, or for cure 2, which am
 
 The thread id (c1), a minted id in the message (c2), and an id computed in advance (d), for the reasons in
 [the options](#options-weighed).
+
+### Status note, 2026-11-26: the run's certificate names the same id ([ADR 0101](0101-a-cloud-runs-model-calls-are-signed-for-the-run-and-the-injector-stays-for-custom-cases.md))
+
+ADR 0101 (accepted 2026-11-26, on the owner's direction of 2026-11-26) gives each cloud run a certificate of its own whose URI SAN
+names the person and **this record's run id**: adam's task id, bound on first sight. The recommendation above stands,
+and option (b) is now also the identity a key is issued for:
+
+- **The race moves to the certificate.** The signer asks the broker for the run's certificate at the run's first model
+  call; before the bind it is refused `run_not_bound` and parks exactly as a refused model call does today (adam-rs ADR
+  0067). Cure 1 (`adam.resume` after the bind) shortens that wait for the certificate as it does for the lease, and the
+  measurement of step 1 counts the certificate refusals beside the lease's.
+- **The run id is no longer a capability on the signed path.** The gateway's verifier requires the leaf's run to be
+  `X-Run-Id`, so naming a run without its key spends nothing. Options (c2) and (d) gain nothing from this and stay
+  rejected.

@@ -22,8 +22,8 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Database, Environment, LogFormat, MAX_PRESIGN_TTL_SECS,
     MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
-    OAUTH_CALLBACK_PATH, Prompt, SecretRef, SecretStoreKind, SharingMode, Surface, ToolServer,
-    ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
+    OAUTH_CALLBACK_PATH, Prompt, Provisioner, ProvisionerCredentials, SecretRef, SecretStoreKind,
+    SharingMode, Surface, ToolServer, ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
 };
 
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
@@ -103,6 +103,8 @@ pub struct Secrets {
     /// `secrets.openbao.caFile`, read: the PEM text of the certificates. A certificate is public,
     /// but it is held as a `Secret` for the one reader that resolves a file the same way.
     pub openbao_ca: Option<Secret>,
+    /// `provisioner.credentials.clientSecret`; `None` without the section.
+    pub provisioner_client_secret: Option<Secret>,
 }
 
 /// One key of `secrets.pg.keys`, resolved. `Debug` shows the reference, never the key.
@@ -601,6 +603,11 @@ impl Checker<'_> {
         // secrets
         if let Some(section) = &cfg.secrets {
             self.user_secrets(section);
+        }
+
+        // provisioner
+        if let Some(section) = &cfg.provisioner {
+            self.provisioner(section);
         }
 
         // userToolServers
@@ -1724,6 +1731,13 @@ impl Checker<'_> {
             Some(section) => self.user_secrets_openbao(section),
             None => (None, None),
         };
+        let provisioner_client_secret = match &cfg.provisioner {
+            Some(Provisioner {
+                credentials: ProvisionerCredentials::DevOidc { client_secret, .. },
+                ..
+            }) => self.resolve(client_secret, "provisioner.credentials.clientSecret", true),
+            None => None,
+        };
         Some(Secrets {
             database_url: database_url?,
             database_direct_url,
@@ -1745,7 +1759,77 @@ impl Checker<'_> {
             user_secret_keys,
             openbao_token,
             openbao_ca,
+            provisioner_client_secret,
         })
+    }
+
+    /// `provisioner`: a URL the adapter can use, each kind once and with a form, and the
+    /// credentials' endpoint and ids. Whether the issuer answers is for the process to find out.
+    fn provisioner(&mut self, section: &Provisioner) {
+        let url_ok = |text: &str| {
+            url::Url::parse(text.trim()).is_ok_and(|u| {
+                matches!(u.scheme(), "http" | "https")
+                    && u.host_str().is_some()
+                    && u.username().is_empty()
+                    && u.password().is_none()
+            })
+        };
+        if !url_ok(&section.url) {
+            self.invalid(
+                "provisioner.url",
+                "expected an absolute http:// or https:// URL with a host and no user name or password",
+            );
+        }
+        for (i, kind) in section.kinds.iter().enumerate() {
+            if section.kinds[..i].contains(kind) {
+                self.invalid(
+                    format!("provisioner.kinds[{i}]"),
+                    "is listed more than once",
+                );
+            }
+            match section.forms.get(kind) {
+                None => self.invalid(
+                    format!("provisioner.forms.{}", kind.as_str()),
+                    "a kind that is provisioned needs its agent form",
+                ),
+                Some(form) => {
+                    if let Some(key) = ["name", "owner", "suspend"]
+                        .into_iter()
+                        .find(|key| form.contains_key(*key))
+                    {
+                        self.invalid(
+                            format!("provisioner.forms.{}.{key}", kind.as_str()),
+                            "the orchestrator sets name, owner and suspend: leave it out",
+                        );
+                    }
+                }
+            }
+        }
+        for kind in section.forms.keys() {
+            if !section.kinds.contains(kind) {
+                self.invalid(
+                    format!("provisioner.forms.{}", kind.as_str()),
+                    "a form for a kind that is not in provisioner.kinds",
+                );
+            }
+        }
+        match &section.credentials {
+            ProvisionerCredentials::DevOidc {
+                token_url,
+                client_id,
+                ..
+            } => {
+                if !url_ok(token_url) {
+                    self.invalid(
+                        "provisioner.credentials.tokenUrl",
+                        "expected an absolute http:// or https:// URL with a host and no user name or password",
+                    );
+                }
+                if client_id.trim().is_empty() {
+                    self.invalid("provisioner.credentials.clientId", "must not be blank");
+                }
+            }
+        }
     }
 
     /// `userToolServers` (ADR 0046): the lists are host patterns the egress guard reads, the plain

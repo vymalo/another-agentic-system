@@ -49,7 +49,13 @@ stateDiagram-v2
 
 * The agent is named `<kind>-<owner>` (`coder-<owner>`, `workspace-<owner>`): one per owner and
   kind, so two first messages at once name one agent. The create is conditional, so the platform
-  makes one and answers the other `409`, which the adapter reads as "it exists".
+  makes one and answers the other `409` `already-exists`, which the adapter reads as "it exists".
+  The platform's other `409`s on that route are told apart by the problem's `type`
+  (`urn:vymalo:agents:problem:<slug>`): `managed-by-gitops` (a GitOps-managed `coder-<owner>`
+  that the API will not write) is `Invalid`, `deleting` is `Deleting`, and `conflict`, an unknown
+  slug or a body that is no problem is a transient `Unavailable`. Only `already-exists` is "made".
+  A `409` on a *replace* (resume) is still read as "read again": the loop ends in a transient
+  error after eight rounds, never in "made".
 * Every call goes through the owner routes, which answer `404` for an agent of another owner: the
   adapter cannot read, suspend or delete one, and a name held by another owner is
   `ProvisionError::Invalid`.
@@ -61,10 +67,19 @@ stateDiagram-v2
 
 ## Configuration
 
-`PlatformConfig::new(url, token)`; defaults: 5 s per request, 120 s to be ready, polled every 2 s.
-The token must hold `platform:agents.own`. **How the orchestrator gets that token is not decided
-yet** (design task ANR-783), and this crate is not yet built into the `orchestrator` binary: the
-composition root takes a static bearer token until then.
+`PlatformConfig::new(url, token)` presents a fixed token; `PlatformConfig::with_credentials(url, credentials)`
+presents what a [`PlatformCredentials`](../ports/src/platform_credentials.rs) gives, **asked before every
+request and never kept**. Defaults: 5 s per request, 120 s to be ready, polled every 2 s. The token must
+hold `platform:agents.own`. A credentials error is `Refused` (the issuer refused the orchestrator) or
+`Unavailable` (it could not be reached); neither holds a token, a secret or a URL.
+
+Adapters of the port here: `StaticCredentials` (one token) and `OidcClientCredentials`, the **development**
+adapter: the OAuth `client_credentials` grant against a token endpoint with the extension parameters of the
+local stack's `mock-oidc` (`user`, `audience`, `roles`), the token cached until 30 s before it expires.
+
+The `orchestrator` binary builds the provisioner from the `provisioner:` section of its configuration
+(Cargo feature `provisioner-platform`, on by default; [`docs/api/config.md`](../../../docs/api/config.md#provisioner)).
+Nothing calls it yet: the message path is the next change.
 
 ## Tests
 
@@ -75,3 +90,7 @@ another owner). It is a stateful axum server and not a WireMock stub, because th
 agent and then read it back. It also checks: a wrong token makes nothing, an agent of another owner
 with the same name is never written, the form that is sent, a wait that times out, and an
 unreachable platform.
+
+The testkit itself is proven able to fail: `crates/ports/tests/provisioner_kit_catches.rs` builds
+fakes that each break one rule (a create that races, a resume that does not wait, a suspend that
+reaches another owner) and asserts the matching conformance case goes red.

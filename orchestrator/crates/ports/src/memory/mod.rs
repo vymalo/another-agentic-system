@@ -1,6 +1,7 @@
 //! In-memory implementations of the ports, for tests and for running the orchestrator
 //! without any network dependency. Behind the `testkit` feature.
 
+mod account_erase;
 mod agent;
 mod artifacts;
 mod auth;
@@ -20,6 +21,7 @@ mod user_tools;
 mod vault;
 mod wakeup;
 
+pub use account_erase::MemoryAccountErase;
 pub use agent::{
     AnswerFault, Call, STREAM_PIECES, ScriptedAgent, SendCall, VerdictScript, stream_id,
     stream_text,

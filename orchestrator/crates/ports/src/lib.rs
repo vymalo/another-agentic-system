@@ -52,6 +52,8 @@
 //! - [`PromptSigner`]: who signs the orchestrator's prompt statement on the cloud path, with a certified key; it
 //!   takes only an [`AttestedPayload`], a statement the integrity rule of `orch-prompt-statement` passed (ADR 0087,
 //!   the note of 2026-11-25);
+//! - [`AccountErase`]: deleting an account erases what a person owns, in one decision, refused while a job runs,
+//!   and keeps only counts under a pseudonym for a set time (ADR 0098);
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
@@ -59,6 +61,7 @@
 //! testkit every `ThreadStore` / `Wakeup` / `AgentClient` / `AgentRegistry` / `ChatModel` / `ArtifactStore` /
 //! `ToolServerClient` implementation must pass.
 
+mod account_erase;
 mod agent;
 mod artifacts;
 mod auth;
@@ -71,6 +74,7 @@ mod inbox;
 mod lookup;
 mod model;
 mod pending;
+mod platform_credentials;
 mod prompt_signer;
 mod prompts;
 mod provisioner;
@@ -91,6 +95,7 @@ pub mod memory;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
+pub use account_erase::{AccountErase, EraseError, EraseOutcome};
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
     AgentTransport, IdemKey, MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot,
@@ -128,6 +133,9 @@ pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
 pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,
+};
+pub use platform_credentials::{
+    PlatformCredentials, PlatformCredentialsError, PlatformToken, PlatformTokenFuture,
 };
 pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};
 pub use prompts::{

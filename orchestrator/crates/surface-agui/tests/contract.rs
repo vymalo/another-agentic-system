@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jsonschema::Validator;
 use orch_agui_proto::SCHEMA_1_0;
-use orch_ports::StoreError;
+use orch_app::Policy;
+use orch_ports::{Role, StoreError};
 use serde_json::{Value, json};
 use support::*;
 
@@ -141,11 +142,14 @@ impl Contract {
     /// The `(content type, schema)` the contract documents for a status.
     fn body(&self, id: &str, status: u16) -> (String, Value, Option<Value>) {
         let response = self.resolve(&self.operation(id)["responses"][status.to_string()]);
-        let (ct, media) = response["content"]
+        let content = response["content"]
             .as_object()
-            .unwrap_or_else(|| panic!("{id} {status} documents no body"))
-            .iter()
-            .next()
+            .unwrap_or_else(|| panic!("{id} {status} documents no body"));
+        // A JSON body is also offered as CBOR with the same schema; the JSON entry is the one these
+        // tests read, whatever order the document's keys come in.
+        let (ct, media) = content
+            .get_key_value("application/json")
+            .or_else(|| content.iter().next())
             .unwrap();
         (
             ct.clone(),
@@ -427,6 +431,33 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         )
         .await;
     seen.problem("runAgent", 422, &r);
+    // runAgent 429: a message over the person's role's `messages_per_minute` (ADR 0081). A
+    // deployment of its own, since the limit is part of the policy.
+    let limited = Harness::start_with_policy(
+        Policy::new(orch_app::built_in_roles(), Some(Role::new("user")))
+            .unwrap()
+            .with_messages_per_minute("user", 1),
+    )
+    .await;
+    let first = new_thread_id();
+    let mut run = limited
+        .run(
+            "plain",
+            ALICE,
+            &input(&first, "limit-1", &[("m1", "hello")]),
+        )
+        .await;
+    run.through_run().await;
+    let r = limited
+        .refused(
+            "plain",
+            Some(ALICE),
+            &input(&new_thread_id(), "limit-2", &[("m1", "again")]),
+        )
+        .await;
+    seen.problem("runAgent", 429, &r);
+    assert_eq!(r.json()["code"], "over_limit");
+    assert_eq!(r.json()["limit"], "messages_per_minute");
     // `vymalo.fork` (ADR 0042): a run that creates its thread as a fork, request and response; a
     // member that is malformed, together with a gate, a parent that is not the caller's, an event
     // that is not in the log.

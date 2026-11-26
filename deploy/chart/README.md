@@ -250,6 +250,10 @@ Cluster); until then `sharedDatabase.coder.enabled: true` only prepares the role
 Creating a role and a database from objects is idempotent: a `Database` that already exists in Postgres with the same name is adopted by
 CNPG's reconcile (*unverified*; here the databases are new). Removing a `Database` object leaves the database (`retain`).
 
+## The PostgreSQL image
+
+`database.imageName` defaults to a pinned CloudNativePG standard image (tag and digest; `render-check.sh` asserts it). To move it, change the tag and digest together. CNPG 1.30 runs PostgreSQL 15 to 18, so the default is 18; a PostgreSQL 19 standard image waits for CNPG 1.31. A major move is CNPG's offline in-place upgrade; take a new base backup after it. The orchestrator's own tests and the local stack run on PostgreSQL 19.0.
+
 ## Scaling the database (issue #290)
 
 For more than one orchestrator, or a database that survives the loss of a node: the cluster gets more instances, and a connection pooler carries the orchestrator's

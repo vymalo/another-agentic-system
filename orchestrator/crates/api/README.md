@@ -30,7 +30,7 @@ binary ([`orchestrator`](../../bin/orchestrator/README.md)) mounts the ones
 | `client_version::ClientVersion`, `client_version::{HEADER, TYPE, CODE}`, `ApiConfig::min_client_version` | the minimum application version (`server.minClientVersion`, [`docs/api/client-version.md`](../../../docs/api/client-version.md)): `Some` refuses, before identity and on the resource API only, a client whose `X-Client-Version` is lower, unreadable or absent, with the problem `urn:vymalo:problem:client-update-required` (426, `code: client_update_required`, `minClientVersion`); `None` (default) never reads the header. Test: `tests/client_version.rs` |
 | `cors::layer(&[String]) -> Option<CorsLayer>`, `cors::PREFLIGHT_MAX_AGE` | calls from a page of another origin (ADR 0047, `server.cors`): the router's outermost layer, an exact allow-list (`*` and `null` are skipped), the API's methods, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision`, `X-Client-Version`, the exposed `WWW-Authenticate`, `Date`, `Content-Disposition`, a 10-minute preflight, **never credentials**; a preflight is answered before identity, for any origin (tower-http answers every `OPTIONS` preflight with the methods, headers, `Max-Age` and `Vary`), and only a listed origin gets `Access-Control-Allow-Origin` |
 | `IDENTITY_HEADER` | the header the identity layer reads beside `Authorization: Bearer`. Identity itself is the `Authenticator` of the application's `Ports` ([ADR 0033](../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)); `ApiConfig.auth` and `AuthConfig` are gone, a development user is `HeaderAuth::with_dev_user` |
-| `Problem`, `ApiError` | RFC 9457 `application/problem+json` errors, and what a handler can `?` (an `AppError` mapped by its class, or a ready problem) |
+| `Problem`, `ApiError` | RFC 9457 `application/problem+json` errors, and what a handler can `?` (an `AppError` mapped by its class, or a ready problem); the members `limit`, `inUse` and `max` name the limit a 429 `over_limit` reached (ADR 0081, `Problem::with_limit`) |
 | `ApiJson<T>`, `ApiQuery<T>` | extractors whose rejections are 400 problems |
 | `EXPORT_FORMAT`, `EXPORT_VERSION`, `ORCHESTRATOR_REVISION`, `UNKNOWN_BUILD` | the `format` (`another-agentic-system/thread-export`) and `version` (1) members of the export document, the commit the binary was built from (`ORCH_BUILD_REVISION`, `unknown` without one) and the word for a build that is not known |
 | `parse_thread_id` | a path `{threadId}` that is not a UUID is a thread that does not exist |
@@ -78,6 +78,13 @@ is present and bad is refused even when another would have served.
 never fetched is kept out of the service. `/healthz` does not follow it.
 **The identity header is only trustworthy behind a proxy (oauth2-proxy) that strips client-supplied copies**; with
 `auth.mode: jwt` it is not read at all.
+
+### CBOR ([ADR 0102](../../../docs/decisions/0102-cbor-is-a-second-media-type-of-the-same-bodies.md), `src/cbor.rs`)
+
+`Content-Type: application/cbor` on a request and `Accept: application/cbor` on an answer select CBOR for the same bodies as JSON,
+which stays the default. One middleware over the resource API does it: the request is checked and converted to the JSON value the
+handler reads, a JSON answer is encoded as CBOR. An `Accept` naming neither is 406, another media type 415, bad CBOR 400
+`bad_cbor` (indefinite length, depth over 64, trailing data, byte strings). Errors stay `application/problem+json`; SSE is untouched.
 
 ### Roles and permissions
 

@@ -263,6 +263,7 @@ taken away, which is how [`user-tools-relay-e2e.sh`](user-tools-relay-e2e.sh) sh
 ```sh
 H=$(dev/auth-header.sh admin@example.com)
 curl -s -H "$H" http://127.0.0.1:8080/api/me | jq .                  # who the token says, and what its roles grant
+curl -s -H "$H" -H 'Accept: application/cbor' http://127.0.0.1:8080/api/me | xxd | head   # the same body as CBOR (ADR 0102)
 curl -s -H "$H" 'http://127.0.0.1:8080/api/threads' | jq 'map({id, owner, title})'   # the caller's own threads, for every role
 ```
 
@@ -574,7 +575,7 @@ Host ports are not per project: two stacks side by side need different `*_PORT` 
 
 | Service | Image | Host port (127.0.0.1) | Profile | What it is |
 |---|---|---|---|---|
-| `postgres` | `postgres:16.15-alpine` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
+| `postgres` | `postgres:19.0-alpine3.24` | `5432` (`POSTGRES_PORT`) | default | The orchestrator's database `orch`, and `orch_test` for `cargo test`. User and password are both `postgres`. Named volume `postgres-data`. |
 | `rustfs`, `rustfs-bucket` | `rustfs/rustfs:1.0.1-preview.17`, pinned by tag and digest | `9000` (`RUSTFS_PORT`) | `s3` | RustFS, an S3-compatible store, for the S3 artifact store's tests (`docker compose --profile s3 run --rm rustfs-bucket`, then `ORCH_TEST_S3_URL=http://127.0.0.1:9000 cargo test -p orch-artifacts-s3`, credentials `minioadmin`, the tests' defaults; [ADR 0032](../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md), amended 2026-10-09). `rustfs-bucket` is a one-shot that waits for RustFS to be ready and creates the bucket `orch-test`; its healthcheck only asks whether it is ready. Path style only, the console off, its version check sent to a proxy port nobody listens on. Named volume `rustfs-data`. The orchestrator of this stack keeps its files in a directory, not here. |
 | `mock-agent` | `wiremock/wiremock:3.13.2` | `8081` (`MOCK_AGENT_PORT`) | default | A fake A2A 1.0 coding agent. |
 | `mock-agent-releases` | `wiremock/wiremock:3.13.2` | `8082` (`MOCK_AGENT_RELEASES_PORT`) | default | The same agent, declaring the [release-channels extension](https://github.com/vymalo/another-agentic-platform/blob/main/docs/extensions/release-channels-v1.md). |
@@ -591,10 +592,11 @@ Host ports are not per project: two stacks side by side need different `*_PORT` 
 | `oauth2-proxy` | `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5-alpine`, pinned by tag and digest | not published | `app` | The real oauth2-proxy in auth_request mode: signs a browser in at `mock-oidc`, and lets a script's own token of that issuer through; answers the edge with `Authorization: Bearer <JWT>` for the orchestrator to validate. |
 | `mock-oidc` | built from [`mock-oidc/`](mock-oidc/Dockerfile) (`node:24-alpine3.23`, pinned by tag and digest; no dependencies) | `8099` (`MOCK_OIDC_PORT`) | `app` | The mock OpenID Connect issuer: discovery, `jwks`, `authorize` (approves the user of `login_hint`, the `/login-as` cookie or `dev@example.com`), `token` (the code; `client_credentials` with a `user`), `userinfo`. Users and roles: [`mock-oidc/users.json`](mock-oidc/users.json). [Sign in](#sign-in-a-mock-issuer-and-oauth2-proxy). |
 | `orchestrator-worker-1`, `orchestrator-worker-2` | the `orchestrator` image | not published | `split` | Workers: `ORCH_ROLE=worker`, so the dispatcher and a port that serves only `/healthz`, `/readyz` and `/metrics`. They read the same `orchestrator.yaml`. The instance id is the service name (it is the `lease_owner` of the outbox rows they hold) and the lease is 5 s (`OUTBOX_LEASE_SECS`, a variable over the file). See [the split profile](#the-split-profile-a-control-plane-and-two-workers). |
+| `swagger-ui` | `swaggerapi/swagger-ui:v5.36.0`, pinned by tag and digest (as `x-swagger-ui-image` at the top of `compose.yaml`) | `8104` (`SWAGGER_UI_PORT`) | `api-docs` | Swagger UI with every OpenAPI document of the repository behind one dropdown: [Read the OpenAPI documents](#read-the-openapi-documents). |
 | `coder` | `ghcr.io/vymalo/another-adam-rs/coder`, pinned by tag and digest (once, as `x-adam-image` at the top of `compose.yaml`) | `8090` (`CODER_PORT`) | `app` | adam-coder, the default agent: an A2A agent that turns a task into a branch and a pull request. About 2.9 GB, `linux/amd64` only. It reads its agent folder (instructions, card) from [`coder/agent/`](coder/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`ADAM_AGENT_DIR`; `CODER_AGENT_DIR` points the mount elsewhere), once at startup: [Change what the coder says](#change-what-the-coder-says). Since adam-rs `8e1133d` (adam-rs ADR 0031) every adam agent here also serves Swagger UI: `http://127.0.0.1:8090/docs` (the chat on 8097, the researcher on 8098), public on the loopback; a call from it needs the agent's token (`dev-coder-token`, `dev-chat-token`, `dev-researcher-token`), and the edge does not route to the agents. |
-| `coder-postgres` | `postgres:16.15-alpine` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
+| `coder-postgres` | `postgres:19.0-alpine3.24` | not published | `app` | The coder's own database, `coder`. Named volume `coder-postgres-data`. |
 | `mock-openai` | `wiremock/wiremock:3.13.2` | `8091` (`MOCK_OPENAI_PORT`) | `app` | The coder's model endpoint: the script `mock-coder` (no `mock-opencode` since adam-rs `7418467`), and the SSE twin of each of its scripts that answers a request with `"stream": true` (the coder streams its model calls). Vendored, see [`coder/UPSTREAM`](coder/UPSTREAM), plus one script of ours beside them, `[mock:share]` ([`wiremock/coder-share/`](wiremock/coder-share), with its twins: the coder makes three files and shares them, [Files from agents](#files-from-agents-the-artifact-store)). The two folders are mounted next to each other under `/home/wiremock/mappings`, which WireMock reads recursively. |
-| `agents-postgres` | `postgres:16.15-alpine` | not published | `app` | The database `agents`, shared by every agent that is only a folder (`chat`, `researcher`, and the next one): runs are scoped by the agent's name. Named volume `agents-postgres-data`. |
+| `agents-postgres` | `postgres:19.0-alpine3.24` | not published | `app` | The database `agents`, shared by every agent that is only a folder (`chat`, `researcher`, and the next one): runs are scoped by the agent's name. Named volume `agents-postgres-data`. |
 | `mock-model` | `wiremock/wiremock:3.13.2` | `8094` (`MOCK_MODEL_PORT`) | `app` | The model of the chat and the researcher, and of the orchestrator's thread titles: three scripts, `mock-persona`, `mock-researcher` and `mock-title`, in [`wiremock/model/mappings/`](wiremock/model/mappings), and an SSE twin of the first two (`*-stream.json`: the agents stream their model calls). Ours, not vendored. See [Several agents](#several-agents) and [Thread titles](#thread-titles-the-orchestrator-asks-a-model). |
 | `chat` | the coder's image, entrypoint `tini -- adam-agent` | `8097` (`CHAT_PORT`) | `app` | A casual chat: `adam-agent` serving the folder [`agents/chat/agent/`](agents/chat/agent/instructions.md), mounted read-only at `/etc/adam/agent` (`CHAT_AGENT_DIR` points the mount at a copy), model `mock-persona`. With [`compose.chat-browser.yaml`](compose.chat-browser.yaml) it reads a copy of that folder with the browser as a remote sub-agent ([The browser agent](#the-browser-agent-a-folder-with-obscura-beside-it)). |
 | `researcher` | the coder's image, entrypoint `tini -- adam-agent` | `8098` (`RESEARCHER_PORT`) | `app` | A researcher: the folder [`agents/researcher/agent/`](agents/researcher/agent/instructions.md) (`RESEARCHER_AGENT_DIR`), whose `mcp.json` names the mock web search, model `mock-researcher`. Waits for `mock-mcp-search` to be healthy. Live: [`agents/researcher/mcp.live.json`](agents/researcher/mcp.live.json) is mounted over that `mcp.json` and names `searxng-mcp`; it waits for that. |
@@ -611,7 +613,7 @@ Host ports are not per project: two stacks side by side need different `*_PORT` 
 | `mock-mcp-search` | built from [`mock-mcp-search/`](mock-mcp-search/Dockerfile) (`node:24-alpine3.23`, pinned by tag and digest; no dependencies, nothing is installed) | `8096` (`MOCK_MCP_SEARCH_PORT`) | `app` | A mock web-search MCP server: streamable HTTP at `http://mock-mcp-search:8080/mcp` (bearer `dev-search-token`), one tool `web_search` with an icon, canned results from [`mock-mcp-search/results.json`](mock-mcp-search/results.json). See [Mock web search (MCP)](#mock-web-search-mcp). |
 | `smee-proxy` | `caddy:2.11.4-alpine` | not published | `smee` | A Caddy of its own ([`Caddyfile.smee`](Caddyfile.smee)) that passes `POST /webhooks/github` to the orchestrator and nothing else (404); never the identity-injecting `edge`. See [Going live](#going-live). |
 | `smee` | built from [`smee/`](smee/Dockerfile) (`node:24-alpine3.23` by tag and digest, `smee-client` 5.0.0) | not published | `smee` | Forwards the deliveries smee.io holds for `SMEE_URL` to `smee-proxy`. Opt-in; exits with a message when `SMEE_URL` is unset. smee.io is a third party that sees the payloads. |
-| `orchestrator-local`, `local-postgres` | the orchestrator built with `--build-arg ORCH_FEATURES=agent-local` (long: it links the adam-rs runtime); `postgres:16.15-alpine` | `8095` (`ORCH_LOCAL_PORT`) | `local-agent` | A second orchestrator that hosts an `echo` agent in its own process ([`agents.local-echo.yaml`](agents.local-echo.yaml)), with a database of its own and `AUTH_DEV_USER` for the identity; no web UI. See [An agent inside the orchestrator](#an-agent-inside-the-orchestrator-agent-local). |
+| `orchestrator-local`, `local-postgres` | the orchestrator built with `--build-arg ORCH_FEATURES=agent-local` (long: it links the adam-rs runtime); `postgres:19.0-alpine3.24` | `8095` (`ORCH_LOCAL_PORT`) | `local-agent` | A second orchestrator that hosts an `echo` agent in its own process ([`agents.local-echo.yaml`](agents.local-echo.yaml)), with a database of its own and `AUTH_DEV_USER` for the identity; no web UI. See [An agent inside the orchestrator](#an-agent-inside-the-orchestrator-agent-local). |
 
 The default profile builds nothing and starts in seconds. `--profile app` builds the two images
 (the Rust build takes a few minutes the first time), the git server, `mock-ci`, `mock-mcp-search` and `mock-oidc`, and pulls the coder image (which
@@ -2176,6 +2178,28 @@ the control plane serves it.
 dev/artifact-e2e.sh           # on the running app profile
 dev/e2e-all.sh artifact       # the same, with the summary
 ```
+
+## Read the OpenAPI documents
+
+One opt-in profile holds the viewer. Name it, so that the default services (the database and the mocks) do not start with them; nothing is built:
+
+```sh
+docker compose --profile api-docs up -d swagger-ui
+```
+
+| What | URL | For |
+|---|---|---|
+| Swagger UI | <http://127.0.0.1:8104> | Every OpenAPI document of this repository in one page: the dropdown at the top lists them (today the [chat API](../docs/api/chat-api.yaml)). |
+
+It reads the files from the checkout, mounted read-only, so a refresh shows what is on disk. There is no editor here: an editor in your IDE reads
+the same files. A document is added in `compose.yaml`: one mount on `swagger-ui` and one entry in its `URLS`; the Compose workflow fails when a
+document under `docs/` that says `openapi:` is not named there. The port is `SWAGGER_UI_PORT`, bound to `127.0.0.1`. The image is the latest stable
+release of 2026-11-25, pinned by tag and digest; move it by reading the new tag and digest from Docker Hub
+(`https://hub.docker.com/v2/repositories/swaggerapi/swagger-ui/tags`) and changing the `x-swagger-ui-image` line.
+
+"Try it out" calls the `servers` of the document, and `chat-api.yaml` names `/`: a call made from this page goes to Swagger UI itself, so
+make those calls against the edge or the orchestrator (`dev/auth-header.sh` gives a token). Every adam agent of this stack also serves
+its own Swagger UI at `/docs` ([Services](#services), `coder`); those documents belong to adam-rs and are not listed here.
 
 ## kagent: an agent on Kubernetes, over plain A2A
 

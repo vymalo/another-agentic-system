@@ -1083,6 +1083,8 @@ impl ThreadStore for RacyStore {
             -> Result<Vec<orch_core::Event>, StoreError>;
         latest_events(thread: ThreadId, kind: orch_core::EventKind, limit: u32)
             -> Result<Vec<orch_core::Event>, StoreError>;
+        messages_since(owner: &orch_core::UserId, since: Timestamp)
+            -> Result<Vec<Timestamp>, StoreError>;
         ui_catalog_event(thread: ThreadId, digest: &str)
             -> Result<Option<orch_core::Event>, StoreError>;
         get_binding(thread: ThreadId) -> Result<Option<orch_ports::AgentBinding>, StoreError>;
