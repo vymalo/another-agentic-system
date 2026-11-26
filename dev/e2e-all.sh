@@ -84,6 +84,13 @@
 #                     both extensions activated and each member in its metadata; each message names its own and one that names none carries
 #                     no member; an alias or level the card does not offer, and a model for mock-coder, are typed 422s carrying `offered`
 #                     before anything is written
+#   pick-real         the model pick on a REAL adam agent (ADR 0086): the chat's card    pick-real-e2e.sh
+#                     lists model-pick/v1 with the two aliases of dev/model-profiles.json
+#                     (MODEL_ALIASES_FILE); GET /api/agents carries them; a message naming
+#                     none is answered by the chat's own model, the thread's default is
+#                     answered by its alias, a message's pick wins over the thread's, and
+#                     an alias the card does not offer is a 422 with the offered list and
+#                     nothing sent
 #   locale-real       the interface language on a REAL adam agent (ADR 0069): the chat's   locale-real-e2e.sh
 #                     card lists locale/v1 with the deployment's tag (DEFAULT_LOCALE of
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
@@ -263,7 +270,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier pick locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier pick pick-real locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -383,6 +390,11 @@ for s in "$@"; do
           *) echo "scenario pick needs the agents mock-pick and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    pick-real)
+      case " $agents " in
+        *" chat "*) ;;
+        *) echo "scenario pick-real needs the agent chat; GET /api/agents does not list it (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
     locale-real)
       for a in chat researcher; do
         case " $agents " in
@@ -482,6 +494,7 @@ for s in "$@"; do
     usage-ledger) run usage-ledger sh "$here/usage-ledger-e2e.sh" ;;
     tier) run tier sh "$here/tier-e2e.sh" ;;
     pick) run pick sh "$here/pick-e2e.sh" ;;
+    pick-real) run pick-real sh "$here/pick-real-e2e.sh" ;;
     locale) run locale sh "$here/locale-e2e.sh" ;;
     locale-real) run locale-real sh "$here/locale-real-e2e.sh" ;;
     child-sessions) run child-sessions sh "$here/child-sessions-e2e.sh" ;;

@@ -941,11 +941,17 @@ services:
       # tag, so a message may name one, and adam tells its model the language in one more turn (dev/locale-real-e2e.sh).
       # The researcher below sets none: its card lists nothing, which is the scenario's negative case.
       DEFAULT_LOCALE: en-GB
+      # The deployment's per-model profiles (adam-rs MODEL_ALIASES_FILE, ADR 0063/0064): the chat's own model
+      # (`mock-persona`) plus two aliases it offers, so its live card lists `model-pick/v1` with them and a person can
+      # pick one per message (dev/pick-real-e2e.sh; docs/api/model-pick-v1.md). The other agents set no file, so their
+      # cards list no choices.
+      MODEL_ALIASES_FILE: /etc/adam/model-profiles.json
       SEARCH_MCP_TOKEN: dev-search-token # the bearer token of mock-mcp-search, for the researcher helper
     ports:
       - "127.0.0.1:${CHAT_PORT:-8097}:8080"
     volumes:
       - ${CHAT_AGENT_DIR:-./dev/agents/chat/agent}:/etc/adam/agent:ro # read-only; CHAT_AGENT_DIR points the mount at a copy
+      - ./dev/model-profiles.json:/etc/adam/model-profiles.json:ro
 
   # A researcher: searches the web through the MCP server its folder names (agent/mcp.json: `search`, the mock web search)
   # and answers with the sources it found, and, when the screen's catalog has `Cards` and `Mermaid` (adam-rs c13ddf1), shows
