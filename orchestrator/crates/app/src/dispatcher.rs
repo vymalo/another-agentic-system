@@ -81,6 +81,10 @@ pub struct DispatcherConfig {
     pub max_poll_failures: u32,
     /// Attempts of a cancel row.
     pub max_cancel_attempts: u32,
+    /// Times a row is tried again while the person's own agent, ready on the platform, is not
+    /// listed in the registry yet (ANR-1061); then it is given up. With the backoff, 5 tries last
+    /// about 15 s.
+    pub own_agent_listing_attempts: u32,
     /// Delay before re-checking a cancel that raced a delegation.
     pub cancel_retry_delay: Duration,
     /// How often a verification or an ask in flight looks at its thread to see that it is still wanted
@@ -113,6 +117,7 @@ impl Default for DispatcherConfig {
             poll_max: Duration::from_secs(10),
             max_poll_failures: 10,
             max_cancel_attempts: 10,
+            own_agent_listing_attempts: 5,
             cancel_retry_delay: Duration::from_secs(1),
             verify_watch: Duration::from_secs(5),
             live_flush: Duration::from_millis(100),
@@ -740,19 +745,58 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // when the registry answers without it (ADR 0022), and a registry that cannot answer
         // leaves the row to be tried again, never dead.
         //
-        // Where a person's message goes (ANR-1061): for a kind the deployment provisions it is the
-        // person's own agent, which the message path made ready, looked up under its name in the
-        // registry; the thread keeps the configured agent as its target (gates, tiers and tools
-        // are the configured agent's). Derived from the thread's owner and the binding's agent,
-        // so every message and a fork go to the same agent and nothing is stored.
-        let own = self.app.own_agent_id(&thread.owner, &binding.agent_id);
-        let lookup = own.as_ref().unwrap_or(&binding.agent_id);
+        // Where the thread's messages go is the route recorded with it (ANR-1061, ADR 0103): the
+        // person's own agent, or the thread's agent when it has none. A row woken for a routed
+        // thread makes sure that agent is up first, except a stop and a follow, which never wake
+        // an agent.
+        let route = thread.job.route.clone();
+        let lookup = route.as_ref().unwrap_or(&binding.agent_id);
+        let wakes = route.is_some()
+            && !matches!(
+                row.payload,
+                OutboxPayload::Cancel { .. } | OutboxPayload::Observe { .. }
+            );
+        if wakes
+            && let Err(e) = self
+                .app
+                .ensure_own_agent(&thread.owner, &binding.agent_id)
+                .await
+        {
+            tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
+            if row.attempts < self.cfg.max_attempts {
+                self.retry(
+                    row,
+                    self.backoff(row.attempts),
+                    format!("your agent could not be made ready: {}", report(&e)),
+                )
+                .await?;
+                return Ok(None);
+            }
+            self.apply_quiet(
+                row,
+                Input::DeliveryFailed {
+                    reason: "your agent could not be made ready".to_owned(),
+                    retryable: false,
+                },
+                format!("dead:{}", row.id),
+            )
+            .await?;
+            self.finish(
+                row,
+                OutboxFinal::Dead {
+                    error: "own agent not ready".to_owned(),
+                },
+            )
+            .await?;
+            return Ok(None);
+        }
         let entry = match self.app.resolve_agent(lookup).await {
             Ok(Some(entry)) => entry,
             // ready on the platform and not listed yet: the registry reads the platform live, so
-            // give it a few tries before giving the person a dead row
-            Ok(None) if own.is_some() && row.attempts < self.cfg.max_attempts => {
-                tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, "the person's own agent is not listed yet; will retry");
+            // the row is tried again `own_agent_listing_attempts` times, and then given up with
+            // its own reason
+            Ok(None) if route.is_some() && row.attempts < self.cfg.own_agent_listing_attempts => {
+                tracing::debug!(id = %row.id, agent = %lookup, attempt = row.attempts, "the person's own agent is not listed yet; will retry");
                 self.retry(
                     row,
                     self.backoff(row.attempts),
@@ -761,8 +805,27 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 .await?;
                 return Ok(None);
             }
+            // a stop is answered here: an agent the platform does not list holds no task to stop
+            Ok(None) if route.is_some() && matches!(row.payload, OutboxPayload::Cancel { .. }) => {
+                tracing::warn!(id = %row.id, agent = %lookup, "the stop is answered without the person's own agent: it is not listed");
+                self.apply_quiet(
+                    row,
+                    Input::CancelledBeforeStart,
+                    format!("cancelstart:{}", row.id),
+                )
+                .await?;
+                self.finish(row, OutboxFinal::Delivered).await?;
+                return Ok(None);
+            }
             Ok(None) => {
-                let reason = format!("agent '{lookup}' is no longer listed");
+                if route.is_some() {
+                    tracing::warn!(id = %row.id, agent = %lookup, attempts = row.attempts, "the person's own agent was never listed; giving up");
+                }
+                let reason = if route.is_some() {
+                    format!("your agent '{lookup}' is ready but is not listed yet")
+                } else {
+                    format!("agent '{lookup}' is no longer listed")
+                };
                 // A person's start or close of a session is no delegation: it ends with the
                 // word, and the job it was asked beside is not failed (ADR 0072)
                 match &row.payload {

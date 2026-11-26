@@ -34,6 +34,7 @@
 #       `done`; after the scenarios are reset (the agent is suspended again) a second message to the same thread does it again (two resumes);
 #   (c) the wait ends at the bound: the run is a 503 `agent_not_ready` after at least 5 s and at most 16 s (the bound, 6 s, and its backstop), the
 #       detail says "not ready after 6s", it carries `Retry-After`, the platform saw the create and several polls, and no thread was written.
+# The registry stub is at priority 0 (it wins over the file's two stubs), and the script resets it, and the own agent's journal, in a `trap` on exit.
 # The mock platform is left empty (reset). Exit status 0 when every check passed. It leaves two threads behind (dev's and the holder's).
 #
 # Environment (defaults match compose.yaml and dev/compose.provisioner.yaml on one machine):
@@ -79,7 +80,13 @@ finish() {
 }
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+# the stubs of the registry and the journal of the own agent are put back however the script ends
+cleanup() {
+  curl -fsS --max-time 10 -X POST "$registry/__admin/mappings/reset" >/dev/null 2>&1 || true
+  curl -fsS --max-time 10 -X DELETE "$own/__admin/requests" >/dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
@@ -190,7 +197,7 @@ items=$(jq -n --arg card "http://mock-own-agent:8080/.well-known/agent-card.json
   {href: $card, type: "application/json", title: "Holder coder", service: [$h], tags: ["coding"], audience: ["*"]}]')
 curl -fsS --max-time 10 -X POST "$registry/__admin/mappings" -H 'content-type: application/json' \
   -d "$(jq -n --argjson items "$items" '{
-    name: "the platform lists the agents of dev and the holder", priority: 1,
+    name: "the platform lists the agents of dev and the holder", priority: 0,
     request: {method: "GET", urlPath: "/registry/v1/agents"},
     response: {status: 200, headers: {"Content-Type": "application/linkset+json", "Cache-Control": "private, max-age=2"},
       jsonBody: {linkset: [{profile: [{href: "https://agents.vymalo.com/registry/v1"}], item: $items}]}}}')" >/dev/null
@@ -240,14 +247,15 @@ if [ -n "$last_poll" ] && [ -n "$first_event_ms" ] && [ "$first_event_ms" -ge "$
 else
   bad "the thread's first event ($first_event, ${first_event_ms:-?} ms) is before the platform's last poll (${last_poll:-?} ms), or one of them is missing"
 fi
-# The message went to the person's own agent (ANR-1061), and its answer is the thread's.
+# The message went to the person's own agent (ANR-1061), and its answer is the thread's. The deployment's `adam` is the real coder image and keeps no
+# journal a script can read, so "it was not asked" is shown by the answer: the thread holds the stand-in's `Data: ...`, which `adam` never says.
 if [ "$(in_own_agent "$marker_a")" -ge 1 ]; then
   ok "the message is in the journal of the person's own agent (coder-<owner>), not only at the shared one"
 else
   bad "the person's own agent was sent no message that holds $marker_a"
 fi
 if jq -e '[.events[] | tostring | select(contains("Data: nine seasons"))] | length >= 1' "$tmp/export.json" >/dev/null 2>&1; then
-  ok "the thread holds the person's own agent's answer, which the deployment's agent never gives"
+  ok "the thread holds the person's own agent's answer (\"Data: ...\"), which the deployment's agent never gives"
 else
   bad "the thread does not hold the answer of the person's own agent"
 fi

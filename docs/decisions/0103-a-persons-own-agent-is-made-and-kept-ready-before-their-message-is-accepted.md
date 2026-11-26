@@ -34,28 +34,39 @@ and how long a person may be made to wait.
 4. **A replay is not a reason to ask.** A request whose idempotency key is already in the log (`ThreadStore::key_recorded`), a
    first message whose thread already exists, and a fork that is the replay of an earlier one write nothing, so they do not ask
    the platform and get the acceptance they had even while the platform is down.
-5. **What this does not do.** *(Amended 2026-11-26, ANR-1061: the message is now sent to the person's own agent, see the note below.)* Sends that do not come from a person's request (the verifier and CI re-delegation, a redelivery, an
-   `@mention` or `ask_agent` to a coder) do not provision: the dispatcher does not ask the platform.
+5. **What this does not do.** *(Amended 2026-11-26, ANR-1061: the message is sent to the person's own agent, by a route recorded with the thread, and the dispatcher's sends for a routed thread provision too; see the note below.)* An `@mention` or `ask_agent` to a coder does not provision: the dispatcher does not ask the platform for it.
 
 ## Amended 2026-11-26 (ANR-1061): the message goes to the person's own agent
 
 Decision 5 left the message at the deployment's configured agent, so the agent this ADR makes was never used. It is used now.
+This amendment replaces its first version, which recomputed the route from the configuration on every dispatch.
 
-- **Seam: the dispatcher's resolution of the agent id to an endpoint** (`Dispatcher::load`), not the thread's target and not the
-  registry. The target stays the configured agent (`coder`, `adam`): the gates, the tiers, the tool grants, the permissions and the
-  thread the person sees are keyed by it, and changing it would change all of them. The registry already lists the person's agent
-  under the name `ensure_ready` returns, so the dispatcher asks it for `<kind>-<owner>` in place of the binding's agent and takes
-  its endpoint; `Ctx.agent` is unchanged.
-- **Nothing is stored.** The name is a pure function of the thread's owner and the binding's agent (`Provisioning::own_agent_id`,
-  the kind read from the id and its aliases, as in decision 2), so every message of a thread reaches the same agent and a fork,
-  which keeps its parent's binding agent and has its forker as owner, reaches that person's agent. No migration, no new port.
-- **Not listed yet is retried, not trusted.** The platform says `Ready` before its registry may list the agent: the delegation is
-  retried with the dispatcher's backoff up to its attempts, and then dead-lettered like an agent the platform removed. It is never
-  sent to the shared agent instead: that would answer a person from an agent that is not theirs.
-- **A thread begun before provisioning was switched on** has its context at the shared agent; its next message goes to the
-  person's agent, which refuses a context it did not make. Turning provisioning on is a change for new threads.
-- **Unchanged:** the sends the dispatcher makes on its own that name an agent other than the thread's (`ask_agent`, `@mention`)
-  and ask the platform nothing.
+- **The route is recorded, not recomputed.** When a thread's first message provisions the person's agent (`create_thread_as`, or
+  a fork), the thread's job ledger records the agent: `Job.route`, the `ProvisionedAgent.name` (`<kind>-<owner>`). It is an
+  additive, optional field of the ledger (no migration; a ledger without it reads as none), kept by every later job like the
+  title or the attached servers. The thread's **target stays the configured agent** (`coder`, `adam`): the gates, the tiers, the
+  tool grants and the permissions are keyed by it and do not change.
+- **`Dispatcher::load` uses the recorded route for every row kind** (delegation, action, steer, cancel, follow, helper-session
+  start and close, redelivery), never the configuration. A row for a thread with no route goes where it always went.
+- **A thread that began before provisioning keeps its agent and its context.** Its job has no route, so no mid-thread switch:
+  the shared agent holds its A2A context and task, and a message to it asks the platform nothing and makes no agent nobody uses.
+  (Whether an agent refuses a context it did not make is *unverified*; the design does not rely on it.)
+- **A fork has a binding of its own and no context at either agent yet**, so it records its owner's own agent when the agent's
+  kind is provisioned, which for a person forking their own thread is the parent's.
+- **Which sends provision.** The person's requests (a message, Stop & send, an action, a fork's message, a helper session's
+  start) call `ensure_ready` for a routed thread, as in decision 3. Every row the dispatcher claims for a routed thread does too
+  before it is loaded, so a re-delegation by the verifier or CI, a redelivery and a session start find a suspended agent resumed;
+  one platform read per row when the agent is up. **A stop (`Cancel`) and a follow (`Observe`) never wake an agent.**
+- **Not listed yet.** The platform says `Ready` before its registry may list the agent. A row for a routed thread whose agent the
+  registry does not list is tried again `own_agent_listing_attempts` times (`DispatcherConfig`, **default 5**, about 15 s with the
+  default backoff), with a debug log each time and a warning when it is given up, and then fails with its own reason, "your agent
+  ... is ready but is not listed yet". It is never sent to the shared agent in its place, and the retry applies to the thread's own
+  agent only. A stop whose agent is not listed is answered here: an agent the platform does not list holds no task to stop, so the
+  thread is cancelled without asking it (`CancelledBeforeStart`).
+- **The tier and the cap come from the own agent's card.** The request checks a tier against the thread's agent, the send against
+  the card of the agent the row goes to (`tier_for_send`), so an own agent that does not list `access-tier/v1` gets no tier, and one
+  that lists it is given the message under it. The same holds for the model pick and the other extensions read from the live card.
+- **Unchanged:** the sends that name an agent other than the thread's (`ask_agent`, `@mention`) and ask the platform nothing.
 
 ## Consequences
 

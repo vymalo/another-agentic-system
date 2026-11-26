@@ -3253,6 +3253,7 @@ fn busy_job() -> Job {
             branch: "agent/x".into(),
             commit: "a".repeat(40),
         }),
+        route: Some(AgentId::new("coder-0123456789abcdef01234567")),
         builds: vec![orch_core::AgentBuild::new(
             AgentId::new("coder"),
             Some("Adam"),
