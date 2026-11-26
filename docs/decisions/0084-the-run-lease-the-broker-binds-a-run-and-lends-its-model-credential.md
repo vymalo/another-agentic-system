@@ -5,7 +5,8 @@
   person's balance; the lease is **30 s, renewed by Authorino's cache**. Both are this record's
   recommendations; the code follows them. It fixes the contract of sys#334's slice **B1** (the broker's first
   part) that S9's injector consumes. The requirements are the epic's own (*Key Assumptions* 3, 14 and 15, and
-  the constraint that the lease route is not at the edge).
+  the constraint that the lease route is not at the edge). **Amended 2026-11-26** by ADR 0101 (accepted 2026-11-26): the lease
+  answers only a binding whose path is `injected`, the custom-case injector's; see the status note of that date.
 
 ## Context
 
@@ -150,3 +151,18 @@ exists; no identity is `unauthenticated`. The meter holds no lease, bind or unbi
 binding's deadline (a pod can outlive its run's lease); it ends with the binding. `accountId` is in no log line, no refusal and no error. `RunLeases`
 gains the required method `account`, which breaks an implementer. *Unverified:* the binary's configuration key for the meter's token
 (`SharedTokens::with_meter`) is not wired yet, as the injector's is not; the meter itself is the platform's.
+
+### Status note, 2026-11-26: the lease is the custom-case injector's only ([ADR 0101](0101-a-cloud-runs-model-calls-are-signed-for-the-run-and-the-injector-stays-for-custom-cases.md))
+
+**The owner, 2026-11-26:** *"Then we go with signatures only. [...] We can even keep the injector for completely custom
+use-cases."* ADR 0101 (accepted 2026-11-26) changes what this record's lease is for, and nothing else of it:
+
+1. **A binding names its path** (`signed` or `injected`, default `signed`). The lookup of decision 2 answers **only a
+   binding whose path is `injected`**; a `signed` binding is refused (`signed_run`). Every cloud run of ours is bound
+   `signed`, so it has no lease: its calls are signed with a certificate of the run's own and go to the model gateway
+   with no bearer.
+2. **The binding stays the source of the run's person** for everything else: the run's certificate (ADR 0101,
+   decision 3, `POST /internal/runs/{run}/certificate`) is issued only for a live `signed` binding, to the binding's
+   agent, naming the binding's person; the meter's account route is unchanged.
+3. **The injector is kept as built**, off by default, for completely custom deployments; no cloud run of ours uses it.
+   Decisions 3 to 7 hold for it as written.

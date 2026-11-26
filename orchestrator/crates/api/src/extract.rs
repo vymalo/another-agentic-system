@@ -12,14 +12,23 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {
     type Rejection = Problem;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let typed = req.headers().contains_key(axum::http::header::CONTENT_TYPE);
         match axum::Json::<T>::from_request(req, state).await {
             Ok(axum::Json(value)) => Ok(ApiJson(value)),
-            Err(rejection) => Err(json_problem(&rejection)),
+            Err(rejection) => Err(json_problem(&rejection, typed)),
         }
     }
 }
 
-fn json_problem(rejection: &JsonRejection) -> Problem {
+/// A body that names another media type is 415; one that names none stays a 400.
+fn json_problem(rejection: &JsonRejection, typed: bool) -> Problem {
+    if typed && matches!(rejection, JsonRejection::MissingJsonContentType(_)) {
+        return Problem::new(
+            axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "the body must be application/json or application/cbor",
+        )
+        .with_code("unsupported_media_type");
+    }
     Problem::bad_request(rejection.body_text())
 }
 

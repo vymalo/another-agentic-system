@@ -912,6 +912,70 @@ pub async fn latest_events_newest_first<S: ThreadStore>(store: S) {
     );
 }
 
+/// ADR 0081: the person's messages in a window, oldest first. Only `user_message` events, only
+/// their own threads, and nothing before `since`.
+pub async fn messages_since_counts_the_owners_in_the_window<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    seed(&store, &bob(), 3).await;
+    let user = |secs: i64, text: &str| NewEvent {
+        at: at(secs),
+        actor: Actor::user(&alice()),
+        body: EventBody::UserMessage(UserMessageData::new(text)),
+        idempotency_key: None,
+    };
+    let artifact = NewEvent {
+        at: at(30),
+        actor: Actor::agent(&AgentId::new("coder"), None),
+        body: EventBody::Artifact(orch_core::ArtifactData {
+            name: "a".to_owned(),
+            mime_type: None,
+            uri: None,
+            text: None,
+            file: None,
+        }),
+        idempotency_key: None,
+    };
+    applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(
+                    ThreadState::Working,
+                    vec![artifact, user(30, "later"), user(50, "much later")],
+                    vec![],
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+
+    // Two messages at the start and two inside the first minute, oldest first; nothing of Bob's.
+    assert_eq!(
+        store.messages_since(&alice(), t0()).await.unwrap(),
+        [t0(), t0(), at(30), at(50)]
+    );
+    // The window is what `since` says: the last two only.
+    assert_eq!(
+        store.messages_since(&alice(), at(1)).await.unwrap(),
+        [at(30), at(50)]
+    );
+    // Nothing after the last message; nobody else's messages.
+    assert!(
+        store
+            .messages_since(&alice(), at(51))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.messages_since(&bob(), t0()).await.unwrap(),
+        [t0()],
+        "Bob's one message"
+    );
+}
+
 pub async fn list_events_after_limit<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     let events: Vec<NewEvent> = (0..4).map(|i| user_event(&format!("e{i}"), None)).collect();

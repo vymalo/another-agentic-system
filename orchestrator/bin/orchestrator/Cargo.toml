@@ -13,7 +13,7 @@ name = "orchestrator"
 path = "src/main.rs"
 
 [features]
-default = ["surface-agui", "surface-mcp", "surface-thread-tools", "tool-relay", "surface-webhook", "registry-platform", "artifacts-fs", "artifacts-s3", "secrets-pg", "secrets-openbao", "auth-header", "auth-jwt"]
+default = ["surface-agui", "surface-mcp", "surface-thread-tools", "tool-relay", "surface-webhook", "registry-platform", "provisioner-platform", "artifacts-fs", "artifacts-s3", "secrets-pg", "secrets-openbao", "auth-header", "auth-jwt"]
 # The AG-UI interaction route (POST /agui/agents/{agentId}), the default user-facing protocol.
 surface-agui = ["dep:orch-surface-agui"]
 # The MCP server (`/mcp`, ADR 0019). Compiled in by default like the AG-UI surface, so the image
@@ -43,6 +43,10 @@ surface-webhook = ["dep:orch-surface-webhook"]
 # `agents.registry.url` (AGENT_REGISTRY_URL) is set. Without the feature a registry is refused at
 # startup (exit 78), never quietly ignored.
 registry-platform = ["dep:orch-registry-platform"]
+# The platform's owner routes (`provisioner`): a person's own agents made, resumed and waited for, over
+# the Platform API. On by default; used only when the configuration has a `provisioner` section. Without
+# the feature a `provisioner` section is refused at startup (exit 78), never quietly ignored.
+provisioner-platform = ["dep:orch-provisioner-platform"]
 # The artifact stores (`artifacts.store`, ADR 0032): where the files agents hand over are kept, each an
 # implementation of the `ArtifactStore` port in its own crate. `artifacts-fs` (a directory, for development
 # and a single node) and `artifacts-s3` (an S3 bucket, the production store) are on by default, so that the
@@ -98,6 +102,7 @@ orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
 orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }
+orch-provisioner-platform = { workspace = true, optional = true }
 orch-artifacts-fs = { workspace = true, optional = true }
 orch-artifacts-s3 = { workspace = true, optional = true }
 orch-secrets-pg = { workspace = true, optional = true }

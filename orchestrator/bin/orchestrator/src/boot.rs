@@ -835,6 +835,15 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
 
     let Shared { store, app, local } = setup(&cfg).await?;
 
+    // The platform's provisioner, built from the file so that a bad section stops the process here
+    // (exit 78) and not at a person's first message. Nothing calls it yet: the message path asks
+    // for it in a later change.
+    #[cfg(feature = "provisioner-platform")]
+    let _provisioner = match &cfg.provisioner {
+        Some(settings) => Some(crate::provisioner::build(settings)?),
+        None => None,
+    };
+
     // Arm the shutdown signal before the address is bound. A future that waits for SIGTERM installs
     // its handler the first time it is polled, and the host polls `shutdown` only once every
     // component has started: a SIGTERM that arrived after the server answered and before that first

@@ -1,6 +1,10 @@
 # The model-credential injector: the headers the model endpoint may trust, and the balance a call may spend
 
-> **Status: built in the chart, off by default** (`deploy/chart`, values `injector`; [ADR 0084](../decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)).
+> **Status: built in the chart, off by default, and from 2026-11-26 the path for completely custom deployments only**
+> ([ADR 0101](../decisions/0101-a-cloud-runs-model-calls-are-signed-for-the-run-and-the-injector-stays-for-custom-cases.md),
+> accepted 2026-11-26): a cloud run of ours signs its model calls with a certificate of the run's own and goes to the model gateway
+> with no bearer, so it never reaches the injector, and its binding has no lease. What follows describes the injector
+> for a deployment that turns it on (`deploy/chart`, values `injector`; [ADR 0084](../decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)).
 > The transport and the refusals are proven in kind by [`dev/agent-router-spike/`](../../dev/agent-router-spike/README.md)
 > (*verified 2026-11-24/25*). The deployment's turn-on values and the object list are in
 > [`deploy/chart/README.md`](../../deploy/chart/README.md#the-model-credential-injector-s9).

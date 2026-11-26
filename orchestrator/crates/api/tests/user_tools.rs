@@ -73,7 +73,10 @@ impl Contract {
         let Some(content) = response.get("content").and_then(Value::as_object) else {
             return Ok(None);
         };
-        let (_, media) = content.iter().next().unwrap();
+        let (_, media) = content
+            .iter()
+            .find(|(ct, _)| *ct != "application/cbor")
+            .unwrap();
         Ok(Some(media["schema"].clone()))
     }
 

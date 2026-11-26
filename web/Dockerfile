@@ -33,6 +33,22 @@ ARG NEXT_PUBLIC_SIGN_IN_PATH=""
 ARG NEXT_PUBLIC_BUILD_REVISION=""
 RUN pnpm build
 
+# The screenshots' generator (`web/scripts/screens-docker.sh`): the same base and the same locked dependencies as the build, plus the
+# Playwright browser and the fonts it installs, so the images of e2e/__screens__/ come from one environment and not from a host.
+# Not part of the runtime image: nothing below `runtime` copies from it.
+FROM base AS screens
+ENV CI=true \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /app
+COPY docs/api/chat-api.yaml docs/api/chat-api.yaml
+COPY orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json
+COPY web/ web/
+COPY --from=deps /app/web/node_modules web/node_modules
+WORKDIR /app/web
+RUN pnpm exec playwright install --with-deps chromium
+# the screens are written to e2e/__screens__/; the script mounts a directory there
+CMD ["sh", "-c", "pnpm gen:api && pnpm screens"]
+
 # The runtime is Caddy serving the export (web/Caddyfile): no Node, no node_modules. The same Caddy as the chart's edge, pinned
 # by tag and digest. It listens on 3000 as an unprivileged user and writes nothing (`persist_config off`, no certificates).
 FROM caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b AS runtime

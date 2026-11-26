@@ -355,6 +355,29 @@ impl LocalAgents {
         )
     }
 
+    /// Local agents whose journal is the SQLite file at `path` (the embedded build, ADR 0076):
+    /// one process writes it, no server and no Postgres driver, in tables prefixed
+    /// [`TABLE_PREFIX`]. Work is found by polling the journal (there is no `NOTIFY`), and a run
+    /// survives the process: a new one resumes it from its last commit once the lease expires.
+    /// Call [`migrate`](Self::migrate) before first use.
+    #[cfg(feature = "embedded")]
+    pub fn sqlite(
+        path: impl AsRef<std::path::Path>,
+        opts: LocalOptions,
+        kinds: &[LocalKind],
+    ) -> Result<Self, LocalAgentsError> {
+        let store = adam_store_sqlite::SqliteStore::open(path)
+            .and_then(|store| store.with_table_prefix(TABLE_PREFIX))
+            .map_err(LocalAgentsError::store)?;
+        Ok(Self::assemble(
+            Arc::new(store),
+            None,
+            BroadcastSink::default(),
+            opts,
+            kinds.iter().map(|k| k.hosted()).collect(),
+        ))
+    }
+
     /// The composition: a runtime over `store`, one task backend per hosted kind.
     pub(crate) fn assemble(
         store: DynStore,

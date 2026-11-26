@@ -1223,6 +1223,18 @@ pub trait ThreadStore:
         limit: u32,
     ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
 
+    /// The `at` of every `user_message` event of `owner`'s threads at or after `since`, oldest
+    /// first: what a role's `messages_per_minute` counts before a message is written (ADR 0081,
+    /// decisions 2 and 3). A query over the log and never an in-memory counter, so every replica
+    /// counts the same and a restart loses nothing. A message a fork copied from its parent counts
+    /// for the fork's owner with the parent's time; the orchestrator asks for one minute, so the
+    /// result is small by construction and no window is ever kept anywhere else.
+    fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> impl Future<Output = Result<Vec<Timestamp>, StoreError>> + Send;
+
     /// The newest `ui_catalog` event of `thread` whose catalog has this `digest`, or `None` when the
     /// thread has none (or no thread has this id): the thread-tools endpoint reads the catalog its
     /// ledger names as current with it (ADR 0023). A query by what the event holds, not a window

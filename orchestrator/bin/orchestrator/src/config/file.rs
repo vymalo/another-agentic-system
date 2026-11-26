@@ -1296,6 +1296,13 @@ fn load_file(
         }
     }
 
+    #[cfg(not(feature = "provisioner-platform"))]
+    if valid.config.provisioner.is_some() {
+        return Err(document(
+            "provisioner: needs the Cargo feature \"provisioner-platform\", which this build does not have"
+                .to_owned(),
+        ));
+    }
     let (file_args, mut resolved) = project(&valid, &tree, args.hostname.clone())?;
     (resolved.sharing, resolved.public_limits) = sharing_of(&valid)?;
     let merged = serde_norway::to_string(&valid.config.effective())
@@ -1543,6 +1550,7 @@ fn project(
         artifacts: artifact_settings(valid)?,
         // People's own MCP servers (ADR 0046): the egress policy and the keys, only when enabled.
         user_tools: UserToolsSettings::from_file(valid).map_err(document)?,
+        provisioner: crate::provisioner::ProvisionerSettings::from_file(valid),
         auth: super::AuthSettings::from_file(&c.auth),
         models: Some(models_of(valid)),
         tool_servers: tool_servers_of(&c.tool_servers),
@@ -3701,6 +3709,42 @@ agents:
             let errors = lines(loaded);
             assert!(errors[0].contains("agents.registry.url"), "{errors:?}");
         }
+    }
+
+    #[test]
+    fn a_provisioner_section_is_read_with_its_secret_and_no_section_changes_nothing() {
+        let section = "\
+provisioner:
+  url: http://platform-api:8080
+  kinds: [coder]
+  forms:
+    coder: { kind: coder }
+  credentials:
+    type: dev-oidc
+    tokenUrl: http://mock-oidc:8080/token
+    clientId: orchestrator
+    clientSecret: { env: PLATFORM_CLIENT_SECRET }
+";
+        let file =
+            "version: 1\ndatabase: { url: { env: DATABASE_URL } }\nagents:\n  file: agents.yaml\n";
+        let mut pairs = base();
+        pairs.retain(|(k, _)| *k != "THREAD_TOOLS_SECRET");
+        pairs.push(("PLATFORM_CLIENT_SECRET", "hunter2-hunter2"));
+        let off = load_file_only(&pairs, file).unwrap();
+        assert!(off.config.provisioner.is_none());
+
+        let on = load_file_only(&pairs, &format!("{file}{section}"));
+        #[cfg(feature = "provisioner-platform")]
+        {
+            let on = on.unwrap();
+            let settings = on.config.provisioner.as_ref().unwrap();
+            assert_eq!(settings.url, "http://platform-api:8080");
+            assert_eq!(settings.forms.len(), 1);
+            let shown = format!("{:?}", on.config);
+            assert!(!shown.contains("hunter2"), "{shown}");
+        }
+        #[cfg(not(feature = "provisioner-platform"))]
+        assert!(lines(on)[0].contains("provisioner"));
     }
 
     #[test]

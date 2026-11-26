@@ -2,3 +2,7 @@ node_modules/
 
 # Local settings and secrets for compose.live.yaml (copy .env.example): never commit.
 .env
+docs/api/chat-api.md
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/.shots/

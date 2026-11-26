@@ -1907,6 +1907,27 @@ impl ThreadStore for SqliteStore {
         .await
     }
 
+    async fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> Result<Vec<Timestamp>, StoreError> {
+        // The Postgres statement with SQLite's types: the person's messages of the window, over
+        // the log (ADR 0081, decision 3).
+        let owner = owner.as_str().to_owned();
+        let since = to_db(since)?;
+        self.call(move |conn| {
+            rows(
+                conn,
+                "SELECT e.at FROM events e JOIN threads t ON t.id = e.thread_id \
+                 WHERE t.owner = ?1 AND e.kind = ?2 AND e.at >= ?3 ORDER BY e.at",
+                &[&owner, &EventKind::UserMessage.as_str(), &since],
+                |row| from_db(row.get::<_, i64>(0).map_err(store_err)?),
+            )
+        })
+        .await
+    }
+
     async fn ui_catalog_event(
         &self,
         thread: ThreadId,

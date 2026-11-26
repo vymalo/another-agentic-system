@@ -837,6 +837,14 @@ for (const scheme of ["light", "dark"] as const) {
 
     test("the agent's own commands: the / menu", async ({ page, context }) => {
       const lib = await promptsSession(context, "user");
+      // the "Your prompts" group is drawn only for a person who has one: this session starts with none
+      await lib.make({
+        name: "standup",
+        title: "Write my standup",
+        description: "A short note of what I did, what is next and what blocks me.",
+        body: "Write my standup from {{notes}}.",
+        variables: [{ id: "notes", question: "Your notes", type: "longText" }],
+      });
       expect(
         (
           await lib.hook("/__mock/commands", {

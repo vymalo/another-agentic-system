@@ -57,6 +57,8 @@ struct Platform {
     delay_ms: AtomicU64,
     next_uid: AtomicU64,
     requests: Mutex<Vec<String>>,
+    /// When set, a create answers `409` with this problem slug whatever the agents are.
+    conflict: Mutex<Option<&'static str>>,
 }
 
 type Shared = Arc<Platform>;
@@ -140,6 +142,9 @@ async fn write(
         .and_then(|v| v.to_str().ok());
     match (if_match, if_none) {
         (None, Some("*")) => {
+            if let Some(slug) = *p.conflict.lock().unwrap() {
+                return problem(StatusCode::CONFLICT, slug);
+            }
             if agents.contains_key(&name) {
                 return problem(StatusCode::CONFLICT, "already-exists");
             }
@@ -374,4 +379,41 @@ async fn an_unreachable_platform_is_unavailable() {
     let p = PlatformProvisioner::new(config("http://127.0.0.1:1", TOKEN)).unwrap();
     let err = p.state(&owner("a"), AgentKind::Coder).await.unwrap_err();
     assert!(matches!(err, ProvisionError::Unavailable { .. }), "{err:?}");
+}
+
+async fn put_count(platform: &Shared) -> usize {
+    platform
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.starts_with("PUT"))
+        .count()
+}
+
+#[tokio::test]
+async fn a_409_that_is_not_already_exists_is_not_made() {
+    for (slug, expect) in [
+        ("managed-by-gitops", "invalid"),
+        ("deleting", "deleting"),
+        ("conflict", "unavailable"),
+        ("something-new", "unavailable"),
+    ] {
+        let (url, platform) = serve().await;
+        *platform.conflict.lock().unwrap() = Some(slug);
+        let p = PlatformProvisioner::new(config(&url, TOKEN)).unwrap();
+        let err = p
+            .ensure_ready(&owner("gita"), AgentKind::Coder)
+            .await
+            .unwrap_err();
+        let got = match err {
+            ProvisionError::Invalid => "invalid",
+            ProvisionError::Deleting => "deleting",
+            ProvisionError::Unavailable { .. } => "unavailable",
+            ref other => panic!("{slug}: unexpected {other:?}"),
+        };
+        assert_eq!(got, expect, "{slug}");
+        assert_eq!(put_count(&platform).await, 1, "{slug}: no second create");
+        assert!(platform.agents.lock().unwrap().is_empty(), "{slug}");
+    }
 }
